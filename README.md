@@ -23,7 +23,7 @@ The character creation process is divided into 5 stages:
 1. Place the downloaded folder into `ComfyUI/custom_nodes/`
 2. Launch ComfyUI and open Comfy Manager
 3. Click "Install missing custom nodes"
-4. Alternatively, in the console: go to `ComfyUI/custom_nodes/` and run `git clone [repository link]`
+4. Alternatively, in the console: go to `ComfyUI/custom_nodes/` and run `git clone https://github.com/AHEKOT/ComfyUI_VNCCS.git`
 
 ## Required Models
 
@@ -84,25 +84,25 @@ Open the workflow `VN_Step1_CharSheetGenerator`.
 ---
 #### **First Pass**
 Initial generation. Raw and imprecise, used for visual identification of the character.
-- **Match** - how much new character would be look like character from initial charsheet. To low and to high settings are not recommended and will result to unwanted things.
+- **Match** - how much the new character would look like character from initial charsheet. Too low and too high settings are not recommended and will result to unwanted things.
 Safe to stay in about 0.5, but you can test other values!
 ---
 #### **Stabilizer**
 Stabilizes the initial generation, bringing it to a common look.
-- **Blur** - blur level for complex cases to help small differences dissapear.
+- **Blur** - blur level for complex cases to help small differences disappear.
 - **Match** - similarity level (0.85 is safe, range 0.4-1.0)
 - LoRA trained on character sheet to help with matching things.
 ---
 #### **Third Pass**
 Third generation pass using the stabilized character sheet.
-- **RMBG Resolution** - its very important for great sprites. 1408 - maximum resolution for 8gb vram cards! But you can set 1536 if you have better videocard than me.
+- **RMBG Resolution** - it's very important for great sprites. 1408 - maximum resolution for 8GB VRAM cards! But you can set 1536 if you have better videocard than me.
 But if you have troubles - you can lower it to 1024 and edit small mistakes manualy.
 Better resolution - better mask!
 ---
 #### **Upscaler**
 Improves character sheet quality by adding details.
-- **Denoise** - strength in settings (safe values 0.4-0.5). More denoise - more details. More details - more incosistity with small details on character. Stay in balance!
-- **Seam Fix Mode** - to best results set to "Half Tile + intersections but this will result to dramatically increased generation time. 
+- **Denoise** - strength in settings (safe values 0.4-0.5). More denoise - more details. More details - more inconsistency with small details on character. Stay in balance!
+- **Seam Fix Mode** - to the best results, set to "Half Tile + intersections but this will result in dramatically increased generation time.
 ---
 #### **Face Detailer**
 Improves face quality.
@@ -122,7 +122,7 @@ It's similar to the first, but has key differences:
 **Workflow nodes work the same way as in Character Creator.
 So, let focus of the nuances of settings:**
 
-- Lower match strenght means better and more diverse clothing, but the character may look less like themselves
+- Lower match strength means better and more diverse clothing, but the character may look less like themselves
 - Higher strength means the node repeats the previous result more
 - Find a balance between diversity and consistency
 - For complex clothing, look for similar examples on Danbooru for accurate tags
@@ -143,7 +143,7 @@ This step is similar to the previous ones, but focuses on creating emotions for 
 
 #### VNCCS Emotion Generator
 ![Emotion Node](images/EmotionsNode.png)
-- **Denoise** greatly impact on emotion steinght but too high values can distort face of character and affect consistity. 
+- **Denoise** greatly impacts emotion strength but too high values can distort face of character and affect consistency.
 
 After setting the parameters, click "Run".
 
@@ -193,7 +193,7 @@ Don't forget to save all your work and regularly back up your data. Good luck cr
 
 Future plans: 
 - implement more "modern" models like qwen, flux and nanobanana
-- consistant background generation
+- consistent background generation
 - animated sprites
 - animation of transitions between poses
 - automatic translation of the game on RenPy into other languages.
