@@ -47,7 +47,7 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         if any(c in forbidden for c in name):
             return web.json_response({"error": "invalid characters"}, status=400)
         defaults = dict(
-            existing_character="None",
+            existing_character=name,
             background_color="green",
             aesthetics="masterpiece",
             nsfw=False,
