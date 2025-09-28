@@ -15,5 +15,5 @@ Documentation = "https://github.com/AHEKOT/ComfyUI_VNCCS/wiki"
 [tool.comfy]
 PublisherId = "vnccs"
 DisplayName = "Visual Novel Character Creation Suite"
-Icon = ""
+Icon = "https://github.com/AHEKOT/ComfyUI_VNCCS/blob/main/images/VNCCS_LOGO.png"
 
