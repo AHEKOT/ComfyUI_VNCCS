@@ -69,6 +69,8 @@ Open the workflow `VN_Step1_CharSheetGenerator`.
 
 #### Character Sheet
 ![Character Sheet Node](images/charsheetnode.png)
+Default character sheet lay is in `character_pemplate` folder
+
 ---
 #### Settings
 ![Settings Node](images/settings.png)
