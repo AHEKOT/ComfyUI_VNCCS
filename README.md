@@ -20,6 +20,8 @@ The character creation process is divided into 5 stages:
 
 ## Installation
 
+Find `VNCCS - Visual Novel Character Creation Suite` in Custom Nodes Manager or install it manually:
+
 1. Place the downloaded folder into `ComfyUI/custom_nodes/`
 2. Launch ComfyUI and open Comfy Manager
 3. Click "Install missing custom nodes"

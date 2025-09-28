@@ -1,7 +1,7 @@
 [project]
 name = "vnccs"
-description = "Visual Novel Character Creation Suite"
-version = "1.0.0"
+description = "VNCCS - Visual Novel Character Creation Suite"
+version = "1.0.2"
 license = {file = "LICENSE"} 
 
 dependencies = ["torch>=1.9.0", "numpy>=1.21.0", "Pillow>=8.0.0", "opencv-python>=4.5.0"]
@@ -14,6 +14,6 @@ Documentation = "https://github.com/AHEKOT/ComfyUI_VNCCS/wiki"
 
 [tool.comfy]
 PublisherId = "vnccs"
-DisplayName = "Visual Novel Character Creation Suite"
-Icon = "https://github.com/AHEKOT/ComfyUI_VNCCS/blob/main/images/VNCCS_LOGO.png"
+DisplayName = "VNCCS - Visual Novel Character Creation Suite"
+Icon = "https://raw.githubusercontent.com/AHEKOT/ComfyUI_VNCCS/refs/heads/main/images/VNCCS_LOGO.png"
 
