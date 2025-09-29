@@ -110,7 +110,7 @@ Improves character sheet quality by adding details.
 ---
 #### **Face Detailer**
 Improves face quality.
-- **Value range:** 0.2-0.7 (default 0.65). More values - more changes.
+- **Value range:** 0.2-0.7 (default 0.65). Higher value - more changes.
 ---
 ![FinishFirsStep](images/finishfirststep.png)
 ---
@@ -204,4 +204,4 @@ Future plans:
 - automatic voice generation for the game on RenPy
 ---
 
-[![Buy Me a Coffee](https://img.buymeacoffee.com/button-api/?text=Help%20me%20buy%20RTX%203090&emoji=&slug=MIUProject&button_colour=BD5FFF&font_colour=ffffff&font_family=Inter&outline_colour=000000&coffee_colour=FFDD00)](https://www.buymeacoffee.com/MIUProject)
+[![Buy Me a Coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20rtx%203090&emoji=☕&slug=MIUProject&button_colour=FFDD00&font_colour=000000&font_family=Comic&outline_colour=000000&coffee_colour=ffffff)](https://www.buymeacoffee.com/MIUProject)
