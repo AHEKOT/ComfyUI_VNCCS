@@ -17,6 +17,10 @@ The character creation process is divided into 5 stages:
 3. **Create emotion sets**
 4. **Generate finished sprites**
 5. **Create a dataset for LoRA training** (optional)
+---
+**If you found my project useful, you can help me buy a new graphics card! With it, I will be able to add animation and bring static graphics to life!**
+
+[![Buy Me a Coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20rtx%203090&emoji=☕&slug=MIUProject&button_colour=FFDD00&font_colour=000000&font_family=Comic&outline_colour=000000&coffee_colour=ffffff)](https://www.buymeacoffee.com/MIUProject)
 
 ## Installation
 
@@ -193,8 +197,6 @@ Don't forget to save all your work and regularly back up your data. Good luck cr
 
 ---
 
-**If you found my project useful, you can help me buy a new graphics card! With it, I will be able to add animation and bring static graphics to life!**
-
 Future plans: 
 - implement more "modern" models like qwen, flux and nanobanana
 - consistent background generation
@@ -204,4 +206,3 @@ Future plans:
 - automatic voice generation for the game on RenPy
 ---
 
-[![Buy Me a Coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20rtx%203090&emoji=☕&slug=MIUProject&button_colour=FFDD00&font_colour=000000&font_family=Comic&outline_colour=000000&coffee_colour=ffffff)](https://www.buymeacoffee.com/MIUProject)
