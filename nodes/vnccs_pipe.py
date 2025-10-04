@@ -13,14 +13,14 @@ Sampler / scheduler:
 
 
 """Prepare enumeration lists once so both inputs and outputs share identical types."""
-try:
-    import importlib as _importlib
-    _comfy_mod = _importlib.import_module('comfy')
-    SAMPLER_ENUM = list(getattr(getattr(getattr(_comfy_mod, 'samplers', object()), 'KSampler', object()), 'SAMPLERS', [])) or ["euler", "euler_a", "heun"]
-    SCHEDULER_ENUM = list(getattr(getattr(getattr(_comfy_mod, 'samplers', object()), 'KSampler', object()), 'SCHEDULERS', [])) or ["normal", "karras", "exponential"]
-except Exception:  # fallback if comfy module not yet available in analysis context
-    SAMPLER_ENUM = ["euler", "euler_a", "heun"]
-    SCHEDULER_ENUM = ["normal", "karras", "exponential"]
+from .sampler_scheduler_picker import (
+    fetch_sampler_scheduler_lists,
+    DEFAULT_SAMPLERS,
+    DEFAULT_SCHEDULERS,
+)
+
+
+SAMPLER_ENUM, SCHEDULER_ENUM = fetch_sampler_scheduler_lists()
 
 
 class VNCCS_Pipe:
@@ -61,14 +61,7 @@ class VNCCS_Pipe:
 
     @classmethod
     def INPUT_TYPES(cls):
-        try:
-            import importlib
-            comfy_mod = importlib.import_module('comfy')
-            sampler_enum = list(getattr(getattr(getattr(comfy_mod, 'samplers', object()), 'KSampler', object()), 'SAMPLERS', [])) or ["euler", "euler_a", "heun"]
-            scheduler_enum = list(getattr(getattr(getattr(comfy_mod, 'samplers', object()), 'KSampler', object()), 'SCHEDULERS', [])) or ["normal", "karras", "exponential"]
-        except Exception:
-            sampler_enum = ["euler", "euler_a", "heun"]
-            scheduler_enum = ["normal", "karras", "exponential"]
+        sampler_enum, scheduler_enum = fetch_sampler_scheduler_lists()
 
         return {
             "optional": {
@@ -82,8 +75,8 @@ class VNCCS_Pipe:
                 "cfg": ("FLOAT", {"default": None}),
                 "denoise": ("FLOAT", {"default": None}),
                 "pipe": ("VNCCS_PIPE",),
-                "sampler_name": (sampler_enum, {"default": sampler_enum[0] if sampler_enum else "euler"}),
-                "scheduler": (scheduler_enum, {"default": scheduler_enum[0] if scheduler_enum else "normal"}),
+                "sampler_name": (sampler_enum, {"default": sampler_enum[0] if sampler_enum else DEFAULT_SAMPLERS[0]}),
+                "scheduler": (scheduler_enum, {"default": scheduler_enum[0] if scheduler_enum else DEFAULT_SCHEDULERS[0]}),
             }
         }
 

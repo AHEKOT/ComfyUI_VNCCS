@@ -1,4 +1,4 @@
-torch>=1.9.0
-numpy>=1.21.0
-Pillow>=8.0.0
-opencv-python>=4.5.0
+torch
+numpy
+Pillow
+opencv-python

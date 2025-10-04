@@ -13,6 +13,9 @@ class VNCCSSheetManager:
                 "images": ("IMAGE",),
                 "target_width": ("INT", {"default": 1024, "min": 64, "max": 6144, "step": 64}),
                 "target_height": ("INT", {"default": 3072, "min": 64, "max": 6144, "step": 64}),
+            },
+            "optional": {
+                "safe_margin": ("BOOLEAN", {"default": False}),
             }
         }
 
@@ -62,7 +65,7 @@ class VNCCSSheetManager:
         
         return parts
 
-    def compose_sheet(self, image_tensors: torch.Tensor, target_height: int) -> torch.Tensor:
+    def compose_sheet(self, image_tensors: torch.Tensor, target_height: int, safe_margin: bool = False) -> torch.Tensor:
         """Compose images into a fixed 2x6 grid to create square sheets."""
         # Fixed layout: 2 rows × 6 columns = 12 images
         num_rows = 2
@@ -89,32 +92,47 @@ class VNCCSSheetManager:
             image_tensors = image_tensors[:expected_batch_size]
             batch_size = expected_batch_size
         
+        margin = 4 if safe_margin else 0
+
         # Calculate target cell size for square sheet
         # For 2x6 grid to fit in target_height x target_height square:
         # cell_height = target_height // 2
         # cell_width = target_height // 6
         cell_height = target_height // 2
         cell_width = target_height // 6
-        
+
         # Ensure dimensions are divisible by 8
         cell_height = max(1, (cell_height // 8) * 8)
         cell_width = max(1, (cell_width // 8) * 8)
-        
-        # Final sheet dimensions (should be target_height x target_height)
+
         sheet_height = num_rows * cell_height
         sheet_width = num_columns * cell_width
-        
+
         print(f"Cell size: {cell_height}x{cell_width}")
         print(f"Final sheet dimensions: {sheet_height}x{sheet_width}")
-        
+
         # Create the final sheet
         sheet = torch.zeros((sheet_height, sheet_width, channels), dtype=image_tensors.dtype, device=image_tensors.device)
+
+        if safe_margin:
+            # Fill sheet with pure green background (and opaque alpha if present)
+            if channels >= 3:
+                sheet[:, :, 0] = 0.0
+                sheet[:, :, 1] = 1.0
+                sheet[:, :, 2] = 0.0
+            if channels == 4:
+                sheet[:, :, 3] = 1.0
+        start_y = 0
+        start_x = 0
         
         for idx, image in enumerate(image_tensors):
-            # Resize image to cell size
+            target_inner_height = max(1, cell_height - 2 * margin)
+            target_inner_width = max(1, cell_width - 2 * margin)
+
+            # Resize image to fit within margins (or full cell if margin disabled)
             resized_image = torch.nn.functional.interpolate(
                 image.unsqueeze(0).permute(0, 3, 1, 2), 
-                size=(cell_height, cell_width), 
+                size=(target_inner_height, target_inner_width), 
                 mode="bilinear"
             ).squeeze().permute(1, 2, 0)
             
@@ -123,21 +141,25 @@ class VNCCSSheetManager:
             col = idx % num_columns
             
             # Place image in sheet
-            y_start = row * cell_height
-            y_end = y_start + cell_height
-            x_start = col * cell_width
-            x_end = x_start + cell_width
+            cell_origin_y = start_y + row * cell_height
+            cell_origin_x = start_x + col * cell_width
+
+            y_start = cell_origin_y + margin
+            y_end = y_start + resized_image.shape[0]
+            x_start = cell_origin_x + margin
+            x_end = x_start + resized_image.shape[1]
             
             sheet[y_start:y_end, x_start:x_end, :] = resized_image
         
         return sheet.unsqueeze(0)
 
-    def process_sheet(self, mode, images, target_width, target_height):
+    def process_sheet(self, mode, images, target_width, target_height, safe_margin=False):
         """Main processing function."""
         # Handle list inputs since INPUT_IS_LIST = True
         mode = mode[0] if isinstance(mode, list) else mode
         target_width = target_width[0] if isinstance(target_width, list) else target_width
         target_height = target_height[0] if isinstance(target_height, list) else target_height
+        safe_margin = safe_margin[0] if isinstance(safe_margin, list) else safe_margin
         
         if mode == "split":
             # Split expects a single image [height, width, channels]
@@ -157,13 +179,60 @@ class VNCCSSheetManager:
             elif len(images.shape) == 3:
                 # If we got a single image, add batch dimension
                 images = images.unsqueeze(0)
-            result = self.compose_sheet(images, target_height)
+            result = self.compose_sheet(images, target_height, safe_margin)
             # Convert single image to list
             result_list = [result]
         else:
             raise ValueError(f"Unknown mode: {mode}")
         
         return (result_list,)
+
+
+class VNCCSSheetExtractor:
+    """VNCCS Sheet Extractor - возвращает одну из 12 частей листа."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "part_index": ("INT", {"default": 0, "min": 0, "max": 11}),
+                "target_width": ("INT", {"default": 1024, "min": 64, "max": 6144, "step": 64}),
+                "target_height": ("INT", {"default": 3072, "min": 64, "max": 6144, "step": 64}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
+    CATEGORY = "VNCCS"
+    FUNCTION = "extract"
+    DESCRIPTION = """
+    Возвращает одну часть листа (2×6) по указанному индексу. Индексы 0-5 — верхний ряд слева направо, 6-11 — нижний ряд.
+    """
+
+    def extract(self, image, part_index, target_width, target_height):
+        # Извлечь фактические значения (поддержка передачи списков)
+        part_index = part_index[0] if isinstance(part_index, list) else part_index
+        target_width = target_width[0] if isinstance(target_width, list) else target_width
+        target_height = target_height[0] if isinstance(target_height, list) else target_height
+
+        # Поддержка входа в виде списка/батча
+        if isinstance(image, list):
+            image = image[0]
+        if len(image.shape) == 4:
+            image = image[0]
+
+        manager = VNCCSSheetManager()
+        parts = manager.split_sheet(image, target_width, target_height)
+
+        if not parts:
+            raise ValueError("Не удалось разделить лист: parts пуст")
+
+        # Клэмп индекса в допустимый диапазон
+        part_index = max(0, min(len(parts) - 1, part_index))
+        selected = parts[part_index]
+
+        return (selected.unsqueeze(0),)
 
 
 class VNCCSChromaKey:
@@ -293,15 +362,18 @@ class VNCCSChromaKey:
 
 NODE_CLASS_MAPPINGS = {
     "VNCCSSheetManager": VNCCSSheetManager,
+    "VNCCSSheetExtractor": VNCCSSheetExtractor,
     "VNCCSChromaKey": VNCCSChromaKey
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCSSheetManager": "VNCCS Sheet Manager",
+    "VNCCSSheetExtractor": "VNCCS Sheet Extractor",
     "VNCCSChromaKey": "VNCCS Chroma Key"
 }
 
 NODE_CATEGORY_MAPPINGS = {
     "VNCCSSheetManager": "VNCCS",
+    "VNCCSSheetExtractor": "VNCCS",
     "VNCCSChromaKey": "VNCCS"
 }

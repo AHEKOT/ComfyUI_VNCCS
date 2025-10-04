@@ -1,10 +1,10 @@
 [project]
 name = "vnccs"
 description = "VNCCS - Visual Novel Character Creation Suite"
-version = "1.0.5"
+version = "1.1.0"
 license = {file = "LICENSE"} 
 
-dependencies = ["torch>=1.9.0", "numpy>=1.21.0", "Pillow>=8.0.0", "opencv-python>=4.5.0"]
+dependencies = ["torch", "numpy", "Pillow", "opencv-python"]
 
 [project.urls]
 Repository = "https://github.com/AHEKOT/ComfyUI_VNCCS"
