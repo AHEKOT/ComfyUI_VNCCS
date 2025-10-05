@@ -309,6 +309,8 @@ class VNCCSQWENUpscaler:
         return {
             "required": {
                 "scale": (SCALE_PRESETS, {"default": 2.0}),
+                "tile_size": ("INT", {"default": 512, "min": 256, "max": 1024, "step": 256}),
+                "quality": (QUALITY_PRESETS, {"default": 1024}),
                 "image": ("IMAGE",),
                 "model": ("MODEL",),
                 "clip": ("CLIP",),
@@ -317,17 +319,13 @@ class VNCCSQWENUpscaler:
                 "prompt": ("STRING", {"multiline": True, "default": "upscale image to 4k ultrasharp quality"}),
                 "negative_prompt": ("STRING", {"multiline": True, "default": ""}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
-                "steps": ("INT", {"default": 20, "min": 1, "max": 1000}),
-                "cfg": ("FLOAT", {"default": 5.5, "min": 0.0, "max": 30.0, "step": 0.1}),
+                "steps": ("INT", {"default": 4, "min": 1, "max": 1000}),
+                "cfg": ("FLOAT", {"default": 1, "min": 0.0, "max": 30.0, "step": 0.1}),
                 "sampler_name": (sampler_enum, {"default": default_sampler}),
                 "scheduler": (scheduler_enum, {"default": default_scheduler}),
-                "quality": (QUALITY_PRESETS, {"default": 1024}),
-                "tile_size": ("INT", {"default": 512, "min": 256, "max": 4096, "step": 8}),
-                "tile_context": ("INT", {"default": 32, "min": 0, "max": 256, "step": 8}),
+                "seam_fix": ("INT", {"default": 64, "min": 0, "max": 256, "step": 8}),
                 "vision_tile_size": ("INT", {"default": 384, "min": 256, "max": 512, "step": 8}),
                 "denoise": ("FLOAT", {"default": 1, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "fix_seams": ("BOOLEAN", {"default": True}),
-                "seam_prompt": ("STRING", {"multiline": True, "default": DEFAULT_SEAM_PROMPT}),
                 "debug_logging": ("BOOLEAN", {"default": False}),
             }
         }
@@ -348,13 +346,14 @@ class VNCCSQWENUpscaler:
         sampler_name: str,
         scheduler: str,
         quality: int,
-        tile_size: int,
-        tile_context: int,
+    tile_size: int,
+    seam_fix: int,
         vision_tile_size: int,
         denoise: float,
-        fix_seams: bool,
-        seam_prompt: str,
         debug_logging: bool,
+        fix_seams: bool = False,
+        seam_prompt: str = DEFAULT_SEAM_PROMPT,
+        **deprecated_inputs,
     ) -> Tuple[torch.Tensor]:
         if image.ndim != 4:
             raise ValueError("Expected image tensor with shape [B, H, W, C]")
@@ -385,11 +384,12 @@ class VNCCSQWENUpscaler:
             tile_size = _snap_to_multiple(tile_size, tile_multiple)
 
         try:
-            tile_context = int(tile_context)
+            seam_fix = int(seam_fix)
         except (TypeError, ValueError):
-            raise ValueError(f"Invalid tile context: {tile_context}") from None
-        tile_context = max(0, tile_context)
-        tile_context = min(tile_context, tile_size)
+            raise ValueError(f"Invalid seam fix padding: {seam_fix}") from None
+        seam_fix = max(0, seam_fix)
+        seam_fix = min(seam_fix, tile_size)
+        tile_context = seam_fix
 
         def log(*parts):
             if debug_logging:
@@ -410,15 +410,22 @@ class VNCCSQWENUpscaler:
             f"range=[{image_min:.4f}, {image_max:.4f}]",
         )
 
+        if deprecated_inputs:
+            log(
+                "deprecated inputs ignored:",
+                ", ".join(sorted(deprecated_inputs.keys())),
+            )
+
         prompt_clean = (prompt or "").strip()
         seam_prompt_effective = (seam_prompt or "").strip() or DEFAULT_SEAM_PROMPT
 
-        seam_fix_enabled = bool(fix_seams)
-        if seam_fix_enabled:
-            log("seam repair enabled")
-            log("seam prompt:", seam_prompt_effective)
-        else:
-            log("seam repair disabled")
+        seam_fix_requested = bool(fix_seams)
+        seam_fix_enabled = False
+        log("seam repair disabled (deprecated)")
+        if seam_fix_requested:
+            log("deprecated input 'fix_seams' was requested but is disabled")
+        if seam_prompt and seam_prompt_effective != DEFAULT_SEAM_PROMPT:
+            log("deprecated input 'seam_prompt' ignored")
 
         vae_decoder = VAEDecode()
         negative = _build_negative_conditioning(clip, negative_prompt)
@@ -452,7 +459,7 @@ class VNCCSQWENUpscaler:
                     f"multiple={tile_multiple}",
                 )
                 if tile_context > 0:
-                    log("tile context padding:", f"{tile_context} px")
+                    log("seam fix padding:", f"{tile_context} px")
 
                 pass_outputs: List[torch.Tensor] = []
                 batch_size = current_image.shape[0]
@@ -480,11 +487,8 @@ class VNCCSQWENUpscaler:
                             f"right={pad_right}",
                             f"bottom={pad_bottom}",
                             f"work_size={work_width}x{work_height}",
+                            f"tensor_shape={tuple(base_cf.shape)}",
                         )
-                    padded_height = base_cf.shape[-2]
-                    padded_width = base_cf.shape[-1]
-                    work_height = padded_height
-                    work_width = padded_width
 
                     global_mean = None
                     global_std = None
@@ -495,11 +499,16 @@ class VNCCSQWENUpscaler:
                         global_mean, global_std = _compute_global_stats(base_cf, orig_height, orig_width)
                         low_freq_cf = _compute_low_frequency_guidance(base_cf)
                         seam_guidance_mask = _build_seam_grid_mask(
-                            padded_height,
-                            padded_width,
+                            base_cf.shape[-2],
+                            base_cf.shape[-1],
                             tile_size,
                             base_cf.device,
                             base_cf.dtype,
+                        )
+                        log(
+                            "seam mask prepared:",
+                            f"shape={tuple(seam_guidance_mask.shape)}",
+                            f"device={seam_guidance_mask.device}",
                         )
                         log(
                             "ctc conditioning:",
@@ -511,6 +520,14 @@ class VNCCSQWENUpscaler:
                     final_width = max(1, int(round(work_width * scale_factor)))
                     target_height = max(1, int(round(orig_height * scale_factor)))
                     target_width = max(1, int(round(orig_width * scale_factor)))
+                    if final_height != target_height or final_width != target_width:
+                        log(
+                            "canvas clamp to target:",
+                            f"requested={final_width}x{final_height}",
+                            f"target={target_width}x{target_height}",
+                        )
+                    final_height = target_height
+                    final_width = target_width
                     log("processing batch index", batch_index)
                     log("base input size:", f"{orig_width}x{orig_height}")
                     if work_height != orig_height or work_width != orig_width:
@@ -536,12 +553,19 @@ class VNCCSQWENUpscaler:
                     )
 
                     base_tiles: List[dict] = []
-                    for y in range(0, padded_height, tile_size):
-                        for x in range(0, padded_width, tile_size):
-                            crop_h = min(tile_size, padded_height - y)
-                            crop_w = min(tile_size, padded_width - x)
+                    for y in range(0, work_height, tile_size):
+                        for x in range(0, work_width, tile_size):
+                            crop_h = min(tile_size, work_height - y)
+                            crop_w = min(tile_size, work_width - x)
                             if crop_h <= 0 or crop_w <= 0:
                                 continue
+                            if debug_logging:
+                                log(
+                                    "tile window prepared:",
+                                    f"origin=({x},{y})",
+                                    f"size={crop_w}x{crop_h}",
+                                    f"seam_fix={tile_context}px",
+                                )
                             base_tiles.append(
                                 {
                                     "x": x,
@@ -835,6 +859,15 @@ class VNCCSQWENUpscaler:
                             tile_idx += 1
                             return
 
+                        if debug_logging:
+                            log(
+                                "tile source slice:",
+                                f"pass={pass_name}",
+                                f"index={tile_idx}",
+                                f"shape={tuple(tile_cf.shape)}",
+                                f"padding=({pad_left},{pad_right},{pad_top},{pad_bottom})",
+                            )
+
                         log(
                             "tile start:",
                             f"pass={pass_name}",
@@ -860,6 +893,16 @@ class VNCCSQWENUpscaler:
                                 size=(scaled_total_h, scaled_total_w),
                                 mode="bilinear",
                                 align_corners=False,
+                            )
+                        if debug_logging:
+                            ratio_h = scaled_total_h / max(tile_cf.shape[-2], 1)
+                            ratio_w = scaled_total_w / max(tile_cf.shape[-1], 1)
+                            log(
+                                "tile rescaled:",
+                                f"pass={pass_name}",
+                                f"index={tile_idx}",
+                                f"scaled_shape={tuple(tile_scaled_cf.shape)}",
+                                f"scale_ratio=({ratio_w:.5f},{ratio_h:.5f})",
                             )
                         tile_scaled = tile_scaled_cf.movedim(1, -1)
 
@@ -1062,6 +1105,18 @@ class VNCCSQWENUpscaler:
                             )
                             tile_idx += 1
                             return
+
+                        if debug_logging:
+                            mask_min = float(mask.min().item()) if mask.numel() > 0 else 0.0
+                            mask_max = float(mask.max().item()) if mask.numel() > 0 else 0.0
+                            log(
+                                "tile paste geometry:",
+                                f"pass={pass_name}",
+                                f"index={tile_idx}",
+                                f"dst=({dst_x},{dst_y})-({dst_x_end},{dst_y_end})",
+                                f"paste_size={paste_w}x{paste_h}",
+                                f"mask_minmax=({mask_min:.4f},{mask_max:.4f})",
+                            )
 
                         log(
                             "compositing tile:",
