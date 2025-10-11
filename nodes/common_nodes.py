@@ -92,12 +92,57 @@ class VNCCS_MultilineText:
         return (str(value),)
 
 
+class VNCCS_PromptConcat:
+    """Concatenate up to 4 input strings with a chosen separator.
+
+    Empty inputs are omitted to avoid producing repeated separators.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "a": ("STRING", {"default": "", "multiline": False}),
+                "b": ("STRING", {"default": "", "multiline": False}),
+                "c": ("STRING", {"default": "", "multiline": False}),
+                "d": ("STRING", {"default": "", "multiline": False}),
+                "separator": ("STRING", {"default": ",", "multiline": False}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("value",)
+    CATEGORY = "VNCCS"
+    FUNCTION = "concat"
+
+    def concat(self, a: str, b: str, c: str, d: str, separator: str = ","):
+        # Unwrap list inputs from the UI
+        if isinstance(a, list):
+            a = a[0]
+        if isinstance(b, list):
+            b = b[0]
+        if isinstance(c, list):
+            c = c[0]
+        if isinstance(d, list):
+            d = d[0]
+        if isinstance(separator, list):
+            separator = separator[0]
+
+        parts = [str(x).strip() for x in (a, b, c, d)]
+        # Omit empty parts
+        parts = [p for p in parts if p != ""]
+
+        joined = separator.join(parts)
+        return (joined,)
+
+
 # Node registration maps (if the loader for this project expects them)
 NODE_CLASS_MAPPINGS = {
     "VNCCS_Integer": VNCCS_Integer,
     "VNCCS_Float": VNCCS_Float,
     "VNCCS_String": VNCCS_String,
     "VNCCS_MultilineText": VNCCS_MultilineText,
+    "VNCCS_PromptConcat": VNCCS_PromptConcat,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -105,6 +150,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_Float": "VNCCS Float",
     "VNCCS_String": "VNCCS String",
     "VNCCS_MultilineText": "VNCCS Multiline Text",
+    "VNCCS_PromptConcat": "VNCCS Prompt Concat",
 }
 
 NODE_CATEGORY_MAPPINGS = {
@@ -112,4 +158,5 @@ NODE_CATEGORY_MAPPINGS = {
     "VNCCS_Float": "VNCCS",
     "VNCCS_String": "VNCCS",
     "VNCCS_MultilineText": "VNCCS",
+    "VNCCS_PromptConcat": "VNCCS",
 }
