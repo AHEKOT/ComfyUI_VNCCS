@@ -1126,7 +1126,7 @@ def refine_foreground(image_bchw, masks_b1hw):
     return torch.from_numpy(np.stack(refined_fg))
 
 
-class RMBG:
+class VNCCS_RMBG2:
     def __init__(self):
         self.models = {
             "RMBG-2.0": RMBGModel(),
@@ -1285,16 +1285,10 @@ class RMBG:
             return (image, empty_mask, empty_mask_image)
 
 
-class VNCCS_RMBG2(RMBG):
-    """Wrapper exposing the same RMBG functionality under VNCCS namespace."""
-    pass
-
 # Register VNCCS RMBG2
 NODE_CLASS_MAPPINGS["VNCCS_RMBG2"] = VNCCS_RMBG2
 NODE_DISPLAY_NAME_MAPPINGS["VNCCS_RMBG2"] = "VNCCS RMBG2"
 NODE_CATEGORY_MAPPINGS["VNCCS_RMBG2"] = "VNCCS"
-
-# --- End copy of AILab RMBG implementation ---
 
 # Register the VNCCS Mask Extractor
 NODE_CLASS_MAPPINGS["VNCCS_MaskExtractor"] = VNCCS_MaskExtractor
