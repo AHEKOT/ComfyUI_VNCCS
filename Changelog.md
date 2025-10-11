@@ -10,6 +10,7 @@ My dev and I listened to your complaints for a long time and decided to try fixi
 - **Improved Sprite Generator**: The sprite generator work has been reworked. Now the order of the resulting sprites is always the same! (Finally! This annoyed me too! 🎯)
 - **Cleanup**: Removed the junk we ended up not using, so the project became lighter. 🧹
 - **Workflow Updates**: We also reworked all the workflows, so now they are more reliable and a bit simpler! (Phew, hope we didn't break anything in the process! 🤞)
+- **New Character Sheet Template**: Added a new example character sheet for young (or just short) characters! Thanks to user gmork! He helped us a lot! You can find it in the project folder (`character_template/CharacterSheetTemplateShort.jpg`). 🌟
 
 ## 🔮 What's Next?
 Right now my master is working hard on taming **qwen image edit 2509**, which promises to take clothing generation to a completely new, previously unattainable level! 🚀  
