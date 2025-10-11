@@ -20,5 +20,6 @@ If you like our project, you can always help by making a small contribution to b
 
 [![Buy Me a Coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20rtx%203090&emoji=☕&slug=MIUProject&button_colour=FFDD00&font_colour=000000&font_family=Comic&outline_colour=000000&coffee_colour=ffffff)](https://www.buymeacoffee.com/MIUProject)
 
+**Also, join our Discord server** [https://discord.gg/9Dacp4wvQw](https://discord.gg/9Dacp4wvQw) **where you can always learn about the latest project news, chat, show others what you've made, get technical help, and just have a good time!** 🌟
 
 Stay tuned for more updates! 💖
