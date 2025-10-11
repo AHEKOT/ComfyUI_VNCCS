@@ -224,7 +224,8 @@
       top: costumeData.top,
       bottom: costumeData.bottom,
       shoes: costumeData.shoes,
-      negative_prompt: costumeData.negative_prompt
+      negative_prompt: costumeData.negative_prompt,
+      extra_negative_prompt: costumeData.extra_negative_prompt
     };
     log('fields to update:', map);
     (node.widgets||[]).forEach(w => {
@@ -474,7 +475,10 @@
       const cfg=await fetchConfig(characterName); 
       apply(node,cfg); 
     },200);
-    } else if(node.comfyClass === 'CharacterAssetSelector' || title === 'VNCCS Character Selector'){
+    } else if(
+      (node.comfyClass && node.comfyClass.startsWith('CharacterAssetSelector')) ||
+      (title && title.toLowerCase().startsWith('vnccs character selector'))
+    ){
       hookCharacterAssetSelector(node);
     }
   }
