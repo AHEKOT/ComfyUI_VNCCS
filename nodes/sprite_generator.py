@@ -66,22 +66,19 @@ class SpriteGenerator:
                     continue
                 processed_emotions.add(emotion_key)
                 emotion_dir = os.path.join(costume_dir, emotion)
-                # Use the existing load_character_sheet function and request RGBA sheet
-                sheet = load_character_sheet(character, costume, emotion, with_mask=False)
-                if sheet is not None:
-                    # sheet is an RGBA tensor [1, H, W, 4]
-                    img_tensor = sheet
-                    # Extract alpha channel as mask [1, H, W]
-                    mask_tensor = img_tensor[..., 3]
+                # Use the existing load_character_sheet function
+                result = load_character_sheet(character, costume, emotion, with_mask=True)
+                if result is not None and result[0] is not None:
+                    img_tensor, mask_tensor = result
                     images_out.append(img_tensor)
                     masks_out.append(mask_tensor)
 
                     sprite_dir = os.path.join(self.base_path, character, "Sprites", costume, emotion)
                     os.makedirs(sprite_dir, exist_ok=True)
 
-                    # Use the sprite directory as the target path for saving sprites
-                    # downstream expects directory paths; provide the directory only
-                    sprite_path = sprite_dir
+                    # Generate base sprite filename without number suffix
+                    sprite_filename = f"sprite_{emotion}_"
+                    sprite_path = os.path.join(sprite_dir, sprite_filename)
 
                     for _ in range(12):
                         file_paths_out.append(sprite_path)
