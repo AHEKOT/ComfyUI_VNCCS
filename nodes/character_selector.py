@@ -350,10 +350,10 @@ class CharacterAssetSelectorQWEN:
             sheet_image_tensor = torch.zeros((1, 1, 1, 3), dtype=torch.float32)
         
         costume_items = []
-        if head and head.strip():
-            costume_items.append(head.strip())
         if face and face.strip():
             costume_items.append(face.strip())
+        if head and head.strip():
+            costume_items.append(head.strip())
         if top and top.strip():
             costume_items.append(top.strip())
         if bottom and bottom.strip():

@@ -1,11 +1,5 @@
 """VNCCS Nodes - ComfyUI nodes for visual novel character creation."""
 
-try:
-    from ..web import vnccs_styles_server
-    print("[VNCCS] Style server part loaded")
-except ImportError as e:
-    print(f"[VNCCS] Error loading server part: {e}")
-
 from .character_creator import NODE_CLASS_MAPPINGS as CHARACTER_CREATOR_MAPPINGS
 from .character_preview import NODE_CLASS_MAPPINGS as CHARACTER_PREVIEW_MAPPINGS
 from .character_selector import NODE_CLASS_MAPPINGS as CHARACTER_SELECTOR_MAPPINGS
