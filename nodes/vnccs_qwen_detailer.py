@@ -183,13 +183,13 @@ class VNCCS_QWEN_Detailer:
             },
             "optional": {
                 "controlnet_image": ("IMAGE", ),
-                "reference_image": ("IMAGE", ),
                 "target_size": ("INT", {"default": 1024, "min": 64, "max": 2048, "step": 8}),
                 "target_vl_size": ("INT", {"default": 384, "min": 64, "max": 1024, "step": 8}),
                 "upscale_method": (s.upscale_methods,),
                 "crop_method": (s.crop_methods,),
                 "user_prompt": ("STRING", {"multiline": True, "default": "Enhance the details and quality of this face/object while maintaining the original characteristics."}),
                 "instruction": ("STRING", {"multiline": True, "default": "Describe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate."}),
+                "inpaint_mode": ("BOOLEAN", {"default": False}),
             }
         }
 
@@ -202,9 +202,9 @@ class VNCCS_QWEN_Detailer:
     def detail(self, image, bbox_detector, model, clip, vae, prompt,
                 threshold=0.5, dilation=10, crop_factor=3.0, drop_size=10,
                 feather=5, steps=20, cfg=8.0, sampler_name="euler", scheduler="normal",
-                denoise=0.5, tiled_vae_decode=False, tile_size=512, controlnet_image=None, reference_image=None, target_size=1024, target_vl_size=384,
+                denoise=0.5, tiled_vae_decode=False, tile_size=512, controlnet_image=None, target_size=1024, target_vl_size=384,
                 upscale_method="lanczos", crop_method="center",
-                user_prompt="", instruction=""):
+                user_prompt="", instruction="", inpaint_mode=False):
 
         if len(image) > 1:
             raise Exception('[VNCCS] ERROR: VNCCS_QWEN_Detailer does not allow image batches.')
@@ -224,10 +224,6 @@ class VNCCS_QWEN_Detailer:
                     mode='bicubic',
                     align_corners=False
                 ).permute(0, 2, 3, 1)  # [B, C, H, W] -> [B, H, W, C]
-
-        if reference_image is not None:
-            if len(reference_image) > 1:
-                raise Exception('[VNCCS] ERROR: VNCCS_QWEN_Detailer does not allow reference image batches.')
 
                 # Detect segments using bbox detector
         print(f'[VNCCS] DEBUG: Using bbox_detector: {type(bbox_detector).__name__}')
@@ -315,6 +311,18 @@ class VNCCS_QWEN_Detailer:
             # Crop the segment from the image
             cropped_image = _tensor_crop(enhanced_image, seg.crop_region)
             
+            # Apply inpaint mode: fill bbox area with black, keeping dilation/crop_factor context
+            if inpaint_mode and hasattr(seg, 'bbox'):
+                # Calculate bbox position relative to crop_region
+                bbox_x1, bbox_y1, bbox_x2, bbox_y2 = seg.bbox
+                crop_x1, crop_y1, crop_x2, crop_y2 = seg.crop_region
+                rel_x1 = max(0, int(bbox_x1 - crop_x1))
+                rel_y1 = max(0, int(bbox_y1 - crop_y1))
+                rel_x2 = min(int(crop_x2 - crop_x1), int(bbox_x2 - crop_x1))
+                rel_y2 = min(int(crop_y2 - crop_y1), int(bbox_y2 - crop_y1))
+                if rel_x2 > rel_x1 and rel_y2 > rel_y1:
+                    cropped_image[0, rel_y1:rel_y2, rel_x1:rel_x2, :] = 0  # Fill with black
+            
             # Store the detected region for output
             detected_regions.append(cropped_image)
             
@@ -334,10 +342,10 @@ class VNCCS_QWEN_Detailer:
             # Create conditioning using QWEN encoder logic
             conditioning, latent, _, _, _, _, _, _ = self.encode_qwen(
                 clip=clip, prompt=user_prompt or prompt, vae=vae,
-                image1=cropped_image, image2=cropped_controlnet, image3=reference_image,
+                image1=cropped_image, image2=cropped_controlnet,
                 target_size=dynamic_target_size, target_vl_size=target_vl_size,
                 upscale_method=upscale_method, crop_method=crop_method,
-                instruction=instruction
+                instruction=instruction, inpaint_mode=inpaint_mode
             )
 
             # Generate enhanced version using the model
@@ -399,18 +407,16 @@ class VNCCS_QWEN_Detailer:
 
         return (enhanced_image, detected_regions_tensor)
 
-    def encode_qwen(self, clip, prompt, vae=None, image1=None, image2=None, image3=None,
+    def encode_qwen(self, clip, prompt, vae=None, image1=None, image2=None,
                     target_size=1024, target_vl_size=384,
                     upscale_method="lanczos", crop_method="center",
-                    instruction=""):
+                    instruction="", inpaint_mode=False):
 
         pad_info = {"x": 0, "y": 0, "width": 0, "height": 0, "scale_by": 0}
         ref_latents = []
         images = [{"image": image1, "vl_resize": True}]
         if image2 is not None:
             images.append({"image": image2, "vl_resize": False})
-        if image3 is not None:
-            images.append({"image": image3, "vl_resize": True})
 
         vae_images = []
         vl_images = []
@@ -420,6 +426,9 @@ class VNCCS_QWEN_Detailer:
 
         llama_template = template_prefix + instruction_content + template_suffix
         image_prompt = ""
+
+        if inpaint_mode:
+            prompt += " (Fill black area with image)"
 
         for i, image_obj in enumerate(images):
             image = image_obj["image"]
