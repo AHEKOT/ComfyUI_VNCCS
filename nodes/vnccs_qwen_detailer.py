@@ -4,7 +4,7 @@ This node detects objects in an image using a bbox detector, then enhances each 
 using QWEN image generation with the cropped region as reference.
 
 Class: VNCCS_QWEN_Detailer
-- INPUTS: image, controlnet_image, bbox_detector, model, clip, vae, prompt, user_prompt, instruction, etc.
+- INPUTS: image, controlnet_image, bbox_detector, model, clip, vae, prompt, inpaint_prompt, instruction, etc.
 - OUTPUTS: enhanced image, detected_regions (batch of normalized detected regions)
 
 The node uses QWEN's vision-language capabilities to enhance detected regions.
@@ -12,7 +12,7 @@ ControlNet image (optional) provides additional detail guidance for each detecte
 ControlNet image is automatically resized to match main image dimensions if needed.
 detected_regions contains all cropped regions normalized to the same size for batch processing.
 - instruction: System prompt describing how to analyze and modify images
-- user_prompt: Specific instructions for what to do with each detected region
+- inpaint_prompt: Specific instructions for what to do with each detected region
 
 This file relies on runtime objects provided by ComfyUI.
 Includes local implementations of tensor_crop and tensor_paste to avoid impact.utils dependency.
@@ -169,27 +169,26 @@ class VNCCS_QWEN_Detailer:
                 "vae": ("VAE", ),
                 "prompt": ("STRING", {"multiline": True, "dynamicPrompts": True}),
                 "threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "dilation": ("INT", {"default": 10, "min": -512, "max": 512, "step": 1}),
-                "crop_factor": ("FLOAT", {"default": 3.0, "min": 1.0, "max": 10, "step": 0.1}),
+                "dilation": ("INT", {"default": 40, "min": -512, "max": 512, "step": 1}),
                 "drop_size": ("INT", {"min": 1, "max": MAX_RESOLUTION, "step": 1, "default": 10}),
                 "feather": ("INT", {"default": 5, "min": 0, "max": 300, "step": 1}),
-                "steps": ("INT", {"default": 20, "min": 1, "max": 10000}),
-                "cfg": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 100.0}),
+                "steps": ("INT", {"default": 4, "min": 1, "max": 10000}),
+                "cfg": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "sampler_name": (SAMPLER_NAMES, ),
                 "scheduler": (SCHEDULER_NAMES, ),
-                "denoise": ("FLOAT", {"default": 0.5, "min": 0.0001, "max": 1.0, "step": 0.01}),
+                "denoise": ("FLOAT", {"default": 1, "min": 0.01, "max": 1.0, "step": 0.01}),
                 "tiled_vae_decode": ("BOOLEAN", {"default": False}),
                 "tile_size": ("INT", {"default": 512, "min": 64, "max": 2048, "step": 64}),
             },
             "optional": {
                 "controlnet_image": ("IMAGE", ),
                 "target_size": ("INT", {"default": 1024, "min": 64, "max": 2048, "step": 8}),
-                "target_vl_size": ("INT", {"default": 384, "min": 64, "max": 1024, "step": 8}),
                 "upscale_method": (s.upscale_methods,),
                 "crop_method": (s.crop_methods,),
-                "user_prompt": ("STRING", {"multiline": True, "default": "Enhance the details and quality of this face/object while maintaining the original characteristics."}),
                 "instruction": ("STRING", {"multiline": True, "default": "Describe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate."}),
                 "inpaint_mode": ("BOOLEAN", {"default": False}),
+                "inpaint_prompt": ("STRING", {"multiline": True, "default": "[!!!IMPORTANT!!!] Inpaint mode: draw only inside black areas."}),
             }
         }
 
@@ -200,11 +199,16 @@ class VNCCS_QWEN_Detailer:
     CATEGORY = "VNCCS/detailing"
 
     def detail(self, image, bbox_detector, model, clip, vae, prompt,
-                threshold=0.5, dilation=10, crop_factor=3.0, drop_size=10,
-                feather=5, steps=20, cfg=8.0, sampler_name="euler", scheduler="normal",
-                denoise=0.5, tiled_vae_decode=False, tile_size=512, controlnet_image=None, target_size=1024, target_vl_size=384,
+                threshold=0.5, dilation=10, drop_size=10,
+                feather=5, steps=20, cfg=8.0, seed=0, sampler_name="euler", scheduler="normal",
+                denoise=0.5, tiled_vae_decode=False, tile_size=512, controlnet_image=None, target_size=1024,
                 upscale_method="lanczos", crop_method="center",
-                user_prompt="", instruction="", inpaint_mode=False):
+                instruction="", inpaint_mode=False, inpaint_prompt=""):
+
+        # Fixed crop_factor for bbox detection
+        crop_factor = 1.0
+        # Fixed target_vl_size for QWEN vision processing
+        target_vl_size = 384
 
         if len(image) > 1:
             raise Exception('[VNCCS] ERROR: VNCCS_QWEN_Detailer does not allow image batches.')
@@ -228,7 +232,7 @@ class VNCCS_QWEN_Detailer:
                 # Detect segments using bbox detector
         print(f'[VNCCS] DEBUG: Using bbox_detector: {type(bbox_detector).__name__}')
         print(f'[VNCCS] DEBUG: Calling bbox_detector.detect with params:')
-        print(f'[VNCCS] DEBUG:   threshold={threshold}, dilation={dilation}, crop_factor={crop_factor}, drop_size={drop_size}')
+        print(f'[VNCCS] DEBUG:   threshold={threshold}, dilation={dilation}, crop_factor={crop_factor} (fixed), drop_size={drop_size}')
         
         try:
             segs_result = bbox_detector.detect(image, threshold, dilation, crop_factor, drop_size)
@@ -311,7 +315,7 @@ class VNCCS_QWEN_Detailer:
             # Crop the segment from the image
             cropped_image = _tensor_crop(enhanced_image, seg.crop_region)
             
-            # Apply inpaint mode: fill bbox area with black, keeping dilation/crop_factor context
+            # Apply inpaint mode: fill bbox area with black, keeping dilation context (crop_factor is fixed at 1.0)
             if inpaint_mode and hasattr(seg, 'bbox'):
                 # Calculate bbox position relative to crop_region
                 bbox_x1, bbox_y1, bbox_x2, bbox_y2 = seg.bbox
@@ -341,17 +345,17 @@ class VNCCS_QWEN_Detailer:
             # Use the cropped image as reference for QWEN generation
             # Create conditioning using QWEN encoder logic
             conditioning, latent, _, _, _, _, _, _ = self.encode_qwen(
-                clip=clip, prompt=user_prompt or prompt, vae=vae,
+                clip=clip, prompt=prompt, vae=vae,
                 image1=cropped_image, image2=cropped_controlnet,
                 target_size=dynamic_target_size, target_vl_size=target_vl_size,
                 upscale_method=upscale_method, crop_method=crop_method,
-                instruction=instruction, inpaint_mode=inpaint_mode
+                instruction=instruction, inpaint_mode=inpaint_mode, inpaint_prompt=inpaint_prompt
             )
 
             # Generate enhanced version using the model
             latent_tensor = latent["samples"] if isinstance(latent, dict) and "samples" in latent else latent
             latent_dict = {"samples": latent_tensor} if not isinstance(latent_tensor, dict) else latent_tensor
-            samples = self.sample_latent(model, latent_dict, conditioning, [], steps, cfg, sampler_name, scheduler, denoise)
+            samples = self.sample_latent(model, latent_dict, conditioning, [], steps, cfg, seed, sampler_name, scheduler, denoise)
             
             # common_ksampler returns a list, get the first (and only) latent
             if isinstance(samples, (list, tuple)) and len(samples) > 0:
@@ -410,13 +414,13 @@ class VNCCS_QWEN_Detailer:
     def encode_qwen(self, clip, prompt, vae=None, image1=None, image2=None,
                     target_size=1024, target_vl_size=384,
                     upscale_method="lanczos", crop_method="center",
-                    instruction="", inpaint_mode=False):
+                    instruction="", inpaint_mode=False, inpaint_prompt=""):
 
         pad_info = {"x": 0, "y": 0, "width": 0, "height": 0, "scale_by": 0}
         ref_latents = []
         images = [{"image": image1, "vl_resize": True}]
         if image2 is not None:
-            images.append({"image": image2, "vl_resize": False})
+            images.append({"image": image2, "vl_resize": True})
 
         vae_images = []
         vl_images = []
@@ -428,7 +432,10 @@ class VNCCS_QWEN_Detailer:
         image_prompt = ""
 
         if inpaint_mode:
-            prompt += " (Fill black area with image)"
+            base_prompt = inpaint_prompt or "(Fill black area with image) "
+            base_prompt += prompt
+        else:
+            base_prompt = prompt
 
         for i, image_obj in enumerate(images):
             image = image_obj["image"]
@@ -464,22 +471,17 @@ class VNCCS_QWEN_Detailer:
                 ref_latents.append(vae.encode(image_vae[:, :, :, :3]))
                 vae_images.append(image_vae)
 
-                # VL processing
-                if vl_resize:
-                    total = int(target_vl_size * target_vl_size)
-                    scale_by = math.sqrt(total / current_total)
-                    width = round(samples.shape[3] * scale_by)
-                    height = round(samples.shape[2] * scale_by)
-                    s = comfy.utils.common_upscale(samples, width, height, upscale_method, crop_method)
-                    image_vl = s.movedim(1, -1)
-                    vl_images.append(image_vl)
-                    image_prompt += f"Picture {i+1}: <|vision_start|><|image_pad|><|vision_end|>"
-                else:
-                    # For controlnet images, add to VL without resize
-                    vl_images.append(image)
-                    image_prompt += f"Picture {i+1}: <|vision_start|><|image_pad|><|vision_end|>"
+                # VL processing (always resize to target_vl_size for consistency)
+                total = int(target_vl_size * target_vl_size)
+                scale_by = math.sqrt(total / current_total)
+                width = round(samples.shape[3] * scale_by)
+                height = round(samples.shape[2] * scale_by)
+                s = comfy.utils.common_upscale(samples, width, height, upscale_method, crop_method)
+                image_vl = s.movedim(1, -1)
+                vl_images.append(image_vl)
+                image_prompt += f"Picture {i+1}: <|vision_start|><|image_pad|><|vision_end|>"
 
-        tokens = clip.tokenize(image_prompt + prompt, images=vl_images, llama_template=llama_template)
+        tokens = clip.tokenize(image_prompt + base_prompt, images=vl_images, llama_template=llama_template)
         conditioning = clip.encode_from_tokens_scheduled(tokens)
 
         conditioning_full_ref = conditioning
@@ -491,10 +493,10 @@ class VNCCS_QWEN_Detailer:
 
         return (conditioning_full_ref, latent_out, image1, None, None, conditioning, conditioning, conditioning)
 
-    def sample_latent(self, model, latent, positive, negative, steps, cfg, sampler_name, scheduler, denoise):
+    def sample_latent(self, model, latent, positive, negative, steps, cfg, seed, sampler_name, scheduler, denoise):
         # Use ComfyUI's common_ksampler
         from nodes import common_ksampler
-        return common_ksampler(model, 0, steps, cfg, sampler_name, scheduler, positive, negative, latent, denoise=denoise)
+        return common_ksampler(model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent, denoise=denoise)
 
 
 # Registration mapping so Comfy finds the node
