@@ -62,8 +62,12 @@ class CharacterCreator:
                        negative_prompt="b",
                        lora_prompt="", new_character_name=""):
 
-        character_name = existing_character
-        seed_randomize_allowed = True
+        if new_character_name.strip():
+            character_name = new_character_name.strip()
+            seed_randomize_allowed = True
+        else:
+            character_name = existing_character
+            seed_randomize_allowed = True
 
         ensure_character_structure(character_name, EMOTIONS, MAIN_DIRS)
 
