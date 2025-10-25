@@ -2,15 +2,12 @@
 
 This node detects objects in an image using a bbox detector, then enhances each detected region
 using QWEN image generation with the cropped region as reference.
-
-Class: VNCCS_QWEN_Detailer
 - INPUTS: image, controlnet_image, bbox_detector, model, clip, vae, prompt, inpaint_prompt, instruction, etc.
-- OUTPUTS: enhanced image, detected_regions (batch of normalized detected regions)
+- OUTPUTS: enhanced image
 
 The node uses QWEN's vision-language capabilities to enhance detected regions.
 ControlNet image (optional) provides additional detail guidance for each detected region.
 ControlNet image is automatically resized to match main image dimensions if needed.
-detected_regions contains all cropped regions normalized to the same size for batch processing.
 - instruction: System prompt describing how to analyze and modify images
 - inpaint_prompt: Specific instructions for what to do with each detected region
 
@@ -169,7 +166,7 @@ class VNCCS_QWEN_Detailer:
                 "vae": ("VAE", ),
                 "prompt": ("STRING", {"multiline": True, "dynamicPrompts": True}),
                 "threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "dilation": ("INT", {"default": 40, "min": -512, "max": 512, "step": 1}),
+                "dilation": ("INT", {"default": 300, "min": -512, "max": 512, "step": 1}),
                 "drop_size": ("INT", {"min": 1, "max": MAX_RESOLUTION, "step": 1, "default": 10}),
                 "feather": ("INT", {"default": 5, "min": 0, "max": 300, "step": 1}),
                 "steps": ("INT", {"default": 4, "min": 1, "max": 10000}),
@@ -188,12 +185,12 @@ class VNCCS_QWEN_Detailer:
                 "crop_method": (s.crop_methods,),
                 "instruction": ("STRING", {"multiline": True, "default": "Describe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate."}),
                 "inpaint_mode": ("BOOLEAN", {"default": False}),
-                "inpaint_prompt": ("STRING", {"multiline": True, "default": "[!!!IMPORTANT!!!] Inpaint mode: draw only inside black areas."}),
+                "inpaint_prompt": ("STRING", {"multiline": True, "default": "[!!!IMPORTANT!!!] Inpaint mode: draw only inside black box."}),
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "IMAGE")
-    RETURN_NAMES = ("image", "detected_regions")
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
     FUNCTION = "detail"
 
     CATEGORY = "VNCCS/detailing"
@@ -304,12 +301,10 @@ class VNCCS_QWEN_Detailer:
             print(f'[VNCCS] DEBUG: No valid segments after dilation')
 
         if len(segs[1]) == 0:
-            # No segments detected, return original image and empty detected regions
-            empty_regions = torch.zeros((1, image.shape[1], image.shape[2], image.shape[3]), dtype=image.dtype, device=image.device)
-            return (image, empty_regions)
+            # No segments detected, return original image
+            return (image,)
 
         enhanced_image = image.clone()
-        detected_regions = []
 
         for seg in segs[1]:
             # Crop the segment from the image
@@ -326,14 +321,34 @@ class VNCCS_QWEN_Detailer:
                 rel_y2 = min(int(crop_y2 - crop_y1), int(bbox_y2 - crop_y1))
                 if rel_x2 > rel_x1 and rel_y2 > rel_y1:
                     cropped_image[0, rel_y1:rel_y2, rel_x1:rel_x2, :] = 0  # Fill with black
-            
-            # Store the detected region for output
-            detected_regions.append(cropped_image)
+                
+                # Calculate extended bbox for controlnet: bbox + half dilation
+                dilation_x = int(bbox_x1 - crop_x1)
+                dilation_y = int(bbox_y1 - crop_y1)
+                half_dilation = max(dilation_x, dilation_y) // 2
+                ext_x1 = max(crop_x1, int(bbox_x1 - half_dilation))
+                ext_y1 = max(crop_y1, int(bbox_y1 - half_dilation))
+                ext_x2 = min(crop_x2, int(bbox_x2 + half_dilation))
+                ext_y2 = min(crop_y2, int(bbox_y2 + half_dilation))
+                extended_bbox = (ext_x1, ext_y1, ext_x2, ext_y2)
+                # Relative positions for extended bbox
+                rel_ext_x1 = max(0, int(ext_x1 - crop_x1))
+                rel_ext_y1 = max(0, int(ext_y1 - crop_y1))
+                rel_ext_x2 = min(int(crop_x2 - crop_x1), int(ext_x2 - crop_x1))
+                rel_ext_y2 = min(int(crop_y2 - crop_y1), int(ext_y2 - crop_y1))
             
             # Crop the corresponding region from controlnet image if provided
             cropped_controlnet = None
             if controlnet_image is not None:
-                cropped_controlnet = _tensor_crop(controlnet_image, seg.crop_region)
+                # In inpaint mode, overlay controlnet extended bbox data on a copy of cropped_image
+                if inpaint_mode and hasattr(seg, 'bbox'):
+                    cropped_controlnet = cropped_image.clone()  # Use cropped_image as base
+                    # Crop the extended bbox region from controlnet_image
+                    bbox_crop = _tensor_crop(controlnet_image, tuple(int(x) for x in extended_bbox))
+                    # Overlay controlnet data onto the extended bbox area
+                    cropped_controlnet[0, rel_ext_y1:rel_ext_y2, rel_ext_x1:rel_ext_x2, :] = bbox_crop[0, :, :, :]
+                else:
+                    cropped_controlnet = _tensor_crop(controlnet_image, seg.crop_region)
             
             # Calculate target size based on crop region to maintain quality
             crop_h, crop_w = seg.crop_region[3] - seg.crop_region[1], seg.crop_region[2] - seg.crop_region[0]
@@ -382,34 +397,7 @@ class VNCCS_QWEN_Detailer:
             # Paste back to the original image
             enhanced_image = _tensor_paste(enhanced_image, enhanced_cropped, seg.crop_region, feather)
 
-        # Normalize detected regions to the same size for batching
-        if detected_regions:
-            # Find maximum dimensions
-            max_h = max(region.shape[0] for region in detected_regions)
-            max_w = max(region.shape[1] for region in detected_regions)
-            
-            # Resize all regions to maximum size with padding
-            import torch.nn.functional as F
-            normalized_regions = []
-            for region in detected_regions:
-                # Ensure region has correct format [H, W, C] for normalization
-                if len(region.shape) == 4 and region.shape[0] == 1:  # [B, H, W, C] with B=1
-                    region = region.squeeze(0)  # Remove batch dimension -> [H, W, C]
-                
-                # Resize to max dimensions
-                resized = F.interpolate(
-                    region.unsqueeze(0).permute(0, 3, 1, 2),  # [1, H, W, C] -> [1, C, H, W]
-                    size=(max_h, max_w),
-                    mode='bicubic',
-                    align_corners=False
-                ).permute(0, 2, 3, 1).squeeze(0)  # [1, C, H, W] -> [H, W, C]
-                normalized_regions.append(resized)
-            
-            detected_regions_tensor = torch.stack(normalized_regions, dim=0)
-        else:
-            detected_regions_tensor = torch.zeros((1, image.shape[1], image.shape[2], image.shape[3]), dtype=image.dtype, device=image.device)
-
-        return (enhanced_image, detected_regions_tensor)
+        return (enhanced_image,)
 
     def encode_qwen(self, clip, prompt, vae=None, image1=None, image2=None,
                     target_size=1024, target_vl_size=384,
