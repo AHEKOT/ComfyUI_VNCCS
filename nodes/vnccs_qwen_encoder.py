@@ -5,7 +5,7 @@ that accepts exactly three images and three per-image weights (0.0-1.0, step 0.0
 to control each image's influence via weighted reference latents. Also includes use_ref flags to exclude latents from reference_latents while keeping VL influence.
 
 Class: VNCCS_QWEN_Encoder
-- INPUTS: clip, prompt, vae, image1/2/3, weight1..weight3, vl_size, prompt_weight, resize/control flags
+- INPUTS: clip, prompt, vae, image1/2/3, weight1..weight3, vl_size, latent_image_index, resize/control flags
 - OUTPUTS: positive, negative, latent
 
 This file relies on runtime objects provided by ComfyUI (clip, vae, comfy.utils, node_helpers).
@@ -85,7 +85,7 @@ class VNCCS_QWEN_Encoder:
             },
             "optional": 
             {
-                "prompt_weight": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
+                "latent_image_index": ("INT", {"default": 1, "min": 1, "max": 3, "step": 1}),
                 "image1": ("IMAGE", ),
                 "image2": ("IMAGE", ),
                 "image3": ("IMAGE", ),
@@ -118,7 +118,7 @@ class VNCCS_QWEN_Encoder:
                image1_name="Picture 1", image2_name="Picture 2", image3_name="Picture 3",
                weight1=1.0, weight2=1.0, weight3=1.0,
                vl_size=384,
-               prompt_weight=1.0,
+               latent_image_index=1,
                ):
         
         ref_latents = []
@@ -242,17 +242,6 @@ class VNCCS_QWEN_Encoder:
         tokens = clip.tokenize(image_prompt + prompt, images=vl_images, llama_template=llama_template)
         conditioning = clip.encode_from_tokens_scheduled(tokens)
         
-        # Mix with prompt-only conditioning based on prompt_weight
-        if prompt_weight < 1.0:
-            tokens_base = clip.tokenize(image_prompt + prompt, images=[], llama_template=llama_template)
-            conditioning_base = clip.encode_from_tokens_scheduled(tokens_base)
-            conditioning = [(prompt_weight * img_t + (1 - prompt_weight) * base_t, img_d) for (img_t, img_d), (base_t, _) in zip(conditioning, conditioning_base)]
-        elif prompt_weight > 1.0:
-            # Amplify prompt influence when prompt_weight > 1.0
-            tokens_base = clip.tokenize(image_prompt + prompt, images=[], llama_template=llama_template)
-            conditioning_base = clip.encode_from_tokens_scheduled(tokens_base)
-            conditioning = [((prompt_weight - 1) * base_t + img_t, img_d) for (img_t, img_d), (base_t, _) in zip(conditioning, conditioning_base)]
-        
         conditioning_full_ref = conditioning
         if len(ref_latents) > 0:
             # Apply weights to ref_latents
@@ -266,8 +255,11 @@ class VNCCS_QWEN_Encoder:
         # Create negative conditioning by zeroing out the positive conditioning tensors
         conditioning_negative = [(torch.zeros_like(cond[0]), cond[1]) for cond in conditioning_full_ref]
         
-        # Return latent of first image if available, otherwise return empty latent
-        samples = ref_latents[0] if len(ref_latents) > 0 else torch.zeros(1, 4, 128, 128)
+        # Return latent of selected image if available, otherwise return empty latent
+        if len(ref_latents) >= latent_image_index:
+            samples = ref_latents[latent_image_index - 1]
+        else:
+            samples = torch.zeros(1, 4, 128, 128)
         latent_out = {"samples": samples}
         
         return (conditioning_full_ref, conditioning_negative, latent_out)
