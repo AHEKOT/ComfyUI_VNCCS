@@ -136,56 +136,6 @@ class VNCCS_PromptConcat:
         return (joined,)
 
 
-class VNCCS_Text2List:
-    """Split multiline text into a list using a user-specified separator.
-
-    Inputs:
-    - text: multiline STRING (default empty)
-    - separator: STRING used to split each line (default '|')
-
-    Output:
-    - list of STRINGs (non-empty, trimmed)
-    """
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "text": ("STRING", {"default": "", "multiline": True}),
-                "separator": ("STRING", {"default": "|", "multiline": False}),
-            }
-        }
-
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("items",)
-    OUTPUT_IS_LIST = (True,)
-    CATEGORY = "VNCCS"
-    FUNCTION = "split_to_list"
-
-    def split_to_list(self, text: str, separator: str = "|"):
-        # Unwrap list inputs from UI
-        if isinstance(text, list):
-            text = text[0]
-        if isinstance(separator, list):
-            separator = separator[0]
-
-        # Ensure strings
-        text = "" if text is None else str(text)
-        separator = "|" if separator is None or separator == "" else str(separator)
-
-        # Split by newlines first, then split each line by separator
-        lines = [line for line in text.splitlines()]
-        parts = []
-        for line in lines:
-            # Split the line using the separator and strip whitespace
-            for piece in line.split(separator):
-                piece = piece.strip()
-                if piece:
-                    parts.append(piece)
-
-        return (parts,)
-
-
 # Node registration maps (if the loader for this project expects them)
 NODE_CLASS_MAPPINGS = {
     "VNCCS_Integer": VNCCS_Integer,
@@ -193,7 +143,6 @@ NODE_CLASS_MAPPINGS = {
     "VNCCS_String": VNCCS_String,
     "VNCCS_MultilineText": VNCCS_MultilineText,
     "VNCCS_PromptConcat": VNCCS_PromptConcat,
-    "VNCCS_Text2List": VNCCS_Text2List,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -202,7 +151,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_String": "VNCCS String",
     "VNCCS_MultilineText": "VNCCS Multiline Text",
     "VNCCS_PromptConcat": "VNCCS Prompt Concat",
-    "VNCCS_Text2List": "VNCCS Text2List",
 }
 
 NODE_CATEGORY_MAPPINGS = {
@@ -211,5 +159,4 @@ NODE_CATEGORY_MAPPINGS = {
     "VNCCS_String": "VNCCS",
     "VNCCS_MultilineText": "VNCCS",
     "VNCCS_PromptConcat": "VNCCS",
-    "VNCCS_Text2List": "VNCCS",
 }
