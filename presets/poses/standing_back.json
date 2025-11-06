@@ -1,0 +1,34 @@
+{
+  "name": "Standing Back View",
+  "description": "Default standing pose, back view (like reference image)",
+  "canvas": {
+    "width": 512,
+    "height": 1536
+  },
+  "joints": {
+    "nose": [256, 200],
+    "neck": [256, 280],
+    "r_shoulder": [320, 320],
+    "r_elbow": [350, 520],
+    "r_wrist": [360, 720],
+    "l_shoulder": [192, 320],
+    "l_elbow": [162, 520],
+    "l_wrist": [152, 720],
+    "r_hip": [290, 720],
+    "r_knee": [295, 1020],
+    "r_ankle": [300, 1320],
+    "l_hip": [222, 720],
+    "l_knee": [217, 1020],
+    "l_ankle": [212, 1320],
+    "r_eye": [270, 185],
+    "l_eye": [242, 185],
+    "r_ear": [285, 195],
+    "l_ear": [227, 195],
+    "r_bigtoe": [305, 1360],
+    "r_smalltoe": [310, 1355],
+    "r_heel": [295, 1365],
+    "l_bigtoe": [207, 1360],
+    "l_smalltoe": [202, 1355],
+    "l_heel": [217, 1365]
+  }
+}

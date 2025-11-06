@@ -146,4 +146,37 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    @PromptServer.instance.routes.get("/vnccs/models/{filename}")
+    async def vnccs_get_model(request):
+        """Serve FBX model files for 3D pose editor"""
+        filename = request.match_info.get("filename", "")
+        if not filename.endswith(".fbx"):
+            return web.Response(text="Only FBX files allowed", status=400)
+        
+        # Get the models directory
+        models_dir = os.path.join(os.path.dirname(__file__), "models")
+        file_path = os.path.join(models_dir, filename)
+        
+        # Security check - ensure file is within models directory
+        if not os.path.abspath(file_path).startswith(os.path.abspath(models_dir)):
+            return web.Response(text="Invalid path", status=400)
+        
+        if not os.path.exists(file_path):
+            return web.Response(text=f"Model not found: {filename}", status=404)
+        
+        try:
+            with open(file_path, 'rb') as f:
+                return web.Response(
+                    body=f.read(),
+                    content_type='application/octet-stream',
+                    headers={
+                        'Content-Disposition': f'inline; filename="{filename}"',
+                        'Access-Control-Allow-Origin': '*'
+                    }
+                )
+        except Exception as e:
+            return web.Response(text=f"Error reading file: {str(e)}", status=500)
+
+_vnccs_register_endpoint()
+
 _vnccs_register_endpoint()
