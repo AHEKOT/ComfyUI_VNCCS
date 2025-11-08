@@ -4,6 +4,7 @@ import os
 import json
 import random
 import re
+import functools
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -116,10 +117,16 @@ def ensure_costume_structure(name: str, costume: str, emotions: List[str] = None
 
 
 def list_characters() -> List[str]:
-    """Get list of existing characters."""
+    """Get list of existing characters, excluding system folders like 'emotion_previews'."""
     base_path = base_output_dir()
+ 
     try:
-        return sorted([d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))])
+        # Filter the list comprehension to exclude the specific folder name
+        return sorted([
+            d for d in os.listdir(base_path) 
+            if os.path.isdir(os.path.join(base_path, d))
+            and d != "emotion_previews"
+        ])
     except Exception:
         return []
 
@@ -301,7 +308,7 @@ def save_config(character_name: str, data: Dict[str, Any]) -> str:
         print(f"[VNCCS Utils] Error saving configuration {character_name}: {e}")
         return ""
 
-
+@functools.lru_cache(maxsize=128)
 def load_character_info(character_name: str) -> Optional[Dict[str, Any]]:
     """Load character info with sex/gender unification."""
     config = load_config(character_name)
