@@ -100,20 +100,36 @@ class VNCCS_PoseGenerator:
     
     @classmethod
     def INPUT_TYPES(cls):
-        # Create default 12 poses
-        default_pose_list = []
-        for _ in range(12):
-            default_pose_list.append({
-                "joints": {name: list(pos) for name, pos in DEFAULT_SKELETON.items()}
-            })
+        # Try to load default preset
+        default_pose_json = None
+        preset_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "presets", "poses", "vnccs_poseset.json"
+        )
+        
+        if os.path.exists(preset_path):
+            try:
+                with open(preset_path, 'r', encoding='utf-8') as f:
+                    default_pose_json = json.dumps(json.load(f), indent=2)
+            except Exception as e:
+                print(f"[VNCCS] Warning: Could not load default preset: {e}")
+        
+        # Fallback to creating default 12 poses if preset doesn't exist
+        if default_pose_json is None:
+            default_pose_list = []
+            for _ in range(12):
+                default_pose_list.append({
+                    "joints": {name: list(pos) for name, pos in DEFAULT_SKELETON.items()}
+                })
+            default_pose_json = json.dumps({
+                "canvas": {"width": CANVAS_WIDTH, "height": CANVAS_HEIGHT},
+                "poses": default_pose_list
+            }, indent=2)
             
         return {
             "required": {
                 "pose_data": ("STRING", {
-                    "default": json.dumps({
-                        "canvas": {"width": CANVAS_WIDTH, "height": CANVAS_HEIGHT},
-                        "poses": default_pose_list
-                    }, indent=2),
+                    "default": default_pose_json,
                     "multiline": True,
                     "dynamicPrompts": False
                 }),
@@ -124,12 +140,6 @@ class VNCCS_PoseGenerator:
                     "step": 1,
                     "display": "slider"
                 }),
-                "show_joints": ("BOOLEAN", {
-                    "default": True
-                }),
-                "show_body_parts": ("BOOLEAN", {
-                    "default": True
-                }),
             }
         }
     
@@ -138,15 +148,12 @@ class VNCCS_PoseGenerator:
     FUNCTION = "generate"
     CATEGORY = "VNCCS/pose"
     
-    def generate(self, pose_data: str, line_thickness: int = 3, 
-                show_joints: bool = True, show_body_parts: bool = True):
-        """Generate OpenPose image grid from pose data (12 poses)
+    def generate(self, pose_data: str, line_thickness: int = 3):
+        """Generate OpenPose image grid from pose data (12 poses in 6x2 layout)
         
         Args:
             pose_data: JSON string containing list of 12 poses
-            line_thickness: Thickness of lines in OpenPose output
-            show_joints: Unused (kept for compatibility)
-            show_body_parts: Unused (kept for compatibility)
+            line_thickness: Thickness of lines in OpenPose rendering
         
         Returns:
             Tuple containing (openpose_grid,) in ComfyUI format

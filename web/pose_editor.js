@@ -191,6 +191,51 @@ function parsePoseData(raw) {
         }
     }
 
+    // Handle DWPose format (array with people objects)
+    if (Array.isArray(data)) {
+        const poses = [];
+        const frameData = data[0]; // DWPose exports have frame data at [0]
+        const canvasWidth = frameData?.canvas_width || CANVAS_WIDTH * 3;
+        const canvasHeight = frameData?.canvas_height || CANVAS_HEIGHT * 4;
+        
+        if (frameData?.people) {
+            // Sort people by their position (Y first, then X) to get correct grid order
+            const peopleWithPos = frameData.people.map((person, idx) => {
+                const kp = person.pose_keypoints_2d || [];
+                // Use nose position (first keypoint) for sorting
+                const x = kp[0] || 0;
+                const y = kp[1] || 0;
+                return { person, x, y, originalIndex: idx };
+            });
+            
+            // Sort by Y then X to get row-major order
+            peopleWithPos.sort((a, b) => {
+                const yDiff = a.y - b.y;
+                if (Math.abs(yDiff) > 100) return yDiff; // Different rows
+                return a.x - b.x; // Same row, sort by X
+            });
+            
+            // Now process in sorted order
+            for (let i = 0; i < 12; i++) {
+                if (i < peopleWithPos.length) {
+                    poses.push(convertDWPoseToJoints(peopleWithPos[i].person, canvasWidth, canvasHeight));
+                } else {
+                    poses.push(cloneJoints(DEFAULT_SKELETON));
+                }
+            }
+        } else {
+            // No people, fill with defaults
+            for (let i = 0; i < 12; i++) {
+                poses.push(cloneJoints(DEFAULT_SKELETON));
+            }
+        }
+        
+        return {
+            canvas: { width: CANVAS_WIDTH, height: CANVAS_HEIGHT },
+            poses
+        };
+    }
+
     // Handle legacy format (single 'joints' object)
     if (data.joints && !data.poses) {
         const singlePose = normalizeJoints(data.joints);
@@ -224,6 +269,78 @@ function parsePoseData(raw) {
         },
         poses
     };
+}
+
+function convertDWPoseToJoints(person, canvasWidth, canvasHeight) {
+    // DWPose uses flat array: [x0, y0, conf0, x1, y1, conf1, ...]
+    // OpenPose BODY_25 order (18 joints):
+    // 0: nose, 1: neck, 2: r_shoulder, 3: r_elbow, 4: r_wrist,
+    // 5: l_shoulder, 6: l_elbow, 7: l_wrist, 8: r_hip, 9: r_knee,
+    // 10: r_ankle, 11: l_hip, 12: l_knee, 13: l_ankle, 14: r_eye,
+    // 15: l_eye, 16: r_ear, 17: l_ear
+    
+    const keypoints = person.pose_keypoints_2d || [];
+    const joints = {};
+    
+    const jointNames = [
+        "nose", "neck", "r_shoulder", "r_elbow", "r_wrist",
+        "l_shoulder", "l_elbow", "l_wrist", "r_hip", "r_knee",
+        "r_ankle", "l_hip", "l_knee", "l_ankle", "r_eye",
+        "l_eye", "r_ear", "l_ear"
+    ];
+    
+    // Grid layout: 6 columns × 2 rows
+    const gridCols = 6;
+    const gridRows = 2;
+    const cellWidth = canvasWidth / gridCols;   // 6144/6 = 1024
+    const cellHeight = canvasHeight / gridRows; // 6144/2 = 3072
+    
+    // Determine which cell this person is in based on first keypoint (nose)
+    const noseX = keypoints[0] || 0;
+    const noseY = keypoints[1] || 0;
+    const gridCol = Math.floor(noseX / cellWidth);
+    const gridRow = Math.floor(noseY / cellHeight);
+    
+    // Calculate offset for this cell
+    const offsetX = gridCol * cellWidth;
+    const offsetY = gridRow * cellHeight;
+    
+    // Scale factors: cellWidth→CANVAS_WIDTH, cellHeight→CANVAS_HEIGHT
+    const scaleX = CANVAS_WIDTH / cellWidth;   // 512/1024 = 0.5
+    const scaleY = CANVAS_HEIGHT / cellHeight; // 1536/3072 = 0.5
+    
+    // Convert keypoints
+    for (let i = 0; i < 18 && i * 3 < keypoints.length; i++) {
+        const x = keypoints[i * 3];
+        const y = keypoints[i * 3 + 1];
+        const conf = keypoints[i * 3 + 2];
+        
+        const jointName = jointNames[i];
+        
+        // Use confidence to determine if keypoint is valid
+        if (conf > 0.1) {
+            // Convert to local cell coordinates and scale
+            const localX = (x - offsetX) * scaleX;
+            const localY = (y - offsetY) * scaleY;
+            
+            joints[jointName] = [
+                clamp(localX, -CANVAS_WIDTH, CANVAS_WIDTH * 2),
+                clamp(localY, -CANVAS_HEIGHT, CANVAS_HEIGHT * 2)
+            ];
+        } else {
+            // Use default position for low confidence keypoints
+            joints[jointName] = [...DEFAULT_SKELETON[jointName]];
+        }
+    }
+    
+    // Fill in any missing joints with defaults
+    for (const [name, defaults] of Object.entries(DEFAULT_SKELETON)) {
+        if (!joints[name]) {
+            joints[name] = [...defaults];
+        }
+    }
+    
+    return joints;
 }
 
 function normalizeJoints(source) {
@@ -783,6 +900,22 @@ class PoseEditorDialog {
         this.isPanning = false;
         this.panStartX = 0;
         this.panStartY = 0;
+        
+        // Load default poses
+        this.loadDefaultPoses();
+    }
+
+    async loadDefaultPoses() {
+        try {
+            const response = await fetch(new URL("../presets/poses/vnccs_poseset.json", import.meta.url));
+            if (response.ok) {
+                const payload = await response.json();
+                const parsed = parsePoseData(payload);
+                this.poses = parsed.poses;
+            }
+        } catch (error) {
+            console.warn("[VNCCS] Failed to load default poses, using skeleton defaults", error);
+        }
     }
 
     get joints() {
@@ -1586,8 +1719,14 @@ class PoseEditorDialog {
         const mirrored = {};
         const seen = new Set();
         for (const [left, right] of MIRROR_PAIRS) {
-            const leftPose = this.joints[left] ?? DEFAULT_SKELETON[left];
-            const rightPose = this.joints[right] ?? DEFAULT_SKELETON[right];
+            const leftPose = this.joints[left];
+            const rightPose = this.joints[right];
+            
+            // Skip if either joint is missing or invalid
+            if (!leftPose || !rightPose || !Array.isArray(leftPose) || !Array.isArray(rightPose)) {
+                continue;
+            }
+            
             mirrored[left] = [CANVAS_WIDTH - rightPose[0], rightPose[1]];
             mirrored[right] = [CANVAS_WIDTH - leftPose[0], leftPose[1]];
             seen.add(left);
@@ -1697,7 +1836,11 @@ class PoseEditorDialog {
             try {
                 const raw = JSON.parse(reader.result);
                 
-                if (raw.poses && Array.isArray(raw.poses)) {
+                // Check if it's a pose set (our format or DWPose format)
+                const isPoseSet = (raw.poses && Array.isArray(raw.poses)) || 
+                                  (Array.isArray(raw) && raw[0]?.people);
+                
+                if (isPoseSet) {
                     // It's a set
                     const parsed = parsePoseData(raw);
                     this.poses = parsed.poses;
