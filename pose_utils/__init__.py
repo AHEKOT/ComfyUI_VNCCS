@@ -16,20 +16,8 @@ from .pose_renderer import (
     convert_to_comfyui_format
 )
 
-from .advanced_renderer import (
-    render_depth_map,
-    render_normal_map,
-    render_canny_edges,
-    render_all_maps
-)
-
-from .bone_colors import (
-    OPENPOSE_COLORS,
-    BONE_COLORS,
-    FALLBACK_PALETTE,
-    get_bone_color,
-    get_bone_color_bgr
-)
+from .face_template import compute_face_points
+from .hand_template import compute_hand_points
 
 __all__ = [
     'Skeleton',
@@ -42,13 +30,6 @@ __all__ = [
     'render_schematic',
     'render_openpose',
     'convert_to_comfyui_format',
-    'render_depth_map',
-    'render_normal_map',
-    'render_canny_edges',
-    'render_all_maps',
-    'OPENPOSE_COLORS',
-    'BONE_COLORS',
-    'FALLBACK_PALETTE',
-    'get_bone_color',
-    'get_bone_color_bgr',
+    'compute_face_points',
+    'compute_hand_points',
 ]

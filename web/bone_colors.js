@@ -35,35 +35,52 @@ const OPENPOSE_COLORS = [
 ];
 
 export const BONE_COLORS = {
-    // Match BONE_CONNECTIONS order from pose_editor.js with reference colors
-    // Head and face (indices 0-4)
-    "nose-neck": OPENPOSE_COLORS[12],         // 0: Blue (nose-neck vertical)
-    "nose-r_eye": OPENPOSE_COLORS[13],        // 1: Purple-blue
-    "r_eye-r_ear": OPENPOSE_COLORS[14],       // 2: Purple
-    "nose-l_eye": OPENPOSE_COLORS[15],        // 3: Magenta
-    "l_eye-l_ear": OPENPOSE_COLORS[16],       // 4: Pink
-    
-    // Shoulder line and torso sides (indices 5-7)
-    "r_shoulder-l_shoulder": OPENPOSE_COLORS[0],  // 5: Red (shoulder line)
-    "neck-r_hip": OPENPOSE_COLORS[6],         // 6: Green (right torso)
-    "neck-l_hip": OPENPOSE_COLORS[9],         // 7: Cyan (left torso)
-    
-    // Right arm (indices 8-9) - RED/ORANGE side
-    "r_shoulder-r_elbow": OPENPOSE_COLORS[1], // 8: Orange
-    "r_elbow-r_wrist": OPENPOSE_COLORS[2],    // 9: Dark orange
-    
-    // Left arm (indices 10-11) - YELLOW/GREEN side
-    "l_shoulder-l_elbow": OPENPOSE_COLORS[3], // 10: Yellow
-    "l_elbow-l_wrist": OPENPOSE_COLORS[4],    // 11: Yellow-green
-    
-    // Right leg (indices 12-13) - GREEN/CYAN side
-    "r_hip-r_knee": OPENPOSE_COLORS[7],       // 12: Green-cyan
-    "r_knee-r_ankle": OPENPOSE_COLORS[8],     // 13: Cyan-green
-    
-    // Left leg (indices 14-15) - CYAN/BLUE side
-    "l_hip-l_knee": OPENPOSE_COLORS[10],      // 14: Cyan-blue
-    "l_knee-l_ankle": OPENPOSE_COLORS[11],    // 15: Light blue
+    // Upper body
+    "nose-neck": OPENPOSE_COLORS[12],             // 0: Blue
+    "neck-r_shoulder": OPENPOSE_COLORS[5],        // 1: Light green - SWAPPED
+    "r_shoulder-r_elbow": OPENPOSE_COLORS[6],     // 2: Green - SWAPPED
+    "r_elbow-r_wrist": OPENPOSE_COLORS[7],        // 3: Green-cyan - SWAPPED
+    "neck-l_shoulder": OPENPOSE_COLORS[1],        // 4: Orange - SWAPPED
+    "l_shoulder-l_elbow": OPENPOSE_COLORS[2],     // 5: Dark orange - SWAPPED
+    "l_elbow-l_wrist": OPENPOSE_COLORS[3],        // 6: Yellow - SWAPPED
+    "neck-r_hip": OPENPOSE_COLORS[11],            // 7: Light blue - SWAPPED
+    "neck-l_hip": OPENPOSE_COLORS[8],             // 8: Cyan-green - SWAPPED
+
+    // Right leg
+    "r_hip-r_knee": OPENPOSE_COLORS[12],          // 9: Blue - SWAPPED
+    "r_knee-r_ankle": OPENPOSE_COLORS[13],        // 10: Purple-blue - SWAPPED
+
+    // Left leg
+    "l_hip-l_knee": OPENPOSE_COLORS[9],           // 11: Cyan - SWAPPED
+    "l_knee-l_ankle": OPENPOSE_COLORS[10],        // 12: Cyan-blue - SWAPPED
+
+    // Face
+    "nose-r_eye": OPENPOSE_COLORS[14],            // 13: Purple
+    "r_eye-r_ear": OPENPOSE_COLORS[16],           // 14: Pink
+    "nose-l_eye": OPENPOSE_COLORS[14],            // 15: Purple
+    "l_eye-l_ear": OPENPOSE_COLORS[16],           // 16: Pink
 };
+
+// Fallback palette - MUST match Python FALLBACK_PALETTE exactly
+export const FALLBACK_PALETTE = [
+    OPENPOSE_COLORS[12],  // 0: nose->neck (Blue)
+    OPENPOSE_COLORS[5],   // 1: neck->r_shoulder (Light green) - SWAPPED
+    OPENPOSE_COLORS[6],   // 2: r_shoulder->r_elbow (Green) - SWAPPED
+    OPENPOSE_COLORS[7],   // 3: r_elbow->r_wrist (Green-cyan) - SWAPPED
+    OPENPOSE_COLORS[1],   // 4: neck->l_shoulder (Orange) - SWAPPED
+    OPENPOSE_COLORS[2],   // 5: l_shoulder->l_elbow (Dark orange) - SWAPPED
+    OPENPOSE_COLORS[3],   // 6: l_elbow->l_wrist (Yellow) - SWAPPED
+    OPENPOSE_COLORS[11],  // 7: neck->r_hip (Light blue) - SWAPPED
+    OPENPOSE_COLORS[8],   // 8: neck->l_hip (Cyan-green) - SWAPPED
+    OPENPOSE_COLORS[12],  // 9: r_hip->r_knee (Blue) - SWAPPED
+    OPENPOSE_COLORS[13],  // 10: r_knee->r_ankle (Purple-blue) - SWAPPED
+    OPENPOSE_COLORS[9],   // 11: l_hip->l_knee (Cyan) - SWAPPED
+    OPENPOSE_COLORS[10],  // 12: l_knee->l_ankle (Cyan-blue) - SWAPPED
+    OPENPOSE_COLORS[14],  // 13: nose->r_eye (Purple)
+    OPENPOSE_COLORS[16],  // 14: r_eye->r_ear (Pink)
+    OPENPOSE_COLORS[14],  // 15: nose->l_eye (Purple)
+    OPENPOSE_COLORS[16],  // 16: l_eye->l_ear (Pink)
+];
 
 /**
  * Get color for a specific bone connection
@@ -73,29 +90,24 @@ export const BONE_COLORS = {
  * @returns {string} Hex color code
  */
 export function getBoneColor(joint1, joint2, boneIndex) {
-    // Try direct lookup
+    // Primary: use boneIndex for consistent palette-based colors
+    if (boneIndex >= 0 && boneIndex < FALLBACK_PALETTE.length) {
+        return FALLBACK_PALETTE[boneIndex];
+    }
+    
+    // Secondary: try direct lookup
     const key1 = `${joint1}-${joint2}`;
     if (BONE_COLORS[key1]) {
         return BONE_COLORS[key1];
     }
     
-    // Try reverse lookup
+    // Tertiary: try reverse lookup
     const key2 = `${joint2}-${joint1}`;
     if (BONE_COLORS[key2]) {
         return BONE_COLORS[key2];
     }
     
-    // Fallback to generated colors if not found
-    return generateColorFromIndex(boneIndex);
-}
-
-/**
- * Generate color from bone index (fallback)
- * @param {number} index - Bone index
- * @returns {string} Hex color code
- */
-function generateColorFromIndex(index) {
-    return OPENPOSE_COLORS[index % OPENPOSE_COLORS.length];
+    return "#ffffff";
 }
 
 /**

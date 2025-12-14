@@ -27,57 +27,101 @@ OPENPOSE_COLORS = [
     (255, 0, 85),     # 17: Hot pink
 ]
 
-# Color palette for bones (matching BONE_CONNECTIONS / widget order)
-BONE_COLORS = {
-    # Head and face (0-4)
-    ("nose", "neck"): OPENPOSE_COLORS[12],         # 0: Blue
-    ("nose", "r_eye"): OPENPOSE_COLORS[13],        # 1: Purple-blue
-    ("r_eye", "r_ear"): OPENPOSE_COLORS[14],       # 2: Purple
-    ("nose", "l_eye"): OPENPOSE_COLORS[15],        # 3: Magenta
-    ("l_eye", "l_ear"): OPENPOSE_COLORS[16],       # 4: Pink
-
-    # Shoulder line and torso (5-7)
-    ("r_shoulder", "l_shoulder"): OPENPOSE_COLORS[0],  # 5: Red
-    ("neck", "r_hip"): OPENPOSE_COLORS[6],             # 6: Green
-    ("neck", "l_hip"): OPENPOSE_COLORS[9],             # 7: Cyan
-
-    # Right arm (8-9)
-    ("r_shoulder", "r_elbow"): OPENPOSE_COLORS[1],     # 8: Orange
-    ("r_elbow", "r_wrist"): OPENPOSE_COLORS[2],        # 9: Dark orange
-
-    # Left arm (10-11)
-    ("l_shoulder", "l_elbow"): OPENPOSE_COLORS[3],     # 10: Yellow
-    ("l_elbow", "l_wrist"): OPENPOSE_COLORS[4],        # 11: Yellow-green
-
-    # Right leg (12-13)
-    ("r_hip", "r_knee"): OPENPOSE_COLORS[7],          # 12: Green-cyan
-    ("r_knee", "r_ankle"): OPENPOSE_COLORS[8],        # 13: Cyan-green
-
-    # Left leg (14-15)
-    ("l_hip", "l_knee"): OPENPOSE_COLORS[10],         # 14: Cyan-blue
-    ("l_knee", "l_ankle"): OPENPOSE_COLORS[11],       # 15: Light blue
-}
-
-# Fallback color palette - matches BONE_CONNECTIONS order exactly
+# FALLBACK_PALETTE is used when direct name lookup fails.
+# It maps bone index (position in BONE_CONNECTIONS) to color index in OPENPOSE_COLORS.
+# MUST match JavaScript FALLBACK_PALETTE exactly.
 FALLBACK_PALETTE = [
     OPENPOSE_COLORS[12],  # 0: nose->neck (Blue)
-    OPENPOSE_COLORS[13],  # 1: nose->r_eye (Purple-blue)
-    OPENPOSE_COLORS[14],  # 2: r_eye->r_ear (Purple)
-    OPENPOSE_COLORS[15],  # 3: nose->l_eye (Magenta)
-    OPENPOSE_COLORS[16],  # 4: l_eye->l_ear (Pink)
-    OPENPOSE_COLORS[0],   # 5: r_shoulder->l_shoulder (Red)
-    OPENPOSE_COLORS[6],   # 6: neck->r_hip (Green)
-    OPENPOSE_COLORS[9],   # 7: neck->l_hip (Cyan)
-    OPENPOSE_COLORS[1],   # 8: r_shoulder->r_elbow (Orange)
-    OPENPOSE_COLORS[2],   # 9: r_elbow->r_wrist (Dark orange)
-    OPENPOSE_COLORS[3],   # 10: l_shoulder->l_elbow (Yellow)
-    OPENPOSE_COLORS[4],   # 11: l_elbow->l_wrist (Yellow-green)
-    OPENPOSE_COLORS[7],   # 12: r_hip->r_knee (Green-cyan)
-    OPENPOSE_COLORS[8],   # 13: r_knee->r_ankle (Cyan-green)
-    OPENPOSE_COLORS[10],  # 14: l_hip->l_knee (Cyan-blue)
-    OPENPOSE_COLORS[11],  # 15: l_knee->l_ankle (Light blue)
+    OPENPOSE_COLORS[5],   # 1: neck->r_shoulder (Light green) - SWAPPED
+    OPENPOSE_COLORS[6],   # 2: r_shoulder->r_elbow (Green) - SWAPPED
+    OPENPOSE_COLORS[7],   # 3: r_elbow->r_wrist (Green-cyan) - SWAPPED
+    OPENPOSE_COLORS[1],   # 4: neck->l_shoulder (Orange) - SWAPPED
+    OPENPOSE_COLORS[2],   # 5: l_shoulder->l_elbow (Dark orange) - SWAPPED
+    OPENPOSE_COLORS[3],   # 6: l_elbow->l_wrist (Yellow) - SWAPPED
+    OPENPOSE_COLORS[11],  # 7: neck->r_hip (Light blue) - SWAPPED
+    OPENPOSE_COLORS[8],   # 8: neck->l_hip (Cyan-green) - SWAPPED
+    OPENPOSE_COLORS[12],  # 9: r_hip->r_knee (Blue) - SWAPPED
+    OPENPOSE_COLORS[13],  # 10: r_knee->r_ankle (Purple-blue) - SWAPPED
+    OPENPOSE_COLORS[9],   # 11: l_hip->l_knee (Cyan) - SWAPPED
+    OPENPOSE_COLORS[10],  # 12: l_knee->l_ankle (Cyan-blue) - SWAPPED
+    OPENPOSE_COLORS[14],  # 13: nose->r_eye (Purple)
+    OPENPOSE_COLORS[16],  # 14: r_eye->r_ear (Pink)
+    OPENPOSE_COLORS[14],  # 15: nose->l_eye (Purple)
+    OPENPOSE_COLORS[16],  # 16: l_eye->l_ear (Pink)
 ]
 
+# Color palette for bones (matching BONE_CONNECTIONS / widget order)
+BONE_COLORS = {
+    # Upper body
+    ("nose", "neck"): OPENPOSE_COLORS[12],
+    ("neck", "r_shoulder"): OPENPOSE_COLORS[5],   # Light green - SWAPPED
+    ("r_shoulder", "r_elbow"): OPENPOSE_COLORS[6],  # Green - SWAPPED
+    ("r_elbow", "r_wrist"): OPENPOSE_COLORS[7],     # Green-cyan - SWAPPED
+    ("neck", "l_shoulder"): OPENPOSE_COLORS[1],     # Orange - SWAPPED
+    ("l_shoulder", "l_elbow"): OPENPOSE_COLORS[2],  # Dark orange - SWAPPED
+    ("l_elbow", "l_wrist"): OPENPOSE_COLORS[3],     # Yellow - SWAPPED
+    ("neck", "r_hip"): OPENPOSE_COLORS[11],         # Light blue - SWAPPED
+    ("neck", "l_hip"): OPENPOSE_COLORS[8],          # Cyan-green - SWAPPED
+
+    # Right leg
+    ("r_hip", "r_knee"): OPENPOSE_COLORS[12],       # Blue - SWAPPED
+    ("r_knee", "r_ankle"): OPENPOSE_COLORS[13],     # Purple-blue - SWAPPED
+
+    # Left leg
+    ("l_hip", "l_knee"): OPENPOSE_COLORS[9],        # Cyan - SWAPPED
+    ("l_knee", "l_ankle"): OPENPOSE_COLORS[10],     # Cyan-blue - SWAPPED
+    
+    # Face
+    ("nose", "r_eye"): OPENPOSE_COLORS[14],
+    ("r_eye", "r_ear"): OPENPOSE_COLORS[16],
+    ("nose", "l_eye"): OPENPOSE_COLORS[14],
+    ("l_eye", "l_ear"): OPENPOSE_COLORS[16],
+}
+
+# Joint colors - average of all connected bones or use primary bone color
+JOINT_COLORS = {
+    # Head
+    "nose": OPENPOSE_COLORS[12],       # Blue (nose-neck)
+    "neck": OPENPOSE_COLORS[12],       # Blue
+    "r_eye": OPENPOSE_COLORS[14],      # Purple
+    "l_eye": OPENPOSE_COLORS[14],      # Purple
+    "r_ear": OPENPOSE_COLORS[16],      # Pink
+    "l_ear": OPENPOSE_COLORS[16],      # Pink
+    
+    # Right arm (GREEN)
+    "r_shoulder": OPENPOSE_COLORS[5],  # Light green
+    "r_elbow": OPENPOSE_COLORS[6],     # Green
+    "r_wrist": OPENPOSE_COLORS[7],     # Green-cyan
+    
+    # Left arm (RED-YELLOW)
+    "l_shoulder": OPENPOSE_COLORS[1],  # Orange
+    "l_elbow": OPENPOSE_COLORS[2],     # Dark orange
+    "l_wrist": OPENPOSE_COLORS[3],     # Yellow
+    
+    # Right leg (BLUE)
+    "r_hip": OPENPOSE_COLORS[11],      # Light blue
+    "r_knee": OPENPOSE_COLORS[12],     # Blue
+    "r_ankle": OPENPOSE_COLORS[13],    # Purple-blue
+    
+    # Left leg (CYAN)
+    "l_hip": OPENPOSE_COLORS[8],       # Cyan-green
+    "l_knee": OPENPOSE_COLORS[9],      # Cyan
+    "l_ankle": OPENPOSE_COLORS[10],    # Cyan-blue
+}
+
+def get_joint_color(joint_name):
+    """Get RGB color for a joint.
+    
+    Args:
+        joint_name: Name of the joint
+        
+    Returns:
+        Tuple of (R, G, B) values (0-255)
+    """
+    return JOINT_COLORS.get(joint_name, (255, 255, 255))
+
+# Fallback palette is unreliable because BONE_CONNECTIONS order varies.
+# We will rely on BONE_COLORS lookup.
 
 def get_bone_color(joint1, joint2, bone_index=None):
     """Get RGB color for a bone connection.
@@ -85,7 +129,7 @@ def get_bone_color(joint1, joint2, bone_index=None):
     Args:
         joint1: Name of first joint
         joint2: Name of second joint
-        bone_index: Bone index in BONE_CONNECTIONS (primary source)
+        bone_index: Index in BONE_CONNECTIONS (primary source)
         
     Returns:
         Tuple of (R, G, B) values (0-255)
@@ -104,8 +148,9 @@ def get_bone_color(joint1, joint2, bone_index=None):
     if key_reverse in BONE_COLORS:
         return BONE_COLORS[key_reverse]
     
-    # Default white
+    # Default to white if not found
     return (255, 255, 255)
+
 
 
 def get_bone_color_bgr(joint1, joint2, bone_index=None):

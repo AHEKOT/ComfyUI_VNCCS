@@ -1,7 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { Pose3DEditor } from "./pose_editor_3d.js";
-import { getBoneColorRgba } from "./pose_editor_3d_body.js";
-import { getBoneColor, hexToRgba } from "./bone_colors.js";
+import { getBoneColor } from "./bone_colors.js";
 
 const CANVAS_WIDTH = 512;
 const CANVAS_HEIGHT = 1536;
@@ -37,31 +36,30 @@ const DEFAULT_SKELETON = {
 };
 
 const BONE_CONNECTIONS = [
-    // Head and face
+    // Upper body
     ["nose", "neck"],
-    ["nose", "r_eye"],
-    ["r_eye", "r_ear"],
-    ["nose", "l_eye"],
-    ["l_eye", "l_ear"],
-
-    // Shoulder line and torso sides
-    ["r_shoulder", "l_shoulder"],
-    ["neck", "r_hip"],
-    ["neck", "l_hip"],
-
-    // Arms
+    ["neck", "r_shoulder"],
     ["r_shoulder", "r_elbow"],
     ["r_elbow", "r_wrist"],
+    ["neck", "l_shoulder"],
     ["l_shoulder", "l_elbow"],
     ["l_elbow", "l_wrist"],
-
+    ["neck", "r_hip"],
+    ["neck", "l_hip"],
+    
     // Right leg
     ["r_hip", "r_knee"],
     ["r_knee", "r_ankle"],
-
+    
     // Left leg
     ["l_hip", "l_knee"],
-    ["l_knee", "l_ankle"]
+    ["l_knee", "l_ankle"],
+    
+    // Face
+    ["nose", "r_eye"],
+    ["r_eye", "r_ear"],
+    ["nose", "l_eye"],
+    ["l_eye", "l_ear"]
 ];
 
 const MIRROR_PAIRS = [
@@ -72,7 +70,10 @@ const MIRROR_PAIRS = [
     ["l_knee", "r_knee"],
     ["l_ankle", "r_ankle"],
     ["l_eye", "r_eye"],
-    ["l_ear", "r_ear"]
+    ["l_ear", "r_ear"],
+    ["l_bigtoe", "r_bigtoe"],
+    ["l_smalltoe", "r_smalltoe"],
+    ["l_heel", "r_heel"]
 ];
 
 const JOINT_ALIASES = {};
@@ -132,10 +133,10 @@ function cloneJoints(joints) {
     return JSON.parse(JSON.stringify(joints));
 }
 
-function buildPosePayload(joints) {
+function buildPosePayload(poses) {
     return {
         canvas: { width: CANVAS_WIDTH, height: CANVAS_HEIGHT },
-        joints: cloneJoints(joints)
+        poses: JSON.parse(JSON.stringify(poses))
     };
 }
 
@@ -167,8 +168,14 @@ function computeBounds(joints) {
 }
 
 function parsePoseData(raw) {
+    // Default: 12 poses
+    const defaultPoses = Array(12).fill(null).map(() => cloneJoints(DEFAULT_SKELETON));
+
     if (!raw) {
-        return buildPosePayload(DEFAULT_SKELETON);
+        return {
+            canvas: { width: CANVAS_WIDTH, height: CANVAS_HEIGHT },
+            poses: defaultPoses
+        };
     }
 
     let data = raw;
@@ -176,13 +183,51 @@ function parsePoseData(raw) {
         try {
             data = JSON.parse(raw);
         } catch (error) {
-            console.warn("[VNCCS] Failed to parse pose_data, falling back to default pose", error);
-            return buildPosePayload(DEFAULT_SKELETON);
+            console.warn("[VNCCS] Failed to parse pose_data, falling back to default", error);
+            return {
+                canvas: { width: CANVAS_WIDTH, height: CANVAS_HEIGHT },
+                poses: defaultPoses
+            };
         }
     }
 
+    // Handle legacy format (single 'joints' object)
+    if (data.joints && !data.poses) {
+        const singlePose = normalizeJoints(data.joints);
+        // Place in first slot, fill rest with default
+        const poses = [singlePose, ...defaultPoses.slice(1)];
+        return {
+            canvas: { width: CANVAS_WIDTH, height: CANVAS_HEIGHT },
+            poses
+        };
+    }
+
+    // Handle new format
+    const poses = [];
+    const sourcePoses = Array.isArray(data.poses) ? data.poses : [];
+    
+    for (let i = 0; i < 12; i++) {
+        if (i < sourcePoses.length && sourcePoses[i]) {
+            // Support both {joints: {...}} and direct {...} formats if needed, 
+            // but standard is {joints: ...} inside the array
+            const poseData = sourcePoses[i].joints || sourcePoses[i]; 
+            poses.push(normalizeJoints(poseData));
+        } else {
+            poses.push(cloneJoints(DEFAULT_SKELETON));
+        }
+    }
+
+    return {
+        canvas: {
+            width: Number(data?.canvas?.width) || CANVAS_WIDTH,
+            height: Number(data?.canvas?.height) || CANVAS_HEIGHT
+        },
+        poses
+    };
+}
+
+function normalizeJoints(source) {
     const joints = {};
-    const source = data?.joints ?? {};
     const normalizedSource = {};
 
     for (const [rawName, value] of Object.entries(source)) {
@@ -205,14 +250,7 @@ function parsePoseData(raw) {
             joints[name] = [...defaults];
         }
     }
-
-    return {
-        canvas: {
-            width: Number(data?.canvas?.width) || CANVAS_WIDTH,
-            height: Number(data?.canvas?.height) || CANVAS_HEIGHT
-        },
-        joints
-    };
+    return joints;
 }
 
 function ensurePoseEditorStyles() {
@@ -524,60 +562,6 @@ function ensurePoseEditorStyles() {
 }
 
 class NodePoseIntegration {
-    static OPENPOSE_NAMES = [
-        "nose", "neck",
-        "r_shoulder", "r_elbow", "r_wrist",
-        "l_shoulder", "l_elbow", "l_wrist",
-        "mid_hip",  // Index 8 - usually computed as average of hips, may be 0,0,0
-        "r_hip", "r_knee", "r_ankle",
-        "l_hip", "l_knee", "l_ankle",
-        "r_eye", "l_eye", "r_ear", "l_ear",
-        "l_bigtoe", "l_smalltoe", "l_heel",
-        "r_bigtoe", "r_smalltoe", "r_heel"
-    ];
-    
-    // Alternative mapping for custom 18-point format (BODY_18 from OpenPose)
-    // This is the classic OpenPose BODY_18 format
-    static CUSTOM_18_NAMES = [
-        "nose",           // 0 (1 in 1-indexed)
-        "neck",           // 1 (2 in 1-indexed)
-        "r_shoulder",     // 2 (3 in 1-indexed)
-        "r_elbow",        // 3 (4 in 1-indexed)
-        "r_wrist",        // 4 (5 in 1-indexed)
-        "l_shoulder",     // 5 (6 in 1-indexed)
-        "l_elbow",        // 6 (7 in 1-indexed)
-        "l_wrist",        // 7 (8 in 1-indexed)
-        "r_hip",          // 8 (9 in 1-indexed)
-        "r_knee",         // 9 (10 in 1-indexed)
-        "r_ankle",        // 10 (11 in 1-indexed)
-        "l_hip",          // 11 (12 in 1-indexed)
-        "l_knee",         // 12 (13 in 1-indexed)
-        "l_ankle",        // 13 (14 in 1-indexed)
-        "r_eye",          // 14 (15 in 1-indexed)
-        "l_eye",          // 15 (16 in 1-indexed)
-        "r_ear",          // 16 (17 in 1-indexed)
-        "l_ear"           // 17 (18 in 1-indexed)
-    ];
-
-    static OPENPOSE_ALIASES = {
-        right_shoulder: "r_shoulder",
-        right_elbow: "r_elbow",
-        right_wrist: "r_wrist",
-        left_shoulder: "l_shoulder",
-        left_elbow: "l_elbow",
-        left_wrist: "l_wrist",
-        right_hip: "r_hip",
-        right_knee: "r_knee",
-        right_ankle: "r_ankle",
-        left_hip: "l_hip",
-        left_knee: "l_knee",
-        left_ankle: "l_ankle",
-        right_eye: "r_eye",
-        left_eye: "l_eye",
-        right_ear: "r_ear",
-        left_ear: "l_ear"
-    };
-
     constructor(node, poseWidget) {
         this.node = node;
         this.widget = poseWidget;
@@ -599,253 +583,16 @@ class NodePoseIntegration {
         }
     }
 
-    static unwrapOpenPosePayload(raw) {
-        let current = raw;
-
-        unwrapLoop: for (let i = 0; i < 10; i++) {
-            if (current == null) {
-                return null;
-            }
-
-            if (typeof current === "string") {
-                try {
-                    current = JSON.parse(current);
-                    continue;
-                } catch (error) {
-                    console.warn("[VNCCS] Failed to parse POSE_KEYPOINT string", error);
-                    return null;
-                }
-            }
-
-            if (ArrayBuffer.isView(current)) {
-                return Array.from(current);
-            }
-
-            if (Array.isArray(current)) {
-                return current;
-            }
-
-            if (typeof current === "object") {
-                if (current.constructor === Object || current.toString === Object.prototype.toString) {
-                    return current;
-                }
-
-                if (typeof current.toJSON === "function") {
-                    current = current.toJSON();
-                    continue;
-                }
-
-                for (const key of ["json", "data", "pose", "pose_data", "raw"]) {
-                    if (key in current) {
-                        current = current[key];
-                        continue unwrapLoop;
-                    }
-                }
-
-                if (current.constructor && current.constructor.name === "PoseKeypoint") {
-                    if ("json" in current) {
-                        current = current.json;
-                        continue unwrapLoop;
-                    }
-                    if ("data" in current) {
-                        current = current.data;
-                        continue unwrapLoop;
-                    }
-                }
-
-                try {
-                    current = JSON.parse(JSON.stringify(current));
-                    continue;
-                } catch (error) {
-                    return current;
-                }
-            }
-
-            return current;
-        }
-
-        return current;
-    }
-
-    static _buildJointsFromArray(array, sourceWidth, sourceHeight) {
-        if (ArrayBuffer.isView(array)) {
-            array = Array.from(array);
-        }
-
-        if (!Array.isArray(array)) {
-            return null;
-        }
-
-        const values = Array.from(array);
-        const joints = {};
-        
-        // Auto-detect format: 18 keypoints = custom format, 25+ = BODY_25
-        const keypointCount = Math.floor(values.length / 3);
-        const nameMapping = keypointCount === 18 ? NodePoseIntegration.CUSTOM_18_NAMES : NodePoseIntegration.OPENPOSE_NAMES;
-        const limit = Math.min(nameMapping.length, keypointCount);
-        
-        console.log(`[VNCCS] Detected ${keypointCount} keypoints, using ${keypointCount === 18 ? 'CUSTOM_18' : 'BODY_25'} format`);
-
-        let scaleX = 1;
-        let scaleY = 1;
-        if (
-            Number.isFinite(sourceWidth) && Number.isFinite(sourceHeight) &&
-            sourceWidth > 0 && sourceHeight > 0 &&
-            (sourceWidth !== CANVAS_WIDTH || sourceHeight !== CANVAS_HEIGHT)
-        ) {
-            scaleX = CANVAS_WIDTH / sourceWidth;
-            scaleY = CANVAS_HEIGHT / sourceHeight;
-            console.info(`[VNCCS] Auto-rescaling keypoints UI from ${sourceWidth}x${sourceHeight} to ${CANVAS_WIDTH}x${CANVAS_HEIGHT}`);
-        }
-
-        for (let i = 0; i < limit; i++) {
-            const xRaw = Number(values[i * 3]);
-            const yRaw = Number(values[i * 3 + 1]);
-            const confidence = Number(values[i * 3 + 2] ?? 0);
-
-            if (!Number.isFinite(xRaw) || !Number.isFinite(yRaw) || !Number.isFinite(confidence) || confidence <= 0) {
-                continue;
-            }
-
-            const jointName = nameMapping[i];
-            const x = Math.round(clamp(xRaw * scaleX, 0, CANVAS_WIDTH - 1));
-            const y = Math.round(clamp(yRaw * scaleY, 0, CANVAS_HEIGHT - 1));
-            joints[jointName] = [x, y];
-            
-            // Debug log for key joints
-            if (jointName.includes('knee') || jointName.includes('ankle') || jointName.includes('hip')) {
-                console.log(`[VNCCS] Parsed ${jointName} at index ${i}: raw(${xRaw.toFixed(1)}, ${yRaw.toFixed(1)}) -> scaled(${x}, ${y})`);
-            }
-        }
-
-        if (!Object.keys(joints).length) {
-            return null;
-        }
-
-        return { joints, sourceWidth, sourceHeight };
-    }
-
-    static _buildJointsFromDirectMap(container, sourceWidth, sourceHeight) {
-        if (!container || typeof container !== "object") {
-            return null;
-        }
-
-        const joints = {};
-        for (const [rawName, value] of Object.entries(container)) {
-            if (rawName === "canvas_width" || rawName === "canvas_height" || rawName === "people" || rawName === "canvas") {
-                continue;
-            }
-
-            const mappedName = NodePoseIntegration.OPENPOSE_ALIASES[rawName] ?? rawName;
-            if (!NodePoseIntegration.OPENPOSE_NAMES.includes(mappedName)) {
-                continue;
-            }
-
-            if (Array.isArray(value) && value.length >= 2) {
-                const xRaw = Number(value[0]);
-                const yRaw = Number(value[1]);
-                if (Number.isFinite(xRaw) && Number.isFinite(yRaw)) {
-                    joints[mappedName] = [xRaw, yRaw];
-                }
-            } else if (value && typeof value === "object") {
-                const xRaw = Number(value.x ?? value[0]);
-                const yRaw = Number(value.y ?? value[1]);
-                if (Number.isFinite(xRaw) && Number.isFinite(yRaw)) {
-                    joints[mappedName] = [xRaw, yRaw];
-                }
-            }
-        }
-
-        if (!Object.keys(joints).length) {
-            return null;
-        }
-
-        let scaleX = 1;
-        let scaleY = 1;
-        if (
-            Number.isFinite(sourceWidth) && Number.isFinite(sourceHeight) &&
-            sourceWidth > 0 && sourceHeight > 0 &&
-            (sourceWidth !== CANVAS_WIDTH || sourceHeight !== CANVAS_HEIGHT)
-        ) {
-            scaleX = CANVAS_WIDTH / sourceWidth;
-            scaleY = CANVAS_HEIGHT / sourceHeight;
-            console.info(`[VNCCS] Auto-rescaling direct keypoints UI from ${sourceWidth}x${sourceHeight}`);
-        }
-
-        for (const [name, [xRaw, yRaw]] of Object.entries(joints)) {
-            const x = Math.round(clamp(xRaw * scaleX, 0, CANVAS_WIDTH - 1));
-            const y = Math.round(clamp(yRaw * scaleY, 0, CANVAS_HEIGHT - 1));
-            joints[name] = [x, y];
-        }
-
-        return { joints, sourceWidth, sourceHeight };
-    }
-
-    static parseOpenPosePayload(raw) {
-        const payload = NodePoseIntegration.unwrapOpenPosePayload(raw);
-        if (!payload) {
-            return null;
-        }
-
-        if (Array.isArray(payload)) {
-            if (payload.length && typeof payload[0] === "object" && !Array.isArray(payload[0])) {
-                return NodePoseIntegration.parseOpenPosePayload(payload[0]);
-            }
-            return NodePoseIntegration._buildJointsFromArray(payload);
-        }
-
-        if (typeof payload !== "object") {
-            return null;
-        }
-
-        const sourceWidth = Number(payload.canvas_width ?? payload.canvas?.width);
-        const sourceHeight = Number(payload.canvas_height ?? payload.canvas?.height);
-
-        const direct = NodePoseIntegration._buildJointsFromDirectMap(payload, sourceWidth, sourceHeight);
-        if (direct) {
-            return direct;
-        }
-
-        if (Array.isArray(payload.people) && payload.people.length) {
-            const person = payload.people[0];
-            if (person && Array.isArray(person.pose_keypoints_2d)) {
-                return NodePoseIntegration._buildJointsFromArray(person.pose_keypoints_2d, sourceWidth, sourceHeight);
-            }
-        }
-
-        if (Array.isArray(payload.keypoints)) {
-            return NodePoseIntegration._buildJointsFromArray(payload.keypoints, sourceWidth, sourceHeight);
-        }
-
-        if (Array.isArray(payload.points)) {
-            return NodePoseIntegration._buildJointsFromArray(payload.points, sourceWidth, sourceHeight);
-        }
-
-        if (Array.isArray(payload.pose_keypoints_2d)) {
-            return NodePoseIntegration._buildJointsFromArray(payload.pose_keypoints_2d, sourceWidth, sourceHeight);
-        }
-
-        if (payload.data !== undefined) {
-            return NodePoseIntegration.parseOpenPosePayload(payload.data);
-        }
-
-        if (Array.isArray(payload.body_keypoints)) {
-            return NodePoseIntegration._buildJointsFromArray(payload.body_keypoints, sourceWidth, sourceHeight);
-        }
-
-        return null;
-    }
-
     requestPreviewRefresh() {
         this.node.setDirtyCanvas(true, true);
     }
 
-    get joints() {
-        return this.pose.joints;
+    get poses() {
+        return this.pose.poses;
     }
 
-    updatePoseFromEditor(joints, immediate = false) {
-        this.pose = buildPosePayload(joints);
+    updatePoseFromEditor(poses, immediate = false) {
+        this.pose = buildPosePayload(poses);
         if (this.widget) {
             const serialized = JSON.stringify(this.pose, null, 2);
             this.widget.value = serialized;
@@ -861,18 +608,6 @@ class NodePoseIntegration {
         this.requestPreviewRefresh();
     }
 
-    loadFromKeypointsInput(keypointsData) {
-        const result = NodePoseIntegration.parseOpenPosePayload(keypointsData);
-        if (!result || !result.joints) {
-            console.warn("[VNCCS] Failed to parse keypoints payload", keypointsData);
-            return;
-        }
-
-        const mergedJoints = { ...DEFAULT_SKELETON, ...result.joints };
-        this.updatePoseFromEditor(mergedJoints, true);
-        console.log(`[VNCCS] Loaded ${Object.keys(result.joints).length} keypoints from input`);
-    }
-
     installPreview() {
         if (this.previewWidget) {
             return;
@@ -883,7 +618,7 @@ class NodePoseIntegration {
             name: "pose_preview",
             type: "vnccs_pose_preview",
             draw(ctx, node, width, y) {
-                return PosePreviewRenderer.draw(ctx, integration.pose.joints, width, y);
+                return PosePreviewRenderer.draw(ctx, integration.pose.poses, width, y);
             },
             computeSize(width) {
                 return [width, PosePreviewRenderer.HEIGHT];
@@ -896,9 +631,9 @@ class NodePoseIntegration {
 }
 
 class PosePreviewRenderer {
-    static HEIGHT = 220;
+    static HEIGHT = 240;
 
-    static draw(ctx, joints, width, y) {
+    static draw(ctx, poses, width, y) {
         const height = PosePreviewRenderer.HEIGHT;
         ctx.save();
         ctx.translate(0, y);
@@ -909,73 +644,68 @@ class PosePreviewRenderer {
         ctx.lineWidth = 1;
         ctx.strokeRect(4.5, 4.5, width - 9, height - 9);
 
-        const paddingX = 16;
-        const paddingY = 12;
-        const drawableWidth = width - paddingX * 2;
-        const drawableHeight = height - paddingY * 2;
-        const scale = Math.min(drawableWidth / CANVAS_WIDTH, drawableHeight / CANVAS_HEIGHT);
-        const offsetX = paddingX + (drawableWidth - CANVAS_WIDTH * scale) / 2;
-        const offsetY = paddingY + (drawableHeight - CANVAS_HEIGHT * scale) / 2;
-
-        ctx.translate(offsetX, offsetY);
-        ctx.scale(scale, scale);
-
-        ctx.strokeStyle = "rgba(100, 120, 170, 0.18)";
-        ctx.lineWidth = 1;
-        const grid = 128;
-        for (let gx = 0; gx <= CANVAS_WIDTH; gx += grid) {
-            ctx.beginPath();
-            ctx.moveTo(gx, 0);
-            ctx.lineTo(gx, CANVAS_HEIGHT);
-            ctx.stroke();
+        // Grid layout: 6 cols, 2 rows
+        const cols = 6;
+        const rows = 2;
+        const padding = 8;
+        
+        const availableWidth = width - 16;
+        const availableHeight = height - 16;
+        
+        // Calculate cell size to fit
+        const cellAspect = CANVAS_WIDTH / CANVAS_HEIGHT; // 1/3
+        
+        // Try to fit by width
+        let cellWidth = availableWidth / cols;
+        let cellHeight = cellWidth / cellAspect;
+        
+        if (cellHeight * rows > availableHeight) {
+            // Fit by height
+            cellHeight = availableHeight / rows;
+            cellWidth = cellHeight * cellAspect;
         }
-        for (let gy = 0; gy <= CANVAS_HEIGHT; gy += grid) {
-            ctx.beginPath();
-            ctx.moveTo(0, gy);
-            ctx.lineTo(CANVAS_WIDTH, gy);
-            ctx.stroke();
-        }
+        
+        const startX = 8 + (availableWidth - cellWidth * cols) / 2;
+        const startY = 8 + (availableHeight - cellHeight * rows) / 2;
 
-        ctx.strokeStyle = "rgba(115, 198, 255, 0.65)";
-        ctx.setLineDash([20, 10]);
-        ctx.lineWidth = 2;
-        ctx.strokeRect(
-            SAFE_ZONE.left,
-            SAFE_ZONE.top,
-            SAFE_ZONE.right - SAFE_ZONE.left,
-            SAFE_ZONE.bottom - SAFE_ZONE.top
-        );
-        ctx.setLineDash([]);
-
-        ctx.lineWidth = 4;
-        ctx.lineCap = "round";
-        for (let boneIndex = 0; boneIndex < BONE_CONNECTIONS.length; boneIndex++) {
-            const [start, end] = BONE_CONNECTIONS[boneIndex];
-            const a = joints[start];
-            const b = joints[end];
-            if (!a || !b) {
-                continue;
+        for (let i = 0; i < 12; i++) {
+            const joints = poses[i];
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            
+            const cx = startX + col * cellWidth;
+            const cy = startY + row * cellHeight;
+            
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.scale(cellWidth / CANVAS_WIDTH, cellHeight / CANVAS_HEIGHT);
+            
+            // Draw connections
+            ctx.lineWidth = 8; // Scaled down
+            ctx.lineCap = "round";
+            for (let i = 0; i < BONE_CONNECTIONS.length; i++) {
+                const [start, end] = BONE_CONNECTIONS[i];
+                const a = joints[start];
+                const b = joints[end];
+                if (!a || !b) continue;
+                
+                ctx.strokeStyle = getBoneColor(start, end, i);
+                
+                ctx.beginPath();
+                ctx.moveTo(a[0], a[1]);
+                ctx.lineTo(b[0], b[1]);
+                ctx.stroke();
             }
-            // Use custom bone color from config
-            const hexColor = getBoneColor(start, end, boneIndex);
-            ctx.strokeStyle = hexToRgba(hexColor, 0.85);
-            ctx.beginPath();
-            ctx.moveTo(a[0], a[1]);
-            ctx.lineTo(b[0], b[1]);
-            ctx.stroke();
-        }
-
-        const safeLeft = SAFE_ZONE.left;
-        const safeRight = SAFE_ZONE.right;
-        const safeTop = SAFE_ZONE.top;
-        const safeBottom = SAFE_ZONE.bottom;
-
-        for (const [name, [x, y]] of Object.entries(joints)) {
-            const outside = x < safeLeft || x > safeRight || y < safeTop || y > safeBottom;
-            ctx.fillStyle = outside ? "#ff7a7a" : "#f9ac5d";
-            ctx.beginPath();
-            ctx.arc(x, y, outside ? 10 : 7, 0, Math.PI * 2);
-            ctx.fill();
+            
+            // Draw joints (simplified)
+            ctx.fillStyle = "#f9ac5d";
+            for (const [name, [jx, jy]] of Object.entries(joints)) {
+                ctx.beginPath();
+                ctx.arc(jx, jy, 12, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            
+            ctx.restore();
         }
 
         ctx.restore();
@@ -1022,7 +752,9 @@ class PoseEditorDialog {
         };
 
         this.integration = null;
-        this.joints = cloneJoints(DEFAULT_SKELETON);
+        this.poses = Array(12).fill(null).map(() => cloneJoints(DEFAULT_SKELETON));
+        this.currentPoseIndex = 0;
+        
         this.hoveredJoint = null;
         this.selectedJoint = null;
         this.dragging = false;
@@ -1037,6 +769,15 @@ class PoseEditorDialog {
         this.showGrid = true;
         this.showLabels = true;
         this.showSafeZone = true;
+        this.viewMode = "single"; // 'single' or 'grid'
+    }
+
+    get joints() {
+        return this.poses[this.currentPoseIndex];
+    }
+
+    set joints(value) {
+        this.poses[this.currentPoseIndex] = value;
     }
 
     buildLayout() {
@@ -1049,7 +790,7 @@ class PoseEditorDialog {
         title.textContent = "VNCCS Pose Editor";
         const subtitle = document.createElement("div");
         subtitle.className = "vnccs-pose-editor-subtitle";
-        subtitle.textContent = "512×1536 canvas · 85% safe zone guidance";
+        subtitle.textContent = "12-Pose Grid Editor · 512×1536 per pose";
         titleWrap.appendChild(title);
         titleWrap.appendChild(subtitle);
 
@@ -1062,6 +803,40 @@ class PoseEditorDialog {
         header.appendChild(titleWrap);
         header.appendChild(closeBtn);
         this.panel.appendChild(header);
+
+        // Pose Selector Toolbar
+        const toolbar = document.createElement("div");
+        toolbar.style.padding = "0 28px 12px";
+        toolbar.style.display = "flex";
+        toolbar.style.gap = "8px";
+        toolbar.style.alignItems = "center";
+        toolbar.style.borderBottom = "1px solid rgba(121, 150, 255, 0.15)";
+        
+        const label = document.createElement("span");
+        label.textContent = "Active Pose:";
+        label.style.fontSize = "12px";
+        label.style.color = "#92a3d6";
+        toolbar.appendChild(label);
+
+        this.poseButtons = [];
+        for (let i = 0; i < 12; i++) {
+            const btn = document.createElement("button");
+            btn.textContent = `${i + 1}`;
+            btn.className = "vnccs-btn secondary";
+            btn.style.width = "32px";
+            btn.style.padding = "6px 0";
+            btn.style.textAlign = "center";
+            btn.addEventListener("click", () => this.selectPose(i));
+            toolbar.appendChild(btn);
+            this.poseButtons.push(btn);
+        }
+        
+        const viewToggle = this.createButton("Grid View", () => this.toggleViewMode(), "ghost");
+        viewToggle.style.marginLeft = "auto";
+        this.viewToggleBtn = viewToggle;
+        toolbar.appendChild(viewToggle);
+
+        this.panel.appendChild(toolbar);
 
         const body = document.createElement("div");
         body.className = "vnccs-pose-editor-body";
@@ -1090,10 +865,60 @@ class PoseEditorDialog {
         sidebar.className = "vnccs-pose-editor-sidebar";
         sidebar.appendChild(this.createPoseToolsPanel());
         sidebar.appendChild(this.createPresetPanel());
-        sidebar.appendChild(this.createExtremitiesPanel());
-        sidebar.appendChild(this.createExportPanel());
         sidebar.appendChild(this.createOptionsPanel());
         body.appendChild(sidebar);
+    }
+
+    selectPose(index) {
+        if (index < 0 || index >= 12) return;
+        this.currentPoseIndex = index;
+        this.updatePoseButtons();
+        
+        // Update 3D editor
+        if (this.pose3d) {
+            this.pose3d.setPose(this.joints, true);
+        }
+        
+        this.render();
+        this.updateMetrics();
+        this.setStatus(`Switched to Pose ${index + 1}`);
+    }
+
+    updatePoseButtons() {
+        this.poseButtons.forEach((btn, i) => {
+            if (i === this.currentPoseIndex) {
+                btn.classList.remove("secondary");
+                btn.style.background = "rgba(79, 123, 255, 0.4)";
+                btn.style.borderColor = "rgba(79, 123, 255, 0.6)";
+            } else {
+                btn.classList.add("secondary");
+                btn.style.background = "";
+                btn.style.borderColor = "";
+            }
+        });
+    }
+
+    toggleViewMode() {
+        this.viewMode = this.viewMode === "single" ? "grid" : "single";
+        this.viewToggleBtn.textContent = this.viewMode === "single" ? "Grid View" : "Single View";
+        this.viewToggleBtn.classList.toggle("active", this.viewMode === "grid");
+        
+        if (this.viewMode === "grid") {
+            // Resize canvas for grid
+            // We want to show 6x2 grid. 
+            // Aspect ratio of single is 1:3.
+            // Grid is 6 wide, 2 high.
+            // Total aspect: (6*1)/(2*3) = 6/6 = 1:1.
+            // So grid is square.
+            this.canvas.width = 3072;
+            this.canvas.height = 3072; // Wait, 6*512=3072, 2*1536=3072. Yes.
+            this.canvas.style.aspectRatio = "1 / 1";
+        } else {
+            this.canvas.width = CANVAS_WIDTH;
+            this.canvas.height = CANVAS_HEIGHT;
+            this.canvas.style.aspectRatio = "512 / 1536";
+        }
+        this.render();
     }
 
     createPoseToolsPanel() {
@@ -1155,9 +980,13 @@ class PoseEditorDialog {
 
         const row = document.createElement("div");
         row.className = "vnccs-button-row";
-        row.appendChild(this.createButton("Import JSON", () => this.importPose(), "secondary"));
+        row.appendChild(this.createButton("Import", () => this.importPose(), "secondary"));
         row.appendChild(this.createButton("Copy JSON", () => this.copyPoseJson(), "ghost"));
-        row.appendChild(this.createButton("Download", () => this.downloadPose()));
+        
+        const row2 = document.createElement("div");
+        row2.className = "vnccs-button-row";
+        row2.appendChild(this.createButton("Save Pose", () => this.downloadPose()));
+        row2.appendChild(this.createButton("Save Set", () => this.downloadSet()));
 
         this.fileInput = document.createElement("input");
         this.fileInput.type = "file";
@@ -1172,55 +1001,9 @@ class PoseEditorDialog {
         panel.appendChild(description);
         panel.appendChild(this.presetSelect);
         panel.appendChild(row);
+        panel.appendChild(row2);
         panel.appendChild(this.statusEl);
         panel.appendChild(this.fileInput);
-        return panel;
-    }
-
-    createExtremitiesPanel() {
-        const panel = document.createElement("div");
-        panel.className = "vnccs-panel";
-
-        const heading = document.createElement("h3");
-        heading.textContent = "3D Hands & Feet";
-        const description = document.createElement("p");
-        description.textContent = "3D models with articulated fingers and toes are always visible. Select bones to manipulate them.";
-
-        const info = document.createElement("div");
-        info.className = "vnccs-info-line";
-        info.innerHTML = "✓ Left/Right hands attached to wrists<br>✓ Left/Right feet attached to ankles<br>Use 3D editor to manipulate finger bones";
-
-        panel.appendChild(heading);
-        panel.appendChild(description);
-        panel.appendChild(info);
-        return panel;
-    }
-
-    createExportPanel() {
-        const panel = document.createElement("div");
-        panel.className = "vnccs-panel";
-
-        const heading = document.createElement("h3");
-        heading.textContent = "Export";
-        const description = document.createElement("p");
-        description.textContent = "Generate control images for use with ControlNet.";
-
-        const row = document.createElement("div");
-        row.className = "vnccs-button-row";
-        
-        const exportBtn = this.createButton("Export Images", async () => {
-            await this.exportAllImages();
-        });
-        
-        row.appendChild(exportBtn);
-
-        this.exportStatus = document.createElement("div");
-        this.exportStatus.className = "vnccs-status";
-
-        panel.appendChild(heading);
-        panel.appendChild(description);
-        panel.appendChild(row);
-        panel.appendChild(this.exportStatus);
         return panel;
     }
 
@@ -1360,7 +1143,11 @@ class PoseEditorDialog {
 
     open(integration) {
         this.integration = integration;
-        this.joints = cloneJoints(integration.pose.joints);
+        // Deep copy all poses
+        this.poses = JSON.parse(JSON.stringify(integration.pose.poses));
+        this.currentPoseIndex = 0;
+        this.updatePoseButtons();
+        
         this.hoveredJoint = null;
         this.selectedJoint = null;
         this.dragging = false;
@@ -1441,12 +1228,67 @@ class PoseEditorDialog {
 
     render() {
         const ctx = this.ctx;
-        ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
-
+        const width = this.canvas.width;
+        const height = this.canvas.height;
+        
+        ctx.clearRect(0, 0, width, height);
         ctx.fillStyle = "#111828";
-        ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+        ctx.fillRect(0, 0, width, height);
 
-        if (this.showGrid) {
+        if (this.viewMode === "grid") {
+            this.renderGrid(ctx);
+        } else {
+            this.renderSingle(ctx, this.joints, 0, 0);
+        }
+    }
+
+    renderGrid(ctx) {
+        const cols = 6;
+        const w = CANVAS_WIDTH;
+        const h = CANVAS_HEIGHT;
+        
+        // Draw grid lines
+        ctx.strokeStyle = "rgba(80, 115, 180, 0.32)";
+        ctx.lineWidth = 2;
+        for (let i = 1; i < cols; i++) {
+            ctx.beginPath();
+            ctx.moveTo(i * w, 0);
+            ctx.lineTo(i * w, this.canvas.height);
+            ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.moveTo(0, h);
+        ctx.lineTo(this.canvas.width, h);
+        ctx.stroke();
+
+        for (let i = 0; i < 12; i++) {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const x = col * w;
+            const y = row * h;
+            
+            // Highlight active pose background
+            if (i === this.currentPoseIndex) {
+                ctx.fillStyle = "rgba(79, 123, 255, 0.1)";
+                ctx.fillRect(x, y, w, h);
+                ctx.strokeStyle = "rgba(79, 123, 255, 0.5)";
+                ctx.strokeRect(x, y, w, h);
+            }
+            
+            this.renderSingle(ctx, this.poses[i], x, y, i === this.currentPoseIndex);
+            
+            // Draw pose number
+            ctx.fillStyle = "rgba(255, 255, 255, 0.3)";
+            ctx.font = "40px sans-serif";
+            ctx.fillText(`${i + 1}`, x + 20, y + 50);
+        }
+    }
+
+    renderSingle(ctx, joints, offsetX, offsetY, isActive = true) {
+        ctx.save();
+        ctx.translate(offsetX, offsetY);
+
+        if (this.showGrid && isActive) {
             ctx.strokeStyle = "rgba(80, 115, 180, 0.15)";
             ctx.lineWidth = 1;
             const minor = 64;
@@ -1462,23 +1304,9 @@ class PoseEditorDialog {
                 ctx.lineTo(CANVAS_WIDTH, y);
                 ctx.stroke();
             }
-            ctx.strokeStyle = "rgba(80, 115, 180, 0.32)";
-            const major = 128;
-            for (let x = 0; x <= CANVAS_WIDTH; x += major) {
-                ctx.beginPath();
-                ctx.moveTo(x, 0);
-                ctx.lineTo(x, CANVAS_HEIGHT);
-                ctx.stroke();
-            }
-            for (let y = 0; y <= CANVAS_HEIGHT; y += major) {
-                ctx.beginPath();
-                ctx.moveTo(0, y);
-                ctx.lineTo(CANVAS_WIDTH, y);
-                ctx.stroke();
-            }
         }
 
-        if (this.showSafeZone) {
+        if (this.showSafeZone && isActive) {
             ctx.strokeStyle = "rgba(130, 210, 255, 0.75)";
             ctx.setLineDash([24, 14]);
             ctx.lineWidth = 2;
@@ -1491,15 +1319,19 @@ class PoseEditorDialog {
             ctx.setLineDash([]);
         }
 
-        ctx.strokeStyle = "#5dd0ff";
         ctx.lineWidth = 4;
         ctx.lineCap = "round";
-        for (const [start, end] of BONE_CONNECTIONS) {
-            const a = this.joints[start];
-            const b = this.joints[end];
+        for (let i = 0; i < BONE_CONNECTIONS.length; i++) {
+            const [start, end] = BONE_CONNECTIONS[i];
+            const a = joints[start];
+            const b = joints[end];
             if (!a || !b) {
                 continue;
             }
+            
+            // Use colored bones matching OpenPose standard
+            ctx.strokeStyle = getBoneColor(start, end, i);
+            
             ctx.beginPath();
             ctx.moveTo(a[0], a[1]);
             ctx.lineTo(b[0], b[1]);
@@ -1511,10 +1343,10 @@ class PoseEditorDialog {
         const safeTop = SAFE_ZONE.top;
         const safeBottom = SAFE_ZONE.bottom;
 
-        for (const [name, [x, y]] of Object.entries(this.joints)) {
+        for (const [name, [x, y]] of Object.entries(joints)) {
             const outside = x < safeLeft || x > safeRight || y < safeTop || y > safeBottom;
-            const hovered = name === this.hoveredJoint;
-            const selected = name === this.selectedJoint;
+            const hovered = isActive && name === this.hoveredJoint;
+            const selected = isActive && name === this.selectedJoint;
 
             let fill = "#ff7f5a";
             if (outside) {
@@ -1542,11 +1374,17 @@ class PoseEditorDialog {
                 ctx.fillText(name, x, y - 18);
             }
         }
+        ctx.restore();
     }
 
     onPointerDown(event) {
         const { x, y } = this.getCanvasCoords(event);
-        const joint = this.findJointAt(x, y);
+        const { name: joint, poseIndex } = this.findJointAt(x, y);
+        
+        if (poseIndex !== -1 && poseIndex !== this.currentPoseIndex) {
+            this.selectPose(poseIndex);
+        }
+
         if (!joint) {
             this.setSelectedJoint(null, { source: "2d" });
             this.setHoveredJoint(null, { source: "2d" });
@@ -1563,16 +1401,28 @@ class PoseEditorDialog {
 
     onPointerMove(event) {
         const { x, y } = this.getCanvasCoords(event);
+        
         if (this.dragging && this.selectedJoint) {
+            // Map global coords to local pose coords
+            let localX = x;
+            let localY = y;
+            
+            if (this.viewMode === "grid") {
+                const col = this.currentPoseIndex % 6;
+                const row = Math.floor(this.currentPoseIndex / 6);
+                localX = x - col * CANVAS_WIDTH;
+                localY = y - row * CANVAS_HEIGHT;
+            }
+
             this.joints[this.selectedJoint] = [
-                clamp(x, 0, CANVAS_WIDTH),
-                clamp(y, 0, CANVAS_HEIGHT)
+                clamp(localX, 0, CANVAS_WIDTH),
+                clamp(localY, 0, CANVAS_HEIGHT)
             ];
             this.handleJointsMutated(false);
             return;
         }
 
-        const joint = this.findJointAt(x, y);
+        const { name: joint } = this.findJointAt(x, y);
         if (joint !== this.hoveredJoint) {
             this.setHoveredJoint(joint, { source: "2d" });
         }
@@ -1637,16 +1487,34 @@ class PoseEditorDialog {
 
     findJointAt(x, y) {
         const radius = 30;
+        let targetPoseIndex = this.currentPoseIndex;
+        let localX = x;
+        let localY = y;
+
+        if (this.viewMode === "grid") {
+            const col = Math.floor(x / CANVAS_WIDTH);
+            const row = Math.floor(y / CANVAS_HEIGHT);
+            if (col >= 0 && col < 6 && row >= 0 && row < 2) {
+                targetPoseIndex = row * 6 + col;
+                localX = x % CANVAS_WIDTH;
+                localY = y % CANVAS_HEIGHT;
+            } else {
+                return { name: null, poseIndex: -1 };
+            }
+        }
+
+        const joints = this.poses[targetPoseIndex];
         let closest = null;
         let minDist = Number.POSITIVE_INFINITY;
-        for (const [name, [jx, jy]] of Object.entries(this.joints)) {
-            const dist = Math.hypot(jx - x, jy - y);
+        
+        for (const [name, [jx, jy]] of Object.entries(joints)) {
+            const dist = Math.hypot(jx - localX, jy - localY);
             if (dist < radius && dist < minDist) {
                 closest = name;
                 minDist = dist;
             }
         }
-        return closest;
+        return { name: closest, poseIndex: targetPoseIndex };
     }
 
     resetPose() {
@@ -1735,21 +1603,20 @@ class PoseEditorDialog {
             }
             const payload = await response.json();
             
-            // Try OpenPose format first
-            const openPoseResult = NodePoseIntegration.parseOpenPosePayload(payload);
-            if (openPoseResult && openPoseResult.joints) {
-                // Merge with defaults to ensure all joints exist
-                this.joints = { ...DEFAULT_SKELETON, ...openPoseResult.joints };
-                this.handleJointsMutated(true);
-                this.setStatus(`Preset "${preset.label}" loaded (OpenPose format).`, "success");
-                return;
+            // Check if preset is a set or single pose
+            if (payload.poses && Array.isArray(payload.poses)) {
+                const parsed = parsePoseData(payload);
+                this.poses = parsed.poses;
+                this.setStatus(`Preset set “${preset.label}” loaded.`, "success");
+            } else {
+                // Single pose
+                const parsed = parsePoseData(payload); // This returns a set with the pose in [0]
+                // We want to load it into current slot
+                this.joints = parsed.poses[0];
+                this.setStatus(`Preset pose “${preset.label}” loaded.`, "success");
             }
             
-            // Fallback to old VNCCS format
-            const parsed = parsePoseData(payload);
-            this.joints = parsed.joints;
             this.handleJointsMutated(true);
-            this.setStatus(`Preset “${preset.label}” loaded.`, "success");
         } catch (error) {
             console.error("[VNCCS] Failed to load preset", error);
             this.setStatus("Failed to load preset", "warning");
@@ -1769,26 +1636,21 @@ class PoseEditorDialog {
         const reader = new FileReader();
         reader.onload = () => {
             try {
-                // Try to parse as JSON
-                let payload = reader.result;
-                if (typeof payload === "string") {
-                    payload = JSON.parse(payload);
-                }
+                const raw = JSON.parse(reader.result);
                 
-                // Try OpenPose format first
-                const openPoseResult = NodePoseIntegration.parseOpenPosePayload(payload);
-                if (openPoseResult && openPoseResult.joints) {
-                    this.joints = { ...DEFAULT_SKELETON, ...openPoseResult.joints };
-                    this.handleJointsMutated(true);
-                    this.setStatus(`Imported pose "${file.name}" (OpenPose).`, "success");
-                    return;
+                if (raw.poses && Array.isArray(raw.poses)) {
+                    // It's a set
+                    const parsed = parsePoseData(raw);
+                    this.poses = parsed.poses;
+                    this.setStatus(`Imported pose set “${file.name}”.`, "success");
+                } else {
+                    // It's a single pose (or legacy)
+                    // parsePoseData will put it in [0]
+                    const parsed = parsePoseData(raw);
+                    this.joints = parsed.poses[0];
+                    this.setStatus(`Imported pose “${file.name}” into slot ${this.currentPoseIndex + 1}.`, "success");
                 }
-                
-                // Fallback to old VNCCS format  
-                const parsed = parsePoseData(reader.result);
-                this.joints = parsed.joints;
                 this.handleJointsMutated(true);
-                this.setStatus(`Imported pose “${file.name}”.`, "success");
             } catch (error) {
                 console.error("[VNCCS] Failed to import pose", error);
                 this.setStatus("Invalid pose JSON.", "warning");
@@ -1798,10 +1660,16 @@ class PoseEditorDialog {
     }
 
     copyPoseJson() {
-        const json = JSON.stringify(buildPosePayload(this.joints), null, 2);
+        // Copy current pose only? Or set?
+        // Let's copy current pose for compatibility with other tools
+        const json = JSON.stringify({
+            canvas: { width: CANVAS_WIDTH, height: CANVAS_HEIGHT },
+            joints: this.joints
+        }, null, 2);
+        
         if (navigator.clipboard?.writeText) {
             navigator.clipboard.writeText(json)
-                .then(() => this.setStatus("Pose JSON copied to clipboard.", "success"))
+                .then(() => this.setStatus("Current pose JSON copied.", "success"))
                 .catch(() => this.setStatus("Clipboard unavailable.", "warning"));
         } else {
             this.setStatus("Clipboard API unsupported.", "warning");
@@ -1809,56 +1677,30 @@ class PoseEditorDialog {
     }
 
     downloadPose() {
-        const json = JSON.stringify(buildPosePayload(this.joints), null, 2);
+        const json = JSON.stringify({
+            canvas: { width: CANVAS_WIDTH, height: CANVAS_HEIGHT },
+            joints: this.joints
+        }, null, 2);
         const blob = new Blob([json], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const anchor = document.createElement("a");
         anchor.href = url;
-        anchor.download = `vnccs_pose_${Date.now()}.json`;
+        anchor.download = `vnccs_pose_${this.currentPoseIndex + 1}_${Date.now()}.json`;
         anchor.click();
         URL.revokeObjectURL(url);
         this.setStatus("Pose JSON downloaded.", "success");
     }
 
-    async exportAllImages() {
-        try {
-            this.exportStatus.textContent = "Generating images from 3D view...";
-            
-            const editor3d = await this.ensurePose3D();
-            if (!editor3d) {
-                this.exportStatus.textContent = "⚠ 3D editor not available";
-                return;
-            }
-
-            // Capture all 4 images from 3D renderer
-            const images = editor3d.captureAllImages(512, 1536);
-            
-            // Download each image
-            const timestamp = Date.now();
-            const imageTypes = ['openpose', 'depth', 'normal', 'canny'];
-            
-            for (let i = 0; i < imageTypes.length; i++) {
-                const type = imageTypes[i];
-                const dataUrl = images[i];
-                
-                const anchor = document.createElement('a');
-                anchor.href = dataUrl;
-                anchor.download = `vnccs_${type}_${timestamp}.png`;
-                anchor.click();
-                
-                // Small delay between downloads
-                await new Promise(resolve => setTimeout(resolve, 100));
-            }
-            
-            this.exportStatus.textContent = `✓ Exported 4 images successfully`;
-            setTimeout(() => {
-                this.exportStatus.textContent = "";
-            }, 3000);
-            
-        } catch (error) {
-            console.error("[VNCCS] Failed to export images:", error);
-            this.exportStatus.textContent = "⚠ Export failed";
-        }
+    downloadSet() {
+        const json = JSON.stringify(buildPosePayload(this.poses), null, 2);
+        const blob = new Blob([json], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = `vnccs_poseset_${Date.now()}.json`;
+        anchor.click();
+        URL.revokeObjectURL(url);
+        this.setStatus("Pose Set JSON downloaded.", "success");
     }
 
     scheduleSync(immediate = false) {
@@ -1870,14 +1712,14 @@ class PoseEditorDialog {
                 clearTimeout(this.syncTimer);
                 this.syncTimer = null;
             }
-            this.integration.updatePoseFromEditor(this.joints);
+            this.integration.updatePoseFromEditor(this.poses);
             return;
         }
         if (this.syncTimer) {
             clearTimeout(this.syncTimer);
         }
         this.syncTimer = setTimeout(() => {
-            this.integration?.updatePoseFromEditor(this.joints);
+            this.integration?.updatePoseFromEditor(this.poses);
             this.syncTimer = null;
         }, 120);
     }
@@ -2094,110 +1936,6 @@ app.registerExtension({
                 return false;
             });
             button.serialize = false;
-
-            // Watch for json_keypoints input changes - update pose_data when input is connected
-            const checkAndLoadKeypoints = () => {
-                const keypointsInput = this.inputs?.find(inp => inp.name === "json_keypoints");
-                if (!keypointsInput || keypointsInput.link == null) {
-                    return;
-                }
-
-                const link = app.graph.links[keypointsInput.link];
-                if (!link) {
-                    return;
-                }
-
-                // Try to get cached data from link first
-                if (link.data !== undefined && link.data !== null) {
-                    console.log("[VNCCS] Loading keypoints from link.data");
-                    integration.loadFromKeypointsInput(link.data);
-                    return;
-                }
-
-                // Get origin node and try to extract POSE_KEYPOINT output
-                const originNode = app.graph.getNodeById(link.origin_id);
-                if (!originNode) {
-                    return;
-                }
-
-                const outputSlot = link.origin_slot;
-                const output = originNode.outputs?.[outputSlot];
-                
-                if (!output) {
-                    return;
-                }
-
-                // For POSE_KEYPOINT type, data might be in different places
-                // Try widget first
-                const outputWidget = originNode.widgets?.find((w) => w.name === output.name);
-                if (outputWidget && outputWidget.value) {
-                    console.log("[VNCCS] Loading keypoints from origin widget");
-                    integration.loadFromKeypointsInput(outputWidget.value);
-                    return;
-                }
-
-                // Try getting from node's internal storage
-                if (originNode.pose_keypoint_data) {
-                    console.log("[VNCCS] Loading keypoints from node storage");
-                    integration.loadFromKeypointsInput(originNode.pose_keypoint_data);
-                    return;
-                }
-
-                // Try to trigger origin node to get fresh data
-                if (typeof originNode.getOutputData === "function") {
-                    try {
-                        const data = originNode.getOutputData(outputSlot);
-                        if (data) {
-                            console.log("[VNCCS] Loading keypoints from getOutputData");
-                            integration.loadFromKeypointsInput(data);
-                            return;
-                        }
-                    } catch (e) {
-                        console.warn("[VNCCS] getOutputData failed:", e);
-                    }
-                }
-
-                console.log("[VNCCS] Could not load keypoints - no data available yet");
-            };
-
-            // Check on connection change
-            const originalOnConnectionsChange = this.onConnectionsChange;
-            this.onConnectionsChange = function(type, index, connected, link_info) {
-                const result = originalOnConnectionsChange?.apply(this, arguments);
-                
-                if (type === 1) { // input
-                    const inputName = this.inputs?.[index]?.name;
-                    if (inputName === "json_keypoints") {
-                        if (connected) {
-                            console.log("[VNCCS] json_keypoints input connected");
-                            setTimeout(checkAndLoadKeypoints, 100);
-                        }
-                    }
-                }
-                
-                return result;
-            };
-
-            // Load keypoints BEFORE execution to update the widget
-            const originalOnExecute = this.onExecute;
-            this.onExecute = function() {
-                // Check and load keypoints before execute
-                checkAndLoadKeypoints();
-                
-                const result = originalOnExecute?.apply(this, arguments);
-                return result;
-            };
-
-            // Also check after execution for live updates
-            const originalOnExecuted = this.onExecuted;
-            this.onExecuted = function(message) {
-                const result = originalOnExecuted?.apply(this, arguments);
-                
-                // Try to load keypoints after execution for preview
-                setTimeout(checkAndLoadKeypoints, 50);
-                
-                return result;
-            };
 
             const originalOnRemoved = this.onRemoved;
             this.onRemoved = function () {

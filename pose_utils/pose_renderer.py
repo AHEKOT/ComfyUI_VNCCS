@@ -4,26 +4,21 @@ import cv2
 import numpy as np
 import math
 from typing import Dict, Tuple, List, Optional
-import sys
-from pathlib import Path
 
 # Import from same directory
 try:
     from .skeleton_512x1536 import BODY_PARTS, BONE_CONNECTIONS
-    from .bone_colors import get_bone_color_bgr, get_bone_color
+    from .bone_colors import get_bone_color, get_joint_color
 except (ImportError, ValueError):
     try:
         from skeleton_512x1536 import BODY_PARTS, BONE_CONNECTIONS
-        from bone_colors import get_bone_color_bgr, get_bone_color
+        from bone_colors import get_bone_color, get_joint_color
     except ImportError:
         # If still fails, define minimal constants
         BODY_PARTS = []
         BONE_CONNECTIONS = []
-        # Fallback functions if import fails
-        def get_bone_color_bgr(j1, j2, idx=None):
-            return (255, 255, 255)  # Default white
-        def get_bone_color(j1, j2, idx=None):
-            return (255, 255, 255)  # Default white
+        def get_bone_color(*args): return (255, 255, 255)
+        def get_joint_color(*args): return (255, 255, 255)
 
 
 def as_point(value: Tuple[float, float]) -> Optional[Tuple[int, int]]:
@@ -142,13 +137,13 @@ def render_openpose(joints: Dict[str, Tuple[int, int]],
                     width: int = 512, 
                     height: int = 1536,
                     line_thickness: int = 3) -> np.ndarray:
-    """Render OpenPose format (colored ellipses on black background, matching reference implementation)
+    """Render OpenPose format (colored lines on black background)
     
     Args:
         joints: Dictionary of joint names to (x, y) coordinates
         width: Canvas width
         height: Canvas height
-        line_thickness: Thickness of bone ellipses (pose_marker_size in reference)
+        line_thickness: Thickness of bone lines
     
     Returns:
         RGB numpy array [H, W, 3]
@@ -156,67 +151,48 @@ def render_openpose(joints: Dict[str, Tuple[int, int]],
     # Create black canvas
     img = np.zeros((height, width, 3), dtype=np.uint8)
     
-    # Draw bones as filled ellipses (matching reference implementation)
-    for bone_index, (joint1, joint2) in enumerate(BONE_CONNECTIONS):
+    # Draw bones (colored lines)
+    for i, (joint1, joint2) in enumerate(BONE_CONNECTIONS):
         if joint1 in joints and joint2 in joints:
             pt1 = as_point(joints[joint1])
             pt2 = as_point(joints[joint2])
             if pt1 is not None and pt2 is not None:
-                # Get RGB color and convert to BGR
-                color_rgb = get_bone_color(joint1, joint2, bone_index)
+                # Get color from bone_colors.py (returns RGB)
+                color_rgb = get_bone_color(joint1, joint2, i)
+                # Convert to BGR for OpenCV
                 color_bgr = (color_rgb[2], color_rgb[1], color_rgb[0])
-                
-                # Calculate ellipse parameters (same as reference)
-                Y = np.array([pt1[0], pt2[0]], dtype=float)  # X coordinates
-                X = np.array([pt1[1], pt2[1]], dtype=float)  # Y coordinates
-                mX = np.mean(X)
-                mY = np.mean(Y)
-                length = ((X[0] - X[1]) ** 2 + (Y[0] - Y[1]) ** 2) ** 0.5
-                angle = math.degrees(math.atan2(X[0] - X[1], Y[0] - Y[1]))
-                
-                # Draw ellipse (cv2.ellipse2Poly returns polygon points for the ellipse)
-                polygon = cv2.ellipse2Poly(
-                    (int(mY), int(mX)),           # center
-                    (int(length / 2), line_thickness),  # axes (half length, thickness)
-                    int(angle),                    # rotation angle
-                    0, 360,                        # start/end angles (full ellipse)
-                    1                              # number of curve segments
-                )
-                cv2.fillConvexPoly(img, polygon, color_bgr)
+                cv2.line(img, pt1, pt2, color_bgr, line_thickness, cv2.LINE_AA)
     
-    # Reduce canvas opacity to 60% (matching reference)
-    img = (img * 0.6).astype(np.uint8)
-    
-    # Draw joints as circles on top (using same color as first connected bone)
+    # Draw joints (colored circles)
     for joint_name, coords in joints.items():
         point = as_point(coords)
         if point is None:
             continue
-        # Find first bone connected to this joint to get its color
-        color_rgb = (255, 255, 255)  # Default white
-        for bone_index, (joint1, joint2) in enumerate(BONE_CONNECTIONS):
-            if joint1 == joint_name or joint2 == joint_name:
-                color_rgb = get_bone_color(joint1, joint2, bone_index)
-                break
+            
+        # Get color from bone_colors.py (returns RGB)
+        color_rgb = get_joint_color(joint_name)
+        # Convert to BGR for OpenCV
         color_bgr = (color_rgb[2], color_rgb[1], color_rgb[0])
-        cv2.circle(img, point, line_thickness, color_bgr, thickness=-1)
-
-    # Convert back to RGB for consumers (ComfyUI expects RGB ordering)
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    return img_rgb
+        
+        cv2.circle(img, point, 4, color_bgr, -1, cv2.LINE_AA)
+    
+    return img
 
 
 def convert_to_comfyui_format(img: np.ndarray) -> np.ndarray:
     """Convert image to ComfyUI format [B, H, W, C] with values in [0, 1]
     
     Args:
-        img: Numpy array in [H, W, C] format with values in [0, 255]
+        img: Numpy array in [H, W, C] format (BGR from OpenCV) with values in [0, 255]
     
     Returns:
-        Tensor in [1, H, W, C] format with values in [0, 1]
+        Tensor in [1, H, W, C] format with values in [0, 1] (converted to RGB)
     """
+    # Convert BGR to RGB
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    
     # Normalize to [0, 1]
-    img_float = img.astype(np.float32) / 255.0
+    img_float = img_rgb.astype(np.float32) / 255.0
     
     # Add batch dimension
     img_batch = np.expand_dims(img_float, axis=0)

@@ -1,5 +1,3 @@
-import { getBoneColor, hexToRgb } from "./bone_colors.js";
-
 const OPENPOSE_NAMES = [
     "nose",
     "neck",
@@ -18,7 +16,13 @@ const OPENPOSE_NAMES = [
     "r_eye",
     "l_eye",
     "r_ear",
-    "l_ear"
+    "l_ear",
+    "l_bigtoe",
+    "l_smalltoe",
+    "l_heel",
+    "r_bigtoe",
+    "r_smalltoe",
+    "r_heel"
 ];
 
 const BONE_RADIUS = 4.2;
@@ -56,13 +60,6 @@ const BONE_COLOR_PALETTE = [
     0x6699ff
 ];
 
-export function hexToRgba(hex, alpha = 1) {
-    const r = (hex >> 16) & 255;
-    const g = (hex >> 8) & 255;
-    const b = hex & 255;
-    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
 export const JOINT_TREE = [
     { name: "neck", parent: null },
     { name: "nose", parent: "neck" },
@@ -75,9 +72,15 @@ export const JOINT_TREE = [
     { name: "r_hip", parent: "neck" },
     { name: "r_knee", parent: "r_hip" },
     { name: "r_ankle", parent: "r_knee" },
+    { name: "r_bigtoe", parent: "r_ankle" },
+    { name: "r_smalltoe", parent: "r_bigtoe" },
+    { name: "r_heel", parent: "r_ankle" },
     { name: "l_hip", parent: "neck" },
     { name: "l_knee", parent: "l_hip" },
     { name: "l_ankle", parent: "l_knee" },
+    { name: "l_bigtoe", parent: "l_ankle" },
+    { name: "l_smalltoe", parent: "l_bigtoe" },
+    { name: "l_heel", parent: "l_ankle" },
     { name: "r_eye", parent: "nose" },
     { name: "r_ear", parent: "r_eye" },
     { name: "l_eye", parent: "nose" },
@@ -86,15 +89,6 @@ export const JOINT_TREE = [
 
 function colorForIndex(index) {
     return BONE_COLOR_PALETTE[index % BONE_COLOR_PALETTE.length];
-}
-
-export function getBoneColorHex(index) {
-    return colorForIndex(index);
-}
-
-export function getBoneColorRgba(index, alpha = 0.85) {
-    const hex = colorForIndex(index);
-    return hexToRgba(hex, alpha);
 }
 
 function createJointHandle(THREE, name) {
@@ -229,10 +223,7 @@ export function createPoseBody(THREE, { connections, defaultDepth }) {
         if (!startData || !endData) {
             return;
         }
-        // Use custom color from config
-        const hexColor = getBoneColor(start, end, index);
-        const rgb = hexToRgb(hexColor);
-        const color = (rgb.r << 16) | (rgb.g << 8) | rgb.b;
+        const color = colorForIndex(index);
         const mesh = createBoneMesh(THREE, color);
         mesh.name = `${start}__${end}_bone`;
         mesh.userData = { start, end };

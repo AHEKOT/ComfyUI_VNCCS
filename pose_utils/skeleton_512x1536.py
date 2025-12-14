@@ -17,7 +17,7 @@ OFFSET_Y = (CANVAS_HEIGHT - PERSON_HEIGHT) // 2  # 115px
 
 # Default skeleton pose (standing, back view)
 DEFAULT_SKELETON = {
-    # BODY_18 format (18 keypoints without toe/heel details)
+    # OpenPose BODY_25 ordering (without mid_hip)
     "nose": (256, 200),          # 0
     "neck": (256, 280),          # 1
     "r_shoulder": (320, 320),    # 2
@@ -42,30 +42,30 @@ LEGACY_JOINT_ALIASES = {}
 
 # Bone connections (for drawing lines)
 BONE_CONNECTIONS = [
-    # Match the web widget ordering exactly so preview and exports stay in sync
-    # Head and face
+    # Upper body
     ("nose", "neck"),
+    ("neck", "r_shoulder"),
+    ("r_shoulder", "r_elbow"),
+    ("r_elbow", "r_wrist"),
+    ("neck", "l_shoulder"),
+    ("l_shoulder", "l_elbow"),
+    ("l_elbow", "l_wrist"),
+    ("neck", "r_hip"),
+    ("neck", "l_hip"),
+    
+    # Right side
+    ("r_hip", "r_knee"),
+    ("r_knee", "r_ankle"),
+    
+    # Left side
+    ("l_hip", "l_knee"),
+    ("l_knee", "l_ankle"),
+    
+    # Face
     ("nose", "r_eye"),
     ("r_eye", "r_ear"),
     ("nose", "l_eye"),
     ("l_eye", "l_ear"),
-
-    # Shoulder line and torso sides
-    ("r_shoulder", "l_shoulder"),
-    ("neck", "r_hip"),
-    ("neck", "l_hip"),
-
-    # Arms
-    ("r_shoulder", "r_elbow"),
-    ("r_elbow", "r_wrist"),
-    ("l_shoulder", "l_elbow"),
-    ("l_elbow", "l_wrist"),
-
-    # Legs
-    ("r_hip", "r_knee"),
-    ("r_knee", "r_ankle"),
-    ("l_hip", "l_knee"),
-    ("l_knee", "l_ankle"),
 ]
 
 # Body parts for oval rendering (schematic view)
