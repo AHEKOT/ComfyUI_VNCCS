@@ -1717,30 +1717,24 @@ class PoseEditorDialog {
 
     mirrorPose() {
         const mirrored = {};
-        const seen = new Set();
-        for (const [left, right] of MIRROR_PAIRS) {
-            const leftPose = this.joints[left];
-            const rightPose = this.joints[right];
-            
-            // Skip if either joint is missing or invalid
-            if (!leftPose || !rightPose || !Array.isArray(leftPose) || !Array.isArray(rightPose)) {
+        
+        // ПРОСТО зеркалим координаты, имена НЕ меняем!
+        // Тогда правая рука (оранжевая) окажется слева визуально
+        for (const [name, pos] of Object.entries(this.joints)) {
+            if (!Array.isArray(pos) || pos.length < 2) {
                 continue;
             }
             
-            mirrored[left] = [CANVAS_WIDTH - rightPose[0], rightPose[1]];
-            mirrored[right] = [CANVAS_WIDTH - leftPose[0], leftPose[1]];
-            seen.add(left);
-            seen.add(right);
+            const [x, y] = pos;
+            const mirroredX = CANVAS_WIDTH - x;
+            
+            // Сохраняем под ТЕМ ЖЕ именем с зеркальной координатой
+            mirrored[name] = [mirroredX, y];
         }
-        for (const [name, [x, y]] of Object.entries(this.joints)) {
-            if (seen.has(name)) {
-                continue;
-            }
-            mirrored[name] = [CANVAS_WIDTH - x, y];
-        }
+        
         this.joints = mirrored;
         this.handleJointsMutated(true);
-        this.setStatus("Pose mirrored horizontally.");
+        this.setStatus("Pose mirrored");
     }
 
     fitSafeZone() {

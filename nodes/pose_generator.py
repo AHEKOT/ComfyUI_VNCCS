@@ -67,6 +67,44 @@ def _clamp(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
+def _apply_safe_zone(poses: list, scale_factor: float, center_x: float, center_y: float) -> list:
+    """Scale all poses proportionally toward the center point.
+    
+    Args:
+        poses: List of pose dictionaries
+        scale_factor: Scale factor (0.0-1.0), where 1.0 = 100% (no scaling)
+        center_x: X coordinate of center point
+        center_y: Y coordinate of center point
+    
+    Returns:
+        List of scaled poses
+    """
+    scaled_poses = []
+    
+    for pose in poses:
+        scaled_pose = {}
+        
+        for joint_name, coords in pose.items():
+            if isinstance(coords, (list, tuple)) and len(coords) >= 2:
+                x, y = coords[0], coords[1]
+                
+                # Scale toward center
+                scaled_x = center_x + (x - center_x) * scale_factor
+                scaled_y = center_y + (y - center_y) * scale_factor
+                
+                # Clamp to canvas bounds
+                scaled_x = _clamp(int(round(scaled_x)), 0, CANVAS_WIDTH - 1)
+                scaled_y = _clamp(int(round(scaled_y)), 0, CANVAS_HEIGHT - 1)
+                
+                scaled_pose[joint_name] = (scaled_x, scaled_y)
+            else:
+                scaled_pose[joint_name] = coords
+        
+        scaled_poses.append(scaled_pose)
+    
+    return scaled_poses
+
+
 def _sanitize_joints(joints_data: Dict[str, Tuple]) -> Dict[str, Tuple[int, int]]:
     """Normalize joint payload into clamped integer tuples following OpenPose BODY_25 names."""
     sanitized: Dict[str, Tuple[int, int]] = {}
@@ -140,6 +178,13 @@ class VNCCS_PoseGenerator:
                     "step": 1,
                     "display": "slider"
                 }),
+                "safe_zone": ("INT", {
+                    "default": 100,
+                    "min": 0,
+                    "max": 100,
+                    "step": 1,
+                    "display": "slider"
+                }),
             }
         }
     
@@ -148,17 +193,18 @@ class VNCCS_PoseGenerator:
     FUNCTION = "generate"
     CATEGORY = "VNCCS/pose"
     
-    def generate(self, pose_data: str, line_thickness: int = 3):
+    def generate(self, pose_data: str, line_thickness: int = 3, safe_zone: int = 100):
         """Generate OpenPose image grid from pose data (12 poses in 6x2 layout)
         
         Args:
             pose_data: JSON string containing list of 12 poses
             line_thickness: Thickness of lines in OpenPose rendering
+            safe_zone: Safe zone percentage (0-100). Scales poses proportionally toward center
         
         Returns:
             Tuple containing (openpose_grid,) in ComfyUI format
         """
-        print(f"[VNCCS] Generating pose grid...")
+        print(f"[VNCCS] Generating pose grid (safe_zone: {safe_zone}%)...")
         
         try:
             data = json.loads(pose_data)
@@ -189,6 +235,14 @@ class VNCCS_PoseGenerator:
                 poses.append(_sanitize_joints(joints_payload))
             else:
                 poses.append(DEFAULT_SKELETON.copy())
+        
+        # Apply safe zone scaling if not 100%
+        if safe_zone < 100:
+            scale_factor = safe_zone / 100.0
+            center_x = CANVAS_WIDTH / 2.0
+            center_y = CANVAS_HEIGHT / 2.0
+            
+            poses = _apply_safe_zone(poses, scale_factor, center_x, center_y)
         
         print(f"[VNCCS] Processing {len(poses)} poses")
         

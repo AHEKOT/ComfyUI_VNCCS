@@ -32,18 +32,18 @@ OPENPOSE_COLORS = [
 # MUST match JavaScript FALLBACK_PALETTE exactly.
 FALLBACK_PALETTE = [
     OPENPOSE_COLORS[12],  # 0: nose->neck (Blue)
-    OPENPOSE_COLORS[5],   # 1: neck->r_shoulder (Light green) - SWAPPED
-    OPENPOSE_COLORS[6],   # 2: r_shoulder->r_elbow (Green) - SWAPPED
-    OPENPOSE_COLORS[7],   # 3: r_elbow->r_wrist (Green-cyan) - SWAPPED
-    OPENPOSE_COLORS[1],   # 4: neck->l_shoulder (Orange) - SWAPPED
-    OPENPOSE_COLORS[2],   # 5: l_shoulder->l_elbow (Dark orange) - SWAPPED
-    OPENPOSE_COLORS[3],   # 6: l_elbow->l_wrist (Yellow) - SWAPPED
-    OPENPOSE_COLORS[11],  # 7: neck->r_hip (Light blue) - SWAPPED
-    OPENPOSE_COLORS[8],   # 8: neck->l_hip (Cyan-green) - SWAPPED
-    OPENPOSE_COLORS[12],  # 9: r_hip->r_knee (Blue) - SWAPPED
-    OPENPOSE_COLORS[13],  # 10: r_knee->r_ankle (Purple-blue) - SWAPPED
-    OPENPOSE_COLORS[9],   # 11: l_hip->l_knee (Cyan) - SWAPPED
-    OPENPOSE_COLORS[10],  # 12: l_knee->l_ankle (Cyan-blue) - SWAPPED
+    OPENPOSE_COLORS[1],   # 1: neck->r_shoulder (Orange) - RIGHT is orange/warm
+    OPENPOSE_COLORS[2],   # 2: r_shoulder->r_elbow (Dark orange) - RIGHT
+    OPENPOSE_COLORS[3],   # 3: r_elbow->r_wrist (Yellow) - RIGHT
+    OPENPOSE_COLORS[5],   # 4: neck->l_shoulder (Light green) - LEFT is cool
+    OPENPOSE_COLORS[6],   # 5: l_shoulder->l_elbow (Green) - LEFT
+    OPENPOSE_COLORS[7],   # 6: l_elbow->l_wrist (Green-cyan) - LEFT
+    OPENPOSE_COLORS[8],   # 7: neck->r_hip (Cyan-green) - RIGHT hip
+    OPENPOSE_COLORS[11],  # 8: neck->l_hip (Light blue) - LEFT hip
+    OPENPOSE_COLORS[5],   # 9: r_hip->r_knee (Light green) - RIGHT leg
+    OPENPOSE_COLORS[6],   # 10: r_knee->r_ankle (Green) - RIGHT leg
+    OPENPOSE_COLORS[9],   # 11: l_hip->l_knee (Cyan) - LEFT leg
+    OPENPOSE_COLORS[10],  # 12: l_knee->l_ankle (Cyan-blue) - LEFT leg
     OPENPOSE_COLORS[14],  # 13: nose->r_eye (Purple)
     OPENPOSE_COLORS[16],  # 14: r_eye->r_ear (Pink)
     OPENPOSE_COLORS[14],  # 15: nose->l_eye (Purple)
@@ -54,22 +54,22 @@ FALLBACK_PALETTE = [
 BONE_COLORS = {
     # Upper body
     ("nose", "neck"): OPENPOSE_COLORS[12],
-    ("neck", "r_shoulder"): OPENPOSE_COLORS[5],   # Light green - SWAPPED
-    ("r_shoulder", "r_elbow"): OPENPOSE_COLORS[6],  # Green - SWAPPED
-    ("r_elbow", "r_wrist"): OPENPOSE_COLORS[7],     # Green-cyan - SWAPPED
-    ("neck", "l_shoulder"): OPENPOSE_COLORS[1],     # Orange - SWAPPED
-    ("l_shoulder", "l_elbow"): OPENPOSE_COLORS[2],  # Dark orange - SWAPPED
-    ("l_elbow", "l_wrist"): OPENPOSE_COLORS[3],     # Yellow - SWAPPED
-    ("neck", "r_hip"): OPENPOSE_COLORS[11],         # Light blue - SWAPPED
-    ("neck", "l_hip"): OPENPOSE_COLORS[8],          # Cyan-green - SWAPPED
+    ("neck", "r_shoulder"): OPENPOSE_COLORS[1],   # Orange - RIGHT is orange/warm
+    ("r_shoulder", "r_elbow"): OPENPOSE_COLORS[2],  # Dark orange - RIGHT
+    ("r_elbow", "r_wrist"): OPENPOSE_COLORS[3],     # Yellow - RIGHT
+    ("neck", "l_shoulder"): OPENPOSE_COLORS[5],     # Light green - LEFT is cool
+    ("l_shoulder", "l_elbow"): OPENPOSE_COLORS[6],  # Green - LEFT
+    ("l_elbow", "l_wrist"): OPENPOSE_COLORS[7],     # Green-cyan - LEFT
+    ("neck", "r_hip"): OPENPOSE_COLORS[8],         # Cyan-green - RIGHT hip
+    ("neck", "l_hip"): OPENPOSE_COLORS[11],          # Light blue - LEFT hip
 
-    # Right leg
-    ("r_hip", "r_knee"): OPENPOSE_COLORS[12],       # Blue - SWAPPED
-    ("r_knee", "r_ankle"): OPENPOSE_COLORS[13],     # Purple-blue - SWAPPED
+    # Right leg (GREEN)
+    ("r_hip", "r_knee"): OPENPOSE_COLORS[5],       # Light green - RIGHT leg
+    ("r_knee", "r_ankle"): OPENPOSE_COLORS[6],     # Green - RIGHT leg
 
-    # Left leg
-    ("l_hip", "l_knee"): OPENPOSE_COLORS[9],        # Cyan - SWAPPED
-    ("l_knee", "l_ankle"): OPENPOSE_COLORS[10],     # Cyan-blue - SWAPPED
+    # Left leg (CYAN-BLUE)
+    ("l_hip", "l_knee"): OPENPOSE_COLORS[9],        # Cyan - LEFT leg
+    ("l_knee", "l_ankle"): OPENPOSE_COLORS[10],     # Cyan-blue - LEFT leg
     
     # Face
     ("nose", "r_eye"): OPENPOSE_COLORS[14],
@@ -88,23 +88,23 @@ JOINT_COLORS = {
     "r_ear": OPENPOSE_COLORS[16],      # Pink
     "l_ear": OPENPOSE_COLORS[16],      # Pink
     
-    # Right arm (GREEN)
-    "r_shoulder": OPENPOSE_COLORS[5],  # Light green
-    "r_elbow": OPENPOSE_COLORS[6],     # Green
-    "r_wrist": OPENPOSE_COLORS[7],     # Green-cyan
+    # Right arm (ORANGE-YELLOW) - warm colors
+    "r_shoulder": OPENPOSE_COLORS[1],  # Orange
+    "r_elbow": OPENPOSE_COLORS[2],     # Dark orange
+    "r_wrist": OPENPOSE_COLORS[3],     # Yellow
     
-    # Left arm (RED-YELLOW)
-    "l_shoulder": OPENPOSE_COLORS[1],  # Orange
-    "l_elbow": OPENPOSE_COLORS[2],     # Dark orange
-    "l_wrist": OPENPOSE_COLORS[3],     # Yellow
+    # Left arm (GREEN) - cool colors
+    "l_shoulder": OPENPOSE_COLORS[5],  # Light green
+    "l_elbow": OPENPOSE_COLORS[6],     # Green
+    "l_wrist": OPENPOSE_COLORS[7],     # Green-cyan
     
-    # Right leg (BLUE)
-    "r_hip": OPENPOSE_COLORS[11],      # Light blue
-    "r_knee": OPENPOSE_COLORS[12],     # Blue
-    "r_ankle": OPENPOSE_COLORS[13],    # Purple-blue
+    # Right leg (GREEN)
+    "r_hip": OPENPOSE_COLORS[8],       # Cyan-green
+    "r_knee": OPENPOSE_COLORS[5],      # Light green
+    "r_ankle": OPENPOSE_COLORS[6],     # Green
     
-    # Left leg (CYAN)
-    "l_hip": OPENPOSE_COLORS[8],       # Cyan-green
+    # Left leg (CYAN-BLUE)
+    "l_hip": OPENPOSE_COLORS[11],      # Light blue
     "l_knee": OPENPOSE_COLORS[9],      # Cyan
     "l_ankle": OPENPOSE_COLORS[10],    # Cyan-blue
 }
