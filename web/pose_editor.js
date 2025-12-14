@@ -118,10 +118,8 @@ function dot(a, b) {
     return a[0] * b[0] + a[1] * b[1];
 }
 
-const PRESETS = [
-    { id: "standing_back", label: "Standing (Back)", file: "standing_back.json" },
-    { id: "t_pose", label: "T-Pose", file: "t_pose.json" }
-];
+// Presets loaded dynamically from server
+let PRESETS = [];
 
 const PRESET_BASE_URL = new URL("../presets/poses/", import.meta.url);
 
@@ -901,8 +899,44 @@ class PoseEditorDialog {
         this.panStartX = 0;
         this.panStartY = 0;
         
-        // Load default poses
+        // Load presets list and default poses
+        this.loadPresetsList();
         this.loadDefaultPoses();
+    }
+    
+    async loadPresetsList() {
+        try {
+            const response = await fetch("/vnccs/pose_presets");
+            if (response.ok) {
+                PRESETS.length = 0;
+                const presets = await response.json();
+                PRESETS.push(...presets);
+                
+                // Update preset selector if it exists
+                if (this.presetSelect) {
+                    this.updatePresetSelect();
+                }
+            }
+        } catch (error) {
+            console.warn("[VNCCS] Failed to load presets list", error);
+        }
+    }
+    
+    updatePresetSelect() {
+        if (!this.presetSelect) return;
+        
+        // Clear existing options except placeholder
+        while (this.presetSelect.options.length > 1) {
+            this.presetSelect.remove(1);
+        }
+        
+        // Add presets
+        for (const preset of PRESETS) {
+            const option = document.createElement("option");
+            option.value = preset.id;
+            option.textContent = preset.label;
+            this.presetSelect.appendChild(option);
+        }
     }
 
     async loadDefaultPoses() {
@@ -1011,7 +1045,6 @@ class PoseEditorDialog {
         sidebar.className = "vnccs-pose-editor-sidebar";
         sidebar.appendChild(this.createPoseToolsPanel());
         sidebar.appendChild(this.createPresetPanel());
-        sidebar.appendChild(this.createOptionsPanel());
         body.appendChild(sidebar);
     }
 
@@ -1116,12 +1149,8 @@ class PoseEditorDialog {
         placeholder.textContent = "Choose preset";
         this.presetSelect.appendChild(placeholder);
 
-        for (const preset of PRESETS) {
-            const option = document.createElement("option");
-            option.value = preset.id;
-            option.textContent = preset.label;
-            this.presetSelect.appendChild(option);
-        }
+        // Presets will be populated by updatePresetSelect() after loading
+        this.updatePresetSelect();
 
         this.presetSelect.addEventListener("change", (event) => {
             const presetId = event.target.value;
@@ -1160,38 +1189,8 @@ class PoseEditorDialog {
     }
 
     createOptionsPanel() {
-        const panel = document.createElement("div");
-        panel.className = "vnccs-panel";
-
-        const heading = document.createElement("h3");
-        heading.textContent = "View Options";
-        const description = document.createElement("p");
-        description.textContent = "Toggle helper overlays while editing the pose.";
-
-        const toggles = document.createElement("div");
-        toggles.className = "vnccs-option-group";
-        toggles.appendChild(this.createToggle("Show grid", this.showGrid, (value) => {
-            this.showGrid = value;
-            this.render();
-        }));
-        toggles.appendChild(this.createToggle("Show safe zone", this.showSafeZone, (value) => {
-            this.showSafeZone = value;
-            this.render();
-        }));
-        toggles.appendChild(this.createToggle("Show labels", this.showLabels, (value) => {
-            this.showLabels = value;
-            this.render();
-        }));
-
-        const hint = document.createElement("div");
-        hint.className = "vnccs-info-line";
-        hint.textContent = "Drag joints • Hold Shift for 10px steps • Arrow keys nudge selected joint.";
-
-        panel.appendChild(heading);
-        panel.appendChild(description);
-        panel.appendChild(toggles);
-        panel.appendChild(hint);
-        return panel;
+        // Removed - options enabled by default
+        return null;
     }
 
     createThreeColumn() {
@@ -1789,7 +1788,7 @@ class PoseEditorDialog {
         }
         try {
             this.setStatus(`Loading preset “${preset.label}”…`);
-            const response = await fetch(new URL(preset.file, PRESET_BASE_URL));
+            const response = await fetch(`/vnccs/pose_preset/${preset.file}`);
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
             }

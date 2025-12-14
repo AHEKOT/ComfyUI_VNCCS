@@ -176,6 +176,54 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
                 )
         except Exception as e:
             return web.Response(text=f"Error reading file: {str(e)}", status=500)
+    
+    @PromptServer.instance.routes.get("/vnccs/pose_presets")
+    async def vnccs_get_pose_presets(request):
+        """Get list of available pose presets"""
+        try:
+            presets_dir = os.path.join(os.path.dirname(__file__), "presets", "poses")
+            presets = []
+            
+            if os.path.exists(presets_dir):
+                for filename in sorted(os.listdir(presets_dir)):
+                    if filename.endswith('.json'):
+                        # Create preset entry
+                        preset_id = filename[:-5]  # Remove .json
+                        label = preset_id.replace('_', ' ').title()
+                        presets.append({
+                            "id": preset_id,
+                            "label": label,
+                            "file": filename
+                        })
+            
+            return web.json_response(presets)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+    
+    @PromptServer.instance.routes.get("/vnccs/pose_preset/{filename}")
+    async def vnccs_get_pose_preset(request):
+        """Get specific pose preset file"""
+        try:
+            filename = request.match_info.get("filename", "")
+            if not filename.endswith('.json'):
+                return web.Response(text="Only JSON files allowed", status=400)
+            
+            presets_dir = os.path.join(os.path.dirname(__file__), "presets", "poses")
+            file_path = os.path.join(presets_dir, filename)
+            
+            # Security check
+            if not os.path.abspath(file_path).startswith(os.path.abspath(presets_dir)):
+                return web.Response(text="Invalid path", status=400)
+            
+            if not os.path.exists(file_path):
+                return web.Response(text=f"Preset not found: {filename}", status=404)
+            
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            return web.json_response(data)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
 
 _vnccs_register_endpoint()
 
