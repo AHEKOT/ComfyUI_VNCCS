@@ -25,42 +25,29 @@ try:
         LEGACY_JOINT_ALIASES,
     )
     from ..pose_utils.pose_renderer import render_schematic, render_openpose, convert_to_comfyui_format
-except (ImportError, ValueError) as e:
-    # Fallback to adding to sys.path
+except (ImportError, ValueError):
+    # Fallback: try as package import using importlib
+    import importlib.util
     current_dir = os.path.dirname(os.path.abspath(__file__))
     parent_dir = os.path.dirname(current_dir)
     utils_dir = os.path.join(parent_dir, "pose_utils")
-    if utils_dir not in sys.path:
-        sys.path.insert(0, utils_dir)
     
-    try:
-        from skeleton_512x1536 import (
-            Skeleton,
-            DEFAULT_SKELETON,
-            CANVAS_WIDTH,
-            CANVAS_HEIGHT,
-            LEGACY_JOINT_ALIASES,
-        )
-        from pose_renderer import render_schematic, render_openpose, convert_to_comfyui_format
-    except ImportError:
-        # Last resort: try as package import
-        import importlib.util
-        spec_skeleton = importlib.util.spec_from_file_location("skeleton_512x1536", os.path.join(utils_dir, "skeleton_512x1536.py"))
-        skeleton_module = importlib.util.module_from_spec(spec_skeleton)
-        spec_skeleton.loader.exec_module(skeleton_module)
-        
-        spec_renderer = importlib.util.spec_from_file_location("pose_renderer", os.path.join(utils_dir, "pose_renderer.py"))
-        renderer_module = importlib.util.module_from_spec(spec_renderer)
-        spec_renderer.loader.exec_module(renderer_module)
-        
-        Skeleton = skeleton_module.Skeleton
-        DEFAULT_SKELETON = skeleton_module.DEFAULT_SKELETON
-        CANVAS_WIDTH = skeleton_module.CANVAS_WIDTH
-        CANVAS_HEIGHT = skeleton_module.CANVAS_HEIGHT
-        LEGACY_JOINT_ALIASES = getattr(skeleton_module, "LEGACY_JOINT_ALIASES", {})
-        render_schematic = renderer_module.render_schematic
-        render_openpose = renderer_module.render_openpose
-        convert_to_comfyui_format = renderer_module.convert_to_comfyui_format
+    spec_skeleton = importlib.util.spec_from_file_location("skeleton_512x1536", os.path.join(utils_dir, "skeleton_512x1536.py"))
+    skeleton_module = importlib.util.module_from_spec(spec_skeleton)
+    spec_skeleton.loader.exec_module(skeleton_module)
+    
+    spec_renderer = importlib.util.spec_from_file_location("pose_renderer", os.path.join(utils_dir, "pose_renderer.py"))
+    renderer_module = importlib.util.module_from_spec(spec_renderer)
+    spec_renderer.loader.exec_module(renderer_module)
+    
+    Skeleton = skeleton_module.Skeleton
+    DEFAULT_SKELETON = skeleton_module.DEFAULT_SKELETON
+    CANVAS_WIDTH = skeleton_module.CANVAS_WIDTH
+    CANVAS_HEIGHT = skeleton_module.CANVAS_HEIGHT
+    LEGACY_JOINT_ALIASES = getattr(skeleton_module, "LEGACY_JOINT_ALIASES", {})
+    render_schematic = renderer_module.render_schematic
+    render_openpose = renderer_module.render_openpose
+    convert_to_comfyui_format = renderer_module.convert_to_comfyui_format
 
 
 def _clamp(value: int, minimum: int, maximum: int) -> int:

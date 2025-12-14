@@ -16,9 +16,6 @@ from .pose_renderer import (
     convert_to_comfyui_format
 )
 
-from .face_template import compute_face_points
-from .hand_template import compute_hand_points
-
 __all__ = [
     'Skeleton',
     'DEFAULT_SKELETON',
@@ -30,6 +27,4 @@ __all__ = [
     'render_schematic',
     'render_openpose',
     'convert_to_comfyui_format',
-    'compute_face_points',
-    'compute_hand_points',
 ]
