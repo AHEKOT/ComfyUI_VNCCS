@@ -344,18 +344,22 @@ function ensurePoseEditorStyles() {
             border-radius: 12px;
             padding: 16px;
             border: 1px solid rgba(121, 150, 255, 0.12);
-            overflow: auto;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
         .vnccs-pose-editor-canvas-wrapper canvas {
             display: block;
-            margin: 0 auto;
-            width: clamp(220px, 30vw, 360px);
-            aspect-ratio: 512 / 1536;
+            max-width: 100%;
+            max-height: 100%;
+            width: auto;
             height: auto;
             image-rendering: crisp-edges;
             cursor: crosshair;
             border-radius: 10px;
             box-shadow: 0 18px 40px rgba(10, 17, 30, 0.45);
+            transition: transform 0.1s ease-out;
         }
         .vnccs-pose-editor-sidebar {
             flex: 0 0 280px;
@@ -743,6 +747,7 @@ class PoseEditorDialog {
         this.canvas.addEventListener("pointerup", (event) => this.onPointerUp(event));
         this.canvas.addEventListener("pointerleave", (event) => this.onPointerUp(event));
         this.canvas.addEventListener("keydown", (event) => this.onKeyDown(event));
+        this.canvas.addEventListener("wheel", (event) => this.onWheel(event), { passive: false });
 
         this.onEscape = (event) => {
             if (event.key === "Escape") {
@@ -770,6 +775,14 @@ class PoseEditorDialog {
         this.showLabels = true;
         this.showSafeZone = true;
         this.viewMode = "single"; // 'single' or 'grid'
+        this.zoom = 1.0;
+        this.minZoom = 0.3;
+        this.maxZoom = 3.0;
+        this.panX = 0;
+        this.panY = 0;
+        this.isPanning = false;
+        this.panStartX = 0;
+        this.panStartY = 0;
     }
 
     get joints() {
@@ -902,6 +915,12 @@ class PoseEditorDialog {
         this.viewMode = this.viewMode === "single" ? "grid" : "single";
         this.viewToggleBtn.textContent = this.viewMode === "single" ? "Grid View" : "Single View";
         this.viewToggleBtn.classList.toggle("active", this.viewMode === "grid");
+        
+        // Reset zoom and pan when switching modes
+        this.zoom = 1.0;
+        this.panX = 0;
+        this.panY = 0;
+        this.canvas.style.transform = `translate(${this.panX}px, ${this.panY}px) scale(${this.zoom})`;
         
         if (this.viewMode === "grid") {
             // Resize canvas for grid
@@ -1378,6 +1397,17 @@ class PoseEditorDialog {
     }
 
     onPointerDown(event) {
+        // Middle mouse button (button 1) for panning
+        if (event.button === 1) {
+            event.preventDefault();
+            this.isPanning = true;
+            this.panStartX = event.clientX - this.panX;
+            this.panStartY = event.clientY - this.panY;
+            this.canvas.style.cursor = "grabbing";
+            this.canvas.setPointerCapture(event.pointerId);
+            return;
+        }
+
         const { x, y } = this.getCanvasCoords(event);
         const { name: joint, poseIndex } = this.findJointAt(x, y);
         
@@ -1400,6 +1430,14 @@ class PoseEditorDialog {
     }
 
     onPointerMove(event) {
+        // Handle panning
+        if (this.isPanning) {
+            this.panX = event.clientX - this.panStartX;
+            this.panY = event.clientY - this.panStartY;
+            this.canvas.style.transform = `translate(${this.panX}px, ${this.panY}px) scale(${this.zoom})`;
+            return;
+        }
+
         const { x, y } = this.getCanvasCoords(event);
         
         if (this.dragging && this.selectedJoint) {
@@ -1429,6 +1467,14 @@ class PoseEditorDialog {
     }
 
     onPointerUp(event) {
+        // End panning
+        if (this.isPanning) {
+            this.isPanning = false;
+            this.canvas.style.cursor = this.hoveredJoint ? "grab" : "crosshair";
+            this.canvas.releasePointerCapture(event.pointerId);
+            return;
+        }
+
         if (!this.dragging || event.pointerId !== this.dragPointerId) {
             if (event.type === "pointerleave") {
                 this.setHoveredJoint(null, { source: "2d" });
@@ -1441,6 +1487,19 @@ class PoseEditorDialog {
         this.canvas.releasePointerCapture(event.pointerId);
         this.canvas.style.cursor = this.hoveredJoint ? "grab" : "crosshair";
         this.handleJointsMutated(true);
+    }
+
+    onWheel(event) {
+        event.preventDefault();
+        
+        const delta = event.deltaY > 0 ? 0.9 : 1.1;
+        const newZoom = clamp(this.zoom * delta, this.minZoom, this.maxZoom);
+        
+        if (newZoom !== this.zoom) {
+            this.zoom = newZoom;
+            this.canvas.style.transform = `translate(${this.panX}px, ${this.panY}px) scale(${this.zoom})`;
+            this.setStatus(`Zoom: ${Math.round(this.zoom * 100)}%`);
+        }
     }
 
     onKeyDown(event) {

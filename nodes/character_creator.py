@@ -1,5 +1,4 @@
 import os
-import sys
 
 # Try relative import first, fallback to absolute if running outside package
 try:
@@ -9,6 +8,7 @@ try:
         dedupe_tokens, faces_dir, sheets_dir, EMOTIONS, MAIN_DIRS, load_config
     )
 except ImportError:
+    import sys
     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
     from ..utils import (
         base_output_dir, character_dir, list_characters, generate_seed, age_strength, append_age,
@@ -18,15 +18,11 @@ except ImportError:
 
 
 class CharacterCreator:
-    """
-    A node for creating and managing characters in VNCCS.
-    Handles character configuration, prompt generation, and directory structure setup.
-    """
     def __init__(self):
         self.base_path = base_output_dir()
 
     @classmethod
-    def INPUT_TYPES(cls) -> dict:
+    def INPUT_TYPES(cls):
         characters = list_characters()
         characters_list = characters if characters else ["None"]
         default_character = characters_list[0]
@@ -54,60 +50,21 @@ class CharacterCreator:
                 "new_character_name": ("STRING", {"default": ""})
             }
         }
-
     RETURN_TYPES = ("STRING", "INT", "STRING", "FLOAT", "STRING", "STRING", "STRING")
     RETURN_NAMES = ("positive_prompt", "seed", "negative_prompt", "age_lora_strength", "sheets_path", "faces_path", "face_details")
     FUNCTION = "create_character"
     CATEGORY = "VNCCS"
 
-    def create_character(self, existing_character: str, background_color: str = "green",
-                       aesthetics: str = "", nsfw: bool = False, sex: str = "female", age: int = 18, race: str = "",
-                       eyes: str = "", hair: str = "", face: str = "", body: str = "", skin_color: str = "",
-                       additional_details: str = "", seed: int = 0,
-                       negative_prompt: str = "b",
-                       lora_prompt: str = "", new_character_name: str = "") -> tuple:
-        """
-        Generates character details, configures the character directory, and builds prompts.
+    def create_character(self, existing_character, background_color="green",
+                       aesthetics="", nsfw=False, sex="female", age=18, race="",
+                       eyes="", hair="", face="", body="", skin_color="",
+                       additional_details="", seed=0,
+                       negative_prompt="b",
+                       lora_prompt="", new_character_name=""):
 
-        Args:
-            existing_character: Name of an existing character to load.
-            background_color: Background color for the prompt.
-            aesthetics: Aesthetic tags for the prompt.
-            nsfw: Whether to generate NSFW content.
-            sex: Character sex ('female' or 'male').
-            age: Character age.
-            race: Character race.
-            eyes: Character eye description.
-            hair: Character hair description.
-            face: Character face description.
-            body: Character body description.
-            skin_color: Character skin color.
-            additional_details: Extra details for the prompt.
-            seed: Random seed.
-            negative_prompt: Negative prompt tags.
-            lora_prompt: LoRA trigger words.
-            new_character_name: Name for a new character (overrides existing_character).
+        character_name = existing_character
+        seed_randomize_allowed = True
 
-        Returns:
-            Tuple containing:
-            - positive_prompt (str)
-            - seed (int)
-            - negative_prompt (str)
-            - age_lora_strength (float)
-            - sheets_path (str)
-            - faces_path (str)
-            - face_details (str)
-        """
-
-        # Determine character name and seed behavior
-        if new_character_name.strip():
-            character_name = new_character_name.strip()
-            seed_randomize_allowed = True
-        else:
-            character_name = existing_character
-            seed_randomize_allowed = True
-
-        # Ensure directory structure exists
         ensure_character_structure(character_name, EMOTIONS, MAIN_DIRS)
 
         if seed_randomize_allowed:
@@ -116,62 +73,44 @@ class CharacterCreator:
         character_path = character_dir(character_name)
         sheets_path = sheets_dir(character_name)
         faces_path = faces_dir(character_name)
-
-        # Build Positive Prompt
-        prompt_parts = []
-        
-        if aesthetics:
-            prompt_parts.append(aesthetics)
-        
-        prompt_parts.append("simple background")
-        prompt_parts.append("expressionless")
+        positive_prompt = f"{aesthetics}, simple background, expressionless"
 
         if background_color:
-            prompt_parts.append(f"{background_color} background")
+            positive_prompt += f", {background_color} background"
         
-        # Join initial parts to pass to apply_sex, as it expects a string
-        current_prompt = ", ".join(prompt_parts)
-        current_prompt, gender_negative = apply_sex(sex, current_prompt, "")
-        
-        # Re-split or just append to the string? apply_sex returns a string. 
-        # Let's continue building the string or reset the list. 
-        # Since apply_sex modifies the prompt significantly, let's work with the string it returns.
-        
+        positive_prompt, gender_negative = apply_sex(sex, positive_prompt, "")
+
         if nsfw:
             nude_phrase = "(naked, nude, penis)" if sex == "male" else "(naked, nude, vagina, nipples)"
         else:
             nude_phrase = "(bare chest, wear white boxers)" if sex == "male" else "(wear white bra and panties)"
         
-        current_prompt += f", {nude_phrase}"
-        current_prompt = append_age(current_prompt, age, sex)
         
-        # Add physical attributes
-        attributes = [
-            (race, "race"),
-            (hair, "hair"),
-            (eyes, "eyes"),
-            (face, "face"),
-            (body, "body"),
-            (skin_color, "skin"),
-        ]
-
-        for value, name in attributes:
-            if value:
-                current_prompt += f", ({value} {name}:1.0)"
-
+        positive_prompt += f", {nude_phrase}"
+        positive_prompt = append_age(positive_prompt, age, sex)
+        
+        if race:
+            positive_prompt += f", ({race} race:1.0)"
+        if hair:
+            positive_prompt += f", ({hair} hair:1.0)"
+        if eyes:
+            positive_prompt += f", ({eyes} eyes:1.0)"
+        if face:
+            positive_prompt += f", ({face} face:1.0)"
+        if body:
+            positive_prompt += f", ({body} body:1.0)"
+        if skin_color:
+            positive_prompt += f", ({skin_color} skin:1.0)"
         if additional_details:
-            current_prompt += f", ({additional_details})"
-        
+            positive_prompt += f", ({additional_details})"
         if lora_prompt:
-            current_prompt += f", {lora_prompt}"
+            positive_prompt += f", {lora_prompt}"
 
-        positive_prompt = current_prompt
         
         age_lora_strength = age_strength(age)
 
         final_negative_prompt = dedupe_tokens(f"{negative_prompt},{gender_negative}")
 
-        # Load or Create Config
         config = load_config(character_name) or {
             "character_info": {},
             "folder_structure": {
