@@ -100,6 +100,7 @@ class VNCCS_QWEN_Encoder:
                 "weight3": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
                 "vl_size": ("INT", {"default": 384, "min": 256, "max": 1024, "step": 8}),
                 "instruction": ("STRING", {"multiline": True, "default": "Describe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate."}),
+                "qwen_2511": ("BOOLEAN", {"default": True}),
             }
         }
 
@@ -119,6 +120,7 @@ class VNCCS_QWEN_Encoder:
                weight1=1.0, weight2=1.0, weight3=1.0,
                vl_size=384,
                latent_image_index=1,
+               qwen_2511=True,
                ):
         
         ref_latents = []
@@ -241,6 +243,18 @@ class VNCCS_QWEN_Encoder:
                 
         tokens = clip.tokenize(image_prompt + prompt, images=vl_images, llama_template=llama_template)
         conditioning = clip.encode_from_tokens_scheduled(tokens)
+
+        # If QWEN 2511 checkbox enabled, modify conditioning to include
+        # reference_latents_method = "index_timestep_zero" by default.
+        # Use node_helpers.conditioning_set_values to attach the value.
+        try:
+            if qwen_2511:
+                # prefer explicit method name; handle possible ux/uso variants
+                method = "index_timestep_zero"
+                conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents_method": method})
+        except Exception:
+            # best-effort: if node_helpers not available or fails, continue with unmodified conditioning
+            pass
         
         conditioning_full_ref = conditioning
         if len(ref_latents) > 0:

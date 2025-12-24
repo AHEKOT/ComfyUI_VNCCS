@@ -186,6 +186,7 @@ class VNCCS_QWEN_Detailer:
                 "instruction": ("STRING", {"multiline": True, "default": "Describe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate."}),
                 "inpaint_mode": ("BOOLEAN", {"default": False}),
                 "inpaint_prompt": ("STRING", {"multiline": True, "default": "[!!!IMPORTANT!!!] Inpaint mode: draw only inside black box."}),
+                "qwen_2511": ("BOOLEAN", {"default": True}),
             }
         }
 
@@ -200,7 +201,7 @@ class VNCCS_QWEN_Detailer:
                 feather=5, steps=20, cfg=8.0, seed=0, sampler_name="euler", scheduler="normal",
                 denoise=0.5, tiled_vae_decode=False, tile_size=512, controlnet_image=None, target_size=1024,
                 upscale_method="lanczos", crop_method="center",
-                instruction="", inpaint_mode=False, inpaint_prompt=""):
+                instruction="", inpaint_mode=False, inpaint_prompt="", qwen_2511=True):
 
         # Fixed crop_factor for bbox detection
         crop_factor = 1.0
@@ -370,6 +371,14 @@ class VNCCS_QWEN_Detailer:
             # Generate enhanced version using the model
             latent_tensor = latent["samples"] if isinstance(latent, dict) and "samples" in latent else latent
             latent_dict = {"samples": latent_tensor} if not isinstance(latent_tensor, dict) else latent_tensor
+            # Apply QWEN 2511 conditioning modification if enabled
+            try:
+                if qwen_2511:
+                    method = "index_timestep_zero"
+                    conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents_method": method})
+            except Exception:
+                pass
+
             samples = self.sample_latent(model, latent_dict, conditioning, [], steps, cfg, seed, sampler_name, scheduler, denoise)
             
             # common_ksampler returns a list, get the first (and only) latent
