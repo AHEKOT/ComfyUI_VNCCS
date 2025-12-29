@@ -1162,7 +1162,7 @@ class VNCCS_RMBG2:
                 "mask_offset": ("INT", {"default": 0, "min": -64, "max": 64, "step": 1, "tooltip": tooltips["mask_offset"]}),
                 "invert_output": ("BOOLEAN", {"default": False, "tooltip": tooltips["invert_output"]}),
                 "refine_foreground": ("BOOLEAN", {"default": False, "tooltip": tooltips["refine_foreground"]}),
-                "background": (["Alpha", "Color"], {"default": "Alpha", "tooltip": tooltips["background"]}),
+                "background": (["Alpha", "Green", "Blue"], {"default": "Alpha", "tooltip": tooltips["background"]}),
             }
         }
 
@@ -1232,7 +1232,9 @@ class VNCCS_RMBG2:
                     r, g, b, _ = orig_rgba_local.split()
                     foreground_local = Image.merge('RGBA', (r, g, b, mask_img_local))
                 
-                if params["background"] == "Color":
+                if params["background"] == "Green":
+                    # Use fixed bright green background when Green option is selected
+                    background_color = "#00FF00"
                     def hex_to_rgba(hex_color):
                         hex_color = hex_color.lstrip('#')
                         if len(hex_color) == 6:
@@ -1243,8 +1245,23 @@ class VNCCS_RMBG2:
                         else:
                             raise ValueError("Invalid color format")
                         return (r, g, b, a)
-                    # Use fixed bright green background when Color option is selected
-                    background_color = "#00FF00"
+                    rgba = hex_to_rgba(background_color)
+                    bg_image = Image.new('RGBA', orig_image_local.size, rgba)
+                    composite_image = Image.alpha_composite(bg_image, foreground_local)
+                    processed_images.append(pil2tensor(composite_image.convert("RGB")))
+                elif params["background"] == "Blue":
+                    # Use solid blue background when Blue option is selected
+                    background_color = "#0000FF"
+                    def hex_to_rgba(hex_color):
+                        hex_color = hex_color.lstrip('#')
+                        if len(hex_color) == 6:
+                            r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+                            a = 255
+                        elif len(hex_color) == 8:
+                            r, g, b, a = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16), int(hex_color[6:8], 16)
+                        else:
+                            raise ValueError("Invalid color format")
+                        return (r, g, b, a)
                     rgba = hex_to_rgba(background_color)
                     bg_image = Image.new('RGBA', orig_image_local.size, rgba)
                     composite_image = Image.alpha_composite(bg_image, foreground_local)
