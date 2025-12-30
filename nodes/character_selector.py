@@ -225,6 +225,8 @@ class CharacterAssetSelectorQWEN:
     RETURN_NAMES = ("face_details", "face_path", "sheet_path", "positive_prompt", "seed", "negative_prompt", "character_sheet", "costume_prompt")
     CATEGORY = "VNCCS"
     FUNCTION = "select"
+    # costume_prompt is returned as a single multiline STRING with each item on its own line
+    OUTPUT_IS_LIST = (False, False, False, False, False, False, False, False)
 
     def load_character_config(self, character):
         self.character_config = load_config(character)
@@ -348,19 +350,19 @@ class CharacterAssetSelectorQWEN:
             sheet_image_tensor = torch.zeros((1, 1, 1, 3), dtype=torch.float32)
         
         costume_items = []
-        if head:
-            costume_items.append(f"{head} on the head")
-        if face:
-            costume_items.append(f", {face} on the face")
-        if top:
-            costume_items.append(f", {top}")
-        if bottom:
-            costume_items.append(f", {bottom}")
-        if shoes:
-            costume_items.append(f", {shoes} on the feet")
-        costume_prompt = ", ".join(costume_items)
-            
-        return face_details, face_path, sheet_path, positive_prompt, seed, negative_prompt, sheet_image_tensor, costume_prompt
+        if face and face.strip():
+            costume_items.append(face.strip())
+        if head and head.strip():
+            costume_items.append(head.strip())
+        if top and top.strip():
+            costume_items.append(top.strip())
+        if bottom and bottom.strip():
+            costume_items.append(bottom.strip())
+        if shoes and shoes.strip():
+            costume_items.append(shoes.strip())
+
+        costume_items = "\n".join(costume_items)
+        return face_details, face_path, sheet_path, positive_prompt, seed, negative_prompt, sheet_image_tensor, costume_items
 
 
 NODE_CLASS_MAPPINGS = {

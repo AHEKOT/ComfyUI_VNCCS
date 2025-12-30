@@ -3,4 +3,3 @@ numpy
 Pillow
 opencv-python
 huggingface_hub
-timm

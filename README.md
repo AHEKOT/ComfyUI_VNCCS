@@ -2,7 +2,7 @@
 ---
 # VNCCS - Visual Novel Character Creation Suite
 
-VNCCS is a comprehensive tool for creating character sprites for visual novels. It allows you to create unique characters with a consistent appearance across all images, which was previously a challenging task when using neural networks.
+VNCCS is NOT just another workflow for creating consistent characters, it is a complete pipeline for creating sprites for any purpose. It allows you to create unique characters with a consistent appearance across all images, organise them, manage emotions, clothing, poses, and conduct a full cycle of work with characters.
 
 ## Description
 
@@ -13,12 +13,13 @@ Many people want to use neural networks to create graphics, but making a unique 
 The character creation process is divided into 5 stages:
 
 1. **Create a base character**
-2. **Create clothing sets**
-3. **Create emotion sets**
-4. **Generate finished sprites**
-5. **Create a dataset for LoRA training** (optional)
+2. **Clone any existing character**
+3. **Create clothing sets**
+4. **Create emotion sets**
+5. **Generate finished sprites**
+6. **Create a dataset for LoRA training** (optional)
 ---
-**If you found my project useful, you can help me buy a new graphics card! With it, I will be able to add animation and bring static graphics to life!**
+## **If you find my project useful, please consider supporting it! I work on it completely on my own, and your support will allow me to continue maintaining it and adding even more cool features!**
 
 [![Buy Me a Coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20rtx%203090&emoji=☕&slug=MIUProject&button_colour=FFDD00&font_colour=000000&font_family=Comic&outline_colour=000000&coffee_colour=ffffff)](https://www.buymeacoffee.com/MIUProject)
 
@@ -44,6 +45,7 @@ VNCCS requires the following models in ComfyUI. Make sure they are installed in 
 - `DMD2/dmd2_sdxl_4step_lora_fp16.safetensors`
 - `vn_character_sheet.safetensors`
 - `IL/mimimeter.safetensors`
+- `QWEN/all_loras_from_here`
 
 ### ControlNet Models (`models/controlnet/`)
 - `SDXL/AnytestV4.safetensors`
@@ -65,7 +67,41 @@ All models must be placed in the standard ComfyUI directories according to their
 
 You can download them from my huggingface: https://huggingface.co/MIUProject/VNCCS/tree/main
 
-## Usage
+# Usage 
+![Welcome](images/v2/v2_welcome.png)
+
+### Step 1: Create a Base Character
+
+Open the workflow `VN_Step1_QWEN_CharSheetGenerator`.
+![Welcome](images/v2/v2_step1.png)
+#### VNCCS Character Creator
+- First, write your character's name and click the ‘Create New Character’ button. Without this, the magic won't happen.
+- After that, describe your character's appearance in the appropriate fields.
+- SDXL is still used to generate characters. A huge number of different Loras have been released for it, and the image quality is still much higher than that of all other models.
+- Don't worry, if you don't want to use SDXL, you can use the following workflow. We'll get to that in a moment.
+
+### New Poser Node
+![Welcome](images/v2/v2_poser.png)
+#### VNCCS Pose Generator
+To begin with, you can use the default poses, but don't be afraid to experiment!
+- At the moment, the default poses are not fully optimised and may cause problems. We will fix this in future updates, and you can help us by sharing your cool presets on our Discord server!
+
+### Step 1.1 Clone any character
+![Welcome](images/v2/V2_clone.png)
+- Try to use full body images. It can work with any images, but would "imagine" missing parst, so it can impact results.
+- Suit for anime and real photos
+![Welcome](images/v2/Promo%20Ayase.png)
+### Step 2 ClothesGenerator
+Open the workflow `VN_Step2_QWEN_ClothesGenerator`.
+![Welcome](images/v2/v2_clothes.png)
+- Clothes helper lora are still in beta, so it can miss some "body parts" sizes. If this happens - just try again with different seeds.
+
+### Steps 3, 4 and 5 are not changed, you can follow old guide below.
+
+### Be creative! Now everything is possible!
+![Welcome](images/v2/v2_clone_list.png)
+
+# Usage (Old SDXL WorkFlows)
 
 Always use the latest versions of workflows!
 
@@ -75,7 +111,7 @@ Open the workflow `VN_Step1_CharSheetGenerator`.
 
 #### Character Sheet
 ![Character Sheet Node](images/charsheetnode.png)
-Default character sheet lay is in `character_pemplate` folder
+Default character sheet lay is in `character_template` folder
 
 ---
 #### Settings

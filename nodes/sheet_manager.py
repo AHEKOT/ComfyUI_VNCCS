@@ -1162,7 +1162,7 @@ class VNCCS_RMBG2:
                 "mask_offset": ("INT", {"default": 0, "min": -64, "max": 64, "step": 1, "tooltip": tooltips["mask_offset"]}),
                 "invert_output": ("BOOLEAN", {"default": False, "tooltip": tooltips["invert_output"]}),
                 "refine_foreground": ("BOOLEAN", {"default": False, "tooltip": tooltips["refine_foreground"]}),
-                "background": (["Alpha", "Color"], {"default": "Alpha", "tooltip": tooltips["background"]}),
+                "background": (["Alpha", "Green", "Blue"], {"default": "Alpha", "tooltip": tooltips["background"]}),
             }
         }
 
@@ -1232,7 +1232,9 @@ class VNCCS_RMBG2:
                     r, g, b, _ = orig_rgba_local.split()
                     foreground_local = Image.merge('RGBA', (r, g, b, mask_img_local))
                 
-                if params["background"] == "Color":
+                if params["background"] == "Green":
+                    # Use fixed bright green background when Green option is selected
+                    background_color = "#00FF00"
                     def hex_to_rgba(hex_color):
                         hex_color = hex_color.lstrip('#')
                         if len(hex_color) == 6:
@@ -1243,8 +1245,23 @@ class VNCCS_RMBG2:
                         else:
                             raise ValueError("Invalid color format")
                         return (r, g, b, a)
-                    # Use fixed bright green background when Color option is selected
-                    background_color = "#00FF00"
+                    rgba = hex_to_rgba(background_color)
+                    bg_image = Image.new('RGBA', orig_image_local.size, rgba)
+                    composite_image = Image.alpha_composite(bg_image, foreground_local)
+                    processed_images.append(pil2tensor(composite_image.convert("RGB")))
+                elif params["background"] == "Blue":
+                    # Use solid blue background when Blue option is selected
+                    background_color = "#0000FF"
+                    def hex_to_rgba(hex_color):
+                        hex_color = hex_color.lstrip('#')
+                        if len(hex_color) == 6:
+                            r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+                            a = 255
+                        elif len(hex_color) == 8:
+                            r, g, b, a = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16), int(hex_color[6:8], 16)
+                        else:
+                            raise ValueError("Invalid color format")
+                        return (r, g, b, a)
                     rgba = hex_to_rgba(background_color)
                     bg_image = Image.new('RGBA', orig_image_local.size, rgba)
                     composite_image = Image.alpha_composite(bg_image, foreground_local)
@@ -1284,6 +1301,203 @@ class VNCCS_RMBG2:
             empty_mask_image = empty_mask.reshape((-1, 1, empty_mask.shape[-2], empty_mask.shape[-1])).movedim(1, -1).expand(-1, -1, -1, 3)
             return (image, empty_mask, empty_mask_image)
 
+class VNCCS_QuadSplitter:
+    """Split a square character sheet into 4 equal square quadrants (2x2) and return them as a list.
+
+    Accepts a single IMAGE (H,W,C) or a batched IMAGE ([B,H,W,C]) or a list containing one IMAGE tensor.
+    If the incoming image is not square it will be center-cropped to the largest possible square.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "mode": (["split", "compose"], {"default": "split"}),
+            "image": ("IMAGE",),
+        }}
+
+    RETURN_TYPES = ("IMAGE",)
+    OUTPUT_IS_LIST = (True,)
+    RETURN_NAMES = ("images",)
+    CATEGORY = "VNCCS"
+    FUNCTION = "process"
+    INPUT_IS_LIST = True
+
+    def _ensure_tensor(self, image):
+        # Accept list inputs and batched inputs, return single image tensor H,W,C
+        if isinstance(image, list):
+            image = image[0]
+        if len(image.shape) == 4:
+            # If batch dimension present and batch==1, squeeze; otherwise take first element
+            if image.shape[0] == 1:
+                image = image[0]
+            else:
+                image = image[0]
+        return image
+
+    def _normalize_image_list(self, images):
+        """Normalize various incoming shapes into a flat list of single-image HWC tensors."""
+        out = []
+        # If a single tensor with batch dim
+        if isinstance(images, torch.Tensor):
+            if len(images.shape) == 4:
+                for i in range(images.shape[0]):
+                    out.append(images[i])
+                return out
+            else:
+                return [images]
+
+        # If it's a list-like object
+        if isinstance(images, list):
+            for item in images:
+                # nested list
+                if isinstance(item, list):
+                    for sub in item:
+                        if isinstance(sub, torch.Tensor) and len(sub.shape) == 4 and sub.shape[0] == 1:
+                            out.append(sub[0])
+                        elif isinstance(sub, torch.Tensor):
+                            out.append(sub)
+                        else:
+                            out.append(sub)
+                elif isinstance(item, torch.Tensor):
+                    if len(item.shape) == 4 and item.shape[0] > 1:
+                        for i in range(item.shape[0]):
+                            out.append(item[i])
+                    elif len(item.shape) == 4 and item.shape[0] == 1:
+                        out.append(item[0])
+                    else:
+                        out.append(item)
+                else:
+                    out.append(item)
+
+        return out
+
+    def _center_crop_square(self, img: torch.Tensor) -> torch.Tensor:
+        h, w, c = img.shape
+        if h == w:
+            return img
+        size = min(h, w)
+        y0 = (h - size) // 2
+        x0 = (w - size) // 2
+        return img[y0:y0 + size, x0:x0 + size, :]
+
+    def split(self, image):
+        img = self._ensure_tensor(image)
+        if img is None:
+            raise ValueError("No image provided to VNCCS_QuadSplitter")
+
+        img = img.clone()
+        # Ensure float in [0,1] for consistency (do not modify dtype if already float)
+        if not torch.is_floating_point(img):
+            img = img.float()
+            if img.max() > 1.5:
+                img = img / 255.0
+
+        img = self._center_crop_square(img)
+        size, _, _ = img.shape
+        half = size // 2
+
+        quads = []
+        # Top-left
+        q1 = img[0:half, 0:half, :]
+        # Top-right
+        q2 = img[0:half, half:half * 2, :]
+        # Bottom-left
+        q3 = img[half:half * 2, 0:half, :]
+        # Bottom-right
+        q4 = img[half:half * 2, half:half * 2, :]
+
+        quads = [q1, q2, q3, q4]
+
+        # Return as a list of single-item batches for compatibility with the node system
+        return ([q.unsqueeze(0) for q in quads],)
+
+    def process(self, mode, image):
+        """Dispatcher that accepts keyword args from ComfyUI and routes to split or compose.
+
+        mode: 'split' or 'compose' (may be a list-wrapped value)
+        image: image tensor or list as provided by ComfyUI
+        """
+        # normalize mode (support list inputs)
+        if isinstance(mode, list):
+            mode_val = mode[0]
+        else:
+            mode_val = mode
+
+        if mode_val not in ("split", "compose"):
+            raise ValueError(f"Unknown mode for VNCCS_QuadSplitter: {mode_val}")
+
+        if mode_val == "split":
+            return self.split(image)
+        else:
+            return self.compose(image)
+
+    def compose(self, images):
+        """Compose 4 square images (order: top-left, top-right, bottom-left, bottom-right)
+        into a single square sheet (2x2 grid). Accepts a list of 4 IMAGE tensors or a batch.
+        """
+        # Normalize inputs: accept list of tensors, batched tensor, or single tensor
+        imgs = images
+        if isinstance(imgs, list):
+            imgs = imgs
+        elif isinstance(imgs, torch.Tensor) and len(imgs.shape) == 4:
+            # batch dimension present
+            # if batch has exactly 4 elements, use them; if 1 and each element contains 4 via list, try to unwrap
+            if imgs.shape[0] == 4:
+                imgs = [imgs[i] for i in range(4)]
+            elif imgs.shape[0] == 1:
+                # single batch, maybe contains the 4 images as channels? unsupported
+                imgs = [imgs[0]]
+            else:
+                imgs = [imgs[i] for i in range(min(4, imgs.shape[0]))]
+
+        if not isinstance(imgs, list):
+            raise ValueError("Compose expects a list or batch of images")
+
+        imgs = self._normalize_image_list(imgs)
+        if len(imgs) < 4:
+            raise ValueError("Compose expects at least 4 images (top-left, top-right, bottom-left, bottom-right)")
+
+        # Ensure each image is a single image tensor H,W,C
+        norm = []
+        for im in imgs[:4]:
+            if isinstance(im, list):
+                im = im[0]
+            if len(im.shape) == 4 and im.shape[0] == 1:
+                im = im[0]
+            # ensure float [0,1]
+            if not torch.is_floating_point(im):
+                im = im.float()
+                if im.max() > 1.5:
+                    im = im / 255.0
+            norm.append(im)
+
+        # Verify squareness and uniform size; if not, center-crop to the min size
+        sizes = [min(im.shape[0], im.shape[1]) for im in norm]
+        target = min(sizes)
+        cropped = []
+        for im in norm:
+            h, w, _ = im.shape
+            if h != w or h != target:
+                # center-crop to target
+                y0 = (h - target) // 2
+                x0 = (w - target) // 2
+                imc = im[y0:y0 + target, x0:x0 + target, :]
+            else:
+                imc = im
+            cropped.append(imc)
+
+        # Compose into big square of size target*2
+        big = torch.zeros((target * 2, target * 2, cropped[0].shape[2]), dtype=cropped[0].dtype, device=cropped[0].device)
+        # top-left
+        big[0:target, 0:target, :] = cropped[0]
+        # top-right
+        big[0:target, target:target * 2, :] = cropped[1]
+        # bottom-left
+        big[target:target * 2, 0:target, :] = cropped[2]
+        # bottom-right
+        big[target:target * 2, target:target * 2, :] = cropped[3]
+
+        return ([big.unsqueeze(0)],)
 
 # Register VNCCS RMBG2
 NODE_CLASS_MAPPINGS["VNCCS_RMBG2"] = VNCCS_RMBG2
@@ -1303,3 +1517,8 @@ NODE_CATEGORY_MAPPINGS["VNCCS_Resize"] = "VNCCS"
 NODE_CLASS_MAPPINGS["VNCCS_ColorFix"] = VNCCS_ColorFix
 NODE_DISPLAY_NAME_MAPPINGS["VNCCS_ColorFix"] = "VNCCS Color Fix"
 NODE_CATEGORY_MAPPINGS["VNCCS_ColorFix"] = "VNCCS"
+
+# Register VNCCS Quad Splitter
+NODE_CLASS_MAPPINGS["VNCCS_QuadSplitter"] = VNCCS_QuadSplitter
+NODE_DISPLAY_NAME_MAPPINGS["VNCCS_QuadSplitter"] = "VNCCS Quad Splitter"
+NODE_CATEGORY_MAPPINGS["VNCCS_QuadSplitter"] = "VNCCS"

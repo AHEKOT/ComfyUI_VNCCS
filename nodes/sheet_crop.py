@@ -1,7 +1,6 @@
 import torch
 import numpy as np
 import cv2
-from PIL import Image
 
 
 class CharacterSheetCropper:
@@ -12,20 +11,20 @@ class CharacterSheetCropper:
                 "image": ("IMAGE",),
                 "mask": ("MASK",),
                 "min_size": ("INT", {"default": 64, "min": 1, "max": 1024, "step": 1}),
-                "target_height": ("INT", {"default": 3072, "min": 64, "max": 8192, "step": 64}),
             }
         }
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("cropped_images",)
+    RETURN_TYPES = ("IMAGE", "MASK")
+    RETURN_NAMES = ("cropped_images", "cropped_masks")
     FUNCTION = "crop_character_sheet"
     CATEGORY = "VNCCS/Util"
-    OUTPUT_IS_LIST = (True,)
+    OUTPUT_IS_LIST = (True, True)
 
-    def crop_character_sheet(self, image: torch.Tensor, mask: torch.Tensor, min_size: int = 64, target_height: int = 3072):
+    def crop_character_sheet(self, image: torch.Tensor, mask: torch.Tensor, min_size: int = 64):
 
         batch_size = image.shape[0]
         all_cropped_images = []
+        all_cropped_masks = []
 
         for i in range(batch_size):
             img_item = image[i]
@@ -48,20 +47,6 @@ class CharacterSheetCropper:
 
             # Each contour should correspond to a separate character/object
             contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-            # Sort contours by grid position (2 rows x 6 cols) for deterministic sprite numbering
-            # Assume sheet is divided into 2 rows and 6 columns
-            sheet_h, sheet_w = img_h_orig, img_w_orig
-            part_h = sheet_h // 2
-            part_w = sheet_w // 6
-            def contour_key(c):
-                x, y, w, h = cv2.boundingRect(c)
-                center_y = y + h // 2
-                center_x = x + w // 2
-                row = min(1, center_y // part_h)  # 0 or 1
-                col = min(5, center_x // part_w)  # 0 to 5
-                return row * 6 + col
-            contours = sorted(contours, key=contour_key)
 
             if not contours:
                 print(f"[CharacterSheetCropper] Info: No contours found in mask for item {i}.")
@@ -106,23 +91,16 @@ class CharacterSheetCropper:
 
                 final_cropped_image_np = np.concatenate((rgb_part, alpha_part), axis=-1)
 
-                # Normalize to target height, maintaining aspect ratio
-                h, w = final_cropped_image_np.shape[:2]
-                if h > 0 and target_height > 0:
-                    aspect_ratio = w / h
-                    new_w = int(target_height * aspect_ratio)
-                    if new_w > 0:
-                        pil_img = Image.fromarray((final_cropped_image_np * 255).astype(np.uint8), mode='RGBA')
-                        pil_img = pil_img.resize((new_w, target_height), Image.LANCZOS)
-                        final_cropped_image_np = np.array(pil_img).astype(np.float32) / 255.0
-
                 img_out_tensor = torch.from_numpy(final_cropped_image_np.astype(np.float32)).unsqueeze(0)
                 all_cropped_images.append(img_out_tensor)
 
-        if not all_cropped_images and batch_size > 0:
-            print("[CharacterSheetCropper] Warning: No valid character crops were generated for any item in the batch. Returning empty list.")
+                mask_out_tensor = torch.from_numpy(cropped_mask_np_slice.astype(np.float32)).unsqueeze(0)
+                all_cropped_masks.append(mask_out_tensor)
 
-        return (all_cropped_images,)
+        if not all_cropped_images and batch_size > 0:
+            print("[CharacterSheetCropper] Warning: No valid character crops were generated for any item in the batch. Returning empty lists.")
+
+        return (all_cropped_images, all_cropped_masks)
 
 
 NODE_CLASS_MAPPINGS = {
