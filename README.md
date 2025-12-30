@@ -96,6 +96,8 @@ Open the workflow `VN_Step2_QWEN_ClothesGenerator`.
 ![Welcome](images/v2/v2_clothes.png)
 - Clothes helper lora are still in beta, so it can miss some "body parts" sizes. If this happens - just try again with different seeds.
 
+### Steps 3, 4 and 5 are not changed, you can follow old guide below.
+
 ### Be creative! Now everything is possible!
 ![Welcome](images/v2/v2_clone_list.png)
 
