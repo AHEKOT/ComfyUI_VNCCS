@@ -264,10 +264,14 @@ class EmotionGenerator:
             
             config_seed = info.get("seed", 0)
             seed = generate_seed(config_seed)
+            base_negative_prompt = negative_prompt
+            positive_prompt = aesthetics # Initialize here to avoid UnboundLocalError
         else:
             print(f"[EmotionGenerator] Character '{character}' not found") 
             info = {}
             aesthetics = background_color = sex = race = eyes = hair = face_features = body = skin_color = additional_details = negative_prompt = lora_prompt = ""
+            positive_prompt = ""
+            base_negative_prompt = ""
             age = 18
             seed = generate_seed(0)
         
@@ -344,7 +348,7 @@ class EmotionGenerator:
                 # Original utility calls
                 positive_prompt_after_sex, gender_negative = apply_sex(sex, positive_prompt, "")
                 positive_prompt = positive_prompt_after_sex
-                negative_prompt += f", {gender_negative}"
+                negative_prompt = f"{base_negative_prompt}, {gender_negative}"
 
                 positive_prompt = append_age(positive_prompt, age, sex)
                 
@@ -353,20 +357,8 @@ class EmotionGenerator:
 
                 # Original logic for emotion_text: using the description now, as requested.
                 face_details = build_face_details(info)
-                emotion_text = f"({emotion_description}), {face_details}" # Adapted to use description
+                emotion_text = f"({emotion_key}, {emotion_description}), {face_details}" # Adapted to use description
                 
-                if head:
-                    emotion_text += f", (wear {head} on head:1.0)"
-                if face_wear:
-                    emotion_text += f", (wear {face_wear} on face:1.0)"
-                if top:
-                    emotion_text += f", (wear {top} on top:1.0)"
-                if bottom:
-                    emotion_text += f", (wear {bottom} on bottom:1.0)"
-                if shoes:
-                    emotion_text += f", (wear {shoes} on feet:1.0)"
-                # --- END RESTORED PROMPT BUILDER LOGIC ---
-
                 if mask_tensor is None:
                     h, w = img_tensor.shape[2], img_tensor.shape[3]
                     mask_tensor = torch.ones((1, h, w), dtype=torch.float32)
