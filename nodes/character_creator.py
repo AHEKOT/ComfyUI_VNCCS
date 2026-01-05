@@ -59,16 +59,12 @@ class CharacterCreator:
                        aesthetics="", nsfw=False, sex="female", age=18, race="",
                        eyes="", hair="", face="", body="", skin_color="",
                        additional_details="", seed=0,
-                       negative_prompt="b",
+                       negative_prompt="",
                        lora_prompt="", new_character_name=""):
 
         character_name = existing_character
-        seed_randomize_allowed = True
 
         ensure_character_structure(character_name, EMOTIONS, MAIN_DIRS)
-
-        if seed_randomize_allowed:
-            seed = generate_seed(seed)
 
         character_path = character_dir(character_name)
         sheets_path = sheets_dir(character_name)
