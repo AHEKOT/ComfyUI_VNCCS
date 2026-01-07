@@ -166,45 +166,9 @@ class VNCCS_QWEN_Encoder:
             if image is not None:
                     samples = image.movedim(-1, 1)
                     current_total = (samples.shape[3] * samples.shape[2])
-                    total = int(target_size * target_size)
-                    scale_by = math.sqrt(total / current_total)
-                    if crop_method == "pad":
-                        crop = "center"
-                        # pad image to upper size
-                        scaled_width = round(samples.shape[3] * scale_by)
-                        scaled_height = round(samples.shape[2] * scale_by)
-                        canvas_width = math.ceil(samples.shape[3] * scale_by / 8.0) * 8
-                        canvas_height = math.ceil(samples.shape[2] * scale_by / 8.0) * 8
-                        
-                        # pad image to canvas size
-                        canvas = torch.zeros(
-                            (samples.shape[0], samples.shape[1], canvas_height, canvas_width),
-                            dtype=samples.dtype,
-                            device=samples.device
-                        )
-                        resized_samples = comfy.utils.common_upscale(samples, scaled_width, scaled_height, upscale_method, crop)
-                        resized_width = resized_samples.shape[3]
-                        resized_height = resized_samples.shape[2]
-                        
-                        canvas[:, :, :resized_height, :resized_width] = resized_samples
-                        pad_info = {
-                            "x": 0,
-                            "y": 0,
-                            "width": canvas_width - resized_width,
-                            "height": canvas_height - resized_height,
-                            "scale_by": 1 / scale_by
-                        }
-                        s = canvas
-                    else:
-                        width = round(samples.shape[3] * scale_by / 8.0) * 8
-                        height = round(samples.shape[2] * scale_by / 8.0) * 8
-                        crop = crop_method
-                        s = comfy.utils.common_upscale(samples, width, height, upscale_method, crop)
-                    image = s.movedim(1, -1)
-                    ref_latents.append(vae.encode(image[:, :, :, :3]))
                     
+                    # VL processing (always resize to target_vl_size for vision-language consistency)
                     if vl_resize:
-                        # print("vl_resize")
                         total = int(vl_size * vl_size)
                         scale_by = math.sqrt(total / current_total)
                         
@@ -238,7 +202,20 @@ class VNCCS_QWEN_Encoder:
                         vl_images.append(image)
                     # handle non resize vl images
                     image_prompt += "{}: <|vision_start|><|image_pad|><|vision_end|>".format(names[i])
-                    vl_images.append(image)
+                    if vl_resize:
+                        pass  # Already appended above
+                    else:
+                        vl_images.append(image.movedim(1, -1))
+                    
+                    # VAE encode - use original resolution without upscaling (only round to multiple of 8)
+                    # This prevents image drift, shifting, magnification issues
+                    if vae is not None:
+                        width = (samples.shape[3] + 7) // 8 * 8
+                        height = (samples.shape[2] + 7) // 8 * 8
+                        crop = crop_method
+                        s = comfy.utils.common_upscale(samples, width, height, upscale_method, crop)
+                        image = s.movedim(1, -1)
+                        ref_latents.append(vae.encode(image[:, :, :, :3]))
                     
                 
         tokens = clip.tokenize(image_prompt + prompt, images=vl_images, llama_template=llama_template)

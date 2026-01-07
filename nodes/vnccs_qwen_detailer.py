@@ -60,7 +60,59 @@ except Exception:
     comfy = _ComfyUtilsFallback()
 
 import torch
+import numpy as np
+from PIL import Image
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 from nodes import MAX_RESOLUTION
+
+def _tensor_resize(image, width, height, method="lanczos"):
+    """
+    Resize image tensor [B, H, W, C] to new dimensions.
+    If method is 'lanczos', uses PIL for high-quality downsampling (prevents compression artifacts).
+    """
+    if image.shape[1] == height and image.shape[2] == width:
+        return image
+        
+    if method == "lanczos":
+        import torch
+        import numpy as np
+        from PIL import Image
+        
+        # Ensure image is in [B, H, W, C]
+        if len(image.shape) == 3:
+            image = image.unsqueeze(0)
+            
+        res_images = []
+        for img in image:
+            # Convert to PIL
+            img_np = (img.cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
+            pil_img = Image.fromarray(img_np)
+            
+            # Resize
+            scaled_pil = pil_img.resize((width, height), resample=Image.Resampling.LANCZOS)
+            
+            # Convert back to tensor
+            scaled_tensor = torch.from_numpy(np.array(scaled_pil).astype(np.float32) / 255.0)
+            res_images.append(scaled_tensor)
+            
+        return torch.stack(res_images, dim=0).to(image.device)
+    else:
+        # Use PyTorch interpolate for other methods (bicubic, area, etc)
+        import torch.nn.functional as F
+        if len(image.shape) == 3:
+            image = image.unsqueeze(0)
+            
+        # Convert to [B, C, H, W] for interpolate
+        image_bchw = image.permute(0, 3, 1, 2)
+        
+        kwargs = {"size": (height, width), "mode": method}
+        if method in ["linear", "bilinear", "bicubic", "trilinear"]:
+            kwargs["align_corners"] = False
+            
+        scaled = F.interpolate(image_bchw, **kwargs)
+        return scaled.permute(0, 2, 3, 1)  # Back to [B, H, W, C]
 
 try:
     import comfy.samplers
@@ -72,85 +124,309 @@ except Exception:
     SCHEDULER_NAMES = ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform"]
 
 
+def _make_square_crop(image_tensor, crop_region, full_image_shape):
+    """
+    Convert rectangular crop into square by extending to sides with available space.
+    If not enough space, pad with black pixels and track padding info.
+    
+    Args:
+        image_tensor: [B, H, W, C] full image tensor
+        crop_region: (x1, y1, x2, y2) in image coordinates
+        full_image_shape: (H, W) of full image
+    
+    Returns:
+        square_crop: [1, S, S, C] square crop at 1536x1536
+        square_info: dict with metadata for later unpadding
+            - orig_size: (h, w) original crop size
+            - square_size: S (square side)
+            - pad_top, pad_bottom, pad_left, pad_right: pixels added
+            - was_padded: bool, if True need to crop black pixels after generation
+    """
+    import torch
+    
+    x1, y1, x2, y2 = crop_region
+    crop_h = y2 - y1
+    crop_w = x2 - x1
+    full_h, full_w = full_image_shape
+    
+    # Make square by extending to the longer side
+    square_size = max(crop_h, crop_w)
+    
+    # Calculate how much space we need on each side
+    pad_h = square_size - crop_h
+    pad_w = square_size - crop_w
+    
+    # Try to balance padding: add to sides with available space
+    pad_top = pad_h // 2
+    pad_bottom = pad_h - pad_top
+    pad_left = pad_w // 2
+    pad_right = pad_w - pad_left
+    
+    # Adjust if we're at image boundaries
+    if y1 - pad_top < 0:
+        pad_bottom += pad_top - y1
+        pad_top = y1
+    if y2 + pad_bottom > full_h:
+        pad_top += (y2 + pad_bottom) - full_h
+        pad_bottom = full_h - y2
+    
+    if x1 - pad_left < 0:
+        pad_right += pad_left - x1
+        pad_left = x1
+    if x2 + pad_right > full_w:
+        pad_left += (x2 + pad_right) - full_w
+        pad_right = full_w - x2
+    
+    # Extract square region from image
+    square_y1 = max(0, y1 - pad_top)
+    square_y2 = min(full_h, y2 + pad_bottom)
+    square_x1 = max(0, x1 - pad_left)
+    square_x2 = min(full_w, x2 + pad_right)
+    
+    # Crop from image
+    square_crop = _tensor_crop(image_tensor, (square_x1, square_y1, square_x2, square_y2))
+    
+    # Calculate actual padding that was applied
+    actual_pad_top = y1 - square_y1
+    actual_pad_left = x1 - square_x1
+    actual_pad_bottom = square_y2 - y2
+    actual_pad_right = square_x2 - x2
+    actual_square_size = square_y2 - square_y1
+    
+    # If still not square, pad with black
+    if actual_square_size != square_x2 - square_x1:
+        # This shouldn't happen with current logic, but be safe
+        target_size = max(square_y2 - square_y1, square_x2 - square_x1)
+        h_current, w_current = actual_square_size, square_x2 - square_x1
+        pad_h_final = target_size - h_current
+        pad_w_final = target_size - w_current
+        
+        if pad_h_final > 0 or pad_w_final > 0:
+            padded = torch.nn.functional.pad(
+                square_crop.permute(0, 3, 1, 2),
+                (0, pad_w_final, 0, pad_h_final),
+                mode='constant',
+                value=0
+            ).permute(0, 2, 3, 1)
+            square_crop = padded
+    
+    # Resize to 1536x1536 for QWEN, but use smaller size for small crops to avoid excessive resizing artifacts
+    import torch.nn.functional as F
+    
+    # Adaptive target size: if crop is small, use smaller target to avoid 30x+ zoom artifacts
+    # For crops < 256px: use 512 (2x zoom max)
+    # For crops < 512px: use 768 (1.5x zoom max)
+    # For crops >= 512px: use 1536 (3x zoom max)
+    if actual_square_size < 256:
+        target_qwen_size = 512
+    elif actual_square_size < 512:
+        target_qwen_size = 768
+    else:
+        target_qwen_size = 1536
+    
+    square_crop_resized = F.interpolate(
+        square_crop.permute(0, 3, 1, 2),
+        size=(target_qwen_size, target_qwen_size),
+        mode='bicubic',
+        align_corners=False
+    ).permute(0, 2, 3, 1)
+    
+    print(f'[VNCCS] Square crop: {crop_w}x{crop_h} → {actual_square_size}x{actual_square_size} → adaptive QWEN size {target_qwen_size}x{target_qwen_size}')
+    
+    square_info = {
+        'orig_size': (crop_h, crop_w),
+        'orig_crop_region': crop_region,
+        'square_size': actual_square_size,
+        'square_crop_region': (square_x1, square_y1, square_x2, square_y2),
+        'pad_top': actual_pad_top,
+        'pad_bottom': actual_pad_bottom,
+        'pad_left': actual_pad_left,
+        'pad_right': actual_pad_right,
+        'was_padded': actual_pad_top > 0 or actual_pad_bottom > 0 or actual_pad_left > 0 or actual_pad_right > 0,
+        'target_qwen_size': target_qwen_size  # Store for reverse transformation
+    }
+    
+    print(f'[VNCCS] Square crop: {crop_w}x{crop_h} → {actual_square_size}x{actual_square_size} (pad T:{actual_pad_top} B:{actual_pad_bottom} L:{actual_pad_left} R:{actual_pad_right})')
+    
+    return square_crop_resized, square_info
+
+
+def _unsquare_crop(square_image_resized, square_info):
+    """
+    Reverse the square crop transformation:
+    1. Resize from adaptive size (512/768/1536) back to original square size
+    2. Remove black padding if added
+    3. Return to original crop size
+    """
+    import torch
+    import torch.nn.functional as F
+    
+    # Get the QWEN target size from square_info (defaults to 1536 for backward compatibility)
+    target_qwen_size = square_info.get('target_qwen_size', 1536)
+    square_size = square_info['square_size']
+    orig_h, orig_w = square_info['orig_size']
+    
+    # Step 1: Resize from QWEN size back to square size
+    # For downscaling: use lanczos (via PIL) for high quality
+    if target_qwen_size > square_size:
+        resize_mode_1 = 'lanczos'
+    else:
+        resize_mode_1 = 'bicubic'
+    
+    square_resized = _tensor_resize(square_image_resized, square_size, square_size, method=resize_mode_1)
+    
+    # Remove padding if it was added
+    if square_info['was_padded']:
+        pad_top = square_info['pad_top']
+        pad_bottom = square_info['pad_bottom']
+        pad_left = square_info['pad_left']
+        pad_right = square_info['pad_right']
+        
+        h = square_size
+        w = square_size
+        
+        crop_h_start = pad_top
+        crop_h_end = h - pad_bottom
+        crop_w_start = pad_left
+        crop_w_end = w - pad_right
+        
+        square_unpadded = square_resized[:, crop_h_start:crop_h_end, crop_w_start:crop_w_end, :]
+    else:
+        square_unpadded = square_resized
+    
+    # Step 2: Resize to original crop size
+    # This is ALWAYS downscaling, use lanczos for high quality
+    resize_mode_2 = 'lanczos' 
+    
+    original_resized = _tensor_resize(square_unpadded, orig_w, orig_h, method=resize_mode_2)
+    
+    print(f'[VNCCS] Unsquare crop: {target_qwen_size}x{target_qwen_size} ({resize_mode_1}) → {square_size}x{square_size} → {orig_w}x{orig_h} ({resize_mode_2})')
+    
+    return original_resized
+
+
 def _tensor_crop(image, crop_region):
+
     """Crop tensor image using crop_region coordinates [x1, y1, x2, y2]"""
     x1, y1, x2, y2 = crop_region
     return image[:, y1:y2, x1:x2, :]
 
 
-def _tensor_paste(image1, image2, crop_region, feather=0):
-    """Paste image2 onto image1 at crop_region position with optional feather blending"""
+def _tensor_paste(image1, image2, crop_region, feather=0, mask=None):
+    """Paste image2 onto image1 at crop_region position with optional feather blending and/or custom mask"""
+    import time
+    t_paste_total = time.time()
+    
     x1, y1, x2, y2 = crop_region
     h, w = y2 - y1, x2 - x1
     
+    t_ensure = time.time()
     # Ensure image2 has batch dimension
     if len(image2.shape) == 3:  # [H, W, C] format
         image2 = image2.unsqueeze(0)
+    print(f'[_tensor_paste] Ensure batch: {(time.time() - t_ensure)*1000:.2f}ms')
     
+    t_resize = time.time()
     # Ensure image2 matches the crop region size
     if image2.shape[1] != h or image2.shape[2] != w:
         # Resize image2 to match crop region
-        # Handle different input formats
-        if len(image2.shape) == 4:  # [B, H, W, C] or [B, C, H, W]
-            if image2.shape[-1] in [1, 3, 4]:  # [B, H, W, C] format
-                image2 = torch.nn.functional.interpolate(image2.permute(0, 3, 1, 2), 
-                                                       size=(h, w), 
-                                                       mode='bicubic', 
-                                                       align_corners=False).permute(0, 2, 3, 1)
-            else:  # [B, C, H, W] format  
-                image2 = torch.nn.functional.interpolate(image2, 
-                                                       size=(h, w), 
-                                                       mode='bicubic', 
-                                                       align_corners=False).permute(0, 2, 3, 1)
-        elif len(image2.shape) == 3:  # [H, W, C] format
-            image2 = image2.unsqueeze(0)  # Add batch dimension
-            image2 = torch.nn.functional.interpolate(image2.permute(0, 3, 1, 2), 
-                                                   size=(h, w), 
-                                                   mode='bicubic', 
-                                                   align_corners=False).permute(0, 2, 3, 1)
+        # Use lanczos for downscaling, bicubic for upscaling
+        is_downscaling = (h < image2.shape[1]) or (w < image2.shape[2])
+        resize_mode = 'lanczos' if is_downscaling else 'bicubic'
+        
+        image2 = _tensor_resize(image2, w, h, method=resize_mode)
+        print(f'[_tensor_paste] Resize image2 ({resize_mode}, {"downscaling" if is_downscaling else "upscaling"}): {(time.time() - t_resize)*1000:.2f}ms')
+    else:
+        print(f'[_tensor_paste] Resize image2: no resize needed')
     
+    t_squeeze = time.time()
     # Remove batch dimension if present for single image pasting
     if image2.shape[0] == 1:
         image2 = image2.squeeze(0)
+    print(f'[_tensor_paste] Squeeze batch: {(time.time() - t_squeeze)*1000:.2f}ms')
     
-    if feather > 0:
-        # Create feather mask
-        import torch.nn.functional as F
+    # Final mask calculation
+    t_mask = time.time()
+    final_mask = None
+    
+    # 1. Use custom mask (e.g. from SAM) if provided
+    if mask is not None:
+        # Convert numpy array to tensor if needed
+        if isinstance(mask, np.ndarray):
+            mask = torch.from_numpy(mask).float().to(image2.device)
         
-        # Create a mask with the same size as the crop region
-        mask = torch.ones((h, w), dtype=image2.dtype, device=image2.device)
+        # Ensure mask is [H, W] and matches current crop size
+        if len(mask.shape) == 4: # [B, C, H, W]
+            mask = mask.squeeze(0).squeeze(0)
+        elif len(mask.shape) == 3: # [C, H, W] or [H, W, C]
+            if mask.shape[0] == 1: mask = mask.squeeze(0)
+            elif mask.shape[2] == 1: mask = mask.squeeze(2)
         
-        # Apply gaussian blur to create feather effect
-        # Convert to 4D for conv2d
-        mask_4d = mask.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
+        # Normalize mask to [0, 1] range (may come as 0-255 or other ranges)
+        mask_min = mask.min()
+        mask_max = mask.max()
+        if mask_max > 1.0:
+            mask = (mask - mask_min) / (mask_max - mask_min) if mask_max != mask_min else mask
         
-        # Create gaussian kernel
-        kernel_size = min(feather * 2 + 1, min(h, w) // 2 * 2 + 1)  # Ensure odd kernel size
-        if kernel_size > 1:
-            # Simple box blur approximation for gaussian
-            kernel = torch.ones((1, 1, kernel_size, kernel_size), dtype=mask.dtype, device=mask.device)
-            kernel = kernel / kernel.numel()
+        # Debug: check mask values
+        print(f'[_tensor_paste] Mask stats - min: {mask.min():.4f}, max: {mask.max():.4f}, mean: {mask.mean():.4f}')
             
-            # Apply blur
-            mask_4d = F.conv2d(mask_4d, kernel, padding=kernel_size//2)
-            mask_4d = F.conv2d(mask_4d, kernel, padding=kernel_size//2)
-        
-        mask = mask_4d.squeeze(0).squeeze(0)  # Back to [H, W]
-        
-        # Ensure mask values are between 0 and 1
-        mask = torch.clamp(mask, 0, 1)
-        
-        # Apply mask to image2
-        # Expand mask to match image channels
-        mask_expanded = mask.unsqueeze(-1).expand_as(image2)  # [H, W, C]
-        
-        # Alpha blending: image1 * (1 - mask) + image2 * mask
-        image1[:, y1:y2, x1:x2, :] = image1[:, y1:y2, x1:x2, :] * (1 - mask_expanded) + image2 * mask_expanded
-    else:
-        # Paste with full opacity (original behavior)
-        image1[:, y1:y2, x1:x2, :] = image2
+        if mask.shape[0] != h or mask.shape[1] != w:
+            # Resize mask to current dimensions
+            import torch.nn.functional as F
+            mask_resized = F.interpolate(mask.unsqueeze(0).unsqueeze(0), size=(h, w), mode='bilinear', align_corners=False)
+            final_mask = mask_resized.squeeze(0).squeeze(0)
+        else:
+            final_mask = mask
     
+    # 2. Apply feathering if needed
+    if feather > 0:
+        # Create a basic box mask if no mask exists
+        if final_mask is None:
+            final_mask = torch.ones((h, w), dtype=image2.dtype, device=image2.device)
+            
+        # Apply simple box blur to create feather effect
+        import torch.nn.functional as F
+        mask_4d = final_mask.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
+        kernel_size = min(feather + 1, min(h, w) // 2 * 2 + 1)
+        if kernel_size > 1:
+            kernel = torch.ones((1, 1, kernel_size, kernel_size), dtype=final_mask.dtype, device=final_mask.device)
+            kernel = kernel / kernel.numel()
+            mask_4d = F.conv2d(mask_4d, kernel, padding=kernel_size//2)
+            if mask_4d.shape[2:] != (h, w):
+                mask_4d = F.interpolate(mask_4d, size=(h, w), mode='bilinear', align_corners=False)
+        final_mask = torch.clamp(mask_4d.squeeze(0).squeeze(0), 0, 1)
+        
+    if final_mask is not None:
+        # Expand mask to match image channels
+        mask_expanded = final_mask.unsqueeze(-1).expand_as(image2)  # [H, W, C]
+        
+        # When we have a SAM mask, use it to blend only at the EDGES
+        # The mask=1 area should be 100% image2, only blend where mask transitions
+        # Apply a strong edge mask: use only where mask < 0.95 (the transition zone)
+        if feather > 0:
+            # With feathering: use the feathered mask (it's already transition-aware)
+            image1[:, y1:y2, x1:x2, :] = image1[:, y1:y2, x1:x2, :] * (1 - mask_expanded) + image2 * mask_expanded
+            print(f'[_tensor_paste] Blending with mask + feathering: {(time.time() - t_mask)*1000:.2f}ms')
+        else:
+            # Without feathering: use mask only to create soft edges (full opacity in center)
+            # Create a threshold to ensure center is fully replaced
+            threshold = 0.5
+            edge_mask = torch.clamp(final_mask * 2, 0, 1)  # Make transition sharper
+            edge_mask_expanded = edge_mask.unsqueeze(-1).expand_as(image2)
+            image1[:, y1:y2, x1:x2, :] = image1[:, y1:y2, x1:x2, :] * (1 - edge_mask_expanded) + image2 * edge_mask_expanded
+            print(f'[_tensor_paste] Blending with SAM mask (edge-only): {(time.time() - t_mask)*1000:.2f}ms')
+    else:
+        # Paste with full opacity
+        image1[:, y1:y2, x1:x2, :] = image2
+        print(f'[_tensor_paste] Simple paste: {(time.time() - t_mask)*1000:.2f}ms')
+    
+    print(f'[_tensor_paste] TOTAL: {(time.time() - t_paste_total)*1000:.2f}ms')
     return image1
+
+
+
+
 class VNCCS_QWEN_Detailer:
     upscale_methods = ["nearest-exact", "bilinear", "area", "bicubic", "lanczos"]
     crop_methods = ["disabled", "center"]
@@ -168,7 +444,7 @@ class VNCCS_QWEN_Detailer:
                 "threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "dilation": ("INT", {"default": 300, "min": -512, "max": 512, "step": 1}),
                 "drop_size": ("INT", {"min": 1, "max": MAX_RESOLUTION, "step": 1, "default": 10}),
-                "feather": ("INT", {"default": 5, "min": 0, "max": 300, "step": 1}),
+                "feather": ("INT", {"default": 0, "min": 0, "max": 300, "step": 1}),
                 "steps": ("INT", {"default": 4, "min": 1, "max": 10000}),
                 "cfg": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
@@ -180,12 +456,21 @@ class VNCCS_QWEN_Detailer:
             },
             "optional": {
                 "controlnet_image": ("IMAGE", ),
+                "sam_model_opt": ("SAM_MODEL", ),
+                "segm_detector_opt": ("SEGM_DETECTOR", ),
+                "sam_detection_hint": (["center-1", "horizontal-2", "vertical-2", "rect-4", "diamond-4", "mask-area", "mask-points", "mask-point-bbox", "none"], {"default": "center-1"}),
+                "sam_dilation": ("INT", {"default": 0, "min": -512, "max": 512, "step": 1}),
+                "sam_threshold": ("FLOAT", {"default": 0.93, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "sam_bbox_expansion": ("INT", {"default": 0, "min": 0, "max": 1000, "step": 1}),
+                "sam_mask_hint_threshold": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "sam_mask_hint_use_negative": (["False", "Small", "Outter"], {"default": "False"}),
                 "target_size": ("INT", {"default": 1024, "min": 64, "max": 2048, "step": 8}),
                 "upscale_method": (s.upscale_methods,),
                 "crop_method": (s.crop_methods,),
                 "instruction": ("STRING", {"multiline": True, "default": "Describe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate."}),
                 "inpaint_mode": ("BOOLEAN", {"default": False}),
                 "inpaint_prompt": ("STRING", {"multiline": True, "default": "[!!!IMPORTANT!!!] Inpaint mode: draw only inside black box."}),
+                "color_match_method": (["disabled", "mkl", "hm", "reinhard", "mvgd", "hm-mvgd-hm", "hm-mkl-hm"], {"default": "disabled"}),
                 "qwen_2511": ("BOOLEAN", {"default": True}),
             }
         }
@@ -198,11 +483,19 @@ class VNCCS_QWEN_Detailer:
 
     def detail(self, image, bbox_detector, model, clip, vae, prompt,
                 threshold=0.5, dilation=10, drop_size=10,
-                feather=5, steps=20, cfg=8.0, seed=0, sampler_name="euler", scheduler="normal",
+                feather=0, steps=20, cfg=8.0, seed=0, sampler_name="euler", scheduler="normal",
                 denoise=0.5, tiled_vae_decode=False, tile_size=512, controlnet_image=None, target_size=1024,
                 upscale_method="lanczos", crop_method="center",
-                instruction="", inpaint_mode=False, inpaint_prompt="", qwen_2511=True):
+                instruction="", inpaint_mode=False, inpaint_prompt="", qwen_2511=True,
+                color_match_method="disabled", color_match_strength=1.0, color_match_multithread=True,
+                sam_model_opt=None, segm_detector_opt=None,
+                sam_detection_hint="center-1", sam_dilation=0, sam_threshold=0.93,
+                sam_bbox_expansion=0, sam_mask_hint_threshold=0.7, sam_mask_hint_use_negative="False"):
 
+        # Timing markers
+        t_start = time.time()
+        t_marks = {}
+        
         # Fixed crop_factor for bbox detection
         crop_factor = 1.0
         # Fixed target_vl_size for QWEN vision processing
@@ -228,14 +521,35 @@ class VNCCS_QWEN_Detailer:
                 ).permute(0, 2, 3, 1)  # [B, C, H, W] -> [B, H, W, C]
 
                 # Detect segments using bbox detector
+        t_detect_start = time.time()
         print(f'[VNCCS] DEBUG: Using bbox_detector: {type(bbox_detector).__name__}')
         print(f'[VNCCS] DEBUG: Calling bbox_detector.detect with params:')
         print(f'[VNCCS] DEBUG:   threshold={threshold}, dilation={dilation}, crop_factor={crop_factor} (fixed), drop_size={drop_size}')
         
         try:
             segs_result = bbox_detector.detect(image, threshold, dilation, crop_factor, drop_size)
+            
+            # Refine detection with SAM or Segm if provided (Impact Pack logic)
+            if sam_model_opt is not None:
+                import impact.core as core
+                print(f"[VNCCS] Refining {len(segs_result[1])} segments with SAM...")
+                sam_mask = core.make_sam_mask(sam_model_opt, segs_result, image, sam_detection_hint, sam_dilation,
+                                              sam_threshold, sam_bbox_expansion, sam_mask_hint_threshold,
+                                              sam_mask_hint_use_negative)
+                segs_result = core.segs_bitwise_and_mask(segs_result, sam_mask)
+            elif segm_detector_opt is not None:
+                import impact.core as core
+                print(f"[VNCCS] Refining {len(segs_result[1])} segments with Segm detector...")
+                segm_segs = segm_detector_opt.detect(image, threshold, dilation, crop_factor, drop_size)
+                # Apply bitwise AND with segm mask
+                segm_mask = core.segs_to_combined_mask(segm_segs)
+                segs_result = core.segs_bitwise_and_mask(segs_result, segm_mask)
+                
         except Exception as e:
-            raise Exception(f'[VNCCS] ERROR: Failed to detect segments with bbox_detector: {str(e)}')
+            raise Exception(f'[VNCCS] ERROR: Failed to detect/refine segments: {str(e)}')
+        
+        t_marks['detect'] = time.time() - t_detect_start
+        print(f'[VNCCS] ⏱️ BBox Detection: {t_marks["detect"]:.2f}s')
         
         # Handle different return formats from bbox detectors
         if isinstance(segs_result, tuple) and len(segs_result) == 2:
@@ -275,11 +589,18 @@ class VNCCS_QWEN_Detailer:
             y1 = max(0, y1 - dilation)
             x2 = min(image_width, x2 + dilation)
             y2 = min(image_height, y2 + dilation)
+            
+            # Extract cropped_mask if available (for SAM/Segm refinement)
+            cropped_mask = None
+            if hasattr(seg, 'cropped_mask') and seg.cropped_mask is not None:
+                cropped_mask = seg.cropped_mask.copy() if isinstance(seg.cropped_mask, np.ndarray) else seg.cropped_mask
+            
             if x2 - x1 >= min_region_size and y2 - y1 >= min_region_size:
                 # Create new seg-like object with adjusted crop_region
                 adjusted_seg = type('AdjustedSEG', (), {
                     'crop_region': (x1, y1, x2, y2),
-                    'bbox': seg.bbox if hasattr(seg, 'bbox') else (x1, y1, x2, y2)
+                    'bbox': seg.bbox if hasattr(seg, 'bbox') else (x1, y1, x2, y2),
+                    'cropped_mask': cropped_mask
                 })()
                 # Copy other attributes if needed
                 for attr in dir(seg):
@@ -307,7 +628,11 @@ class VNCCS_QWEN_Detailer:
 
         enhanced_image = image.clone()
 
-        for seg in segs[1]:
+        t_gen_start = time.time()
+        gen_count = 0
+        for seg_idx, seg in enumerate(segs[1]):
+            seg_time_start = time.time()
+            gen_count += 1
             # Crop the segment from the image
             cropped_image = _tensor_crop(enhanced_image, seg.crop_region)
             
@@ -351,19 +676,61 @@ class VNCCS_QWEN_Detailer:
                 else:
                     cropped_controlnet = _tensor_crop(controlnet_image, seg.crop_region)
             
-            # Calculate target size based on crop region to maintain quality
-            crop_h, crop_w = seg.crop_region[3] - seg.crop_region[1], seg.crop_region[2] - seg.crop_region[0]
-            # Use crop region size as target, but ensure minimum size for quality and divisible by 8 for VAE
-            min_target_size = 256  # Minimum size to maintain quality
-            dynamic_target_size = max(crop_h, crop_w, min_target_size)
-            dynamic_target_size = ((dynamic_target_size + 7) // 8) * 8  # Round up to nearest multiple of 8
+            # Calculate segment dimensions for logging
+            crop_h = seg.crop_region[3] - seg.crop_region[1]
+            crop_w = seg.crop_region[2] - seg.crop_region[0]
+            
+            print(f'[VNCCS] Segment {seg_idx}: crop_region=({seg.crop_region[0]},{seg.crop_region[1]},{seg.crop_region[2]},{seg.crop_region[3]}), size={crop_w}x{crop_h}→target_size={target_size}')
+            
+            # Pre-scale cropped image to target_size by long side before encoding
+            # This ensures consistent high-quality latent encoding without re-scaling in encode_qwen
+            import torch.nn.functional as F
+            crop_h_actual = cropped_image.shape[1]
+            crop_w_actual = cropped_image.shape[2]
+            long_side = max(crop_h_actual, crop_w_actual)
+            
+            # **NEW: Convert crop to square for better QWEN processing**
+            print(f'[VNCCS] Segment {seg_idx}: Converting to square crop...')
+            square_image, square_info = _make_square_crop(enhanced_image, seg.crop_region, (enhanced_image.shape[1], enhanced_image.shape[2]))
+            if cropped_controlnet is not None:
+                # Also square the controlnet if it exists
+                square_controlnet, _ = _make_square_crop(controlnet_image, seg.crop_region, (controlnet_image.shape[1], controlnet_image.shape[2]))
+            else:
+                square_controlnet = None
+            
+            cropped_image = square_image
+            if cropped_controlnet is not None:
+                cropped_controlnet = square_controlnet
+            
+            crop_h_actual = cropped_image.shape[1]
+            crop_w_actual = cropped_image.shape[2]
+            long_side = max(crop_h_actual, crop_w_actual)
+            
+            if long_side < target_size:
+                # Calculate scaling to reach target_size on long side
+                scale = target_size / long_side
+                new_h = int(crop_h_actual * scale)
+                new_w = int(crop_w_actual * scale)
+                # Round to multiple of 8 for VAE compatibility
+                new_h = ((new_h + 7) // 8) * 8
+                new_w = ((new_w + 7) // 8) * 8
+                # Resize using F.interpolate with [B, C, H, W] format
+                cropped_image_resized = F.interpolate(cropped_image.permute(0, 3, 1, 2), size=(new_h, new_w), mode='bicubic', align_corners=False).permute(0, 2, 3, 1)
+                cropped_image = cropped_image_resized
+                if cropped_controlnet is not None:
+                    cropped_controlnet_resized = F.interpolate(cropped_controlnet.permute(0, 3, 1, 2), size=(new_h, new_w), mode='bicubic', align_corners=False).permute(0, 2, 3, 1)
+                    cropped_controlnet = cropped_controlnet_resized
+                print(f'[VNCCS] Segment {seg_idx}: Pre-scaled crop {crop_w_actual}x{crop_h_actual} → {new_w}x{new_h}')
+            
+            # Save original crop for drift correction reference (AFTER pre-scaling!)
+            original_crop = cropped_image.clone()
             
             # Use the cropped image as reference for QWEN generation
-            # Create conditioning using QWEN encoder logic
-            conditioning, latent, _, _, _, _, _, _ = self.encode_qwen(
+            # encode_qwen will handle consistent encoding without additional re-scaling
+            positive_cond, latent, _, _, _, negative_cond, _, _ = self.encode_qwen(
                 clip=clip, prompt=prompt, vae=vae,
                 image1=cropped_image, image2=cropped_controlnet,
-                target_size=dynamic_target_size, target_vl_size=target_vl_size,
+                target_size=target_size, target_vl_size=target_vl_size,
                 upscale_method=upscale_method, crop_method=crop_method,
                 instruction=instruction, inpaint_mode=inpaint_mode, inpaint_prompt=inpaint_prompt
             )
@@ -375,25 +742,37 @@ class VNCCS_QWEN_Detailer:
             try:
                 if qwen_2511:
                     method = "index_timestep_zero"
-                    conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents_method": method})
+                    positive_cond = node_helpers.conditioning_set_values(positive_cond, {"reference_latents_method": method})
+                    negative_cond = node_helpers.conditioning_set_values(negative_cond, {"reference_latents_method": method})
             except Exception:
                 pass
 
-            samples = self.sample_latent(model, latent_dict, conditioning, [], steps, cfg, seed, sampler_name, scheduler, denoise)
+            # Use anti-drift technique: pass negative_cond with same reference latents to prevent image drift
+            print(f'[VNCCS] Segment {seg_idx}: Starting KSampler...')
+            t_sample_start = time.time()
+            samples = self.sample_latent(model, latent_dict, positive_cond, negative_cond, steps, cfg, seed, sampler_name, scheduler, denoise)
+            print(f'[VNCCS] Segment {seg_idx}: KSampler completed in {time.time() - t_sample_start:.2f}s')
             
             # common_ksampler returns a list, get the first (and only) latent
+            t_process_start = time.time()
             if isinstance(samples, (list, tuple)) and len(samples) > 0:
                 samples = samples[0]
             if isinstance(samples, dict) and "samples" in samples:
                 samples = samples["samples"]
+            print(f'[VNCCS] Segment {seg_idx}: Latent processing in {time.time() - t_process_start:.3f}s')
 
             # Decode to image
+            print(f'[VNCCS] Segment {seg_idx}: Starting VAE decode...')
+            t_decode_start = time.time()
             if tiled_vae_decode:
                 enhanced_cropped = vae.decode_tiled(samples, tile_x=tile_size, tile_y=tile_size)
             else:
                 enhanced_cropped = vae.decode(samples)
+            print(f'[VNCCS] Segment {seg_idx}: VAE decode completed in {time.time() - t_decode_start:.2f}s')
+
             
             # Ensure proper image format [B, H, W, C] and remove batch dimension if present
+            t_format_start = time.time()
             if len(enhanced_cropped.shape) == 4 and enhanced_cropped.shape[1] in [1, 3, 4]:  # [B, C, H, W] format
                 enhanced_cropped = enhanced_cropped.permute(0, 2, 3, 1)  # Convert to [B, H, W, C]
             elif len(enhanced_cropped.shape) == 3:  # [H, W, C] format
@@ -402,11 +781,129 @@ class VNCCS_QWEN_Detailer:
             # Remove batch dimension for single image
             if enhanced_cropped.shape[0] == 1:
                 enhanced_cropped = enhanced_cropped.squeeze(0)
+            print(f'[VNCCS] Segment {seg_idx}: Image format processing in {time.time() - t_format_start:.3f}s')
+            
+            # **NEW: Reverse the square transformation (unsquare and remove padding)**
+            print(f'[VNCCS] Segment {seg_idx}: Reversing square crop transformation...')
+            if len(enhanced_cropped.shape) == 3:  # [H, W, C]
+                enhanced_cropped = enhanced_cropped.unsqueeze(0)  # Add batch: [1, H, W, C]
+            enhanced_cropped = _unsquare_crop(enhanced_cropped, square_info)
+            if enhanced_cropped.shape[0] == 1:
+                enhanced_cropped = enhanced_cropped.squeeze(0)  # Remove batch
+            
+            # Debug: Check if enhanced_cropped matches original crop size
+            orig_h, orig_w = square_info['orig_size']
+            actual_h, actual_w = enhanced_cropped.shape[0], enhanced_cropped.shape[1]
+            print(f'[VNCCS] Segment {seg_idx}: After unsquare - expected {orig_w}x{orig_h}, got {actual_w}x{actual_h}')
+            
+            # If there's a mismatch, resize to exact original crop size to avoid _tensor_paste doing extra resize
+            if actual_h != orig_h or actual_w != orig_w:
+                print(f'[VNCCS] Segment {seg_idx}: ⚠️  Size mismatch after unsquare! Resizing to exact original size (using lanczos) to avoid extra scaling artifacts')
+                enhanced_cropped = _tensor_resize(enhanced_cropped, orig_w, orig_h, method='lanczos')
+                if enhanced_cropped.shape[0] == 1:
+                    enhanced_cropped = enhanced_cropped.squeeze(0)
 
-            # Paste back to the original image
-            enhanced_image = _tensor_paste(enhanced_image, enhanced_cropped, seg.crop_region, feather)
+            # Apply color matching BEFORE pasting (on clean generated image, not mixed)
+            if color_match_method != "disabled":
+                t_color_crop_start = time.time()
+                # Crop the region from ORIGINAL image for color matching reference
+                cropped_original = _tensor_crop(image, seg.crop_region)
+                # Apply color match to the clean generated enhanced_cropped
+                enhanced_cropped = self._apply_color_match(cropped_original, enhanced_cropped, color_match_method, color_match_strength, color_match_multithread)
+                print(f'[VNCCS] Segment {seg_idx}: Color match in {time.time() - t_color_crop_start:.3f}s')
+
+            # Paste back to the original image (now with color-corrected enhanced_cropped)
+            t_paste_start = time.time()
+            # Extract cropped_mask if available (from SAM/Segm refinement)
+            seg_mask = seg.cropped_mask if hasattr(seg, 'cropped_mask') else None
+            enhanced_image = _tensor_paste(enhanced_image, enhanced_cropped, seg.crop_region, feather, mask=seg_mask)
+            print(f'[VNCCS] Segment {seg_idx}: Paste operation in {time.time() - t_paste_start:.3f}s')
+            
+            seg_time = time.time() - seg_time_start
+            t_marks[f'seg_{seg_idx}'] = seg_time
+            print(f'[VNCCS] ⏱️ Segment {seg_idx} processed: {seg_time:.2f}s')
+
+        t_generation = time.time() - t_gen_start
+        t_marks['generation'] = t_generation
+        print(f'[VNCCS] ⏱️ Total Generation ({gen_count} segments): {t_generation:.2f}s')
+        
+        # Apply color matching to full image if enabled (2nd pass - final adjustment to whole image)
+        t_color_start = time.time()
+        if color_match_method != "disabled":
+            enhanced_image = self._apply_color_match(image, enhanced_image, color_match_method, color_match_strength, color_match_multithread)
+        t_marks['color_match'] = time.time() - t_color_start
+        print(f'[VNCCS] ⏱️ Color Matching: {t_marks["color_match"]:.2f}s')
+
+        t_total = time.time() - t_start
+        t_marks['total'] = t_total
+        print(f'[VNCCS] ✅ TOTAL TIME: {t_total:.2f}s')
+        print(f'[VNCCS] Breakdown: detect={t_marks.get("detect", 0):.2f}s, gen={t_marks.get("generation", 0):.2f}s, color={t_marks.get("color_match", 0):.2f}s')
 
         return (enhanced_image,)
+
+    def _apply_color_match(self, image_ref, image_target, method, strength=1.0, multithread=True):
+        """
+        Apply color matching from reference image to target image.
+        
+        Args:
+            image_ref: Reference image for color extraction [B, H, W, C]
+            image_target: Target image to apply colors to [B, H, W, C]
+            method: Color matching method
+            strength: Blend strength (0.0 = no change, 1.0 = full transfer)
+            multithread: Use multithreading for batch processing
+            
+        Returns:
+            Color-matched image
+        """
+        if strength == 0:
+            return image_target
+
+        try:
+            from color_matcher import ColorMatcher
+        except ImportError:
+            print("[VNCCS] Warning: color-matcher not installed. Skipping color matching. Install with: pip install color-matcher")
+            return image_target
+        
+        image_ref = image_ref.cpu()
+        image_target = image_target.cpu()
+        batch_size = image_target.size(0) if len(image_target.shape) == 4 else 1
+        
+        images_target = image_target.squeeze()
+        images_ref = image_ref.squeeze()
+
+        image_ref_np = images_ref.numpy()
+        images_target_np = images_target.numpy()
+
+        def process(i):
+            try:
+                cm = ColorMatcher()
+                image_target_np_i = images_target_np if batch_size == 1 else (images_target_np[i] if images_target_np.ndim == 4 else images_target_np)
+                image_ref_np_i = image_ref_np if image_ref.size(0) == 1 else (image_ref_np[i] if image_ref_np.ndim == 4 else image_ref_np)
+                
+                # Main color transfer process
+                image_result = cm.transfer(src=image_target_np_i, ref=image_ref_np_i, method=method)
+                
+                if strength != 1:
+                    # Apply strength blending
+                    image_result = image_target_np_i + strength * (image_result - image_target_np_i)
+                
+                return torch.from_numpy(image_result).float()
+                
+            except Exception as e:
+                print(f"[VNCCS] ColorMatch thread {i} error: {e}")
+                image_target_np_i = images_target_np if batch_size == 1 else (images_target_np[i] if images_target_np.ndim == 4 else images_target_np)
+                return torch.from_numpy(image_target_np_i).float()
+
+        if multithread and batch_size > 1:
+            max_threads = min(os.cpu_count() or 1, batch_size)
+            with ThreadPoolExecutor(max_workers=max_threads) as executor:
+                out = list(executor.map(process, range(batch_size)))
+        else:
+            out = [process(i) for i in range(batch_size)]
+
+        out = torch.stack(out, dim=0).to(torch.float32)
+        out = out.clamp(0, 1)
+        return out
 
     def encode_qwen(self, clip, prompt, vae=None, image1=None, image2=None,
                     target_size=1024, target_vl_size=384,
@@ -419,7 +916,6 @@ class VNCCS_QWEN_Detailer:
         if image2 is not None:
             images.append({"image": image2, "vl_resize": True})
 
-        vae_images = []
         vl_images = []
         template_prefix = "<|im_start|>system\n"
         template_suffix = "<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n"
@@ -437,38 +933,11 @@ class VNCCS_QWEN_Detailer:
         for i, image_obj in enumerate(images):
             image = image_obj["image"]
             vl_resize = image_obj["vl_resize"]
-            if image is not None and vae is not None:
+            if image is not None:
                 samples = image.movedim(-1, 1)
                 current_total = (samples.shape[3] * samples.shape[2])
                 
-                # VAE encode (always resize to target_size)
-                total = int(target_size * target_size)
-                scale_by = math.sqrt(total / current_total)
-                if crop_method == "pad":
-                    crop = "center"
-                    scaled_width = round(samples.shape[3] * scale_by)
-                    scaled_height = round(samples.shape[2] * scale_by)
-                    canvas_width = math.ceil(samples.shape[3] * scale_by / 8.0) * 8
-                    canvas_height = math.ceil(samples.shape[2] * scale_by / 8.0) * 8
-
-                    canvas = torch.zeros((samples.shape[0], samples.shape[1], canvas_height, canvas_width), dtype=samples.dtype, device=samples.device)
-                    resized_samples = comfy.utils.common_upscale(samples, scaled_width, scaled_height, upscale_method, crop)
-                    resized_width = resized_samples.shape[3]
-                    resized_height = resized_samples.shape[2]
-
-                    canvas[:, :, :resized_height, :resized_width] = resized_samples
-                    s = canvas
-                else:
-                    width = round(samples.shape[3] * scale_by / 8.0) * 8
-                    height = round(samples.shape[2] * scale_by / 8.0) * 8
-                    crop = crop_method
-                    s = comfy.utils.common_upscale(samples, width, height, upscale_method, crop)
-
-                image_vae = s.movedim(1, -1)
-                ref_latents.append(vae.encode(image_vae[:, :, :, :3]))
-                vae_images.append(image_vae)
-
-                # VL processing (always resize to target_vl_size for consistency)
+                # VL processing (always resize to target_vl_size for vision-language consistency)
                 total = int(target_vl_size * target_vl_size)
                 scale_by = math.sqrt(total / current_total)
                 width = round(samples.shape[3] * scale_by)
@@ -477,18 +946,44 @@ class VNCCS_QWEN_Detailer:
                 image_vl = s.movedim(1, -1)
                 vl_images.append(image_vl)
                 image_prompt += f"Picture {i+1}: <|vision_start|><|image_pad|><|vision_end|>"
+                
+                # VAE encode - use original resolution without upscaling (only round to multiple of 8)
+                # This prevents image drift, shifting, magnification issues
+                if vae is not None:
+                    width = (samples.shape[3] + 7) // 8 * 8
+                    height = (samples.shape[2] + 7) // 8 * 8
+                    crop = crop_method
+                    s = comfy.utils.common_upscale(samples, width, height, upscale_method, crop)
 
-        tokens = clip.tokenize(image_prompt + base_prompt, images=vl_images, llama_template=llama_template)
+                    image_vae = s.movedim(1, -1)
+                    ref_latents.append(vae.encode(image_vae[:, :, :, :3]))
+
+
+
+        # Use only text prompt without image inputs - rely on reference_latents for guidance
+        # This matches the reddit fix: "Disconnect the VAE input from the TextEncodeQwenImageEditPlus node"
+        # Reference latents are attached to conditioning to provide image guidance without VAE pass-through
+        tokens = clip.tokenize(base_prompt, llama_template=llama_template)
         conditioning = clip.encode_from_tokens_scheduled(tokens)
 
-        conditioning_full_ref = conditioning
+        # ReferenceLatent technique: attach reference latents to conditioning
+        # This prevents image drift and pixel shifting in QWEN Image Edit workflows
+        # The reference_latents parameter tells the model to use the encoded original image as guidance
+        conditioning_with_ref = conditioning
         if len(ref_latents) > 0:
-            conditioning_full_ref = node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents}, append=True)
+            # Attach reference latents to conditioning (both positive and negative use same reference)
+            conditioning_with_ref = node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents}, append=True)
+            print(f'[VNCCS] encode_qwen: Attached {len(ref_latents)} reference latent(s) to prevent pixel shift')
 
+        # Create negative conditioning with same reference latents to prevent drift
+        # Both positive and negative use the same reference latents to anchor the model to the original
+        conditioning_negative = conditioning_with_ref if len(ref_latents) > 0 else conditioning
+
+        # Use the reference latent as starting point for sampling
         samples = ref_latents[0] if len(ref_latents) > 0 else torch.zeros(1, 4, 128, 128)
         latent_out = {"samples": samples}
 
-        return (conditioning_full_ref, latent_out, image1, None, None, conditioning, conditioning, conditioning)
+        return (conditioning_with_ref, latent_out, image1, None, None, conditioning_negative, conditioning, conditioning)
 
     def sample_latent(self, model, latent, positive, negative, steps, cfg, seed, sampler_name, scheduler, denoise):
         # Use ComfyUI's common_ksampler
@@ -559,11 +1054,18 @@ class VNCCS_BBox_Extractor:
             y1 = max(0, y1 - dilation)
             x2 = min(image_width, x2 + dilation)
             y2 = min(image_height, y2 + dilation)
+            
+            # Extract cropped_mask if available (for SAM/Segm refinement)
+            cropped_mask = None
+            if hasattr(seg, 'cropped_mask') and seg.cropped_mask is not None:
+                cropped_mask = seg.cropped_mask.copy() if isinstance(seg.cropped_mask, np.ndarray) else seg.cropped_mask
+            
             if x2 - x1 >= min_region_size and y2 - y1 >= min_region_size:
                 # Create new seg-like object with adjusted crop_region
                 adjusted_seg = type('AdjustedSEG', (), {
                     'crop_region': (x1, y1, x2, y2),
-                    'bbox': seg.bbox if hasattr(seg, 'bbox') else (x1, y1, x2, y2)
+                    'bbox': seg.bbox if hasattr(seg, 'bbox') else (x1, y1, x2, y2),
+                    'cropped_mask': cropped_mask
                 })()
                 # Copy other attributes if needed
                 for attr in dir(seg):
@@ -581,11 +1083,32 @@ class VNCCS_BBox_Extractor:
 
         # Extract cropped images
         extracted_images = []
+        max_h = 0
+        max_w = 0
+        
+        # First pass: find max dimensions
+        for seg in valid_segs:
+            x1, y1, x2, y2 = seg.crop_region
+            h = y2 - y1
+            w = x2 - x1
+            max_h = max(max_h, h)
+            max_w = max(max_w, w)
+        
+        # Second pass: crop and pad to max dimensions
         for i, seg in enumerate(valid_segs):
             cropped = _tensor_crop(image, seg.crop_region)
-            extracted_images.append(cropped)
             x1, y1, x2, y2 = seg.crop_region
-            print(f'[VNCCS] BBox Extractor: Segment {i}: region=({x1},{y1},{x2},{y2}), size={x2-x1}x{y2-y1}')
+            h = y2 - y1
+            w = x2 - x1
+            
+            # Pad if needed to match max dimensions
+            if h < max_h or w < max_w:
+                pad_h_bottom = max_h - h
+                pad_w_right = max_w - w
+                cropped = torch.nn.functional.pad(cropped, (0, 0, 0, pad_w_right, 0, pad_h_bottom), mode='constant', value=0)
+            
+            extracted_images.append(cropped)
+            print(f'[VNCCS] BBox Extractor: Segment {i}: region=({x1},{y1},{x2},{y2}), size={w}x{h}→padded to {max_w}x{max_h}')
 
         # Concatenate all extracted images along batch dimension
         extracted_batch = torch.cat(extracted_images, dim=0)
