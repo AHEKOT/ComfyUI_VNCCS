@@ -385,14 +385,53 @@ class EmotionGenerator:
 
         # Return lists directly as in original code
         return images, emotions_out, face_output_paths, sheet_output_paths, positive_prompt, negative_prompt, seed, masks
+
+class EmotionGeneratorDebug(EmotionGenerator):
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Get parent inputs
+        types = super().INPUT_TYPES()
+        # Create new dict to modify to avoid affecting the original class
+        new_types = {"required": types["required"].copy()}
+        
+        # Remove selection widgets, keep character
+        # We don't need 'emotion_selector' (JS dummy) or 'selected_emotions' (User input)
+        new_types["required"].pop("emotion_selector", None)
+        new_types["required"].pop("selected_emotions", None)
+        
+        return new_types
+
+    FUNCTION = "generate_all_emotions"
+    CATEGORY = "VNCCS/Debug"
+
+    def generate_all_emotions(self, character):
+        # Ensure data is loaded
+        if self.SAFE_NAME_MAP is None:
+            self._setup_emotions_data()
+
+        # Construct the input string that mimics the UI selection
+        # Only include emotions that have a safe_name (which should be all in the map)
+        all_emotions_lines = [f"Debug: {safe_name}" for safe_name in self.SAFE_NAME_MAP.keys()]
+        
+        fake_input_string = "\n".join(all_emotions_lines)
+        
+        print(f"[VNCCS Debug] Generating all {len(all_emotions_lines)} emotions from configuration for character: {character}")
+        
+        # Delegate to the original method
+        return self.generate_emotions(character, "DEBUG_MODE", fake_input_string)
+
+
 NODE_CLASS_MAPPINGS = {
-    "EmotionGenerator": EmotionGenerator
+    "EmotionGenerator": EmotionGenerator,
+    "EmotionGeneratorDebug": EmotionGeneratorDebug
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "EmotionGenerator": "VNCCS Emotion Generator"
+    "EmotionGenerator": "VNCCS Emotion Generator",
+    "EmotionGeneratorDebug": "VNCCS Emotion Generator (Debug All Emotions)"
 }
 
 NODE_CATEGORY_MAPPINGS = {
-    "EmotionGenerator": "VNCCS"
+    "EmotionGenerator": "VNCCS",
+    "EmotionGeneratorDebug": "VNCCS"
 }
