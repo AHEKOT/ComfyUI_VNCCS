@@ -1,177 +1,962 @@
 {
     "Anger 😠": [
-        {"key":"angry 😠","description":"angry, furrowed_brow, clenched_teeth, glaring, scowl, annoyed","safe_name":"angry"},
-        {"key":"rage 😡","description":"angry, screaming, open_mouth, wide-eyed, furrowed_brow, furious, anger_vein, roaring","safe_name":"rage"},
-        {"key":"annoyed 😒","description":"annoyed, raised_eyebrow, closed_mouth, narrowed_eyes, unamused, scowl","safe_name":"annoyed"},
-        {"key":"frustrated 😤","description":"frustrated, furrowed_brow, narrowed_eyes, scowl, sweatdrop, nervous_sweating, grimace","safe_name":"frustrated"},
-        {"key":"scowl 😠","description":"scowl, frown, furrowed_brow, glaring, angry, annoyed","safe_name":"scowl"},
-        {"key":"boiling rage 🔥","description":"angry, anger_vein, clenched_teeth, glaring, furious, trembling","safe_name":"boiling-rage"},
-        {"key":"cold anger ❄️","description":"angry, closed_mouth, narrowed_eyes, serious, glaring, scowl","safe_name":"cold-anger"},
-        {"key":"disdain 😤","description":"disdain, sneer, narrowed_eyes, unamused, glaring","safe_name":"disdain"},
-        {"key":"gritted teeth 😬","description":"clenched_teeth, narrowed_eyes, angry, scowl","safe_name":"gritted-teeth"},
-        {"key":"furious snarl 😡","description":"angry, roaring, open_mouth, wide-eyed, furious, clenched_teeth, anger_vein","safe_name":"furious-snarl"},
-        {"key":"seething 😠","description":"angry, closed_mouth, trembling, glaring, furious, clenched_teeth, anger_vein","safe_name":"seething"},
-        {"key":"explosive fury 💥","description":"screaming, open_mouth, raised_eyebrows, angry, furious, roaring, anger_vein","safe_name":"explosive-fury"},
-        {"key":"glare of judgment 👁️","description":"glaring, furrowed_brow, closed_mouth, serious, disdain, unamused","safe_name":"glare-of-judgment"},
-        {"key":"trembling rage 😤","description":"trembling, angry, clenched_teeth, glaring, furious, anger_vein","safe_name":"trembling-rage"},
-        {"key":"angry pout 😠","description":"pout, furrowed_brow, puffy_cheeks, angry, cheek_bulge, annoyed","safe_name":"angry-pout-2"},
-        {"key":"veins pop 💥","description":"anger_vein, angry, clenched_teeth, glaring, furious, trembling","safe_name":"veins-pop"},
-        {"key":"scream of fury 🤬","description":"screaming, open_mouth, tongue, tears, angry, furious, roaring, crying","safe_name":"scream-of-fury"},
-        {"key":"evil cackle 😈","description":"evil-cackle, evil_grin, grin, open_mouth, angry, evil,  laughing, evil_smile, crazy_smile,crazy_grin, empty_eyes","safe_name":"evil-cackle"}
+        {
+            "key": "angry 😠",
+            "description": "angry, furrowed_brow, clenched_teeth, glaring, scowl, annoyed",
+            "safe_name": "angry",
+            "natural_prompt": "The character has a sharp, angry expression with deeply furrowed brows and eyes fixed in a persistent glare. Their teeth are tightly clenched behind a scowling mouth, conveying a sense of intense irritation and simmering annoyance."
+        },
+        {
+            "key": "rage 😡",
+            "description": "angry, screaming, open_mouth, wide-eyed, furrowed_brow, furious, anger_vein, roaring",
+            "safe_name": "rage",
+            "natural_prompt": "A look of pure, unbridled fury consumes the character’s face as they let out a primal scream. Their eyes are wide and bloodshot with rage, brows heavily furrowed, and an anger vein pulses on their forehead while their mouth is thrown open in a ferocious roar."
+        },
+        {
+            "key": "annoyed 😒",
+            "description": "annoyed, raised_eyebrow, closed_mouth, narrowed_eyes, unamused, scowl",
+            "safe_name": "annoyed",
+            "natural_prompt": "The character wears a look of weary annoyance, with one eyebrow skeptically raised and eyes narrowed in an unamused stare. Their mouth is set in a flat, thin line, radiating a clear sense of being completely done with the situation."
+        },
+        {
+            "key": "frustrated 😤",
+            "description": "frustrated, furrowed_brow, narrowed_eyes, scowl, sweatdrop, nervous_sweating, grimace",
+            "safe_name": "frustrated",
+            "natural_prompt": "Signs of mounting frustration are visible in the character’s tightly furrowed brow and narrowed eyes. A grimace twists their lips, and beads of nervous sweat appear on their skin as they struggle to maintain their composure."
+        },
+        {
+            "key": "scowl 😠",
+            "description": "scowl, frown, furrowed_brow, glaring, angry, annoyed",
+            "safe_name": "scowl",
+            "natural_prompt": "A heavy scowl weighs down the character’s features, with eyebrows knit tightly together in a deep furrow. Their gaze is fixed in a dark, judgmental glare, and their mouth is pulled into a sharp, downward frown."
+        },
+        {
+            "key": "boiling rage 🔥",
+            "description": "angry, anger_vein, clenched_teeth, glaring, furious, trembling",
+            "safe_name": "boiling-rage",
+            "natural_prompt": "The character is consumed by a simmering, boiling rage that makes their teeth clench so hard their jaw muscles tense. Their eyes are narrowed into lethal slits, and a prominent anger vein throb on their brow, signaling a loss of control is imminent."
+        },
+        {
+            "key": "cold anger ❄️",
+            "description": "angry, closed_mouth, narrowed_eyes, serious, glaring, scowl",
+            "safe_name": "cold-anger",
+            "natural_prompt": "A mask of icy, controlled fury settles over the character’s face. Their eyes are narrowed and piercing, their expression remains stoically serious, and their mouth is clamped shut horizontally, radiating a chilling and dangerous intensity."
+        },
+        {
+            "key": "disdain 😤",
+            "description": "disdain, sneer, narrowed_eyes, unamused, glaring",
+            "safe_name": "disdain",
+            "natural_prompt": "The character looks down with palpable disdain, their eyes narrowed in a cold, unamused glare. A subtle sneer curls their upper lip, perfectly capturing their feeling of superiority and contempt."
+        },
+        {
+            "key": "gritted teeth 😬",
+            "description": "clenched_teeth, narrowed_eyes, angry, scowl",
+            "safe_name": "gritted-teeth",
+            "natural_prompt": "Extreme tension is etched on the character’s face as they grit their teeth visibly. Their eyes are narrowed in a sharp scowl, conveying a sense of suppressed rage or intense effort to hold back a sharp retort."
+        },
+        {
+            "key": "furious snarl 😡",
+            "description": "angry, roaring, open_mouth, wide-eyed, furious, clenched_teeth, anger_vein",
+            "safe_name": "furious-snarl",
+            "natural_prompt": "The character’s face is twisted into a beastly, furious snarl with their mouth open to reveal clenched teeth in a threatening roar. Their eyes are wide with manic energy, and visible anger veins highlight the sheer intensity of their wrath."
+        },
+        {
+            "key": "seething 😠",
+            "description": "angry, closed_mouth, trembling, glaring, furious, clenched_teeth, anger_vein",
+            "safe_name": "seething",
+            "natural_prompt": "The character is visibly seething, their entire body trembling with the effort to contain a volcanic anger. Their mouth is shut tight, but their narrowed eyes and the pulsing vein on their temple betray the furious storm within."
+        },
+        {
+            "key": "explosive fury 💥",
+            "description": "screaming, open_mouth, raised_eyebrows, angry, furious, roaring, anger_vein",
+            "safe_name": "explosive-fury",
+            "natural_prompt": "In a sudden burst of explosive fury, the character’s eyebrows shoot upward as they let out a deafening scream. Their mouth is wide open in a roar, and their face is contorted with a mixture of shock and overwhelming rage."
+        },
+        {
+            "key": "glare of judgment 👁️",
+            "description": "glaring, furrowed_brow, closed_mouth, serious, disdain, unamused",
+            "safe_name": "glare-of-judgment",
+            "natural_prompt": "The character casts a heavy, judgmental glare, their brows deeply furrowed over eyes that seem to pierce right through the viewer. Their expression is cold and humorless, with a mouth set in a firm, serious line of disapproval."
+        },
+        {
+            "key": "trembling rage 😤",
+            "description": "trembling, angry, clenched_teeth, glaring, furious, anger_vein",
+            "safe_name": "trembling-rage",
+            "natural_prompt": "Shaking with a trembling rage, the character’s face is a mask of pure fury. Their teeth are bared in a tight clench, and their eyes are fixed in a murderous glare, accentuated by the visible strain of an anger vein."
+        },
+        {
+            "key": "angry pout 😠",
+            "description": "pout, furrowed_brow, puffy_cheeks, angry, cheek_bulge, annoyed",
+            "safe_name": "angry-pout-2",
+            "natural_prompt": "The character sports an adorable yet clearly irritated angry pout, with their cheeks puffed out and their brows knit together in a furrow. Their eyes are fixed in an annoyed stare, blending childish defiance with genuine frustration."
+        },
+        {
+            "key": "veins pop 💥",
+            "description": "anger_vein, angry, clenched_teeth, glaring, furious, trembling",
+            "safe_name": "veins-pop",
+            "natural_prompt": "The character’s face is tight with a rage so intense that veins are literally popping on their forehead. Their jaw is locked in a fierce clench, and their eyes are narrowed into dangerous, trembling slits of pure fury."
+        },
+        {
+            "key": "scream of fury 🤬",
+            "description": "screaming, open_mouth, tongue, tears, angry, furious, roaring, crying",
+            "safe_name": "scream-of-fury",
+            "natural_prompt": "A raw scream of absolute fury rips from the character’s throat, their mouth wide open to reveal their tongue and teeth. Tears of rage stream down their face, and their features are contorted into a mask of pure, unadulterated anger."
+        },
+        {
+            "key": "evil cackle 😈",
+            "description": "evil-cackle, evil_grin, grin, open_mouth, angry, evil, laughing, evil_smile, crazy_smile, crazy_grin, empty_eyes",
+            "safe_name": "evil-cackle",
+            "natural_prompt": "The character’s face is split by a wide, villainous grin as they let out a manic evil cackle. Their eyes are wide and hollow, glowing with a deranged and predatory light that perfectly captures their malicious delight."
+        }
     ],
     "Smile 😊": [
-        {"key":"smile 🙂","description":"smile, happy, closed_mouth, light_smile","safe_name":"smile"},
-        {"key":"grin 😁","description":"grin, happy, teeth, open_mouth, smile","safe_name":"grin"},
-        {"key":"laughing 😄","description":"laughing, open_mouth, squinting, happy, smile, closed_eyes","safe_name":"laughing"},
-        {"key":"light smile 🌤️","description":"light_smile, happy, closed_mouth, smile","safe_name":"light-smile"},
-        {"key":"radiant smile 😄","description":"smile, happy, open_mouth, sparkling_eyes, grin","safe_name":"radiant-smile"},
-        {"key":"shy smile 😊","description":"shy, smile, blush, downcast_eyes, light_smile","safe_name":"shy-smile"},
-        {"key":"mischievous grin 😜","description":"mischievous, grin, raised_eyebrow, squinting, smirk, naughty_face","safe_name":"mischievous-grin"},
-        {"key":"content smile 😌","description":"smile, happy, closed_eyes, light_smile, relaxing","safe_name":"content-smile"},
-        {"key":"smile with dimples 🙂","description":"smile, happy, cheek_bulge, light_smile","safe_name":"smile-dimples"},
-        {"key":"gentle grin 😁","description":"grin, happy, closed_eyes, smile","safe_name":"gentle-grin"},
-        {"key":"sweet smile 😇","description":"smile, happy, closed_eyes, blush, light_smile","safe_name":"sweet-smile"},
-        {"key":"cat smile (nyan) 😼","description":"smile, :3, happy, mischievous","safe_name":"cat-smile-nyan"}
+        {
+            "key": "smile 🙂",
+            "description": "smile, happy, closed_mouth, light_smile",
+            "safe_name": "smile",
+            "natural_prompt": "A simple, warm smile graces the character’s face, with their mouth gently curved upward in a light, pleasant expression. Their eyes are soft and filled with a quiet sense of happiness and contentment."
+        },
+        {
+            "key": "grin 😁",
+            "description": "grin, happy, teeth, open_mouth, smile",
+            "safe_name": "grin",
+            "natural_prompt": "The character’s face lights up with a broad, cheerful grin that reveals a flash of white teeth. Their mouth is open in an expression of pure joy, and their eyes sparkle with genuine happiness."
+        },
+        {
+            "key": "laughing 😄",
+            "description": "laughing, open_mouth, squinting, happy, smile, closed_eyes",
+            "safe_name": "laughing",
+            "natural_prompt": "Caught in a moment of pure mirth, the character is laughing heartily with their mouth wide open. Their eyes are squinted shut in delight, and their entire face radiates infectious joy and amusement."
+        },
+        {
+            "key": "light smile 🌤️",
+            "description": "light_smile, happy, closed_mouth, smile",
+            "safe_name": "light-smile",
+            "natural_prompt": "A faint, gentle smile touches the character’s lips, suggesting a calm and pleasant mood. Their expression is soft and approachable, with eyes that convey a subtle sense of well-being."
+        },
+        {
+            "key": "radiant smile 😄",
+            "description": "smile, happy, open_mouth, sparkling_eyes, grin",
+            "safe_name": "radiant-smile",
+            "natural_prompt": "The character beams with a radiant, high-energy smile that seems to light up their whole face. Their eyes are wide and sparkling with excitement, and their broad grin reveals a sense of uncontainable happiness."
+        },
+        {
+            "key": "shy smile 😊",
+            "description": "shy, smile, blush, downcast_eyes, light_smile",
+            "safe_name": "shy-smile",
+            "natural_prompt": "A sweet, bashful smile plays on the character’s lips as they look downcast, their cheeks flushed with a soft pink blush. Their expression is one of modest happiness, blending shyness with a gentle, appreciative warmth."
+        },
+        {
+            "key": "mischievous grin 😜",
+            "description": "mischievous, grin, raised_eyebrow, squinting, smirk, naughty_face",
+            "safe_name": "mischievous-grin",
+            "natural_prompt": "The character’s face is alive with a mischievous grin, one eyebrow quirked up and eyes squinted in a playful smirk. Their expression is full of naughty charm, suggesting they are up to something fun or tricky."
+        },
+        {
+            "key": "content smile 😌",
+            "description": "smile, happy, closed_eyes, light_smile, relaxing",
+            "safe_name": "content-smile",
+            "natural_prompt": "A look of deep, peaceful contentment washes over the character’s face, their eyes closed in a relaxing bliss. A small, serene smile rests on their lips, conveying a total sense of ease and satisfaction."
+        },
+        {
+            "key": "smile with dimples 🙂",
+            "description": "smile, happy, cheek_bulge, light_smile",
+            "safe_name": "smile-dimples",
+            "natural_prompt": "The character has a charming smile that causes their cheeks to bulge slightly, hinting at lovely dimples. Their expression is genuinely happy and exudes a friendly, approachable warmth."
+        },
+        {
+            "key": "gentle grin 😁",
+            "description": "grin, happy, closed_eyes, smile",
+            "safe_name": "gentle-grin",
+            "natural_prompt": "With a soft, gentle grin and eyes closed in a peaceful manner, the character radiates a sense of kind-hearted joy. Their expression is welcoming and incredibly sweet, reflecting a soul at ease."
+        },
+        {
+            "key": "sweet smile 😇",
+            "description": "smile, happy, closed_eyes, blush, light_smile",
+            "safe_name": "sweet-smile",
+            "natural_prompt": "An angelic, sweet smile curves the character’s lips, accompanied by closed eyes and a light, innocent blush. Their expression is the picture of pure, heartfelt happiness and gentle kindness."
+        },
+        {
+            "key": "cat smile (nyan) 😼",
+            "description": "smile, :3, happy, mischievous",
+            "safe_name": "cat-smile-nyan",
+            "natural_prompt": "The character wears a playful, cat-like smile with a \":3\" shaped mouth, their eyes bright with a sense of mischievous happiness. It’s a whimsical and cute expression that captures a feline sense of fun."
+        }
     ],
     "Smug 😏": [
-        {"key":"smirk 😏","description":"smirk, raised_eyebrow, sideways_mouth, smug","safe_name":"smirk"},
-        {"key":"smug 😼","description":"smug, grin, narrowed_eyes, smirk","safe_name":"smug"},
-        {"key":"troll face 😈","description":"troll_face, grin, mischievous, smug, evil_grin","safe_name":"troll-face"},
-        {"key":"doyagao 🧠","description":"doyagao, smug, grin, smirk","safe_name":"doyagao"},
-        {"key":"victorious smirk 😏","description":"smirk, smug, narrowed_eyes, happy, victory","safe_name":"victorious-smirk"},
-        {"key":"mocking smile 😈","description":"smirk, smug, evil_smile, taunting","safe_name":"mocking-smile"},
-        {"key":"knowing grin 😏","description":"grin, smug, raised_eyebrow, smirk","safe_name":"knowing-grin"},
-        {"key":"sly smile 😼","description":"smirk, sideways_mouth, narrowed_eyes, smug","safe_name":"sly-smile"},
-        {"key":"condescending smirk 😒","description":"smirk, raised_eyebrow, unamused, smug, disdain","safe_name":"condescending-smirk"},
-        {"key":"tsundere pout","description":"tsundere, pout, blush, averted_eyes, angry","safe_name":"tsundere-pout"},
-        {"key":"yandere smile 🔪","description":"yandere,shaded face,naughty face,grin, crazy_smile, empty_eyes, smile, heavy_breathing","safe_name":"yandere-smile"},
-        {"key":"wry smile 😕","description":"sad_smile, sideways_mouth, closed_mouth, smirk","safe_name":"wry-smile"}
+        {
+            "key": "smirk 😏",
+            "description": "smirk, raised_eyebrow, sideways_mouth, smug",
+            "safe_name": "smirk",
+            "natural_prompt": "A confident smirk plays on the character’s lips, with one corner of their mouth pulled slightly higher than the other. One eyebrow is cockatiel-like raised, and their eyes hold a knowing, smug glint."
+        },
+        {
+            "key": "smug 😼",
+            "description": "smug, grin, narrowed_eyes, smirk",
+            "safe_name": "smug",
+            "natural_prompt": "The character’s face is the definition of smugness, sporting a self-satisfied grin and eyes narrowed into calculating slits. Their expression radiates a sense of absolute superiority and triumph."
+        },
+        {
+            "key": "troll face 😈",
+            "description": "troll_face, grin, mischievous, smug, evil_grin",
+            "safe_name": "troll-face",
+            "natural_prompt": "A wide, exaggeratedly mischievous grin stretches across the character’s face, giving them a classic \"troll face\" look. Their eyes are alight with a smug, evil delight as they revel in their own trickery."
+        },
+        {
+            "key": "doyagao 🧠",
+            "description": "doyagao, smug, grin, smirk",
+            "safe_name": "doyagao",
+            "natural_prompt": "The character wears a classic \"doyagao\" look of extreme self-importance, with a prominent smug grin and a confident smirk. Their expression practically shouts \"I told you so\" with every fiber of their being."
+        },
+        {
+            "key": "victorious smirk 😏",
+            "description": "smirk, smug, narrowed_eyes, happy, victory",
+            "safe_name": "victorious-smirk",
+            "natural_prompt": "Having achieved their goal, the character wears a victorious smirk with eyes narrowed in satisfied pride. Their expression is a blend of smugness and genuine happiness at their own success."
+        },
+        {
+            "key": "mocking smile 😈",
+            "description": "smirk, smug, evil_smile, taunting",
+            "safe_name": "mocking-smile",
+            "natural_prompt": "A cruel, mocking smile twists the character’s features, their smirk radiating a sense of taunting superiority. Their eyes are cold and smug, clearly enjoying the discomfort or failure of another."
+        },
+        {
+            "key": "knowing grin 😏",
+            "description": "grin, smug, raised_eyebrow, smirk",
+            "safe_name": "knowing-grin",
+            "natural_prompt": "The character sports a knowing grin, one eyebrow raised in a clever arch that suggests they are several steps ahead. Their smug smirk indicates they hold a secret or an advantage that everyone else has missed."
+        },
+        {
+            "key": "sly smile 😼",
+            "description": "smirk, sideways_mouth, narrowed_eyes, smug",
+            "safe_name": "sly-smile",
+            "natural_prompt": "A sly, cunning smile plays on the character’s lips, their mouth pulled to the side in a sharp smirk. Their eyes are narrowed as they watch with a smug, calculated interest, looking like a cat that just found the cream."
+        },
+        {
+            "key": "condescending smirk 😒",
+            "description": "smirk, raised_eyebrow, unamused, smug, disdain",
+            "safe_name": "condescending-smirk",
+            "natural_prompt": "The character looks down with a condescending smirk, one eyebrow raised in an unamused and skeptical arch. Their expression is heavy with disdain and smug self-assurance, showing they are thoroughly unimpressed."
+        },
+        {
+            "key": "tsundere pout",
+            "description": "tsundere, pout, blush, averted_eyes, angry",
+            "safe_name": "tsundere-pout",
+            "natural_prompt": "The character is in a classic tsundere state, with their cheeks puffed out in an angry pout while their face is heavily flushed with a bashful blush. Their eyes are averted in an attempt to hide their true feelings."
+        },
+        {
+            "key": "yandere smile 🔪",
+            "description": "yandere, shaded face, naughty face, grin, crazy_smile, empty_eyes, smile, heavy_breathing",
+            "safe_name": "yandere-smile",
+            "natural_prompt": "A chilling yandere smile stretches across the character’s face, their eyes wide and completely hollow of light. Their face is partially shaded, giving them a predatory look as they breathe heavily in a state of manic obsession."
+        },
+        {
+            "key": "wry smile 😕",
+            "description": "sad_smile, sideways_mouth, closed_mouth, smirk",
+            "safe_name": "wry-smile",
+            "natural_prompt": "The character wears a slightly awkward, wry smile that is pulled to one side in a faint smirk. Their expression is a mix of sadness and ironic amusement, capturing a sense of self-deprecation or forced cheer."
+        }
     ],
     "Surprise 😲": [
-        {"key":"surprised 😲","description":"surprised, raised_eyebrows, wide-eyed, open_mouth, gasp, blush, sidelocks","safe_name":"surprised"},
-        {"key":"shocked 😱","description":"shocked, wide-eyed, open_mouth, blush, smile, hair_between_eyes, sidelocks, hair_ornament","safe_name":"shocked"},
-        {"key":"traumatized 😨","description":"traumatized, empty_eyes, trembling, open_mouth, despair, hollow_eyes, tears, crying, shaded_face, sweat","safe_name":"traumatized"},
-        {"key":"turn pale 🫣","description":"turn_pale, open_mouth, smile, sweat, closed_eyes, blush, chibi, closed_mouth","safe_name":"turn-pale"},
-        {"key":"delighted surprise 😲","description":"surprised, happy, wide-eyed, open_mouth, sparkling_eyes, blush, smile, sparkle","safe_name":"delighted-surprise"},
-        {"key":"shocked silence 😶","description":"shocked, wide-eyed, closed_mouth, expressionless, hair_between_eyes, braid","safe_name":"shocked-silence"},
-        {"key":"sudden realization 😮","description":"surprised, wide-eyed, open_mouth, parted_lips, hair_between_eyes, sidelocks","safe_name":"sudden-realization"},
-        {"key":"startled blink 😳","description":"surprised, parted_lips, wide-eyed, blinking, blush, braid","safe_name":"startled-blink"},
-        {"key":"jaw drop 😮","description":"jaw_drop, open_mouth, wide-eyed, surprised, smile, blush, sweatdrop, smile","safe_name":"jaw-drop"},
-        {"key":"sudden shock ⚡","description":"shocked, wide-eyed, empty_eyes, surprised, open_mouth, trembling","safe_name":"sudden-shock"},
-        {"key":"awe 😮‍💨","description":"awestruck, open_mouth, wide-eyed, sparkling_eyes, blush, smile, sparkle","safe_name":"awe-reverence"}
+        {
+            "key": "surprised 😲",
+            "description": "surprised, raised_eyebrows, wide-eyed, open_mouth, gasp, blush",
+            "safe_name": "surprised",
+            "natural_prompt": "The character’s face is a picture of genuine surprise, with eyebrows shot high and eyes wide with wonder. Their mouth is popped open in a small \"o\" of a gasp, and a light blush of excitement colors their cheeks."
+        },
+        {
+            "key": "shocked 😱",
+            "description": "shocked, wide-eyed, open_mouth, blush, smile",
+            "safe_name": "shocked",
+            "natural_prompt": "A look of total shock and disbelief takes over the character’s features, their eyes wide and their mouth agape. A stunned blush creeps across their face, and they seem frozen in a moment of pure astonishment."
+        },
+        {
+            "key": "traumatized 😨",
+            "description": "traumatized, empty_eyes, trembling, open_mouth, despair, hollow_eyes, tears, crying, shaded_face, sweat",
+            "safe_name": "traumatized",
+            "natural_prompt": "The character’s face is a hollow mask of trauma and despair, with empty, lightless eyes and a trembling, open mouth. Their face is heavily shaded, and cold sweat drips down as they stare into the void in total shock."
+        },
+        {
+            "key": "turn pale 🫣",
+            "description": "turn_pale, open_mouth, smile, sweat, closed_eyes, blush, closed_mouth",
+            "safe_name": "turn-pale",
+            "natural_prompt": "The character’s face has gone completely pale with shock, their eyes squeezed shut and a nervous, trembling smile on their lips. Beads of sweat are visible on their brow as they blush from the sheer intensity of the surprise."
+        },
+        {
+            "key": "delighted surprise 😲",
+            "description": "surprised, happy, wide-eyed, open_mouth, sparkling_eyes, blush, smile",
+            "safe_name": "delighted-surprise",
+            "natural_prompt": "The character’s face lights up with a delightful surprise, their eyes wide and sparkling with joy. Their mouth is open in a happy gasp, and a broad smile accompanies the genuine wonder on their face."
+        },
+        {
+            "key": "shocked silence 😶",
+            "description": "shocked, wide-eyed, closed_mouth, expressionless",
+            "safe_name": "shocked-silence",
+            "natural_prompt": "Stunned into absolute silence, the character’s eyes are wide and fixed, while their mouth is pressed into a thin, expressionless line. They look completely paralyzed by what they’ve just witnessed."
+        },
+        {
+            "key": "sudden realization 😮",
+            "description": "surprised, wide-eyed, open_mouth, parted_lips",
+            "safe_name": "sudden-realization",
+            "natural_prompt": "A look of sudden realization dawns on the character’s face, their eyebrows raised and eyes wide with clarity. Their lips are slightly parted as the pieces of the puzzle finally click into place."
+        },
+        {
+            "key": "startled blink 😳",
+            "description": "surprised, parted_lips, wide-eyed, blinking, blush",
+            "safe_name": "startled-blink",
+            "natural_prompt": "The character is caught off guard, their eyes blinking in wide-eyed surprise and their lips parted in a small gasp. A quick blush of embarrassment or shock colors their cheeks as they process the sudden event."
+        },
+        {
+            "key": "jaw drop 😮",
+            "description": "jaw_drop, open_mouth, wide-eyed, surprised, smile, blush, sweatdrop, smile",
+            "safe_name": "jaw-drop",
+            "natural_prompt": "The character’s jaw has literally dropped in astonishment, their mouth hanging wide open. Their eyes are huge with surprise, and a mixture of a smile and a blush suggests they can’t quite believe their own eyes."
+        },
+        {
+            "key": "sudden shock ⚡",
+            "description": "shocked, wide-eyed, empty_eyes, surprised, open_mouth, trembling",
+            "safe_name": "sudden-shock",
+            "natural_prompt": "A bolt of sudden shock leaves the character trembling, their eyes going completely empty and wide with terror. Their mouth is thrown open in a silent scream as they are overwhelmed by a jarring surprise."
+        },
+        {
+            "key": "awe 😮‍💨",
+            "description": "awestruck, open_mouth, wide-eyed, sparkling_eyes, blush, smile",
+            "safe_name": "awe-reverence",
+            "natural_prompt": "The character is caught in a state of pure awe and reverence, their eyes wide and sparkling with a deep sense of wonder. Their mouth is slightly open, and a soft blush and gentle smile show they are truly captivated."
+        }
     ],
     "Emotional 😢": [
-        {"key":"sad 😢","description":"sad, frown, downcast_eyes, depressed, closed_mouth, looking_at_viewer, white_background","safe_name":"sad"},
-        {"key":"crying 😭","description":"crying, tears, frown, sobbing, crying_with_eyes_open, open_mouth, blush, closed_mouth","safe_name":"crying"},
-        {"key":"depressed 😞","description":"depressed, monochrome, closed_mouth, sitting, bags_under_eyes, jacket, original, greyscale","safe_name":"depressed"},
-        {"key":"despair 😩","description":"despair, crying, tears, open_mouth, gloves, smile, teeth, comic, sitting","safe_name":"despair"},
-        {"key":"sobbing 😭","description":"sobbing, streaming_tears, crying, tears, closed_eyes, sad, blush, open_mouth","safe_name":"sobbing"},
-        {"key":"nostalgic sadness 😢","description":"sad_smile, tears, downcast_eyes, sad, smile, blush, ","safe_name":"nostalgic-sadness"},
-        {"key":"bittersweet 😔","description":"sad_smile, blush, tears, sad, smile, closed_eyes, looking_at_viewer","safe_name":"bittersweet"},
-        {"key":"emotional vulnerability 😢","description":"tearing_up, blush, trembling, sad, crying, tears, open_mouth, comic","safe_name":"emotional-vulnerability"},
-        {"key":"silent tears 😭","description":"tears, closed_mouth, sad, crying, streaming_tears, no_mouth, expressionless","safe_name":"silent-tears"},
-        {"key":"aching heart 💔","description":"sad, frown, furrowed_brow, crying, tears, despair, closed_eyes","safe_name":"aching-heart"},
-        {"key":"silent scream 😥","description":"screaming, tears, open_mouth, expressionless, sad, despair, mouth_open, comic","safe_name":"silent-scream-anguish"},
-        {"key":"downtrodden 😞","description":"sad, frown, heavy_eyelids, depressed, monochrome, sitting, holding","safe_name":"downtrodden"},
-        {"key":"exhausted sigh 😮‍💨","description":"sigh, exhausted, closed_eyes, open_mouth, tired, heavy_eyelids, ","safe_name":"exhausted-sigh"}
+        {
+            "key": "sad 😢",
+            "description": "sad, frown, downcast_eyes, depressed, closed_mouth",
+            "safe_name": "sad",
+            "natural_prompt": "A heavy cloud of sadness hangs over the character’s face, their brows slightly furrowed and eyes downcast in a pensive look. Their mouth is pulled into a small, quiet frown, radiating a sense of deep melancholy and depression."
+        },
+        {
+            "key": "crying 😭",
+            "description": "crying, tears, frown, sobbing, crying_with_eyes_open, open_mouth, blush, closed_mouth",
+            "safe_name": "crying",
+            "natural_prompt": "Tears stream down the character’s face as they succumb to their emotions, their face contorted in a sad frown. Their eyes are wide and brimming with moisture, and their mouth is open in a silent, heartbreaking sob."
+        },
+        {
+            "key": "depressed 😞",
+            "description": "depressed, closed_mouth, bags_under_eyes",
+            "safe_name": "depressed",
+            "natural_prompt": "The character looks utterly defeated and depressed, with their mouth set in a firm, flat line and heavy bags visible under their eyes. Their gaze is hollow and fixed on nothing, reflecting a soul-crushing weariness."
+        },
+        {
+            "key": "despair 😩",
+            "description": "despair, crying, tears, open_mouth, smile, teeth",
+            "safe_name": "despair",
+            "natural_prompt": "A look of total despair takes over as the character cries openly, tears flooding their eyes. Their mouth is open in a pained smile or grimace, showing their teeth as they struggle with an overwhelming sense of loss."
+        },
+        {
+            "key": "sobbing 😭",
+            "description": "sobbing, streaming_tears, crying, tears, closed_eyes, sad, blush, open_mouth",
+            "safe_name": "sobbing",
+            "natural_prompt": "The character is caught in a fit of heavy sobbing, streaming tears pouring from their tightly closed eyes. Their face is flushed with a sad blush, and their mouth is wide open as they let out their grief in a series of racking sobs."
+        },
+        {
+            "key": "nostalgic sadness 😢",
+            "description": "sad_smile, tears, downcast_eyes, sad, smile, blush",
+            "safe_name": "nostalgic-sadness",
+            "natural_prompt": "A bittersweet, nostalgic sadness touches the character’s face, with a faint, trembling smile fighting through the tears in their downcast eyes. Their expression is a complex blend of happy memories and current sorrow."
+        },
+        {
+            "key": "bittersweet 😔",
+            "description": "sad_smile, blush, tears, sad, smile, closed_eyes",
+            "safe_name": "bittersweet",
+            "natural_prompt": "The character wears a bittersweet expression, their eyes closed as a single tear escapes and a soft blush colors their cheeks. A faint, sad smile rests on their lips, perfectly capturing the pain of a beautiful but lost moment."
+        },
+        {
+            "key": "emotional vulnerability 😢",
+            "description": "tearing_up, blush, trembling, sad, crying, tears, open_mouth",
+            "safe_name": "emotional-vulnerability",
+            "natural_prompt": "The character shows raw emotional vulnerability, their eyes welling up with tears and their body trembling with suppressed feeling. Their mouth is slightly open and their face is flushed, showing they are on the very edge of breaking down."
+        },
+        {
+            "key": "silent tears 😭",
+            "description": "tears, closed_mouth, sad, crying, streaming_tears, no_mouth, expressionless",
+            "safe_name": "silent-tears",
+            "natural_prompt": "Quiet and heartbreaking, the character sheds silent tears that stream down an expressionless face. Their mouth is nonexistent or pressed shut, emphasizing the stoic and solitary nature of their deep sorrow."
+        },
+        {
+            "key": "aching heart 💔",
+            "description": "sad, frown, furrowed_brow, crying, tears, despair, closed_eyes",
+            "safe_name": "aching-heart",
+            "natural_prompt": "The character’s face is a map of an aching heart, with brows deeply furrowed in pain and eyes squeezed shut against the tears. Their mouth is pulled into a tight frown of despair, reflecting an intense inner agony."
+        },
+        {
+            "key": "silent scream 😥",
+            "description": "screaming, tears, open_mouth, expressionless, sad, despair, mouth_open",
+            "safe_name": "silent-scream-anguish",
+            "natural_prompt": "In a moment of absolute anguish, the character’s mouth is wide open in a silent scream, but no sound comes out. Their eyes are flooded with tears, and their face is an expressionless mask of pure, unbearable despair."
+        },
+        {
+            "key": "downtrodden 😞",
+            "description": "sad, frown, heavy_eyelids, depressed",
+            "safe_name": "downtrodden",
+            "natural_prompt": "The character looks completely downtrodden and weary, their heavy eyelids half-closed and their mouth set in a permanent, despondent frown. Every feature radiates a sense of being burdened by the weight of the world."
+        },
+        {
+            "key": "exhausted sigh 😮‍💨",
+            "description": "sigh, exhausted, closed_eyes, open_mouth, tired, heavy_eyelids",
+            "safe_name": "exhausted-sigh",
+            "natural_prompt": "Letting out a long, exhausted sigh, the character’s eyes are closed in weariness and their mouth is slightly open. Their heavy eyelids and slumped expression convey a total state of physical and emotional burnout."
+        }
     ],
     "Sexual 🔥": [
-        {"key":"seductive smile 😏","description":"seductive_smile, smirk, heavy_eyelids, come_hither, narrowed_eyes, smile, looking_at_viewer","safe_name":"seductive-smile"},
-        {"key":"aroused 🥵","description":"aroused, blush, sweat, open_mouth, heart, looking_at_viewer, smile","safe_name":"aroused"},
-        {"key":"in heat 🔥","description":"in_heat, blush, drooling, aroused, open_mouth, sweat, heart, heavy_breathing","safe_name":"in-heat"},
-        {"key":"afterglow ✨","description":"smile, happy, blush, closed_eyes, relaxing, soft, peaceful, satisfied","safe_name":"afterglow"},
-        {"key":"torogao 🫦","description":"torogao, drooling, blush, open_mouth, mouth_drool, saliva, smile, happy","safe_name":"torogao"},
-        {"key":"naughty face 😈","description":"naughty_face, smirk, raised_eyebrow, evil_smile, blush, narrow_eyes, smile","safe_name":"naughty-face"},
-        {"key":"ohhoai 🫦","description":"ohhoai, tongue_out, open_mouth, blush, aroused, smile, happy, looking_at_viewer","safe_name":"ohhoai"},
-        {"key":"ahegao face 😵‍💫","description":"ahegao, tongue_out, rolling_eyes, open_mouth, drooling, blush, cum, smile","safe_name":"ahegao"},
-        {"key":"teasing glance 😏","description":"smirk, sideways_mouth, heavy_eyelids, seductive_smile, smile, looking_at_viewer, narrowed_eyes","safe_name":"teasing-glance"},
-        {"key":"dominant allure 😈","description":"smirk, serious, narrowed_eyes, seductive_smile, glaring, confident, ","safe_name":"dominant-allure"},
-        {"key":"submissive blush 🥺","description":"blush, downcast_eyes, shy, parted_lips, embarrassed, sad_smile, trembling","safe_name":"submissive-blush"},
-        {"key":"sensual tension 🔥","description":"heavy_eyelids, parted_lips, blush, trembling, aroused, sweat, open_mouth, ","safe_name":"sensual-tension"},
-        {"key":"bedroom eyes 😍","description":"heavy_eyelids, seductive_smile, blush, aroused, looking_at_viewer, smile, ","safe_name":"bedroom-eyes"},
-        {"key":"soft moan 🫦","description":"moaning, parted_lips, heavy_eyelids, blush, aroused, open_mouth, smile, ","safe_name":"soft-moan"},
-        {"key":"biting lip 😏","description":"biting_lip, heavy_eyelids, blush, seductive_smile, smile, parted_lips, looking_at_viewer","safe_name":"biting-lip"},
-        {"key":"tongue tease 😛","description":"tongue_out, smirk, heavy_eyelids, naughty_face, smile, blush, open_mouth","safe_name":"tongue-tease"},
-        {"key":"flushed desire 🥵","description":"full-face_blush, aroused, heavy_eyelids, sweat, open_mouth, smile, heart","safe_name":"flushed-desire"},
-        {"key":"sultry pout 😘","description":"pout, heavy_eyelids, blush, seductive_smile, smile, parted_lips, closed_eyes","safe_name":"sultry-pout"},
-        {"key":"erotic daze 😵","description":"dazed, heavy_eyelids, blush, parted_lips, aroused, rolling_eyes, open_mouth, ","safe_name":"erotic-daze"},
-        {"key":"tongue out 🫦","description":"tongue_out, parted_lips, blush, open_mouth, smile, looking_at_viewer, heart, ","safe_name":"tongue-out-sexual"},
-        {"key":"moaning face 🤤","description":"moaning, open_mouth, drooling, blush, aroused, mouth_drool, saliva, smile, ","safe_name":"moaning-face"},
-        {"key":"glazed eyes 😵‍💫","description":"dazed, parted_lips, aroused, empty_eyes, rolling_eyes, heavy_eyelids, ","safe_name":"glazed-eyes-sexual"},
-        {"key":"choking face 😵","description":"pain, tongue_out, wide-eyed, blush, open_mouth, drooling, gagging, ","safe_name":"choking-face-strain"},
-        {"key":"kissing face 😗","description":"kissing, closed_eyes, puckered_lips, blush, puckered_face, smile, closed_mouth, happy","safe_name":"kissing-face"}
+        {
+            "key": "seductive smile 😏",
+            "description": "seductive_smile, smirk, heavy_eyelids, come_hither, narrowed_eyes, smile",
+            "safe_name": "seductive-smile",
+            "natural_prompt": "The character wears a heavy-lidded, seductive smile that is equal parts confident and alluring. One corner of their mouth is pulled into a smirk, and their narrowed eyes seem to beckon the viewer with a \"come hither\" look."
+        },
+        {
+            "key": "aroused 🥵",
+            "description": "aroused, blush, sweat, open_mouth, heart, smile",
+            "safe_name": "aroused",
+            "natural_prompt": "A clear look of arousal flushes the character’s face, with a deep blush and beads of sweat on their skin. Their mouth is slightly open and their eyes hold a shimmering heat, often accompanied by small heart symbols to show their desire."
+        },
+        {
+            "key": "in heat 🔥",
+            "description": "in_heat, blush, drooling, aroused, open_mouth, sweat, heart, heavy_breathing",
+            "safe_name": "in-heat",
+            "natural_prompt": "Overpowered by desire, the character’s face is heavily flushed and covered in sweat, their eyes wide with a desperate heat. They are breathing heavily through an open mouth, and a bit of drool escapes as their pupils take on a heart shape."
+        },
+        {
+            "key": "afterglow ✨",
+            "description": "smile, happy, blush, closed_eyes, relaxing, soft, peaceful, satisfied",
+            "safe_name": "afterglow",
+            "natural_prompt": "A look of pure, peaceful satisfaction and soft happiness settles over the character’s face in the afterglow. Their eyes are closed and a gentle, satisfied smile rests on their lips, radiating a sense of total relaxation and well-being."
+        },
+        {
+            "key": "torogao 🫦",
+            "description": "torogao, drooling, blush, open_mouth, mouth_drool, saliva, smile, happy",
+            "safe_name": "torogao",
+            "natural_prompt": "The character’s face is melted with pleasure into a \"torogao\" expression, their mouth open and drooling with saliva. Their eyes are dazed and happy, and their face is flushed with an intense, blissful blush."
+        },
+        {
+            "key": "naughty face 😈",
+            "description": "naughty_face, smirk, raised_eyebrow, evil_smile, blush, narrow_eyes, smile",
+            "safe_name": "naughty-face",
+            "natural_prompt": "The character’s face is full of naughty intent, with a sharp smirk and a playfully raised eyebrow. Their eyes are narrowed and focused, and a light blush suggests they are enjoying their own scandalous thoughts."
+        },
+        {
+            "key": "ohhoai 🫦",
+            "description": "ohhoai, tongue_out, open_mouth, blush, aroused, smile, happy",
+            "safe_name": "ohhoai",
+            "natural_prompt": "In a moment of playful arousal, the character sticks their tongue out slightly with an open mouth and a wide, happy smile. Their face is flushed with desire, and their eyes sparkle with a mixture of mischief and excitement."
+        },
+        {
+            "key": "ahegao face 😵‍💫",
+            "description": "ahegao, tongue_out, rolling_eyes, open_mouth, drooling, blush, cum, smile",
+            "safe_name": "ahegao",
+            "natural_prompt": "The character is lost in a state of extreme, cross-eyed ecstasy known as ahegao. Their tongue is lolling out, eyes are rolled back, and their face is flushed and covered in sweat and other fluids, capturing a total loss of control to pleasure."
+        },
+        {
+            "key": "teasing glance 😏",
+            "description": "smirk, sideways_mouth, heavy_eyelids, seductive_smile, smile, narrowed_eyes",
+            "safe_name": "teasing-glance",
+            "natural_prompt": "The character casts a playful, teasing glance over their shoulder, their eyes heavy-lidded and seductive. A small smirk and slightly parted lips suggest they are having fun pushing someone’s buttons."
+        },
+        {
+            "key": "dominant allure 😈",
+            "description": "smirk, serious, narrowed_eyes, seductive_smile, glaring, confident",
+            "safe_name": "dominant-allure",
+            "natural_prompt": "The character radiates a dangerous, dominant allure with a serious but seductive smile and eyes narrowed in a predator-like glare. Their expression is one of absolute confidence and irresistible power."
+        },
+        {
+            "key": "submissive blush 🥺",
+            "description": "blush, downcast_eyes, shy, parted_lips, embarrassed, sad_smile, trembling",
+            "safe_name": "submissive-blush",
+            "natural_prompt": "The character wears a deep, submissive blush, their eyes downcast and filled with a shy, embarrassed light. Their lips are slightly parted and their body is trembling, showing a vulnerable and yielding state."
+        },
+        {
+            "key": "sensual tension 🔥",
+            "description": "heavy_eyelids, parted_lips, blush, trembling, aroused, sweat, open_mouth",
+            "safe_name": "sensual-tension",
+            "natural_prompt": "A look of intense sensual tension tightens the character’s features, their face flushed and covered in a fine sheen of sweat. Their breathing is heavy through parted lips, and their eyes are wide with an unvoiced, desperate need."
+        },
+        {
+            "key": "bedroom eyes 😍",
+            "description": "heavy_eyelids, seductive_smile, blush, aroused, smile",
+            "safe_name": "bedroom-eyes",
+            "natural_prompt": "The character gazes with classic, heavy-lidded bedroom eyes that are full of unmistakable desire. A soft, seductive smile and a deep blush complete this look of pure, focused attraction."
+        },
+        {
+            "key": "soft moan 🫦",
+            "description": "moaning, parted_lips, heavy_eyelids, blush, aroused, open_mouth, smile",
+            "safe_name": "soft-moan",
+            "natural_prompt": "Caught in a moment of pleasure, the character’s lips are parted as if in a soft moan, their eyes heavy-lidded and hazy. A flush of arousal colors their cheeks, and their expression is one of mounting, blissful sensation."
+        },
+        {
+            "key": "biting lip 😏",
+            "description": "biting_lip, heavy_eyelids, blush, seductive_smile, smile, parted_lips",
+            "safe_name": "biting-lip",
+            "natural_prompt": "In a classic gesture of suppressed desire, the character is biting their lower lip hard while looking on with heavy-lidded, seductive eyes. Their face is flushed, and their smirk suggests they are enjoying the tension."
+        },
+        {
+            "key": "tongue tease 😛",
+            "description": "tongue_out, smirk, heavy_eyelids, naughty_face, smile, blush, open_mouth",
+            "safe_name": "tongue-tease",
+            "natural_prompt": "The character playfully sticks out their tongue in a seductive tease, their eyes heavy-lidded and full of mischief. A naughty smirk and a light blush show they are fully aware of the effect they’re having."
+        },
+        {
+            "key": "flushed desire 🥵",
+            "description": "full-face_blush, aroused, heavy_eyelids, sweat, open_mouth, smile, heart",
+            "safe_name": "flushed-desire",
+            "natural_prompt": "The character’s entire face is a deep crimson with flushed desire, their breathing ragged through an open mouth. Their eyes are heavy with need, and small hearts appear in their gaze as they struggle with their arousal."
+        },
+        {
+            "key": "sultry pout 😘",
+            "description": "pout, heavy_eyelids, blush, seductive_smile, smile, parted_lips, closed_eyes",
+            "safe_name": "sultry-pout",
+            "natural_prompt": "The character wears a sultry, inviting pout with their lips slightly puckered and eyes closed in a dreamlike state. A soft blush and heavy eyelids give them an air of irresistible, sleepy seduction."
+        },
+        {
+            "key": "erotic daze 😵",
+            "description": "dazed, heavy_eyelids, blush, parted_lips, aroused, rolling_eyes, open_mouth",
+            "safe_name": "erotic-daze",
+            "natural_prompt": "Lost in an erotic daze, the character’s eyes are rolled back and their mouth hangs open in a dazed, blissful expression. Their face is heavily flushed, and they seem completely untethered from reality by the intensity of their pleasure."
+        },
+        {
+            "key": "tongue out 🫦",
+            "description": "tongue_out, parted_lips, blush, open_mouth, smile, heart",
+            "safe_name": "tongue-out-sexual",
+            "natural_prompt": "With their tongue out and lips parted, the character’s face is a mask of pure, unbridled desire. Their eyes are wide and filled with heart-shaped pupils, and their face is flushed with the heat of their passion."
+        },
+        {
+            "key": "moaning face 🤤",
+            "description": "moaning, open_mouth, drooling, blush, aroused, mouth_drool, saliva, smile",
+            "safe_name": "moaning-face",
+            "natural_prompt": "The character’s face is contorted in a moaning expression, their mouth wide open and drooling with saliva. Their eyes are squeezed shut in pleasure, and their face is a deep, burning red from the intensity of their climax."
+        },
+        {
+            "key": "glazed eyes 😵‍💫",
+            "description": "dazed, parted_lips, aroused, empty_eyes, rolling_eyes, heavy_eyelids",
+            "safe_name": "glazed-eyes-sexual",
+            "natural_prompt": "The character’s eyes are glazed and unfocused, appearing dazed and empty as they are overwhelmed by sensation. Their lips are parted and their breathing is shallow, capturing a moment of pure, sensory overload."
+        },
+        {
+            "key": "choking face 😵",
+            "description": "pain, tongue_out, wide-eyed, blush, open_mouth, drooling, gagging",
+            "safe_name": "choking-face-strain",
+            "natural_prompt": "The character’s face shows the intense physical strain of being choked, with eyes wide and bulging and their tongue forced out. Their face is flushed a deep red, and they are gagging and drooling in a state of pained but aroused struggle."
+        },
+        {
+            "key": "kissing face 😗",
+            "description": "kissing, closed_eyes, puckered_lips, blush, puckered_face, smile, closed_mouth, happy",
+            "safe_name": "kissing-face",
+            "natural_prompt": "Prepared for a kiss, the character’s eyes are closed and their lips are sweetly puckered. A soft blush and a gentle, happy smile show they are anticipating a tender and loving moment."
+        }
     ],
     "Focus/Thought 🤔": [
-        {"key":"concentration 🧐","description":"thinking, closed_mouth, narrowed_eyes, serious, hand_on_own_chin","safe_name":"concentration"},
-        {"key":"meditation 🧘","description":"closed_eyes, smile, relaxing, happy, ","safe_name":"meditation"},
-        {"key":"deep thought 🤔","description":"thinking, hand_on_own_chin, furrowed_brow, pensive, looking_away","safe_name":"deep-thought"},
-        {"key":"unimpressed 😒","description":"closed_mouth, narrowed_eyes, frown, deadpan, unamused","safe_name":"unimpressed"},
-        {"key":"deadpan 😐","description":"expressionless, closed_mouth","safe_name":"deadpan-face"},
-        {"key":"bored 🥱","description":"heavy_eyelids, closed_eyes, expressionless","safe_name":"bored"},
-        {"key":"skeptical 🤨","description":"raised_eyebrow, frown, unamused, narrowed_eyes, looking_at_viewer","safe_name":"skeptical"},
-        {"key":"cynical 🙄","description":"rolling_eyes, smirk, unamused, narrowed_eyes, looking_away","safe_name":"cynical-face"},
-        {"key":"side eye 👀","description":"looking_to_the_side, frown, serious, narrowed_eyes","safe_name":"side-eye"},
-        {"key":"puzzled 🤔","description":"raised_eyebrow, parted_lips, confused, thinking, open_mouth","safe_name":"puzzled"},
-        {"key":"amusement/disbelief 😂","description":"laughing, open_mouth, closed_eyes, smile, surprised","safe_name":"amusement-disbelief"}
+        {
+            "key": "concentration 🧐",
+            "description": "thinking, closed_mouth, narrowed_eyes, serious",
+            "safe_name": "concentration",
+            "natural_prompt": "The character is in a state of deep concentration, their eyes narrowed and fixed on a specific point. Their mouth is shut tight in a serious line, reflecting the intensity of their mental effort and focus."
+        },
+        {
+            "key": "meditation 🧘",
+            "description": "closed_eyes, smile, relaxing, happy",
+            "safe_name": "meditation",
+            "natural_prompt": "A serene look of meditation settles over the character, their eyes closed and a soft, peaceful smile on their lips. Their expression is one of total relaxation and inner harmony, as if they are miles away in a state of calm."
+        },
+        {
+            "key": "deep thought 🤔",
+            "description": "thinking, furrowed_brow, pensive, looking_away",
+            "safe_name": "deep-thought",
+            "natural_prompt": "Lost in deep thought, the character’s brow is furrowed and they are looking away with a pensive, analytical expression. They seem to be weighing complex ideas, completely absorbed in their own internal monologue."
+        },
+        {
+            "key": "unimpressed 😒",
+            "description": "closed_mouth, narrowed_eyes, frown, deadpan, unamused",
+            "safe_name": "unimpressed",
+            "natural_prompt": "The character looks thoroughly unimpressed, their eyes narrowed in a deadpan, unamused stare. Their mouth is set in a firm, flat line or a small frown, radiating a clear message of \"I am not entertained.\""
+        },
+        {
+            "key": "deadpan 😐",
+            "description": "expressionless, closed_mouth",
+            "safe_name": "deadpan-face",
+            "natural_prompt": "The character’s face is a complete blank, a deadpan expression with a closed mouth and eyes that betray absolutely no emotion. They look like a stone wall, impossible to read or provoke."
+        },
+        {
+            "key": "bored 🥱",
+            "description": "heavy_eyelids, closed_eyes, expressionless",
+            "safe_name": "bored",
+            "natural_prompt": "Absolute boredom is etched on the character’s face, their heavy eyelids half-closed and eyes looking completely lifeless. Their expression is utterly blank, conveying a total lack of interest in anything happening around them."
+        },
+        {
+            "key": "skeptical 🤨",
+            "description": "raised_eyebrow, frown, unamused, narrowed_eyes",
+            "safe_name": "skeptical",
+            "natural_prompt": "One eyebrow is raised in a sharp, skeptical arch while the character’s eyes are narrowed in suspicion. Their mouth is pulled into a small, unamused frown, clearly signaling their doubt and disbelief."
+        },
+        {
+            "key": "cynical 🙄",
+            "description": "rolling_eyes, smirk, unamused, narrowed_eyes, looking_away",
+            "safe_name": "cynical-face",
+            "natural_prompt": "The character lets out a cynical eye-roll, their gaze looking away with an unamused smirk. Their narrowed eyes and mocking expression reflect a deeply-ingrained sense of skepticism and weary disbelief."
+        },
+        {
+            "key": "side eye 👀",
+            "description": "looking_to_the_side, frown, serious, narrowed_eyes",
+            "safe_name": "side-eye",
+            "natural_prompt": "The character casts a sharp side-eye, their gaze looking to the side with a serious and narrowed focus. Their mouth is set in a firm frown, conveying a sense of suspicion and silent judgment."
+        },
+        {
+            "key": "puzzled 🤔",
+            "description": "raised_eyebrow, parted_lips, confused, thinking, open_mouth",
+            "safe_name": "puzzled",
+            "natural_prompt": "A look of puzzled confusion crosses the character’s face, one eyebrow raised and lips slightly parted in a small \"o\". They look like they are trying to process something that doesn’t quite make sense."
+        },
+        {
+            "key": "amusement/disbelief 😂",
+            "description": "laughing, open_mouth, closed_eyes, smile, surprised",
+            "safe_name": "amusement-disbelief",
+            "natural_prompt": "Caught between a laugh and a look of total disbelief, the character’s mouth is wide open in a happy smile. Their eyes are closed in amusement as they find the situation both hilarious and completely absurd."
+        }
     ],
     "Pain/Ailment 🤕": [
-        {"key":"physical pain 😫","description":"open_mouth, closed_eyes, wince, clenched_teeth, tears","safe_name":"physical-pain"},
-        {"key":"headache 🤕","description":"hand_on_own_chin, closed_eyes, wince, pain, open_mouth","safe_name":"headache"},
-        {"key":"wincing 😖","description":"clenched_teeth, scrunched_eyes, pain, closed_eyes, open_mouth","safe_name":"wincing"},
-        {"key":"biting lower lip 😬","description":"biting_lip, wince, narrowed_eyes, pain, open_mouth","safe_name":"biting-lower-lip"},
-        {"key":"confused perplexity 🤯","description":"confused, open_mouth, furrowed_brow, thinking, wide-eyed","safe_name":"confused-perplexity"}
+        {
+            "key": "physical pain 😫",
+            "description": "open_mouth, closed_eyes, wince, clenched_teeth, tears",
+            "safe_name": "physical-pain",
+            "natural_prompt": "The character’s face is contorted in a look of sudden physical pain, their eyes squeezed shut and teeth bared in a tight clench. Their mouth is open in a silent wince, and a few tears of agony escape their lashes."
+        },
+        {
+            "key": "headache 🤕",
+            "description": "closed_eyes, wince, pain, open_mouth",
+            "safe_name": "headache",
+            "natural_prompt": "Suffering from a throbbing headache, the character’s eyes are tightly closed and their face is twisted in a painful wince. Their mouth is slightly open, as if they are trying to breathe through the waves of pressure in their head."
+        },
+        {
+            "key": "wincing 😖",
+            "description": "clenched_teeth, scrunched_eyes, pain, closed_eyes, open_mouth",
+            "safe_name": "wincing",
+            "natural_prompt": "The character is caught in a sharp wince, their teeth clenched and eyes scrunched shut against a sudden Pang of pain. Their face is tight with tension, and their mouth is open in a pained grimace."
+        },
+        {
+            "key": "biting lower lip 😬",
+            "description": "biting_lip, wince, narrowed_eyes, pain, open_mouth",
+            "safe_name": "biting-lower-lip",
+            "natural_prompt": "In an attempt to endure pain, the character is biting their lower lip hard while their eyes are narrowed and focused. Their face is a mask of pained tension, showing the sheer effort of keeping a scream at bay."
+        },
+        {
+            "key": "confused perplexity 🤯",
+            "description": "confused, open_mouth, furrowed_brow, thinking, wide-eyed",
+            "safe_name": "confused-perplexity",
+            "natural_prompt": "The character’s mind seems to have exploded with confused perplexity, their eyebrows furrowed and eyes wide with a complete lack of understanding. Their mouth is open as they stumble through a mental fog."
+        }
     ],
     "Emotes 🤪": [
-        {"key": ";) (wink) 😉","description":"wink, smile, closed_mouth, one_eye_closed, happy, looking_at_viewer","safe_name":"wink"},
-        {"key": ";D (cheeky grin) 😜","description":"grin, open_mouth, smile, closed_eyes, squinting, raised_eyebrows","safe_name":"cheeky-grin"},
-        {"key":"XD (laughing) 😆","description":"laughing, closed_eyes, open_mouth, smile, ","safe_name":"laughing-face"},
-        {"key":"D: (shock) 😧","description":"shocked, wide-eyed, open_mouth, open_mouth, surprised, ","safe_name":"shock-face"},
-        {"key":":3 (cat smile) 🐱","description":"smile, open_mouth, closed_mouth, happy, ","safe_name":"cat-smile"},
-        {"key":";3 (flirty cat) 😽","description":"smile, wink, one_eye_closed, open_mouth, closed_mouth, happy","safe_name":"flirty-cat"},
-        {"key":"x3 (anime grin) 😸","description":"grin, smile, closed_eyes, open_mouth, happy, ","safe_name":"anime-grin"},
-        {"key":"3: (pout) 😠","description":"pout, narrowed_eyes, frown, closed_mouth, angry, open_mouth","safe_name":"pout-face"},
-        {"key":"0w0 (excited anime) 🤩","description":"surprised, wide-eyed, open_mouth, smile, happy, closed_eyes","safe_name":"excited-anime"},
-        {"key":"uwu (bashful) 🥺","description":"smile, closed_eyes, blush, happy, shy, ","safe_name":"uwu"},
-        {"key":":p (tongue out) 😛","description":"tongue_out, open_mouth, smile, happy, closed_eyes","safe_name":"tongue-out"},
-        {"key": ";p (wink tongue) 😜","description":"tongue_out, wink, one_eye_closed, open_mouth, smile, happy","safe_name":"wink-tongue"},
-        {"key": ":q (quirky) 🤪","description":"open_mouth, puckered_lips, raised_eyebrows, smile, happy","safe_name":"quirky-face"},
-        {"key": ";q (flirty pucker) 😚","description":"puckered_lips, wink, one_eye_closed, closed_eyes, smile, happy","safe_name":"flirty-pucker"},
-        {"key":">:)","description":"evil_grin, grin, narrowed_eyes, raised_eyebrows, smirk, open_mouth","safe_name":"evil-grin"},
-        {"key":">:(","description":"angry, furrowed_brow, clenched_teeth, scowl, closed_mouth, open_mouth","safe_name":"angry-emote"},
-        {"key": ":t (awkward) 😬","description":"clenched_teeth, serious, narrowed_eyes, closed_mouth, nervous","safe_name":"awkward-face"},
-        {"key": ":i (indifferent) 😐","description":"expressionless, closed_mouth,  deadpan, white_background","safe_name":"indifferent"},
-        {"key": ":/ (uncertain) 😕","description":"sideways_mouth, raised_eyebrow, uncertain, frown, closed_mouth","safe_name":"uncertain"},
-        {"key": ":| (neutral) 😐","description":"expressionless, closed_mouth,  deadpan, neutral","safe_name":"neutral-emote"},
-        {"key":"x mouth (silent) 🤐","description":"closed_mouth, expressionless,  silent, no_mouth","safe_name":"x-mouth"},
-        {"key": ":c (sad) 😢","description":"sad, frown, closed_mouth, tears, crying, ","safe_name":"sad-emote"},
-        {"key":"c: (hopeful) 😊","description":"smile, closed_mouth, happy,  looking_at_viewer","safe_name":"hopeful-smile"},
-        {"key": ":< (disappointed) 😞","description":"frown, sad, closed_mouth, disappointed, ","safe_name":"disappointed"},
-        {"key": ";< (winking frown) 😔","description":"frown, wink, one_eye_closed, sad, closed_mouth, ","safe_name":"winking-frown"},
-        {"key":"diamond mouth (stylized) 🔷","description":"surprised, open_mouth,  wide-eyed","safe_name":"diamond-mouth"},
-        {"key": ":> (smug) 😏","description":"smirk, smile, narrowed_eyes, closed_mouth, looking_at_viewer","safe_name":"smug-smile"},
-        {"key": ":>= (awkward grin) 😬","description":"grin, awkward, squinting, clenched_teeth, closed_eyes","safe_name":"awkward-grin"},
-        {"key": ":o (surprised) 😮","description":"surprised, open_mouth, wide-eyed, ","safe_name":"surprised-emote"},
-        {"key": ";o (winking surprise) 😲","description":"surprised, open_mouth, wink, wide-eyed, one_eye_closed","safe_name":"winking-surprise"},
-        {"key":"o3o (anime pout) 😗","description":"pout, open_mouth, puckered_lips, closed_eyes, ","safe_name":"anime-pout"},
-        {"key":">3< (scrunched pout) 😣","description":"pout, closed_eyes, scrunched, clenched_teeth, frown","safe_name":"scrunched-pout"},
-        {"key":"o_o (blank stare) 😐","description":"wide-eyed, expressionless, open_mouth, ","safe_name":"blank-stare"},
-        {"key":"0_0 (anime shock) 😳","description":"wide-eyed, shocked,  surprised, open_mouth","safe_name":"anime-shock"},
-        {"key":"|_| (expressionless) 😶","description":"expressionless, closed_eyes,  closed_mouth","safe_name":"expressionless"},
-        {"key":"._. (tired) 😩","description":"heavy_eyelids, expressionless, closed_mouth, ","safe_name":"tired-face"},
-        {"key":"solid circle eyes (stylized) ⚫⚫","description":"expressionless,  blank_eyes, closed_mouth","safe_name":"circle-eyes"},
-        {"key":"heart-shaped eyes (adoring) 😍","description":"smile, blush, closed_eyes, happy, ","safe_name":"heart-eyes"},
-        {"key":"^_^ (happy) 😊","description":"smile, closed_eyes, happy,  looking_at_viewer","safe_name":"happy-emote"},
-        {"key":"\\(^o^)/ (cheering) 🎉","description":"open_mouth, smile, happy, closed_eyes, ","safe_name":"cheering"},
-        {"key":"^q^ (playful pucker) 😚","description":"puckered_lips, closed_eyes, smile, happy, ","safe_name":"playful-pucker"},
-        {"key":">_< (frustrated) 😣","description":"closed_eyes, frustrated, clenched_teeth, frown, scrunched","safe_name":"frustrated-emote"},
-        {"key":">o< (angry pout) 😠","description":"pout, angry, closed_eyes, clenched_teeth, frown","safe_name":"angry-pout"},
-        {"key":"@_@ (dizzy) 😵","description":"dizzy, expressionless,  rolling_eyes","safe_name":"dizzy"},
-        {"key":">_@ (suspicious) 🧐","description":"narrowed_eyes, raised_eyebrow, suspicious, looking_to_the_side","safe_name":"suspicious"},
-        {"key":"+_+ (exhausted) 😫","description":"exhausted, expressionless, closed_eyes, ","safe_name":"exhausted"},
-        {"key":"+_- (sarcastic) 😒","description":"narrowed_eyes, smirk, unamused, closed_mouth, looking_away","safe_name":"sarcastic"},
-        {"key":"=_= (deadpan) 😑","description":"closed_eyes, expressionless,  deadpan, closed_mouth","safe_name":"deadpan"},
-        {"key":"t_t (crying) 😭","description":"crying, tears, closed_eyes, sad, frown, ","safe_name":"crying-emote"},
-        {"key":"<o>_<o> (anime glare) 😠","description":"glaring, angry, narrowed_eyes, frown, ","safe_name":"anime-glare"},
-        {"key":"<|>_<|> (focused glare) 👁️","description":"glaring, serious, narrowed_eyes,  looking_at_viewer","safe_name":"focused-glare"}
+        {
+            "key": ";) (wink) 😉",
+            "description": "wink, smile, closed_mouth, one_eye_closed, happy",
+            "safe_name": "wink",
+            "natural_prompt": "The character gives a playful wink with one eye closed and a warm, happy smile on their lips. It’s a classic and charming expression that radiates friendliness and a touch of flirtatious fun."
+        },
+        {
+            "key": ";D (cheeky grin) 😜",
+            "description": "grin, open_mouth, smile, closed_eyes, squinting, raised_eyebrows",
+            "safe_name": "cheeky-grin",
+            "natural_prompt": "A broad, cheeky grin stretches across the character’s face, their mouth open in a joyful laugh. Their eyebrows are raised and their eyes are squinted in delight, perfectly capturing a sense of naughty amusement."
+        },
+        {
+            "key": "XD (laughing) 😆",
+            "description": "laughing, closed_eyes, open_mouth, smile",
+            "safe_name": "laughing-face",
+            "natural_prompt": "The character is burst out laughing with their eyes squeezed shut in the shape of an \"X\" and their mouth wide open in a happy grin. It’s a high-energy expression of pure, unadulterated hilarity."
+        },
+        {
+            "key": "D: (shock) 😧",
+            "description": "shocked, wide-eyed, open_mouth, open_mouth, surprised",
+            "safe_name": "shock-face",
+            "natural_prompt": "The character’s face is a mask of pure shock, their eyes wide and staring while their mouth is thrown open in a large, stunned circle. They look like they’ve just witnessed something truly horrifying or unbelievable."
+        },
+        {
+            "key": ":3 (cat smile) 🐱",
+            "description": "smile, open_mouth, closed_mouth, happy",
+            "safe_name": "cat-smile",
+            "natural_prompt": "The character wears a famous adorable \"cat smile\" with a mouth curved into a cute :3 shape. Their eyes are bright and happy, giving them a whimsical and feline-like charm."
+        },
+        {
+            "key": ";3 (flirty cat) 😽",
+            "description": "smile, wink, one_eye_closed, open_mouth, closed_mouth, happy",
+            "safe_name": "flirty-cat",
+            "natural_prompt": "Combining a cat smile with a playful wink, the character looks both adorable and a little bit flirty. Their mouth is set in a cute :3 shape while one eye is playfully closed in a wink."
+        },
+        {
+            "key": "x3 (anime grin) 😸",
+            "description": "grin, smile, closed_eyes, open_mouth, happy",
+            "safe_name": "anime-grin",
+            "natural_prompt": "The character sports a wide, high-energy anime grin with their eyes closed in happy squints and their mouth open in a joyful laugh. It’s a quintessential look of pure, exaggerated cheer."
+        },
+        {
+            "key": "3: (pout) 😠",
+            "description": "pout, narrowed_eyes, frown, closed_mouth, angry, open_mouth",
+            "safe_name": "pout-face",
+            "natural_prompt": "A cute but clearly angry pout twists the character’s face, their mouth set in a firm, downward curve. Their eyes are narrowed in an annoyed stare, blending childish defiance with real irritation."
+        },
+        {
+            "key": "0w0 (excited anime) 🤩",
+            "description": "surprised, wide-eyed, open_mouth, smile, happy, closed_eyes",
+            "safe_name": "excited-anime",
+            "natural_prompt": "The character’s eyes are huge and sparkling with excitement, while their mouth is a tiny, cute \"w\" shape. It’s an expression of intense curiosity and delighted anime-style wonder."
+        },
+        {
+            "key": "uwu (bashful) 🥺",
+            "description": "smile, closed_eyes, blush, happy, shy",
+            "safe_name": "uwu",
+            "natural_prompt": "The character wears a soft, bashful \"uwu\" look with their eyes closed and a sweet, gentle smile. A soft blush on their cheeks makes them look incredibly innocent and appreciative."
+        },
+        {
+            "key": ":p (tongue out) 😛",
+            "description": "tongue_out, open_mouth, smile, happy, closed_eyes",
+            "safe_name": "tongue-out",
+            "natural_prompt": "Adorably playful, the character sticks their tongue out with a wide, happy smile. Their eyes are closed in a joyful squint, capturing a moment of lighthearted fun and teasing."
+        },
+        {
+            "key": ";p (wink tongue) 😜",
+            "description": "tongue_out, wink, one_eye_closed, open_mouth, smile, happy",
+            "safe_name": "wink-tongue",
+            "natural_prompt": "The character gives a cheeky wink while sticking their tongue out in a playful tease. It’s a high-energy look of naughty fun and flirtatious amusement."
+        },
+        {
+            "key": ":q (quirky) 🤪",
+            "description": "open_mouth, puckered_lips, raised_eyebrows, smile, happy",
+            "safe_name": "quirky-face",
+            "natural_prompt": "The character’s face is full of quirky energy, with their lips puckered to one side and eyebrows raised in a funny arch. They look genuinely happy and a little bit eccentric in a fun way."
+        },
+        {
+            "key": ";q (flirty pucker) 😚",
+            "description": "puckered_lips, wink, one_eye_closed, closed_eyes, smile, happy",
+            "safe_name": "flirty-pucker",
+            "natural_prompt": "Preparing for a playful, flirty kiss, the character has their lips puckered while one eye is playfully closed in a wink. It’s a charming look of affectionate fun."
+        },
+        {
+            "key": ">:)",
+            "description": "evil_grin, grin, narrowed_eyes, raised_eyebrows, smirk, open_mouth",
+            "safe_name": "evil-grin",
+            "natural_prompt": "The character wears a dark, evil grin with their eyebrows raised in a sinister arch and eyes narrowed in a calculating smirk. It’s the face of a villain who has just hatched a perfect, wicked plan."
+        },
+        {
+            "key": ">:(",
+            "description": "angry, furrowed_brow, clenched_teeth, scowl, closed_mouth, open_mouth",
+            "safe_name": "angry-emote",
+            "natural_prompt": "A face of pure, focused anger, with eyebrows deeply furrowed and a sharp scowl pulling at the mouth. The teeth are bared in a tight clench, radiating a sense of intense and direct hostility."
+        },
+        {
+            "key": ":t (awkward) 😬",
+            "description": "clenched_teeth, serious, narrowed_eyes, closed_mouth, nervous",
+            "safe_name": "awkward-face",
+            "natural_prompt": "The character’s face is a mask of awkward tension, their teeth clenched together in a tight, nervous grin. Their eyes are narrowed and serious, as if they are cringing at a social faux pas."
+        },
+        {
+            "key": ":i (indifferent) 😐",
+            "description": "expressionless, closed_mouth, deadpan",
+            "safe_name": "indifferent",
+            "natural_prompt": "The character is the picture of total indifference, with a deadpan expression and a mouth pressed into a thin, expressionless line. They look completely unbothered and detached from everything."
+        },
+        {
+            "key": ":/ (uncertain) 😕",
+            "description": "sideways_mouth, raised_eyebrow, uncertain, frown, closed_mouth",
+            "safe_name": "uncertain",
+            "natural_prompt": "A look of uncertain doubt crosses the character’s face, their mouth pulled to one side in a crooked line. One eyebrow is raised, reflecting their confusion and lack of confidence in the situation."
+        },
+        {
+            "key": ":| (neutral) 😐",
+            "description": "expressionless, closed_mouth, deadpan, neutral",
+            "safe_name": "neutral-emote",
+            "natural_prompt": "The character’s face is a complete neutral blank, with an expressionless gaze and a mouth that shows neither joy nor sorrow. It’s a perfectly balanced, emotionless state."
+        },
+        {
+            "key": "x mouth (silent) 🤐",
+            "description": "closed_mouth, expressionless, silent, no_mouth",
+            "safe_name": "x-mouth",
+            "natural_prompt": "The character looks absolutely silent and stoic, their mouth nonexistent or crossed out in a sign of forced or chosen silence. Their eyes are blank and unreadable, emphasizing their lack of voice."
+        },
+        {
+            "key": ":c (sad) 😢",
+            "description": "sad, frown, closed_mouth, tears, crying",
+            "safe_name": "sad-emote",
+            "natural_prompt": "A simple and heartbreaking expression of sadness, with the mouth pulled into a deep, downward frown. Tears well up in the eyes, capturing a moment of pure, solitary sorrow."
+        },
+        {
+            "key": "c: (hopeful) 😊",
+            "description": "smile, closed_mouth, happy",
+            "safe_name": "hopeful-smile",
+            "natural_prompt": "The character wears a bright, hopeful smile that reaches their eyes, radiating a sense of optimistic happiness. Their expression is simple, pure, and genuinely uplifting."
+        },
+        {
+            "key": ":< (disappointed) 😞",
+            "description": "frown, sad, closed_mouth, disappointed",
+            "safe_name": "disappointed",
+            "natural_prompt": "A look of heavy disappointment weights down the character’s features, with a deep frown and sad, downcast eyes. They look like they’ve just received some truly discouraging news."
+        },
+        {
+            "key": ";< (winking frown) 😔",
+            "description": "frown, wink, one_eye_closed, sad, closed_mouth",
+            "safe_name": "winking-frown",
+            "natural_prompt": "Combining a sad frown with a weary wink, the character looks like they are trying to hide their deep sorrow with a touch of irony. Their expression is one of tired, resigned sadness."
+        },
+        {
+            "key": "diamond mouth (stylized) 🔷",
+            "description": "surprised, open_mouth, wide-eyed",
+            "safe_name": "diamond-mouth",
+            "natural_prompt": "The character’s mouth is open in a stylized, diamond-shaped gasp of surprise, their eyes wide with wonder. It’s a clean and graphic expression of sudden, sharp astonishment."
+        },
+        {
+            "key": ":> (smug) 😏",
+            "description": "smirk, smile, narrowed_eyes, closed_mouth",
+            "safe_name": "smug-smile",
+            "natural_prompt": "A small, self-satisfied smirk plays on the character’s lips, their eyes narrowed in a smug and knowing stare. It’s a subtle but clearly confident look of superiority."
+        },
+        {
+            "key": ":>= (awkward grin) 😬",
+            "description": "grin, awkward, squinting, clenched_teeth, closed_eyes",
+            "safe_name": "awkward-grin",
+            "natural_prompt": "The character wears a wide, awkward grin that exposes their clenched teeth, while their eyes are squeezed shut in a nervous squint. They look like they are trying to force a smile through a very cringy situation."
+        },
+        {
+            "key": ":o (surprised) 😮",
+            "description": "surprised, open_mouth, wide-eyed",
+            "safe_name": "surprised-emote",
+            "natural_prompt": "The character’s mouth is open in a perfect \"o\" of surprise, their eyes wide with a look of sudden, clear-eyed wonder. It’s a quintessential and easily readable face of astonishment."
+        },
+        {
+            "key": ";o (winking surprise) 😲",
+            "description": "surprised, open_mouth, wink, wide-eyed, one_eye_closed",
+            "safe_name": "winking-surprise",
+            "natural_prompt": "Combining a look of surprise with a playful wink, the character looks both shocked and a little bit amused by the turn of events. Their mouth is open in a gasp while one eye is playfully closed."
+        },
+        {
+            "key": "o3o (anime pout) 😗",
+            "description": "pout, open_mouth, puckered_lips, closed_eyes",
+            "safe_name": "anime-pout",
+            "natural_prompt": "The character sports a classic anime-style pout with their lips puckered out like a small bird’s beak. Their eyes are closed in a defiant squint, making them look adorable yet clearly annoyed."
+        },
+        {
+            "key": ">3< (scrunched pout) 😣",
+            "description": "pout, closed_eyes, scrunched, clenched_teeth, frown",
+            "safe_name": "scrunched-pout",
+            "natural_prompt": "The character’s whole face is scrunched up in an intense pout, with eyes squeezed shut and teeth bared in a frustrated clench. Their mouth is pulled into a tight, unhappy curve of pure childish defiance."
+        },
+        {
+            "key": "o_o (blank stare) 😐",
+            "description": "wide-eyed, expressionless, open_mouth",
+            "safe_name": "blank-stare",
+            "natural_prompt": "The character is caught in a wide-eyed, blank stare that conveys a sense of stunned disbelief or total mental emptiness. Their mouth is slightly open, making them look completely lost for words."
+        },
+        {
+            "key": "0_0 (anime shock) 😳",
+            "description": "wide-eyed, shocked, surprised, open_mouth",
+            "safe_name": "anime-shock",
+            "natural_prompt": "A look of pure, wide-eyed anime shock takes over the character’s face, their eyes becoming huge circles. Their mouth is slightly open, and they look completely paralyzed by a jarring surprise."
+        },
+        {
+            "key": "|_| (expressionless) 😶",
+            "description": "expressionless, closed_eyes, closed_mouth",
+            "safe_name": "expressionless",
+            "natural_prompt": "The character’s face is a complete void of emotion, with eyes closed and mouth pressed into a flat, expressionless line. They look like they have simply checked out from reality."
+        },
+        {
+            "key": "._. (tired) 😩",
+            "description": "heavy_eyelids, expressionless, closed_mouth",
+            "safe_name": "tired-face",
+            "natural_prompt": "Weary and worn out, the character’s heavy eyelids are half-closed and their mouth is a flat line of total exhaustion. They look like they haven’t slept in days and have simply given up on being expressive."
+        },
+        {
+            "key": "solid circle eyes (stylized) ⚫⚫",
+            "description": "expressionless, blank_eyes, closed_mouth",
+            "safe_name": "circle-eyes",
+            "natural_prompt": "Using stylized solid black circle eyes, the character’s face is an unreadable mask of blankness. Their mouth is closed, reinforcing a sense of being an empty, emotionless shell."
+        },
+        {
+            "key": "heart-shaped eyes (adoring) 😍",
+            "description": "smile, blush, closed_eyes, happy",
+            "safe_name": "heart-eyes",
+            "natural_prompt": "The character’s eyes are wide and filled with love, appearing almost like hearts. A broad, happy smile and a deep blush show they are completely captivated and adoring whatever they are looking at."
+        },
+        {
+            "key": "^_^ (happy) 😊",
+            "description": "smile, closed_eyes, happy",
+            "safe_name": "happy-emote",
+            "natural_prompt": "A simple and sweet expression of happiness, with eyes closed in a joyful squint and a gentle smile on the lips. It radiates a pure and uncomplicated sense of well-being."
+        },
+        {
+            "key": "\\(^o^)/ (cheering) 🎉",
+            "description": "open_mouth, smile, happy, closed_eyes",
+            "safe_name": "cheering",
+            "natural_prompt": "The character is burst with joy, their mouth wide open in a happy shout and eyes closed in a delighted squint. It’s a high-energy look of pure celebration and cheering excitement."
+        },
+        {
+            "key": "^q^ (playful pucker) 😚",
+            "description": "puckered_lips, closed_eyes, smile, happy",
+            "safe_name": "playful-pucker",
+            "natural_prompt": "With eyes closed and a playful, cute pucker on their lips, the character looks absolutely adorable. It’s a sweet and whimsical expression of innocent, happy affection."
+        },
+        {
+            "key": ">_< (frustrated) 😣",
+            "description": "closed_eyes, frustrated, clenched_teeth, frown, scrunched",
+            "safe_name": "frustrated-emote",
+            "natural_prompt": "The character’s eyes are squeezed shut in a frustrated scrunched-up look, their teeth bared in a tight, unhappy clench. Every feature shows the strain of intense irritation and mounting annoyance."
+        },
+        {
+            "key": ">o< (angry pout) 😠",
+            "description": "pout, angry, closed_eyes, clenched_teeth, frown",
+            "safe_name": "angry-pout",
+            "natural_prompt": "A face of pure, adorable rage, with eyes squeezed shut and lips pulled into an angry, bird-like pout. Their teeth are bared in a frustration-filled clench, blending anger with a cute, childish defiance."
+        },
+        {
+            "key": "@_@ (dizzy) 😵",
+            "description": "dizzy, expressionless, rolling_eyes",
+            "safe_name": "dizzy",
+            "natural_prompt": "The character looks completely dizzy and disoriented, their eyes rolling in their sockets in a spiraling motion. Their face is a blank mask of confusion as they struggle to keep their balance."
+        },
+        {
+            "key": ">_@ (suspicious) 🧐",
+            "description": "narrowed_eyes, raised_eyebrow, suspicious, looking_to_the_side",
+            "safe_name": "suspicious",
+            "natural_prompt": "One eye is narrowed in suspicion while the other is wide, paired with a skeptical, raised eyebrow. The character’s gaze is cast to the side, looking like they are searching for a lie in everything you say."
+        },
+        {
+            "key": "+_+ (exhausted) 😫",
+            "description": "exhausted, expressionless, closed_eyes",
+            "safe_name": "exhausted",
+            "natural_prompt": "The character looks completely drained and exhausted, their eyes closed and replaced by stylized plus signs. Their face is an expressionless mask of total physical and mental burnout."
+        },
+        {
+            "key": "+_- (sarcastic) 😒",
+            "description": "narrowed_eyes, smirk, unamused, closed_mouth, looking_away",
+            "safe_name": "sarcastic",
+            "natural_prompt": "With one eye narrowed and a subtle, unamused smirk, the character radiates a sense of weary sarcasm. Their gaze is averted, showing they are completely unimpressed and done with the nonsense."
+        },
+        {
+            "key": "=_= (deadpan) 😑",
+            "description": "closed_eyes, expressionless, deadpan, closed_mouth",
+            "safe_name": "deadpan",
+            "natural_prompt": "A classic deadpan expression with eyes squeezed into flat lines and a mouth set in a firm, neutral line. They look like they are enduring a situation with extreme, unamused patience."
+        },
+        {
+            "key": "t_t (crying) 😭",
+            "description": "crying, tears, closed_eyes, sad, frown",
+            "safe_name": "crying-emote",
+            "natural_prompt": "Tears pour from the character’s tightly closed eyes in a simple, stylized expression of grief. Their mouth is pulled into a sad, downward frown, capturing a moment of pure, uncomplicated sorrow."
+        },
+        {
+            "key": "<o>_<o> (anime glare) 😠",
+            "description": "glaring, angry, narrowed_eyes, frown",
+            "safe_name": "anime-glare",
+            "natural_prompt": "The character casts an intense anime glare with narrowed eyes and a deep, angry frown. Their features are sharp and focused, radiating a sense of direct and powerful hostility."
+        },
+        {
+            "key": "<|>_<|> (focused glare) 👁️",
+            "description": "glaring, serious, narrowed_eyes",
+            "safe_name": "focused-glare",
+            "natural_prompt": "The character’s eyes are narrowed into dangerous slits of absolute focus and serious intent. Their expression is a cold, lethal glare that leaves no doubt about their deadly determination."
+        }
     ]
 }
