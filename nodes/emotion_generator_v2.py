@@ -301,9 +301,7 @@ class EmotionGeneratorV2:
 
                 # Path construction
                 face_dir = os.path.join(character_path, "Faces", costume, emotion_key)
-                os.makedirs(face_dir, exist_ok=True)
                 sheet_dir = os.path.join(character_path, "Sheets", costume, emotion_key)
-                os.makedirs(sheet_dir, exist_ok=True)
                 
                 face_output_path = os.path.join(face_dir, f"face_{emotion_key}_")
                 sheet_output_path = os.path.join(sheet_dir, f"sheet_{emotion_key}_")
@@ -342,9 +340,7 @@ class EmotionGeneratorV2:
                 images.append(img_tensor)
                 emotions_out.append(emotion_text)
                 masks.append(curr_mask_tensor)
-                # 12 crops per sheet usually
-                for _ in range(12):
-                    face_output_paths.append(face_output_path)
+                face_output_paths.append(face_output_path)
                 sheet_output_paths.append(sheet_output_path)
 
         # Return results even if no images (user may not have connected image input)

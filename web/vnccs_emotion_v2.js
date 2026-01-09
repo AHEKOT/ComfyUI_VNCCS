@@ -57,7 +57,7 @@ const STYLE = `
     color: white;
     padding: 5px 10px;
     font-weight: bold;
-    font-size: 32px; /* Doubled from 16px */
+    font-size: 16px; /* Reduced to match user request */
     border-bottom: 2px solid #555;
     margin-bottom: 5px;
     border-radius: 8px 8px 0 0;
