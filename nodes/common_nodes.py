@@ -7,6 +7,7 @@ File: nodes/common_nodes.py
 Category used: VNCCS
 """
 from typing import Tuple
+import json
 
 # No heavy imports required; keep these nodes minimal and dependency-free.
 
@@ -160,3 +161,4 @@ NODE_CATEGORY_MAPPINGS = {
     "VNCCS_MultilineText": "VNCCS",
     "VNCCS_PromptConcat": "VNCCS",
 }
+
