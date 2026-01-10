@@ -340,7 +340,15 @@ class EmotionGeneratorV2:
                 images.append(img_tensor)
                 emotions_out.append(emotion_text)
                 masks.append(curr_mask_tensor)
-                face_output_paths.append(face_output_path)
+                
+                if prompt_style == "SDXL Style":
+                    # SDXL workflow expects 12 face paths per sheet (one for each of the 12 sprites)
+                    for _ in range(12):
+                        face_output_paths.append(face_output_path)
+                else:
+                    # QWEN (Step 3) workflow typically handles single images or does its own mapping
+                    face_output_paths.append(face_output_path)
+                    
                 sheet_output_paths.append(sheet_output_path)
 
         # Return results even if no images (user may not have connected image input)
