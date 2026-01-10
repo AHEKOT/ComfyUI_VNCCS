@@ -96,7 +96,27 @@ Open the workflow `VN_Step2_QWEN_ClothesGenerator`.
 ![Welcome](images/v2/v2_clothes.png)
 - Clothes helper lora are still in beta, so it can miss some "body parts" sizes. If this happens - just try again with different seeds.
 
-### Steps 3, 4 and 5 are not changed, you can follow old guide below.
+### Step 3: Emotion Studio
+
+Open the workflow `VN_Step3_CharEmotionGenerator` for SDXL processing or `VN_Step3_QWEN_EmotionStudio` for new experemental QWEN emotion generator.
+
+![Welcome](images/v2/EmotionStudio_banner.png)
+
+#### VNCCS Emotion Studio
+The new Emotion Studio provides a convenient visual interface for managing character expressions.
+
+- **Visual Selection**: Browse and select emotions from a visual grid instead of text lists.
+- **Multi-Costume Support**: Select one or multiple costumes to generate emotions for all of them in one batch.
+- **Prompt Styles**: Choose between **SDXL Style** (classic) or **QWEN Style** (improved) for different generation pipelines.
+
+Select your character, pick the clothes, click on the desired emotions, and run the workflow. The system will generate faces and sheets for every selected combination!
+
+![Welcome](images/v2/EmotionStudio_Page2.png)
+
+
+
+
+### Steps 4 and 5 are not changed, you can follow old guide below.
 
 ### Be creative! Now everything is possible!
 ![Welcome](images/v2/v2_clone_list.png)
@@ -181,7 +201,7 @@ After creating costumes, proceed to emotions.
 Open the workflow `VN_Step3_EmotionsGenerator`.
 
 ---
-### Step 3: Create Emotion Sets
+### Step 3: Create Emotion Sets - Deprecated and replaced with EmotionStudio (still available in old_workflows folder)
 
 This step is similar to the previous ones, but focuses on creating emotions for your character.
 
