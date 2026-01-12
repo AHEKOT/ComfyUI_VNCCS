@@ -225,6 +225,93 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
-_vnccs_register_endpoint()
+    # Character Studio API for real-time 3D preview
+    @PromptServer.instance.routes.post("/vnccs/character_studio/update_preview")
+    async def vnccs_character_studio_update_preview(request):
+        try:
+            import numpy as np
+            data = await request.json()
+            
+            # Extract params
+            age = float(data.get('age', 25.0))
+            gender = float(data.get('gender', 0.5))
+            weight = float(data.get('weight', 0.5))
+            muscle = float(data.get('muscle', 0.5))
+            height = float(data.get('height', 0.5))
+            breast_size = float(data.get('breast_size', 0.5))
+            genital_size = float(data.get('genital_size', 0.5))
+            
+            # Import from CharacterData
+            from .CharacterData.mh_parser import TargetParser, HumanSolver
+            from .CharacterData.obj_loader import load_obj
+            from .nodes.character_studio import CHARACTER_STUDIO_CACHE, _ensure_data_loaded
+            
+            # Normalize age
+            mh_age = (age - 1.0) / (90.0 - 1.0)
+            mh_age = max(0.0, min(1.0, mh_age))
+            
+            # Ensure data loaded
+            _ensure_data_loaded()
+            
+            # Solve mesh
+            solver = HumanSolver()
+            factors = solver.calculate_factors(mh_age, gender, weight, muscle, height, breast_size, genital_size)
+            new_verts = solver.solve_mesh(CHARACTER_STUDIO_CACHE['base_mesh'], CHARACTER_STUDIO_CACHE['targets'], factors)
+            
+            # Filter faces and return
+            base_mesh = CHARACTER_STUDIO_CACHE['base_mesh']
+            valid_prefixes = ["body", "helper-r-eye", "helper-l-eye", "helper-upper-teeth", "helper-lower-teeth", "helper-tongue", "helper-genital"]
+            
+            valid_faces = []
+            if base_mesh.face_groups:
+                for i, group in enumerate(base_mesh.face_groups):
+                    g_clean = group.strip()
+                    is_valid = g_clean in valid_prefixes
+                    if g_clean.startswith("joint-"): is_valid = False
+                    if g_clean in ["helper-skirt", "helper-tights", "helper-hair"]: is_valid = False
+                    if g_clean == "helper-genital" and gender < 0.99: is_valid = False
+                    
+                    if is_valid:
+                        valid_faces.append(base_mesh.faces[i])
+            
+            # Convert quads to triangles
+            tri_indices = []
+            for f in valid_faces:
+                if len(f) == 4:
+                    tri_indices.extend([f[0], f[1], f[2]])
+                    tri_indices.extend([f[0], f[2], f[3]])
+                elif len(f) == 3:
+                    tri_indices.extend([f[0], f[1], f[2]])
+
+            # Calculate normals
+            verts_np = new_verts
+            normals = np.zeros_like(verts_np)
+            
+            tris = np.array(tri_indices).reshape(-1, 3)
+            v0 = verts_np[tris[:, 0]]
+            v1 = verts_np[tris[:, 1]]
+            v2 = verts_np[tris[:, 2]]
+            
+            norms = np.cross(v1 - v0, v2 - v0)
+            np.add.at(normals, tris[:, 0], norms)
+            np.add.at(normals, tris[:, 1], norms)
+            np.add.at(normals, tris[:, 2], norms)
+            
+            norms_len = np.linalg.norm(normals, axis=1, keepdims=True)
+            norms_len[norms_len == 0] = 1.0
+            normals = normals / norms_len
+            
+            return web.json_response({
+                "vertices": new_verts.flatten().tolist(),
+                "indices": tri_indices,
+                "normals": normals.flatten().tolist(),
+                "status": "success"
+            })
+            
+        except Exception as e:
+            print(f"Character Studio API Error: {e}")
+            import traceback as tb
+            tb.print_exc()
+            return web.json_response({"status": "error", "message": str(e)})
 
 _vnccs_register_endpoint()
