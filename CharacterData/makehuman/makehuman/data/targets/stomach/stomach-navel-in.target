@@ -1,0 +1,37 @@
+# This is a target file for MakeHuman
+# 
+# This asset was explicitly released as CC0 in september 2020. The license
+# text for CC0 can be found in the root of this repository.
+#
+# Original copyright (C) 2014 Manuel Bastioni 
+#
+# The copyright was explicitly transfered to other team members in 2016:
+#
+# Copyright (C) 2020 Data Collection AB, https://www.datacollection.se
+# Copyright (C) 2020 Joel Palmius
+# Copyright (C) 2020 Jonas Hauquier
+#
+# The primary legal contact for MakeHuman is Data Collection AB.
+#
+# For more information, see homepage at http://www.makehumancommunity.org
+#
+# basemesh hm08
+4069 0 .001 -.008
+4106 0 .031 -.012
+4111 0 -.040 .001
+4112 .008 -.024 .001
+4113 .027 0 .001
+4114 .024 .017 0
+4115 0 .024 -.001
+4116 0 0 -.062
+4117 0 0 -.062
+4118 0 0 -.062
+4119 0 0 -.062
+4120 0 0 -.062
+4121 0 0 -.062
+10759 -.008 -.024 .001
+10760 -.027 0 .001
+10761 -.024 .017 0
+10762 0 0 -.062
+10763 0 0 -.062
+10764 0 0 -.062

@@ -1,0 +1,95 @@
+################################################################################
+# Example build configuration
+# Rename to build.conf to use (must be in buildscripts/ folder in hg root)
+# Uncomment the properties you want to change.
+# Don't wrap any "around your strings" (property = some string)!
+################################################################################
+
+#
+# General declarations
+#
+[General]
+# Path to git executable on system (default: use lib/gitutils to deduce)
+#gitPath = /usr/bin/git
+
+#
+# Config section for build_prepare.py
+#
+[BuildPrepare]
+# Git commit to use for version information (default: use gitutils to deduce)
+#gitCommit=123456abc
+
+# Git branch to use for version information (default: use gitutils to deduce)
+#gitBranch=master
+
+# Location where to clone the assets repository (default: makehuman user home)
+#assetRepoLocation=/home/joepal/source/makehuman/nightly-builds/official_assets
+
+# Title to use inside MakeHuman, used for writing to version info
+# (default: use the defaults from MHVersion)
+#title=makehuman test build
+
+# MakeHuman version (default: use the defaults from MHVersion)
+#version=1.1.2
+
+# Release status (default: not specified, obtained from declaration
+# in makehuman/makehuman.py) If set replaces contents of that file in export. 
+#isRelease = True
+
+# Skip download and compile assets scripts (default: obtained from commandline
+# argument, False if not specified)
+#skipScripts = False
+
+# Skip only downloading assets scripts (default: obtained from commandline
+# argument, False if not specified) Has no effect if skipScripts is already
+# enabled
+#noDownload = False
+
+
+#
+# Debian package config
+#
+[Deb]
+# Name of the debian package. 
+#packageName = makehuman
+
+# Installed packages to replace by this package
+#packageReplaces = makehuman-nightly, makehuman-alpha, makehumansvn
+
+# Override the string used as version for the package (default: is derived from
+# version either specified in this file or in makehuman.py)
+#packageVersion = 1.0.0~alpha8~rc3
+
+
+#
+# Redhat RPM package config
+#
+[Rpm]
+# Name of the redhat package. In nightly mode (isRelease == False) "hg" is 
+# appended to this string
+#packageName = makehuman
+
+# Override the string used as version for the package (default: is derived from
+# version either specified in this file or in makehuman.py)
+#packageVersion = 1.0.0.alpha8.rc3
+
+[Win32]
+# Base name for the end zip file
+#packageName = makehuman-unstable
+#
+# Override the string used as version for the package (default: is derived from
+# version either specified in this file or in makehuman.py)
+#packageVersion = 20140503
+
+# Where to put the resulting zip file
+#distDir = c:\jenkins\workspace\makehuman-unstable-dist
+
+# Note that PPA signing and uploading requires a valid GPG signature
+
+#[PPA]
+#packageVersion = 1.1.0~rc1
+#packageSub = 1ppa1
+#signString = Joel Palmius <joepal1976@hotmail.com>
+#performSign = True
+#performUpload = True
+
