@@ -67,7 +67,6 @@ try:
     from PIL import Image
 except Exception:
     Image = None
-import numbers
 
 
 class VNCCS_QWEN_Encoder:
@@ -75,32 +74,54 @@ class VNCCS_QWEN_Encoder:
     crop_methods = ["pad", "center", "disabled"]
     target_sizes = [1024, 1344, 1536, 2048, 768, 512]
     @classmethod
-    def INPUT_TYPES(s):
+    def INPUT_TYPES(cls):
+        tooltips = {
+            "clip": "Input CLIP model for text encoding.",
+            "prompt": "Positive prompt describing the desired output.",
+            "vae": "VAE model for encoding/decoding images.",
+            "latent_image_index": "Select which input image (1, 2, or 3) to use as the base latent for generation.",
+            "image1": "First reference image.",
+            "image2": "Second reference image.",
+            "image3": "Third reference image.",
+            "image1_name": "Name tag for the first image, used in the prompt construction (e.g. 'Picture 1').",
+            "image2_name": "Name tag for the second image.",
+            "image3_name": "Name tag for the third image.",
+            "target_size": "Target resolution for reference inputs. Images are resized/padded to this size before ease.",
+            "upscale_method": "Method used for resizing images.",
+            "crop_method": "How to handle aspect ratio changes: 'center' crop, 'pad' with black bars, or 'disabled'.",
+            "weight1": "Influence strength of Image 1 reference latents.",
+            "weight2": "Influence strength of Image 2 reference latents.",
+            "weight3": "Influence strength of Image 3 reference latents.",
+            "vl_size": "Resolution for Vision-Language processing (Qwen). Lower values are faster but less detailed.",
+            "instruction": "System instruction for the Qwen model describing how to interpret the images and prompt.",
+            "qwen_2511": "Enable special handling for Qwen 2511 model versions (strongly recommended).",
+        }
+        
         return {
             "required": 
             {
-                "clip": ("CLIP", ),
-                "prompt": ("STRING", {"multiline": True, "dynamicPrompts": True}),
-                "vae": ("VAE", ),
+                "clip": ("CLIP", {"tooltip": tooltips["clip"]}),
+                "prompt": ("STRING", {"multiline": True, "dynamicPrompts": True, "tooltip": tooltips["prompt"]}),
+                "vae": ("VAE", {"tooltip": tooltips["vae"]}),
             },
             "optional": 
             {
-                "latent_image_index": ("INT", {"default": 1, "min": 1, "max": 3, "step": 1}),
-                "image1": ("IMAGE", ),
-                "image2": ("IMAGE", ),
-                "image3": ("IMAGE", ),
-                "image1_name": ("STRING", {"default": "Picture 1"}),
-                "image2_name": ("STRING", {"default": "Picture 2"}),
-                "image3_name": ("STRING", {"default": "Picture 3"}),
-                "target_size": (s.target_sizes, {"default": 1024}),
-                "upscale_method": (s.upscale_methods,),
-                "crop_method": (s.crop_methods,),
-                "weight1": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-                "weight2": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-                "weight3": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-                "vl_size": ("INT", {"default": 384, "min": 256, "max": 1024, "step": 8}),
-                "instruction": ("STRING", {"multiline": True, "default": "Describe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate."}),
-                "qwen_2511": ("BOOLEAN", {"default": True}),
+                "latent_image_index": ("INT", {"default": 1, "min": 1, "max": 3, "step": 1, "tooltip": tooltips["latent_image_index"]}),
+                "image1": ("IMAGE", {"tooltip": tooltips["image1"]}),
+                "image2": ("IMAGE", {"tooltip": tooltips["image2"]}),
+                "image3": ("IMAGE", {"tooltip": tooltips["image3"]}),
+                "image1_name": ("STRING", {"default": "Picture 1", "tooltip": tooltips["image1_name"]}),
+                "image2_name": ("STRING", {"default": "Picture 2", "tooltip": tooltips["image2_name"]}),
+                "image3_name": ("STRING", {"default": "Picture 3", "tooltip": tooltips["image3_name"]}),
+                "target_size": (cls.target_sizes, {"default": 1024, "tooltip": tooltips["target_size"]}),
+                "upscale_method": (cls.upscale_methods, {"tooltip": tooltips["upscale_method"]}),
+                "crop_method": (cls.crop_methods, {"tooltip": tooltips["crop_method"]}),
+                "weight1": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01, "tooltip": tooltips["weight1"]}),
+                "weight2": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01, "tooltip": tooltips["weight2"]}),
+                "weight3": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01, "tooltip": tooltips["weight3"]}),
+                "vl_size": ("INT", {"default": 384, "min": 256, "max": 1024, "step": 8, "tooltip": tooltips["vl_size"]}),
+                "instruction": ("STRING", {"multiline": True, "default": "Describe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate.", "tooltip": tooltips["instruction"]}),
+                "qwen_2511": ("BOOLEAN", {"default": True, "tooltip": tooltips["qwen_2511"]}),
             }
         }
 
@@ -109,6 +130,44 @@ class VNCCS_QWEN_Encoder:
     FUNCTION = "encode"
 
     CATEGORY = "VNCCS/encoding"
+
+    def _process_image(self, image: torch.Tensor, target_size: int, upscale_method: str, crop_method: str) -> torch.Tensor:
+        """Process image: resize and pad/crop to target size."""
+        samples = image.movedim(-1, 1)
+        current_total = (samples.shape[3] * samples.shape[2])
+        total = int(target_size * target_size)
+        scale_by = math.sqrt(total / current_total)
+        
+        if crop_method == "pad":
+            crop = "center"
+            # pad image to upper size
+            scaled_width = round(samples.shape[3] * scale_by)
+            scaled_height = round(samples.shape[2] * scale_by)
+            canvas_width = math.ceil(samples.shape[3] * scale_by / 8.0) * 8
+            canvas_height = math.ceil(samples.shape[2] * scale_by / 8.0) * 8
+            
+            # pad image to canvas size
+            canvas = torch.zeros(
+                (samples.shape[0], samples.shape[1], canvas_height, canvas_width),
+                dtype=samples.dtype,
+                device=samples.device
+            )
+            resized_samples = comfy.utils.common_upscale(samples, scaled_width, scaled_height, upscale_method, crop)
+            resized_width = resized_samples.shape[3]
+            resized_height = resized_samples.shape[2]
+            
+            canvas[:, :, :resized_height, :resized_width] = resized_samples
+            s = canvas
+        else:
+            width = round(samples.shape[3] * scale_by / 8.0) * 8
+            height = round(samples.shape[2] * scale_by / 8.0) * 8
+            # Ensure even dimensions
+            width = max(8, width)
+            height = max(8, height)
+            crop = crop_method
+            s = comfy.utils.common_upscale(samples, width, height, upscale_method, crop)
+            
+        return s.movedim(1, -1)
 
     def encode(self, clip, prompt, vae=None, 
                image1=None, image2=None, image3=None,
@@ -124,23 +183,13 @@ class VNCCS_QWEN_Encoder:
                ):
         
         ref_latents = []
-        images = [
-            {
-                "image": image1,
-                "vl_resize": True 
-            },
-            {
-                "image": image2,
-                "vl_resize": True 
-            },
-            {
-                "image": image3,
-                "vl_resize": True 
-            }
-        ]
+        input_images = [image1, image2, image3]
+        names = [image1_name, image2_name, image3_name]
+        
         vl_images = []
         template_prefix = "<|im_start|>system\n"
         template_suffix = "<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n"
+        
         instruction_content = ""
         if instruction == "":
             instruction_content = "Describe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate."
@@ -156,90 +205,23 @@ class VNCCS_QWEN_Encoder:
                 # remove {} from instruction
                 instruction = instruction.replace("{}", "")
             instruction_content = instruction
+            
         llama_template = template_prefix + instruction_content + template_suffix
         image_prompt = ""
-        names = [image1_name, image2_name, image3_name]
 
-        for i, image_obj in enumerate(images):
-            image = image_obj["image"]
-            vl_resize = image_obj["vl_resize"]
+        # Process each input image
+        for i, image in enumerate(input_images):
             if image is not None:
-                    samples = image.movedim(-1, 1)
-                    current_total = (samples.shape[3] * samples.shape[2])
-                    total = int(target_size * target_size)
-                    scale_by = math.sqrt(total / current_total)
-                    if crop_method == "pad":
-                        crop = "center"
-                        # pad image to upper size
-                        scaled_width = round(samples.shape[3] * scale_by)
-                        scaled_height = round(samples.shape[2] * scale_by)
-                        canvas_width = math.ceil(samples.shape[3] * scale_by / 8.0) * 8
-                        canvas_height = math.ceil(samples.shape[2] * scale_by / 8.0) * 8
-                        
-                        # pad image to canvas size
-                        canvas = torch.zeros(
-                            (samples.shape[0], samples.shape[1], canvas_height, canvas_width),
-                            dtype=samples.dtype,
-                            device=samples.device
-                        )
-                        resized_samples = comfy.utils.common_upscale(samples, scaled_width, scaled_height, upscale_method, crop)
-                        resized_width = resized_samples.shape[3]
-                        resized_height = resized_samples.shape[2]
-                        
-                        canvas[:, :, :resized_height, :resized_width] = resized_samples
-                        pad_info = {
-                            "x": 0,
-                            "y": 0,
-                            "width": canvas_width - resized_width,
-                            "height": canvas_height - resized_height,
-                            "scale_by": 1 / scale_by
-                        }
-                        s = canvas
-                    else:
-                        width = round(samples.shape[3] * scale_by / 8.0) * 8
-                        height = round(samples.shape[2] * scale_by / 8.0) * 8
-                        crop = crop_method
-                        s = comfy.utils.common_upscale(samples, width, height, upscale_method, crop)
-                    image = s.movedim(1, -1)
-                    ref_latents.append(vae.encode(image[:, :, :, :3]))
-                    
-                    if vl_resize:
-                        # print("vl_resize")
-                        total = int(vl_size * vl_size)
-                        scale_by = math.sqrt(total / current_total)
-                        
-                        if crop_method == "pad":
-                            crop = "center"
-                            # pad image to upper size
-                            scaled_width = round(samples.shape[3] * scale_by)
-                            scaled_height = round(samples.shape[2] * scale_by)
-                            canvas_width = math.ceil(samples.shape[3] * scale_by)
-                            canvas_height = math.ceil(samples.shape[2] * scale_by)
-                            
-                            # pad image to canvas size
-                            canvas = torch.zeros(
-                                (samples.shape[0], samples.shape[1], canvas_height, canvas_width),
-                                dtype=samples.dtype,
-                                device=samples.device
-                            )
-                            resized_samples = comfy.utils.common_upscale(samples, scaled_width, scaled_height, upscale_method, crop)
-                            resized_width = resized_samples.shape[3]
-                            resized_height = resized_samples.shape[2]
-                            
-                            canvas[:, :, :resized_height, :resized_width] = resized_samples
-                            s = canvas
-                        else:
-                            width = round(samples.shape[3] * scale_by)
-                            height = round(samples.shape[2] * scale_by)
-                            crop = crop_method
-                            s = comfy.utils.common_upscale(samples, width, height, upscale_method, crop)
-                        
-                        image = s.movedim(1, -1)
-                        vl_images.append(image)
-                    # handle non resize vl images
-                    image_prompt += "{}: <|vision_start|><|image_pad|><|vision_end|>".format(names[i])
-                    vl_images.append(image)
-                    
+                # 1. Processing for Reference Latents (VAE)
+                processed_ref = self._process_image(image, target_size, upscale_method, crop_method)
+                ref_latents.append(vae.encode(processed_ref[:, :, :, :3]))
+                
+                # 2. Processing for VL (Qwen) - resizing to vl_size and padding/cropping
+                processed_vl = self._process_image(image, vl_size, upscale_method, crop_method)
+                vl_images.append(processed_vl)
+                
+                # Add special tokens for this image
+                image_prompt += "{}: <|vision_start|><|image_pad|><|vision_end|>".format(names[i])
                 
         tokens = clip.tokenize(image_prompt + prompt, images=vl_images, llama_template=llama_template)
         conditioning = clip.encode_from_tokens_scheduled(tokens)
@@ -286,4 +268,8 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_QWEN_Encoder": "VNCCS QWEN Encoder",
+}
+
+NODE_CATEGORY_MAPPINGS = {
+    "VNCCS_QWEN_Encoder": "VNCCS/encoding",
 }

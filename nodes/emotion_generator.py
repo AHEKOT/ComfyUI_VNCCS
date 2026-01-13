@@ -2,23 +2,12 @@ import os
 import torch
 from PIL import Image, ImageOps
 
-try:
-    from ..utils import (
-        base_output_dir, character_dir, list_characters, 
-        load_character_info, ensure_costume_structure, EMOTIONS,
-        apply_sex, append_age, generate_seed, build_face_details, load_character_sheet,
-        sheets_dir, load_costume_info
-    )
-except ImportError:
-    import sys
-    import os
-    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from ..utils import (
-        base_output_dir, character_dir, list_characters, 
-        load_character_info, ensure_costume_structure, EMOTIONS,
-        apply_sex, append_age, generate_seed, build_face_details, load_character_sheet,
-        sheets_dir, load_costume_info
-    )
+from ..utils import (
+    base_output_dir, character_dir, list_characters, 
+    load_character_info, ensure_costume_structure, EMOTIONS,
+    apply_sex, append_age, generate_seed, build_face_details, load_character_sheet,
+    sheets_dir, load_costume_info
+)
 
 
 class EmotionGenerator:

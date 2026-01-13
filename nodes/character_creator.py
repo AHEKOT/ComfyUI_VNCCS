@@ -1,25 +1,14 @@
 import os
 
-# Try relative import first, fallback to absolute if running outside package
-try:
-    from ..utils import (
-        base_output_dir, character_dir, list_characters, generate_seed, age_strength, append_age,
-        apply_sex, save_config, ensure_character_structure, build_face_details, 
-        dedupe_tokens, faces_dir, sheets_dir, EMOTIONS, MAIN_DIRS, load_config
-    )
-except ImportError:
-    import sys
-    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from ..utils import (
-        base_output_dir, character_dir, list_characters, generate_seed, age_strength, append_age,
-        apply_sex, save_config, ensure_character_structure, build_face_details,
-        dedupe_tokens, faces_dir, sheets_dir, EMOTIONS, MAIN_DIRS, load_config
-    )
+from ..utils import (
+    base_output_dir, character_dir, list_characters, generate_seed, age_strength, append_age,
+    apply_sex, save_config, ensure_character_structure, build_face_details, 
+    dedupe_tokens, faces_dir, sheets_dir, EMOTIONS, MAIN_DIRS, load_config
+)
 
 
 class CharacterCreator:
-    def __init__(self):
-        self.base_path = base_output_dir()
+    """Create or update character profiles with physical attributes and prompts."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -55,12 +44,38 @@ class CharacterCreator:
     FUNCTION = "create_character"
     CATEGORY = "VNCCS"
 
-    def create_character(self, existing_character, background_color="green",
-                       aesthetics="", nsfw=False, sex="female", age=18, race="",
-                       eyes="", hair="", face="", body="", skin_color="",
-                       additional_details="", seed=0,
-                       negative_prompt="",
-                       lora_prompt="", new_character_name=""):
+    @classmethod
+    def VALIDATE_INPUTS(cls, existing_character: str, **kwargs) -> bool | str:
+        """Validate inputs before execution - errors show on node in UI."""
+        if not existing_character or existing_character == "None":
+            return "Please create a character first using the button below"
+        
+        char_path = character_dir(existing_character)
+        if not os.path.exists(char_path):
+            return f"Character '{existing_character}' folder not found. It may have been deleted. Please create a new character."
+        
+        return True
+
+    def create_character(
+        self,
+        existing_character: str,
+        background_color: str = "green",
+        aesthetics: str = "",
+        nsfw: bool = False,
+        sex: str = "female",
+        age: int = 18,
+        race: str = "",
+        eyes: str = "",
+        hair: str = "",
+        face: str = "",
+        body: str = "",
+        skin_color: str = "",
+        additional_details: str = "",
+        seed: int = 0,
+        negative_prompt: str = "",
+        lora_prompt: str = "",
+        new_character_name: str = ""
+    ) -> tuple[str, int, str, float, str, str, str]:
 
         character_name = existing_character
 

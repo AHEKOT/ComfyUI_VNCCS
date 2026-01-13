@@ -56,3 +56,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCSSamplerSchedulerPicker": "VNCCS Sampler Scheduler Picker",
 }
+
+NODE_CATEGORY_MAPPINGS = {
+    "VNCCSSamplerSchedulerPicker": "VNCCS",
+}

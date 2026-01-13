@@ -1,21 +1,11 @@
 import os
 import torch
-import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image
 
-try:
-    from ..utils import (
-        base_output_dir, character_dir, list_characters,
-        load_character_info, load_character_sheet
-    )
-except ImportError:
-    import sys
-    import os
-    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from ..utils import (
-        base_output_dir, character_dir, list_characters,
-        load_character_info, load_character_sheet
-    )
+from ..utils import (
+    base_output_dir, character_dir, list_characters,
+    load_character_info, load_character_sheet
+)
 
 
 class SpriteGenerator:

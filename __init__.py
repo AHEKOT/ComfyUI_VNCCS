@@ -5,7 +5,6 @@ from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
 
 
-__all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
 
 WEB_DIRECTORY = "web"
 
@@ -224,7 +223,5 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             return web.json_response(data)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
-
-_vnccs_register_endpoint()
 
 _vnccs_register_endpoint()

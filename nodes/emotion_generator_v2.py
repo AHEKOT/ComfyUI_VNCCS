@@ -4,25 +4,13 @@ import json
 import re
 import torch
 import glob
-from itertools import chain
 
-try:
-    from ..utils import (
-        base_output_dir, character_dir, list_characters,
-        load_character_info, ensure_costume_structure, EMOTIONS,
-        apply_sex, append_age, generate_seed, build_face_details, load_character_sheet,
-        sheets_dir, load_costume_info, list_costumes
-    )
-except ImportError:
-    import sys
-    import os
-    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from ..utils import (
-        base_output_dir, character_dir, list_characters,
-        load_character_info, ensure_costume_structure, EMOTIONS,
-        apply_sex, append_age, generate_seed, build_face_details, load_character_sheet,
-        sheets_dir, load_costume_info, list_costumes
-    )
+from ..utils import (
+    base_output_dir, character_dir, list_characters,
+    load_character_info, ensure_costume_structure, EMOTIONS,
+    apply_sex, append_age, generate_seed, build_face_details, load_character_sheet,
+    sheets_dir, load_costume_info, list_costumes
+)
 
 # --- ComfyUI Server Imports ---
 try:
@@ -168,9 +156,8 @@ class EmotionGeneratorV2:
     EMOTIONS_DATA = None
     SAFE_NAME_MAP = None
 
-    @classmethod
-    def __init__(cls):
-        cls._setup_emotions_data()
+    def __init__(self):
+        self._setup_emotions_data()
 
     @classmethod
     def _setup_emotions_data(cls):

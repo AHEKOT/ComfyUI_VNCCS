@@ -1,19 +1,10 @@
 import os
 import shutil
 
-try:
-    from ..utils import (
-        base_output_dir, list_characters,
-        load_character_info
-    )
-except ImportError:
-    import sys
-    import os
-    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from ..utils import (
-        base_output_dir, list_characters,
-        load_character_info
-    )
+from ..utils import (
+    base_output_dir, list_characters,
+    load_character_info
+)
 
 
 class DatasetGenerator:
