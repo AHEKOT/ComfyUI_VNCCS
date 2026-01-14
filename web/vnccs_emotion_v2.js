@@ -248,7 +248,7 @@ app.registerExtension({
                     selectedCostumes: new Set(),
                     emotions: [],
                     selectedEmotions: new Set(),
-                    searchTerm: "" 
+                    searchTerm: ""
                 };
 
                 // Create UI Container
@@ -366,12 +366,12 @@ app.registerExtension({
 
                 // Add Prompt Style Select (Top)
                 const styleWidget = node.widgets.find(w => w.name === "prompt_style");
-                
+
                 const styleContainer = document.createElement("div");
                 styleContainer.className = "vnccs-section";
                 styleContainer.style.marginBottom = "10px";
                 styleContainer.style.padding = "5px 10px";
-                
+
                 const styleSelect = document.createElement("select");
                 styleSelect.style.width = "100%";
                 styleSelect.style.padding = "5px";
@@ -379,16 +379,16 @@ app.registerExtension({
                 styleSelect.style.background = "#555";
                 styleSelect.style.color = "white";
                 styleSelect.style.border = "1px solid #333";
-                
+
                 if (styleWidget && styleWidget.options.values) {
-                     styleWidget.options.values.forEach(v => {
+                    styleWidget.options.values.forEach(v => {
                         const opt = document.createElement("option");
                         opt.value = v;
                         opt.innerText = v;
                         if (v === styleWidget.value) opt.selected = true;
                         styleSelect.appendChild(opt);
                     });
-                     // Sync
+                    // Sync
                     styleSelect.onchange = () => {
                         styleWidget.value = styleSelect.value;
                         if (styleWidget.callback) styleWidget.callback(styleSelect.value);
@@ -403,42 +403,42 @@ app.registerExtension({
 
 
                 const widget = node.addDOMWidget("emotion_ui_v2", "ui", container, {
-                    serialize: true, 
+                    serialize: true,
                     hideOnZoom: false,
-                    getValue() { return undefined; }, 
+                    getValue() { return undefined; },
                     setValue(v) { }
                 });
 
 
                 function restoreStateFromWidgets() {
-                     // 1. Character
-                     if(charWidget && charWidget.value) {
-                         state.character = charWidget.value;
-                         charSelect.value = charWidget.value;
-                         fetchCharacterData(state.character);
-                     }
-                     
-                     // 2. Style
-                     if(styleWidget && styleWidget.value) {
-                         styleSelect.value = styleWidget.value;
-                     }
+                    // 1. Character
+                    if (charWidget && charWidget.value) {
+                        state.character = charWidget.value;
+                        charSelect.value = charWidget.value;
+                        fetchCharacterData(state.character);
+                    }
 
-                     // 3. Costumes & Emotions (from hidden text strings)
-                    if(costumesDataWidget && costumesDataWidget.value) {
+                    // 2. Style
+                    if (styleWidget && styleWidget.value) {
+                        styleSelect.value = styleWidget.value;
+                    }
+
+                    // 3. Costumes & Emotions (from hidden text strings)
+                    if (costumesDataWidget && costumesDataWidget.value) {
                         try {
                             const savedCostumes = JSON.parse(costumesDataWidget.value);
                             state.selectedCostumes = new Set(savedCostumes);
                             renderCostumes();
-                        } catch(e) {}
+                        } catch (e) { }
                     }
-                    if(emotionsDataWidget && emotionsDataWidget.value) {
+                    if (emotionsDataWidget && emotionsDataWidget.value) {
                         try {
                             const savedEmotions = JSON.parse(emotionsDataWidget.value);
                             state.selectedEmotions = new Set(savedEmotions);
                             // renderEmotions is called after fetch("/vnccs/get_emotions"), need to wait?
                             // No, renderEmotions() just needs state.emotions to be populated.
                             // The fetch happens async.
-                        } catch(e) {}
+                        } catch (e) { }
                     }
                 }
 
@@ -470,9 +470,9 @@ app.registerExtension({
                         return;
                     }
                     btnAll.disabled = false;
-                    
+
                     const allFilteredSelected = filtered.every(e => state.selectedEmotions.has(e.safe_name));
-                    
+
                     if (allFilteredSelected) {
                         btnAll.innerText = "Cancel Selection";
                         btnAll.style.background = "#d32f2f"; // Red for cancel
@@ -588,7 +588,20 @@ app.registerExtension({
                         const res = await fetch(`/vnccs/get_character_costumes?character=${encodeURIComponent(charName)}`);
                         const validCostumes = await res.json();
                         state.costumes = validCostumes || [];
-                        state.selectedCostumes = new Set(state.costumes);
+
+                        // FIX: Only reset to "all" if no saved selection exists
+                        // Otherwise, filter saved selection to only include valid costumes
+                        if (costumesDataWidget && costumesDataWidget.value) {
+                            try {
+                                const saved = JSON.parse(costumesDataWidget.value);
+                                state.selectedCostumes = new Set(saved.filter(c => state.costumes.includes(c)));
+                            } catch (e) {
+                                state.selectedCostumes = new Set(state.costumes);
+                            }
+                        } else {
+                            state.selectedCostumes = new Set(state.costumes);
+                        }
+
                         renderCostumes();
                         updateCostumesData();
                     } catch (e) {
@@ -606,7 +619,7 @@ app.registerExtension({
                         }
                         state.emotions = flat;
                         renderEmotions();
-                        
+
                         // NOW restore selection state (after list loaded)
                         restoreStateFromWidgets();
                         // Re-render to show restored selections
