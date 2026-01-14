@@ -69,61 +69,15 @@
     if (!name) return { error: 'empty name' };
     try { const r = await fetch(`/vnccs/create?name=${encodeURIComponent(name)}`); if (!r.ok) return { error: 'http ' + r.status }; return await r.json(); } catch (e) { return { error: String(e) }; }
   }
-  function addCreateButton(node) {
-    if (node.widgets?.find(w => w._vnccsCreate)) return;
-    const nameWidget = node.widgets?.find(w => w.name === 'character_name');
-    function refreshExistingList(node, newName) {
-      const sel = node.widgets?.find(w => w.name === 'existing_character');
-      if (!sel) { warn('no existing_character to refresh'); return; }
-      log('OLD refreshExistingList called with newName:', newName, 'type:', typeof newName);
-      let list = sel.options || sel.values || sel.choices || sel.items;
-      log('OLD list before update:', list);
-      if (Array.isArray(list)) {
-        if (!list.includes(newName)) {
-          list.push(newName);
-          log('OLD list after push:', list);
-          if (sel.options) sel.options = list; if (sel.values) sel.values = list; if (sel.choices) sel.choices = list; if (sel.items) sel.items = list;
-        }
-      }
-      sel.value = newName;
-      log('OLD set sel.value to:', newName);
-      // if(typeof sel.callback === 'function'){ try { sel.callback(newName); } catch(e){} }
-      try { node.setDirtyCanvas(true, true); } catch (_) { }
-    }
-    const callback = async () => {
-      const newName = (nameWidget?.value || '').trim();
-      log('nameWidget found, raw value:', nameWidget?.value, 'trimmed:', newName);
-      if (!newName) {
-        log('Empty character name in new_character_name field');
-        return;
-      }
-      log('create request', newName);
-      const res = await createNewCharacter(newName);
-      if (res && !res.error) {
-        log('created', newName, res.existing ? '(existing)' : '');
-        refreshExistingList(newName);
-        const cfg = await fetchConfig(newName);
-        apply(node, cfg);
-      } else {
-        warn('create failed', res && res.error);
-      }
-    };
-    const w = node.addWidget('button', 'Create New Character', '', callback);
-    if (w) {
-      w._vnccsCreate = true;
-      if (nameWidget) {
-        const list = node.widgets;
-        const nameIdx = list.indexOf(nameWidget);
-        const btnIdx = list.indexOf(w);
-        if (nameIdx >= 0 && btnIdx > nameIdx + 1) {
-          list.splice(btnIdx, 1);
-          list.splice(nameIdx + 1, 0, w);
-        }
-      }
-      try { node.setDirtyCanvas(true, true); } catch (_) { }
-    }
+
+  // Helper to update widget value without triggering infinite callback loops
+  function updateWidgetValue(widget, value) {
+    const cb = widget.callback;
+    widget.callback = null;
+    widget.value = value;
+    widget.callback = cb;
   }
-  function addCreateButtonSafely(node) {
+  function addCreateButton(node) {
     if (node.widgets?.find(w => w._vnccsCreateButton)) return;
 
     log('Adding create button safely to node', node.id);
@@ -234,10 +188,7 @@
     (node.widgets || []).forEach(w => {
       if (map.hasOwnProperty(w.name) && map[w.name] !== undefined && w.value !== map[w.name]) {
         log('updating field', w.name, 'from', w.value, 'to', map[w.name]);
-        const tempCallback = w.callback;
-        w.callback = null;
-        w.value = map[w.name];
-        w.callback = tempCallback;
+        updateWidgetValue(w, map[w.name]);
         log('field', w.name, 'updated');
       } else {
         log('field', w.name, 'skipped (no change or not in map)');
