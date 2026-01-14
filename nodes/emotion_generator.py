@@ -103,12 +103,14 @@ class EmotionGenerator:
             lora_prompt = info.get("lora_prompt", "")
             negative_prompt = info.get("negative_prompt", "")
             negative_prompt = negative_prompt + "(facial droplet), (water drop), (water), (water droplets), (water drops)"
+            base_negative_prompt = negative_prompt  # Store base before loop
             config_seed = info.get("seed", 0)
             seed = generate_seed(config_seed)
         else:
             print(f"[EmotionGenerator] Character '{character}' not found")
             info = {}
-            aesthetics = background_color = sex = race = eyes = hair = face_features = body = skin_color = additional_details = negative_prompt = lora_prompt = ""
+            aesthetics = background_color = sex = race = eyes = hair = face_features = body = skin_color = additional_details = lora_prompt = ""
+            base_negative_prompt = ""  # Initialize base
             age = 18
             seed = generate_seed(0)
 
@@ -157,7 +159,8 @@ class EmotionGenerator:
                 if additional_details:
                     positive_prompt += f", ({additional_details})"
                 positive_prompt, gender_negative = apply_sex(sex, positive_prompt, "")
-                negative_prompt += f", {gender_negative}"
+                # FIX: Use assignment instead of += to prevent accumulation across iterations
+                negative_prompt = f"{base_negative_prompt}, {gender_negative}"
                 positive_prompt = append_age(positive_prompt, age, sex)
                 if lora_prompt:
                     positive_prompt += f", {lora_prompt}"
