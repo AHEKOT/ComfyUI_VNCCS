@@ -22,20 +22,49 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         name = request.rel_url.query.get("name")
         if not name:
             return web.json_response({"error": "name required"}, status=400)
+        
+        # 1. Try New Path
         try:
-            from .nodes.character_creator import CharacterCreator
-            base = CharacterCreator().base_path
-        except Exception:
-            base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "output", "VN_CharacterCreatorSuit"))
+            from .utils import base_output_dir, get_legacy_output_dir
+            base = base_output_dir()
+            legacy_base = get_legacy_output_dir()
+        except ImportError:
+             # Fallback if utils fail to import (shouldn't happen but safe)
+             base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "output", "VNCCS", "Characters"))
+             legacy_base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "output", "VN_CharacterCreatorSuit"))
+
         cfg_path = os.path.join(base, name, f"{name}_config.json")
+        
+        # 2. Try Legacy Path if New not found
         if not os.path.exists(cfg_path):
-            return web.json_response({"error": "not found", "path": cfg_path}, status=404)
+             legacy_cfg_path = os.path.join(legacy_base, name, f"{name}_config.json")
+             if os.path.exists(legacy_cfg_path):
+                 cfg_path = legacy_cfg_path
+             else:
+                 return web.json_response({"error": "not found", "path": cfg_path}, status=404)
+
         try:
             with open(cfg_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             return web.json_response(data)
         except Exception as e:
             return web.json_response({"error": "read failed", "detail": str(e)}, status=500)
+
+
+
+    @PromptServer.instance.routes.get("/vnccs/migrate")
+    async def vnccs_migrate(request):
+        """Trigger migration of legacy data to new folder structure."""
+        try:
+            from .utils import migrate_legacy_data
+            result = migrate_legacy_data()
+            return web.json_response(result)
+        except Exception as e:
+            return web.json_response({
+                "migrated": False,
+                "error": str(e),
+                "trace": traceback.format_exc()
+            }, status=500)
 
     @PromptServer.instance.routes.get("/vnccs/create")
     async def vnccs_create_character(request):
@@ -223,5 +252,7 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             return web.json_response(data)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
+
+
 
 _vnccs_register_endpoint()

@@ -35,11 +35,115 @@ def base_output_dir() -> str:
     """Get base output directory path."""
     try:
         from folder_paths import get_output_directory
-        return os.path.join(get_output_directory(), "VN_CharacterCreatorSuit")
+        return os.path.join(get_output_directory(), "VNCCS", "Characters")
     except ImportError:
         # Fallback for local usage
         current_dir = os.path.dirname(__file__)
+        return os.path.abspath(os.path.join(current_dir, "..", "..", "output", "VNCCS", "Characters"))
+
+
+def get_legacy_output_dir() -> str:
+    """Get legacy output directory path for migration."""
+    try:
+        from folder_paths import get_output_directory
+        return os.path.join(get_output_directory(), "VN_CharacterCreatorSuit")
+    except ImportError:
+        current_dir = os.path.dirname(__file__)
         return os.path.abspath(os.path.join(current_dir, "..", "..", "output", "VN_CharacterCreatorSuit"))
+
+
+import shutil
+import traceback
+
+def migrate_legacy_data() -> dict:
+    """Check for legacy data and migrate to new location.
+    
+    Returns:
+        dict: with keys 'migrated' (bool), 'count' (int), 'details' (list of names)
+    """
+    try:
+        print("[VNCCS Migration] Starting migration check...")
+        old_dir = get_legacy_output_dir()
+        new_dir = base_output_dir()
+        
+        print(f"[VNCCS Migration] Old Dir: {old_dir}")
+        print(f"[VNCCS Migration] New Dir: {new_dir}")
+        
+        if not os.path.exists(old_dir):
+            print("[VNCCS Migration] Legacy folder not found.")
+            return {"migrated": False, "count": 0, "message": "No legacy folder found"}
+        
+        # Check if old folder has content
+        try:
+            items = os.listdir(old_dir)
+        except OSError as e:
+            print(f"[VNCCS Migration] Error reading legacy folder: {e}")
+            return {"migrated": False, "count": 0, "message": f"Error reading legacy folder: {e}"}
+            
+        chars_to_move = [i for i in items if os.path.isdir(os.path.join(old_dir, i))]
+        print(f"[VNCCS Migration] Found candidates: {chars_to_move}")
+        
+        if not chars_to_move:
+            print("[VNCCS Migration] Legacy folder empty (no subdirs).")
+            return {"migrated": False, "count": 0, "message": "Legacy folder empty"}
+
+        # Ensure new dir exists
+        if not os.path.exists(new_dir):
+            try:
+                os.makedirs(new_dir, exist_ok=True)
+                print(f"[VNCCS Migration] Created new dir: {new_dir}")
+            except Exception as e:
+                 print(f"[VNCCS Migration] Failed to create new dir: {e}")
+                 return {"migrated": False, "count": 0, "message": f"Failed to create new dir: {e}"}
+        
+        moved_count = 0
+        moved_names = []
+        errors = []
+        
+        for char_name in chars_to_move:
+            src = os.path.join(old_dir, char_name)
+            dst = os.path.join(new_dir, char_name)
+            
+            if os.path.exists(dst):
+                msg = f"Skipped {char_name}: already exists in new location"
+                print(f"[VNCCS Migration] {msg}")
+                errors.append(msg)
+                continue
+                
+            try:
+                print(f"[VNCCS Migration] Moving {src} -> {dst}")
+                shutil.move(src, dst)
+                moved_count += 1
+                moved_names.append(char_name)
+            except Exception as e:
+                msg = f"Failed to move {char_name}: {str(e)}"
+                print(f"[VNCCS Migration] {msg}")
+                errors.append(msg)
+                
+        # If old dir is empty now, try to remove it
+        if not os.listdir(old_dir):
+            try:
+                print("[VNCCS Migration] Removing empty legacy dir.")
+                os.rmdir(old_dir)
+            except Exception as e:
+                print(f"[VNCCS Migration] Failed to remove empty legacy dir: {e}")
+                pass
+                
+        return {
+            "migrated": moved_count > 0,
+            "count": moved_count,
+            "details": moved_names,
+            "errors": errors,
+            "all_characters": list_characters()
+        }
+    except Exception as e:
+        trace = traceback.format_exc()
+        print(f"[VNCCS Migration] CRITICAL ERROR: {e}\n{trace}")
+        return {
+            "migrated": False, 
+            "error": str(e), 
+            "trace": trace
+        }
 
 
 def character_dir(name: str) -> str:

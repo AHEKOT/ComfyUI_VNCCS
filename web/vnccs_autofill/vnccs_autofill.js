@@ -1,10 +1,10 @@
-(()=>{
-  const TAG='[VNCCS autofill]';
-  const DEBUG=false;
-  function log(){ if(DEBUG) console.log(TAG, ...arguments); }
-  function warn(){ console.warn(TAG, ...arguments); }
-  async function fetchConfig(name){
-    if(!name||name==='None') {
+(() => {
+  const TAG = '[VNCCS autofill]';
+  const DEBUG = false;
+  function log() { if (DEBUG) console.log(TAG, ...arguments); }
+  function warn() { console.warn(TAG, ...arguments); }
+  async function fetchConfig(name) {
+    if (!name || name === 'None') {
       log('fetchConfig skipped for', name);
       return null;
     }
@@ -12,83 +12,86 @@
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
-      const r = await fetch(`/vnccs/config?name=${encodeURIComponent(name)}`, {cache:'no-store', signal: controller.signal});
+      const r = await fetch(`/vnccs/config?name=${encodeURIComponent(name)}`, { cache: 'no-store', signal: controller.signal });
       clearTimeout(timeoutId);
-      if(r.ok){ 
+      if (r.ok) {
         log('fetched via endpoint');
-        return await r.json(); 
+        return await r.json();
       } else {
         log('endpoint status', r.status);
       }
-    } catch(e){ 
-      if(e.name === 'AbortError') {
+    } catch (e) {
+      if (e.name === 'AbortError') {
         warn('fetch timeout for', name);
       } else {
-        warn('endpoint error', e); 
+        warn('endpoint error', e);
       }
     }
     // Fallbacks
     const encName = encodeURIComponent(name);
-    const rawPath = `VN_CharacterCreatorSuit/${name}/${name}_config.json`;
+    // New Path
+    const rawPath = `VNCCS/Characters/${name}/${name}_config.json`;
     const candidates = [
-      `/output/VN_CharacterCreatorSuit/${encName}/${encName}_config.json`,
+      `/output/VNCCS/Characters/${encName}/${encName}_config.json`,
       `/view?filename=${encodeURIComponent(rawPath)}&type=output`,
+      // Keep legacy path as last resort fallback for 1-2 seconds during migration race conditions
+      `/output/VN_CharacterCreatorSuit/${encName}/${encName}_config.json`,
     ];
-    for(const url of candidates){
-      try{ 
+    for (const url of candidates) {
+      try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 5000);
-        const r = await fetch(url,{cache:'no-store', signal: controller.signal});
+        const r = await fetch(url, { cache: 'no-store', signal: controller.signal });
         clearTimeout(timeoutId);
-        if(r.ok){ 
-          log('fetched via', url); 
-          return await r.json(); 
-        } else { 
-          log('attempt', url, r.status); 
+        if (r.ok) {
+          log('fetched via', url);
+          return await r.json();
+        } else {
+          log('attempt', url, r.status);
         }
-      } catch(e){ 
-        if(e.name === 'AbortError') {
+      } catch (e) {
+        if (e.name === 'AbortError') {
           warn('fallback fetch timeout for', url);
         } else {
-          warn('error', url, e); 
+          warn('error', url, e);
         }
       }
     }
     warn('all fetch attempts failed for', name);
     return null;
   }
-  function apply(node,cfg){
-    if(!cfg) return; const ci=cfg.character_info||{}; const map={character_name:ci.name,background_color:ci.background_color,aesthetics:ci.aesthetics,gender:ci.gender,age:ci.age,race:ci.race,eyes:ci.eyes,hair:ci.hair,face:ci.face,body:ci.body,skin_color:ci.skin_color,additional_details:ci.additional_details,negative_prompt:ci.negative_prompt,lora_prompt:ci.lora_prompt,seed:ci.seed};
-    (node.widgets||[]).forEach(w=>{ if(map.hasOwnProperty(w.name) && map[w.name]!==undefined && w.value!==map[w.name]){ log('set',w.name); w.value=map[w.name]; if(typeof w.callback==='function'){ try{ w.callback(w.value);}catch(e){} } } });
-    try{ node.setDirtyCanvas(true,true);}catch(_){ }
+  function apply(node, cfg) {
+    if (!cfg) return; const ci = cfg.character_info || {}; const map = { character_name: ci.name, background_color: ci.background_color, aesthetics: ci.aesthetics, gender: ci.gender, age: ci.age, race: ci.race, eyes: ci.eyes, hair: ci.hair, face: ci.face, body: ci.body, skin_color: ci.skin_color, additional_details: ci.additional_details, negative_prompt: ci.negative_prompt, lora_prompt: ci.lora_prompt, seed: ci.seed };
+    (node.widgets || []).forEach(w => { if (map.hasOwnProperty(w.name) && map[w.name] !== undefined && w.value !== map[w.name]) { log('set', w.name); w.value = map[w.name]; if (typeof w.callback === 'function') { try { w.callback(w.value); } catch (e) { } } } });
+    try { node.setDirtyCanvas(true, true); } catch (_) { }
   }
-  async function createNewCharacter(name){
-    if(!name) return {error:'empty name'};
-    try{ const r=await fetch(`/vnccs/create?name=${encodeURIComponent(name)}`); if(!r.ok) return {error:'http '+r.status}; return await r.json(); }catch(e){ return {error:String(e)}; }
+  async function createNewCharacter(name) {
+    if (!name) return { error: 'empty name' };
+    try { const r = await fetch(`/vnccs/create?name=${encodeURIComponent(name)}`); if (!r.ok) return { error: 'http ' + r.status }; return await r.json(); } catch (e) { return { error: String(e) }; }
   }
-  function addCreateButton(node){
-  if(node.widgets?.find(w=>w._vnccsCreate)) return;
-    const nameWidget = node.widgets?.find(w=>w.name==='character_name');
-  function refreshExistingList(node, newName){
-      const sel = node.widgets?.find(w=>w.name==='existing_character');
-      if(!sel) { warn('no existing_character to refresh'); return; }
+  function addCreateButton(node) {
+    if (node.widgets?.find(w => w._vnccsCreate)) return;
+    const nameWidget = node.widgets?.find(w => w.name === 'character_name');
+    function refreshExistingList(node, newName) {
+      const sel = node.widgets?.find(w => w.name === 'existing_character');
+      if (!sel) { warn('no existing_character to refresh'); return; }
       log('OLD refreshExistingList called with newName:', newName, 'type:', typeof newName);
       let list = sel.options || sel.values || sel.choices || sel.items;
       log('OLD list before update:', list);
-      if(Array.isArray(list)){
-        if(!list.includes(newName)){
+      if (Array.isArray(list)) {
+        if (!list.includes(newName)) {
           list.push(newName);
           log('OLD list after push:', list);
-          if(sel.options) sel.options = list; if(sel.values) sel.values = list; if(sel.choices) sel.choices = list; if(sel.items) sel.items = list;
+          if (sel.options) sel.options = list; if (sel.values) sel.values = list; if (sel.choices) sel.choices = list; if (sel.items) sel.items = list;
         }
       }
       sel.value = newName;
       log('OLD set sel.value to:', newName);
       // if(typeof sel.callback === 'function'){ try { sel.callback(newName); } catch(e){} }
-      try { node.setDirtyCanvas(true,true); } catch(_){}
+      try { node.setDirtyCanvas(true, true); } catch (_) { }
     }
-    const callback = async ()=>{
-      const newName = (nameWidget?.value||'').trim();
+    const callback = async () => {
+      const newName = (nameWidget?.value || '').trim();
       log('nameWidget found, raw value:', nameWidget?.value, 'trimmed:', newName);
       if (!newName) {
         log('Empty character name in new_character_name field');
@@ -96,7 +99,7 @@
       }
       log('create request', newName);
       const res = await createNewCharacter(newName);
-      if(res && !res.error){
+      if (res && !res.error) {
         log('created', newName, res.existing ? '(existing)' : '');
         refreshExistingList(newName);
         const cfg = await fetchConfig(newName);
@@ -105,19 +108,19 @@
         warn('create failed', res && res.error);
       }
     };
-    const w = node.addWidget('button','Create New Character','', callback);
-    if(w){
+    const w = node.addWidget('button', 'Create New Character', '', callback);
+    if (w) {
       w._vnccsCreate = true;
-      if(nameWidget){
+      if (nameWidget) {
         const list = node.widgets;
         const nameIdx = list.indexOf(nameWidget);
         const btnIdx = list.indexOf(w);
-        if(nameIdx >=0 && btnIdx > nameIdx+1){
-          list.splice(btnIdx,1);
-          list.splice(nameIdx+1,0,w);
+        if (nameIdx >= 0 && btnIdx > nameIdx + 1) {
+          list.splice(btnIdx, 1);
+          list.splice(nameIdx + 1, 0, w);
         }
       }
-      try { node.setDirtyCanvas(true,true); } catch(_){}
+      try { node.setDirtyCanvas(true, true); } catch (_) { }
     }
   }
   function addCreateButtonSafely(node) {
@@ -146,7 +149,7 @@
 
       existingWidget.value = newName;
       log('Set existingWidget.value to:', newName);
-      try { node.setDirtyCanvas(true,true); } catch(_){}
+      try { node.setDirtyCanvas(true, true); } catch (_) { }
     }
 
     const createCallback = async () => {
@@ -185,7 +188,7 @@
 
       log('create request', newName);
       const res = await createNewCharacter(newName);
-      if(res && !res.error){
+      if (res && !res.error) {
         log('created', newName, res.existing ? '(existing)' : '');
         refreshExistingList(newName);
         const cfg = await fetchConfig(newName);
@@ -210,9 +213,9 @@
       log('Create button added successfully at the end of widget list');
     }
   }
-  function applyCostumeData(node, cfg, costume){
+  function applyCostumeData(node, cfg, costume) {
     log('applyCostumeData called for node', node.id, 'costume:', costume);
-    if(!cfg || !cfg.costumes || !cfg.costumes[costume]) {
+    if (!cfg || !cfg.costumes || !cfg.costumes[costume]) {
       warn('no costume data for', costume);
       return;
     }
@@ -228,8 +231,8 @@
       extra_negative_prompt: costumeData.extra_negative_prompt
     };
     log('fields to update:', map);
-    (node.widgets||[]).forEach(w => {
-      if(map.hasOwnProperty(w.name) && map[w.name] !== undefined && w.value !== map[w.name]){
+    (node.widgets || []).forEach(w => {
+      if (map.hasOwnProperty(w.name) && map[w.name] !== undefined && w.value !== map[w.name]) {
         log('updating field', w.name, 'from', w.value, 'to', map[w.name]);
         const tempCallback = w.callback;
         w.callback = null;
@@ -243,17 +246,17 @@
     log('applyCostumeData completed without setDirtyCanvas');
   }
 
-  function updateCostumeList(node, cfg){
+  function updateCostumeList(node, cfg) {
     log('updateCostumeList called for node', node.id);
     const costumeWidget = node.widgets?.find(w => w.name === 'costume');
-    if(!costumeWidget) {
+    if (!costumeWidget) {
       warn('costumeWidget not found');
       return;
     }
     let costumes = ['Naked'];
-    if(cfg && cfg.costumes){
+    if (cfg && cfg.costumes) {
       Object.keys(cfg.costumes).forEach(c => {
-        if(!costumes.includes(c)) costumes.push(c);
+        if (!costumes.includes(c)) costumes.push(c);
       });
     }
     log('new costume list:', costumes);
@@ -274,15 +277,15 @@
     }
     costumeWidget.callback = tempCallback;
     setTimeout(() => {
-      try { node.setDirtyCanvas(true, true); } catch(_) {}
+      try { node.setDirtyCanvas(true, true); } catch (_) { }
       log('setDirtyCanvas called after updateCostumeList');
     }, 10);
     log('updateCostumeList completed');
   }
 
-  function hookCharacterAssetSelector(node){
+  function hookCharacterAssetSelector(node) {
     log('hookCharacterAssetSelector called for node', node.id);
-    if(node.__vnccsAssetHooked) {
+    if (node.__vnccsAssetHooked) {
       log('already hooked, skipping');
       return;
     }
@@ -291,27 +294,27 @@
 
     const charWidget = node.widgets?.find(w => w.name === 'character');
     const costumeWidget = node.widgets?.find(w => w.name === 'costume');
-    if(!charWidget || !costumeWidget) {
+    if (!charWidget || !costumeWidget) {
       warn('character or costume widget not found');
       return;
     }
     log('widgets found: character and costume');
 
-    if(!node.widgets.find(w => w._vnccsCreateCostume)) {
+    if (!node.widgets.find(w => w._vnccsCreateCostume)) {
       log('Adding create costume button');
       const nameWidget = node.widgets?.find(w => w.name === 'new_costume_name');
-      if(!nameWidget) {
+      if (!nameWidget) {
         warn('new_costume_name widget not found');
       } else {
         const createCostumeCallback = async () => {
           const newName = (nameWidget?.value || '').trim();
           const character = charWidget.value;
           log('Create costume button clicked, newName:', newName, 'character:', character);
-          if(!newName) {
+          if (!newName) {
             warn('Empty costume name');
             return;
           }
-          if(!character || character === 'None') {
+          if (!character || character === 'None') {
             warn('No character selected');
             return;
           }
@@ -322,7 +325,7 @@
             log('Response status:', response.status);
             const result = await response.json();
             log('Response result:', result);
-            if(result.ok) {
+            if (result.ok) {
               log('Costume created successfully:', newName);
               const cfg = await fetchConfig(character);
               log('Fetched config for update');
@@ -334,13 +337,13 @@
             } else {
               warn('Create failed:', result.error);
             }
-          } catch(e) {
+          } catch (e) {
             console.error('Error creating costume:', e);
             warn('Error creating costume:', e);
           }
         };
         const button = node.addWidget('button', 'Create New Costume', '', createCostumeCallback);
-        if(button) {
+        if (button) {
           button._vnccsCreateCostume = true;
           log('Create costume button added');
         }
@@ -351,47 +354,47 @@
     let updatingCostume = false;
 
     const origChar = charWidget.callback;
-    charWidget.callback = async function(){
+    charWidget.callback = async function () {
       log('character callback triggered, value:', charWidget.value, 'updatingCharacter:', updatingCharacter);
-      if(updatingCharacter) {
+      if (updatingCharacter) {
         log('already updating character, skipping');
         return;
       }
       updatingCharacter = true;
       log('processing character change');
-      if(origChar) try{ origChar.apply(this, arguments); } catch(e){ warn('orig char callback error', e); }
+      if (origChar) try { origChar.apply(this, arguments); } catch (e) { warn('orig char callback error', e); }
       log('fetching config for character:', charWidget.value);
-      try{
+      try {
         const cfg = await fetchConfig(charWidget.value);
         log('config fetched, updating costume list');
         updateCostumeList(node, cfg);
-      } catch(e){ warn('update costume list error', e); }
+      } catch (e) { warn('update costume list error', e); }
       updatingCharacter = false;
       log('character update completed');
     };
 
     const origCostume = costumeWidget.callback;
-    costumeWidget.callback = async function(){
+    costumeWidget.callback = async function () {
       log('costume callback triggered, value:', costumeWidget.value, 'updatingCostume:', updatingCostume);
-      if(updatingCostume) {
+      if (updatingCostume) {
         log('already updating costume, skipping');
         return;
       }
       updatingCostume = true;
       log('processing costume change');
-      if(origCostume) try{ origCostume.apply(this, arguments); } catch(e){ warn('orig costume callback error', e); }
+      if (origCostume) try { origCostume.apply(this, arguments); } catch (e) { warn('orig costume callback error', e); }
       log('fetching config for costume update, character:', charWidget.value);
-      try{
+      try {
         const cfg = await fetchConfig(charWidget.value);
         log('config fetched, applying costume data');
         applyCostumeData(node, cfg, costumeWidget.value);
-      } catch(e){ warn('apply costume data error', e); }
+      } catch (e) { warn('apply costume data error', e); }
       updatingCostume = false;
       log('costume update completed');
     };
     log('callbacks set for CharacterAssetSelector');
-    
-    setTimeout(async ()=>{
+
+    setTimeout(async () => {
       log('Initial load for CharacterAssetSelector', node.id);
       const charWidget = node.widgets?.find(w => w.name === 'character');
       if (charWidget && charWidget.value && charWidget.value !== 'None') {
@@ -401,49 +404,67 @@
           log('Initial config loaded, updating costume list');
           updateCostumeList(node, cfg);
           log('Initial load completed');
-        } catch(e) {
+        } catch (e) {
           warn('Initial load error:', e);
         }
       } else {
         log('No character selected for initial load');
       }
-    },300);
+    }, 300);
   }
-  function hook(node){
-    if(!node) return;
+  function hook(node) {
+    if (!node) return;
     const title = (node.title || '').trim();
-    if(node.comfyClass === 'CharacterCreator' || title === 'VNCCS Character Creator'){
-      if(node.__vnccsHooked) return;
+    if (node.comfyClass === 'CharacterCreator' || title === 'VNCCS Character Creator') {
+      if (node.__vnccsHooked) return;
       node.__vnccsHooked = true;
       log('hook Creator', node.id);
-      const sel=(node.widgets||[]).find(w=>w.name==='existing_character'); if(!sel){ warn('no existing_character'); return; }
-  addCreateButtonSafely(node);
-    const orig=sel.callback; sel.callback=async function(){ 
-      if(orig) try{ orig.apply(this,arguments);}catch(e){} 
-      let characterName = sel.value;
-      log('existing_character callback triggered, sel.value:', characterName, 'type:', typeof characterName);
-      
-      if (typeof characterName !== 'string') {
-        if (characterName && characterName.title) {
-          characterName = characterName.title;
-          log('Extracted name from node title:', characterName);
-        } else if (characterName && characterName.id !== undefined) {
-          characterName = 'node_' + characterName.id;
-          log('Extracted name from node id:', characterName);
-        } else {
-          log('Cannot extract string name from sel.value, using fallback');
-          characterName = 'unknown';
-        }
-      }
-      
-      const cfg=await fetchConfig(characterName); 
-      apply(node,cfg); 
-    };
-    if(!node.widgets.find(w=>w.name==='vnccs_reload')){
-      node.addWidget('button','Reload Config','', async ()=>{ 
+      const sel = (node.widgets || []).find(w => w.name === 'existing_character'); if (!sel) { warn('no existing_character'); return; }
+      addCreateButtonSafely(node);
+      const orig = sel.callback; sel.callback = async function () {
+        if (orig) try { orig.apply(this, arguments); } catch (e) { }
         let characterName = sel.value;
-        log('Reload Config button clicked, sel.value:', characterName, 'type:', typeof characterName);
-        
+        log('existing_character callback triggered, sel.value:', characterName, 'type:', typeof characterName);
+
+        if (typeof characterName !== 'string') {
+          if (characterName && characterName.title) {
+            characterName = characterName.title;
+            log('Extracted name from node title:', characterName);
+          } else if (characterName && characterName.id !== undefined) {
+            characterName = 'node_' + characterName.id;
+            log('Extracted name from node id:', characterName);
+          } else {
+            log('Cannot extract string name from sel.value, using fallback');
+            characterName = 'unknown';
+          }
+        }
+
+        const cfg = await fetchConfig(characterName);
+        apply(node, cfg);
+      };
+      if (!node.widgets.find(w => w.name === 'vnccs_reload')) {
+        node.addWidget('button', 'Reload Config', '', async () => {
+          let characterName = sel.value;
+          log('Reload Config button clicked, sel.value:', characterName, 'type:', typeof characterName);
+
+          if (typeof characterName !== 'string') {
+            if (characterName && characterName.title) {
+              characterName = characterName.title;
+            } else if (characterName && characterName.id !== undefined) {
+              characterName = 'node_' + characterName.id;
+            } else {
+              characterName = 'unknown';
+            }
+          }
+
+          const cfg = await fetchConfig(characterName);
+          apply(node, cfg);
+        });
+      }
+      setTimeout(async () => {
+        let characterName = sel.value;
+        log('Initial load, sel.value:', characterName, 'type:', typeof characterName);
+
         if (typeof characterName !== 'string') {
           if (characterName && characterName.title) {
             characterName = characterName.title;
@@ -453,40 +474,22 @@
             characterName = 'unknown';
           }
         }
-        
-        const cfg=await fetchConfig(characterName); 
-        apply(node,cfg); 
-      });
-    }
-    setTimeout(async ()=>{
-      let characterName = sel.value;
-      log('Initial load, sel.value:', characterName, 'type:', typeof characterName);
-      
-      if (typeof characterName !== 'string') {
-        if (characterName && characterName.title) {
-          characterName = characterName.title;
-        } else if (characterName && characterName.id !== undefined) {
-          characterName = 'node_' + characterName.id;
-        } else {
-          characterName = 'unknown';
-        }
-      }
-      
-      const cfg=await fetchConfig(characterName); 
-      apply(node,cfg); 
-    },200);
-    } else if(
+
+        const cfg = await fetchConfig(characterName);
+        apply(node, cfg);
+      }, 200);
+    } else if (
       (node.comfyClass && node.comfyClass.startsWith('CharacterAssetSelector')) ||
       (title && title.toLowerCase().startsWith('vnccs character selector'))
-    ){
+    ) {
       hookCharacterAssetSelector(node);
     }
   }
-  function scan(){ try{ (app.graph?._nodes||[]).forEach(hook); }catch(e){} }
-  function register(){
-    if(!window.app || !app.graph){ return setTimeout(register,150); }
-    if(app.registerExtension){
-      app.registerExtension({ name:'vnccs.autofill', nodeCreated(node){ hook(node); }, loadedGraph(){ scan(); } });
+  function scan() { try { (app.graph?._nodes || []).forEach(hook); } catch (e) { } }
+  function register() {
+    if (!window.app || !app.graph) { return setTimeout(register, 150); }
+    if (app.registerExtension) {
+      app.registerExtension({ name: 'vnccs.autofill', nodeCreated(node) { hook(node); }, loadedGraph() { scan(); } });
       log('extension registered');
     } else {
       // Fallback periodic scan
