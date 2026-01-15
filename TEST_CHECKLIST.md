@@ -35,3 +35,9 @@
 - [ ] Create chain: Pipe1 (model) → Pipe2 (clip) → Pipe3 (vae)
 - [ ] Verify all values inherited correctly through the chain
 - [ ] Override a value in middle pipe, verify downstream receives override
+
+## 8. 3D Background Generator
+- [ ] Load WorldMirror model (requires GPU)
+- [ ] Test 360° Panorama to Views with equirectangular image
+- [ ] Run 3D reconstruction on sample images
+- [ ] Save PLY file with rotation options

@@ -58,3 +58,24 @@ Added rules:
 | `nodes/pose_generator.py` | ✅ | Clean, no changes needed |
 | `web/pose_editor.js` | ⚠️ | 2144 lines, requires refactoring (deferred) |
 | `nodes/character_selector.py` | ⚠️ | 90% duplication, plan ready (deferred) |
+
+---
+
+## New Features
+
+### `nodes/background_generator.py` [NEW]
+Integrated 3D Background Generation nodes from standalone project:
+- **🌐 Load WorldMirror Model** – Load HunyuanWorld-Mirror for 3D reconstruction
+- **🏔️ WorldMirror 3D Reconstruction** – Generate point clouds and gaussian splats
+- **🔄 360° Panorama to Views** – Extract perspective views from equirectangular panoramas
+- **💾 Save PLY File** – Export reconstruction as PLY with rotation options
+- **👁️ Background Preview** – Interactive 3D Gaussian Splatting viewer
+
+### `background-data/worldmirror/` [NEW]
+WorldMirror ML model files and utilities.
+
+### `web/gaussian_preview/` [NEW]
+WebGL viewer files for interactive 3D Gaussian Splatting preview.
+- `gaussian_preview.js` – ComfyUI widget integration
+- `gsplat-bundle.js` – WebGL 3D Gaussian renderer
+- `viewer_gaussian.html` – Standalone viewer HTML
