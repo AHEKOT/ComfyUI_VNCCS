@@ -46,18 +46,12 @@ class VNCCS_Pipe:
     )
     FUNCTION = "process_pipe"
 
-    def __init__(self):
-        self.model = None
-        self.clip = None
-        self.vae = None
-        self.pos = None
-        self.neg = None
-        self.seed_int = None
-        self.sample_steps = None
-        self.cfg = None
-        self.denoise = None
-        self.sampler_name = None
-        self.scheduler = None
+    @staticmethod
+    def _inherit(value, pipe, attr_name, zero_is_empty=True):
+        """Inherit value from pipe if current value is empty."""
+        if value is None or (zero_is_empty and value == 0):
+            return getattr(pipe, attr_name, value) if pipe else value
+        return value
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -83,36 +77,30 @@ class VNCCS_Pipe:
     def process_pipe(self, model=None, clip=None, vae=None, pos=None, neg=None, seed_int=0,
                      sample_steps=None, cfg=None, denoise=None, pipe=None,
                      sampler_name=None, scheduler=None):
-        # 3. Otherwise remain 0 (caller downstream may randomize later).
-        if pipe is not None:
-            if model is None: model = getattr(pipe, "model", None)
-            if clip is None: clip = getattr(pipe, "clip", None)
-            if vae is None: vae = getattr(pipe, "vae", None)
-            if pos is None: pos = getattr(pipe, "pos", None)
-            if neg is None: neg = getattr(pipe, "neg", None)
-            if sample_steps is None or sample_steps == 0: sample_steps = getattr(pipe, "sample_steps", None)
-            if cfg is None or cfg == 0: cfg = getattr(pipe, "cfg", None)
-            if denoise is None or denoise == 0: denoise = getattr(pipe, "denoise", None)
-            default_sampler_name = SAMPLER_ENUM[0] if SAMPLER_ENUM else None
-            default_scheduler_name = SCHEDULER_ENUM[0] if SCHEDULER_ENUM else None
-            if (sampler_name in (None, "", default_sampler_name)):
-                sampler_name = getattr(pipe, "sampler_name", sampler_name)
-            if (scheduler in (None, "", default_scheduler_name)):
-                scheduler = getattr(pipe, "scheduler", scheduler)
-            if seed_int in (None, 0):
-                upstream_val = getattr(pipe, "seed_int", getattr(pipe, "seed", 0))
-                if upstream_val not in (None, 0):
-                    seed_int = upstream_val
-            else:
-                # Propagate override downstream pipe immediately so deeper chains see it
-                try:
-                    pipe.seed_int = seed_int
-                except Exception:
-                    try:
-                        pipe.seed = seed_int
-                    except Exception:
-                        pass
+        """Aggregate pipe values, inheriting from upstream pipe if not provided."""
+        # Inherit from upstream pipe if values are empty
+        model = self._inherit(model, pipe, "model", zero_is_empty=False)
+        clip = self._inherit(clip, pipe, "clip", zero_is_empty=False)
+        vae = self._inherit(vae, pipe, "vae", zero_is_empty=False)
+        pos = self._inherit(pos, pipe, "pos", zero_is_empty=False)
+        neg = self._inherit(neg, pipe, "neg", zero_is_empty=False)
+        sample_steps = self._inherit(sample_steps, pipe, "sample_steps")
+        cfg = self._inherit(cfg, pipe, "cfg")
+        denoise = self._inherit(denoise, pipe, "denoise")
 
+        # Handle seed with fallback to legacy "seed" attribute
+        if seed_int in (None, 0) and pipe is not None:
+            seed_int = getattr(pipe, "seed_int", getattr(pipe, "seed", 0)) or 0
+
+        # Handle sampler/scheduler with default comparison
+        default_sampler = SAMPLER_ENUM[0] if SAMPLER_ENUM else None
+        default_scheduler = SCHEDULER_ENUM[0] if SCHEDULER_ENUM else None
+        if sampler_name in (None, "", default_sampler) and pipe:
+            sampler_name = getattr(pipe, "sampler_name", sampler_name)
+        if scheduler in (None, "", default_scheduler) and pipe:
+            scheduler = getattr(pipe, "scheduler", scheduler)
+
+        # Store on self for return
         self.model = model
         self.clip = clip
         self.vae = vae
@@ -124,18 +112,6 @@ class VNCCS_Pipe:
         self.denoise = denoise
         self.sampler_name = sampler_name
         self.scheduler = scheduler
-
-        if pipe is not None:
-            pipe.model = self.model
-            pipe.clip = self.clip
-            pipe.vae = self.vae
-            pipe.pos = self.pos
-            pipe.neg = self.neg
-            pipe.sample_steps = self.sample_steps
-            pipe.cfg = self.cfg
-            pipe.denoise = self.denoise
-            pipe.sampler_name = self.sampler_name
-            pipe.scheduler = self.scheduler
 
         return (
             self.model,

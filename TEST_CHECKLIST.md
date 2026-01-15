@@ -24,3 +24,14 @@
 
 ## 5. Agent Skills (Optional)
 - [ ] Verify ComfyUI loads without JS errors
+
+## 6. Sheet Manager
+- [ ] Test VNCCSSheetExtractor with any sheet image
+- [ ] Verify it returns correct part (1-12 index, where 1=top-left, 12=bottom-right)
+- [ ] Test VNCCS_QuadSplitter split mode with a square image
+- [ ] Test VNCCS_QuadSplitter compose mode with 4 images
+
+## 7. VNCCS Pipe
+- [ ] Create chain: Pipe1 (model) → Pipe2 (clip) → Pipe3 (vae)
+- [ ] Verify all values inherited correctly through the chain
+- [ ] Override a value in middle pipe, verify downstream receives override

@@ -18,19 +18,22 @@ This skill enforces a context-sensitive workflow that adapts to the type and cla
 
 **If Type C (Complex):**
 1.  **Stop**: Do not touch code.
-2.  **Plan**: Create `implementation_plan.md` (Goal, Changes, Verification).
+2.  **Plan**: Create `implementation_plan.md` (Goal, Changes, Verification). Structured, beautifully designed with code examples (original and modified).
 3.  **Approve**: Ask user for "Yes/No".
 4.  **Execute**: Only after approval.
+5.  **internal planning based onVerification Standards**: Make before toching code. Check each step after each phase
 
 **If Type A or B:**
 *   Proceed directly. Ensure correctness.
+*   **MANDATORY**: After ANY code change (Type B or C), update `CHANGELOG.md` IMMEDIATELY.
 
 ## 4. Verification Standards (Mandatory)
 *   **Syntax Check**: Must run python syntax check (`python -m py_compile file.py`) or linter.
 *   **Runtime Check**: If possible, trigger the code (e.g., import test, dry run).
 *   **Evidence**: Output logs or errors must be analyzed in the final report.
 *   **Cleanup**: After testing, YOU MUST DELETE any `__pycache__` directories created during verification.
-*   **Sign-off**: "Task is complete ONLY when verification passed AND cleanup is done."
+*   **Documentation**: Update `CHANGELOG.md` and `TEST_CHECKLIST.md` **AFTER EVERY CODE CHANGE** (Type B or C). This is NOT optional.
+*   **Sign-off**: "Task is complete ONLY when verification passed, **CHANGELOG.md updated**, and cleanup is done."
 
 ## 5. Zero Tolerance Policies
 *   **No Silent Assumptions** – Ambiguity must be resolved explicitly.
@@ -47,3 +50,13 @@ This skill enforces a context-sensitive workflow that adapts to the type and cla
 *   **Context: Codebase & Repository** -> **ENGLISH**
     *   Applies to: Source code, comments, docstrings, `README.md`, `CHANGELOG.md`, `CHECKLIST.md`.
     *   Reason: Universal project compatibility and standard.
+
+## 7. Post-Code-Change Checklist (MANDATORY)
+**After ANY code file is modified (Type B or C), you MUST complete ALL items IN ORDER:**
+1. [ ] Run syntax check (`python -m py_compile <file>`) AND IMMEDIATELY delete `__pycache__` after
+2. [ ] Update `CHANGELOG.md` with change description
+3. [ ] Update `TEST_CHECKLIST.md` if testing instructions changed
+4. [ ] Delete `__pycache__` directories if created
+5. [ ] Only THEN report completion to user
+
+**FAILURE TO COMPLETE THIS CHECKLIST = INCOMPLETE TASK**

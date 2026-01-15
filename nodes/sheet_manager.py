@@ -80,10 +80,6 @@ class VNCCSSheetManager:
         
         batch_size, img_height, img_width, channels = image_tensors.shape
         
-        print(f"Input: {batch_size} images of {img_height}x{img_width}")
-        print(f"Target layout: {num_rows} rows × {num_columns} columns")
-        print(f"Expected total images: {expected_batch_size}")
-        
         if batch_size < expected_batch_size:
             padding_needed = expected_batch_size - batch_size
             padding = torch.zeros((padding_needed, img_height, img_width, channels), 
@@ -104,9 +100,6 @@ class VNCCSSheetManager:
 
         sheet_height = num_rows * cell_height
         sheet_width = num_columns * cell_width
-
-        print(f"Cell size: {cell_height}x{cell_width}")
-        print(f"Final sheet dimensions: {sheet_height}x{sheet_width}")
 
         sheet = torch.zeros((sheet_height, sheet_width, channels), dtype=image_tensors.dtype, device=image_tensors.device)
 
@@ -178,7 +171,7 @@ class VNCCSSheetExtractor:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "part_index": ("INT", {"default": 0, "min": 0, "max": 11}),
+                "part_index": ("INT", {"default": 1, "min": 1, "max": 12}),
                 "target_width": ("INT", {"default": 1024, "min": 64, "max": 6144, "step": 64}),
                 "target_height": ("INT", {"default": 3072, "min": 64, "max": 6144, "step": 64}),
             }
@@ -189,10 +182,11 @@ class VNCCSSheetExtractor:
     CATEGORY = "VNCCS"
     FUNCTION = "extract"
     DESCRIPTION = """
-    Returns one part of the sheet (2×6 grid) at the given index. Indices 0-5 are the top row left-to-right, 6-11 are the bottom row.
+    Returns one part of the sheet (2×6 grid) at the given index. Indices 1-6 are the top row left-to-right, 7-12 are the bottom row.
     """
 
     def extract(self, image, part_index, target_width, target_height):
+        """Extract a single part from a 2x6 sheet grid without splitting the entire sheet."""
         part_index = part_index[0] if isinstance(part_index, list) else part_index
         target_width = target_width[0] if isinstance(target_width, list) else target_width
         target_height = target_height[0] if isinstance(target_height, list) else target_height
@@ -202,16 +196,32 @@ class VNCCSSheetExtractor:
         if len(image.shape) == 4:
             image = image[0]
 
-        manager = VNCCSSheetManager()
-        parts = manager.split_sheet(image, target_width, target_height)
+        # Convert from human-friendly 1-12 to internal 0-11 and clamp
+        part_index = max(0, min(11, part_index - 1))
 
-        if not parts:
-            raise ValueError("Failed to split sheet: parts is empty")
+        height, width, channels = image.shape
+        cell_width = width // 6
+        cell_height = height // 2
 
-        part_index = max(0, min(len(parts) - 1, part_index))
-        selected = parts[part_index]
+        row = part_index // 6
+        col = part_index % 6
 
-        return (selected.unsqueeze(0),)
+        y_start = row * cell_height
+        y_end = (row + 1) * cell_height
+        x_start = col * cell_width
+        x_end = (col + 1) * cell_width
+
+        part = image[y_start:y_end, x_start:x_end, :]
+
+        # Resize if needed
+        if part.shape[0] != target_height or part.shape[1] != target_width:
+            part = torch.nn.functional.interpolate(
+                part.unsqueeze(0).permute(0, 3, 1, 2),
+                size=(target_height, target_width),
+                mode="bilinear"
+            ).squeeze().permute(1, 2, 0)
+
+        return (part.unsqueeze(0),)
 
 
 class VNCCS_QuadSplitter:
@@ -242,37 +252,27 @@ class VNCCS_QuadSplitter:
         return image
 
     def _normalize_image_list(self, images):
-        """Normalize various incoming shapes into a flat list of single-image HWC tensors."""
+        """Flatten incoming images into a list of HWC tensors.
+        
+        Handles: Tensor (B,H,W,C), List[Tensor], List[List[Tensor]], mixed nesting.
+        """
         out = []
-        if isinstance(images, torch.Tensor):
-            if len(images.shape) == 4:
-                for i in range(images.shape[0]):
-                    out.append(images[i])
-                return out
-            else:
-                return [images]
 
-        if isinstance(images, list):
-            for item in images:
-                if isinstance(item, list):
-                    for sub in item:
-                        if isinstance(sub, torch.Tensor) and len(sub.shape) == 4 and sub.shape[0] == 1:
-                            out.append(sub[0])
-                        elif isinstance(sub, torch.Tensor):
-                            out.append(sub)
-                        else:
-                            out.append(sub)
-                elif isinstance(item, torch.Tensor):
-                    if len(item.shape) == 4 and item.shape[0] > 1:
-                        for i in range(item.shape[0]):
-                            out.append(item[i])
-                    elif len(item.shape) == 4 and item.shape[0] == 1:
-                        out.append(item[0])
-                    else:
-                        out.append(item)
-                else:
-                    out.append(item)
+        def _add_tensor(t):
+            if len(t.shape) == 4:
+                for i in range(t.shape[0]):
+                    out.append(t[i])
+            elif len(t.shape) == 3:
+                out.append(t)
 
+        def _process(x):
+            if isinstance(x, torch.Tensor):
+                _add_tensor(x)
+            elif isinstance(x, list):
+                for item in x:
+                    _process(item)
+
+        _process(images)
         return out
 
     def _center_crop_square(self, img: torch.Tensor) -> torch.Tensor:

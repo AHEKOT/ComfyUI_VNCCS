@@ -19,6 +19,18 @@
 - **Renamed**: `addCreateButtonSafely` → `addCreateButton`
 - **Result**: Reduced from 503 to 454 lines
 
+### `nodes/sheet_manager.py`
+- **Optimized**: `VNCCSSheetExtractor.extract()` now crops directly instead of splitting entire sheet (12x memory reduction)
+- **Simplified**: `VNCCS_QuadSplitter._normalize_image_list()` rewritten with cleaner recursion (33 → 18 lines)
+- **Removed**: 5 debug `print()` statements from `VNCCSSheetManager.compose_sheet()`
+- **UX**: `VNCCSSheetExtractor.part_index` changed from 0-11 to human-friendly 1-12
+
+### `nodes/vnccs_pipe.py`
+- **Removed**: Unused `__init__` method (12 lines)
+- **Removed**: Mutation of input `pipe` object (prevents race conditions)
+- **Added**: Helper `_inherit(value, pipe, attr_name, zero_is_empty)` for cleaner inheritance logic
+- **Result**: Reduced from 168 to 143 lines
+
 ---
 
 ## Agent Skills
