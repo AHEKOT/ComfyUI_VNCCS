@@ -21,7 +21,7 @@ This skill enforces a context-sensitive workflow that adapts to the type and cla
 2.  **Plan**: Create `implementation_plan.md` (Goal, Changes, Verification). Structured, beautifully designed with code examples (original and modified).
 3.  **Approve**: Ask user for "Yes/No".
 4.  **Execute**: Only after approval.
-5.  **internal planning based onVerification Standards**: Make before toching code. Check each step after each phase
+5.  **Internal Planning**: Verification Standards must be defined before touching code. Check each step after each phase.
 
 **If Type A or B:**
 *   Proceed directly. Ensure correctness.
@@ -45,11 +45,7 @@ This skill enforces a context-sensitive workflow that adapts to the type and cla
 *   **No Low-Effort Plans** – Plans must be COMPREHENSIVE. Include "Analysis Findings", "Reasoning", and specific code references. A plan should be as detailed as a technical design document. If you explained it well in chat, put that explanation in the plan.
 ## 6. Language & Localization Protocol
 *   **Context: Chat & Planning** -> **RUSSIAN**
-    *   Applies to: Chat responses, `task_boundary`, `notify_user`, `implementation_plan.md`, `walkthrough.md`.
-    *   Reason: Efficient communication with the user.
 *   **Context: Codebase & Repository** -> **ENGLISH**
-    *   Applies to: Source code, comments, docstrings, `README.md`, `CHANGELOG.md`, `CHECKLIST.md`.
-    *   Reason: Universal project compatibility and standard.
 
 ## 7. Post-Code-Change Checklist (MANDATORY)
 **After ANY code file is modified (Type B or C), you MUST complete ALL items IN ORDER:**
@@ -58,5 +54,25 @@ This skill enforces a context-sensitive workflow that adapts to the type and cla
 3. [ ] Update `TEST_CHECKLIST.md` if testing instructions changed
 4. [ ] Delete `__pycache__` directories if created
 5. [ ] Only THEN report completion to user
-
 **FAILURE TO COMPLETE THIS CHECKLIST = INCOMPLETE TASK**
+
+## 8. Anti-Panic & Error Protocol (CRITICAL)
+**When execution fails, the user is angry, or an unexpected error occurs:**
+1.  **STOP IMMEDIATELY**: Freeze all code execution. Do NOT attempt to "quickly fix" it.
+2.  **NO QUIET FIXES**: It is strictly FORBIDDEN to overwrite files, move files, or change logic to "patch" the issue without a documented plan.
+3.  **REVERT TO PLANNING**:
+    *   Acknowledge the failure.
+    *   Create or Update `implementation_plan.md` with a specific **"Recovery Plan"** section.
+    *   Present this plan to the user.
+4.  **WAIT FOR APPROVAL**: Do not touch a single line of code until the Recovery Plan is approved.
+5.  **VIOLATION CONSEQUENCES**: Ignoring this protocol leads to immediate loss of trust and potential rollback of all work.
+
+## 9. Panic/Provocation Circuit Breaker (CRITICAL)
+**When execution fails, the user is angry, or an unexpected error occurs (e.g. "Ты уебался?"):**
+1.  **HARD STOP**: usage of `write_to_file`, `replace_file_content`, `run_command` (for modification) is **SUSPENDED**.
+2.  **MANDATORY ACKNOWLEDGEMENT**: You must explicitly state: "TRIGGER DETECTED. EXECUTION FROZEN."
+3.  **NO "JUST ONE THING"**: It is forbidden to fix "just a typo" or "just one line" in this state. It is strictly FORBIDDEN to overwrite files, move files, or change logic to "patch" the issue without a documented plan.
+4.  **RETURN TO PLANNING**: You must immediately call `task_boundary` with `Mode: PLANNING` and `TaskStatus: Analyzing User Feedback`.
+5.  **SINGLE ACTION**: Your ONLY allowed action is to create/update the Plan to address the user's feedback.
+6.  **WAIT FOR APPROVAL**: Do not touch a single line of code until the Recovery Plan is approved.
+7.  **VIOLATION CONSEQUENCES**: Ignoring this protocol leads to immediate loss of trust and potential rollback of all work.

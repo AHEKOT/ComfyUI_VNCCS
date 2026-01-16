@@ -220,7 +220,8 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
             gs_feat, gs_depth, gs_depth_conf = self.gs_head(
                 context_preds.get("token_list", token_list), 
                 images=context_preds.get("imgs", imgs), 
-                patch_start_idx=patch_start_idx
+                patch_start_idx=patch_start_idx,
+                frames_chunk_size=2  # Enforce small chunks for GS head to save VRAM (default 8 causes OOM)
             )
 
             preds["gs_depth"] = gs_depth

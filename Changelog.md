@@ -75,7 +75,21 @@ Integrated 3D Background Generation nodes from standalone project:
 WorldMirror ML model files and utilities.
 
 ### `web/gaussian_preview/` [NEW]
-WebGL viewer files for interactive 3D Gaussian Splatting preview.
-- `gaussian_preview.js` – ComfyUI widget integration
+- **[DOCS]** **Strict Mode**: Updated `strict_mode/SKILL.md` with new "Anti-Panic & Error Protocol" (Section 8) to prevent ad-hoc fixes without planning.
+- **[FIX]** **VNCCS_BackgroundPreview**: Fixed "Unsupported property type: uchar" error by converting colors to float32 in `save_gs_ply`.
+- **[FIX]** **VNCCS_BackgroundPreview**: Fixed missing widget by refactoring `gaussian_preview.js` to correct extension path and node name bindings.
+- **[REFACTOR]** **Web**: Rewrote `gaussian_preview.js` to use `GaussianPreviewWidget` class pattern aligned with VNCCS standards.
+- **[OPTIMIZE]** **VNCCS_WorldMirror3D**: Added support for CPU offloading via `offload_scheme` (`model_cpu_offload`, `sequential_cpu_offload`) to reduce VRAM usage.
+- **[OPTIMIZE]** **VNCCS_LoadWorldMirrorModel**: Changed default load device to `cpu` to prevent VRAM allocation before inference.
+- **[FIX]** **VNCCS_WorldMirror3D**: Fixed `target_size` input to respect patch size (14px) divisibility. Logic enforces modulo and sets minimum reachable value (252).
+- **[FIX]** **WorldMirror**: Resolved `RuntimeError: Expected all tensors to be on the same device` by enforcing explicit device casting for normalization buffers in `visual_geometry_transformer.py`.
+- **[FIX]** **WorldMirror**: Resolved `RuntimeError: Input type (float) and bias type (BFloat16) should be the same` by explicitly casting images to match model dtype.
+- **[FIX]** **VNCCS_WorldMirror3D**: Replaced unsafe `worldmirror.device` access with parameter-based check to prevent `AttributeError`.
+- **[FIX]** **WorldMirror**: Implemented **Manual Block Offloading** for `sequential_cpu_offload` scheme. This resolves CUDA OOM on cards with <24GB VRAM by loading only one transformer block to GPU at a time.
+- **[FIX]** **WorldMirror**: Resolved `RuntimeError: Expected all tensors to be on the same device` in manual offload mode. Conditioning embeddings and special tokens are now explicitly moved to the execution device before concatenation.
+- **[FIX]** **WorldMirror**: Updated prediction heads (`CameraHead`, `DPTHead`) to handle CPU-based input tokens, effectively resolving device mismatches during manual offloading.
+- **[FIX]** **WorldMirror**: Enforced aggressive chunking (`metrics=2`) for `gs_head` computation. This prevents OOM errors during the final Gaussian Splatting feature generation by processing frames in very small batches.
+- **[FIX]** **WorldMirror**: Modified `DenseHead` to accumulate prediction results on CPU instead of GPU. This resolves the final OOM crash when concatenating massive feature tensors (e.g., 6.5GB+) for large context windows.
+- **[FIX]** **VNCCS_Equirect360ToViews**: Aligned `output_size` constraints with `WorldMirror` patch requirements. Changed minimum size from 256 to 252 and max to 1022 to strictly follow the step size of 14, preventing resolution mismatch errors.
 - `gsplat-bundle.js` – WebGL 3D Gaussian renderer
 - `viewer_gaussian.html` – Standalone viewer HTML

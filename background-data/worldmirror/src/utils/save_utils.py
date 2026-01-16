@@ -13,9 +13,12 @@ def save_scene_ply(path: Path,
                    points_xyz: torch.Tensor,
                    point_colors: torch.Tensor,
                    valid_mask: torch.Tensor = None) -> None:
-    """Save point cloud to PLY format"""
+    """Save point cloud to PLY format (gsplat.js compatible)"""
     pts = points_xyz.detach().cpu().to(torch.float32).numpy().reshape(-1, 3)
-    colors = point_colors.detach().cpu().to(torch.uint8).numpy().reshape(-1, 3)
+    # Convert colors to float32 in 0-1 range for gsplat.js compatibility
+    colors = point_colors.detach().cpu().to(torch.float32).numpy().reshape(-1, 3)
+    if colors.max() > 1.0:
+        colors = colors / 255.0  # Normalize if uint8 values
     
     # Filter out invalid points (NaN, Inf)
     if valid_mask is None:
@@ -28,11 +31,11 @@ def save_scene_ply(path: Path,
     # Handle empty point cloud
     if len(pts) == 0:
         pts = np.array([[0, 0, 0]], dtype=np.float32)
-        colors = np.array([[255, 255, 255]], dtype=np.uint8)
+        colors = np.array([[1.0, 1.0, 1.0]], dtype=np.float32)
 
-    # Create PLY data
+    # Create PLY data with float colors for gsplat.js compatibility
     vertex_dtype = [("x", "f4"), ("y", "f4"), ("z", "f4"), 
-                    ("red", "u1"), ("green", "u1"), ("blue", "u1")]
+                    ("red", "f4"), ("green", "f4"), ("blue", "f4")]
     vertex_elements = np.empty(len(pts), dtype=vertex_dtype)
     vertex_elements["x"] = pts[:, 0]
     vertex_elements["y"] = pts[:, 1]

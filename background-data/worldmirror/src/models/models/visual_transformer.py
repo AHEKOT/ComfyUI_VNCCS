@@ -107,6 +107,9 @@ class VisualGeometryTransformer(nn.Module):
             self.register_buffer(name, torch.FloatTensor(value).reshape(1, 1, 3, 1, 1), persistent=False)
 
         self.use_reentrant = False
+        
+        # OOM Fix: Manual Block Offloading flag
+        self.manual_offload = False
 
     def _init_patch_embedding_module(
         self,
@@ -271,23 +274,51 @@ class VisualGeometryTransformer(nn.Module):
         b, seq_len, ch, h, w = images.shape
         if ch != 3:
             raise ValueError(f"Expected 3 input channels, got {ch}")
+        
+        exec_device = images.device
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):           
-            images = (images - self._resnet_mean) / self._resnet_std
+            images = (images - self._resnet_mean.to(exec_device)) / self._resnet_std.to(exec_device)
+            # Explicit cast to match autocast context (bfloat16)
+            # Dynamic check (weight.dtype) is unreliable if model is offloaded to CPU (might show float32)
+            images = images.to(dtype=torch.bfloat16)
+            
             images = images.reshape(b * seq_len, ch, h, w)
+            
+            # Manual Offload: patch_embed
+            if self.manual_offload:
+                self.patch_embed.to(exec_device)
+                
             patch_tokens = self.patch_embed(images)
             if isinstance(patch_tokens, dict):
                 patch_tokens = patch_tokens["x_norm_patchtokens"]
 
+            if self.manual_offload:
+                self.patch_embed.to("cpu")
+                torch.cuda.empty_cache()
+
         _, patch_count, embed_dim = patch_tokens.shape
 
         # Prepare special tokens
-        cam_tokens = expand_and_flatten_special_tokens(self.cam_token, b, seq_len)
-        reg_tokens = expand_and_flatten_special_tokens(self.reg_token, b, seq_len)
+        cam_tokens = expand_and_flatten_special_tokens(self.cam_token, b, seq_len).to(exec_device)
+        reg_tokens = expand_and_flatten_special_tokens(self.reg_token, b, seq_len).to(exec_device)
 
         # Process all tokens (optional conditioning)
         if self.enable_cond:
+             # Manual Offload: Conditioning embeddings
+            if self.manual_offload:
+                if hasattr(self, "pose_embed") and self.pose_embed is not None: self.pose_embed.to(exec_device)
+                if hasattr(self, "depth_embed") and self.depth_embed is not None: self.depth_embed.to(exec_device)
+                if hasattr(self, "ray_embed") and self.ray_embed is not None: self.ray_embed.to(exec_device)
+
             pose_tokens, depth_tokens, ray_tokens = self._process_conditioning(depth_maps, ray_dirs, poses, b, seq_len, patch_count, embed_dim, images, cond_flags)
+            
+            # Manual Offload: Conditioning cleanup
+            if self.manual_offload:
+                if hasattr(self, "pose_embed") and self.pose_embed is not None: self.pose_embed.to("cpu")
+                if hasattr(self, "depth_embed") and self.depth_embed is not None: self.depth_embed.to("cpu")
+                if hasattr(self, "ray_embed") and self.ray_embed is not None: self.ray_embed.to("cpu")
+
             # Add condition tokens to patch tokens
             patch_tokens = patch_tokens + depth_tokens
             all_tokens = torch.cat([cam_tokens, reg_tokens, pose_tokens, ray_tokens, patch_tokens], dim=1) 
@@ -299,6 +330,10 @@ class VisualGeometryTransformer(nn.Module):
         # Position embedding
         pos_emb = None
         if self.rope is not None:
+            # rope to device (usually small, but good to ensure)
+            if self.manual_offload:
+                self.rope.to(exec_device)
+                
             pos_emb = self.pos_getter(b * seq_len, h // self.patch_size, w // self.patch_size, device=images.device)
             if self.patch_start_idx > 0:
                 pos_emb = pos_emb + 1
@@ -310,6 +345,11 @@ class VisualGeometryTransformer(nn.Module):
             outputs = []
             global_tokens = None
             for idx in range(self.depth):
+                # Manual Offload: Move only current blocks
+                if self.manual_offload:
+                    self.frame_blocks[idx].to(exec_device)
+                    self.global_blocks[idx].to(exec_device)
+
                 local_tokens = self._process_attention_blocks(
                             tokens=all_tokens if global_tokens is None else global_tokens,
                             b=b,
@@ -333,10 +373,32 @@ class VisualGeometryTransformer(nn.Module):
                             pos=pos_emb,
                         )
 
+                # Manual Offload: Clean up
+                if self.manual_offload:
+                    self.frame_blocks[idx].to("cpu")
+                    self.global_blocks[idx].to("cpu")
+                    # No empty_cache here to save speed? Or needed?
+                    # If memory is tight, we must empty cache.
+                    # But doing it every block is super slow.
+                    # Let's verify: 11GB is hitting limit. 
+                    # One block is ~80MB params.
+                    # But activations are big. 
+                    # If we don't clear, we accumulate junk?
+                    # No, activations from previous blocks are freed if not stored in 'outputs'.
+                    # 'local_tokens' are carried over, but 'global_tokens' too.
+                    # The weights are the issue.
+                    # moving to cpu frees GPU memory for weights. 
+                    # We assume pytorch allocator handles fragmentation.
+
                 # Combine frame and global intermediates
                 if idx in self.intermediate_idxs:
                     combined_out = torch.cat([local_tokens, global_tokens], dim=-1)
+                    if self.manual_offload:
+                        combined_out = combined_out.cpu()
                     outputs.append(combined_out)
+            
+            if self.manual_offload and self.rope is not None:
+                self.rope.to("cpu")
 
         return outputs, self.patch_start_idx
 

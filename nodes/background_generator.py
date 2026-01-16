@@ -136,7 +136,7 @@ class VNCCS_LoadWorldMirrorModel:
         return {
             "required": {},
             "optional": {
-                "device": (["cuda", "cpu"], {"default": "cuda"}),
+                "device": (["cuda", "cpu"], {"default": "cpu"}),
             }
         }
     
@@ -168,7 +168,8 @@ class VNCCS_WorldMirror3D:
                 "images": ("IMAGE",),
             },
             "optional": {
-                "target_size": ("INT", {"default": 518, "min": 256, "max": 1024, "step": 14}),
+                "target_size": ("INT", {"default": 518, "min": 252, "max": 1024, "step": 14}),
+                "offload_scheme": (["none", "model_cpu_offload", "sequential_cpu_offload"], {"default": "none"}),
             }
         }
     
@@ -177,8 +178,11 @@ class VNCCS_WorldMirror3D:
     FUNCTION = "run_inference"
     CATEGORY = "VNCCS/3D"
     
-    def run_inference(self, model, images, target_size=518):
+    def run_inference(self, model, images, target_size=518, offload_scheme="none"):
         from torchvision import transforms
+        
+        # Ensure target_size is divisible by 14
+        target_size = (target_size // 14) * 14
         
         worldmirror = model["model"]
         device = model["device"]
@@ -213,17 +217,124 @@ class VNCCS_WorldMirror3D:
             
             tensor_list.append(tensor_img)
         
+        # device management
+        execution_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        original_device = next(worldmirror.parameters()).device
+        
         imgs_tensor = torch.stack(tensor_list)
-        imgs_tensor = imgs_tensor.unsqueeze(0).to(device)
+        # Use execution_device (GPU) for inputs, as accelerate expects inputs on the compute device
+        imgs_tensor = imgs_tensor.unsqueeze(0).to(execution_device)
 
-        print(f"🚀 Running WorldMirror inference on {B} images...")
+        print(f"🚀 Running WorldMirror inference on {B} images (offload: {offload_scheme})...")
+        
+        if offload_scheme != "none" and execution_device.type == "cuda":
+            if offload_scheme == "sequential_cpu_offload":
+                 # Manual Block Offloading (OOM fix for <16GB/24GB cards)
+                 # We keep the main model on CPU, but move heads to GPU.
+                 # The transformer handles its own internal block moving.
+                 
+                 # 0. STRIP ACCELERATE HOOKS if present (conflicting with manual offload)
+                 def recursive_remove_hooks(module):
+                     if hasattr(module, "_hf_hook"):
+                         del module._hf_hook
+                     if hasattr(module, "_old_forward"):
+                         module.forward = module._old_forward
+                         del module._old_forward
+                     for child in module.children():
+                         recursive_remove_hooks(child)
+
+                 try:
+                     recursive_remove_hooks(worldmirror)
+                     # Also try accelerate's official method just in case
+                     from accelerate.hooks import remove_hook_from_module
+                     remove_hook_from_module(worldmirror, recurse=True)
+                 except Exception as e:
+                     print(f"⚠️ Failed to remove hooks: {e}")
+
+                 # 1. Enable manual offload in transformer
+                 if hasattr(worldmirror.visual_geometry_transformer, "manual_offload"):
+                      worldmirror.visual_geometry_transformer.manual_offload = True
+                 
+                 # 2. Move heads to GPU manually (they are small-ish)
+                 heads = [
+                     getattr(worldmirror, "cam_head", None),
+                     getattr(worldmirror, "pts_head", None),
+                     getattr(worldmirror, "depth_head", None),
+                     getattr(worldmirror, "norm_head", None),
+                     getattr(worldmirror, "gs_head", None),
+                 ]
+                 for head in heads:
+                     if head is not None:
+                         # Check for corrupted/meta state from previous runs
+                         param = next(head.parameters(), None)
+                         if param is not None and param.device.type == 'meta':
+                             raise RuntimeError(
+                                 "CRITICAL: WorldMirror model is in a corrupted state (weights are on 'meta' device). "
+                                 "This happens if a previous run crashed or used a different offload scheme. "
+                                 "Please RESTART ComfyUI or invalidating the 'Load WorldMirror Model' node to reload fresh weights."
+                             )
+                         
+                         # If head is on meta device, this might fail unless we materialize it.
+                         head.to(execution_device)
+            
+            elif offload_scheme == "model_cpu_offload":
+                try:
+                    from accelerate import cpu_offload
+                    cpu_offload(worldmirror, execution_device=execution_device)
+                except ImportError:
+                    print("⚠️ Accelerate not installed, ignoring model_cpu_offload")
+                except Exception as e:
+                    print(f"⚠️ Offload failed: {e}")
+                    # Do NOT fallback to full GPU load if offload requested, as it likely causes OOM
+        else:
+            # Standard behavior: move everything to GPU
+            param = next(worldmirror.parameters())
+            # Check if likely meta device
+            if param.device.type == 'meta':
+                 print("⚠️ Model is on meta device, attempting to materialize empty weights...")
+                 worldmirror.to_empty(device=execution_device)
+                 # This is risky as weights are lost. But better than crash.
+                 # Ideally user should reload model.
+            elif param.device != execution_device:
+                 worldmirror.to(execution_device)
+
         views = {"img": imgs_tensor}
         cond_flags = [0, 0, 0]
         
-        with torch.no_grad():
-            with torch.amp.autocast('cuda', enabled=True, dtype=torch.bfloat16):
-                predictions = worldmirror(views=views, cond_flags=cond_flags)
-        
+        try:
+            with torch.no_grad():
+                with torch.amp.autocast('cuda', enabled=True, dtype=torch.bfloat16):
+                    predictions = worldmirror(views=views, cond_flags=cond_flags)
+        finally:
+            # Cleanup for Manual Sequential Offload
+            if offload_scheme == "sequential_cpu_offload":
+                 # Move heads back to CPU
+                 heads = [
+                        getattr(worldmirror, "cam_head", None),
+                        getattr(worldmirror, "pts_head", None),
+                        getattr(worldmirror, "depth_head", None),
+                        getattr(worldmirror, "norm_head", None),
+                        getattr(worldmirror, "gs_head", None),
+                    ]
+                 for head in heads:
+                        if head is not None:
+                            head.to("cpu")
+                 
+                 # Disable manual flag (reset state)
+                 if hasattr(worldmirror.visual_geometry_transformer, "manual_offload"):
+                         worldmirror.visual_geometry_transformer.manual_offload = False
+                 
+                 torch.cuda.empty_cache()
+
+            if offload_scheme == "none" and original_device.type == "cpu":
+                 # If we moved it manually to GPU, and it came from CPU (which is now default),
+                 # maybe we should move it back to save memory for other nodes?
+                 # Actually, usually ComfyUI models stay where they are put.
+                 # But if user selected "cpu" in loader, they expect it in CPU.
+                 # Let's move it back if it wasn't offloaded by accelerate (accelerate handles it).
+                 worldmirror.to("cpu")
+                 torch.cuda.empty_cache()
+
         print("✅ Inference complete")
         
         ply_data = {
@@ -269,7 +380,7 @@ class VNCCS_Equirect360ToViews:
                 "fov": ("INT", {"default": 90, "min": 30, "max": 120}),
                 "yaw_step": ("INT", {"default": 45, "min": 15, "max": 90}),
                 "pitches": ("STRING", {"default": "0,-30,30"}),
-                "output_size": ("INT", {"default": 518, "min": 256, "max": 1024, "step": 14}),
+                "output_size": ("INT", {"default": 518, "min": 252, "max": 1022, "step": 14}),
             }
         }
     

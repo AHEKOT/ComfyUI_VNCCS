@@ -145,17 +145,18 @@ class DPTHead(nn.Module):
                 gs, preds, conf = self._forward_impl(
                     token_list, images, patch_start_idx, frame_start, frame_end
                 )
-                gs_chunks.append(gs)
-                preds_chunks.append(preds)
-                conf_chunks.append(conf)
+                gs_chunks.append(gs.cpu())
+                preds_chunks.append(preds.cpu())
+                conf_chunks.append(conf.cpu())
             else:
                 preds, conf = self._forward_impl(
                     token_list, images, patch_start_idx, frame_start, frame_end
                 )
-                preds_chunks.append(preds)
-                conf_chunks.append(conf)
+                preds_chunks.append(preds.cpu())
+                conf_chunks.append(conf.cpu())
 
         # Concatenate chunks along frame dimension
+        # Results will be on CPU
         if self.is_gsdpt:
             return torch.cat(gs_chunks, dim=1), torch.cat(preds_chunks, dim=1), torch.cat(conf_chunks, dim=1), 
         else:
@@ -201,6 +202,8 @@ class DPTHead(nn.Module):
             
             # Reshape to [B*S, N_patches, C]
             patch_tokens = patch_tokens.reshape(B * S, -1, patch_tokens.shape[-1])
+            # Resolve device mismatch (inputs might be on CPU from manual offload)
+            patch_tokens = patch_tokens.to(self.norm.weight.device)
             patch_tokens = self.norm(patch_tokens)
             
             # Convert to 2D feature map [B*S, C, ph, pw]

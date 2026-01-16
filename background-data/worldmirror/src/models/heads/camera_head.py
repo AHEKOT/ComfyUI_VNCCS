@@ -71,6 +71,8 @@ class CameraHead(nn.Module):
 
         # Extract camera tokens
         cam_tokens = latest_feat[:, :, 0]
+        # Resolve device mismatch (inputs might be on CPU from manual offload)
+        cam_tokens = cam_tokens.to(self.token_norm.weight.device)
         cam_tokens = self.token_norm(cam_tokens)
 
         # Iteratively refine camera pose predictions
