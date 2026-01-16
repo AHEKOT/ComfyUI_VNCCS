@@ -10,7 +10,7 @@ const STYLE = `
     background: #1e1e1e;
     color: #e0e0e0;
     font-family: 'Consolas', 'Monaco', monospace;
-    font-size: 13px;
+    font-size: 16px;
     width: 100%;
     height: 100%;
     overflow: hidden; /* Main container shouldn't scroll, inner parts will */
@@ -83,8 +83,10 @@ const STYLE = `
 .vnccs-select {
     background: #151515; border: 1px solid #444; color: #fff;
     border-radius: 4px; padding: 6px; font-family: inherit; 
-    font-size: 18px; /* Increased to 18px per user request */
-    width: 100%; box-sizing: border-box;
+    font-size: 12px;
+    width: 66.6%; box-sizing: border-box;
+    zoom: 1.5; /* Counteract container zoom to fix dropdown menu size */
+    padding: 4px;
 }
 .vnccs-input:focus, .vnccs-select:focus, .vnccs-textarea:focus { border-color: #5b96f5; outline: none; }
 
@@ -148,6 +150,7 @@ const STYLE = `
 }
 .vnccs-btn-primary { background: #3558c7; } .vnccs-btn-primary:hover { background: #4264d9; }
 .vnccs-btn-success { background: #2e7d32; } .vnccs-btn-success:hover { background: #388e3c; }
+.vnccs-btn-danger { background: #d32f2f; } .vnccs-btn-danger:hover { background: #b71c1c; }
 .vnccs-btn-disabled { background: #333; color: #666; cursor: default; }
 
 /* Bottom Textareas */
@@ -389,8 +392,79 @@ app.registerExtension({
                 btnNew.innerText = "CREATE NEW";
                 btnNew.onclick = () => doCreate();
 
+                const btnDel = document.createElement("button");
+                btnDel.className = "vnccs-btn vnccs-btn-danger";
+                btnDel.innerText = "DELETE";
+                btnDel.onclick = () => {
+                    const charName = state.character;
+                    if (!charName || charName === "None" || charName === "Unknown") {
+                        alert("Please select a character to delete.");
+                        return;
+                    }
+
+                    // Custom Modal for Confirmation
+                    const overlay = document.createElement("div"); overlay.className = "vnccs-modal-overlay";
+                    const m = document.createElement("div"); m.className = "vnccs-modal";
+                    m.innerHTML = `<div class="vnccs-section-title" style="color:#d32f2f">Delete Character</div>
+                                   <div style="font-size:14px; text-align:center;">
+                                       Are you sure you want to <b>PERMANENTLY DELETE</b><br/>
+                                       <span style="color:#fff; font-weight:bold;">'${charName}'</span>?<br/><br/>
+                                       <span style="font-size:12px; color:#aaa;">This action cannot be undone.</span>
+                                   </div>`;
+
+                    const row = document.createElement("div"); row.className = "vnccs-btn-row";
+
+                    const bC = document.createElement("button");
+                    bC.className = "vnccs-btn";
+                    bC.innerText = "Cancel";
+                    bC.onclick = () => overlay.remove();
+
+                    const bD = document.createElement("button");
+                    bD.className = "vnccs-btn vnccs-btn-danger";
+                    bD.innerText = "CONFIRM DELETE";
+                    bD.onclick = async () => {
+                        try {
+                            bD.innerText = "DELETING...";
+                            bD.disabled = true;
+
+                            const r = await api.fetchApi(`/vnccs/delete?name=${encodeURIComponent(charName)}`);
+                            if (r.ok) {
+                                // Remove from list
+                                const opts = Array.from(els.charSelect.options);
+                                const idx = opts.findIndex(o => o.value === charName);
+                                if (idx > -1) els.charSelect.remove(idx);
+
+                                // Reset selection
+                                if (els.charSelect.options.length > 0) {
+                                    state.character = els.charSelect.options[0].value;
+                                } else {
+                                    state.character = "";
+                                }
+                                els.charSelect.value = state.character;
+                                await loadChar(state.character);
+                                saveState();
+                                overlay.remove();
+                            } else {
+                                const err = await r.json();
+                                alert("Delete Failed: " + (err.error || "Unknown Error"));
+                                bD.innerText = "CONFIRM DELETE";
+                                bD.disabled = false;
+                            }
+                        } catch (e) {
+                            alert("Delete Failed: " + e);
+                            overlay.remove();
+                        }
+                    };
+
+                    row.appendChild(bC); row.appendChild(bD);
+                    m.appendChild(row);
+                    overlay.appendChild(m);
+                    container.appendChild(overlay);
+                };
+
                 btnRow.appendChild(btnGen);
                 btnRow.appendChild(btnNew);
+                btnRow.appendChild(btnDel);
                 colLeft.appendChild(btnRow);
 
                 const frame = document.createElement("div");

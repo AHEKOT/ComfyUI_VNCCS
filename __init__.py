@@ -66,6 +66,33 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
                 "trace": traceback.format_exc()
             }, status=500)
 
+    @PromptServer.instance.routes.get("/vnccs/delete")
+    async def vnccs_delete_character(request):
+        name = request.rel_url.query.get("name", "").strip()
+        if not name:
+            return web.json_response({"error": "name required"}, status=400)
+        
+        try:
+            from .utils import character_dir, base_output_dir
+            import shutil
+            import time
+            
+            char_path = character_dir(name)
+            if not os.path.exists(char_path):
+                return web.json_response({"error": f"Character '{name}' not found"}, status=404)
+                
+            # Permanent Delete as requested
+            shutil.rmtree(char_path)
+            
+            return web.json_response({"ok": True, "name": name, "deleted": True})
+            
+        except Exception as e:
+            return web.json_response({
+                "error": "delete failed",
+                "detail": str(e),
+                "trace": traceback.format_exc()
+            }, status=500)
+
     @PromptServer.instance.routes.get("/vnccs/create")
     async def vnccs_create_character(request):
         name = request.rel_url.query.get("name", "").strip()
