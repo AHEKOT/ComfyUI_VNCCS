@@ -1,64 +1,69 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-// --- STYLES: Monolithic Centered Layout ---
+// --- STYLES: 3-Column Grid Layout ---
 const STYLE = `
-/* Main Host: Centers the Monolithic UI */
+/* Main Host */
 .vnccs-container {
     display: flex;
-    align-items: center;
-    justify-content: center;
+    flex-direction: column;
     background: #1e1e1e;
     color: #e0e0e0;
     font-family: 'Consolas', 'Monaco', monospace;
     font-size: 13px;
     width: 100%;
     height: 100%;
-    overflow: auto; /* Scroll if node is too small */
-    padding: 0;
-}
-
-/* The Grid Wrapper: Keeps columns glued together and holds bottom row */
-.vnccs-layout-grid {
-    display: flex;
-    flex-direction: column; /* Vertical stack */
-    gap: 20px;
-    height: fit-content;
-    max-height: 100%;
-    padding: 20px;
+    overflow: hidden; /* Main container shouldn't scroll, inner parts will */
     box-sizing: border-box;
-    width: fit-content; 
-    margin: auto;
+    padding: 10px;
+    gap: 10px;
+    pointer-events: none; /* Allow canvas zoom/pan in gaps */
 }
 
-/* TOP ROW */
-.vnccs-main-row {
-    display: flex;
-    flex-direction: row;
-    gap: 20px;
-    height: fit-content;
+/* TOP ROW: 3 Columns */
+.vnccs-top-row {
+    display: grid;
+    grid-template-columns: 30% 35% 35%; /* Adjust ratios as needed */
+    gap: 10px;
+    flex: 1; /* Takes remaining height */
+    min-height: 0; /* Important for scroll */
+    width: 100%;
 }
 
-/* BOTTOM ROW */
+/* BOTTOM ROW: Prompts */
 .vnccs-bottom-row {
     display: flex;
     flex-direction: row;
-    gap: 20px;
+    gap: 10px;
+    height: 75px; /* Reduced height per user request */
+    min-height: 75px;
     width: 100%;
-}
-.vnccs-bottom-row .vnccs-section {
-    flex: 1; /* Expand textareas equally */
-    min-width: 0;
+    flex-shrink: 0;
+    pointer-events: auto; /* Re-enable interaction */
 }
 
-/* Side Columns */
+/* Common Section/Column Styles */
 .vnccs-col {
     display: flex;
     flex-direction: column;
-    gap: 15px;
-    /* overflow-y: auto; -- removed to prevent double scrollbars in monolithic layout */
-    height: fit-content;
-    width: 320px; 
+    background: #252525;
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 10px;
+    gap: 10px;
+    overflow-y: auto; /* Columns scroll independently */
+    height: 100%;
+    box-sizing: border-box;
+    pointer-events: auto; /* Re-enable interaction */
+}
+.vnccs-section-title {
+    font-size: 14px;
+    font-weight: bold;
+    color: #fff;
+    border-bottom: 2px solid #444;
+    padding-bottom: 5px;
+    margin-bottom: 5px;
+    text-transform: uppercase;
     flex-shrink: 0;
 }
 
@@ -66,92 +71,111 @@ const STYLE = `
 .vnccs-col::-webkit-scrollbar { width: 6px; }
 .vnccs-col::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
 
-/* Center Column */
-.vnccs-center {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-start; /* Start from top in the stack */
-    gap: 15px;
-    height: fit-content;
-    width: 330px; 
-    flex-shrink: 0;
-}
-
-/* Preview Frame: FIXED SIZE */
-.vnccs-preview-frame {
-    width: 320px;
-    height: 768px;
-    background: #000;
-    border: 2px solid #333;
-    border-radius: 6px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
-    position: relative;
-    flex-shrink: 0;
-}
-
-.vnccs-preview-img { 
-    width: 100%; 
-    height: 100%; 
-    object-fit: cover; 
-    border-radius: 4px; 
-}
-.vnccs-placeholder { color: #555; text-align: center; }
-
 /* Fields */
-.vnccs-section {
-    background: #252525;
-    border: 1px solid #333;
-    border-radius: 6px;
-    padding: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}
-.vnccs-header {
-    font-size: 11px; font-weight: bold; color: #fff;
-    border-bottom: 2px solid #333; padding-bottom: 5px; margin-bottom: 5px;
-    text-transform: uppercase; letter-spacing: 0.5px;
-}
-.vnccs-field { display: flex; flex-direction: column; gap: 4px; }
+.vnccs-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 5px; flex-shrink: 0; }
 .vnccs-label { color: #aaa; font-size: 11px; font-weight: 600; }
 .vnccs-input, .vnccs-select, .vnccs-textarea {
     background: #151515; border: 1px solid #444; color: #fff;
     border-radius: 4px; padding: 6px; font-family: inherit; font-size: 12px;
+    width: 100%; box-sizing: border-box;
 }
 .vnccs-input:focus { border-color: #5b96f5; outline: none; }
-.vnccs-textarea { min-height: 80px; resize: vertical; width: 100%; box-sizing: border-box; }
+
+/* Specialized Components */
+
+/* PREVIEW COLUMN (Left) */
+.vnccs-preview-container {
+    flex: 1;
+    background: #000;
+    border: 1px solid #333;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    position: relative;
+    min-height: 0; 
+}
+.vnccs-preview-img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain; /* Scales with container */
+}
+.vnccs-placeholder { color: #555; text-align: center; }
+
+/* ATTRIBUTES (Center) */
+/* Just uses standard fields */
+
+/* GENERATION (Right) */
+.vnccs-lora-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 10px;
+    border-top: 1px solid #444;
+    padding-top: 10px;
+}
+.vnccs-lora-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: #1a1a1a;
+    padding: 5px;
+    border-radius: 4px;
+    border: 1px solid #333;
+}
+.vnccs-lora-row {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+}
+.vnccs-slider-val { width: 35px; text-align: right; font-size: 10px; color: #aaa; }
 
 /* Buttons */
-.vnccs-footer { display: flex; gap: 10px; width: 100%; max-width: 320px; }
+.vnccs-btn-row { display: flex; gap: 10px; margin-top: auto; flex-shrink: 0; }
 .vnccs-btn {
-    flex: 1; padding: 12px; border: none; border-radius: 4px;
+    flex: 1; padding: 10px; border: none; border-radius: 4px;
     cursor: pointer; font-weight: bold; text-transform: uppercase;
     font-size: 12px; color: white;
+    text-align: center;
 }
 .vnccs-btn-primary { background: #3558c7; } .vnccs-btn-primary:hover { background: #4264d9; }
 .vnccs-btn-success { background: #2e7d32; } .vnccs-btn-success:hover { background: #388e3c; }
 .vnccs-btn-disabled { background: #333; color: #666; cursor: default; }
 
-.vnccs-checkbox-row { flex-direction: row; align-items: center; gap: 8px; }
-.vnccs-row { display: flex; gap: 8px; }
+/* Bottom Textareas */
+.vnccs-textarea-wrapper {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    background: #252525;
+    padding: 5px;
+    border-radius: 6px;
+    border: 1px solid #333;
+}
+.vnccs-textarea-wrapper textarea {
+    flex: 1;
+    resize: none;
+    border: none;
+    background: transparent;
+    padding: 5px;
+}
+.vnccs-textarea-label {
+    font-size: 10px; color: #888; text-transform: uppercase; font-weight: bold; padding: 0 5px;
+}
 
-/* MODAL */
+/* Modal */
 .vnccs-modal-overlay {
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
     background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center;
-    z-index: 1000; border-radius: 6px;
+    z-index: 1000;
+    pointer-events: auto;
 }
 .vnccs-modal {
     background: #252525; border: 1px solid #444; padding: 20px; border-radius: 8px;
     width: 300px; display: flex; flex-direction: column; gap: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.5);
 }
-.vnccs-modal-title { font-weight: bold; color: #fff; text-transform: uppercase; font-size: 12px; }
-.vnccs-modal-footer { display: flex; gap: 10px; justify-content: flex-end; }
-.vnccs-btn-sm { padding: 8px 12px; font-size: 11px; }
 `;
 
 app.registerExtension({
@@ -163,7 +187,7 @@ app.registerExtension({
                 if (onNodeCreated) onNodeCreated.apply(this, arguments);
 
                 const node = this;
-                node.setSize([1200, 1100]); // Increased to fit the bottom row
+                node.setSize([1280, 800]); // Default wide 3-column
 
                 // 1. Setup CSS
                 const style = document.createElement("style");
@@ -176,22 +200,17 @@ app.registerExtension({
                     for (const w of node.widgets) {
                         if (w.name !== "ui" && w.name !== "widget_data") {
                             w.hidden = true;
-                            w.computeSize = () => [0, -4];
+                            //w.computeSize = () => [0, -4]; // Cause issues sometimes?
                         }
                     }
                 };
                 cleanup();
+
+                // Keep keeping them hidden
                 const origDraw = node.onDrawBackground;
                 node.onDrawBackground = function (ctx) {
                     cleanup();
                     if (origDraw) origDraw.apply(this, arguments);
-                };
-
-                // Add onResize to help the DOM widget follow node height
-                this.onResize = function (size) {
-                    if (this.widgets && this.widgets[0]) {
-                        this.widgets[0].computedHeight = size[1];
-                    }
                 };
 
                 // 3. State
@@ -207,141 +226,112 @@ app.registerExtension({
                     gen_settings: {
                         ckpt_name: "", sampler: "euler", scheduler: "normal",
                         steps: 20, cfg: 8.0, seed: 0,
-                        lora_name: "", lora_strength: 1.0
+                        dmd_lora_name: "", dmd_lora_strength: 1.0,
+                        age_lora_name: "",
+                        lora_stack: [
+                            { name: "", strength: 1.0 },
+                            { name: "", strength: 1.0 },
+                            { name: "", strength: 1.0 },
+                            { name: "", strength: 1.0 },
+                            { name: "", strength: 1.0 }
+                        ]
                     }
                 };
 
-                // UI Referencing
                 const els = {};
                 const saveState = () => {
                     localStorage.setItem("VNCCS_V2_Settings", JSON.stringify(state.gen_settings));
                     const w = node.widgets.find(x => x.name === "widget_data");
-                    if (w) w.value = JSON.stringify(state); // Sync everything
+                    if (w) w.value = JSON.stringify(state);
                 };
                 const loadState = () => {
                     try {
                         const s = localStorage.getItem("VNCCS_V2_Settings");
-                        if (s) state.gen_settings = { ...state.gen_settings, ...JSON.parse(s) };
+                        if (s) {
+                            const parsed = JSON.parse(s);
+                            // Merge carefully to preserve structure
+                            Object.assign(state.gen_settings, parsed);
+                            // Ensure stack length
+                            while (state.gen_settings.lora_stack.length < 5) {
+                                state.gen_settings.lora_stack.push({ name: "", strength: 1.0 });
+                            }
+                        }
                     } catch (e) { }
                 };
 
                 // 4. UI Builders
-                const createField = (lbl, key, type = "text", opts = [], target = "character_info") => {
+                const createField = (lbl, key, type = "text", opts = [], targetObj = state.character_info) => {
                     const wrap = document.createElement("div");
-                    // FIXED: Access state[target][key] dynamically.
+                    wrap.className = "vnccs-field";
 
                     if (type === "checkbox") {
-                        wrap.className = "vnccs-field vnccs-checkbox-row";
+                        // Row layout for checkbox
+                        wrap.style.flexDirection = "row";
+                        wrap.style.alignItems = "center";
+                        wrap.style.gap = "8px";
                         const inp = document.createElement("input");
                         inp.type = "checkbox";
-                        inp.checked = !!state[target][key];
+                        inp.checked = !!targetObj[key];
                         inp.onchange = (e) => {
-                            state[target][key] = e.target.checked;
+                            targetObj[key] = e.target.checked;
                             saveState();
                         };
-                        const l = document.createElement("label"); l.className = "vnccs-label"; l.innerText = lbl;
-                        wrap.appendChild(inp); wrap.appendChild(l);
+                        const l = document.createElement("label");
+                        l.className = "vnccs-label";
+                        l.innerText = lbl;
+                        wrap.appendChild(inp);
+                        wrap.appendChild(l);
                         els[key] = inp;
                         return wrap;
                     }
 
-                    wrap.className = "vnccs-field";
                     wrap.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
-
                     let inp;
                     if (type === "select") {
                         inp = document.createElement("select"); inp.className = "vnccs-select";
-                        opts.forEach(v => {
-                            const o = document.createElement("option"); o.value = v; o.innerText = v; inp.appendChild(o);
-                        });
-                        inp.value = state[target][key] || opts[0];
-                        inp.onchange = (e) => {
-                            state[target][key] = e.target.value;
-                            saveState();
-                        };
+                        opts.forEach(v => inp.add(new Option(v, v)));
+                        inp.value = targetObj[key] || opts[0];
+                        inp.onchange = (e) => { targetObj[key] = e.target.value; saveState(); };
                     } else if (type === "number") {
                         inp = document.createElement("input"); inp.className = "vnccs-input";
-                        inp.type = "number"; if (opts.step) inp.step = opts.step;
-                        inp.value = state[target][key];
-                        inp.onchange = (e) => {
-                            state[target][key] = parseFloat(e.target.value);
-                            saveState();
-                        };
-                    } else if (type === "textarea") {
-                        inp = document.createElement("textarea"); inp.className = "vnccs-textarea";
-                        inp.value = state[target][key] || "";
-                        inp.oninput = (e) => {
-                            state[target][key] = e.target.value;
-                            saveState();
-                        };
+                        inp.type = "number";
+                        if (opts.step) inp.step = opts.step;
+                        inp.value = targetObj[key];
+                        inp.onchange = (e) => { targetObj[key] = parseFloat(e.target.value); saveState(); };
                     } else {
                         inp = document.createElement("input"); inp.className = "vnccs-input";
-                        inp.value = state[target][key] || "";
-                        inp.oninput = (e) => {
-                            state[target][key] = e.target.value;
-                            saveState();
-                        };
+                        inp.value = targetObj[key] || "";
+                        inp.onchange = (e) => { targetObj[key] = e.target.value; saveState(); };
                     }
+                    els[key] = inp; // Register for updates
                     wrap.appendChild(inp);
-                    els[key] = inp;
                     return wrap;
                 };
 
-                // 5. Layout
+                // 5. Build Layout
                 const container = document.createElement("div");
                 container.className = "vnccs-container";
 
-                // MAIN GRID (TOP + BOTTOM)
-                const layoutGrid = document.createElement("div");
-                layoutGrid.className = "vnccs-layout-grid";
+                // --- TOP ROW ---
+                const topRow = document.createElement("div");
+                topRow.className = "vnccs-top-row";
 
-                // TOP BLOCK (3 Columns)
-                const mainRow = document.createElement("div");
-                mainRow.className = "vnccs-main-row";
+                // COL 1: LEFT (Preview)
+                const colLeft = document.createElement("div");
+                colLeft.className = "vnccs-col";
+                colLeft.innerHTML = '<div class="vnccs-section-title">Character Select</div>';
 
-                // LEFT (Params)
-                const left = document.createElement("div"); left.className = "vnccs-col";
-                const sChar = document.createElement("div"); sChar.className = "vnccs-section";
-                sChar.innerHTML = '<div class="vnccs-header">Character</div>';
                 const charSel = document.createElement("select"); charSel.className = "vnccs-select";
                 charSel.onchange = async (e) => {
-                    const v = e.target.value;
-                    state.character = v;
-                    await loadChar(v);
+                    state.character = e.target.value;
+                    await loadChar(state.character);
                     saveState();
                 };
                 els.charSelect = charSel;
-                sChar.appendChild(charSel);
-                left.appendChild(sChar);
+                colLeft.appendChild(charSel);
 
-                const sAttr = document.createElement("div"); sAttr.className = "vnccs-section";
-                sAttr.innerHTML = '<div class="vnccs-header">Attributes</div>';
-                sAttr.appendChild(createField("Gender", "sex", "select", ["female", "male"]));
-                sAttr.appendChild(createField("Age", "age", "number"));
-                sAttr.appendChild(createField("Race", "race"));
-                sAttr.appendChild(createField("Skin Color", "skin_color"));
-                sAttr.appendChild(createField("Body Type", "body"));
-                sAttr.appendChild(createField("Face Features", "face"));
-                sAttr.appendChild(createField("Hair Style", "hair"));
-                sAttr.appendChild(createField("Eye Color", "eyes"));
-                sAttr.appendChild(createField("Outfit / Details", "additional_details", "textarea"));
-                sAttr.appendChild(createField("NSFW Mode", "nsfw", "checkbox"));
-                sAttr.appendChild(createField("Background Color", "background_color"));
-                left.appendChild(sAttr);
-
-                mainRow.appendChild(left);
-
-                // CENTER (Preview)
-                const center = document.createElement("div"); center.className = "vnccs-center";
-
-                const frame = document.createElement("div"); frame.className = "vnccs-preview-frame";
-                frame.innerHTML = '<div class="vnccs-placeholder">No Preview<br>(320x768)</div>';
-                const img = document.createElement("img");
-                img.className = "vnccs-preview-img"; img.style.display = "none";
-                frame.appendChild(img);
-                els.previewImg = img; els.placeholder = frame.querySelector(".vnccs-placeholder");
-
-                const footer = document.createElement("div"); footer.className = "vnccs-footer";
+                const btnRow = document.createElement("div");
+                btnRow.className = "vnccs-btn-row";
                 const btnGen = document.createElement("button");
                 btnGen.className = "vnccs-btn vnccs-btn-primary";
                 btnGen.innerText = "GENERATE PREVIEW";
@@ -353,73 +343,156 @@ app.registerExtension({
                 btnNew.innerText = "CREATE NEW";
                 btnNew.onclick = () => doCreate();
 
-                footer.appendChild(btnGen); footer.appendChild(btnNew);
+                btnRow.appendChild(btnGen);
+                btnRow.appendChild(btnNew);
+                colLeft.appendChild(btnRow);
 
-                center.appendChild(frame);
-                center.appendChild(footer);
-                mainRow.appendChild(center);
+                const frame = document.createElement("div");
+                frame.className = "vnccs-preview-container";
+                frame.innerHTML = '<div class="vnccs-placeholder">No Preview</div>';
+                const img = document.createElement("img");
+                img.className = "vnccs-preview-img"; img.style.display = "none";
+                frame.appendChild(img);
+                els.previewImg = img; els.placeholder = frame.querySelector(".vnccs-placeholder");
+                colLeft.appendChild(frame);
 
-                // RIGHT (Settings)
-                const right = document.createElement("div"); right.className = "vnccs-col";
-                const sGen = document.createElement("div"); sGen.className = "vnccs-section";
-                sGen.innerHTML = '<div class="vnccs-header">Generation</div>';
+                topRow.appendChild(colLeft);
 
-                const dC = document.createElement("div"); dC.className = "vnccs-field";
-                dC.innerHTML = '<div class="vnccs-label">Checkpoint (SDXL)</div>';
-                const sC = document.createElement("select"); sC.className = "vnccs-select";
-                sC.onchange = (e) => { state.gen_settings.ckpt_name = e.target.value; saveState(); };
-                els.ckptSelect = sC; dC.appendChild(sC); sGen.appendChild(dC);
+                // COL 2: CENTER (Attributes)
+                const colCenter = document.createElement("div");
+                colCenter.className = "vnccs-col";
+                colCenter.innerHTML = '<div class="vnccs-section-title">Attributes</div>';
 
-                sGen.appendChild(createField("Sampler", "sampler", "select", [], "gen_settings"));
-                els.sampler = sGen.lastChild.querySelector("select");
+                colCenter.appendChild(createField("Gender", "sex", "select", ["female", "male"]));
+                colCenter.appendChild(createField("Age", "age", "number"));
+                colCenter.appendChild(createField("Race", "race"));
+                colCenter.appendChild(createField("Skin Mode", "skin_color")); // Label changed to "Color"?
+                colCenter.appendChild(createField("Body Type", "body"));
+                colCenter.appendChild(createField("Face Features", "face"));
+                colCenter.appendChild(createField("Hair Style", "hair"));
+                colCenter.appendChild(createField("Eye Color", "eyes"));
+                colCenter.appendChild(createField("Outfit / Details", "additional_details")); // Simplified to input for compactness, or keep input
+                colCenter.appendChild(createField("NSFW Mode", "nsfw", "checkbox"));
+                colCenter.appendChild(createField("Background Color", "background_color"));
 
-                sGen.appendChild(createField("Scheduler", "scheduler", "select", [], "gen_settings"));
-                els.scheduler = sGen.lastChild.querySelector("select");
+                topRow.appendChild(colCenter);
 
-                const row = document.createElement("div"); row.className = "vnccs-row";
-                row.appendChild(createField("Steps", "steps", "number", {}, "gen_settings"));
-                row.appendChild(createField("CFG", "cfg", "number", { step: 0.1 }, "gen_settings"));
-                // Fix layout of row
-                row.querySelector(".vnccs-field:first-child").style.flex = "1";
-                row.querySelector(".vnccs-field:last-child").style.flex = "1";
-                sGen.appendChild(row);
+                // COL 3: RIGHT (Generation)
+                const colRight = document.createElement("div");
+                colRight.className = "vnccs-col";
+                colRight.innerHTML = '<div class="vnccs-section-title">Generation</div>';
 
-                // DMD2 LoRA moved here (used to be in sAdv)
-                const dL = document.createElement("div"); dL.className = "vnccs-field";
-                dL.innerHTML = '<div class="vnccs-label">DMD2 LoRA Model</div>';
-                const rL = document.createElement("div"); rL.className = "vnccs-row";
-                const sL = document.createElement("select"); sL.className = "vnccs-select"; sL.style.flex = "2";
-                sL.onchange = (e) => { state.gen_settings.lora_name = e.target.value; saveState(); };
-                els.loraSelect = sL;
-                const iL = document.createElement("input"); iL.className = "vnccs-input"; iL.type = "number"; iL.step = "0.1"; iL.style.flex = "1";
-                iL.value = 1.0; iL.onchange = (e) => { state.gen_settings.lora_strength = parseFloat(e.target.value); saveState(); };
-                els.loraStrength = iL;
-                rL.appendChild(sL); rL.appendChild(iL); dL.appendChild(rL); sGen.appendChild(dL);
+                // Checkpoint
+                const wrapCkpt = document.createElement("div"); wrapCkpt.className = "vnccs-field";
+                wrapCkpt.innerHTML = '<div class="vnccs-label">Checkpoint (SDXL)</div>';
+                const sCkpt = document.createElement("select"); sCkpt.className = "vnccs-select";
+                sCkpt.onchange = (e) => { state.gen_settings.ckpt_name = e.target.value; saveState(); };
+                els.ckptSelect = sCkpt; wrapCkpt.appendChild(sCkpt); colRight.appendChild(wrapCkpt);
 
-                right.appendChild(sGen);
-                mainRow.appendChild(right);
+                colRight.appendChild(createField("Sampler", "sampler", "select", [], state.gen_settings));
+                els.sampler = colRight.lastChild.querySelector("select");
 
-                layoutGrid.appendChild(mainRow);
+                colRight.appendChild(createField("Scheduler", "scheduler", "select", [], state.gen_settings));
+                els.scheduler = colRight.lastChild.querySelector("select");
 
-                // BOTTOM BLOCK (Prompt Areas)
+                const rowGen = document.createElement("div"); rowGen.className = "vnccs-field";
+                rowGen.style.flexDirection = "row"; rowGen.style.gap = "10px";
+                rowGen.appendChild(createField("Steps", "steps", "number", {}, state.gen_settings));
+                rowGen.appendChild(createField("CFG", "cfg", "number", { step: 0.1 }, state.gen_settings));
+                colRight.appendChild(rowGen);
+
+                // --- LoRA Section ---
+                const loraHeader = document.createElement("div");
+                loraHeader.className = "vnccs-section-title";
+                loraHeader.style.marginTop = "10px";
+                loraHeader.innerText = "LoRa Stack";
+                colRight.appendChild(loraHeader);
+
+                // DMD2 LoRA
+                const dmdWrap = document.createElement("div"); dmdWrap.className = "vnccs-lora-item";
+                dmdWrap.innerHTML = '<div class="vnccs-label">DMD2 LoRA Model</div>';
+                const dmdRow = document.createElement("div"); dmdRow.className = "vnccs-lora-row";
+                const dmdSel = document.createElement("select"); dmdSel.className = "vnccs-select";
+                dmdSel.style.flex = "2";
+                dmdSel.onchange = (e) => { state.gen_settings.dmd_lora_name = e.target.value; saveState(); };
+                els.dmdSelect = dmdSel;
+
+                const dmdStr = document.createElement("input"); dmdStr.className = "vnccs-input";
+                dmdStr.type = "number"; dmdStr.step = "0.05"; dmdStr.style.flex = "1";
+                dmdStr.onchange = (e) => {
+                    state.gen_settings.dmd_lora_strength = parseFloat(e.target.value);
+                    saveState();
+                };
+
+                dmdRow.appendChild(dmdSel); dmdRow.appendChild(dmdStr);
+                dmdWrap.appendChild(dmdRow);
+                colRight.appendChild(dmdWrap);
+                els.dmdSlider = dmdStr; // Renamed ref for logic compat, though it's an input now
+
+                // Age LoRA
+                const ageWrap = document.createElement("div"); ageWrap.className = "vnccs-lora-item";
+                ageWrap.innerHTML = '<div class="vnccs-label">Age LoRA (Auto Strength)</div>';
+                const ageSel = document.createElement("select"); ageSel.className = "vnccs-select";
+                ageSel.onchange = (e) => { state.gen_settings.age_lora_name = e.target.value; saveState(); };
+                els.ageSelect = ageSel;
+                ageWrap.appendChild(ageSel);
+                colRight.appendChild(ageWrap);
+
+                // Stack (5 Slots)
+                const stackContainer = document.createElement("div");
+                stackContainer.className = "vnccs-lora-stack";
+                els.loraStackSelects = [];
+
+                for (let i = 0; i < 5; i++) {
+                    const item = document.createElement("div"); item.className = "vnccs-lora-item";
+                    const row = document.createElement("div"); row.className = "vnccs-lora-row";
+
+                    const sel = document.createElement("select"); sel.className = "vnccs-select";
+                    sel.style.flex = "2";
+                    sel.onchange = (e) => { state.gen_settings.lora_stack[i].name = e.target.value; saveState(); };
+
+                    const rng = document.createElement("input"); rng.className = "vnccs-input";
+                    rng.type = "number"; rng.step = "0.05"; rng.style.flex = "1";
+
+                    rng.onchange = (e) => {
+                        state.gen_settings.lora_stack[i].strength = parseFloat(e.target.value);
+                        saveState();
+                    };
+
+                    row.appendChild(sel);
+                    row.appendChild(rng);
+                    item.appendChild(row);
+                    stackContainer.appendChild(item);
+
+                    // Ref for population
+                    els.loraStackSelects.push({ sel, rng, idx: i });
+                }
+                colRight.appendChild(stackContainer);
+
+                topRow.appendChild(colRight);
+                container.appendChild(topRow);
+
+                // --- BOTTOM ROW (Prompts) ---
                 const bottomRow = document.createElement("div");
                 bottomRow.className = "vnccs-bottom-row";
 
-                const sAes = document.createElement("div"); sAes.className = "vnccs-section";
-                sAes.appendChild(createField("Aesthetics", "aesthetics", "textarea"));
-                bottomRow.appendChild(sAes);
+                const createText = (lbl, key) => {
+                    const w = document.createElement("div"); w.className = "vnccs-textarea-wrapper";
+                    w.innerHTML = `<div class="vnccs-textarea-label">${lbl}</div>`;
+                    const t = document.createElement("textarea");
+                    t.value = state.character_info[key] || "";
+                    t.oninput = (e) => { state.character_info[key] = e.target.value; saveState(); };
+                    w.appendChild(t);
+                    els[key] = t;
+                    return w;
+                }
+                bottomRow.appendChild(createText("Aesthetics", "aesthetics"));
+                bottomRow.appendChild(createText("Negative Prompt", "negative_prompt"));
+                bottomRow.appendChild(createText("LoRA Trigger", "lora_prompt"));
 
-                const sNeg = document.createElement("div"); sNeg.className = "vnccs-section";
-                sNeg.appendChild(createField("Negative Prompt", "negative_prompt", "textarea"));
-                bottomRow.appendChild(sNeg);
+                container.appendChild(bottomRow);
 
-                const sLora = document.createElement("div"); sLora.className = "vnccs-section";
-                sLora.appendChild(createField("LoRA Trigger (Prompt)", "lora_prompt", "textarea"));
-                bottomRow.appendChild(sLora);
-
-                layoutGrid.appendChild(bottomRow);
-
-                container.appendChild(layoutGrid);
+                // Inject UI
                 this.addDOMWidget("ui", "ui", container, { serialize: false });
 
                 // 6. Logic
@@ -429,30 +502,53 @@ app.registerExtension({
                         const r = await api.fetchApi("/vnccs/context_lists");
                         const d = await r.json();
 
-                        const pop = (el, i, none) => {
+                        const pop = (el, items, none = false) => {
                             if (!el) return; el.innerHTML = "";
-                            if (none) el.appendChild(new Option("None", ""));
-                            (i || []).forEach(x => el.appendChild(new Option(x, x)));
+                            if (none) el.add(new Option("None", ""));
+                            (items || []).forEach(x => el.add(new Option(x, x)));
                         };
 
                         pop(els.ckptSelect, d.checkpoints);
                         pop(els.sampler, d.samplers);
                         pop(els.scheduler, d.schedulers);
-                        pop(els.loraSelect, d.loras, true);
+
+                        // Populate LoRA selectors
+                        const loras = d.loras || [];
+                        pop(els.dmdSelect, loras, true);
+                        pop(els.ageSelect, loras, true);
+                        els.loraStackSelects.forEach(o => pop(o.sel, loras, true));
 
                         els.charSelect.innerHTML = "";
-                        if (!d.characters || !d.characters.length) els.charSelect.appendChild(new Option("None", ""));
-                        else d.characters.forEach(c => els.charSelect.appendChild(new Option(c, c)));
+                        if (!d.characters || !d.characters.length) els.charSelect.add(new Option("None", ""));
+                        else d.characters.forEach(c => els.charSelect.add(new Option(c, c)));
 
-                        // Restore Gen
+                        // Restore values
                         const g = state.gen_settings;
                         if (g.ckpt_name) els.ckptSelect.value = g.ckpt_name;
                         if (g.sampler) els.sampler.value = g.sampler;
                         if (g.scheduler) els.scheduler.value = g.scheduler;
-                        if (g.lora_name) els.loraSelect.value = g.lora_name;
-                        if (g.lora_strength) els.loraStrength.value = g.lora_strength;
-                        if (els.steps) els.steps.value = g.steps;
-                        if (els.cfg) els.cfg.value = g.cfg;
+
+                        if (g.steps && els.steps) els.steps.value = g.steps;
+                        if (g.cfg && els.cfg) els.cfg.value = g.cfg;
+
+                        // Restore LoRAs
+                        if (g.dmd_lora_name) els.dmdSelect.value = g.dmd_lora_name;
+                        if (g.dmd_lora_strength !== undefined) {
+                            els.dmdSlider.value = g.dmd_lora_strength;
+                        } else {
+                            els.dmdSlider.value = 1.0;
+                        }
+
+                        if (g.age_lora_name) els.ageSelect.value = g.age_lora_name;
+
+                        // Restore Stack
+                        g.lora_stack.forEach((item, i) => {
+                            if (i < els.loraStackSelects.length) {
+                                const ref = els.loraStackSelects[i];
+                                if (item.name) ref.sel.value = item.name;
+                                ref.rng.value = item.strength;
+                            }
+                        });
 
                         if (state.character) els.charSelect.value = state.character;
                         else if (d.characters.length) { state.character = d.characters[0]; els.charSelect.value = state.character; }
@@ -465,74 +561,50 @@ app.registerExtension({
                 const loadChar = async (n) => {
                     if (!n) return;
                     try {
+                        // 1. Fetch Info
                         const r = await api.fetchApi(`/vnccs/character_info?character=${encodeURIComponent(n)}`);
                         const i = await r.json();
-                        state.character_info = { ...state.character_info, ...i };
+                        Object.assign(state.character_info, i);
+
                         // Update Fields
-                        Object.keys(i).forEach(k => {
+                        Object.keys(state.character_info).forEach(k => {
                             if (els[k]) {
-                                if (els[k].type === "checkbox") els[k].checked = !!i[k];
-                                else els[k].value = i[k];
+                                if (els[k].type === "checkbox") els[k].checked = !!state.character_info[k];
+                                else els[k].value = state.character_info[k];
                             }
                         });
-                        // Explicit Extra
-                        if (els.lora_prompt) els.lora_prompt.value = i.lora_prompt || "";
 
-                    } catch (e) { }
-                };
+                        // 2. Fetch Preview Image (Existing endpoint logic or direct file?)
+                        // Currently backend returns image in JSON for 'preview_generate'?
+                        // No, for loading existing character, user might want to see the stored sheet or a generated preview.
+                        // Emotion Studio has `/vnccs/get_character_sheet_preview`.
+                        // Let's use that if available.
+                        els.previewImg.src = `/vnccs/get_character_sheet_preview?character=${encodeURIComponent(n)}&t=${Date.now()}`;
+                        els.previewImg.style.display = "block";
+                        els.placeholder.style.display = "none";
+                        els.previewImg.onerror = () => {
+                            els.previewImg.style.display = "none";
+                            els.placeholder.innerText = "No Preview Image";
+                            els.placeholder.style.display = "block";
+                        }
 
-                const doCreate = () => {
-                    const overlay = document.createElement("div");
-                    overlay.className = "vnccs-modal-overlay";
-                    const m = document.createElement("div");
-                    m.className = "vnccs-modal";
-                    m.innerHTML = `<div class="vnccs-modal-title">New Character Name:</div>`;
-                    const inp = document.createElement("input");
-                    inp.className = "vnccs-input";
-                    inp.placeholder = "Enter name...";
-                    m.appendChild(inp);
-
-                    const foot = document.createElement("div");
-                    foot.className = "vnccs-modal-footer";
-
-                    const btnCan = document.createElement("button");
-                    btnCan.className = "vnccs-btn vnccs-btn-sm";
-                    btnCan.style.background = "#444";
-                    btnCan.innerText = "CANCEL";
-                    btnCan.onclick = () => overlay.remove();
-
-                    const btnOk = document.createElement("button");
-                    btnOk.className = "vnccs-btn vnccs-btn-primary vnccs-btn-sm";
-                    btnOk.innerText = "CREATE";
-                    btnOk.onclick = async () => {
-                        const n = inp.value.trim();
-                        if (!n) return;
-                        await fetch("/vnccs/create", { method: "POST", body: JSON.stringify({ name: n }) });
-                        overlay.remove();
-                        await init();
-                    };
-
-                    foot.appendChild(btnCan);
-                    foot.appendChild(btnOk);
-                    m.appendChild(foot);
-                    overlay.appendChild(m);
-                    container.appendChild(overlay);
-                    inp.focus();
+                    } catch (e) { console.error(e); }
                 };
 
                 const doGenerate = async () => {
                     if (!state.gen_settings.ckpt_name) { alert("Select Checkpoint"); return; }
-                    els.btnGen.innerText = "GENERATING...";
+                    els.btnGen.innerText = "BUSY...";
                     els.btnGen.disabled = true;
                     saveState();
 
                     try {
-                        // Send RAW INFO, Backend does the prompt logic now!
                         const payload = {
                             ...state.gen_settings,
                             character_info: state.character_info
                         };
-                        console.log("[VNCCS V2] Sending Payload:", payload); // DEBUG
+                        // Clean stack
+                        payload.lora_stack = payload.lora_stack.filter(x => x.name && x.name !== "None");
+
                         const r = await fetch("/vnccs/preview_generate", { method: "POST", body: JSON.stringify(payload) });
                         const d = await r.json();
                         if (d.image) {
@@ -540,11 +612,35 @@ app.registerExtension({
                             els.previewImg.style.display = "block";
                             els.placeholder.style.display = "none";
                         }
-                    } catch (e) { alert(e); }
+                    } catch (e) { alert("Error: " + e); }
                     finally {
                         els.btnGen.innerText = "GENERATE PREVIEW";
                         els.btnGen.disabled = false;
                     }
+                };
+
+                const doCreate = () => {
+                    const overlay = document.createElement("div"); overlay.className = "vnccs-modal-overlay";
+                    const m = document.createElement("div"); m.className = "vnccs-modal";
+                    m.innerHTML = `<div class="vnccs-section-title">New Character</div>`;
+                    const inp = document.createElement("input"); inp.className = "vnccs-input"; inp.placeholder = "Name...";
+
+                    const row = document.createElement("div"); row.className = "vnccs-btn-row";
+                    const bC = document.createElement("button"); bC.className = "vnccs-btn"; bC.innerText = "Cancel";
+                    bC.onclick = () => overlay.remove();
+                    const bO = document.createElement("button"); bO.className = "vnccs-btn vnccs-btn-primary"; bO.innerText = "Create";
+                    bO.onclick = async () => {
+                        const n = inp.value.trim();
+                        if (!n) return;
+                        await fetch(`/vnccs/create?name=${encodeURIComponent(n)}`);
+                        overlay.remove();
+                        await init();
+                    };
+                    row.appendChild(bC); row.appendChild(bO);
+                    m.appendChild(inp); m.appendChild(row);
+                    overlay.appendChild(m);
+                    container.appendChild(overlay);
+                    inp.focus();
                 };
 
                 setTimeout(init, 50);

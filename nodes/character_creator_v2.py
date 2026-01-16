@@ -16,10 +16,10 @@ import numpy as np
 import traceback
 
 from ..utils import (
-    base_output_dir, character_dir, list_characters,
     load_character_info, ensure_character_structure, EMOTIONS, MAIN_DIRS,
     save_config, build_face_details, generate_seed, dedupe_tokens,
-    apply_sex, append_age, load_config
+    apply_sex, append_age, load_config, age_strength,
+    list_characters, character_dir, base_output_dir
 )
 
 # --------------------------------------------------------------------
@@ -63,7 +63,7 @@ if server:
             config = load_config(name)
             if config and "character_info" in config:
                 return web.json_response(config["character_info"])
-            return web.json_response({"image": base64_image})
+            return web.json_response({})
             
         except Exception as e:
             traceback.print_exc() # Print to console
@@ -90,9 +90,16 @@ if server:
             scheduler = json_data.get("scheduler", "normal")
             seed = int(json_data.get("seed", 0))
             
-            # Additional LoRA Application for Preview?
-            lora_name = json_data.get("lora_name")
-            lora_strength = float(json_data.get("lora_strength", 1.0))
+            # Additional LoRA Application for Preview
+            # 1. DMD2 / Main LoRA
+            dmd_lora_name = json_data.get("dmd_lora_name") or json_data.get("lora_name")
+            dmd_lora_strength = float(json_data.get("dmd_lora_strength", json_data.get("lora_strength", 1.0)))
+            
+            # 2. Age LoRA
+            age_lora_name = json_data.get("age_lora_name")
+            
+            # 3. LoRA Stack
+            lora_stack = json_data.get("lora_stack", []) # List of {name, strength}
 
             # Resolution
             width = 640
@@ -109,12 +116,27 @@ if server:
             out = comfy.sd.load_checkpoint_guess_config(ckpt_path, output_vae=True, output_clip=True, embedding_directory=folder_paths.get_folder_paths("embeddings"))
             model, clip, vae = out[:3]
             
-            # 1.5 Apply LoRA if selected
-            if lora_name:
-                lora_path = folder_paths.get_full_path("loras", lora_name)
-                if lora_path:
-                    lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
-                    model, clip = comfy.sd.load_lora_for_models(model, clip, lora, lora_strength, lora_strength)
+            # Helper to apply LoRA
+            def apply_lora_safe(m, c, l_name, l_strength):
+                if not l_name or l_name == "None": return m, c
+                l_path = folder_paths.get_full_path("loras", l_name)
+                if l_path:
+                    lora = comfy.utils.load_torch_file(l_path, safe_load=True)
+                    return comfy.sd.load_lora_for_models(m, c, lora, l_strength, l_strength)
+                return m, c
+
+            # Apply DMD2
+            model, clip = apply_lora_safe(model, clip, dmd_lora_name, dmd_lora_strength)
+            
+            # Apply Age LoRA
+            if age_lora_name:
+                age = int(char_info.get("age", 18))
+                age_str = age_strength(age)
+                model, clip = apply_lora_safe(model, clip, age_lora_name, age_str)
+                
+            # Apply Stack
+            for l_item in lora_stack:
+                model, clip = apply_lora_safe(model, clip, l_item.get("name"), float(l_item.get("strength", 1.0)))
 
             # 2. Encode Prompts
             # Positive
