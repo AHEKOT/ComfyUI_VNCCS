@@ -264,9 +264,37 @@ app.registerExtension({
                     if (origDraw) origDraw.apply(this, arguments);
                 };
 
-                // 3. State
+                // Override onSerialize to guarantee state is written to widget before execution
+                const origSerialize = node.onSerialize;
+                node.onSerialize = function (o) {
+                    if (origSerialize) origSerialize.apply(this, arguments);
+
+                    // Critical Sync: Ensure widget_data receives latest state
+                    const w = node.widgets ? node.widgets.find(w => w.name === "widget_data") : null;
+                    if (w) {
+                        w.value = JSON.stringify(state);
+                    } else {
+                        // Should have been created, but safety net
+                        console.warn("[VNCCS] widget_data missing on serialize, creating...");
+                        node.addWidget("text", "widget_data", JSON.stringify(state), (v) => { }, { serialize: true });
+                    }
+                };
+
+                // 3. State & Widget Setup
+                // Ensure 'widget_data' widget exists (ComfyUI backend hidden inputs don't always create widgets automatically)
+                let dataWidget = node.widgets ? node.widgets.find(w => w.name === "widget_data") : null;
+                if (!dataWidget) {
+                    // Create it manually if missing. 
+                    // Type "text" is safe, we'll hide it.
+                    // serialize: true is default for widgets added this way? We check opts.
+                    dataWidget = node.addWidget("text", "widget_data", "{}", (v) => { }, { serialize: true });
+                }
+                // Ensure it's hidden (cleanup hides everything else, but let's be explicit)
+                if (dataWidget) dataWidget.hidden = true;
+
                 const state = {
                     preview_valid: false, // Smart Cache Flag
+                    preview_source: "gen", // "gen" or "sheet" - tracks what user sees
                     character: "",
                     character_info: {
                         sex: "female", age: 18, race: "human", skin_color: "",
@@ -484,7 +512,7 @@ app.registerExtension({
                 charSel.onchange = async (e) => {
                     state.character = e.target.value;
                     await loadChar(state.character);
-                    saveState();
+                    saveState(true);
                 };
                 els.charSelect = charSel;
                 colLeft.appendChild(charSel);
@@ -855,14 +883,22 @@ app.registerExtension({
                         if (!d.characters || !d.characters.length) els.charSelect.add(new Option("None", ""));
                         else d.characters.forEach(c => els.charSelect.add(new Option(c, c)));
 
-                        // Restore values
+                        // Restore values or Default
                         const g = state.gen_settings;
-                        if (g.ckpt_name) els.ckptSelect.value = g.ckpt_name;
+
+                        if (g.ckpt_name) {
+                            els.ckptSelect.value = g.ckpt_name;
+                        } else if (els.ckptSelect.options.length > 0) {
+                            // Default to first option if not set
+                            g.ckpt_name = els.ckptSelect.options[0].value;
+                            els.ckptSelect.value = g.ckpt_name;
+                            saveState(); // Ensure this default is saved immediately
+                        }
                         if (g.sampler) els.sampler.value = g.sampler;
                         if (g.scheduler) els.scheduler.value = g.scheduler;
 
-                        if (g.steps && els.steps) els.steps.value = g.steps;
-                        if (g.cfg && els.cfg) els.cfg.value = g.cfg;
+                        if (g.steps && els.steps) { els.steps.range.value = g.steps; els.steps.num.value = g.steps; }
+                        if (g.cfg && els.cfg) { els.cfg.range.value = g.cfg; els.cfg.num.value = g.cfg; }
 
                         if (g.seed !== undefined && els.seed) els.seed.value = g.seed;
                         if (g.seed_mode && els.seed_mode) els.seed_mode.value = g.seed_mode;
@@ -870,9 +906,9 @@ app.registerExtension({
                         // Restore LoRAs
                         if (g.dmd_lora_name) els.dmdSelect.value = g.dmd_lora_name;
                         if (g.dmd_lora_strength !== undefined) {
-                            els.dmdSlider.value = g.dmd_lora_strength;
+                            els.dmdSlider.checked = (g.dmd_lora_strength > 0);
                         } else {
-                            els.dmdSlider.value = 1.0;
+                            els.dmdSlider.checked = true;
                         }
 
                         if (g.age_lora_name) els.ageSelect.value = g.age_lora_name;
@@ -900,6 +936,11 @@ app.registerExtension({
 
                         if (state.character) await loadChar(state.character);
 
+                        // CRITICAL: Ensure the widget is synced with whatever state we just loaded/defaulted
+                        // If we loaded a character, we assume the preview is valid (or at least we want to try to use cache)
+                        // AND we explicitly set source to 'sheet' because loadChar does that.
+                        saveState(!!state.character);
+
                     } catch (e) { console.error(e); }
                 };
 
@@ -923,10 +964,17 @@ app.registerExtension({
                         Object.assign(state.character_info, i);
 
                         // Update Fields
+                        // Update Fields
                         Object.keys(state.character_info).forEach(k => {
                             if (els[k]) {
-                                if (els[k].type === "checkbox") els[k].checked = !!state.character_info[k];
-                                else els[k].value = state.character_info[k];
+                                const val = state.character_info[k];
+                                if (els[k].range && els[k].num) {
+                                    // Slider Composite
+                                    els[k].range.value = val;
+                                    els[k].num.value = val;
+                                }
+                                else if (els[k].type === "checkbox") els[k].checked = !!val;
+                                else els[k].value = val;
                             }
                         });
 
@@ -938,6 +986,10 @@ app.registerExtension({
                         els.previewImg.src = `/vnccs/get_character_sheet_preview?character=${encodeURIComponent(n)}&t=${Date.now()}`;
                         els.previewImg.style.display = "block";
                         els.placeholder.style.display = "none";
+
+                        // Force state to reflect that we are looking at the SHEET
+                        state.preview_source = "sheet";
+
                         els.previewImg.onerror = () => {
                             els.previewImg.style.display = "none";
                             els.placeholder.innerText = "No Preview Image";
@@ -980,7 +1032,8 @@ app.registerExtension({
                             els.previewImg.src = "data:image/png;base64," + d.image;
                             els.previewImg.style.display = "block";
                             els.placeholder.style.display = "none";
-                            // Successful generation -> Cache is Valid
+                            // Successful generation -> Cache is Valid AND source is 'gen'
+                            state.preview_source = "gen";
                             saveState(true);
                         }
                     } catch (e) { alert("Error: " + e); }

@@ -14,6 +14,8 @@ import io
 import base64
 import numpy as np
 import traceback
+import glob
+import re
 
 from ..utils import (
     load_character_info, ensure_character_structure, EMOTIONS, MAIN_DIRS,
@@ -21,6 +23,85 @@ from ..utils import (
     apply_sex, append_age, load_config, age_strength,
     list_characters, character_dir, base_output_dir
 )
+
+# --------------------------------------------------------------------
+# Helper Functions
+# --------------------------------------------------------------------
+def pil2tensor(image):
+    return torch.from_numpy(np.array(image).astype(np.float32) / 255.0).unsqueeze(0)
+
+def tensor2pil(image):
+    return Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
+
+def get_latest_sheet_crop(character_name):
+    """
+    Attempts to find the latest 'sheet_neutral_*.png' for the character
+    and crop the 12th sprite (Row 1, Col 5), mimicking the frontend preview logic.
+    Returns: torch.Tensor (1,H,W,3) or None
+    """
+    try:
+        # 1. Find the Sheet
+        # Try Naked/neutral first
+        base_char_path = character_dir(character_name)
+        sheet_dir_path = os.path.join(base_char_path, "Sheets", "Naked", "neutral")
+        print(f"[VNCCS Debug] Checking Fallback Path: {sheet_dir_path}")
+        
+        if not os.path.exists(sheet_dir_path):
+                print(f"[VNCCS Debug] Path not found: {sheet_dir_path}")
+                found = False
+                base = os.path.join(base_char_path, "Sheets")
+                if os.path.exists(base):
+                    costumes = sorted(os.listdir(base))
+                    for costume in costumes:
+                        path = os.path.join(base, costume, "neutral")
+                        if os.path.isdir(path):
+                            sheet_dir_path = path
+                            found = True
+                            print(f"[VNCCS Debug] Found alternative sheet path: {path}")
+                            break
+                if not found:
+                    print(f"[VNCCS Debug] No sheet directories found in {base}")
+                    return None
+
+        # 2. Find the best file (highest index)
+        pattern = os.path.join(sheet_dir_path, "sheet_neutral_*.png")
+        files = glob.glob(pattern)
+        print(f"[VNCCS Debug] Files found: {len(files)}")
+        if not files:
+                return None
+        
+        def get_index(f):
+            m = re.search(r'(\d+)', os.path.basename(f))
+            return int(m.group(1)) if m else 0
+        
+        files.sort(key=get_index)
+        best_file = files[-1]
+        print(f"[VNCCS Debug] Using file: {best_file}")
+
+        # 3. Load and Crop
+        img = Image.open(best_file)
+        w, h = img.size
+        
+        # Layout: 2 Rows, 6 Columns
+        # We want Index 11 (The last one) -> Row 1 (2nd row), Col 5 (6th col)
+        
+        item_w = w // 6
+        item_h = h // 2
+        
+        row = 1
+        col = 5
+        
+        left = col * item_w
+        upper = row * item_h
+        right = left + item_w
+        lower = upper + item_h
+        
+        crop = img.crop((left, upper, right, lower))
+        return pil2tensor(crop)
+        
+    except Exception as e:
+        print(f"[VNCCS] Cache Fallback Failed: {e}")
+        return None
 
 # --------------------------------------------------------------------
 # API Endpoints
@@ -235,8 +316,9 @@ class CharacterCreatorV2:
         positive_prompt = f"{aesthetics}, simple background, expressionless"
         positive_prompt, gender_negative = apply_sex(sex, positive_prompt, "")
         
-        # NSFW / Clothing
-        is_nsfw = info.get("nsfw")
+        # NSWF / Clothing (Ensure bool casting)
+        is_nsfw = bool(info.get("nsfw", False))
+        if str(info.get("nsfw")).lower() == "false": is_nsfw = False 
         
         if is_nsfw:
              nude_phrase = "(naked, nude, penis)" if sex == "male" else "(naked, nude, vagina, nipples)"
@@ -315,12 +397,21 @@ class CharacterCreatorV2:
         # ----------------------------------------------------------------
         ckpt_name = gen_settings.get("ckpt_name") or data.get("ckpt_name")
         if not ckpt_name:
-            # Fallback or Error? For now, return empty/safe defaults if possible or raise
              raise ValueError("No Checkpoint selected in Character Creator V2")
 
         ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
+        if not ckpt_path:
+            raise ValueError(f"Checkpoint path not found for '{ckpt_name}'")
+
         out = comfy.sd.load_checkpoint_guess_config(ckpt_path, output_vae=True, output_clip=True, embedding_directory=folder_paths.get_folder_paths("embeddings"))
         model, clip, vae = out[:3]
+        
+        if model is None:
+             raise ValueError(f"Failed to load Model from checkpoint '{ckpt_name}'")
+        if clip is None:
+             raise ValueError(f"Failed to load CLIP from checkpoint '{ckpt_name}'")
+        if vae is None:
+             raise ValueError(f"Failed to load VAE from checkpoint '{ckpt_name}'")
 
         # Helper to apply LoRA
         def apply_lora_safe(m, c, l_name, l_strength):
@@ -389,17 +480,63 @@ class CharacterCreatorV2:
         
         image = None
 
-        if preview_valid and os.path.exists(cache_path):
-            print(f"[VNCCS] Smart Cache Hit: Loading existing preview for '{character_name}'")
-            try:
-                # Load image using PIL -> Tensor
-                i = Image.open(cache_path)
-                image = pil2tensor(i)
-            except Exception as e:
-                 print(f"[VNCCS] Failed to load cache: {e}. Regenerating.")
+        # Determine source
+        preview_source = "gen"
+        if widget_data:
+             try:
+                # widget_data is a string (JSON), but here it seems passed as 'widget_data' argument which might be raw string
+                # logic above parsed it into 'data' dict. use that.
+                preview_source = data.get("preview_source", "gen")
+             except: pass
+        
+        print(f"[VNCCS] Processing - Source: {preview_source}, Valid: {preview_valid}")
+
+        # LOGIC:
+        # 1. If source == 'sheet' (User just loaded character), we MUST use the sheet.
+        #    We ignore the existing cache file because it might be stale.
+        #    We overwrite the cache with the sheet crop.
+        # 2. If source == 'gen' (User generated previously), we use the cache.
+        
+        if preview_valid:
+             if preview_source == "sheet":
+                  print("[VNCCS] Source is Sheet. Force-loading sheet crop.")
+                  image = get_latest_sheet_crop(character_name)
+                  if image is not None:
+                       print("[VNCCS] Sheet loaded successfully. Overwriting Cache.")
+                       try:
+                           c_img = tensor2pil(image)
+                           os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                           c_img.save(cache_path)
+                       except: pass
+                  else:
+                       print("[VNCCS] Sheet load failed. Will try cache/regen.")
+
+             # If image not set yet (source=gen OR sheet load failed), try cache
+             if image is None and os.path.exists(cache_path):
+                 print(f"[VNCCS] Smart Cache Hit: Loading existing preview for '{character_name}'")
+                 try:
+                     i = Image.open(cache_path)
+                     image = pil2tensor(i)
+                 except Exception as e:
+                     print(f"[VNCCS] Failed to load cache: {e}. Regenerating.")
 
         if image is None:
-            print(f"[VNCCS] Smart Cache Miss (Valid: {preview_valid}). Regenerating...")
+             # Fallback: If cache is missing (even if source=gen), try sheet before regen
+             if preview_valid:
+                 print(f"[VNCCS] Cache Miss. Attempting Sheet Fallback...")
+                 image = get_latest_sheet_crop(character_name)
+                 if image is not None:
+                     print(f"[VNCCS] Sheet Fallback Successful. Updating Cache.")
+                     try:
+                        c_img = tensor2pil(image)
+                        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                        c_img.save(cache_path)
+                     except: pass
+                 else:
+                     print(f"[VNCCS] Sheet Fallback Failed. Regenerating...")
+
+        if image is None:
+            print(f"[VNCCS] Regenerating Preview...")
             
             latent = torch.zeros([1, 4, 1536 // 8, 640 // 8], device=model.load_device)
             

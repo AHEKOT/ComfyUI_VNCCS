@@ -11,7 +11,9 @@
     - Generate Preview -> Should work.
     - Reload Page -> **Settings should persist** (Model, LoRA, etc.).
     - Change Character -> LoRA setting should **NOT** change (independent of char).
-- [ ] **Data Loading**: Select character -> Attributes fill.
+- [ ] **Data Loading**: Select character -> Attributes fill (Verify sliders like Age populate correctly).
+- [ ] **Smart Cache**: Load character -> Run (Queued) -> **Should NOT regenerate**. Verify console says "Sheet Fallback Successful" if cache was empty.
+- [ ] **NSFW**: Enable NSFW -> Run -> Verify prompt contains "nude/naked" terms.
 - [ ] **Persistence**: Queue Prompt -> Check JSON -> Data saved (except LoRA).
 - [ ] **Outputs**: Connect `lora_name` / `lora_strength` outputs to a downstream node. Verify values.
 
