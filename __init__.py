@@ -95,9 +95,11 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         )
         try:
             from .nodes.character_creator import CharacterCreator
+            from .utils import base_output_dir
             cc = CharacterCreator()
-            os.makedirs(cc.base_path, exist_ok=True)
-            base_char_dir = os.path.join(cc.base_path, name)
+            base_path = base_output_dir()
+            os.makedirs(base_path, exist_ok=True)
+            base_char_dir = os.path.join(base_path, name)
             config_path = os.path.join(base_char_dir, f"{name}_config.json")
             if os.path.exists(config_path):
                 try:

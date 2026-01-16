@@ -142,13 +142,15 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
                 self.gs_renderer = None
 
 
-    def forward(self, views: Dict[str, torch.Tensor], cond_flags: List[int]=[0, 0, 0], is_inference=True):
+    def forward(self, views: Dict[str, torch.Tensor], cond_flags: List[int]=[0, 0, 0], is_inference=True, stabilization="none", confidence_percentile=10.0):
         """
         Execute forward pass through the WorldMirror model.
 
         Args:
             views: Input data dictionary
             cond_flags: Conditioning flags [depth, rays, camera]
+            stabilization: Stabilization mode ("none", "panorama_lock")
+            confidence_percentile: Percentage of low-confidence points to discard (0-100)
 
         Returns:
             dict: Prediction results dictionary
@@ -171,13 +173,13 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
         with torch.amp.autocast('cuda', dtype=torch.float32):
             # Generate all predictions
             preds = self._gen_all_preds(
-                token_list, imgs, patch_start_idx, views, cond_flags, is_inference
+                token_list, imgs, patch_start_idx, views, cond_flags, is_inference, stabilization, confidence_percentile
             )
 
         return preds
 
     def _gen_all_preds(self, token_list, imgs, patch_start_idx, 
-                       views, cond_flags, is_inference):
+                       views, cond_flags, is_inference, stabilization="none", confidence_percentile=10.0):
         """Generate all enabled predictions"""
         preds = {}
 
@@ -185,6 +187,13 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
         if self.enable_cam:
             cam_seq = self.cam_head(token_list)
             cam_params = cam_seq[-1]
+            
+            # Apply Stabilization
+            if stabilization == "panorama_lock":
+                # Force translation to zero (pure rotation for panoramas)
+                # cam_params is [B, S, 9] or similar. Translation is first 3.
+                cam_params[..., :3] = 0.0
+                
             preds["camera_params"] = cam_params
             c2w_mat, int_mat = self.transform_camera_vector(cam_params, imgs.shape[-2], imgs.shape[-1])
             preds["camera_poses"] = c2w_mat  # C2W pose (OpenCV) in world coordinates: [B, S, 4, 4]
@@ -232,6 +241,10 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
             
             # Only render if gs_renderer is available (requires gsplat)
             if self.gs_renderer is not None:
+                # Update renderer settings dynamically
+                self.gs_renderer.enable_conf_filter = True
+                self.gs_renderer.conf_threshold_percent = confidence_percentile
+                
                 preds = self.gs_renderer.render(
                     gs_feats=gs_feat,
                     images=imgs,

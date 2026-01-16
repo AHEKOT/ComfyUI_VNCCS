@@ -170,6 +170,8 @@ class VNCCS_WorldMirror3D:
             "optional": {
                 "target_size": ("INT", {"default": 518, "min": 252, "max": 1024, "step": 14}),
                 "offload_scheme": (["none", "model_cpu_offload", "sequential_cpu_offload"], {"default": "none"}),
+                "stabilization": (["none", "panorama_lock"], {"default": "none"}),
+                "confidence_percentile": ("FLOAT", {"default": 10.0, "min": 0.0, "max": 100.0, "step": 1.0}),
             }
         }
     
@@ -178,7 +180,7 @@ class VNCCS_WorldMirror3D:
     FUNCTION = "run_inference"
     CATEGORY = "VNCCS/3D"
     
-    def run_inference(self, model, images, target_size=518, offload_scheme="none"):
+    def run_inference(self, model, images, target_size=518, offload_scheme="none", stabilization="none", confidence_percentile=10.0):
         from torchvision import transforms
         
         # Ensure target_size is divisible by 14
@@ -304,7 +306,7 @@ class VNCCS_WorldMirror3D:
         try:
             with torch.no_grad():
                 with torch.amp.autocast('cuda', enabled=True, dtype=torch.bfloat16):
-                    predictions = worldmirror(views=views, cond_flags=cond_flags)
+                    predictions = worldmirror(views=views, cond_flags=cond_flags, stabilization=stabilization, confidence_percentile=confidence_percentile)
         finally:
             # Cleanup for Manual Sequential Offload
             if offload_scheme == "sequential_cpu_offload":

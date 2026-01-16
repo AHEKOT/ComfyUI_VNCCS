@@ -67,7 +67,22 @@
   }
   async function createNewCharacter(name) {
     if (!name) return { error: 'empty name' };
-    try { const r = await fetch(`/vnccs/create?name=${encodeURIComponent(name)}`); if (!r.ok) return { error: 'http ' + r.status }; return await r.json(); } catch (e) { return { error: String(e) }; }
+    try {
+      const r = await fetch(`/vnccs/create?name=${encodeURIComponent(name)}`);
+      let res = null;
+      try {
+        res = await r.json();
+      } catch (jsonErr) {
+        // response might be text/html on 500 error from proxy/server
+        res = { error: 'http ' + r.status + ' (parse fail)' };
+      }
+
+      if (!r.ok) {
+        warn('createNewCharacter failed:', res);
+        return { error: (res && res.error) || ('http ' + r.status), detail: res && res.detail, trace: res && res.trace };
+      }
+      return res;
+    } catch (e) { return { error: String(e) }; }
   }
 
   // Helper to update widget value without triggering infinite callback loops
@@ -364,39 +379,58 @@
     }, 300);
   }
   function hook(node) {
-    if (!node) return;
-    const title = (node.title || '').trim();
-    if (node.comfyClass === 'CharacterCreator' || title === 'VNCCS Character Creator') {
-      if (node.__vnccsHooked) return;
-      node.__vnccsHooked = true;
-      log('hook Creator', node.id);
-      const sel = (node.widgets || []).find(w => w.name === 'existing_character'); if (!sel) { warn('no existing_character'); return; }
-      addCreateButtonSafely(node);
-      const orig = sel.callback; sel.callback = async function () {
-        if (orig) try { orig.apply(this, arguments); } catch (e) { }
-        let characterName = sel.value;
-        log('existing_character callback triggered, sel.value:', characterName, 'type:', typeof characterName);
-
-        if (typeof characterName !== 'string') {
-          if (characterName && characterName.title) {
-            characterName = characterName.title;
-            log('Extracted name from node title:', characterName);
-          } else if (characterName && characterName.id !== undefined) {
-            characterName = 'node_' + characterName.id;
-            log('Extracted name from node id:', characterName);
-          } else {
-            log('Cannot extract string name from sel.value, using fallback');
-            characterName = 'unknown';
-          }
-        }
-
-        const cfg = await fetchConfig(characterName);
-        apply(node, cfg);
-      };
-      if (!node.widgets.find(w => w.name === 'vnccs_reload')) {
-        node.addWidget('button', 'Reload Config', '', async () => {
+    try {
+      if (!node) return;
+      const title = (node.title || '').trim();
+      if (node.comfyClass === 'CharacterCreator' || title === 'VNCCS Character Creator') {
+        if (node.__vnccsHooked) return;
+        node.__vnccsHooked = true;
+        log('hook Creator', node.id);
+        const sel = (node.widgets || []).find(w => w.name === 'existing_character'); if (!sel) { warn('no existing_character'); return; }
+        addCreateButton(node);
+        const orig = sel.callback; sel.callback = async function () {
+          if (orig) try { orig.apply(this, arguments); } catch (e) { }
           let characterName = sel.value;
-          log('Reload Config button clicked, sel.value:', characterName, 'type:', typeof characterName);
+          log('existing_character callback triggered, sel.value:', characterName, 'type:', typeof characterName);
+
+          if (typeof characterName !== 'string') {
+            if (characterName && characterName.title) {
+              characterName = characterName.title;
+              log('Extracted name from node title:', characterName);
+            } else if (characterName && characterName.id !== undefined) {
+              characterName = 'node_' + characterName.id;
+              log('Extracted name from node id:', characterName);
+            } else {
+              log('Cannot extract string name from sel.value, using fallback');
+              characterName = 'unknown';
+            }
+          }
+
+          const cfg = await fetchConfig(characterName);
+          apply(node, cfg);
+        };
+        if (!node.widgets.find(w => w.name === 'vnccs_reload')) {
+          node.addWidget('button', 'Reload Config', '', async () => {
+            let characterName = sel.value;
+            log('Reload Config button clicked, sel.value:', characterName, 'type:', typeof characterName);
+
+            if (typeof characterName !== 'string') {
+              if (characterName && characterName.title) {
+                characterName = characterName.title;
+              } else if (characterName && characterName.id !== undefined) {
+                characterName = 'node_' + characterName.id;
+              } else {
+                characterName = 'unknown';
+              }
+            }
+
+            const cfg = await fetchConfig(characterName);
+            apply(node, cfg);
+          });
+        }
+        setTimeout(async () => {
+          let characterName = sel.value;
+          log('Initial load, sel.value:', characterName, 'type:', typeof characterName);
 
           if (typeof characterName !== 'string') {
             if (characterName && characterName.title) {
@@ -410,30 +444,15 @@
 
           const cfg = await fetchConfig(characterName);
           apply(node, cfg);
-        });
+        }, 200);
+      } else if (
+        (node.comfyClass && node.comfyClass.startsWith('CharacterAssetSelector')) ||
+        (title && title.toLowerCase().startsWith('vnccs character selector'))
+      ) {
+        hookCharacterAssetSelector(node);
       }
-      setTimeout(async () => {
-        let characterName = sel.value;
-        log('Initial load, sel.value:', characterName, 'type:', typeof characterName);
-
-        if (typeof characterName !== 'string') {
-          if (characterName && characterName.title) {
-            characterName = characterName.title;
-          } else if (characterName && characterName.id !== undefined) {
-            characterName = 'node_' + characterName.id;
-          } else {
-            characterName = 'unknown';
-          }
-        }
-
-        const cfg = await fetchConfig(characterName);
-        apply(node, cfg);
-      }, 200);
-    } else if (
-      (node.comfyClass && node.comfyClass.startsWith('CharacterAssetSelector')) ||
-      (title && title.toLowerCase().startsWith('vnccs character selector'))
-    ) {
-      hookCharacterAssetSelector(node);
+    } catch (e) {
+      console.error('[VNCCS autofill] Error in hook:', e);
     }
   }
   function scan() { try { (app.graph?._nodes || []).forEach(hook); } catch (e) { } }
