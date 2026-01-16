@@ -46,15 +46,15 @@ const BONE_CONNECTIONS = [
     ["l_elbow", "l_wrist"],
     ["neck", "r_hip"],
     ["neck", "l_hip"],
-    
+
     // Right leg
     ["r_hip", "r_knee"],
     ["r_knee", "r_ankle"],
-    
+
     // Left leg
     ["l_hip", "l_knee"],
     ["l_knee", "l_ankle"],
-    
+
     // Face
     ["nose", "r_eye"],
     ["r_eye", "r_ear"],
@@ -195,7 +195,7 @@ function parsePoseData(raw) {
         const frameData = data[0]; // DWPose exports have frame data at [0]
         const canvasWidth = frameData?.canvas_width || CANVAS_WIDTH * 3;
         const canvasHeight = frameData?.canvas_height || CANVAS_HEIGHT * 4;
-        
+
         if (frameData?.people) {
             // Sort people by their position (Y first, then X) to get correct grid order
             const peopleWithPos = frameData.people.map((person, idx) => {
@@ -205,14 +205,14 @@ function parsePoseData(raw) {
                 const y = kp[1] || 0;
                 return { person, x, y, originalIndex: idx };
             });
-            
+
             // Sort by Y then X to get row-major order
             peopleWithPos.sort((a, b) => {
                 const yDiff = a.y - b.y;
                 if (Math.abs(yDiff) > 100) return yDiff; // Different rows
                 return a.x - b.x; // Same row, sort by X
             });
-            
+
             // Now process in sorted order
             for (let i = 0; i < 12; i++) {
                 if (i < peopleWithPos.length) {
@@ -227,7 +227,7 @@ function parsePoseData(raw) {
                 poses.push(cloneJoints(DEFAULT_SKELETON));
             }
         }
-        
+
         return {
             canvas: { width: CANVAS_WIDTH, height: CANVAS_HEIGHT },
             poses
@@ -248,12 +248,12 @@ function parsePoseData(raw) {
     // Handle new format
     const poses = [];
     const sourcePoses = Array.isArray(data.poses) ? data.poses : [];
-    
+
     for (let i = 0; i < 12; i++) {
         if (i < sourcePoses.length && sourcePoses[i]) {
             // Support both {joints: {...}} and direct {...} formats if needed, 
             // but standard is {joints: ...} inside the array
-            const poseData = sourcePoses[i].joints || sourcePoses[i]; 
+            const poseData = sourcePoses[i].joints || sourcePoses[i];
             poses.push(normalizeJoints(poseData));
         } else {
             poses.push(cloneJoints(DEFAULT_SKELETON));
@@ -276,51 +276,51 @@ function convertDWPoseToJoints(person, canvasWidth, canvasHeight) {
     // 5: l_shoulder, 6: l_elbow, 7: l_wrist, 8: r_hip, 9: r_knee,
     // 10: r_ankle, 11: l_hip, 12: l_knee, 13: l_ankle, 14: r_eye,
     // 15: l_eye, 16: r_ear, 17: l_ear
-    
+
     const keypoints = person.pose_keypoints_2d || [];
     const joints = {};
-    
+
     const jointNames = [
         "nose", "neck", "r_shoulder", "r_elbow", "r_wrist",
         "l_shoulder", "l_elbow", "l_wrist", "r_hip", "r_knee",
         "r_ankle", "l_hip", "l_knee", "l_ankle", "r_eye",
         "l_eye", "r_ear", "l_ear"
     ];
-    
+
     // Grid layout: 6 columns × 2 rows
     const gridCols = 6;
     const gridRows = 2;
     const cellWidth = canvasWidth / gridCols;   // 6144/6 = 1024
     const cellHeight = canvasHeight / gridRows; // 6144/2 = 3072
-    
+
     // Determine which cell this person is in based on first keypoint (nose)
     const noseX = keypoints[0] || 0;
     const noseY = keypoints[1] || 0;
     const gridCol = Math.floor(noseX / cellWidth);
     const gridRow = Math.floor(noseY / cellHeight);
-    
+
     // Calculate offset for this cell
     const offsetX = gridCol * cellWidth;
     const offsetY = gridRow * cellHeight;
-    
+
     // Scale factors: cellWidth→CANVAS_WIDTH, cellHeight→CANVAS_HEIGHT
     const scaleX = CANVAS_WIDTH / cellWidth;   // 512/1024 = 0.5
     const scaleY = CANVAS_HEIGHT / cellHeight; // 1536/3072 = 0.5
-    
+
     // Convert keypoints
     for (let i = 0; i < 18 && i * 3 < keypoints.length; i++) {
         const x = keypoints[i * 3];
         const y = keypoints[i * 3 + 1];
         const conf = keypoints[i * 3 + 2];
-        
+
         const jointName = jointNames[i];
-        
+
         // Use confidence to determine if keypoint is valid
         if (conf > 0.1) {
             // Convert to local cell coordinates and scale
             const localX = (x - offsetX) * scaleX;
             const localY = (y - offsetY) * scaleY;
-            
+
             joints[jointName] = [
                 clamp(localX, -CANVAS_WIDTH, CANVAS_WIDTH * 2),
                 clamp(localY, -CANVAS_HEIGHT, CANVAS_HEIGHT * 2)
@@ -330,14 +330,14 @@ function convertDWPoseToJoints(person, canvasWidth, canvasHeight) {
             joints[jointName] = [...DEFAULT_SKELETON[jointName]];
         }
     }
-    
+
     // Fill in any missing joints with defaults
     for (const [name, defaults] of Object.entries(DEFAULT_SKELETON)) {
         if (!joints[name]) {
             joints[name] = [...defaults];
         }
     }
-    
+
     return joints;
 }
 
@@ -737,10 +737,37 @@ class NodePoseIntegration {
             name: "pose_preview",
             type: "vnccs_pose_preview",
             draw(ctx, node, width, y) {
-                return PosePreviewRenderer.draw(ctx, integration.pose.poses, width, y);
+                // Record Y position for computeSize to use on next frame
+                integration.lastY = y;
+
+                // Calculate height dynamically to fill space
+                // node.size[1] is total height
+                // y is our start Y
+                // we need to leave room for the button (~32px) + padding
+                const buttonHeight = 32;
+                const bottomPadding = 10;
+                // Ensure we don't return negative height or too small
+                const availableHeight = Math.max(240, node.size[1] - y - buttonHeight - bottomPadding);
+
+                PosePreviewRenderer.draw(ctx, integration.pose.poses, width, availableHeight, y);
             },
             computeSize(width) {
-                return [width, PosePreviewRenderer.HEIGHT];
+                // Calculate dynamic height so LiteGraph pushes the button down
+                // Use lastY if available, otherwise estimate header height (approx 30-40)
+                const startY = integration.lastY || 40;
+                const buttonHeight = 32;
+                const bottomPadding = 10;
+
+                // integration.node must be accessed safely
+                // Note: During initial load optimization, node.size might be [0,0] or default.
+                // We default to 240 if calculation is weird.
+                const nodeHeight = integration.node && integration.node.size ? integration.node.size[1] : 0;
+
+                const calculatedHeight = nodeHeight > 0
+                    ? nodeHeight - startY - buttonHeight - bottomPadding
+                    : 240;
+
+                return [width, Math.max(240, calculatedHeight)];
             },
             serializeValue() {
                 return undefined;
@@ -750,10 +777,7 @@ class NodePoseIntegration {
 }
 
 class PosePreviewRenderer {
-    static HEIGHT = 240;
-
-    static draw(ctx, poses, width, y) {
-        const height = PosePreviewRenderer.HEIGHT;
+    static draw(ctx, poses, width, height, y) {
         ctx.save();
         ctx.translate(0, y);
 
@@ -766,24 +790,23 @@ class PosePreviewRenderer {
         // Grid layout: 6 cols, 2 rows
         const cols = 6;
         const rows = 2;
-        const padding = 8;
-        
+
         const availableWidth = width - 16;
         const availableHeight = height - 16;
-        
+
         // Calculate cell size to fit
         const cellAspect = CANVAS_WIDTH / CANVAS_HEIGHT; // 1/3
-        
+
         // Try to fit by width
         let cellWidth = availableWidth / cols;
         let cellHeight = cellWidth / cellAspect;
-        
+
         if (cellHeight * rows > availableHeight) {
             // Fit by height
             cellHeight = availableHeight / rows;
             cellWidth = cellHeight * cellAspect;
         }
-        
+
         const startX = 8 + (availableWidth - cellWidth * cols) / 2;
         const startY = 8 + (availableHeight - cellHeight * rows) / 2;
 
@@ -791,14 +814,14 @@ class PosePreviewRenderer {
             const joints = poses[i];
             const col = i % cols;
             const row = Math.floor(i / cols);
-            
+
             const cx = startX + col * cellWidth;
             const cy = startY + row * cellHeight;
-            
+
             ctx.save();
             ctx.translate(cx, cy);
             ctx.scale(cellWidth / CANVAS_WIDTH, cellHeight / CANVAS_HEIGHT);
-            
+
             // Draw connections
             ctx.lineWidth = 8; // Scaled down
             ctx.lineCap = "round";
@@ -807,15 +830,15 @@ class PosePreviewRenderer {
                 const a = joints[start];
                 const b = joints[end];
                 if (!a || !b) continue;
-                
+
                 ctx.strokeStyle = getBoneColor(start, end, i);
-                
+
                 ctx.beginPath();
                 ctx.moveTo(a[0], a[1]);
                 ctx.lineTo(b[0], b[1]);
                 ctx.stroke();
             }
-            
+
             // Draw joints (simplified)
             ctx.fillStyle = "#f9ac5d";
             for (const [name, [jx, jy]] of Object.entries(joints)) {
@@ -823,7 +846,7 @@ class PosePreviewRenderer {
                 ctx.arc(jx, jy, 12, 0, Math.PI * 2);
                 ctx.fill();
             }
-            
+
             ctx.restore();
         }
 
@@ -874,7 +897,7 @@ class PoseEditorDialog {
         this.integration = null;
         this.poses = Array(12).fill(null).map(() => cloneJoints(DEFAULT_SKELETON));
         this.currentPoseIndex = 0;
-        
+
         this.hoveredJoint = null;
         this.selectedJoint = null;
         this.dragging = false;
@@ -898,12 +921,12 @@ class PoseEditorDialog {
         this.isPanning = false;
         this.panStartX = 0;
         this.panStartY = 0;
-        
+
         // Load presets list and default poses
         this.loadPresetsList();
         this.loadDefaultPoses();
     }
-    
+
     async loadPresetsList() {
         try {
             const response = await fetch("/vnccs/pose_presets");
@@ -911,7 +934,7 @@ class PoseEditorDialog {
                 PRESETS.length = 0;
                 const presets = await response.json();
                 PRESETS.push(...presets);
-                
+
                 // Update preset selector if it exists
                 if (this.presetSelect) {
                     this.updatePresetSelect();
@@ -921,15 +944,15 @@ class PoseEditorDialog {
             console.warn("[VNCCS] Failed to load presets list", error);
         }
     }
-    
+
     updatePresetSelect() {
         if (!this.presetSelect) return;
-        
+
         // Clear existing options except placeholder
         while (this.presetSelect.options.length > 1) {
             this.presetSelect.remove(1);
         }
-        
+
         // Add presets
         for (const preset of PRESETS) {
             const option = document.createElement("option");
@@ -991,7 +1014,7 @@ class PoseEditorDialog {
         toolbar.style.gap = "8px";
         toolbar.style.alignItems = "center";
         toolbar.style.borderBottom = "1px solid rgba(121, 150, 255, 0.15)";
-        
+
         const label = document.createElement("span");
         label.textContent = "Active Pose:";
         label.style.fontSize = "12px";
@@ -1010,7 +1033,7 @@ class PoseEditorDialog {
             toolbar.appendChild(btn);
             this.poseButtons.push(btn);
         }
-        
+
         const viewToggle = this.createButton("Grid View", () => this.toggleViewMode(), "ghost");
         viewToggle.style.marginLeft = "auto";
         this.viewToggleBtn = viewToggle;
@@ -1038,8 +1061,8 @@ class PoseEditorDialog {
 
         body.appendChild(canvasColumn);
 
-    const threeColumn = this.createThreeColumn();
-    body.appendChild(threeColumn);
+        const threeColumn = this.createThreeColumn();
+        body.appendChild(threeColumn);
 
         const sidebar = document.createElement("div");
         sidebar.className = "vnccs-pose-editor-sidebar";
@@ -1052,12 +1075,12 @@ class PoseEditorDialog {
         if (index < 0 || index >= 12) return;
         this.currentPoseIndex = index;
         this.updatePoseButtons();
-        
+
         // Update 3D editor
         if (this.pose3d) {
             this.pose3d.setPose(this.joints, true);
         }
-        
+
         this.render();
         this.updateMetrics();
         this.setStatus(`Switched to Pose ${index + 1}`);
@@ -1081,13 +1104,13 @@ class PoseEditorDialog {
         this.viewMode = this.viewMode === "single" ? "grid" : "single";
         this.viewToggleBtn.textContent = this.viewMode === "single" ? "Grid View" : "Single View";
         this.viewToggleBtn.classList.toggle("active", this.viewMode === "grid");
-        
+
         // Reset zoom and pan when switching modes
         this.zoom = 1.0;
         this.panX = 0;
         this.panY = 0;
         this.canvas.style.transform = `translate(${this.panX}px, ${this.panY}px) scale(${this.zoom})`;
-        
+
         if (this.viewMode === "grid") {
             // Resize canvas for grid
             // We want to show 6x2 grid. 
@@ -1163,7 +1186,7 @@ class PoseEditorDialog {
         row.className = "vnccs-button-row";
         row.appendChild(this.createButton("Import", () => this.importPose(), "secondary"));
         row.appendChild(this.createButton("Copy JSON", () => this.copyPoseJson(), "ghost"));
-        
+
         const row2 = document.createElement("div");
         row2.className = "vnccs-button-row";
         row2.appendChild(this.createButton("Save Pose", () => this.downloadPose()));
@@ -1298,7 +1321,7 @@ class PoseEditorDialog {
         this.poses = JSON.parse(JSON.stringify(integration.pose.poses));
         this.currentPoseIndex = 0;
         this.updatePoseButtons();
-        
+
         this.hoveredJoint = null;
         this.selectedJoint = null;
         this.dragging = false;
@@ -1381,7 +1404,7 @@ class PoseEditorDialog {
         const ctx = this.ctx;
         const width = this.canvas.width;
         const height = this.canvas.height;
-        
+
         ctx.clearRect(0, 0, width, height);
         ctx.fillStyle = "#111828";
         ctx.fillRect(0, 0, width, height);
@@ -1397,7 +1420,7 @@ class PoseEditorDialog {
         const cols = 6;
         const w = CANVAS_WIDTH;
         const h = CANVAS_HEIGHT;
-        
+
         // Draw grid lines
         ctx.strokeStyle = "rgba(80, 115, 180, 0.32)";
         ctx.lineWidth = 2;
@@ -1417,7 +1440,7 @@ class PoseEditorDialog {
             const row = Math.floor(i / cols);
             const x = col * w;
             const y = row * h;
-            
+
             // Highlight active pose background
             if (i === this.currentPoseIndex) {
                 ctx.fillStyle = "rgba(79, 123, 255, 0.1)";
@@ -1425,9 +1448,9 @@ class PoseEditorDialog {
                 ctx.strokeStyle = "rgba(79, 123, 255, 0.5)";
                 ctx.strokeRect(x, y, w, h);
             }
-            
+
             this.renderSingle(ctx, this.poses[i], x, y, i === this.currentPoseIndex);
-            
+
             // Draw pose number
             ctx.fillStyle = "rgba(255, 255, 255, 0.3)";
             ctx.font = "40px sans-serif";
@@ -1479,10 +1502,10 @@ class PoseEditorDialog {
             if (!a || !b) {
                 continue;
             }
-            
+
             // Use colored bones matching OpenPose standard
             ctx.strokeStyle = getBoneColor(start, end, i);
-            
+
             ctx.beginPath();
             ctx.moveTo(a[0], a[1]);
             ctx.lineTo(b[0], b[1]);
@@ -1542,7 +1565,7 @@ class PoseEditorDialog {
 
         const { x, y } = this.getCanvasCoords(event);
         const { name: joint, poseIndex } = this.findJointAt(x, y);
-        
+
         if (poseIndex !== -1 && poseIndex !== this.currentPoseIndex) {
             this.selectPose(poseIndex);
         }
@@ -1571,12 +1594,12 @@ class PoseEditorDialog {
         }
 
         const { x, y } = this.getCanvasCoords(event);
-        
+
         if (this.dragging && this.selectedJoint) {
             // Map global coords to local pose coords
             let localX = x;
             let localY = y;
-            
+
             if (this.viewMode === "grid") {
                 const col = this.currentPoseIndex % 6;
                 const row = Math.floor(this.currentPoseIndex / 6);
@@ -1623,10 +1646,10 @@ class PoseEditorDialog {
 
     onWheel(event) {
         event.preventDefault();
-        
+
         const delta = event.deltaY > 0 ? 0.9 : 1.1;
         const newZoom = clamp(this.zoom * delta, this.minZoom, this.maxZoom);
-        
+
         if (newZoom !== this.zoom) {
             this.zoom = newZoom;
             this.canvas.style.transform = `translate(${this.panX}px, ${this.panY}px) scale(${this.zoom})`;
@@ -1697,7 +1720,7 @@ class PoseEditorDialog {
         const joints = this.poses[targetPoseIndex];
         let closest = null;
         let minDist = Number.POSITIVE_INFINITY;
-        
+
         for (const [name, [jx, jy]] of Object.entries(joints)) {
             const dist = Math.hypot(jx - localX, jy - localY);
             if (dist < radius && dist < minDist) {
@@ -1716,21 +1739,21 @@ class PoseEditorDialog {
 
     mirrorPose() {
         const mirrored = {};
-        
+
         // ПРОСТО зеркалим координаты, имена НЕ меняем!
         // Тогда правая рука (оранжевая) окажется слева визуально
         for (const [name, pos] of Object.entries(this.joints)) {
             if (!Array.isArray(pos) || pos.length < 2) {
                 continue;
             }
-            
+
             const [x, y] = pos;
             const mirroredX = CANVAS_WIDTH - x;
-            
+
             // Сохраняем под ТЕМ ЖЕ именем с зеркальной координатой
             mirrored[name] = [mirroredX, y];
         }
-        
+
         this.joints = mirrored;
         this.handleJointsMutated(true);
         this.setStatus("Pose mirrored");
@@ -1793,7 +1816,7 @@ class PoseEditorDialog {
                 throw new Error(`HTTP ${response.status}`);
             }
             const payload = await response.json();
-            
+
             // Check if preset is a set or single pose
             if (payload.poses && Array.isArray(payload.poses)) {
                 const parsed = parsePoseData(payload);
@@ -1806,7 +1829,7 @@ class PoseEditorDialog {
                 this.joints = parsed.poses[0];
                 this.setStatus(`Preset pose “${preset.label}” loaded.`, "success");
             }
-            
+
             this.handleJointsMutated(true);
         } catch (error) {
             console.error("[VNCCS] Failed to load preset", error);
@@ -1828,11 +1851,11 @@ class PoseEditorDialog {
         reader.onload = () => {
             try {
                 const raw = JSON.parse(reader.result);
-                
+
                 // Check if it's a pose set (our format or DWPose format)
-                const isPoseSet = (raw.poses && Array.isArray(raw.poses)) || 
-                                  (Array.isArray(raw) && raw[0]?.people);
-                
+                const isPoseSet = (raw.poses && Array.isArray(raw.poses)) ||
+                    (Array.isArray(raw) && raw[0]?.people);
+
                 if (isPoseSet) {
                     // It's a set
                     const parsed = parsePoseData(raw);
@@ -1861,7 +1884,7 @@ class PoseEditorDialog {
             canvas: { width: CANVAS_WIDTH, height: CANVAS_HEIGHT },
             joints: this.joints
         }, null, 2);
-        
+
         if (navigator.clipboard?.writeText) {
             navigator.clipboard.writeText(json)
                 .then(() => this.setStatus("Current pose JSON copied.", "success"))
@@ -2118,7 +2141,7 @@ app.registerExtension({
             if (poseWidget) {
                 poseWidget.hidden = true;
                 poseWidget.computeSize = () => [0, -4];
-                poseWidget.draw = () => {};
+                poseWidget.draw = () => { };
                 poseWidget.serializeValue = () => poseWidget.value;
             }
 
