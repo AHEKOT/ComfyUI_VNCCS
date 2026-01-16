@@ -18,6 +18,7 @@ const STYLE = `
     padding: 10px;
     gap: 10px;
     pointer-events: none; /* Allow canvas zoom/pan in gaps */
+    zoom: 0.67; /* Scale down 1.5x as requested */
 }
 
 /* TOP ROW: 3 Columns */
@@ -30,16 +31,16 @@ const STYLE = `
     width: 100%;
 }
 
-/* BOTTOM ROW: Prompts */
+/* BOTTOM ROW: Prompts - aligned with Top Row Columns */
 .vnccs-bottom-row {
-    display: flex;
-    flex-direction: row;
+    display: grid;
+    grid-template-columns: 30% 35% 35%; /* Matching top row */
     gap: 10px;
-    height: 75px; /* Reduced height per user request */
+    height: 75px; 
     min-height: 75px;
     width: 100%;
     flex-shrink: 0;
-    pointer-events: auto; /* Re-enable interaction */
+    pointer-events: auto; 
 }
 
 /* Common Section/Column Styles */
@@ -74,12 +75,18 @@ const STYLE = `
 /* Fields */
 .vnccs-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 5px; flex-shrink: 0; }
 .vnccs-label { color: #aaa; font-size: 11px; font-weight: 600; }
-.vnccs-input, .vnccs-select, .vnccs-textarea {
+.vnccs-input, .vnccs-textarea {
     background: #151515; border: 1px solid #444; color: #fff;
     border-radius: 4px; padding: 6px; font-family: inherit; font-size: 12px;
     width: 100%; box-sizing: border-box;
 }
-.vnccs-input:focus { border-color: #5b96f5; outline: none; }
+.vnccs-select {
+    background: #151515; border: 1px solid #444; color: #fff;
+    border-radius: 4px; padding: 6px; font-family: inherit; 
+    font-size: 18px; /* Increased to 18px per user request */
+    width: 100%; box-sizing: border-box;
+}
+.vnccs-input:focus, .vnccs-select:focus, .vnccs-textarea:focus { border-color: #5b96f5; outline: none; }
 
 /* Specialized Components */
 
@@ -241,7 +248,11 @@ app.registerExtension({
 
                 const els = {};
                 const saveState = (isValid = false) => {
-                    localStorage.setItem("VNCCS_V2_Settings", JSON.stringify(state.gen_settings));
+                    const persistData = {
+                        gen_settings: state.gen_settings,
+                        character: state.character
+                    };
+                    localStorage.setItem("VNCCS_V2_Settings", JSON.stringify(persistData));
 
                     // Mark cache validity
                     state.preview_valid = isValid;
@@ -250,13 +261,43 @@ app.registerExtension({
                     if (w) w.value = JSON.stringify(state);
                 };
                 const loadState = () => {
+                    // 1. Try Widget Data (Graph Persistence)
+                    const w = node.widgets.find(x => x.name === "widget_data");
+                    if (w && w.value && w.value !== "{}") {
+                        try {
+                            const parsed = JSON.parse(w.value);
+                            // Merge from Graph Data
+                            if (parsed.character) state.character = parsed.character;
+                            if (parsed.character_info) Object.assign(state.character_info, parsed.character_info);
+                            if (parsed.gen_settings) {
+                                Object.assign(state.gen_settings, parsed.gen_settings);
+                                // Ensure stack length just in case
+                                while (state.gen_settings.lora_stack.length < 5) {
+                                    state.gen_settings.lora_stack.push({ name: "", strength: 1.0 });
+                                }
+                            }
+                            if (parsed.preview_valid !== undefined) state.preview_valid = parsed.preview_valid;
+
+                            console.log("[VNCCS V2] Loaded state from graph widget. Character:", state.character);
+                            return; // Found graph data, stop here (don't overwrite with global storage defaults)
+                        } catch (e) { console.error("Error loading widget data", e); }
+                    }
+
+                    // 2. Fallback to LocalStorage (Global Preferences for new nodes)
                     try {
                         const s = localStorage.getItem("VNCCS_V2_Settings");
                         if (s) {
                             const parsed = JSON.parse(s);
-                            // Merge carefully to preserve structure
-                            Object.assign(state.gen_settings, parsed);
-                            // Ensure stack length
+                            // Check if new structure (has 'gen_settings' key) or legacy (flat gen_settings)
+                            if (parsed.gen_settings) {
+                                // New structure
+                                Object.assign(state.gen_settings, parsed.gen_settings);
+                                if (parsed.character) state.character = parsed.character;
+                            } else {
+                                // Legacy assumption
+                                Object.assign(state.gen_settings, parsed);
+                            }
+
                             while (state.gen_settings.lora_stack.length < 5) {
                                 state.gen_settings.lora_stack.push({ name: "", strength: 1.0 });
                             }
@@ -530,13 +571,10 @@ app.registerExtension({
 
                 // 6. Logic
                 const init = async () => {
-                    console.log("[VNCCS V2] init() STARTED");
                     loadState();
-                    console.log("[VNCCS V2] state loaded. Char:", state.character);
                     try {
                         const r = await api.fetchApi("/vnccs/context_lists");
                         const d = await r.json();
-                        console.log("[VNCCS V2] context_lists fetched. Chars:", d.characters);
 
                         const pop = (el, items, none = false) => {
                             if (!el) return; el.innerHTML = "";
@@ -607,13 +645,11 @@ app.registerExtension({
                 };
 
                 const loadChar = async (n) => {
-                    console.log("[VNCCS V2] loadChar called for:", n);
                     if (!n) return;
                     try {
                         // 1. Fetch Info
                         const r = await api.fetchApi(`/vnccs/character_info?character=${encodeURIComponent(n)}`);
                         const i = await r.json();
-                        console.log("[VNCCS V2] Fetched Info:", i);
 
                         const defaultInfo = {
                             sex: "female", age: 18, race: "human", skin_color: "",
@@ -626,7 +662,6 @@ app.registerExtension({
                         // Reset & Assign
                         Object.assign(state.character_info, defaultInfo);
                         Object.assign(state.character_info, i);
-                        console.log("[VNCCS V2] State Merged. Age:", state.character_info.age);
 
                         // Update Fields
                         Object.keys(state.character_info).forEach(k => {
@@ -635,7 +670,6 @@ app.registerExtension({
                                 else els[k].value = state.character_info[k];
                             }
                         });
-                        console.log("[VNCCS V2] UI Fields Updated");
 
                         // 2. Fetch Preview Image (Existing endpoint logic or direct file?)
                         // Currently backend returns image in JSON for 'preview_generate'?
@@ -710,33 +744,23 @@ app.registerExtension({
                     bO.onclick = async () => {
                         const n = inp.value.trim();
                         if (!n) return;
-                        console.log("[VNCCS V2] Creating Character:", n);
                         try {
                             await api.fetchApi(`/vnccs/create?name=${encodeURIComponent(n)}`);
-                            console.log("[VNCCS V2] Create API Success");
 
                             // Direct UI Update
                             const exists = Array.from(els.charSelect.options).some(o => o.value === n);
                             if (!exists) {
-                                console.log("[VNCCS V2] Adding new option to dropdown");
                                 els.charSelect.add(new Option(n, n));
-                            } else {
-                                console.log("[VNCCS V2] Option already exists");
                             }
 
                             els.charSelect.value = n;
                             state.character = n;
-                            console.log("[VNCCS V2] UI Selected:", els.charSelect.value, "State:", state.character);
 
                             await loadChar(n);
-                            console.log("[VNCCS V2] loadChar finished");
-
                             saveState();
-                            console.log("[VNCCS V2] State saved");
 
                             overlay.remove();
                         } catch (e) {
-                            console.error("[VNCCS V2] Create Failed:", e);
                             alert("Create Failed: " + e);
                         }
                     };
@@ -747,7 +771,31 @@ app.registerExtension({
                     inp.focus();
                 };
 
-                setTimeout(init, 50);
+                // 7. Graph Restore Hook / Main Entry Point
+                let initialized = false;
+                node.onConfigure = function () {
+                    if (initialized) return;
+                    // Prevent double init if called multiple times
+                    // But we might need to re-load state if configure happens again? 
+                    // Usually configure happens once on load.
+
+                    initialized = true;
+                    // Check if widget_data has value NOW
+                    const w = node.widgets.find(x => x.name === "widget_data");
+                    if (w && w.value) {
+                        // We have data, init will use it via loadState
+                    }
+
+                    init();
+                };
+
+                // Fallback for new nodes (onConfigure runs on add too, but just in case)
+                setTimeout(() => {
+                    if (!initialized) {
+                        initialized = true;
+                        init();
+                    }
+                }, 100);
             };
         }
     }
