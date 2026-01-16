@@ -55,7 +55,7 @@ const STYLE = `
     overflow-y: auto; /* Columns scroll independently */
     height: 100%;
     box-sizing: border-box;
-    pointer-events: auto; /* Re-enable interaction */
+    pointer-events: auto; /* Allow events to fall through gaps */
 }
 .vnccs-section-title {
     font-size: 14px;
@@ -66,6 +66,20 @@ const STYLE = `
     margin-bottom: 5px;
     text-transform: uppercase;
     flex-shrink: 0;
+    pointer-events: auto; /* Allow interaction */
+}
+
+/* Interactive Elements - Re-enable events */
+.vnccs-field, 
+.vnccs-btn-row > *, 
+.vnccs-preview-container, 
+.vnccs-lora-item,
+.vnccs-textarea-wrapper,
+.vnccs-slider-container,
+.vnccs-input,
+.vnccs-select,
+.vnccs-textarea {
+    pointer-events: auto;
 }
 
 /* Scrollbar */
@@ -84,11 +98,38 @@ const STYLE = `
     background: #151515; border: 1px solid #444; color: #fff;
     border-radius: 4px; padding: 6px; font-family: inherit; 
     font-size: 12px;
-    width: 66.6%; box-sizing: border-box;
+    width: 100%; box-sizing: border-box;
     zoom: 1.5; /* Counteract container zoom to fix dropdown menu size */
     padding: 4px;
 }
 .vnccs-input:focus, .vnccs-select:focus, .vnccs-textarea:focus { border-color: #5b96f5; outline: none; }
+
+/* Slider */
+.vnccs-slider-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #151515;
+    border: 1px solid #444;
+    border-radius: 4px;
+    padding: 4px 8px;
+}
+.vnccs-slider {
+    flex: 1;
+    accent-color: #3558c7;
+    cursor: pointer;
+    height: 4px;
+}
+.vnccs-slider-val {
+    width: 48px;
+    text-align: right;
+    font-size: 12px;
+    color: #fff;
+    font-family: inherit;
+    background: transparent;
+    border: none;
+}
+.vnccs-slider-val:focus { outline: none; border-bottom: 1px solid #5b96f5; }
 
 /* Specialized Components */
 
@@ -357,9 +398,78 @@ app.registerExtension({
                     return wrap;
                 };
 
+                const createSlider = (lbl, key, min, max, step, targetObj = state.gen_settings) => {
+                    const wrap = document.createElement("div");
+                    wrap.className = "vnccs-field";
+                    wrap.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
+
+                    const container = document.createElement("div");
+                    container.className = "vnccs-slider-container";
+
+                    const range = document.createElement("input");
+                    range.type = "range"; range.className = "vnccs-slider";
+                    range.min = min; range.max = max; range.step = step;
+                    range.value = targetObj[key];
+
+                    const num = document.createElement("input");
+                    num.type = "number"; num.className = "vnccs-slider-val";
+                    num.step = step;
+                    num.value = targetObj[key];
+
+                    // Sync
+                    range.oninput = (e) => {
+                        num.value = e.target.value;
+                        targetObj[key] = parseFloat(e.target.value);
+                        saveState();
+                    };
+                    num.onchange = (e) => {
+                        let v = parseFloat(e.target.value);
+                        if (v < min) v = min; if (v > max) v = max;
+                        num.value = v; range.value = v;
+                        targetObj[key] = v;
+                        saveState();
+                    };
+
+                    container.appendChild(range);
+                    container.appendChild(num);
+                    wrap.appendChild(container);
+
+                    els[key] = { range, num }; // composite ref
+                    return wrap;
+                };
+
                 // 5. Build Layout
                 const container = document.createElement("div");
                 container.className = "vnccs-container";
+
+                // HACK: Forward MMB (Middle Click) to Canvas for Panning
+                container.addEventListener("mousedown", (e) => {
+                    if (e.button === 1) { // Middle Click
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const canvasEl = app.canvas.canvas; // HTMLCanvasElement
+                        if (canvasEl) {
+                            // Clone event to dispatch to canvas
+                            const evt = new MouseEvent("mousedown", {
+                                bubbles: true,
+                                cancelable: true,
+                                view: window,
+                                detail: e.detail,
+                                screenX: e.screenX,
+                                screenY: e.screenY,
+                                clientX: e.clientX,
+                                clientY: e.clientY,
+                                ctrlKey: e.ctrlKey,
+                                altKey: e.altKey,
+                                shiftKey: e.shiftKey,
+                                metaKey: e.metaKey,
+                                button: 1,
+                                buttons: 4
+                            });
+                            canvasEl.dispatchEvent(evt);
+                        }
+                    }
+                });
 
                 // --- TOP ROW ---
                 const topRow = document.createElement("div");
@@ -395,72 +505,131 @@ app.registerExtension({
                 const btnDel = document.createElement("button");
                 btnDel.className = "vnccs-btn vnccs-btn-danger";
                 btnDel.innerText = "DELETE";
-                btnDel.onclick = () => {
+                // Shared Modal Helper
+                const showModal = (title, contentFunc, buttons) => {
+                    const overlay = document.createElement("div"); overlay.className = "vnccs-modal-overlay";
+                    const m = document.createElement("div"); m.className = "vnccs-modal";
+                    m.innerHTML = `<div class="vnccs-section-title">${title}</div>`;
+
+                    // Content
+                    const content = contentFunc(m);
+                    if (content) m.appendChild(content);
+
+                    // Buttons
+                    const row = document.createElement("div"); row.className = "vnccs-btn-row";
+                    buttons.forEach(b => {
+                        const btn = document.createElement("button");
+                        btn.className = `vnccs-btn ${b.class || ""}`;
+                        btn.innerText = b.text;
+                        btn.onclick = async () => {
+                            if (b.action) {
+                                const keepOpen = await b.action(overlay, btn);
+                                if (!keepOpen) overlay.remove();
+                            } else {
+                                overlay.remove();
+                            }
+                        }
+                        row.appendChild(btn);
+                    });
+                    m.appendChild(row);
+
+                    overlay.appendChild(m);
+                    container.appendChild(overlay);
+                    return { overlay, modal: m, content };
+                };
+
+                const doCreate = () => {
+                    let inpRef;
+                    const { content } = showModal("New Character", () => {
+                        const inp = document.createElement("input");
+                        inp.className = "vnccs-input";
+                        inp.placeholder = "Name...";
+                        inpRef = inp;
+                        return inp;
+                    }, [
+                        { text: "Cancel" },
+                        {
+                            text: "Create",
+                            class: "vnccs-btn-primary",
+                            action: async (ol, btn) => {
+                                const n = inpRef.value.trim();
+                                if (!n) return true; // Keep open
+                                try {
+                                    await api.fetchApi(`/vnccs/create?name=${encodeURIComponent(n)}`);
+                                    const exists = Array.from(els.charSelect.options).some(o => o.value === n);
+                                    if (!exists) els.charSelect.add(new Option(n, n));
+
+                                    state.character = n; // Updates internal state immediately
+                                    els.charSelect.value = n; // Update UI
+                                    await loadChar(n);
+                                    saveState();
+                                    return false; // Close
+                                } catch (e) {
+                                    alert("Create Failed: " + e);
+                                    return true;
+                                }
+                            }
+                        }
+                    ]);
+                    inpRef.focus();
+                };
+
+                const doDelete = () => {
                     const charName = state.character;
                     if (!charName || charName === "None" || charName === "Unknown") {
                         alert("Please select a character to delete.");
                         return;
                     }
 
-                    // Custom Modal for Confirmation
-                    const overlay = document.createElement("div"); overlay.className = "vnccs-modal-overlay";
-                    const m = document.createElement("div"); m.className = "vnccs-modal";
-                    m.innerHTML = `<div class="vnccs-section-title" style="color:#d32f2f">Delete Character</div>
-                                   <div style="font-size:14px; text-align:center;">
-                                       Are you sure you want to <b>PERMANENTLY DELETE</b><br/>
-                                       <span style="color:#fff; font-weight:bold;">'${charName}'</span>?<br/><br/>
-                                       <span style="font-size:12px; color:#aaa;">This action cannot be undone.</span>
-                                   </div>`;
+                    showModal("Delete Character", () => {
+                        const div = document.createElement("div");
+                        div.innerHTML = `
+                                <div style="font-size:14px; text-align:center;">
+                                    Are you sure you want to <b>PERMANENTLY DELETE</b><br/>
+                                    <span style="color:#fff; font-weight:bold;">'${charName}'</span>?<br/><br/>
+                                    <span style="font-size:12px; color:#aaa;">This action cannot be undone.</span>
+                                </div>
+                            `;
+                        return div;
+                    }, [
+                        { text: "Cancel" },
+                        {
+                            text: "CONFIRM DELETE",
+                            class: "vnccs-btn-danger",
+                            action: async (ol, btn) => {
+                                try {
+                                    btn.innerText = "DELETING...";
+                                    btn.disabled = true;
+                                    const r = await api.fetchApi(`/vnccs/delete?name=${encodeURIComponent(charName)}`);
+                                    if (r.ok) {
+                                        const opts = Array.from(els.charSelect.options);
+                                        const idx = opts.findIndex(o => o.value === charName);
+                                        if (idx > -1) els.charSelect.remove(idx);
 
-                    const row = document.createElement("div"); row.className = "vnccs-btn-row";
+                                        if (els.charSelect.options.length > 0) state.character = els.charSelect.options[0].value;
+                                        else state.character = "";
 
-                    const bC = document.createElement("button");
-                    bC.className = "vnccs-btn";
-                    bC.innerText = "Cancel";
-                    bC.onclick = () => overlay.remove();
-
-                    const bD = document.createElement("button");
-                    bD.className = "vnccs-btn vnccs-btn-danger";
-                    bD.innerText = "CONFIRM DELETE";
-                    bD.onclick = async () => {
-                        try {
-                            bD.innerText = "DELETING...";
-                            bD.disabled = true;
-
-                            const r = await api.fetchApi(`/vnccs/delete?name=${encodeURIComponent(charName)}`);
-                            if (r.ok) {
-                                // Remove from list
-                                const opts = Array.from(els.charSelect.options);
-                                const idx = opts.findIndex(o => o.value === charName);
-                                if (idx > -1) els.charSelect.remove(idx);
-
-                                // Reset selection
-                                if (els.charSelect.options.length > 0) {
-                                    state.character = els.charSelect.options[0].value;
-                                } else {
-                                    state.character = "";
+                                        els.charSelect.value = state.character;
+                                        await loadChar(state.character);
+                                        saveState();
+                                        return false;
+                                    } else {
+                                        const err = await r.json();
+                                        alert("Delete Failed: " + (err.error || "Unknown Error"));
+                                        btn.innerText = "CONFIRM DELETE";
+                                        btn.disabled = false;
+                                        return true;
+                                    }
+                                } catch (e) {
+                                    alert("Delete Failed: " + e);
+                                    return false; // Close on crash to avoid Stuck UI
                                 }
-                                els.charSelect.value = state.character;
-                                await loadChar(state.character);
-                                saveState();
-                                overlay.remove();
-                            } else {
-                                const err = await r.json();
-                                alert("Delete Failed: " + (err.error || "Unknown Error"));
-                                bD.innerText = "CONFIRM DELETE";
-                                bD.disabled = false;
                             }
-                        } catch (e) {
-                            alert("Delete Failed: " + e);
-                            overlay.remove();
                         }
-                    };
-
-                    row.appendChild(bC); row.appendChild(bD);
-                    m.appendChild(row);
-                    overlay.appendChild(m);
-                    container.appendChild(overlay);
+                    ]);
                 };
+
+                btnDel.onclick = () => doDelete();
 
                 btnRow.appendChild(btnGen);
                 btnRow.appendChild(btnNew);
@@ -483,17 +652,17 @@ app.registerExtension({
                 colCenter.className = "vnccs-col";
                 colCenter.innerHTML = '<div class="vnccs-section-title">Attributes</div>';
 
+                colCenter.appendChild(createField("Background Color", "background_color"));
                 colCenter.appendChild(createField("Gender", "sex", "select", ["female", "male"]));
-                colCenter.appendChild(createField("Age", "age", "number"));
+                colCenter.appendChild(createSlider("Age", "age", 1, 100, 1, state.character_info));
                 colCenter.appendChild(createField("Race", "race"));
-                colCenter.appendChild(createField("Skin Mode", "skin_color")); // Label changed to "Color"?
+                colCenter.appendChild(createField("Skin Color", "skin_color"));
                 colCenter.appendChild(createField("Body Type", "body"));
                 colCenter.appendChild(createField("Face Features", "face"));
                 colCenter.appendChild(createField("Hair Style", "hair"));
                 colCenter.appendChild(createField("Eye Color", "eyes"));
-                colCenter.appendChild(createField("Outfit / Details", "additional_details")); // Simplified to input for compactness, or keep input
+                colCenter.appendChild(createField("Details", "additional_details"));
                 colCenter.appendChild(createField("NSFW Mode", "nsfw", "checkbox"));
-                colCenter.appendChild(createField("Background Color", "background_color"));
 
                 topRow.appendChild(colCenter);
 
@@ -515,20 +684,22 @@ app.registerExtension({
                 colRight.appendChild(createField("Scheduler", "scheduler", "select", [], state.gen_settings));
                 els.scheduler = colRight.lastChild.querySelector("select");
 
-                const rowGen = document.createElement("div"); rowGen.className = "vnccs-field";
-                rowGen.style.flexDirection = "row"; rowGen.style.gap = "10px";
-                rowGen.appendChild(createField("Steps", "steps", "number", {}, state.gen_settings));
-                rowGen.appendChild(createField("CFG", "cfg", "number", { step: 0.1 }, state.gen_settings));
-                colRight.appendChild(rowGen);
+                // Sliders for Steps & CFG
+                colRight.appendChild(createSlider("Steps", "steps", 1, 100, 1));
+                colRight.appendChild(createSlider("CFG", "cfg", 1, 20, 0.1));
 
-                // SEED Section
+                // SEED Section (Rebalanced)
                 const seedWrap = document.createElement("div"); seedWrap.className = "vnccs-field";
                 seedWrap.innerHTML = '<div class="vnccs-label">Seed</div>';
-                const seedRow = document.createElement("div"); seedRow.style.display = "flex"; seedRow.style.gap = "5px";
+
+                const seedRow = document.createElement("div");
+                seedRow.style.display = "flex";
+                seedRow.style.gap = "5px";
+                seedRow.style.width = "100%"; // Ensure fill
 
                 const seedInp = document.createElement("input"); seedInp.className = "vnccs-input";
                 seedInp.type = "number"; seedInp.value = state.gen_settings.seed || 0;
-                seedInp.style.flex = "2";
+                seedInp.style.flex = "1.5"; // Give seed more space, but not overwhelming
                 seedInp.onchange = (e) => {
                     state.gen_settings.seed = parseInt(e.target.value);
                     saveState();
@@ -536,7 +707,12 @@ app.registerExtension({
                 els.seed = seedInp;
 
                 const seedMode = document.createElement("select"); seedMode.className = "vnccs-select";
-                seedMode.style.flex = "1";
+                seedMode.style.flex = "1"; // Less space for mode
+                // Since .vnccs-select has zoom:1.5, we might need to be careful with flex calc?
+                // Actually zoom affects computed width. If we set width 100% in CSS, flex controls container width.
+                // The zoom might make it overflow its flex item container.
+                seedMode.style.width = "100%"; // Inner width
+
                 ["fixed", "randomize"].forEach(x => seedMode.add(new Option(x, x)));
                 seedMode.value = state.gen_settings.seed_mode || "fixed";
                 seedMode.onchange = (e) => {
@@ -545,7 +721,13 @@ app.registerExtension({
                 };
                 els.seed_mode = seedMode;
 
-                seedRow.appendChild(seedInp); seedRow.appendChild(seedMode);
+                seedRow.appendChild(seedInp);
+                // Wrap seedMode in a div to contain the zoom overflow issues comfortably?
+                // Let's just put it directly first. 
+                const smWrap = document.createElement("div"); smWrap.style.flex = "1"; smWrap.style.minWidth = "0";
+                smWrap.appendChild(seedMode);
+                seedRow.appendChild(smWrap);
+
                 seedWrap.appendChild(seedRow);
                 colRight.appendChild(seedWrap);
 
@@ -565,10 +747,13 @@ app.registerExtension({
                 dmdSel.onchange = (e) => { state.gen_settings.dmd_lora_name = e.target.value; saveState(); };
                 els.dmdSelect = dmdSel;
 
-                const dmdStr = document.createElement("input"); dmdStr.className = "vnccs-input";
-                dmdStr.type = "number"; dmdStr.step = "0.05"; dmdStr.style.flex = "1";
+                const dmdStr = document.createElement("input");
+                dmdStr.type = "checkbox";
+                dmdStr.checked = (state.gen_settings.dmd_lora_strength || 0) > 0;
+                dmdStr.style.flex = "0 0 auto"; // Prevent stretching
+                dmdStr.style.margin = "0 10px";
                 dmdStr.onchange = (e) => {
-                    state.gen_settings.dmd_lora_strength = parseFloat(e.target.value);
+                    state.gen_settings.dmd_lora_strength = e.target.checked ? 1.0 : 0.0;
                     saveState();
                 };
 
@@ -805,45 +990,7 @@ app.registerExtension({
                     }
                 };
 
-                const doCreate = () => {
-                    const overlay = document.createElement("div"); overlay.className = "vnccs-modal-overlay";
-                    const m = document.createElement("div"); m.className = "vnccs-modal";
-                    m.innerHTML = `<div class="vnccs-section-title">New Character</div>`;
-                    const inp = document.createElement("input"); inp.className = "vnccs-input"; inp.placeholder = "Name...";
 
-                    const row = document.createElement("div"); row.className = "vnccs-btn-row";
-                    const bC = document.createElement("button"); bC.className = "vnccs-btn"; bC.innerText = "Cancel";
-                    bC.onclick = () => overlay.remove();
-                    const bO = document.createElement("button"); bO.className = "vnccs-btn vnccs-btn-primary"; bO.innerText = "Create";
-                    bO.onclick = async () => {
-                        const n = inp.value.trim();
-                        if (!n) return;
-                        try {
-                            await api.fetchApi(`/vnccs/create?name=${encodeURIComponent(n)}`);
-
-                            // Direct UI Update
-                            const exists = Array.from(els.charSelect.options).some(o => o.value === n);
-                            if (!exists) {
-                                els.charSelect.add(new Option(n, n));
-                            }
-
-                            els.charSelect.value = n;
-                            state.character = n;
-
-                            await loadChar(n);
-                            saveState();
-
-                            overlay.remove();
-                        } catch (e) {
-                            alert("Create Failed: " + e);
-                        }
-                    };
-                    row.appendChild(bC); row.appendChild(bO);
-                    m.appendChild(inp); m.appendChild(row);
-                    overlay.appendChild(m);
-                    container.appendChild(overlay);
-                    inp.focus();
-                };
 
                 // 7. Graph Restore Hook / Main Entry Point
                 let initialized = false;
