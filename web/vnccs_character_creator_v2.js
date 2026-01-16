@@ -215,6 +215,7 @@ app.registerExtension({
 
                 // 3. State
                 const state = {
+                    preview_valid: false, // Smart Cache Flag
                     character: "",
                     character_info: {
                         sex: "female", age: 18, race: "human", skin_color: "",
@@ -225,7 +226,7 @@ app.registerExtension({
                     },
                     gen_settings: {
                         ckpt_name: "", sampler: "euler", scheduler: "normal",
-                        steps: 20, cfg: 8.0, seed: 0,
+                        steps: 20, cfg: 8.0, seed: 0, seed_mode: "fixed",
                         dmd_lora_name: "", dmd_lora_strength: 1.0,
                         age_lora_name: "",
                         lora_stack: [
@@ -239,8 +240,12 @@ app.registerExtension({
                 };
 
                 const els = {};
-                const saveState = () => {
+                const saveState = (isValid = false) => {
                     localStorage.setItem("VNCCS_V2_Settings", JSON.stringify(state.gen_settings));
+
+                    // Mark cache validity
+                    state.preview_valid = isValid;
+
                     const w = node.widgets.find(x => x.name === "widget_data");
                     if (w) w.value = JSON.stringify(state);
                 };
@@ -401,6 +406,34 @@ app.registerExtension({
                 rowGen.appendChild(createField("CFG", "cfg", "number", { step: 0.1 }, state.gen_settings));
                 colRight.appendChild(rowGen);
 
+                // SEED Section
+                const seedWrap = document.createElement("div"); seedWrap.className = "vnccs-field";
+                seedWrap.innerHTML = '<div class="vnccs-label">Seed</div>';
+                const seedRow = document.createElement("div"); seedRow.style.display = "flex"; seedRow.style.gap = "5px";
+
+                const seedInp = document.createElement("input"); seedInp.className = "vnccs-input";
+                seedInp.type = "number"; seedInp.value = state.gen_settings.seed || 0;
+                seedInp.style.flex = "2";
+                seedInp.onchange = (e) => {
+                    state.gen_settings.seed = parseInt(e.target.value);
+                    saveState();
+                };
+                els.seed = seedInp;
+
+                const seedMode = document.createElement("select"); seedMode.className = "vnccs-select";
+                seedMode.style.flex = "1";
+                ["fixed", "randomize"].forEach(x => seedMode.add(new Option(x, x)));
+                seedMode.value = state.gen_settings.seed_mode || "fixed";
+                seedMode.onchange = (e) => {
+                    state.gen_settings.seed_mode = e.target.value;
+                    saveState();
+                };
+                els.seed_mode = seedMode;
+
+                seedRow.appendChild(seedInp); seedRow.appendChild(seedMode);
+                seedWrap.appendChild(seedRow);
+                colRight.appendChild(seedWrap);
+
                 // --- LoRA Section ---
                 const loraHeader = document.createElement("div");
                 loraHeader.className = "vnccs-section-title";
@@ -497,10 +530,13 @@ app.registerExtension({
 
                 // 6. Logic
                 const init = async () => {
+                    console.log("[VNCCS V2] init() STARTED");
                     loadState();
+                    console.log("[VNCCS V2] state loaded. Char:", state.character);
                     try {
                         const r = await api.fetchApi("/vnccs/context_lists");
                         const d = await r.json();
+                        console.log("[VNCCS V2] context_lists fetched. Chars:", d.characters);
 
                         const pop = (el, items, none = false) => {
                             if (!el) return; el.innerHTML = "";
@@ -531,6 +567,9 @@ app.registerExtension({
                         if (g.steps && els.steps) els.steps.value = g.steps;
                         if (g.cfg && els.cfg) els.cfg.value = g.cfg;
 
+                        if (g.seed !== undefined && els.seed) els.seed.value = g.seed;
+                        if (g.seed_mode && els.seed_mode) els.seed_mode.value = g.seed_mode;
+
                         // Restore LoRAs
                         if (g.dmd_lora_name) els.dmdSelect.value = g.dmd_lora_name;
                         if (g.dmd_lora_strength !== undefined) {
@@ -540,7 +579,6 @@ app.registerExtension({
                         }
 
                         if (g.age_lora_name) els.ageSelect.value = g.age_lora_name;
-
                         // Restore Stack
                         g.lora_stack.forEach((item, i) => {
                             if (i < els.loraStackSelects.length) {
@@ -550,8 +588,18 @@ app.registerExtension({
                             }
                         });
 
-                        if (state.character) els.charSelect.value = state.character;
-                        else if (d.characters.length) { state.character = d.characters[0]; els.charSelect.value = state.character; }
+                        if (state.character) {
+                            // Ensure it's in the list (handle potential race/latency)
+                            const exists = Array.from(els.charSelect.options).some(o => o.value === state.character);
+                            if (!exists) {
+                                els.charSelect.add(new Option(state.character, state.character));
+                            }
+                            els.charSelect.value = state.character;
+                        }
+                        else if (d.characters && d.characters.length) {
+                            state.character = d.characters[0];
+                            els.charSelect.value = state.character;
+                        }
 
                         if (state.character) await loadChar(state.character);
 
@@ -559,12 +607,26 @@ app.registerExtension({
                 };
 
                 const loadChar = async (n) => {
+                    console.log("[VNCCS V2] loadChar called for:", n);
                     if (!n) return;
                     try {
                         // 1. Fetch Info
                         const r = await api.fetchApi(`/vnccs/character_info?character=${encodeURIComponent(n)}`);
                         const i = await r.json();
+                        console.log("[VNCCS V2] Fetched Info:", i);
+
+                        const defaultInfo = {
+                            sex: "female", age: 18, race: "human", skin_color: "",
+                            hair: "", eyes: "", face: "", body: "", additional_details: "",
+                            nsfw: false, aesthetics: "masterpiece, best quality",
+                            negative_prompt: "bad quality, worst quality",
+                            lora_prompt: "", background_color: ""
+                        };
+
+                        // Reset & Assign
+                        Object.assign(state.character_info, defaultInfo);
                         Object.assign(state.character_info, i);
+                        console.log("[VNCCS V2] State Merged. Age:", state.character_info.age);
 
                         // Update Fields
                         Object.keys(state.character_info).forEach(k => {
@@ -573,6 +635,7 @@ app.registerExtension({
                                 else els[k].value = state.character_info[k];
                             }
                         });
+                        console.log("[VNCCS V2] UI Fields Updated");
 
                         // 2. Fetch Preview Image (Existing endpoint logic or direct file?)
                         // Currently backend returns image in JSON for 'preview_generate'?
@@ -593,24 +656,39 @@ app.registerExtension({
 
                 const doGenerate = async () => {
                     if (!state.gen_settings.ckpt_name) { alert("Select Checkpoint"); return; }
+
+                    if (state.gen_settings.seed_mode === "randomize") {
+                        state.gen_settings.seed = Math.floor(Math.random() * 10000000000000);
+                        if (els.seed) els.seed.value = state.gen_settings.seed;
+                    }
+
                     els.btnGen.innerText = "BUSY...";
                     els.btnGen.disabled = true;
                     saveState();
 
                     try {
                         const payload = {
-                            ...state.gen_settings,
-                            character_info: state.character_info
+                            character: state.character,
+                            character_info: state.character_info,
+                            gen_settings: { ...state.gen_settings }
                         };
-                        // Clean stack
-                        payload.lora_stack = payload.lora_stack.filter(x => x.name && x.name !== "None");
+                        // Clean stack in the copy
+                        payload.gen_settings.lora_stack = payload.gen_settings.lora_stack.filter(x => x.name && x.name !== "None");
 
-                        const r = await fetch("/vnccs/preview_generate", { method: "POST", body: JSON.stringify(payload) });
+                        const r = await api.fetchApi("/vnccs/preview_generate", { method: "POST", body: JSON.stringify(payload) });
+
+                        if (!r.ok) {
+                            const errText = await r.text();
+                            throw new Error(`Server Error (${r.status}): ${errText}`);
+                        }
+
                         const d = await r.json();
                         if (d.image) {
                             els.previewImg.src = "data:image/png;base64," + d.image;
                             els.previewImg.style.display = "block";
                             els.placeholder.style.display = "none";
+                            // Successful generation -> Cache is Valid
+                            saveState(true);
                         }
                     } catch (e) { alert("Error: " + e); }
                     finally {
@@ -632,9 +710,35 @@ app.registerExtension({
                     bO.onclick = async () => {
                         const n = inp.value.trim();
                         if (!n) return;
-                        await fetch(`/vnccs/create?name=${encodeURIComponent(n)}`);
-                        overlay.remove();
-                        await init();
+                        console.log("[VNCCS V2] Creating Character:", n);
+                        try {
+                            await api.fetchApi(`/vnccs/create?name=${encodeURIComponent(n)}`);
+                            console.log("[VNCCS V2] Create API Success");
+
+                            // Direct UI Update
+                            const exists = Array.from(els.charSelect.options).some(o => o.value === n);
+                            if (!exists) {
+                                console.log("[VNCCS V2] Adding new option to dropdown");
+                                els.charSelect.add(new Option(n, n));
+                            } else {
+                                console.log("[VNCCS V2] Option already exists");
+                            }
+
+                            els.charSelect.value = n;
+                            state.character = n;
+                            console.log("[VNCCS V2] UI Selected:", els.charSelect.value, "State:", state.character);
+
+                            await loadChar(n);
+                            console.log("[VNCCS V2] loadChar finished");
+
+                            saveState();
+                            console.log("[VNCCS V2] State saved");
+
+                            overlay.remove();
+                        } catch (e) {
+                            console.error("[VNCCS V2] Create Failed:", e);
+                            alert("Create Failed: " + e);
+                        }
                     };
                     row.appendChild(bC); row.appendChild(bO);
                     m.appendChild(inp); m.appendChild(row);
