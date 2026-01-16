@@ -194,6 +194,7 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
         if self.enable_depth:
             depth, depth_conf = self.depth_head(
                 token_list, images=imgs, patch_start_idx=patch_start_idx, 
+                frames_chunk_size=1  # Minimize peak VRAM for high-res
             )
             preds["depth"] = depth
             preds["depth_conf"] = depth_conf
@@ -202,6 +203,7 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
         if self.enable_pts:
             pts, pts_conf = self.pts_head(
                 token_list, images=imgs, patch_start_idx=patch_start_idx,
+                frames_chunk_size=1
             )
             preds["pts3d"] = pts
             preds["pts3d_conf"] = pts_conf
@@ -210,6 +212,7 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
         if self.enable_norm:
             normals, norm_conf = self.norm_head(
                 token_list, images=imgs, patch_start_idx=patch_start_idx,
+                frames_chunk_size=1
             )
             preds["normals"] = normals
             preds["normals_conf"] = norm_conf
@@ -221,7 +224,7 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
                 context_preds.get("token_list", token_list), 
                 images=context_preds.get("imgs", imgs), 
                 patch_start_idx=patch_start_idx,
-                frames_chunk_size=2  # Enforce small chunks for GS head to save VRAM (default 8 causes OOM)
+                frames_chunk_size=1  # Enforce smallest chunk for GS head
             )
 
             preds["gs_depth"] = gs_depth

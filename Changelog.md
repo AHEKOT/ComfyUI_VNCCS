@@ -91,5 +91,6 @@ WorldMirror ML model files and utilities.
 - **[FIX]** **WorldMirror**: Enforced aggressive chunking (`metrics=2`) for `gs_head` computation. This prevents OOM errors during the final Gaussian Splatting feature generation by processing frames in very small batches.
 - **[FIX]** **WorldMirror**: Modified `DenseHead` to accumulate prediction results on CPU instead of GPU. This resolves the final OOM crash when concatenating massive feature tensors (e.g., 6.5GB+) for large context windows.
 - **[FIX]** **VNCCS_Equirect360ToViews**: Aligned `output_size` constraints with `WorldMirror` patch requirements. Changed minimum size from 256 to 252 and max to 1022 to strictly follow the step size of 14, preventing resolution mismatch errors.
+- **[OPTIMIZATION]** **WorldMirror**: Enforced strict single-frame chunking (`frames_chunk_size=1`) for all dense prediction heads (`depth`, `pts`, `norm`, `gs`). This allows processing High-Res (1024px+) frames on 12GB VRAM cards by minimizing peak temporary memory usage.
 - `gsplat-bundle.js` – WebGL 3D Gaussian renderer
 - `viewer_gaussian.html` – Standalone viewer HTML
