@@ -16,6 +16,8 @@
 - [Fix] CharacterCreatorV2: Prevented unnecessary preview regeneration when running workflow with a just-loaded character (Smart Cache Fix). Added missing `pil2tensor`/`tensor2pil` helpers to backend.
 - [Fix] CharacterCreatorV2: Added fallback logic to use existing character sheet (crop) if preview cache is missing but state is valid.
 - [Fix] CharacterCreatorV2: Fixed Stale Cache issue by enforcing `preview_source` sync. Loading a character now invalidates old cache and forces a reload from the sheet.
+- [Fix] VNCCS Pose Generator: Fixed infinite vertical expansion bug by setting a stable widget height.
+- [Fix] CharacterCreatorV2: Fixed output paths for `sheets_path` and `faces_path` to match V1 format (returning full prefix path instead of root folder).
 - [Fix] CharacterCreatorV2: Fixed NSFW checkbox being ignored due to boolean type casting issues.
 
 ### Changed

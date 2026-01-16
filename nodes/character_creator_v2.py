@@ -21,7 +21,8 @@ from ..utils import (
     load_character_info, ensure_character_structure, EMOTIONS, MAIN_DIRS,
     save_config, build_face_details, generate_seed, dedupe_tokens,
     apply_sex, append_age, load_config, age_strength,
-    list_characters, character_dir, base_output_dir
+    list_characters, character_dir, base_output_dir,
+    sheets_dir, faces_dir
 )
 
 # --------------------------------------------------------------------
@@ -375,8 +376,8 @@ class CharacterCreatorV2:
 
         # Save Config logic
         character_path = character_dir(character_name)
-        sheets_path = os.path.join(character_path, "sheets")
-        faces_path = os.path.join(character_path, "faces")
+        sheets_path = sheets_dir(character_name) # Uses default "Naked", "neutral", "sheet_neutral"
+        faces_path = faces_dir(character_name)   # Uses default "Naked", "neutral", "face_neutral"
 
         config = load_config(character_name) or {
             "character_info": {},

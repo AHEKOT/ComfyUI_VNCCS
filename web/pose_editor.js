@@ -739,35 +739,14 @@ class NodePoseIntegration {
             draw(ctx, node, width, y) {
                 // Record Y position for computeSize to use on next frame
                 integration.lastY = y;
-
-                // Calculate height dynamically to fill space
-                // node.size[1] is total height
-                // y is our start Y
-                // we need to leave room for the button (~32px) + padding
-                const buttonHeight = 32;
-                const bottomPadding = 10;
-                // Ensure we don't return negative height or too small
-                const availableHeight = Math.max(240, node.size[1] - y - buttonHeight - bottomPadding);
-
-                PosePreviewRenderer.draw(ctx, integration.pose.poses, width, availableHeight, y);
+                // Match the fixed height from computeSize so we don't draw over the button
+                const height = 340;
+                PosePreviewRenderer.draw(ctx, integration.pose.poses, width, height, y);
             },
             computeSize(width) {
-                // Calculate dynamic height so LiteGraph pushes the button down
-                // Use lastY if available, otherwise estimate header height (approx 30-40)
-                const startY = integration.lastY || 40;
-                const buttonHeight = 32;
-                const bottomPadding = 10;
-
-                // integration.node must be accessed safely
-                // Note: During initial load optimization, node.size might be [0,0] or default.
-                // We default to 240 if calculation is weird.
-                const nodeHeight = integration.node && integration.node.size ? integration.node.size[1] : 0;
-
-                const calculatedHeight = nodeHeight > 0
-                    ? nodeHeight - startY - buttonHeight - bottomPadding
-                    : 240;
-
-                return [width, Math.max(240, calculatedHeight)];
+                // Fixed height to prevent infinite expansion loop
+                // The logical height needed for the grid view
+                return [width, 340];
             },
             serializeValue() {
                 return undefined;
