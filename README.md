@@ -84,7 +84,7 @@ Open the workflow `VN_Step1_QWEN_CharSheetGenerator`.
 ![Welcome](images/v2/v2_poser.png)
 #### VNCCS Pose Generator
 To begin with, you can use the default poses, but don't be afraid to experiment!
-- At the moment, the default poses are not fully optimised and may cause problems. We will fix this in future updates, and you can help us by sharing your cool presets on our Discord server!
+- At the moment, the default poses are not fully optimised and may cause problems. We will fix this in future updates, and you can help us by sharing your cool presets on our [Discord server](https://discord.com/invite/9Dacp4wvQw)!
 
 ### Step 1.1 Clone any character
 ![Welcome](images/v2/V2_clone.png)
