@@ -158,6 +158,22 @@ if server:
             traceback.print_exc() # Print to console
             return web.Response(status=500, text=f"{str(e)}\n\n{traceback.format_exc()}")
 
+    @server.PromptServer.instance.routes.get("/vnccs/get_cached_preview")
+    async def get_cached_preview(request):
+        try:
+            character = request.rel_url.query.get("character", "")
+            if not character or ".." in character or "/" in character or "\\" in character:
+                return web.Response(status=400)
+            
+            c_path = os.path.join(character_dir(character), "cache", "preview.png")
+            if os.path.exists(c_path):
+                return web.FileResponse(c_path)
+            print(f"[VNCCS] Cached preview not found at: {c_path}")
+            return web.Response(status=404)
+        except Exception as e:
+            print(f"[VNCCS] Error serving cached preview: {e}")
+            return web.Response(status=500, text=str(e))
+
     @server.PromptServer.instance.routes.post("/vnccs/preview_generate")
     async def preview_generate(request):
         try:
@@ -532,7 +548,10 @@ class CharacterCreatorV2:
                         c_img = tensor2pil(image)
                         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
                         c_img.save(cache_path)
-                     except: pass
+                        # Notify Frontend
+                        server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": unique_id, "character": character_name})
+                     except Exception as e:
+                        print(f"[VNCCS] Failed to save/notify on sheet fallback: {e}")
                  else:
                      print(f"[VNCCS] Sheet Fallback Failed. Regenerating...")
 
@@ -563,6 +582,8 @@ class CharacterCreatorV2:
                     c_img = tensor2pil(image)
                     c_img.save(cache_path)
                     print(f"[VNCCS] Saved new preview cache to {cache_path}")
+                    # Notify Frontend
+                    server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": unique_id, "character": character_name})
                 except Exception as e:
                     print(f"[VNCCS] Failed to save cache: {e}")
 

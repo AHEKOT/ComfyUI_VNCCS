@@ -857,6 +857,31 @@ app.registerExtension({
                 this.addDOMWidget("ui", "ui", container, { serialize: false });
 
                 // 6. Logic
+
+                // EVENT LISTENER for Backend Updates
+                api.addEventListener("vnccs.preview.updated", (e) => {
+                    // Check if this event is for ME
+                    // Note: node.id is string or int depending on context, usually string in api inputs.
+                    if (e.detail.node_id == node.id) {
+                        const charName = e.detail.character;
+                        console.log(`[VNCCS] Preview Update Event received for '${charName}' (Node ${node.id})`);
+                        // Optional: verify character matches current state
+                        if (charName === state.character) {
+                            console.log("[VNCCS] Character matches. Refreshing local preview...");
+                            // Force reload from cache endpoint
+                            els.previewImg.src = `/vnccs/get_cached_preview?character=${encodeURIComponent(charName)}&t=${Date.now()}`;
+                            els.previewImg.style.display = "block";
+                            els.placeholder.style.display = "none";
+
+                            state.preview_valid = true;
+                            // state.preview_source = "gen"; // Logic suggests we are now up to date
+                            saveState(true);
+                        } else {
+                            console.warn(`[VNCCS] Ignoring update: Current character '${state.character}' != Update character '${charName}'`);
+                        }
+                    }
+                });
+
                 const init = async () => {
                     loadState();
                     try {
@@ -978,23 +1003,39 @@ app.registerExtension({
                             }
                         });
 
-                        // 2. Fetch Preview Image (Existing endpoint logic or direct file?)
-                        // Currently backend returns image in JSON for 'preview_generate'?
-                        // No, for loading existing character, user might want to see the stored sheet or a generated preview.
-                        // Emotion Studio has `/vnccs/get_character_sheet_preview`.
-                        // Let's use that if available.
+                        // 2. Fetch Preview Image
+                        // Strategy: Try Sheet -> Fail -> Try Cache -> Fail -> Placeholder
+
+                        // Function to try loading cache
+                        const tryCache = () => {
+                            console.log("[VNCCS] Trying to load cached preview...");
+                            const cacheUrl = `/vnccs/get_cached_preview?character=${encodeURIComponent(n)}&t=${Date.now()}`;
+
+                            // Set up one-time error handler for cache failure
+                            els.previewImg.onerror = () => {
+                                console.warn("[VNCCS] Both sheet and cache preview failed.");
+                                els.previewImg.style.display = "none";
+                                els.placeholder.innerText = "No Preview Image";
+                                els.placeholder.style.display = "block";
+                                // Clear onerror to prevent potential loop
+                                els.previewImg.onerror = null;
+                            };
+
+                            els.previewImg.src = cacheUrl;
+                            // Update state to reflect we are trying/using gen(cache) source
+                            state.preview_source = "gen";
+                        };
+
+                        // First try Sheet
+                        els.previewImg.onerror = () => {
+                            console.warn("[VNCCS] Sheet preview load failed. Fallback to cache.");
+                            tryCache();
+                        };
+
                         els.previewImg.src = `/vnccs/get_character_sheet_preview?character=${encodeURIComponent(n)}&t=${Date.now()}`;
                         els.previewImg.style.display = "block";
                         els.placeholder.style.display = "none";
-
-                        // Force state to reflect that we are looking at the SHEET
                         state.preview_source = "sheet";
-
-                        els.previewImg.onerror = () => {
-                            els.previewImg.style.display = "none";
-                            els.placeholder.innerText = "No Preview Image";
-                            els.placeholder.style.display = "block";
-                        }
 
                     } catch (e) { console.error(e); }
                 };
