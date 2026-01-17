@@ -1,0 +1,931 @@
+import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
+
+// --- STYLES: 2-Column Grid Layout (Source / Attributes) ---
+const STYLE = `
+/* Main Host */
+.vnccs-cloner-container {
+    display: flex;
+    flex-direction: column;
+    background: #1e1e1e;
+    color: #e0e0e0;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 16px;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    box-sizing: border-box;
+    padding: 10px;
+    gap: 10px;
+    zoom: 0.67; 
+}
+
+/* TOP ROW: 2 Columns now */
+.vnccs-top-row {
+    display: grid;
+    grid-template-columns: 40% 60%; 
+    gap: 10px;
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+}
+
+/* BOTTOM ROW: Prompts - aligned with Top Row */
+.vnccs-bottom-row {
+    display: grid;
+    grid-template-columns: 40% 60%;
+    gap: 10px;
+    height: 75px; 
+    min-height: 75px;
+    width: 100%;
+    flex-shrink: 0;
+}
+
+/* Common Section/Column Styles */
+.vnccs-col {
+    display: flex;
+    flex-direction: column;
+    background: #252525;
+    border: 1px solid #333;
+    border-radius: 6px;
+    padding: 10px;
+    gap: 10px;
+    overflow-y: auto;
+    height: 100%;
+    box-sizing: border-box;
+}
+
+.vnccs-section-title {
+    font-size: 14px;
+    font-weight: bold;
+    color: #fff;
+    border-bottom: 2px solid #444;
+    padding-bottom: 5px;
+    margin-bottom: 5px;
+    text-transform: uppercase;
+    flex-shrink: 0;
+    display: flex; 
+    justify-content: space-between;
+    align-items: center;
+}
+
+/* Scrollbar */
+.vnccs-col::-webkit-scrollbar { width: 6px; }
+.vnccs-col::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+
+/* Fields */
+.vnccs-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 5px; flex-shrink: 0; }
+.vnccs-label { color: #aaa; font-size: 11px; font-weight: 600; }
+.vnccs-input, .vnccs-textarea {
+    background: #151515; border: 1px solid #444; color: #fff;
+    border-radius: 4px; padding: 6px; font-family: inherit; font-size: 12px;
+    width: 100%; box-sizing: border-box;
+}
+.vnccs-select {
+    background: #151515; border: 1px solid #444; color: #fff;
+    border-radius: 4px; padding: 6px; font-family: inherit; 
+    font-size: 12px;
+    width: 100%; box-sizing: border-box;
+    zoom: 1.5;
+    padding: 4px;
+}
+.vnccs-input:focus, .vnccs-select:focus, .vnccs-textarea:focus { border-color: #5b96f5; outline: none; }
+
+/* Buttons */
+.vnccs-btn-row { display: flex; gap: 10px; margin-top: auto; flex-shrink: 0; }
+.vnccs-btn {
+    flex: 1; padding: 10px; border: none; border-radius: 4px;
+    cursor: pointer; font-weight: bold; text-transform: uppercase;
+    font-size: 12px; color: white;
+    text-align: center;
+}
+.vnccs-btn-primary { background: #3558c7; } .vnccs-btn-primary:hover { background: #4264d9; }
+.vnccs-btn-success { background: #2e7d32; } .vnccs-btn-success:hover { background: #388e3c; }
+.vnccs-btn-danger { background: #d32f2f; } .vnccs-btn-danger:hover { background: #b71c1c; }
+.vnccs-btn-upload { background: #555; border: 1px dashed #777; } .vnccs-btn-upload:hover { background: #666; border-color: #999; }
+
+/* Image List */
+.vnccs-img-list {
+    display: flex; flex-wrap: wrap; gap: 5px;
+}
+.vnccs-thumb {
+    width: 80px; height: 80px; object-fit: cover;
+    border: 1px solid #444; border-radius: 4px;
+    cursor: pointer;
+}
+.vnccs-thumb:hover { border-color: #fff; }
+.vnccs-thumb.generating {
+    border: 2px solid #3558c7;
+    animation: pulse 1s infinite alternate;
+}
+
+@keyframes pulse { from { opacity: 0.6; } to { opacity: 1; } }
+
+/* Tag Styles */
+.vnccs-tag-btn {
+    width: 20px; height: 20px;
+    background: #333; color: #fff; border: 1px solid #555;
+    border-radius: 4px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; margin-left: auto;
+    flex-shrink: 0;
+}
+
+/* Modal */
+.vnccs-modal-overlay {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7); z-index: 100;
+    display: flex; align-items: center; justify-content: center;
+}
+.vnccs-modal {
+    background: #252525; border: 1px solid #555; border-radius: 6px;
+    padding: 15px; width: 300px; display: flex; flex-direction: column; gap: 10px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+}
+
+.vnccs-btn-row {
+    display: flex;
+    gap: 5px;
+    margin-top: 5px;
+    width: 100%;
+}
+.vnccs-btn {
+    flex: 1;
+    padding: 6px;
+    background: #444; color: white;
+    border: 1px solid #666; border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+}
+.vnccs-btn:hover { background: #555; }
+.vnccs-btn-primary { background: #007bff; border-color: #0056b3; }
+.vnccs-btn-primary:hover { background: #0056b3; }
+.vnccs-btn-success { background: #28a745; border-color: #1e7e34; }
+.vnccs-btn-success:hover { background: #218838; }
+.vnccs-btn-danger { background: #dc3545; border-color: #bd2130; }
+.vnccs-btn-danger:hover { background: #c82333; }
+
+.vnccs-thumb {
+    width: 80px; height: 80px; object-fit: cover;
+    border: 1px solid #555; border-radius: 4px;
+    cursor: pointer;
+}
+.vnccs-thumb:hover { opacity: 0.8; border-color: #f00; }
+`;
+
+app.registerExtension({
+    name: "VNCCS.CharacterCloner",
+    async beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData.name === "CharacterCloner") {
+            const onNodeCreated = nodeType.prototype.onNodeCreated;
+            nodeType.prototype.onNodeCreated = function () {
+                if (onNodeCreated) onNodeCreated.apply(this, arguments);
+
+                const node = this;
+                node.setSize([900, 700]); // 2-Column fitting
+
+                // 1. Setup CSS
+                const style = document.createElement("style");
+                style.innerHTML = STYLE;
+                document.head.appendChild(style);
+
+                // 2. Cleanup Widgets
+                const cleanup = () => {
+                    if (!node.widgets) return;
+                    for (const w of node.widgets) {
+                        if (w.name !== "ui" && w.name !== "widget_data") {
+                            w.hidden = true;
+                        }
+                    }
+                };
+                cleanup();
+                const origDraw = node.onDrawBackground;
+                node.onDrawBackground = function (ctx) {
+                    cleanup();
+                    if (origDraw) origDraw.apply(this, arguments);
+                };
+
+                // 3. State
+                let dataWidget = node.widgets ? node.widgets.find(w => w.name === "widget_data") : null;
+                if (!dataWidget) {
+                    dataWidget = node.addWidget("text", "widget_data", "{}", (v) => { }, { serialize: true });
+                }
+                dataWidget.hidden = true;
+
+                const state = {
+                    character: "",
+                    source_images: [], // List of filenames
+                    character_info: {
+                        sex: "female", age: 18, race: "human", skin_color: "",
+                        hair: "", eyes: "", face: "", body: "", additional_details: "",
+                        nsfw: false, aesthetics: "masterpiece, best quality",
+                        negative_prompt: "bad quality, worst quality",
+                        lora_prompt: ""
+                    }
+                };
+
+                const els = {};
+                const saveState = () => {
+                    if (dataWidget) dataWidget.value = JSON.stringify(state);
+                };
+
+                const loadState = () => {
+                    if (dataWidget && dataWidget.value && dataWidget.value !== "{}") {
+                        try {
+                            const parsed = JSON.parse(dataWidget.value);
+                            Object.assign(state, parsed);
+                            // Update UI
+                            updateUIFromState();
+                        } catch (e) { }
+                    }
+                };
+
+                // UI Builders
+                const createField = (lbl, key, type = "text", opts = [], targetObj = state.character_info) => {
+                    const wrap = document.createElement("div");
+                    wrap.className = "vnccs-field";
+
+                    if (type === "checkbox") {
+                        wrap.style.flexDirection = "row";
+                        wrap.style.alignItems = "center";
+                        wrap.style.gap = "8px";
+                        const inp = document.createElement("input");
+                        inp.type = "checkbox";
+                        inp.checked = !!targetObj[key];
+                        inp.onchange = (e) => { targetObj[key] = e.target.checked; saveState(); };
+                        wrap.appendChild(inp);
+                        wrap.appendChild(document.createTextNode(lbl));
+                        els[key] = inp;
+                        return wrap;
+                    }
+
+                    const header = document.createElement("div");
+                    header.style.display = "flex"; header.style.justifyContent = "space-between";
+                    header.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
+                    wrap.appendChild(header);
+
+                    let inp;
+                    if (type === "select") {
+                        inp = document.createElement("select"); inp.className = "vnccs-select";
+                        opts.forEach(v => inp.add(new Option(v, v)));
+                        inp.value = targetObj[key] || opts[0];
+                        inp.onchange = (e) => { targetObj[key] = e.target.value; saveState(); };
+                    } else if (type === "number") {
+                        inp = document.createElement("input"); inp.className = "vnccs-input";
+                        inp.type = "number";
+                        inp.value = targetObj[key];
+                        inp.onchange = (e) => { targetObj[key] = parseFloat(e.target.value); saveState(); };
+                    } else {
+                        inp = document.createElement("input"); inp.className = "vnccs-input";
+                        inp.value = targetObj[key] || "";
+                        inp.onchange = (e) => { targetObj[key] = e.target.value; saveState(); };
+                    }
+                    els[key] = inp;
+                    wrap.appendChild(inp);
+                    return wrap;
+                };
+
+                // Define renderThumbs placeholder (populated later)
+                let renderThumbs = () => { };
+
+                const updateUIFromState = () => {
+                    // Fields
+                    for (let k in state.character_info) {
+                        if (els[k]) {
+                            if (els[k].type === "checkbox") els[k].checked = state.character_info[k];
+                            else els[k].value = state.character_info[k];
+                        }
+                    }
+                    // Images
+                    if (renderThumbs) renderThumbs();
+                };
+
+                // --- Helpers (Hoisted) ---
+                const showModal = (title, contentFunc, buttons) => {
+                    const overlay = document.createElement("div"); overlay.className = "vnccs-modal-overlay";
+                    const m = document.createElement("div"); m.className = "vnccs-modal";
+                    m.innerHTML = `<div class="vnccs-section-title">${title}</div>`;
+                    const content = contentFunc(m);
+                    if (content) m.appendChild(content);
+                    const row = document.createElement("div"); row.className = "vnccs-btn-row";
+                    buttons.forEach(b => {
+                        const btn = document.createElement("button");
+                        btn.className = `vnccs-btn ${b.class || ""}`;
+                        btn.innerText = b.text;
+                        btn.onclick = async () => {
+                            if (b.action) {
+                                const keepOpen = await b.action(overlay, btn);
+                                if (!keepOpen) overlay.remove();
+                            } else {
+                                overlay.remove();
+                            }
+                        }
+                        row.appendChild(btn);
+                    });
+                    m.appendChild(row);
+                    overlay.appendChild(m);
+                    container.appendChild(overlay);
+                    return { overlay, modal: m, content };
+                };
+
+                const loadChar = async (name) => {
+                    if (!name || name === "None") return;
+                    try {
+                        const r = await api.fetchApi(`/vnccs/config?name=${encodeURIComponent(name)}`);
+                        if (r.ok) {
+                            const d = await r.json();
+                            if (d.character_info) {
+                                Object.assign(state.character_info, d.character_info);
+                                updateUIFromState();
+                            }
+                        }
+                    } catch (e) { console.error(e); }
+                };
+
+                const loadCharList = async () => {
+                    try {
+                        const r = await api.fetchApi("/vnccs/context_lists");
+                        if (!r.ok) return;
+                        const d = await r.json();
+
+                        els.charSelect.innerHTML = "";
+                        if (!d.characters || !d.characters.length) els.charSelect.add(new Option("None", ""));
+                        else d.characters.forEach(c => els.charSelect.add(new Option(c, c)));
+
+                        // Set Value
+                        if (state.character && Array.from(els.charSelect.options).some(o => o.value === state.character)) {
+                            els.charSelect.value = state.character;
+                        } else if (els.charSelect.options.length > 0) {
+                            state.character = els.charSelect.options[0].value;
+                            els.charSelect.value = state.character;
+                            saveState();
+                        }
+
+                        if (state.character) await loadChar(state.character);
+
+                    } catch (e) { console.error(e); }
+                };
+
+                const doCreate = () => {
+                    let inpRef;
+                    showModal("New Character", () => {
+                        const inp = document.createElement("input");
+                        inp.className = "vnccs-input";
+                        inp.placeholder = "Name...";
+                        inpRef = inp;
+                        return inp;
+                    }, [
+                        { text: "Cancel" },
+                        {
+                            text: "Create", class: "vnccs-btn-primary",
+                            action: async (ol, btn) => {
+                                const n = inpRef.value.trim();
+                                if (!n) return true;
+                                try {
+                                    await api.fetchApi(`/vnccs/create?name=${encodeURIComponent(n)}`);
+                                    const exists = Array.from(els.charSelect.options).some(o => o.value === n);
+                                    if (!exists) els.charSelect.add(new Option(n, n));
+                                    state.character = n; els.charSelect.value = n;
+                                    await loadChar(n);
+                                    saveState();
+                                    return false;
+                                } catch (e) { alert("Create Failed: " + e); return true; }
+                            }
+                        }
+                    ]);
+                    inpRef.focus();
+                };
+
+                const doDelete = () => {
+                    const charName = state.character;
+                    if (!charName || charName === "None") return;
+                    showModal("Delete Character", () => {
+                        const d = document.createElement("div");
+                        d.innerHTML = `Are you sure you want to delete <b>${charName}</b>?`;
+                        return d;
+                    }, [
+                        { text: "Cancel" },
+                        {
+                            text: "DELETE", class: "vnccs-btn-danger",
+                            action: async (ol, btn) => {
+                                try {
+                                    const r = await api.fetchApi(`/vnccs/delete?name=${encodeURIComponent(charName)}`);
+                                    if (r.ok) {
+                                        const idx = Array.from(els.charSelect.options).findIndex(o => o.value === charName);
+                                        if (idx > -1) els.charSelect.remove(idx);
+                                        if (els.charSelect.options.length > 0) state.character = els.charSelect.options[0].value;
+                                        else state.character = "";
+                                        els.charSelect.value = state.character;
+                                        await loadChar(state.character);
+                                        saveState();
+                                        return false;
+                                    }
+                                } catch (e) { alert(e); return false; }
+                            }
+                        }
+                    ]);
+                };
+
+                // --- LAYOUT ---
+                const container = document.createElement("div");
+                container.className = "vnccs-cloner-container";
+
+                // Top Row
+                const topRow = document.createElement("div");
+                topRow.className = "vnccs-top-row";
+
+                // COL 1: SOURCE IMAGES
+                // COL 1: SOURCE IMAGES (Left Column)
+                const colSrc = document.createElement("div");
+                colSrc.className = "vnccs-col";
+
+                // --- CHARACTER SELECTOR (Moved to Left Top) ---
+                colSrc.innerHTML = '<div class="vnccs-section-title">Character Select</div>';
+
+                const charRow = document.createElement("div");
+                charRow.className = "vnccs-field";
+
+                const charSel = document.createElement("select");
+                charSel.className = "vnccs-select";
+                charSel.onchange = async (e) => {
+                    state.character = e.target.value;
+                    await loadChar(state.character);
+                    saveState();
+                };
+                els.charSelect = charSel;
+                charRow.appendChild(charSel);
+                colSrc.appendChild(charRow);
+
+                const btnRow = document.createElement("div");
+                btnRow.className = "vnccs-btn-row";
+
+                const btnNew = document.createElement("button");
+                btnNew.className = "vnccs-btn vnccs-btn-success";
+                btnNew.innerText = "NEW";
+                btnNew.onclick = doCreate;
+
+                const btnDel = document.createElement("button");
+                btnDel.className = "vnccs-btn vnccs-btn-danger";
+                btnDel.innerText = "DEL";
+                btnDel.onclick = doDelete;
+
+                btnRow.appendChild(btnNew);
+                btnRow.appendChild(btnDel);
+                colSrc.appendChild(btnRow);
+
+                // --- SOURCE IMAGES SECTION ---
+                const srcHeader = document.createElement("div");
+                srcHeader.className = "vnccs-section-title";
+                srcHeader.innerText = "Source Images";
+                srcHeader.style.marginTop = "15px";
+                colSrc.appendChild(srcHeader);
+
+                const imgList = document.createElement("div");
+                imgList.className = "vnccs-img-list";
+                colSrc.appendChild(imgList);
+
+                renderThumbs = () => {
+                    imgList.innerHTML = "";
+                    state.source_images.forEach((imgObj, idx) => {
+                        // Normalize Object
+                        let name = "", type = "input", sub = "";
+
+                        if (typeof imgObj === 'string') {
+                            name = imgObj;
+                        } else if (imgObj && imgObj.name) {
+                            name = imgObj.name;
+                            type = imgObj.type || "input";
+                            sub = imgObj.subfolder || "";
+                        }
+
+                        if (!name) return;
+
+                        const img = document.createElement("img");
+
+                        // Explicitly construct query string
+                        const params = new URLSearchParams();
+                        params.append("filename", name);
+                        params.append("type", type);
+                        if (sub) params.append("subfolder", sub);
+
+                        img.src = api.apiURL("/view?" + params.toString());
+                        img.className = "vnccs-thumb";
+                        img.title = "Click to remove";
+                        img.onclick = () => {
+                            if (confirm("Remove this image?")) {
+                                state.source_images.splice(idx, 1);
+                                saveState();
+                                renderThumbs();
+                            }
+                        }
+                        imgList.appendChild(img);
+                    });
+                };
+
+
+
+                // --- IMAGE PREVIEW/UPLOAD AREA ---
+                // Container for the Large Preview
+                const previewContainer = document.createElement("div");
+                previewContainer.className = "vnccs-preview-container";
+                previewContainer.style.flex = "1";
+                previewContainer.style.position = "relative";
+                previewContainer.style.border = "1px solid #444";
+                previewContainer.style.borderRadius = "4px";
+                previewContainer.style.background = "#151515";
+                previewContainer.style.display = "flex";
+                previewContainer.style.flexDirection = "column";
+                previewContainer.style.alignItems = "center";
+                previewContainer.style.justifyContent = "center";
+                previewContainer.style.overflow = "hidden";
+                previewContainer.style.minHeight = "300px";
+
+                // The Large Image Element
+                const previewImg = document.createElement("img");
+                previewImg.style.maxWidth = "100%";
+                previewImg.style.maxHeight = "100%";
+                previewImg.style.objectFit = "contain";
+                previewImg.style.display = "none";
+                previewContainer.appendChild(previewImg);
+
+                // Overlay Controls (Upload Button) - Always visible or overlay?
+                // User wants standard behaviour: Empty -> Upload Button. Filled -> Image + Mini Overlay?
+                // Let's make the click on image trigger upload if empty?
+                // Or keep the upload button below?
+                // User said "Huge square with +upload images IS the place for preview"
+
+                const uploadOverlay = document.createElement("div");
+                uploadOverlay.className = "vnccs-upload-overlay";
+                uploadOverlay.style.position = "absolute";
+                uploadOverlay.style.inset = "0";
+                uploadOverlay.style.display = "flex";
+                uploadOverlay.style.alignItems = "center";
+                uploadOverlay.style.justifyContent = "center";
+                uploadOverlay.style.cursor = "pointer";
+                uploadOverlay.style.zIndex = "10";
+
+                // If image exists, make overlay transparent or subtle?
+                // Let's replicate the Button look but centered
+                const uploadBtn = document.createElement("button");
+                uploadBtn.className = "vnccs-btn vnccs-btn-upload";
+                uploadBtn.innerText = "+ UPLOAD IMAGES";
+                uploadBtn.style.padding = "10px 20px";
+                uploadOverlay.appendChild(uploadBtn);
+
+                const fileInput = document.createElement("input");
+                fileInput.type = "file";
+                fileInput.multiple = true;
+                fileInput.accept = "image/*";
+                fileInput.style.display = "none";
+                fileInput.onchange = async (e) => {
+                    if (e.target.files.length) {
+                        uploadBtn.innerText = "UPLOADING...";
+                        for (const file of e.target.files) {
+                            try {
+                                const body = new FormData();
+                                body.append("image", file);
+                                const resp = await api.fetchApi("/upload/image", { method: "POST", body });
+                                const json = await resp.json();
+                                if (json.name) {
+                                    state.source_images.push({
+                                        name: json.name,
+                                        type: json.type || "input",
+                                        subfolder: json.subfolder || ""
+                                    });
+                                }
+                            } catch (err) { alert("Upload Failed: " + err); }
+                        }
+                        uploadBtn.innerText = "+ UPLOAD IMAGES";
+                        saveState();
+                        renderThumbs();
+                    }
+                };
+
+                // Click anywhere on overlay triggers upload
+                uploadOverlay.onclick = (e) => {
+                    // If clicking button, it propagates. 
+                    // But if we want to support clicking image to swap?
+                    // For now, let's keep it simple: Button triggers input.
+                    if (!previewImg.src || previewImg.style.display === "none") {
+                        fileInput.click();
+                    } else {
+                        // If image is showing, maybe we don't want giant click area?
+                        // User can still drag/drop (not implemented yet) or use button.
+                        // Let's stick to button click.
+                        if (e.target === uploadBtn) fileInput.click();
+                        // If clicking background (not button), do nothing?
+                    }
+                };
+
+                // Allow clicking button specifically even if overlay is transparent
+                uploadBtn.onclick = (e) => { e.stopPropagation(); fileInput.click(); };
+
+                previewContainer.appendChild(uploadOverlay);
+                colSrc.appendChild(previewContainer);
+                colSrc.appendChild(fileInput);
+
+                renderThumbs = () => {
+                    imgList.innerHTML = "";
+                    const images = state.source_images;
+
+                    if (images.length === 0) {
+                        previewImg.style.display = "none";
+                        previewImg.src = "";
+                        uploadOverlay.style.opacity = "1";
+                        uploadOverlay.style.background = "transparent"; // Or visible background
+                        uploadBtn.style.display = "block";
+                    } else {
+                        // Show first image by default or selected?
+                        // For cloner, maybe just the first one is the "Main" one?
+                        // Let's show the first one.
+                        const imgObj = images[0];
+                        let name = "", type = "input", sub = "";
+                        if (typeof imgObj === 'string') { name = imgObj; }
+                        else if (imgObj && imgObj.name) { name = imgObj.name; type = imgObj.type || "input"; sub = imgObj.subfolder || ""; }
+
+                        if (name) {
+                            const params = new URLSearchParams();
+                            params.append("filename", name);
+                            params.append("type", type);
+                            if (sub) params.append("subfolder", sub);
+                            const url = api.apiURL("/view?" + params.toString());
+
+                            previewImg.src = url;
+                            previewImg.style.display = "block";
+
+                            // Hide upload overlay or make it minimal?
+                            // User request: Upload area IS the preview. 
+                            // Usually we hide the big upload button and maybe put a small one?
+                            // Or just opacity 0 on hover?
+                            uploadOverlay.style.opacity = "0"; // Hide
+                            uploadOverlay.style.transition = "opacity 0.2s";
+                            // On hover show?
+                            previewContainer.onmouseenter = () => uploadOverlay.style.opacity = "1";
+                            previewContainer.onmouseleave = () => uploadOverlay.style.opacity = "0";
+                        }
+                    }
+
+                    // Render Thumbnails
+                    images.forEach((imgObj, idx) => {
+                        let name = "", type = "input", sub = "";
+                        if (typeof imgObj === 'string') { name = imgObj; }
+                        else if (imgObj && imgObj.name) { name = imgObj.name; type = imgObj.type || "input"; sub = imgObj.subfolder || ""; }
+                        if (!name) return;
+
+                        const img = document.createElement("img");
+                        const params = new URLSearchParams();
+                        params.append("filename", name);
+                        params.append("type", type);
+                        if (sub) params.append("subfolder", sub);
+                        img.src = api.apiURL("/view?" + params.toString());
+                        img.className = "vnccs-thumb";
+
+                        // Click to set as main?
+                        img.onclick = () => {
+                            // Swap to index 0? Or just view?
+                            // Cloner usually processes ALL images or specific one? 
+                            // Auto-generate uses index 0. 
+                            // So clicking should probably Swap it to 0 so it becomes "Main".
+                            if (idx !== 0) {
+                                const item = state.source_images.splice(idx, 1)[0];
+                                state.source_images.unshift(item);
+                                saveState();
+                                renderThumbs();
+                            }
+                        };
+
+                        // Right click delete?
+                        img.oncontextmenu = (e) => {
+                            e.preventDefault();
+                            if (confirm("Remove image?")) {
+                                state.source_images.splice(idx, 1);
+                                saveState();
+                                renderThumbs();
+                            }
+                        };
+
+                        imgList.appendChild(img);
+                    });
+                };
+
+
+                // COL 2: ATTRIBUTES (Auto Gen)
+                const colAttr = document.createElement("div");
+                colAttr.className = "vnccs-col";
+
+                const attrHeader = document.createElement("div");
+                attrHeader.className = "vnccs-section-title";
+                attrHeader.innerText = "Attributes";
+
+                const autoGenBtn = document.createElement("button");
+                autoGenBtn.className = "vnccs-btn vnccs-btn-primary";
+                autoGenBtn.style.padding = "4px 8px";
+                autoGenBtn.style.fontSize = "10px";
+                autoGenBtn.innerText = "AUTO GENERATE (QWEN)";
+                autoGenBtn.onclick = async () => {
+                    if (!state.source_images.length) {
+                        alert("Please upload at least one source image.");
+                        return;
+                    }
+                    const imgName = state.source_images[0]; // Use first image
+                    autoGenBtn.innerText = "ANALYZING...";
+                    autoGenBtn.disabled = true;
+
+                    // Visual feedback
+                    const thumb = imgList.querySelector("img");
+                    if (thumb) thumb.classList.add("generating");
+
+                    try {
+                        const r = await api.fetchApi("/vnccs/cloner_auto_generate", {
+                            method: "POST",
+                            body: JSON.stringify({ image_name: imgName })
+                        });
+
+                        if (r.ok) {
+                            const data = await r.json();
+                            // Merge into state
+                            Object.assign(state.character_info, data);
+                            updateUIFromState();
+                            saveState();
+                        } else {
+                            if (r.status === 404) {
+                                // Check if it's our structured error
+                                try {
+                                    const err = await r.json();
+                                    if (err.error === "MODEL_MISSING") {
+                                        // Show Download Modal
+                                        showModal("Model Missing", (m) => {
+                                            const d = document.createElement("div");
+                                            d.innerHTML = `
+                                                <div style="font-size:13px; margin-bottom:10px;">
+                                                    <b>Required Model:</b> ${err.model_name}<br/><br/>
+                                                    This model (and its logic) is missing. Would you like to download it now?<br/>
+                                                    <span style="color:#aaa; font-size:11px;">Size: ~5GB. This may take a while.</span>
+                                                </div>
+                                            `;
+                                            return d;
+                                        }, [
+                                            { text: "Cancel" },
+                                            {
+                                                text: "DOWNLOAD & INSTALL", class: "vnccs-btn-success",
+                                                action: async (ol, btn) => {
+                                                    // Trigger Download
+                                                    try {
+                                                        const dl = await api.fetchApi("/vnccs/cloner_download_model", { method: "POST" });
+                                                        if (dl.status === 409) {
+                                                            // already downloading
+                                                            // alert("Download already in progress!"); // Remove alert
+                                                            startProgressPolling();
+                                                            return false;
+                                                        }
+                                                        if (dl.ok) {
+                                                            // alert("Download started. Please wait..."); // Remove alert
+                                                            ol.remove(); // Close prompt
+                                                            startProgressPolling(); // View Progress
+                                                            return false;
+                                                        }
+                                                    } catch (e) { alert("Download trigger failed: " + e); }
+                                                    return true;
+                                                }
+                                            }
+                                        ]);
+                                        return; // Exit normally
+                                    }
+                                } catch (e) { } // Not json
+                            }
+
+                            const txt = await r.text();
+                            alert("Auto-Gen Failed: " + txt);
+                        }
+                    } catch (e) {
+                        alert("Error: " + e);
+                    } finally {
+                        autoGenBtn.innerText = "AUTO GENERATE (QWEN)";
+                        autoGenBtn.disabled = false;
+                        if (thumb) thumb.classList.remove("generating");
+                    }
+                };
+
+                // Helper: Progress Polling
+                const startProgressPolling = () => {
+                    const { overlay, modal } = showModal("Downloading Model...", (m) => {
+                        const d = document.createElement("div");
+                        d.style.width = "100%";
+                        d.innerHTML = `
+                             <div style="margin-bottom:5px; font-size:12px;" id="vnccs-dl-status">Starting...</div>
+                             <div style="width:100%; height:20px; background:#444; border-radius:4px; overflow:hidden;">
+                                <div id="vnccs-dl-bar" style="width:0%; height:100%; background:#2e7d32; transition: width 0.5s;"></div>
+                             </div>
+                             <div style="text-align:right; font-size:11px; color:#aaa; margin-top:5px;" id="vnccs-dl-pct">0%</div>
+                        `;
+                        return d;
+                    }, []); // No buttons, auto-close
+
+                    const statusEl = modal.querySelector("#vnccs-dl-status");
+                    const barEl = modal.querySelector("#vnccs-dl-bar");
+                    const pctEl = modal.querySelector("#vnccs-dl-pct");
+
+                    const interval = setInterval(async () => {
+                        try {
+                            const r = await api.fetchApi("/vnccs/cloner_download_status");
+                            if (r.ok) {
+                                const d = await r.json();
+                                if (d.status === "completed") {
+                                    clearInterval(interval);
+                                    statusEl.innerText = "Download Complete!";
+                                    barEl.style.width = "100%";
+                                    pctEl.innerText = "100%";
+                                    setTimeout(() => overlay.remove(), 1000);
+                                    // Maybe retry generation automatically? No, user can click.
+                                } else if (d.status === "error") {
+                                    clearInterval(interval);
+                                    statusEl.innerText = "Error: " + d.error;
+                                    statusEl.style.color = "red";
+                                } else {
+                                    statusEl.innerText = `Downloading ${d.current_file}...`;
+                                    barEl.style.width = d.progress + "%";
+                                    pctEl.innerText = d.progress + "%";
+                                }
+                            }
+                        } catch (e) {
+                            clearInterval(interval);
+                            overlay.remove();
+                        }
+                    }, 1000);
+                };
+
+                attrHeader.appendChild(autoGenBtn);
+
+
+
+                // Fields
+                colAttr.appendChild(attrHeader);
+
+
+
+                // Other fields
+                // colAttr.appendChild(createField("Name", "character", "text", [], state)); // REMOVE THIS
+
+                colAttr.appendChild(createField("Sex", "sex", "select", ["female", "male"]));
+                colAttr.appendChild(createField("Age", "age", "number"));
+                colAttr.appendChild(createField("Race", "race", "text"));
+                colAttr.appendChild(createField("Skin Color", "skin_color", "text"));
+                colAttr.appendChild(createField("Hair", "hair", "text"));
+                colAttr.appendChild(createField("Eyes", "eyes", "text"));
+                colAttr.appendChild(createField("Face", "face", "text"));
+                colAttr.appendChild(createField("Body", "body", "text"));
+                colAttr.appendChild(createField("Details", "additional_details", "text"));
+                colAttr.appendChild(createField("Aesthetics", "aesthetics", "text"));
+                colAttr.appendChild(createField("NSFW", "nsfw", "checkbox"));
+
+                // Assemble Top Row
+                topRow.appendChild(colSrc);
+                topRow.appendChild(colAttr);
+                container.appendChild(topRow);
+
+                // --- BOTTOM ROW (Prompts) --
+                const botRow = document.createElement("div");
+                botRow.className = "vnccs-bottom-row";
+
+                // Read-only Prompts? Or generated?
+                // Standard textareas
+                const createTA = (lbl, key) => {
+                    const w = document.createElement("div");
+                    w.className = "vnccs-col";
+                    w.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
+                    const t = document.createElement("textarea");
+                    t.className = "vnccs-textarea";
+                    t.style.flex = "1";
+                    t.style.resize = "none";
+                    // We don't bind this to state input, but output?
+                    // Actually, output prompts are generated from attributes. 
+                    // Users might want to ADD to it. 
+                    // For now, let's bind to lora_prompt or neg_prompt
+                    if (key === "lora_prompt") {
+                        t.value = state.character_info.lora_prompt;
+                        t.onchange = (e) => { state.character_info.lora_prompt = e.target.value; saveState(); }
+                    } else if (key === "negative_prompt") {
+                        t.value = state.character_info.negative_prompt;
+                        t.onchange = (e) => { state.character_info.negative_prompt = e.target.value; saveState(); }
+                    }
+                    // If positive, it's auto-generated... maybe just show extra prompt field?
+                    // Let's stick to "LoRA Trigger / Manual Prompt" and "Negative"
+                    w.appendChild(t);
+                    return w;
+                };
+
+                botRow.appendChild(createTA("Extra / LoRA Prompt", "lora_prompt"));
+                botRow.appendChild(createTA("Negative Prompt", "negative_prompt"));
+
+                container.appendChild(botRow);
+
+                // ADD WIDGET
+                node.addDOMWidget("ui", "ui", container, { serialize: false, hideOnZoom: false });
+
+                // Initialize
+                loadState();
+                loadCharList();
+            };
+        }
+    }
+});

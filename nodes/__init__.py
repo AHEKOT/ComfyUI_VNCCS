@@ -16,6 +16,7 @@ from .pose_generator import NODE_CLASS_MAPPINGS as POSE_GENERATOR_CLASS_MAPPINGS
 from .vnccs_utils import NODE_CLASS_MAPPINGS as VNCCS_UTILS_MAPPINGS
 from .background_generator import NODE_CLASS_MAPPINGS as BACKGROUND_GENERATOR_MAPPINGS
 from .character_creator_v2 import CharacterCreatorV2
+from .character_cloner import CharacterCloner
 
 from .character_creator import NODE_DISPLAY_NAME_MAPPINGS as CHARACTER_CREATOR_DISPLAY_MAPPINGS
 from .character_selector import NODE_DISPLAY_NAME_MAPPINGS as CHARACTER_SELECTOR_DISPLAY_MAPPINGS
@@ -50,6 +51,7 @@ NODE_CLASS_MAPPINGS = {
     **VNCCS_UTILS_MAPPINGS,
     **BACKGROUND_GENERATOR_MAPPINGS,
     "CharacterCreatorV2": CharacterCreatorV2,
+    "CharacterCloner": CharacterCloner,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -69,6 +71,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     **VNCCS_UTILS_DISPLAY_MAPPINGS,
     **BACKGROUND_GENERATOR_DISPLAY_MAPPINGS,
     "CharacterCreatorV2": "VNCCS Character Creator V2",
+    "CharacterCloner": "VNCCS Character Cloner",
 }
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']

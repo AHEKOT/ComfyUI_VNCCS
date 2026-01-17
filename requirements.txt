@@ -2,4 +2,13 @@ torch
 numpy
 Pillow
 opencv-python
-huggingface_hub
+llama-cpp-python
+einops
+plyfile
+safetensors
+huggingface-hub[torch]>=0.22
+jaxtyping
+roma
+trimesh
+lightning
+lightning_utilities
