@@ -96,20 +96,43 @@ class CharacterCloner:
         
         if images_tensors:
             # Create a simple grid: standard collage
-            # Find closest square grid
+            # Smart Grid: Minimize aspect ratio difference from 1.0 (Square)
             count = len(images_tensors)
-            cols = int(np.ceil(np.sqrt(count)))
-            rows = int(np.ceil(count / cols))
-            
-            # Find max dimensions for tiles
             max_w = max(img.width for img in images_tensors)
             max_h = max(img.height for img in images_tensors)
+
+            best_cols = 1
+            best_rows = count
+            best_diff = float('inf')
+
+            # Naively try all column counts
+            for c in range(1, count + 1):
+                r = int(np.ceil(count / c))
+                # Grid dimensions if we use this layout (assuming max_w/max_h cells)
+                w_total = c * max_w
+                h_total = r * max_h
+                
+                ratio = w_total / h_total  # width / height
+                
+                # Symmetric score: penalize deviation from 1.0 equally for tall vs wide
+                # e.g. ratio 0.5 -> 2.0; ratio 2.0 -> 2.0
+                symmetric_ratio = ratio if ratio >= 1 else 1 / ratio
+                
+                # Tie-breaker: Prefer square grid of CELLS (c approx r)
+                # This helps when 1x4 (ratio 0.5) and 2x2 (ratio 2.0) have same symmetric score.
+                # 2x2 is "structurally" squarer.
+                grid_diff = abs(c - r)
+                
+                # Weighted score: Main priority is image aspect, secondary is grid shape
+                score = symmetric_ratio + (grid_diff * 0.01)
+
+                if score < best_diff:
+                    best_diff = score
+                    best_cols = c
+                    best_rows = r
             
-            # Resize all to fit in max_w, max_h (contain) or just use max dimensions?
-            # User wants "one large image". Let's preserve individual aspect ratios but fit in grid cells?
-            # Or just stitch them? Stitching varies wildy if sizes differ.
-            # Best approach for "Character Sheet" feel: Resize all to same height, tile horizontally? 
-            # Or use standard grid logic:
+            cols = best_cols
+            rows = best_rows
             
             grid_w = cols * max_w
             grid_h = rows * max_h
@@ -119,7 +142,7 @@ class CharacterCloner:
                 r = idx // cols
                 c = idx % cols
                 
-                # Center image in checking
+                # Center image in cell
                 x = c * max_w + (max_w - img.width) // 2
                 y = r * max_h + (max_h - img.height) // 2
                 grid.paste(img, (x, y))
@@ -390,10 +413,27 @@ if server:
 
              # 4. Initialize Llama
             try:
+                # Select Handler based on model name
+                HandlerCls = None
+                
+                # Check for Qwen2VL handler (newer llama-cpp-python)
+                try:
+                    from llama_cpp.llama_chat_format import Qwen2VLChatHandler
+                    if "Qwen" in model_path:
+                        HandlerCls = Qwen2VLChatHandler
+                        print("[VNCCS] Using Qwen2VLChatHandler")
+                except ImportError:
+                    pass
+
+                # Fallback to Llava1.5
+                if not HandlerCls:
+                     from llama_cpp.llama_chat_format import Llava15ChatHandler
+                     HandlerCls = Llava15ChatHandler
+                     print("[VNCCS] Using Llava15ChatHandler (Fallback)")
+
                 # Debug print
                 print(f"[VNCCS] Loading Model: {model_path}")
                 print(f"[VNCCS] Loading MMProj: {mmproj_path}")
-                print(f"[VNCCS] Handler: {HandlerCls}")
 
                 # Ensure Handler
                 if not HandlerCls:
@@ -416,22 +456,22 @@ if server:
                 # 5. Run Inference
                 # Explicit Instruction for JSON
                 prompt_instruction = """Analyze the image and strictly output valid JSON. 
-Use Danbooru-style tags for descriptions where appropriate (e.g. 'blue_hair', 'short_hair').
+Use Danbooru-style tags for descriptions.
 
 Keys:
-- sex (string: male, female)
-- age (int: estimated)
-- race (string)
-- skin_color (string: tag)
-- hair (string: tags for color and style)
-- eyes (string: tags for color and shape)
-- face (string: tags for features)
-- body (string: tags for build)
-- additional_details (string: tags for clothing, accessories, pose)
-- aesthetics (string: high quality danbooru tags e.g. 'masterpiece, best quality, anime')
+- sex (string: 'male' or 'female')
+- age (int: estimated number)
+- race (string: e.g. 'human', 'elf', 'cyborg')
+- skin_color (string: e.g. 'pale skin', 'tan skin', 'dark skin')
+- hair (string: comma-separated tags for color and style, e.g. 'blue hair, long hair, ponytail')
+- eyes (string: comma-separated tags for color and shape, e.g. 'green eyes, tsurime')
+- face (string: tags for features, e.g. 'blush', 'scars', 'makeup')
+- body (string: tags for build, e.g. 'slim', 'muscular', 'tall')
+- additional_details (string: tags for clothing, accessories, pose, e.g. 'wearing suit, sitting, holding sword')
+- aesthetics (string: high quality tags e.g. 'masterpiece, best quality, anime style')
 - nsfw (boolean)
 
-Structure the response as a raw JSON object. Do not wrap in markdown."""
+Structure the response as a raw JSON object. Do not output the word 'tag' as a value. DESCRIBE the character."""
 
                 # Helper for Base64 with Resizing (Max 512px)
                 import base64
@@ -465,7 +505,7 @@ Structure the response as a raw JSON object. Do not wrap in markdown."""
                     {"role": "system", "content": "You are a character description specialist. Analyze the image and output valid JSON only."},
                     {"role": "user", "content": [
                         {"type": "text", "text": prompt_instruction},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}} 
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}} 
                     ]}
                 ]
                 
@@ -473,34 +513,57 @@ Structure the response as a raw JSON object. Do not wrap in markdown."""
                 response = llm.create_chat_completion(
                     messages=messages,
                     max_tokens=1024,
-                    temperature=0.1
+                    temperature=0.2
                 )
                 print(f"[VNCCS] Inference Complete. Processing Response...")
                 
                 content = response["choices"][0]["message"]["content"]
                 print(f"[VNCCS] Raw LLM Output: {content}")
                 
-                # 6. Extract JSON using json_repair
+                # 6. Robust JSON Extraction
+                if not content or not content.strip():
+                     print("[VNCCS] Error: Empty response from LLM")
+                     return web.json_response({"additional_details": "Error: Empty response from LLM. check console."})
+
+                data = None
+
+                # Attempt 1: json_repair (if installed)
                 try:
                     import json_repair
                     data = json_repair.loads(content)
-                    print(f"[VNCCS] JSON Parsed Success (json_repair): {data.keys()}")
-                    return web.json_response(data)
+                    print(f"[VNCCS] json_repair result type: {type(data)}")
                 except ImportError:
-                    print("[VNCCS] json_repair module not found! Fallback to standard json.")
-                    # Fallback to direct parse if module missing (user didn't install requirements yet)
-                    # ... (Clean minimalist fallback)
-                    json_str = content
-                    if "```json" in content:
-                         json_str = content.split("```json")[1].split("```")[0]
-                    try:
-                        data = json.loads(json_str)
-                        return web.json_response(data)
-                    except:
-                        return web.json_response({"additional_details": content})
-
+                    print("[VNCCS] json_repair not installed.")
                 except Exception as e:
-                    print(f"[VNCCS] JSON Parse Failed: {e}. Raw: {content}")
+                    print(f"[VNCCS] json_repair failed: {e}")
+
+                # Normalize data (handle list of dicts)
+                if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                    data = data[0]
+
+                # Attempt 2: Standard JSON (if Attempt 1 failed or returned non-dict)
+                if not isinstance(data, dict):
+                    print("[VNCCS] Fallback to standard JSON parsing...")
+                    try:
+                        import json
+                        json_str = content
+                        if "```json" in content:
+                            json_str = content.split("```json")[1].split("```")[0]
+                        elif "```" in content:
+                            json_str = content.split("```")[1].split("```")[0]
+                        
+                        data = json.loads(json_str.strip())
+                        print("[VNCCS] Standard JSON parse success.")
+                    except Exception as e:
+                        print(f"[VNCCS] Standard JSON parse failed: {e}")
+
+                # Final Check: If valid dict, return it. Else, raw content.
+                if isinstance(data, dict):
+                    # Ensure keys exist? Frontend handles missing keys.
+                    print(f"[VNCCS] Final JSON Keys: {list(data.keys())}")
+                    return web.json_response(data)
+                else:
+                    print("[VNCCS] Failed to extract JSON. Returning raw content.")
                     return web.json_response({"additional_details": content})
 
             except Exception as e:

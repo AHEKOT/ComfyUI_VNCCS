@@ -344,7 +344,11 @@ app.registerExtension({
                 };
 
                 const loadChar = async (name) => {
-                    if (!name || name === "None") return;
+                    if (!name || name === "None") {
+                        state.char_preview_url = null;
+                        updateUIFromState();
+                        return;
+                    }
                     try {
                         const r = await api.fetchApi(`/vnccs/config?name=${encodeURIComponent(name)}`);
                         if (r.ok) {
@@ -354,7 +358,33 @@ app.registerExtension({
                                 updateUIFromState();
                             }
                         }
-                    } catch (e) { console.error(e); }
+
+                        // Load Preview Image URL Logic
+                        const ts = Date.now();
+                        const sheetUrl = `/vnccs/get_character_sheet_preview?character=${encodeURIComponent(name)}&t=${ts}`;
+                        const cacheUrl = `/vnccs/get_cached_preview?character=${encodeURIComponent(name)}&t=${ts}`;
+
+                        // Helper to find valid one
+                        const checkImage = (url) => {
+                            return new Promise((resolve) => {
+                                const img = new Image();
+                                img.onload = () => resolve(url);
+                                img.onerror = () => resolve(null);
+                                img.src = url;
+                            });
+                        };
+
+                        let finalUrl = await checkImage(sheetUrl);
+                        if (!finalUrl) finalUrl = await checkImage(cacheUrl);
+
+                        state.char_preview_url = finalUrl;
+                        updateUIFromState(); // Trigger renderThumbs
+
+                    } catch (e) {
+                        console.error(e);
+                        state.char_preview_url = null;
+                        updateUIFromState();
+                    }
                 };
 
                 const loadCharList = async () => {
@@ -376,6 +406,7 @@ app.registerExtension({
                             saveState();
                         }
 
+                        // Wait for loadChar to finish so preview updates
                         if (state.character) await loadChar(state.character);
 
                     } catch (e) { console.error(e); }
@@ -471,6 +502,8 @@ app.registerExtension({
                 charRow.appendChild(charSel);
                 colSrc.appendChild(charRow);
 
+                // (Preview removed: Using Native Preview Window below)
+
                 const btnRow = document.createElement("div");
                 btnRow.className = "vnccs-btn-row";
 
@@ -498,46 +531,6 @@ app.registerExtension({
                 const imgList = document.createElement("div");
                 imgList.className = "vnccs-img-list";
                 colSrc.appendChild(imgList);
-
-                renderThumbs = () => {
-                    imgList.innerHTML = "";
-                    state.source_images.forEach((imgObj, idx) => {
-                        // Normalize Object
-                        let name = "", type = "input", sub = "";
-
-                        if (typeof imgObj === 'string') {
-                            name = imgObj;
-                        } else if (imgObj && imgObj.name) {
-                            name = imgObj.name;
-                            type = imgObj.type || "input";
-                            sub = imgObj.subfolder || "";
-                        }
-
-                        if (!name) return;
-
-                        const img = document.createElement("img");
-
-                        // Explicitly construct query string
-                        const params = new URLSearchParams();
-                        params.append("filename", name);
-                        params.append("type", type);
-                        if (sub) params.append("subfolder", sub);
-
-                        img.src = api.apiURL("/view?" + params.toString());
-                        img.className = "vnccs-thumb";
-                        img.title = "Click to remove";
-                        img.onclick = () => {
-                            if (confirm("Remove this image?")) {
-                                state.source_images.splice(idx, 1);
-                                saveState();
-                                renderThumbs();
-                            }
-                        }
-                        imgList.appendChild(img);
-                    });
-                };
-
-
 
                 // --- IMAGE PREVIEW/UPLOAD AREA ---
                 // Container for the Large Preview
@@ -638,127 +631,6 @@ app.registerExtension({
                 previewContainer.appendChild(uploadOverlay);
                 colSrc.appendChild(previewContainer);
                 colSrc.appendChild(fileInput);
-
-                renderThumbs = () => {
-                    imgList.innerHTML = "";
-                    const images = state.source_images;
-
-                    // Set default selection if invalid
-                    if (typeof state.selected_idx !== 'number' || state.selected_idx < 0 || state.selected_idx >= images.length) {
-                        state.selected_idx = 0;
-                    }
-
-                    if (images.length === 0) {
-                        previewImg.style.display = "none";
-                        previewImg.src = "";
-                        uploadOverlay.style.opacity = "1";
-                        uploadOverlay.style.background = "transparent";
-                        uploadBtn.style.display = "block";
-                    } else {
-                        // Display SELECTED image
-                        const imgObj = images[state.selected_idx];
-                        let name = "", type = "input", sub = "";
-                        if (typeof imgObj === 'string') { name = imgObj; }
-                        else if (imgObj && imgObj.name) { name = imgObj.name; type = imgObj.type || "input"; sub = imgObj.subfolder || ""; }
-
-                        if (name) {
-                            const params = new URLSearchParams();
-                            params.append("filename", name);
-                            params.append("type", type);
-                            if (sub) params.append("subfolder", sub);
-                            const url = api.apiURL("/view?" + params.toString());
-
-                            previewImg.src = url;
-                            previewImg.style.display = "block";
-
-                            uploadOverlay.style.opacity = "0";
-                            uploadOverlay.style.transition = "opacity 0.2s";
-                            previewContainer.onmouseenter = () => uploadOverlay.style.opacity = "1";
-                            previewContainer.onmouseleave = () => uploadOverlay.style.opacity = "0";
-                        }
-                    }
-
-                    // Render Thumbnails
-                    images.forEach((imgObj, idx) => {
-                        let name = "", type = "input", sub = "";
-                        if (typeof imgObj === 'string') { name = imgObj; }
-                        else if (imgObj && imgObj.name) { name = imgObj.name; type = imgObj.type || "input"; sub = imgObj.subfolder || ""; }
-                        if (!name) return;
-
-                        const wrap = document.createElement("div");
-                        wrap.style.position = "relative";
-                        wrap.style.display = "inline-block";
-                        wrap.style.margin = "2px";
-
-                        const img = document.createElement("img");
-                        const params = new URLSearchParams();
-                        params.append("filename", name);
-                        params.append("type", type);
-                        if (sub) params.append("subfolder", sub);
-                        img.src = api.apiURL("/view?" + params.toString());
-                        img.className = "vnccs-thumb"; // Assumes width/height/object-fit defined in CSS
-
-                        // Highlight Selected
-                        if (idx === state.selected_idx) {
-                            img.style.borderColor = "#3558c7";
-                            img.style.boxShadow = "0 0 5px #3558c7";
-                        }
-
-                        // Select
-                        img.onclick = () => {
-                            state.selected_idx = idx;
-                            saveState();
-                            renderThumbs();
-                        };
-
-                        // Delete Button
-                        const delBtn = document.createElement("div");
-                        delBtn.innerText = "×";
-                        delBtn.style.position = "absolute";
-                        delBtn.style.top = "0";
-                        delBtn.style.right = "0";
-                        delBtn.style.background = "rgba(0,0,0,0.6)";
-                        delBtn.style.color = "#fff";
-                        delBtn.style.cursor = "pointer";
-                        delBtn.style.width = "16px";
-                        delBtn.style.height = "16px";
-                        delBtn.style.textAlign = "center";
-                        delBtn.style.lineHeight = "14px";
-                        delBtn.style.fontSize = "14px";
-                        delBtn.style.borderRadius = "0 0 0 4px";
-                        delBtn.title = "Remove Image";
-
-                        delBtn.onclick = (e) => {
-                            e.stopPropagation();
-                            // Direct remove or confirm? User didn't ask to remove confirmation, just the right click.
-                            // Keeping confirmation for safety.
-                            showModal("Remove Image?", (m) => {
-                                const d = document.createElement("div");
-                                d.innerText = "Remove this image?";
-                                return d;
-                            }, [
-                                { text: "Cancel" },
-                                {
-                                    text: "Remove", class: "vnccs-btn-danger",
-                                    action: async () => {
-                                        state.source_images.splice(idx, 1);
-                                        // Adjust selection if needed
-                                        if (state.selected_idx >= state.source_images.length) {
-                                            state.selected_idx = Math.max(0, state.source_images.length - 1);
-                                        }
-                                        saveState();
-                                        renderThumbs();
-                                        return false;
-                                    }
-                                }
-                            ]);
-                        };
-
-                        wrap.appendChild(img);
-                        wrap.appendChild(delBtn);
-                        imgList.appendChild(wrap);
-                    });
-                };
 
 
                 // COL 2: ATTRIBUTES (Auto Gen)
@@ -1015,6 +887,116 @@ app.registerExtension({
 
                 // ADD WIDGET
                 node.addDOMWidget("ui", "ui", container, { serialize: false, hideOnZoom: false });
+
+                // Define Render Thumbs Logic
+                renderThumbs = () => {
+                    imgList.innerHTML = "";
+                    const images = state.source_images;
+
+                    // Default Selection
+                    if (typeof state.selected_idx !== 'number' || state.selected_idx < 0 || state.selected_idx >= images.length) {
+                        state.selected_idx = 0;
+                    }
+
+                    // Preview Logic
+                    if (images.length === 0) {
+                        if (state.char_preview_url) {
+                            previewImg.src = state.char_preview_url;
+                            previewImg.style.display = "block";
+                            uploadOverlay.style.opacity = "0";
+                            previewContainer.onmouseenter = () => uploadOverlay.style.opacity = "1";
+                            previewContainer.onmouseleave = () => uploadOverlay.style.opacity = "0";
+                        } else {
+                            previewImg.style.display = "none";
+                            previewImg.src = "";
+                            uploadOverlay.style.opacity = "1";
+                            uploadOverlay.style.background = "transparent";
+                            uploadBtn.style.display = "block";
+                            previewContainer.onmouseenter = null;
+                            previewContainer.onmouseleave = null;
+                        }
+                    } else {
+                        // Show Selected Image
+                        const imgObj = images[state.selected_idx];
+                        let name = "", type = "input", sub = "";
+                        if (typeof imgObj === 'string') { name = imgObj; }
+                        else if (imgObj && imgObj.name) { name = imgObj.name; type = imgObj.type || "input"; sub = imgObj.subfolder || ""; }
+
+                        if (name) {
+                            const params = new URLSearchParams();
+                            params.append("filename", name);
+                            params.append("type", type);
+                            if (sub) params.append("subfolder", sub);
+                            previewImg.src = api.apiURL("/view?" + params.toString());
+                            previewImg.style.display = "block";
+                            uploadOverlay.style.opacity = "0";
+                            previewContainer.onmouseenter = () => uploadOverlay.style.opacity = "1";
+                            previewContainer.onmouseleave = () => uploadOverlay.style.opacity = "0";
+                        }
+                    }
+
+                    // Thumbnails Loop
+                    images.forEach((imgObj, idx) => {
+                        let name = "", type = "input", sub = "";
+                        if (typeof imgObj === 'string') { name = imgObj; }
+                        else if (imgObj && imgObj.name) { name = imgObj.name; type = imgObj.type || "input"; sub = imgObj.subfolder || ""; }
+                        if (!name) return;
+
+                        const wrap = document.createElement("div");
+                        wrap.style.position = "relative";
+                        wrap.style.display = "inline-block";
+                        wrap.style.margin = "2px";
+                        wrap.style.border = "2px solid transparent";
+                        if (idx === state.selected_idx) {
+                            wrap.style.borderColor = "#3558c7";
+                            wrap.style.borderRadius = "4px";
+                        }
+
+                        const img = document.createElement("img");
+                        const params = new URLSearchParams();
+                        params.append("filename", name);
+                        params.append("type", type);
+                        if (sub) params.append("subfolder", sub);
+                        img.src = api.apiURL("/view?" + params.toString());
+                        img.className = "vnccs-thumb";
+                        img.style.width = "60px"; // Ensure styling
+                        img.style.height = "60px";
+                        img.style.objectFit = "cover";
+                        img.style.cursor = "pointer";
+
+                        img.onclick = () => {
+                            state.selected_idx = idx;
+                            saveState();
+                            renderThumbs();
+                        };
+
+                        // Delete X
+                        const delBtn = document.createElement("div");
+                        delBtn.innerText = "×";
+                        delBtn.style.position = "absolute";
+                        delBtn.style.top = "0";
+                        delBtn.style.right = "0";
+                        delBtn.style.background = "rgba(0,0,0,0.7)";
+                        delBtn.style.color = "white";
+                        delBtn.style.cursor = "pointer";
+                        delBtn.style.padding = "0 5px";
+                        delBtn.style.fontSize = "14px";
+                        delBtn.style.borderRadius = "0 0 0 4px";
+                        delBtn.onclick = (e) => {
+                            e.stopPropagation();
+                            if (confirm("Remove image?")) {
+                                state.source_images.splice(idx, 1);
+                                if (state.selected_idx >= state.source_images.length) state.selected_idx = Math.max(0, state.source_images.length - 1);
+                                saveState();
+                                renderThumbs();
+                            }
+                        };
+
+                        wrap.appendChild(img);
+                        wrap.appendChild(delBtn);
+                        imgList.appendChild(wrap);
+                    });
+                };
 
                 // Initialize
                 loadState();
