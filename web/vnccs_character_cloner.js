@@ -643,9 +643,10 @@ app.registerExtension({
 
                 const autoGenBtn = document.createElement("button");
                 autoGenBtn.className = "vnccs-btn vnccs-btn-primary";
-                autoGenBtn.style.padding = "4px 8px";
-                autoGenBtn.style.fontSize = "10px";
-                autoGenBtn.innerText = "AUTO GENERATE (QWEN)";
+                autoGenBtn.style.padding = "10px 12px";
+                autoGenBtn.style.fontSize = "12px";
+                autoGenBtn.style.flex = "0 0 auto"; // Prevent stretching
+                autoGenBtn.innerText = "AUTO GENERATE (Qwen2-VL-7B)";
                 autoGenBtn.onclick = async () => {
                     if (!state.source_images.length) {
                         showModal("No Images", (m) => {
