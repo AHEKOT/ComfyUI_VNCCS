@@ -733,23 +733,84 @@ class NodePoseIntegration {
         }
 
         const integration = this;
+
+        // Hook into the node's onMouseDown to catch clicks on the button
+        // derived from the fact that the button is drawn outside the widget's logical bounds (240px)
+        const originalOnMouseDown = this.node.onMouseDown;
+        this.node.onMouseDown = function (event, pos, graphCanvas) {
+            // Button geometry from draw() logic:
+            // It is always pinned 10px from bottom (padding) + 36px (height)
+            // Range: [SizeY - 46, SizeY - 10]
+            if (this.size && pos) {
+                const nodeHeight = this.size[1];
+                const btnBot = nodeHeight - 10;
+                const btnTop = nodeHeight - 46;
+
+                // Check Y bounds (absolute relative to Node)
+                if (pos[1] >= btnTop && pos[1] <= btnBot) {
+                    // Check X bounds (4px margin)
+                    if (pos[0] >= 4 && pos[0] <= this.size[0] - 4) {
+                        PoseEditorManager.open(integration);
+                        return true; // Consume event
+                    }
+                }
+            }
+
+            if (originalOnMouseDown) {
+                return originalOnMouseDown.apply(this, arguments);
+            }
+        };
+
         this.previewWidget = this.node.addCustomWidget({
             name: "pose_preview",
             type: "vnccs_pose_preview",
+            options: { serialize: false },
             draw(ctx, node, width, y) {
-                // Record Y position for computeSize to use on next frame
                 integration.lastY = y;
-                // Match the fixed height from computeSize so we don't draw over the button
-                const height = 340;
-                PosePreviewRenderer.draw(ctx, integration.pose.poses, width, height, y);
+
+                // 1. Calculate Space
+                const bottomPadding = 10;
+                // We ask for (NodeHeight - Y - padding).
+                const nodeHeight = node.size[1];
+                let availableHeight = nodeHeight - y - bottomPadding;
+                if (availableHeight < 240) availableHeight = 240;
+
+                // 2. Draw Poses (taking up all space minus 40px for button)
+                const buttonAreaHeight = 36;
+                const poseAreaHeight = availableHeight - buttonAreaHeight - 4; // 4px spacing
+
+                PosePreviewRenderer.draw(ctx, integration.pose.poses, width, poseAreaHeight, y);
+
+                // 3. Draw "Open Editor" Button at the bottom of this widget area
+                const btnY = y + poseAreaHeight + 4;
+                const btnH = buttonAreaHeight;
+
+                ctx.save();
+                ctx.fillStyle = "#222a3b";
+                ctx.beginPath();
+                ctx.roundRect(4, btnY, width - 8, btnH, 6);
+                ctx.fill();
+                ctx.strokeStyle = "#3e4c6b";
+                ctx.stroke();
+
+                ctx.fillStyle = "#d7def3";
+                ctx.font = "12px Arial";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillText("Open Pose Editor", width / 2, btnY + btnH / 2);
+                ctx.restore();
+
+                // Store button bounds for click detection
+                integration.buttonRelativeY = btnY - y; // Button starts this many pixels down from widget start
+            },
+            mouse(event, pos, node) {
+                // Logic moved to node.onMouseDown to ensure clicks are caught even if widget is clipped
+                return false;
             },
             computeSize(width) {
-                // Fixed height to prevent infinite expansion loop
-                // The logical height needed for the grid view
-                return [width, 340];
-            },
-            serializeValue() {
-                return undefined;
+                // Fixed minimum height to prevent infinite growth loop on reload.
+                // The draw method will automatically expand to fill available space.
+                return [width, 240];
             }
         });
     }
@@ -2124,15 +2185,22 @@ app.registerExtension({
                 poseWidget.serializeValue = () => poseWidget.value;
             }
 
+            // MERGED PREVIEW WIDGET (Content + Button)
+            // This avoids LiteGraph layout fighting. The widget fills the node, and handles its own internal layout.
+
             const integration = new NodePoseIntegration(this, poseWidget);
             this.__vnccsPose = integration;
             integration.installPreview();
 
-            const button = this.addWidget("button", "Open Pose Editor", null, () => {
-                PoseEditorManager.open(integration);
-                return false;
-            });
-            button.serialize = false;
+            // We do NOT add a separate button widget anymore.
+            // The button is drawn inside the preview widget.
+
+            // Ensure reasonable default size
+            this.setSize([512, 580]);
+
+            this.onResize = function (size) {
+                this.setDirtyCanvas(true, true);
+            }
 
             const originalOnRemoved = this.onRemoved;
             this.onRemoved = function () {
