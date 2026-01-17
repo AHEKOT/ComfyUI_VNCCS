@@ -221,82 +221,83 @@ if server:
             # Load Models (With Cache)
             global PREVIEW_CACHE
             
-            # 1. Checkpoint
-            if PREVIEW_CACHE["ckpt_name"] == ckpt_name and PREVIEW_CACHE["ckpt_obj"]:
-                print(f"[VNCCS] Preview: Using Cached Checkpoint '{ckpt_name}'")
-                model, clip, vae = PREVIEW_CACHE["ckpt_obj"]
-            else:
-                 print(f"[VNCCS] Preview: Loading Checkpoint '{ckpt_name}'")
-                 ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
-                 if not ckpt_path:
-                    return web.Response(status=404, text=f"Checkpoint {ckpt_name} not found")
-                 out = comfy.sd.load_checkpoint_guess_config(ckpt_path, output_vae=True, output_clip=True, embedding_directory=folder_paths.get_folder_paths("embeddings"))
-                 model, clip, vae = out[:3]
-                 # Update Cache
-                 PREVIEW_CACHE["ckpt_name"] = ckpt_name
-                 PREVIEW_CACHE["ckpt_obj"] = (model, clip, vae)
+            with torch.inference_mode():
+                # 1. Checkpoint
+                if PREVIEW_CACHE["ckpt_name"] == ckpt_name and PREVIEW_CACHE["ckpt_obj"]:
+                    print(f"[VNCCS] Preview: Using Cached Checkpoint '{ckpt_name}'")
+                    model, clip, vae = PREVIEW_CACHE["ckpt_obj"]
+                else:
+                     print(f"[VNCCS] Preview: Loading Checkpoint '{ckpt_name}'")
+                     ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
+                     if not ckpt_path:
+                        return web.Response(status=404, text=f"Checkpoint {ckpt_name} not found")
+                     out = comfy.sd.load_checkpoint_guess_config(ckpt_path, output_vae=True, output_clip=True, embedding_directory=folder_paths.get_folder_paths("embeddings"))
+                     model, clip, vae = out[:3]
+                     # Update Cache
+                     PREVIEW_CACHE["ckpt_name"] = ckpt_name
+                     PREVIEW_CACHE["ckpt_obj"] = (model, clip, vae)
 
-            # Clone to avoid tainting cached model with LoRAs
-            model = model.clone()
-            clip = clip.clone()
+                # Clone to avoid tainting cached model with LoRAs
+                model = model.clone()
+                clip = clip.clone()
 
-            # Helper for Cached LoRA
-            def apply_lora_cached(m, c, l_name, l_strength):
-                if not l_name or l_name == "None": return m, c
-                
-                lora_dict = PREVIEW_CACHE["loras"].get(l_name)
-                if not lora_dict:
-                    l_path = folder_paths.get_full_path("loras", l_name)
-                    if l_path:
-                        lora_dict = comfy.utils.load_torch_file(l_path, safe_load=True)
-                        PREVIEW_CACHE["loras"][l_name] = lora_dict
-                        print(f"[VNCCS] Preview: Cached LoRA '{l_name}'")
-                
-                if lora_dict:
-                    return comfy.sd.load_lora_for_models(m, c, lora_dict, l_strength, l_strength)
-                return m, c
+                # Helper for Cached LoRA
+                def apply_lora_cached(m, c, l_name, l_strength):
+                    if not l_name or l_name == "None": return m, c
+                    
+                    lora_dict = PREVIEW_CACHE["loras"].get(l_name)
+                    if not lora_dict:
+                        l_path = folder_paths.get_full_path("loras", l_name)
+                        if l_path:
+                            lora_dict = comfy.utils.load_torch_file(l_path, safe_load=True)
+                            PREVIEW_CACHE["loras"][l_name] = lora_dict
+                            print(f"[VNCCS] Preview: Cached LoRA '{l_name}'")
+                    
+                    if lora_dict:
+                        return comfy.sd.load_lora_for_models(m, c, lora_dict, l_strength, l_strength)
+                    return m, c
 
-            # Apply LoRAs
-            dmd_lora_name = gen_settings.get("dmd_lora_name")
-            dmd_lora_strength = float(gen_settings.get("dmd_lora_strength", 1.0))
-            model, clip = apply_lora_cached(model, clip, dmd_lora_name, dmd_lora_strength)
+                # Apply LoRAs
+                dmd_lora_name = gen_settings.get("dmd_lora_name")
+                dmd_lora_strength = float(gen_settings.get("dmd_lora_strength", 1.0))
+                model, clip = apply_lora_cached(model, clip, dmd_lora_name, dmd_lora_strength)
 
-            age_lora_name = gen_settings.get("age_lora_name")
-            if age_lora_name:
-                age = int(char_info.get("age", 18))
-                age_str = age_strength(age)
-                model, clip = apply_lora_cached(model, clip, age_lora_name, age_str)
+                age_lora_name = gen_settings.get("age_lora_name")
+                if age_lora_name:
+                    age = int(char_info.get("age", 18))
+                    age_str = age_strength(age)
+                    model, clip = apply_lora_cached(model, clip, age_lora_name, age_str)
 
-            lora_stack = gen_settings.get("lora_stack", [])
-            for l_item in lora_stack:
-                model, clip = apply_lora_cached(model, clip, l_item.get("name"), float(l_item.get("strength", 1.0)))
+                lora_stack = gen_settings.get("lora_stack", [])
+                for l_item in lora_stack:
+                    model, clip = apply_lora_cached(model, clip, l_item.get("name"), float(l_item.get("strength", 1.0)))
 
-            # 2. Encode Prompts
-            tokens_pos = clip.tokenize(positive_text)
-            cond_pos, pooled_pos = clip.encode_from_tokens(tokens_pos, return_pooled=True)
-            positive_cond = [[cond_pos, {"pooled_output": pooled_pos}]]
+                # 2. Encode Prompts
+                tokens_pos = clip.tokenize(positive_text)
+                cond_pos, pooled_pos = clip.encode_from_tokens(tokens_pos, return_pooled=True)
+                positive_cond = [[cond_pos, {"pooled_output": pooled_pos}]]
 
-            tokens_neg = clip.tokenize(negative_text)
-            cond_neg, pooled_neg = clip.encode_from_tokens(tokens_neg, return_pooled=True)
-            negative_cond = [[cond_neg, {"pooled_output": pooled_neg}]]
+                tokens_neg = clip.tokenize(negative_text)
+                cond_neg, pooled_neg = clip.encode_from_tokens(tokens_neg, return_pooled=True)
+                negative_cond = [[cond_neg, {"pooled_output": pooled_neg}]]
 
-            # Patch PromptServer
-            if not hasattr(server.PromptServer.instance, 'last_prompt_id'):
-                server.PromptServer.instance.last_prompt_id = 'preview_gen'
+                # Patch PromptServer
+                if not hasattr(server.PromptServer.instance, 'last_prompt_id'):
+                    server.PromptServer.instance.last_prompt_id = 'preview_gen'
 
-            # 3. Sample
-            latent = torch.zeros([1, 4, height // 8, width // 8], device=model.load_device)
-            samples = nodes.common_ksampler(
-                model=model, seed=seed, steps=steps, cfg=cfg, 
-                sampler_name=sampler_name, scheduler=scheduler, 
-                positive=positive_cond, negative=negative_cond, 
-                latent={"samples": latent}, denoise=1.0
-            )[0]["samples"]
+                # 3. Sample
+                latent = torch.zeros([1, 4, height // 8, width // 8], device=model.load_device)
+                samples = nodes.common_ksampler(
+                    model=model, seed=seed, steps=steps, cfg=cfg, 
+                    sampler_name=sampler_name, scheduler=scheduler, 
+                    positive=positive_cond, negative=negative_cond, 
+                    latent={"samples": latent}, denoise=1.0
+                )[0]["samples"]
 
-            # 4. Decode
-            vae_decoded = vae.decode_tiled(samples, tile_x=512, tile_y=512)
-            i = 255. * vae_decoded.cpu().numpy()
-            img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8)[0])
+                # 4. Decode
+                vae_decoded = vae.decode_tiled(samples, tile_x=512, tile_y=512)
+                i = 255. * vae_decoded.cpu().numpy()
+                img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8)[0])
 
             # Save Smart Cache
             try:
