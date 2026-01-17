@@ -232,12 +232,27 @@ app.registerExtension({
                 const loadState = () => {
                     if (dataWidget && dataWidget.value && dataWidget.value !== "{}") {
                         try {
+                            console.log("[VNCCS] Loading State from widget_data:", dataWidget.value);
                             const parsed = JSON.parse(dataWidget.value);
                             Object.assign(state, parsed);
                             // Update UI
                             updateUIFromState();
-                        } catch (e) { }
+                            console.log("[VNCCS] State loaded successfully.");
+                        } catch (e) {
+                            console.error("[VNCCS] Failed to load state:", e);
+                        }
                     }
+                };
+
+                // React to external changes (e.g. reload)
+                if (dataWidget) dataWidget.callback = loadState;
+
+                // Explicitly handle graph configuration (Restoration on Reload)
+                const origConfigure = node.onConfigure;
+                node.onConfigure = function () {
+                    if (origConfigure) origConfigure.apply(this, arguments);
+                    console.log("[VNCCS] onConfigure triggered.");
+                    loadState();
                 };
 
                 // UI Builders
@@ -628,17 +643,20 @@ app.registerExtension({
                     imgList.innerHTML = "";
                     const images = state.source_images;
 
+                    // Set default selection if invalid
+                    if (typeof state.selected_idx !== 'number' || state.selected_idx < 0 || state.selected_idx >= images.length) {
+                        state.selected_idx = 0;
+                    }
+
                     if (images.length === 0) {
                         previewImg.style.display = "none";
                         previewImg.src = "";
                         uploadOverlay.style.opacity = "1";
-                        uploadOverlay.style.background = "transparent"; // Or visible background
+                        uploadOverlay.style.background = "transparent";
                         uploadBtn.style.display = "block";
                     } else {
-                        // Show first image by default or selected?
-                        // For cloner, maybe just the first one is the "Main" one?
-                        // Let's show the first one.
-                        const imgObj = images[0];
+                        // Display SELECTED image
+                        const imgObj = images[state.selected_idx];
                         let name = "", type = "input", sub = "";
                         if (typeof imgObj === 'string') { name = imgObj; }
                         else if (imgObj && imgObj.name) { name = imgObj.name; type = imgObj.type || "input"; sub = imgObj.subfolder || ""; }
@@ -653,13 +671,8 @@ app.registerExtension({
                             previewImg.src = url;
                             previewImg.style.display = "block";
 
-                            // Hide upload overlay or make it minimal?
-                            // User request: Upload area IS the preview. 
-                            // Usually we hide the big upload button and maybe put a small one?
-                            // Or just opacity 0 on hover?
-                            uploadOverlay.style.opacity = "0"; // Hide
+                            uploadOverlay.style.opacity = "0";
                             uploadOverlay.style.transition = "opacity 0.2s";
-                            // On hover show?
                             previewContainer.onmouseenter = () => uploadOverlay.style.opacity = "1";
                             previewContainer.onmouseleave = () => uploadOverlay.style.opacity = "0";
                         }
@@ -672,39 +685,78 @@ app.registerExtension({
                         else if (imgObj && imgObj.name) { name = imgObj.name; type = imgObj.type || "input"; sub = imgObj.subfolder || ""; }
                         if (!name) return;
 
+                        const wrap = document.createElement("div");
+                        wrap.style.position = "relative";
+                        wrap.style.display = "inline-block";
+                        wrap.style.margin = "2px";
+
                         const img = document.createElement("img");
                         const params = new URLSearchParams();
                         params.append("filename", name);
                         params.append("type", type);
                         if (sub) params.append("subfolder", sub);
                         img.src = api.apiURL("/view?" + params.toString());
-                        img.className = "vnccs-thumb";
+                        img.className = "vnccs-thumb"; // Assumes width/height/object-fit defined in CSS
 
-                        // Click to set as main?
+                        // Highlight Selected
+                        if (idx === state.selected_idx) {
+                            img.style.borderColor = "#3558c7";
+                            img.style.boxShadow = "0 0 5px #3558c7";
+                        }
+
+                        // Select
                         img.onclick = () => {
-                            // Swap to index 0? Or just view?
-                            // Cloner usually processes ALL images or specific one? 
-                            // Auto-generate uses index 0. 
-                            // So clicking should probably Swap it to 0 so it becomes "Main".
-                            if (idx !== 0) {
-                                const item = state.source_images.splice(idx, 1)[0];
-                                state.source_images.unshift(item);
-                                saveState();
-                                renderThumbs();
-                            }
+                            state.selected_idx = idx;
+                            saveState();
+                            renderThumbs();
                         };
 
-                        // Right click delete?
-                        img.oncontextmenu = (e) => {
-                            e.preventDefault();
-                            if (confirm("Remove image?")) {
-                                state.source_images.splice(idx, 1);
-                                saveState();
-                                renderThumbs();
-                            }
+                        // Delete Button
+                        const delBtn = document.createElement("div");
+                        delBtn.innerText = "×";
+                        delBtn.style.position = "absolute";
+                        delBtn.style.top = "0";
+                        delBtn.style.right = "0";
+                        delBtn.style.background = "rgba(0,0,0,0.6)";
+                        delBtn.style.color = "#fff";
+                        delBtn.style.cursor = "pointer";
+                        delBtn.style.width = "16px";
+                        delBtn.style.height = "16px";
+                        delBtn.style.textAlign = "center";
+                        delBtn.style.lineHeight = "14px";
+                        delBtn.style.fontSize = "14px";
+                        delBtn.style.borderRadius = "0 0 0 4px";
+                        delBtn.title = "Remove Image";
+
+                        delBtn.onclick = (e) => {
+                            e.stopPropagation();
+                            // Direct remove or confirm? User didn't ask to remove confirmation, just the right click.
+                            // Keeping confirmation for safety.
+                            showModal("Remove Image?", (m) => {
+                                const d = document.createElement("div");
+                                d.innerText = "Remove this image?";
+                                return d;
+                            }, [
+                                { text: "Cancel" },
+                                {
+                                    text: "Remove", class: "vnccs-btn-danger",
+                                    action: async () => {
+                                        state.source_images.splice(idx, 1);
+                                        // Adjust selection if needed
+                                        if (state.selected_idx >= state.source_images.length) {
+                                            state.selected_idx = Math.max(0, state.source_images.length - 1);
+                                        }
+                                        saveState();
+                                        renderThumbs();
+                                        return false;
+                                    }
+                                }
+                            ]);
                         };
 
-                        imgList.appendChild(img);
+                        wrap.appendChild(img);
+                        wrap.appendChild(delBtn);
+                        imgList.appendChild(wrap);
                     });
                 };
 
@@ -724,16 +776,24 @@ app.registerExtension({
                 autoGenBtn.innerText = "AUTO GENERATE (QWEN)";
                 autoGenBtn.onclick = async () => {
                     if (!state.source_images.length) {
-                        alert("Please upload at least one source image.");
+                        showModal("No Images", (m) => {
+                            const d = document.createElement("div");
+                            d.innerText = "Please upload at least one source image to analyze.";
+                            return d;
+                        }, [{ text: "OK", class: "vnccs-btn-primary" }]);
                         return;
                     }
-                    const imgName = state.source_images[0]; // Use first image
+
+                    // USE SELECTED IMAGE
+                    const selIdx = (typeof state.selected_idx === 'number') ? state.selected_idx : 0;
+                    const imgName = state.source_images[selIdx];
+
                     autoGenBtn.innerText = "ANALYZING...";
                     autoGenBtn.disabled = true;
 
-                    // Visual feedback
-                    const thumb = imgList.querySelector("img");
-                    if (thumb) thumb.classList.add("generating");
+                    // Visual feedback highlighting selected thumb
+                    const thumbs = imgList.querySelectorAll("img");
+                    if (thumbs[selIdx]) thumbs[selIdx].classList.add("generating");
 
                     try {
                         const r = await api.fetchApi("/vnccs/cloner_auto_generate", {
@@ -743,62 +803,94 @@ app.registerExtension({
 
                         if (r.ok) {
                             const data = await r.json();
+                            console.log("[VNCCS] Auto-Gen Success. Data:", data);
+
                             // Merge into state
                             Object.assign(state.character_info, data);
+                            console.log("[VNCCS] State Updated:", state.character_info);
+
                             updateUIFromState();
+                            console.log("[VNCCS] UI Updated.");
                             saveState();
                         } else {
-                            if (r.status === 404) {
-                                // Check if it's our structured error
-                                try {
-                                    const err = await r.json();
-                                    if (err.error === "MODEL_MISSING") {
-                                        // Show Download Modal
-                                        showModal("Model Missing", (m) => {
-                                            const d = document.createElement("div");
-                                            d.innerHTML = `
-                                                <div style="font-size:13px; margin-bottom:10px;">
-                                                    <b>Required Model:</b> ${err.model_name}<br/><br/>
-                                                    This model (and its logic) is missing. Would you like to download it now?<br/>
-                                                    <span style="color:#aaa; font-size:11px;">Size: ~5GB. This may take a while.</span>
-                                                </div>
-                                            `;
-                                            return d;
-                                        }, [
-                                            { text: "Cancel" },
-                                            {
-                                                text: "DOWNLOAD & INSTALL", class: "vnccs-btn-success",
-                                                action: async (ol, btn) => {
-                                                    // Trigger Download
-                                                    try {
-                                                        const dl = await api.fetchApi("/vnccs/cloner_download_model", { method: "POST" });
-                                                        if (dl.status === 409) {
-                                                            // already downloading
-                                                            // alert("Download already in progress!"); // Remove alert
-                                                            startProgressPolling();
-                                                            return false;
-                                                        }
-                                                        if (dl.ok) {
-                                                            // alert("Download started. Please wait..."); // Remove alert
-                                                            ol.remove(); // Close prompt
-                                                            startProgressPolling(); // View Progress
-                                                            return false;
-                                                        }
-                                                    } catch (e) { alert("Download trigger failed: " + e); }
-                                                    return true;
+                            console.log("[VNCCS] Auto-Gen Failed. Status:", r.status);
+                            // Check for structured errors (404 for model, 500 for mmproj/other)
+                            let err = null;
+                            try { err = await r.json(); } catch (e) { }
+
+                            if (err && (err.error === "MODEL_MISSING" || err.error === "MMPROJ_MISSING" || err.error === "DEPENDENCY_MISSING")) {
+
+                                // CASE A: Dependency Error (llama-cpp-python)
+                                if (err.error === "DEPENDENCY_MISSING") {
+                                    showModal("Dependency Missing", (m) => {
+                                        const d = document.createElement("div");
+                                        d.innerHTML = `
+                                            <div style="font-size:13px; margin-bottom:10px;">
+                                                <b>Missing AI Library</b><br/><br/>
+                                                ${err.message}<br/>
+                                                <b>Model:</b> ${err.model_name}<br/><br/>
+                                                <span style="color:#f88">Correct 'llama-cpp-python' version required.</span><br/>
+                                                Please install the JamePeng fork or a compatible version manually.
+                                            </div>
+                                        `;
+                                        return d;
+                                    }, [
+                                        { text: "OK", class: "vnccs-btn-danger" }
+                                    ]);
+                                    return;
+                                }
+
+                                // CASE B: Regular Missing Model Files
+                                showModal("Model Missing", (m) => {
+                                    const d = document.createElement("div");
+                                    const missingMsg = err.error === "MMPROJ_MISSING" ? "The Vision Projector (mmproj) is missing." : `Required Model: ${err.model_name || 'QwenVL'}`;
+                                    d.innerHTML = `
+                                        <div style="font-size:13px; margin-bottom:10px;">
+                                            <b>${missingMsg}</b><br/><br/>
+                                            This component is required for character analysis. Would you like to download it now?<br/>
+                                            <span style="color:#aaa; font-size:11px;">Verification & Download will start automatically.</span>
+                                        </div>
+                                    `;
+                                    return d;
+                                }, [
+                                    { text: "Cancel" },
+                                    {
+                                        text: "DOWNLOAD & INSTALL", class: "vnccs-btn-success",
+                                        action: async (ol, btn) => {
+                                            // Trigger Download
+                                            try {
+                                                const dl = await api.fetchApi("/vnccs/cloner_download_model", { method: "POST" });
+                                                if (dl.status === 409) {
+                                                    // already downloading
+                                                    startProgressPolling();
+                                                    return false;
                                                 }
-                                            }
-                                        ]);
-                                        return; // Exit normally
+                                                if (dl.ok) {
+                                                    ol.remove(); // Close prompt
+                                                    startProgressPolling(); // View Progress
+                                                    return false;
+                                                }
+                                            } catch (e) { alert("Download trigger failed: " + e); }
+                                            return true;
+                                        }
                                     }
-                                } catch (e) { } // Not json
+                                ]);
+                                return; // Exit normally
                             }
 
-                            const txt = await r.text();
-                            alert("Auto-Gen Failed: " + txt);
+                            // Fallback for real errors
+                            const txt = err && err.message ? err.message : (await r.text());
+                            showModal("Error", (m) => {
+                                const d = document.createElement("div");
+                                d.innerText = "Auto-Gen Failed: " + txt;
+                                d.style.color = "red";
+                                return d;
+                            }, [{ text: "Close" }]);
                         }
                     } catch (e) {
-                        alert("Error: " + e);
+                        showModal("Error", (m) => {
+                            const d = document.createElement("div"); d.innerText = "Script Error: " + e; return d;
+                        }, [{ text: "Close" }]);
                     } finally {
                         autoGenBtn.innerText = "AUTO GENERATE (QWEN)";
                         autoGenBtn.disabled = false;
@@ -854,12 +946,14 @@ app.registerExtension({
                     }, 1000);
                 };
 
-                attrHeader.appendChild(autoGenBtn);
-
-
-
-                // Fields
+                // Add Header
                 colAttr.appendChild(attrHeader);
+
+                // Add Button (Below header, above fields)
+                autoGenBtn.style.width = "100%";
+                autoGenBtn.style.marginBottom = "10px";
+                autoGenBtn.style.textAlign = "center";
+                colAttr.appendChild(autoGenBtn);
 
 
 

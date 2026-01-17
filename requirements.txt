@@ -2,7 +2,7 @@ torch
 numpy
 Pillow
 opencv-python
-llama-cpp-python
+llama-cpp-python>=0.3.16
 einops
 plyfile
 safetensors
@@ -12,3 +12,4 @@ roma
 trimesh
 lightning
 lightning_utilities
+json_repair

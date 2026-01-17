@@ -1,5 +1,11 @@
 import os
 import json
+import shutil
+import urllib.request
+import subprocess
+import platform
+import sys
+import importlib.util
 import torch
 import folder_paths
 import comfy.sd
@@ -16,7 +22,8 @@ from ..utils import (
     character_dir, sheets_dir, faces_dir, MAIN_DIRS, EMOTIONS
 )
 
-
+# VNCCS Installer (REMOVED: User requested Qwen2)
+# Reverted to manual update instructions if needed.
 
 def pil2tensor(image):
     return torch.from_numpy(np.array(image).astype(np.float32) / 255.0).unsqueeze(0)
@@ -206,49 +213,29 @@ if server:
         if DOWNLOAD_STATUS["status"] == "downloading":
              return web.Response(status=409, text="Download already in progress")
         
-        # Determine what to download? 
-        # For now, default to Qwen2.5-VL-7B (better license/performance) or the Qwen3 one from before?
-        # User had "QwenVL GGUF".
-        # Let's download a small but good one. Qwen2-VL-2B or 7B?
-        # Qwen2-VL-2B-Instruct-Q4_K_M.gguf is ~1.5GB. 
-        # Qwen2-VL-7B-Instruct-Q4_K_M.gguf is ~4.5GB.
-        # Let's replicate the structure we looked for: Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf
+        # User requested Revert to Qwen2-VL (We use Qwen2.5-VL as the best "Qwen2" variant available GGUF)
+        # Using bartowski's build which is reliable for comfy/llama-cpp
         
-        # NOTE: Using a specific hugginface link.
-        # Qwen2-VL-7B-Instruct-GGUF/Qwen2-VL-7B-Instruct-Q4_K_M.gguf
-        # Need separate mmproj? Qwen2-VL usually bundles logic or needs specific mmproj.
-        # ComfyUI-GGUF usually needs both if using llama-cpp-python < ???
-        # Newer llama-cpp-python handles split weights if named correctly?
-        
-        # Simplest path: Qwen2-VL-2B-Instruct-Q4_K_M.gguf + mmproj-Qwen2-VL-2B-Instruct-f16.gguf?
-        # Let's try Qwen2-VL-2B-Instruct-Q4_K_M.gguf (Lightweight for auto-gen)
-        # URL: https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct-GGUF/resolve/main/qwen2-vl-2b-instruct-q4_k_m.gguf
-        # Wait, Qwen-VL-Chat-Int4 is old.
-        
-        # Let's use a known working fallback: Qwen2-VL-7B-Instruct-Q4_K_M.gguf
-        # Repo: https://huggingface.co/bartowski/Qwen2-VL-7B-Instruct-GGUF
-        # File: Qwen2-VL-7B-Instruct-Q4_K_M.gguf (4.79 GB)
-        
-        # If user wants it, we download it.
-        # Destination: models/LLM
         base_path = folder_paths.models_dir
         llm_dir = os.path.join(base_path, "LLM")
         
-        url_model = "https://huggingface.co/bartowski/Qwen2-VL-7B-Instruct-GGUF/resolve/main/Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
-        dest_model = os.path.join(llm_dir, "Qwen2-VL-7B-Instruct-Q4_K_M.gguf")
+        # Target: Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf
+        # Repo: bartowski/Qwen2.5-VL-7B-Instruct-GGUF
         
-        # Threaded download
+        url_model = "https://huggingface.co/bartowski/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
+        dest_model = os.path.join(llm_dir, "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf")
+        
+        # Target: mmproj
+        url_proj = "https://huggingface.co/bartowski/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf"
+        dest_proj = os.path.join(llm_dir, "mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf")
+
         def run_sequences():
-            download_file(url_model, dest_model, "Qwen2-VL-7B-Instruct-Q4_K_M.gguf")
-            # If completed, check mmproj? usually contained in later GGUF or we download it separately?
-            # llava-style clip?
-            # bartowski usually provides separate mmproj if needed?
-            # Most modern GGUF Qwen2VL require 'mmproj-Qwen2-VL-7B-Instruct-f16.gguf'
-            # Let's download that too.
+            # 1. Download Model
+            download_file(url_model, dest_model, "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf")
+            
+            # 2. Download Vision Projector
             if DOWNLOAD_STATUS["status"] == "completed":
-                url_proj = "https://huggingface.co/bartowski/Qwen2-VL-7B-Instruct-GGUF/resolve/main/mmproj-Qwen2-VL-7B-Instruct-f16.gguf"
-                dest_proj = os.path.join(llm_dir, "mmproj-Qwen2-VL-7B-Instruct-f16.gguf")
-                download_file(url_proj, dest_proj, "mmproj-Qwen2-VL-7B-Instruct-f16.gguf")
+                download_file(url_proj, dest_proj, "mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf")
 
         t = threading.Thread(target=run_sequences)
         t.start()
@@ -258,27 +245,52 @@ if server:
 
     @server.PromptServer.instance.routes.post("/vnccs/cloner_auto_generate")
     async def cloner_auto_generate(request):
+        import sys
+        import llama_cpp
+        import llama_cpp.llama_chat_format
+        
+        # DEBUG INFO
+        lib_ver = getattr(llama_cpp, "__version__", "unknown")
+        py_path = sys.executable
+        available_handlers = dir(llama_cpp.llama_chat_format)
+        
+        print(f"[VNCCS] Auto-Gen Debug: Ver={lib_ver}, Py={py_path}")
+        
         try:
-            # 0. Dynamic Import
-            try:
-                from llama_cpp import Llama
-            except ImportError:
-                return web.Response(status=500, text="llama_cpp module not found. Please install llama-cpp-python.")
-            
-            # Select Handler for Qwen
+            # 0. Dynamic Import Check
+            # Try to find ANY QwenVL handler
             HandlerCls = None
-            try:
-                from llama_cpp.llama_chat_format import Qwen2VLChatHandler
-                HandlerCls = Qwen2VLChatHandler
-            except ImportError:
-                try:
-                    from llama_cpp.llama_chat_format import Llava15ChatHandler
-                    HandlerCls = Llava15ChatHandler # Fallback?
-                except:
-                    pass
             
-            # NOTE: Relaxed Check because updated library might have different names
-            # If specifically looking for Qwen2.5/VL, ensure we have it.
+            # 1. Try Qwen2.5 (Newest)
+            if hasattr(llama_cpp.llama_chat_format, "Qwen25VLChatHandler"):
+                HandlerCls = llama_cpp.llama_chat_format.Qwen25VLChatHandler
+            
+            # 2. Try Qwen2 (Standard)
+            elif hasattr(llama_cpp.llama_chat_format, "Qwen2VLChatHandler"):
+                HandlerCls = llama_cpp.llama_chat_format.Qwen2VLChatHandler
+                
+            # 3. Try Qwen (Old/Other)
+            elif hasattr(llama_cpp.llama_chat_format, "Qwen25VLChatHandler"):
+                 HandlerCls = llama_cpp.llama_chat_format.Qwen25VLChatHandler
+            
+            # If still nothing, inspect for partial matches?
+            if not HandlerCls:
+                # Fallback scan
+                for attr in available_handlers:
+                    if "Qwen" in attr and "VL" in attr and "Handler" in attr:
+                        HandlerCls = getattr(llama_cpp.llama_chat_format, attr)
+                        break
+            
+            if not HandlerCls:
+                 msg = f"No QwenVL handlers found. Lib Version: {lib_ver}. Available: { [h for h in available_handlers if 'Handler' in h] }"
+                 return web.json_response({
+                     "error": "DEPENDENCY_MISSING", 
+                     "message": msg,
+                     "model_name": f"llama-cpp-python {lib_ver}"
+                 }, status=500)
+            
+            # Proceed with HandlerCls...
+
             
             post = await request.json()
             image_data = post.get("image_name")
@@ -288,7 +300,6 @@ if server:
             
             # ... (Image Resolution Code same as before) ...
             # 1. Locate Image
-            # Handle dict vs string
             if isinstance(image_data, dict):
                 img_name = image_data.get("name")
                 subfolder = image_data.get("subfolder", "")
@@ -312,11 +323,11 @@ if server:
             base_path = folder_paths.models_dir
             model_path = None
             
-            # Update search names for the one we download
+            # Search for Qwen2.5 / Qwen2
             possible_names = [
+                "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
                 "Qwen2-VL-7B-Instruct-Q4_K_M.gguf", 
-                "qwen2-vl-7b-instruct-q4_k_m.gguf",
-                "Qwen3VL-4B-Instruct-Q4_K_M.gguf"
+                "qwen2-vl-7b-instruct-q4_k_m.gguf"
             ]
             
             search_dirs = [os.path.join(base_path, "LLM"), os.path.join(base_path, "llm"), base_path]
@@ -331,26 +342,32 @@ if server:
                 if model_path: break
             
             if not model_path:
-                 # Return specific JSON error for frontend to trigger download
+                 # Return specific JSON error for frontend to trigger download of Qwen2.5
                  return web.json_response({
                      "error": "MODEL_MISSING",
                      "message": "No QwenVL GGUF model found.",
-                     "model_name": "Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
+                     "model_name": "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
                  }, status=404)
 
             # 3. Locate MMProj (Vision Adapter)
             mmproj_path = None
             if model_path:
                 model_dir = os.path.dirname(model_path)
-                # If specific known model, look for specific mmproj
-                if "Qwen2-VL-7B" in os.path.basename(model_path):
-                     cand = os.path.join(model_dir, "mmproj-Qwen2-VL-7B-Instruct-f16.gguf")
-                     if os.path.exists(cand): mmproj_path = cand
+                # Check for 2.5/2 specific projectors
+                cands = [
+                    "mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf",
+                    "mmproj-Qwen2-VL-7B-Instruct-f16.gguf"
+                ]
+                for c in cands:
+                    cp = os.path.join(model_dir, c)
+                    if os.path.exists(cp):
+                        mmproj_path = cp
+                        break
                 
                 if not mmproj_path:
                     # Flexible Search
                     for f in os.listdir(model_dir):
-                        if "mmproj" in f and f.endswith(".gguf"):
+                        if "mmproj" in f and f.endswith(".gguf") and "Qwen" in f:
                             mmproj_path = os.path.join(model_dir, f)
                             break
             
@@ -371,44 +388,139 @@ if server:
                 ]}
             ]
 
-            # Init Handler
-            if not HandlerCls: HandlerCls = Llava15ChatHandler # Fallback safety
-            
+             # 4. Initialize Llama
             try:
+                # Debug print
+                print(f"[VNCCS] Loading Model: {model_path}")
+                print(f"[VNCCS] Loading MMProj: {mmproj_path}")
+                print(f"[VNCCS] Handler: {HandlerCls}")
+
+                # Ensure Handler
+                if not HandlerCls:
+                    raise ImportError("No suitable ChatHandler found for Qwen/Llava.")
+
                 chat_handler = HandlerCls(clip_model_path=mmproj_path, verbose=False)
-            except Exception as e:
-                # If mmproj missing but required
-                return web.json_response({"error": "MMPROJ_MISSING", "message": str(e)}, status=500)
-            
-            # Init Model
-            llm = Llama(
-                model_path=model_path,
-                n_ctx=2048,
-                n_gpu_layers=-1, 
-                chat_handler=chat_handler,
-                verbose=False
-            )
-            
-            response = llm.create_chat_completion(
-                messages=messages,
-                max_tokens=1024,
-                temperature=0.1
-            )
-            
-            content = response["choices"][0]["message"]["content"]
-            
-            # 5. Extract JSON
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0]
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0]
                 
-            try:
-                data = json.loads(content)
-                return web.json_response(data)
-            except:
-                # If naive parse fails, try to return basic dict with full text
-                return web.json_response({"additional_details": content})
+                llm = llama_cpp.Llama(
+                    model_path=model_path,
+                    chat_handler=chat_handler,
+                    n_ctx=4096, # Safe default for VL
+                    n_gpu_layers=-1, # Auto
+                    verbose=False
+                )
+                # ... Inference code ...
+                if not llm:
+                    raise RuntimeError("Failed to initialize Llama model.")
+
+                # 5. Run Inference
+                # 5. Run Inference
+                # Explicit Instruction for JSON
+                prompt_instruction = """Analyze the image and strictly output valid JSON. 
+Use Danbooru-style tags for descriptions where appropriate (e.g. 'blue_hair', 'short_hair').
+
+Keys:
+- sex (string: male, female)
+- age (int: estimated)
+- race (string)
+- skin_color (string: tag)
+- hair (string: tags for color and style)
+- eyes (string: tags for color and shape)
+- face (string: tags for features)
+- body (string: tags for build)
+- additional_details (string: tags for clothing, accessories, pose)
+- aesthetics (string: high quality danbooru tags e.g. 'masterpiece, best quality, anime')
+- nsfw (boolean)
+
+Structure the response as a raw JSON object. Do not wrap in markdown."""
+
+                # Helper for Base64 with Resizing (Max 512px)
+                import base64
+                import io
+                from PIL import Image
+
+                with Image.open(image_path) as img:
+                    # Convert to RGB to avoid alpha issues with JPEG
+                    if img.mode in ('RGBA', 'P'):
+                        img = img.convert('RGB')
+                    
+                    # Resize if needed
+                    max_size = 512
+                    width, height = img.size
+                    if width > max_size or height > max_size:
+                        if width > height:
+                            new_width = max_size
+                            new_height = int(height * (max_size / width))
+                        else:
+                            new_height = max_size
+                            new_width = int(width * (max_size / height))
+                        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                        print(f"[VNCCS] Resized input image to {new_width}x{new_height}")
+
+                    # Save to buffer
+                    buffered = io.BytesIO()
+                    img.save(buffered, format="JPEG", quality=85)
+                    b64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+                messages = [
+                    {"role": "system", "content": "You are a character description specialist. Analyze the image and output valid JSON only."},
+                    {"role": "user", "content": [
+                        {"type": "text", "text": prompt_instruction},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}} 
+                    ]}
+                ]
+                
+                print(f"[VNCCS] Starting Inference...")
+                response = llm.create_chat_completion(
+                    messages=messages,
+                    max_tokens=1024,
+                    temperature=0.1
+                )
+                print(f"[VNCCS] Inference Complete. Processing Response...")
+                
+                content = response["choices"][0]["message"]["content"]
+                print(f"[VNCCS] Raw LLM Output: {content}")
+                
+                # 6. Extract JSON using json_repair
+                try:
+                    import json_repair
+                    data = json_repair.loads(content)
+                    print(f"[VNCCS] JSON Parsed Success (json_repair): {data.keys()}")
+                    return web.json_response(data)
+                except ImportError:
+                    print("[VNCCS] json_repair module not found! Fallback to standard json.")
+                    # Fallback to direct parse if module missing (user didn't install requirements yet)
+                    # ... (Clean minimalist fallback)
+                    json_str = content
+                    if "```json" in content:
+                         json_str = content.split("```json")[1].split("```")[0]
+                    try:
+                        data = json.loads(json_str)
+                        return web.json_response(data)
+                    except:
+                        return web.json_response({"additional_details": content})
+
+                except Exception as e:
+                    print(f"[VNCCS] JSON Parse Failed: {e}. Raw: {content}")
+                    return web.json_response({"additional_details": content})
+
+            except Exception as e:
+                import traceback
+                print(f"[VNCCS] CRITICAL ERROR IN INFERENCE:")
+                traceback.print_exc()
+                
+                # Detect specific Qwen/Llama errors
+                err_msg = str(e)
+                err_code = "INFERENCE_ERROR"
+
+                # Only trigger "Missing Model" dialog if it's actually about files
+                if "mmproj" in err_msg.lower() or "not found" in err_msg.lower() or "no file" in err_msg.lower():
+                     err_code = "MMPROJ_MISSING"
+                
+                return web.json_response({
+                    "error": err_code, 
+                    "message": f"Engine Error: {err_msg}",
+                    "model_name": "Qwen2VL (Check Console)"
+                }, status=500)
 
         except Exception as e:
             traceback.print_exc()
