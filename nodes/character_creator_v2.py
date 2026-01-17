@@ -174,6 +174,24 @@ if server:
             print(f"[VNCCS] Error serving cached preview: {e}")
             return web.Response(status=500, text=str(e))
 
+    @server.PromptServer.instance.routes.get("/vnccs/get_tags")
+    async def get_tags(request):
+        try:
+            # Locate the file relative to the node
+            # Assuming nodes/character_creator_v2.py -> ../character_template/character_tags.json
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            root_dir = os.path.dirname(current_dir)
+            tags_path = os.path.join(root_dir, "character_template", "character_tags.json")
+            
+            if not os.path.exists(tags_path):
+                return web.Response(status=404, text="Tags file not found")
+                
+            with open(tags_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return web.json_response(data)
+        except Exception as e:
+            return web.Response(status=500, text=str(e))
+
     @server.PromptServer.instance.routes.post("/vnccs/preview_generate")
     async def preview_generate(request):
         try:

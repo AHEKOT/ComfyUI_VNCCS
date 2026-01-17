@@ -226,7 +226,33 @@ const STYLE = `
 .vnccs-modal {
     background: #252525; border: 1px solid #444; padding: 20px; border-radius: 8px;
     width: 300px; display: flex; flex-direction: column; gap: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+    max-height: 80vh; /* Safety for tall content */
 }
+
+/* Tag Constructor Styles */
+.vnccs-tag-btn {
+    width: 20px; height: 20px;
+    background: #333; color: #fff; border: 1px solid #555;
+    border-radius: 4px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; margin-left: auto; /* Push to right */
+    flex-shrink: 0;
+}
+.vnccs-tag-btn:hover { background: #444; color: #5b96f5; border-color: #5b96f5; }
+
+.vnccs-tag-grid {
+    display: flex; flex-wrap: wrap; gap: 5px;
+    max-height: 300px; overflow-y: auto;
+    padding: 5px; background: #1a1a1a; border-radius: 4px;
+}
+.vnccs-tag-chip {
+    padding: 4px 8px; background: #333; border: 1px solid #444; border-radius: 12px;
+    font-size: 11px; color: #ccc; cursor: pointer; select-user: none;
+}
+.vnccs-tag-chip:hover { background: #444; border-color: #666; }
+.vnccs-tag-chip.selected { background: #3558c7; color: white; border-color: #5b96f5; }
+
+.vnccs-tag-category { font-size: 11px; color: #888; margin-top: 5px; text-transform: uppercase; font-weight: bold; }
 `;
 
 app.registerExtension({
@@ -318,6 +344,8 @@ app.registerExtension({
                     }
                 };
 
+                let TAG_DATA = null;
+
                 const els = {};
                 const saveState = (isValid = false) => {
                     const persistData = {
@@ -403,7 +431,27 @@ app.registerExtension({
                         return wrap;
                     }
 
-                    wrap.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
+                    // Header Row: Label + Optional Tag Button
+                    const header = document.createElement("div");
+                    header.style.display = "flex";
+                    header.style.alignItems = "center";
+                    header.style.justifyContent = "space-between";
+                    header.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
+
+                    // Fields that support tag constructor
+                    // hair, eyes, race, body, skin_color(maybe), face, details
+                    const tagSupported = ["hair", "eyes", "race", "body", "face", "additional_details"].includes(key);
+                    if (tagSupported && type === "text") {
+                        const btn = document.createElement("div");
+                        btn.className = "vnccs-tag-btn";
+                        btn.innerHTML = "✎"; // Pencil or List icon
+                        btn.title = "Open Tag Constructor";
+                        btn.onclick = () => openTagConstructor(key, inp);
+                        header.appendChild(btn);
+                    }
+
+                    wrap.appendChild(header);
+
                     let inp;
                     if (type === "select") {
                         inp = document.createElement("select"); inp.className = "vnccs-select";
@@ -652,6 +700,131 @@ app.registerExtension({
                                     alert("Delete Failed: " + e);
                                     return false; // Close on crash to avoid Stuck UI
                                 }
+                            }
+                        }
+                    ]);
+                };
+
+                btnDel.onclick = () => doDelete();
+
+                const openTagConstructor = async (fieldKey, inputEl) => {
+                    // 1. Ensure Data
+                    if (!TAG_DATA) {
+                        try {
+                            const r = await api.fetchApi("/vnccs/get_tags");
+                            if (r.ok) TAG_DATA = await r.json();
+                            else throw new Error("Failed to load tags");
+                        } catch (e) {
+                            alert("Error loading tag database: " + e);
+                            return;
+                        }
+                    }
+
+                    // 2. Determine Categories
+                    // Mapping: widget_key -> [json_keys...]
+                    const map = {
+                        "hair": ["hair_color", "hairstyles"],
+                        "eyes": ["eyes"], // special handling for nested
+                        "face": ["eyes"], // special handling (nested under eyes in user update)
+                        "race": ["races"],
+                        "body": ["breast_size"],
+                        "additional_details": ["details"]
+                    };
+
+                    const categories = map[fieldKey] || [];
+                    if (!categories.length) return;
+
+                    // 3. Collect Tags
+                    const allTags = [];
+                    categories.forEach(cat => {
+                        let data = TAG_DATA.tags[cat];
+                        if (cat === "eyes") {
+                            if (fieldKey === "eyes") {
+                                // Flatten eyes
+                                if (TAG_DATA.tags.eyes.colors) allTags.push({ header: "Eye Colors", items: TAG_DATA.tags.eyes.colors });
+                                if (TAG_DATA.tags.eyes.features) allTags.push({ header: "Eye Features", items: TAG_DATA.tags.eyes.features });
+                            } else if (fieldKey === "face") {
+                                // Face Characteristics
+                                if (TAG_DATA.tags.eyes.face_characteristics) allTags.push({ header: "Face Characteristics", items: TAG_DATA.tags.eyes.face_characteristics });
+                            }
+                        } else if (data) {
+                            // Arrays
+                            // format header nicel
+                            const h = cat.replace("_", " ").toUpperCase();
+                            allTags.push({ header: h, items: data });
+                        }
+                    });
+
+                    if (!allTags.length) {
+                        alert("No tags found for this category.");
+                        return;
+                    }
+
+                    // 4. Modal
+                    // Parse current values to pre-select
+                    const currentVals = inputEl.value.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+                    const selected = new Set(currentVals);
+
+                    showModal(`Tag Constructor: ${fieldKey}`, (modal) => {
+                        const container = document.createElement("div");
+                        container.className = "vnccs-tag-grid";
+
+                        // Fix width for tag modal
+                        modal.style.width = "500px";
+
+                        allTags.forEach(group => {
+                            if (group.header) {
+                                const h = document.createElement("div");
+                                h.className = "vnccs-tag-category";
+                                h.style.width = "100%";
+                                h.innerText = group.header;
+                                container.appendChild(h);
+                            }
+
+                            group.items.forEach(item => {
+                                const t = item.tag;
+                                const chip = document.createElement("div");
+                                chip.className = "vnccs-tag-chip";
+                                chip.innerText = item.label || t;
+                                if (selected.has(t.replace(/_/g, " "))) chip.classList.add("selected");
+                                // Logic: check 't' (underscore) against currentVals (spaces usually)
+                                // Prompt usually uses spaces? "long hair". tag is "long_hair".
+                                // Let's normalize.
+                                const normTag = t.replace(/_/g, " ");
+                                if (currentVals.includes(normTag) || currentVals.includes(t)) {
+                                    chip.classList.add("selected");
+                                    selected.add(normTag);
+                                }
+
+                                chip.onclick = () => {
+                                    const useTag = t.replace(/_/g, " "); // Use spaces for prompt readability? Or Keep underscores?
+                                    // Danbooru acts weird. Usually spaces are better for readability in UI prompts unless model specific.
+                                    // Comfy/SD usually handles spaces. detailed prompts usually "long hair".
+
+                                    if (selected.has(useTag)) {
+                                        selected.delete(useTag);
+                                        chip.classList.remove("selected");
+                                    } else {
+                                        selected.add(useTag);
+                                        chip.classList.add("selected");
+                                    }
+                                };
+                                container.appendChild(chip);
+                            });
+                        });
+
+                        return container;
+                    }, [
+                        { text: "Cancel" },
+                        {
+                            text: "APPLY",
+                            class: "vnccs-btn-primary",
+                            action: () => {
+                                const final = Array.from(selected).join(", ");
+                                inputEl.value = final;
+                                // Trigger change
+                                inputEl.dispatchEvent(new Event('change'));
+                                return false; // Close
                             }
                         }
                     ]);
