@@ -90,6 +90,68 @@ class ClothesDesigner:
         costume_name = data.get("costume", "Naked")
         gen_settings = data.get("gen_settings", {})
         
+        # 0. Cache Check
+        import hashlib
+        cache_dir = os.path.join(character_dir(character_name), "cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_info_path = os.path.join(cache_dir, "preview_info.json")
+        cache_img_path = os.path.join(cache_dir, "preview.png")
+
+        # Stable Hash Calculation
+        # We must parse and re-dump to ensure consistency between JS (widget) and Python (API) serialization
+        # JS JSON.stringify usually has no spaces. Python default has spaces. Key order might differ.
+        try:
+            if isinstance(widget_data, str):
+                msg_obj = json.loads(widget_data)
+            else:
+                msg_obj = widget_data
+            
+            # Canonical JSON representation
+            canonical_str = json.dumps(msg_obj, sort_keys=True, separators=(',', ':'))
+            input_hash = hashlib.sha256(canonical_str.encode('utf-8')).hexdigest()
+            print(f"[ClothesDesigner] Checking Cache Hash: {input_hash}")
+        except:
+             input_hash = "INVALID"
+
+        if os.path.exists(cache_info_path) and os.path.exists(cache_img_path):
+            try:
+                with open(cache_info_path, "r") as f:
+                    cached_info = json.load(f)
+                
+                cached_hash = cached_info.get("hash")
+                print(f"[ClothesDesigner] Stored Cache Hash:  {cached_hash}")
+                
+                if cached_hash == input_hash:
+                    # Cache Hit! Load image and return
+                    print(f"[ClothesDesigner] Cache Hit! Loading preview from {cache_img_path}")
+                    try:
+                        CACHE_IMG = Image.open(cache_img_path)
+                        # Ensure loaded image is RGB (strip alpha if present)
+                        image_np = np.array(CACHE_IMG).astype(np.float32) / 255.0
+                        if image_np.shape[-1] == 4: image_np = image_np[..., :3]
+                        
+                        image_tensor = torch.from_numpy(image_np).unsqueeze(0)
+                        
+                        # Reconstruct prompts and other returns
+                        pos, neg = self.construct_prompt(data)
+                        sheet_path = sheets_dir(character_name, costume_name, "neutral") 
+                        face_path = faces_dir(character_name, costume_name, "neutral")
+                        costume_json_str = json.dumps(data.get("costume_info", {}), indent=2)
+                        
+                        class PipeContext:
+                            def __init__(self): 
+                                self.seed_int = int(gen_settings.get("seed", 0))
+                                self.steps = int(gen_settings.get("steps", 4))
+                                self.cfg = float(gen_settings.get("cfg", 1.0))
+
+                        pipe = PipeContext()
+                        
+                        return (image_tensor, pipe, pos, neg, sheet_path, face_path, costume_json_str)
+                    except Exception as e:
+                        print(f"[ClothesDesigner] Cache Load Error: {e}")
+            except Exception as e:
+                print(f"[ClothesDesigner] Cache Read Failed: {e}")
+
         # 0. Validation
         def has_base_sheet(c):
              p1 = os.path.join(character_dir(c), "Sheets", "Naked", "neutral")
@@ -318,6 +380,15 @@ class ClothesDesigner:
              c_path = os.path.join(c_dir, "preview.png")
              i_pil = Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
              i_pil.save(c_path)
+             
+             # Save Cache Info
+             c_info_path = os.path.join(c_dir, "preview_info.json")
+             with open(c_info_path, "w") as f:
+                 json.dump({
+                     "hash": input_hash,
+                     "widget_data": data # Save parsed data or original string
+                 }, f)
+                 
              server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": unique_id, "character": character_name})
         except: pass
 
@@ -419,9 +490,8 @@ async def clothes_preview(request):
         # But `process` is an instance method and returns a lot of stuff.
         # Let's extract the core logic to a helper or just instantiate ClothesDesigner.
         
-        # NOTE: calling process() expects 'widget_data' as string.
-        # The API receives JSON.
-        widget_data_str = json.dumps(data)
+        # Create canonical string to match process() hashing logic
+        widget_data_str = json.dumps(data, sort_keys=True, separators=(',', ':'))
         
         designer = ClothesDesigner()
         # Run process. This will do the standard node calls.

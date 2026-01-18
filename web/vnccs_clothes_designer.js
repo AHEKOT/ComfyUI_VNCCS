@@ -342,7 +342,7 @@ app.registerExtension({
                 // 4. Generate Button
                 const btnGen = document.createElement("button");
                 btnGen.className = "vnccs-btn vnccs-btn-primary";
-                btnGen.innerText = "GENERATE PREVIEW / SAVE";
+                btnGen.innerText = "GENERATE PREVIEW";
                 btnGen.style.width = "100%";
                 btnGen.style.marginBottom = "5px";
                 btnGen.style.flex = "0 0 auto"; // Prevent vertical stretching
@@ -616,15 +616,11 @@ app.registerExtension({
                     const r = await api.fetchApi(`/vnccs/list_costumes?character=${encodeURIComponent(c)}`);
                     let list = await r.json();
 
-                    const oldVal = els.costSel.value || state.costume;
-
                     els.costSel.innerHTML = "";
                     list.forEach(i => els.costSel.add(new Option(i, i)));
 
-                    // Try to preserve selection if possible, else default to Naked or first
-                    if (oldVal && list.includes(oldVal)) {
-                        state.costume = oldVal;
-                    } else if (list.includes("Naked")) {
+                    // Always default to Naked to ensure fresh view when switching characters
+                    if (list.includes("Naked")) {
                         state.costume = "Naked";
                     } else if (list.length) {
                         state.costume = list[0];
