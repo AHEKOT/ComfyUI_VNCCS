@@ -760,7 +760,43 @@ app.registerExtension({
                         if (!r.ok) {
                             if (r.status === 400) {
                                 const txt = await r.text();
-                                showInfo("Character Incomplete", txt);
+                                showModal("Character don't have body yet. Complete Step1 workflow first.", () => {
+                                    const d = document.createElement("div"); d.innerText = txt; return d;
+                                }, [
+                                    {
+                                        text: "OK", class: "vnccs-btn-primary", action: async (overlay) => {
+                                            // Auto-switch to first valid character
+                                            overlay.remove(); // Close modal immediately
+
+                                            // Helper to check validity
+                                            const checkChar = async (c) => {
+                                                try {
+                                                    const testUrl = `/vnccs/get_preview?character=${encodeURIComponent(c)}&costume=Naked&ts=${Date.now()}`;
+                                                    const testR = await fetch(testUrl);
+                                                    return testR.ok;
+                                                } catch (e) { return false; }
+                                            };
+
+                                            const opts = els.charSelect.options;
+                                            for (let i = 0; i < opts.length; i++) {
+                                                const candidate = opts[i].value;
+                                                // Check validity (even if it's the current one, though we know current failed)
+                                                // Actually, try next ones mainly, but user said "reset to first valid", implies order 0..N
+                                                if (await checkChar(candidate)) {
+                                                    console.log("Found valid character:", candidate);
+                                                    state.character = candidate;
+                                                    els.charSelect.value = candidate;
+                                                    saveState();
+                                                    await loadCostumes();
+                                                    updatePreviewImage();
+                                                    return false; // Done
+                                                }
+                                            }
+                                            showInfo("Error", "No valid characters found in the list.");
+                                            return false;
+                                        }
+                                    }
+                                ]);
                             }
                             els.previewImg.style.display = "none";
                             els.placeholder.style.display = "block";
