@@ -435,7 +435,10 @@ app.registerExtension({
                                     await loadChar(n);
                                     saveState();
                                     return false;
-                                } catch (e) { alert("Create Failed: " + e); return true; }
+                                } catch (e) {
+                                    showModal("Error", () => { const d = document.createElement("div"); d.innerText = "Create Failed: " + e; return d; }, [{ text: "Close" }]);
+                                    return true;
+                                }
                             }
                         }
                     ]);
@@ -466,7 +469,10 @@ app.registerExtension({
                                         saveState();
                                         return false;
                                     }
-                                } catch (e) { alert(e); return false; }
+                                } catch (e) {
+                                    showModal("Error", () => { const d = document.createElement("div"); d.innerText = "" + e; return d; }, [{ text: "Close" }]);
+                                    return false;
+                                }
                             }
                         }
                     ]);
@@ -601,7 +607,9 @@ app.registerExtension({
                                         subfolder: json.subfolder || ""
                                     });
                                 }
-                            } catch (err) { alert("Upload Failed: " + err); }
+                            } catch (err) {
+                                showModal("Upload Error", () => { const d = document.createElement("div"); d.innerText = "Upload Failed: " + err; return d; }, [{ text: "Close" }]);
+                            }
                         }
                         uploadBtn.innerText = "+ UPLOAD IMAGES";
                         saveState();
@@ -743,7 +751,9 @@ app.registerExtension({
                                                     startProgressPolling(); // View Progress
                                                     return false;
                                                 }
-                                            } catch (e) { alert("Download trigger failed: " + e); }
+                                            } catch (e) {
+                                                showModal("Error", () => { const d = document.createElement("div"); d.innerText = "Download trigger failed: " + e; return d; }, [{ text: "Close" }]);
+                                            }
                                             return true;
                                         }
                                     }
@@ -985,12 +995,24 @@ app.registerExtension({
                         delBtn.style.borderRadius = "0 0 0 4px";
                         delBtn.onclick = (e) => {
                             e.stopPropagation();
-                            if (confirm("Remove image?")) {
-                                state.source_images.splice(idx, 1);
-                                if (state.selected_idx >= state.source_images.length) state.selected_idx = Math.max(0, state.source_images.length - 1);
-                                saveState();
-                                renderThumbs();
-                            }
+                            showModal("Remove Image", () => {
+                                const d = document.createElement("div");
+                                d.innerText = "Are you sure you want to remove this image?";
+                                return d;
+                            }, [
+                                { text: "Cancel" },
+                                {
+                                    text: "Remove",
+                                    class: "vnccs-btn-danger",
+                                    action: () => {
+                                        state.source_images.splice(idx, 1);
+                                        if (state.selected_idx >= state.source_images.length) state.selected_idx = Math.max(0, state.source_images.length - 1);
+                                        saveState();
+                                        renderThumbs();
+                                        return false;
+                                    }
+                                }
+                            ]);
                         };
 
                         wrap.appendChild(img);

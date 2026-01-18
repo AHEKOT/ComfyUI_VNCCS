@@ -5,7 +5,7 @@
 - Feature: Added `CharacterCreatorV2` node with standalone GUI and on-demand preview generation (640x1536).
 - Feature: `CharacterCreatorV2` now dynamically updates character list after creating a new character.
 - Tests: Added unit tests for `CharacterCreatorV2` backend.
-- Feature: Added `CharacterCloner` node with multi-image upload and auto-tagging via `llama-cpp-python` (Qwen3-VL).
+- Feature: Added `CharacterCloner` node with multi-image upload and auto-tagging via `llama-cpp-python` (Qwen2.5-VL).
 
 ### Fixed
 - [Fix] CharacterCreatorV2: Removed redundant `pipe` input and output.
