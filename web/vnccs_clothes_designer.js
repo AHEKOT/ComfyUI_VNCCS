@@ -40,6 +40,7 @@ const STYLE = `
 .vnccs-btn-primary { background: #3558c7; } .vnccs-btn-primary:hover { background: #4264d9; }
 .vnccs-btn-success { background: #2e7d32; } .vnccs-btn-success:hover { background: #388e3c; }
 .vnccs-btn-danger { background: #d32f2f; } .vnccs-btn-danger:hover { background: #b71c1c; }
+.vnccs-btn:disabled { background: #555 !important; color: #888 !important; cursor: not-allowed !important; opacity: 0.6; }
 
 .vnccs-btn-row { display: flex; gap: 10px; margin-top: auto; flex-shrink: 0; flex-wrap: wrap; }
 
@@ -394,10 +395,15 @@ app.registerExtension({
                 btnDelCostume.innerText = "DELETE COSTUME";
                 btnDelCostume.onclick = () => {
                     if (state.costume === "Naked") { showInfo("Warning", "Cannot delete Naked costume."); return; }
-                    showModal("Delete", () => { return document.createElement("div").innerText = "Delete " + state.costume + "?"; },
+                    showModal("Delete", () => {
+                        const d = document.createElement("div");
+                        d.innerText = "Delete " + state.costume + "?";
+                        return d;
+                    },
                         [{ text: "Cancel" }, { text: "DELETE", class: "vnccs-btn-danger", action: async () => { showInfo("Not Implemented", "Manual fix required."); return false; } }]);
                 };
                 actionRow.appendChild(btnDelCostume);
+                els.btnDel = btnDelCostume;
                 colLeft.appendChild(actionRow);
 
                 // Generate Button
@@ -430,6 +436,7 @@ app.registerExtension({
                     } catch (e) { showInfo("Error", e.toString()); }
                     btnGen.innerText = "GENERATE PREVIEW / SAVE"; btnGen.disabled = false;
                 };
+                els.btnGen = btnGen;
                 colLeft.appendChild(btnGen);
 
                 // Preview
@@ -686,16 +693,36 @@ app.registerExtension({
                     const r = await api.fetchApi(`/vnccs/list_costumes?character=${encodeURIComponent(c)}`);
                     let list = await r.json();
 
-                    els.costSel.innerHTML = "";
-                    list.forEach(i => els.costSel.add(new Option(i, i)));
+                    // Filter 'Naked' from display list
+                    const displayList = list.filter(i => i !== "Naked");
 
-                    // Always default to Naked to ensure fresh view when switching characters
-                    if (list.includes("Naked")) {
+                    els.costSel.innerHTML = "";
+                    displayList.forEach(i => els.costSel.add(new Option(i, i)));
+
+                    // Logic: If only Naked exists (displayList empty), prevent generation/deletion
+                    if (displayList.length === 0) {
                         state.costume = "Naked";
-                    } else if (list.length) {
-                        state.costume = list[0];
+                        if (els.btnGen) els.btnGen.disabled = true;
+                        if (els.btnDel) els.btnDel.disabled = true;
+                        if (els.costSel) els.costSel.disabled = true;
+                        // Disable Inputs
+                        ["top", "bottom", "head", "face", "shoes"].forEach(k => { if (els[k]) els[k].disabled = true; });
+                    } else {
+                        if (els.btnGen) els.btnGen.disabled = false;
+                        if (els.btnDel) els.btnDel.disabled = false;
+                        if (els.costSel) els.costSel.disabled = false;
+                        // Enable Inputs
+                        ["top", "bottom", "head", "face", "shoes"].forEach(k => { if (els[k]) els[k].disabled = false; });
+
+                        // Select default if current is Naked or invalid
+                        if (state.costume === "Naked" || !displayList.includes(state.costume)) {
+                            state.costume = displayList[0];
+                        }
                     }
-                    els.costSel.value = state.costume;
+
+                    if (els.costSel.options.length > 0) {
+                        els.costSel.value = state.costume;
+                    }
 
                     await loadCostumeInfo();
                 };

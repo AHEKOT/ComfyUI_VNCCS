@@ -23,3 +23,10 @@
 
 ### Changed
 - Refactored `vnccs_autofill.js` for better error logging.
+- [Feature] ClothesDesigner: Added "Clone Clothes" tab for transferring outfits from reference images.
+- [Fix] ClothesDesigner: Fixed `ReferenceError` crashes by restructuring UI initialization order.
+- [Fix] ClothesDesigner: Implemented `SafeQwenEncoder` to handle non-square/RGBA inputs and prevent crashes.
+- [Fix] ClothesDesigner: Disabled resizing for "Clone Image" (Image 3) to pass it "AS IS" to latent encoder.
+- [Fix] ClothesDesigner: Fixed caching hash mismatches using canonical JSON serialization.
+- [Fix] ClothesDesigner: Fixed "Generate Preview" button layout issue.
+- [Fix] ClothesDesigner: UI now correctly resets to "Naked" view when switching characters.
