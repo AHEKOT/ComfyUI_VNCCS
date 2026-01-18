@@ -102,8 +102,6 @@ app.registerExtension({
                 const defaultState = {
                     character: "",
                     costume: "Naked",
-                    activeTab: "generate", // 'generate' or 'clone'
-                    clone_image: null,     // { name, type, subfolder }
                     costume_info: {
                         top: "", bottom: "", head: "", shoes: "", face: ""
                     },
@@ -133,7 +131,6 @@ app.registerExtension({
                 const state = {
                     ...defaultState,
                     ...saved,
-                    activeTab: saved.activeTab || "generate", // Ensure valid tab
                     costume_info: { ...defaultState.costume_info, ...(saved.costume_info || {}) },
                     gen_settings: { ...defaultState.gen_settings, ...(saved.gen_settings || {}) }
                 };
@@ -142,6 +139,7 @@ app.registerExtension({
 
                 const saveState = () => {
                     if (dataWidget) dataWidget.value = JSON.stringify(state);
+                    // Persist to LocalStorage for session restoration
                     try {
                         localStorage.setItem("VNCCS_ClothesDesigner_State", JSON.stringify(state));
                     } catch (e) { }
@@ -221,7 +219,14 @@ app.registerExtension({
                             inp.style.height = inp.scrollHeight + "px";
                         };
                         inp.addEventListener("input", autoResize);
+                        // Initial resize after append (needs small delay or observer, or just call it)
+                        // calling immediately might not work if not in DOM, but we can try or use requestAnimationFrame
                         setTimeout(autoResize, 10);
+
+                        // Also hook into value setting if needed, but onchange covers user input.
+                        // We need to trigger this when loading data too.
+                        // We'll expose it or just trigger input event? 
+                        // Let's add it to the element so we can call it later.
                         inp.autoResize = autoResize;
                     }
 
@@ -235,101 +240,17 @@ app.registerExtension({
                     return wrap;
                 };
 
-                // Helper to render Attributes Panel (Original Tab)
-                const renderAttributes = (container) => {
-                    container.innerHTML = '';
-                    container.appendChild(createField("top", "e.g. White t-shirt"));
-                    container.appendChild(createField("bottom", "e.g. Blue jeans"));
-                    container.appendChild(createField("shoes", "e.g. Sneakers"));
-                    container.appendChild(createField("head", "e.g. Hat"));
-                    container.appendChild(createField("face", "Face features (e.g. glasses)"));
-                };
-
-                // Helper to render Clone Panel (New Tab)
-                const renderClonePanel = (container) => {
-                    container.innerHTML = '';
-
-                    const desc = document.createElement("div");
-                    desc.style.fontSize = "12px"; desc.style.color = "#aaa"; desc.style.marginBottom = "10px";
-                    desc.innerText = "Upload an image to clone clothes from. The AI will attempt to transfer the outfit to your character.";
-                    container.appendChild(desc);
-
-                    // Preview / Upload Area
-                    const pContainer = document.createElement("div");
-                    pContainer.className = "vnccs-preview-container";
-                    pContainer.style.height = "250px";
-                    pContainer.style.background = "#151515";
-                    pContainer.style.position = "relative";
-                    pContainer.style.display = "flex";
-                    pContainer.style.alignItems = "center";
-                    pContainer.style.justifyContent = "center";
-                    pContainer.style.border = "1px solid #444";
-
-                    const img = document.createElement("img");
-                    img.style.maxWidth = "100%"; img.style.maxHeight = "100%"; img.style.objectFit = "contain";
-                    img.style.display = "none";
-                    if (state.clone_image) {
-                        img.src = api.apiURL(`/view?filename=${encodeURIComponent(state.clone_image.name)}&type=${state.clone_image.type}&subfolder=${state.clone_image.subfolder}`);
-                        img.style.display = "block";
-                    }
-                    pContainer.appendChild(img);
-
-                    // Upload Button Overlay
-                    const overlay = document.createElement("div");
-                    overlay.style.position = "absolute"; overlay.style.inset = "0";
-                    overlay.style.display = "flex"; overlay.style.alignItems = "center"; overlay.style.justifyContent = "center";
-                    overlay.style.cursor = "pointer";
-
-                    const btn = document.createElement("button");
-                    btn.className = "vnccs-btn";
-                    btn.style.background = "#444"; btn.style.border = "1px dashed #666";
-                    btn.innerText = state.clone_image ? "REPLACE IMAGE" : "+ UPLOAD IMAGE";
-                    if (state.clone_image) { btn.style.opacity = "0.8"; btn.style.fontSize = "10px"; btn.style.padding = "4px 8px"; btn.style.position = "absolute"; btn.style.bottom = "10px"; }
-
-                    overlay.appendChild(btn);
-
-                    const fileInp = document.createElement("input");
-                    fileInp.type = "file"; fileInp.accept = "image/*"; fileInp.style.display = "none";
-                    fileInp.onchange = async (e) => {
-                        if (e.target.files.length) {
-                            const file = e.target.files[0];
-                            try {
-                                btn.innerText = "UPLOADING...";
-                                const body = new FormData();
-                                body.append("image", file);
-                                const resp = await api.fetchApi("/upload/image", { method: "POST", body });
-                                const json = await resp.json();
-                                state.clone_image = {
-                                    name: json.name, type: json.type || "input", subfolder: json.subfolder || ""
-                                };
-                                saveState();
-                                // Update View
-                                renderClonePanel(container);
-                            } catch (err) {
-                                showInfo("Upload Failed", err.toString());
-                            }
-                        }
-                    };
-
-                    overlay.onclick = (e) => {
-                        e.stopPropagation();
-                        fileInp.click();
-                    };
-
-                    pContainer.appendChild(overlay);
-                    container.appendChild(pContainer);
-                };
-
-
-                // --- MAIN LAYOUT ---
+                // Container
                 const container = document.createElement("div"); container.className = "vnccs-container";
+
+                // --- TOP ROW ---
                 const topRow = document.createElement("div"); topRow.className = "vnccs-top-row";
 
-                // --- COL 1: DESIGN STUDIO ---
+                // --- COL 1: PREVIEW & SELECTION ---
                 const colLeft = document.createElement("div"); colLeft.className = "vnccs-col";
                 colLeft.innerHTML = '<div class="vnccs-section-title">Design Studio</div>';
 
-                // Character Select
+                // 1. Character Dropdown
                 const charRow = document.createElement("div"); charRow.className = "vnccs-field";
                 charRow.innerHTML = '<div class="vnccs-label">CHARACTER</div>';
                 const charSel = document.createElement("select"); charSel.className = "vnccs-select";
@@ -343,21 +264,21 @@ app.registerExtension({
                 els.charSelect = charSel;
                 colLeft.appendChild(charRow);
 
-                // Costume Select
+                // 2. Costume Dropdown (Moved to Left)
                 const costRow = document.createElement("div"); costRow.className = "vnccs-field";
                 costRow.innerHTML = '<div class="vnccs-label">COSTUME (Select to Edit)</div>';
                 const costSel = document.createElement("select"); costSel.className = "vnccs-select";
                 costSel.onchange = async (e) => {
                     state.costume = e.target.value;
                     await loadCostumeInfo();
-                    updatePreviewImage();
+                    updatePreviewImage(); // Also update preview when switching costume
                     saveState();
                 };
                 els.costSel = costSel;
                 costRow.appendChild(costSel);
                 colLeft.appendChild(costRow);
 
-                // Action Buttons
+                // 3. Action Buttons (Create/Delete Costume - NOT Character)
                 const actionRow = document.createElement("div"); actionRow.className = "vnccs-btn-row";
                 actionRow.style.marginBottom = "10px";
 
@@ -373,7 +294,9 @@ app.registerExtension({
                             const n = ol.querySelector("input").value.trim();
                             if (n) {
                                 await api.fetchApi("/vnccs/save_costume", {
-                                    method: "POST", body: JSON.stringify({ character: state.character, costume: n, info: {} })
+                                    method: "POST", body: JSON.stringify({
+                                        character: state.character, costume: n, info: {}
+                                    })
                                 });
                                 await loadCostumes();
                                 state.costume = n;
@@ -387,38 +310,68 @@ app.registerExtension({
                         }
                     }]);
                 };
-                actionRow.appendChild(btnNewCostume);
 
                 const btnDelCostume = document.createElement("button");
                 btnDelCostume.className = "vnccs-btn vnccs-btn-danger";
                 btnDelCostume.innerText = "DELETE COSTUME";
                 btnDelCostume.onclick = () => {
                     if (state.costume === "Naked") { showInfo("Warning", "Cannot delete Naked costume."); return; }
-                    showModal("Delete", () => { return document.createElement("div").innerText = "Delete " + state.costume + "?"; },
-                        [{ text: "Cancel" }, { text: "DELETE", class: "vnccs-btn-danger", action: async () => { showInfo("Not Implemented", "Manual fix required."); return false; } }]);
+                    showModal("Delete Costume", () => {
+                        return document.createElement("div").innerHTML = `Delete <b>${state.costume}</b>?`;
+                    }, [{ text: "Cancel" }, {
+                        text: "DELETE", class: "vnccs-btn-danger", action: async () => {
+                            // Assuming we have a delete endpoint? Or just save empty? 
+                            // Implementation plan didn't specify delete endpoint.
+                            // But we can just "forget" it. Actually we need to remove folder.
+                            // For now, let's just alert "Not fully implemented" or try to remove from list?
+                            // VNCCS lists come from folders.
+                            // Let's rely on manual deletion or implement if critical.
+                            // User asked for "Delete" button.
+                            // alert("Deletion of costume folders not yet implemented in backend API. Please delete folder manually.");
+                            // console.warn("Deletion of costume folders not yet implemented in backend API. Please delete folder manually.");
+                            showInfo("Not Implemented", "Deletion of costume folders not yet implemented in backend API. Please delete folder manually.");
+                            return false;
+                        }
+                    }]);
                 };
+
+                actionRow.appendChild(btnNewCostume);
                 actionRow.appendChild(btnDelCostume);
                 colLeft.appendChild(actionRow);
 
-                // Generate Button
+                // 4. Generate Button
                 const btnGen = document.createElement("button");
                 btnGen.className = "vnccs-btn vnccs-btn-primary";
-                btnGen.innerText = "GENERATE PREVIEW / SAVE";
-                btnGen.style.width = "100%"; btnGen.style.marginBottom = "5px";
+                btnGen.innerText = "GENERATE PREVIEW";
+                btnGen.style.width = "100%";
+                btnGen.style.marginBottom = "5px";
                 btnGen.style.flex = "0 0 auto"; // Prevent vertical stretching
                 btnGen.onclick = async () => {
                     if (!state.character) { showInfo("Error", "Select Character"); return; }
+
                     if (state.gen_settings.seed_mode === "randomize") {
                         state.gen_settings.seed = Math.floor(Math.random() * 10000000000000);
                         if (els.seed) els.seed.value = state.gen_settings.seed;
                     }
-                    if (!state.gen_settings.unet_name) { showInfo("Error", "No UNET Selected"); return; }
+
+                    // Failsafe: Ensure UNET is set
+                    if (!state.gen_settings.unet_name && els.unet_name && els.unet_name.value) {
+                        state.gen_settings.unet_name = els.unet_name.value;
+                        saveState();
+                    }
+                    if (!state.gen_settings.unet_name) {
+                        showInfo("Error", "No UNET Model Selected. Please select a model.");
+                        return;
+                    }
 
                     saveCostumeToBackend();
                     saveState();
-                    btnGen.innerText = "GENERATING..."; btnGen.disabled = true;
+                    btnGen.innerText = "GENERATING...";
+                    btnGen.disabled = true;
                     try {
-                        const r = await api.fetchApi("/vnccs/clothes_preview", { method: "POST", body: JSON.stringify(state) });
+                        const r = await api.fetchApi("/vnccs/clothes_preview", {
+                            method: "POST", body: JSON.stringify(state)
+                        });
                         if (r.ok) {
                             const d = await r.json();
                             if (d.image) {
@@ -426,67 +379,44 @@ app.registerExtension({
                                 els.previewImg.style.display = "block";
                                 els.placeholder.style.display = "none";
                             }
-                        } else showInfo("Error", "Failed");
+                        } else {
+                            showInfo("Error", "Generation Failed");
+                        }
                     } catch (e) { showInfo("Error", e.toString()); }
-                    btnGen.innerText = "GENERATE PREVIEW / SAVE"; btnGen.disabled = false;
+                    btnGen.innerText = "GENERATE PREVIEW / SAVE";
+                    btnGen.disabled = false;
                 };
+                els.btnGen = btnGen;
                 colLeft.appendChild(btnGen);
 
-                // Preview
-                const frame = document.createElement("div"); frame.className = "vnccs-preview-container";
+                // Preview Frame
+                const frame = document.createElement("div");
+                frame.className = "vnccs-preview-container";
                 frame.style.marginTop = "5px";
                 frame.innerHTML = '<div class="vnccs-placeholder">No Preview</div>';
-                const pImg = document.createElement("img"); pImg.className = "vnccs-preview-img"; pImg.style.display = "none";
-                pImg.onclick = () => window.open(pImg.src, "_blank");
-                frame.appendChild(pImg);
-                els.previewImg = pImg; els.placeholder = frame.querySelector(".vnccs-placeholder");
-                colLeft.appendChild(frame);
 
+                const pImg = document.createElement("img");
+                pImg.className = "vnccs-preview-img"; pImg.style.display = "none";
+                pImg.onclick = () => { window.open(pImg.src, "_blank"); };
+                frame.appendChild(pImg);
+
+                els.previewImg = pImg;
+                els.placeholder = frame.querySelector(".vnccs-placeholder");
+
+                colLeft.appendChild(frame);
                 topRow.appendChild(colLeft);
 
-                // --- COL 2: MIDDLE PANEL (Tabs) ---
+                // --- COL 2: ATTRIBUTES (Costume Data) ---
                 const colMid = document.createElement("div"); colMid.className = "vnccs-col";
-                colMid.style.paddingTop = "0"; // Reset padding for tabs
+                colMid.innerHTML = '<div class="vnccs-section-title">Costume Attributes</div>';
 
-                // Tab Header
-                const tabBar = document.createElement("div");
-                tabBar.style.display = "flex"; tabBar.style.borderBottom = "1px solid #444";
-                tabBar.style.marginBottom = "10px"; tabBar.style.margin = "0 -10px 10px -10px"; // edge-to-edge
-                tabBar.style.background = "#1e1e1e";
+                // Attributes only
+                colMid.appendChild(createField("top", "e.g. White t-shirt"));
+                colMid.appendChild(createField("bottom", "e.g. Blue jeans"));
+                colMid.appendChild(createField("shoes", "e.g. Sneakers"));
+                colMid.appendChild(createField("head", "e.g. Hat"));
+                colMid.appendChild(createField("face", "Face features (e.g. glasses)"));
 
-                const createTab = (id, label) => {
-                    const t = document.createElement("div");
-                    t.innerText = label;
-                    t.style.flex = "1"; t.style.textAlign = "center"; t.style.padding = "10px";
-                    t.style.cursor = "pointer"; t.style.fontSize = "12px"; t.style.fontWeight = "bold";
-                    t.style.color = (state.activeTab === id) ? "#fff" : "#888";
-                    t.style.borderBottom = (state.activeTab === id) ? "3px solid #3558c7" : "3px solid transparent";
-                    t.style.background = (state.activeTab === id) ? "#252525" : "#1e1e1e";
-
-                    t.onclick = () => {
-                        state.activeTab = id;
-                        saveState();
-                        refreshTabs();
-                    };
-                    return t;
-                };
-
-                const contentArea = document.createElement("div");
-                contentArea.style.flex = "1"; contentArea.style.display = "flex"; contentArea.style.flexDirection = "column";
-
-                const refreshTabs = () => {
-                    tabBar.innerHTML = '';
-                    tabBar.appendChild(createTab("generate", "GENERATE CLOTHES"));
-                    tabBar.appendChild(createTab("clone", "CLONE CLOTHES"));
-
-                    if (state.activeTab === "generate") renderAttributes(contentArea);
-                    else renderClonePanel(contentArea);
-                };
-
-                refreshTabs(); // Initial Render
-
-                colMid.appendChild(tabBar);
-                colMid.appendChild(contentArea);
                 topRow.appendChild(colMid);
 
                 // --- COL 3: SETTINGS ---

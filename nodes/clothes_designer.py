@@ -46,6 +46,13 @@ class ClothesDesigner:
 
     @staticmethod
     def construct_prompt(data):
+        active_tab = data.get("activeTab", "generate")
+        
+        if active_tab == "clone" and data.get("clone_image"):
+             bg_col = data.get("gen_settings", {}).get("background_color", "Green")
+             hex_col = "00FF00" if bg_col == "Green" else "0000FF"
+             return f"Put clothes, footwear and accessories from Picture 3 to character on Picture 1\nsolid {bg_col.lower()} ({hex_col}) background", ""
+
         info = data.get("costume_info", {})
         parts = []
         for k in ["top", "bottom", "head", "shoes", "face"]:
@@ -74,21 +81,26 @@ class ClothesDesigner:
             best = files[-1]
             img = Image.open(best)
             w, h = img.size
-            item_w = w // 6; item_h = h // 2
-            left = 5 * item_w; upper = 1 * item_h
-            crop = img.crop((left, upper, left+item_w, upper+item_h))
-            return torch.from_numpy(np.array(crop).astype(np.float32) / 255.0).unsqueeze(0)
+            if w > 0 and h > 0:
+                item_w = w // 6; item_h = h // 2
+                left = 5 * item_w; upper = 1 * item_h
+                crop = img.crop((left, upper, left+item_w, upper+item_h))
+                return torch.from_numpy(np.array(crop).astype(np.float32) / 255.0).unsqueeze(0)
+            return None
         except: return None
 
     def process(self, widget_data="{}", unique_id=None):
         try:
-            data = json.loads(widget_data)
+            if isinstance(widget_data, str):
+                data = json.loads(widget_data)
+            else: data = widget_data
         except:
             data = {}
 
         character_name = data.get("character", "Unknown")
         costume_name = data.get("costume", "Naked")
         gen_settings = data.get("gen_settings", {})
+        active_tab = data.get("activeTab", "generate")
         
         # 0. Cache Check
         import hashlib
@@ -98,8 +110,6 @@ class ClothesDesigner:
         cache_img_path = os.path.join(cache_dir, "preview.png")
 
         # Stable Hash Calculation
-        # We must parse and re-dump to ensure consistency between JS (widget) and Python (API) serialization
-        # JS JSON.stringify usually has no spaces. Python default has spaces. Key order might differ.
         try:
             if isinstance(widget_data, str):
                 msg_obj = json.loads(widget_data)
@@ -109,7 +119,6 @@ class ClothesDesigner:
             # Canonical JSON representation
             canonical_str = json.dumps(msg_obj, sort_keys=True, separators=(',', ':'))
             input_hash = hashlib.sha256(canonical_str.encode('utf-8')).hexdigest()
-            print(f"[ClothesDesigner] Checking Cache Hash: {input_hash}")
         except:
              input_hash = "INVALID"
 
@@ -119,20 +128,17 @@ class ClothesDesigner:
                     cached_info = json.load(f)
                 
                 cached_hash = cached_info.get("hash")
-                print(f"[ClothesDesigner] Stored Cache Hash:  {cached_hash}")
                 
                 if cached_hash == input_hash:
-                    # Cache Hit! Load image and return
+                    # Cache Hit
                     print(f"[ClothesDesigner] Cache Hit! Loading preview from {cache_img_path}")
                     try:
                         CACHE_IMG = Image.open(cache_img_path)
-                        # Ensure loaded image is RGB (strip alpha if present)
                         image_np = np.array(CACHE_IMG).astype(np.float32) / 255.0
                         if image_np.shape[-1] == 4: image_np = image_np[..., :3]
                         
                         image_tensor = torch.from_numpy(image_np).unsqueeze(0)
                         
-                        # Reconstruct prompts and other returns
                         pos, neg = self.construct_prompt(data)
                         sheet_path = sheets_dir(character_name, costume_name, "neutral") 
                         face_path = faces_dir(character_name, costume_name, "neutral")
@@ -145,12 +151,10 @@ class ClothesDesigner:
                                 self.cfg = float(gen_settings.get("cfg", 1.0))
 
                         pipe = PipeContext()
-                        
                         return (image_tensor, pipe, pos, neg, sheet_path, face_path, costume_json_str)
                     except Exception as e:
                         print(f"[ClothesDesigner] Cache Load Error: {e}")
-            except Exception as e:
-                print(f"[ClothesDesigner] Cache Read Failed: {e}")
+            except: pass
 
         # 0. Validation
         def has_base_sheet(c):
@@ -179,7 +183,6 @@ class ClothesDesigner:
             raise ValueError("All model fields (UNET, CLIP, VAE) must be set.")
             
         print(f"[ClothesDesigner] Loading UNET: {unet_name}")
-        # Dynamic lookup for GGUF Loader
         if "UnetLoaderGGUF" not in nodes.NODE_CLASS_MAPPINGS:
             raise RuntimeError("UnetLoaderGGUF node not found. Please install ComfyUI-GGUF.")
         
@@ -194,48 +197,29 @@ class ClothesDesigner:
         vae_loader = nodes.VAELoader()
         vae, = vae_loader.load_vae(vae_name)
 
-        # 4. LoRAs (Standard LoraLoader)
+        # 4. LoRAs
         lora_loader = nodes.LoraLoader()
-        
         def safe_load_lora(m, c, name, strength):
             if not name or name == "None": return m, c
             print(f"[ClothesDesigner] Loading LoRA: {name} (s={strength})")
             return lora_loader.load_lora(m, c, name, strength_model=strength, strength_clip=strength)
 
-        # Lightning LoRA
         model, clip = safe_load_lora(model, clip, gen_settings.get("lightning_lora"), gen_settings.get("lightning_lora_strength", 1.0))
-        # Service LoRA
         model, clip = safe_load_lora(model, clip, gen_settings.get("service_lora"), gen_settings.get("service_lora_strength", 1.0))
-        # Stack
         for item in gen_settings.get("lora_stack", []):
              model, clip = safe_load_lora(model, clip, item.get("name"), item.get("strength", 1.0))
 
-        # 5. VNCCS Qwen Encoder
+        # 5. VNCCS Qwen Encoder (Subclass defined above in previous tool call, assuming standard import logic)
         from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder, node_helpers
         
-        # Define a safe subclass to handle aspect ratio requirements without modifying the shared file
         class SafeQwenEncoder(VNCCS_QWEN_Encoder):
-            def encode(self, clip, prompt, vae=None, 
-                       image1=None, image2=None, image3=None,
-                       target_size=1024, 
-                       upscale_method="lanczos",
-                       crop_method="center",
-                       instruction="",
-                       image1_name="Picture 1", image2_name="Picture 2", image3_name="Picture 3",
-                       weight1=1.0, weight2=1.0, weight3=1.0,
-                       vl_size=384,
-                       latent_image_index=1,
-                       qwen_2511=True,
-                       ):
-                
+            def encode(self, clip, prompt, vae=None, image1=None, image2=None, image3=None, target_size=1024, upscale_method="lanczos", crop_method="center", instruction="", image1_name="Picture 1", image2_name="Picture 2", image3_name="Picture 3", weight1=1.0, weight2=1.0, weight3=1.0, vl_size=384, latent_image_index=1, qwen_2511=True):
                 ref_latents = []
                 input_images = [image1, image2, image3]
                 names = [image1_name, image2_name, image3_name]
-                
                 vl_images = []
                 template_prefix = "<|im_start|>system\n"
                 template_suffix = "<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n"
-                
                 instruction_content = ""
                 if instruction == "":
                     instruction_content = "Describe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate."
@@ -244,11 +228,10 @@ class ClothesDesigner:
                     if template_suffix in instruction: instruction = instruction.split(template_suffix)[0]
                     if "{}" in instruction: instruction = instruction.replace("{}", "")
                     instruction_content = instruction
-                    
+                
                 llama_template = template_prefix + instruction_content + template_suffix
                 image_prompt = ""
 
-                # Helper to pad to square (Critical for Qwen token count)
                 def pad_to_square(img_tensor):
                     B, H, W, C = img_tensor.shape
                     if H == W: return img_tensor
@@ -259,27 +242,24 @@ class ClothesDesigner:
                     padded[:, y_off:y_off+H, x_off:x_off+W, :] = img_tensor
                     return padded
 
-                # Process each input image
                 for i, image in enumerate(input_images):
                     if image is not None:
-                        # Force RGB (remove alpha if present) to avoid Qwen channel mismatch
-                        if image.shape[-1] == 4:
-                            image = image[..., :3]
-
-                        # 1. Processing for Reference Latents (VAE) - Keep Original Aspect Ratio
-                        processed_ref = self._process_image(image, target_size, upscale_method, crop_method)
-                        ref_latents.append(vae.encode(processed_ref[:, :, :, :3]))
+                        if image.shape[-1] == 4: image = image[..., :3]
                         
-                        # 2. Processing for VL (Qwen) - Force Square to avoid crash
+                        # Fix: Pass Clone Image (Index 2) "AS IS" without resizing/cropping
+                        if i == 2:
+                            processed_ref = image
+                        else:
+                            processed_ref = self._process_image(image, target_size, upscale_method, crop_method)
+                            
+                        ref_latents.append(vae.encode(processed_ref[:, :, :, :3]))
                         image_sq = pad_to_square(image)
                         processed_vl = self._process_image(image_sq, vl_size, upscale_method, crop_method)
                         vl_images.append(processed_vl)
-                        
                         image_prompt += "{}: <|vision_start|><|image_pad|><|vision_end|>".format(names[i])
                         
                 tokens = clip.tokenize(image_prompt + prompt, images=vl_images, llama_template=llama_template)
                 conditioning = clip.encode_from_tokens_scheduled(tokens)
-
                 try:
                     if qwen_2511:
                         method = "index_timestep_zero"
@@ -294,13 +274,9 @@ class ClothesDesigner:
                     conditioning_full_ref = node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents_full}, append=True)
                 
                 conditioning_negative = [(torch.zeros_like(cond[0]), cond[1]) for cond in conditioning_full_ref]
-                
-                if len(ref_latents) >= latent_image_index:
-                    samples = ref_latents[latent_image_index - 1]
-                else:
-                    samples = torch.zeros(1, 4, 128, 128)
+                if len(ref_latents) >= latent_image_index: samples = ref_latents[latent_image_index - 1]
+                else: samples = torch.zeros(1, 4, 128, 128)
                 latent_out = {"samples": samples}
-                
                 return (conditioning_full_ref, conditioning_negative, latent_out)
 
         encoder = SafeQwenEncoder()
@@ -308,29 +284,49 @@ class ClothesDesigner:
         ref_image = self.get_naked_sheet_crop(character_name)
         if ref_image is None: ref_image = torch.zeros((1, 512, 512, 3))
         
-        # We need AIO Preprocessor for Depth otherwise depth is None
         depth_img = None
         if "AIO_Preprocessor" in nodes.NODE_CLASS_MAPPINGS:
             try:
-                 # Hack: Mock last_prompt_id for AIO nodes that might check it
                  if not hasattr(server.PromptServer.instance, "last_prompt_id"):
                      server.PromptServer.instance.last_prompt_id = "manual_execution"
-                 
                  aio = nodes.NODE_CLASS_MAPPINGS["AIO_Preprocessor"]()
-                 # Best effort invocation
                  args = {"image": ref_image, "preprocessor": "DepthAnythingV2Preprocessor", "resolution": 512}
                  out = getattr(aio, aio.FUNCTION)(**args)
                  depth_img = out[0] if isinstance(out, (list, tuple)) else out
             except Exception as e:
                  print(f"[ClothesDesigner] Depth Gen Failed: {e}")
-        
-        # Fallback: Use black image for depth if failed, to ensure 2 images are passed (maintaining token consistency)
-        if depth_img is None:
-             depth_img = torch.zeros_like(ref_image)
+        if depth_img is None: depth_img = torch.zeros_like(ref_image)
+
+        # Load Clone Image (Image 3)
+        clone_image_tensor = None
+        if active_tab == "clone" and data.get("clone_image"):
+             try:
+                 c_info = data["clone_image"]
+                 c_name = c_info.get("name")
+                 c_sub = c_info.get("subfolder", "")
+                 c_type = c_info.get("type", "input")
+                 
+                 # Standard ComfyUI Image Load logic
+                 if c_sub: 
+                     image_path = os.path.join(folder_paths.get_input_directory(), c_sub, c_name)
+                 else: 
+                     image_path = folder_paths.get_annotated_filepath(c_name)
+                 
+                 i = Image.open(image_path)
+                 
+                 # Convert to Tensor (H,W,C)
+                 i = torch.from_numpy(np.array(i).astype(np.float32) / 255.0).unsqueeze(0)
+                 
+                 # Strip Alpha if present
+                 if i.shape[-1] == 4: i = i[..., :3]
+                 
+                 clone_image_tensor = i
+             except Exception as e:
+                 print(f"[ClothesDesigner] Failed to load clone image: {e}")
 
         pos_cond, neg_cond, empty_latent = encoder.encode(
             clip=clip, prompt=positive_prompt, vae=vae,
-            image1=ref_image, image2=depth_img,
+            image1=ref_image, image2=depth_img, image3=clone_image_tensor,
             target_size=1344,
             crop_method="pad",
             vl_size=384,
