@@ -39,8 +39,8 @@ class ClothesDesigner:
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "IMAGE", "VNCCS_PIPE", "STRING", "STRING", "STRING", "STRING", "STRING")
-    RETURN_NAMES = ("character", "sheet", "pipe", "positive_prompt", "negative_prompt", "sheets_path", "faces_path", "costume_info")
+    RETURN_TYPES = ("IMAGE", "IMAGE", "VNCCS_PIPE", "STRING", "STRING", "*")
+    RETURN_NAMES = ("character", "sheet", "pipe", "sheets_path", "faces_path", "background")
     FUNCTION = "process"
     CATEGORY = "VNCCS"
 
@@ -164,8 +164,8 @@ class ClothesDesigner:
                                 self.steps = int(gen_settings.get("steps", 4))
                                 self.cfg = float(gen_settings.get("cfg", 1.0))
 
-                        pipe = PipeContext()
-                        return (image_tensor, image_tensor, pipe, pos, neg, sheet_path, face_path, costume_json_str)
+                        bg_color = gen_settings.get("background_color", "Green")
+                        return (image_tensor, image_tensor, pipe, sheet_path, face_path, bg_color)
                     except Exception as e:
                         print(f"[ClothesDesigner] Cache Load Error: {e}")
             except: pass
@@ -435,8 +435,8 @@ class ClothesDesigner:
              server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": unique_id, "character": character_name})
         except: pass
 
-        costume_json_str = json.dumps(data.get("costume_info", {}), indent=2)
-        return (image, full_naked_sheet, pipe, positive_prompt, negative_prompt, sheet_path, face_path, costume_json_str)
+        bg_color = gen_settings.get("background_color", "Green")
+        return (image, full_naked_sheet, pipe, sheet_path, face_path, bg_color)
 
 # --- API ---
 
