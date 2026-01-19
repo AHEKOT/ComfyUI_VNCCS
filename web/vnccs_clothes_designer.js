@@ -813,6 +813,15 @@ app.registerExtension({
                     };
                 };
 
+                const onPreviewUpdated = (event) => {
+                    const targetId = String(event.detail?.node_id);
+                    const myId = String(node.id);
+                    if (targetId === myId) {
+                        updatePreviewImage();
+                    }
+                };
+                api.addEventListener("vnccs.preview.updated", onPreviewUpdated);
+
                 node.addDOMWidget("clothes_designer_ui", "ui", container, {
                     serialize: false,
                     hideOnZoom: false
