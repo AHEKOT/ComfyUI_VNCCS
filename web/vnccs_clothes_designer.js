@@ -749,10 +749,11 @@ app.registerExtension({
                     }
                 };
 
-                const updatePreviewImage = async () => {
+                const updatePreviewImage = async (forceCache = false) => {
                     if (!state.character) return;
                     const ts = Date.now();
-                    const url = `/vnccs/get_preview?character=${encodeURIComponent(state.character)}&costume=${encodeURIComponent(state.costume)}&ts=${ts}`;
+                    let url = `/vnccs/get_preview?character=${encodeURIComponent(state.character)}&costume=${encodeURIComponent(state.costume)}&ts=${ts}`;
+                    if (forceCache) url += "&force_cache=true";
 
                     // Check validity first to show message
                     try {
@@ -817,7 +818,8 @@ app.registerExtension({
                     const targetId = String(event.detail?.node_id);
                     const myId = String(node.id);
                     if (targetId === myId) {
-                        updatePreviewImage();
+                        console.log("VNCCS Preview Update Received for Node:", myId);
+                        updatePreviewImage(true);
                     }
                 };
                 api.addEventListener("vnccs.preview.updated", onPreviewUpdated);

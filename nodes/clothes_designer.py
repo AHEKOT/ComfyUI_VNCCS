@@ -68,6 +68,19 @@ class ClothesDesigner:
         negative_prompt = "bad quality, worst quality, (naked, nude, nipple, penis, vagina:2.0)"
         return positive_prompt, negative_prompt
 
+    @staticmethod
+    def get_cache_paths(character, costume):
+        def clean_name(n):
+            return "".join([c for c in n if c.isalnum() or c in (' ', '_', '-')]).strip().replace(' ', '_')
+        
+        safe_costume = clean_name(costume)
+        cache_dir = os.path.join(character_dir(character), "cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        img_path = os.path.join(cache_dir, f"preview_{safe_costume}.png")
+        info_path = os.path.join(cache_dir, f"preview_info_{safe_costume}.json")
+        return img_path, info_path
+
     def get_naked_sheet_crop(self, character_name):
         try:
             base = character_dir(character_name)
@@ -118,10 +131,7 @@ class ClothesDesigner:
         
         # 0. Cache Check
         import hashlib
-        cache_dir = os.path.join(character_dir(character_name), "cache")
-        os.makedirs(cache_dir, exist_ok=True)
-        cache_info_path = os.path.join(cache_dir, "preview_info.json")
-        cache_img_path = os.path.join(cache_dir, "preview.png")
+        cache_img_path, cache_info_path = self.get_cache_paths(character_name, costume_name)
 
         # Stable Hash Calculation
         try:
@@ -242,14 +252,23 @@ class ClothesDesigner:
 
         model = safe_load_lora(model, l_lora, l_str)
         
-        # Skip Service LoRA in Clone mode
+        # Fork Model: gen_model for Preview, pipe_model for Output Pipe
+        gen_model = model
+        pipe_model = model
+
+        # Apply Service LoRA ONLY to gen_model (Preview)
+        # Excluded from pipe_model as per requirements
         if active_tab != "clone":
-            model = safe_load_lora(model, s_lora, s_str)
+            gen_model = safe_load_lora(gen_model, s_lora, s_str)
         else:
             print("[ClothesDesigner] Clone Mode: Skipping Service LoRA")
             
+        # Apply Stack LoRAs to BOTH
         for item in gen_settings.get("lora_stack", []):
-             model = safe_load_lora(model, item.get("name"), item.get("strength", 1.0))
+             n = item.get("name")
+             s = item.get("strength", 1.0)
+             gen_model = safe_load_lora(gen_model, n, s)
+             pipe_model = safe_load_lora(pipe_model, n, s)
 
         # 5. VNCCS Qwen Encoder (Subclass defined above in previous tool call, assuming standard import logic)
         from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder, node_helpers
@@ -386,7 +405,7 @@ class ClothesDesigner:
                 for k, v in kwargs.items(): setattr(self, k, v)
                     
         pipe = PipeContext(
-            model=model, clip=clip, vae=vae,
+            model=pipe_model, clip=clip, vae=vae,
             pos=pos_cond, neg=neg_cond,
             seed_int=int(gen_settings.get("seed", 0)),
             sample_steps=int(gen_settings.get("steps", 4)),
@@ -406,7 +425,7 @@ class ClothesDesigner:
         
         print("[ClothesDesigner] Sampling...")
         latent_result = k_sampler.sample(
-            model=model, seed=pipe.seed_int, steps=pipe.sample_steps, 
+            model=gen_model, seed=pipe.seed_int, steps=pipe.sample_steps, 
             cfg=pipe.cfg, sampler_name=pipe.sampler_name, scheduler=pipe.scheduler,
             positive=pos_cond, negative=neg_cond, latent_image=empty_latent, denoise=1.0
         )[0] # KSampler returns (LATENT,)
@@ -418,22 +437,22 @@ class ClothesDesigner:
 
         # Cache for UI preview
         try:
-             c_dir = os.path.join(character_dir(character_name), "cache")
-             os.makedirs(c_dir, exist_ok=True)
-             c_path = os.path.join(c_dir, "preview.png")
+             c_img_path, c_info_path = self.get_cache_paths(character_name, costume_name)
              i_pil = Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
-             i_pil.save(c_path)
+             i_pil.save(c_img_path)
              
              # Save Cache Info
-             c_info_path = os.path.join(c_dir, "preview_info.json")
              with open(c_info_path, "w") as f:
                  json.dump({
                      "hash": input_hash,
                      "widget_data": data # Save parsed data or original string
                  }, f)
                  
-             server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": unique_id, "character": character_name})
-        except: pass
+             print(f"[ClothesDesigner] Sending Preview Update Event: ID={unique_id}, Char={character_name}")
+             server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": str(unique_id), "character": character_name})
+        except Exception as e:
+             print(f"[ClothesDesigner] Failed to send preview update: {e}")
+             traceback.print_exc()
 
         bg_color = gen_settings.get("background_color", "Green")
         return (image, full_naked_sheet, pipe, sheet_path, face_path, bg_color)
@@ -498,10 +517,27 @@ async def vnccs_get_preview(request):
     if not naked_sheet and not original_sheet:
          return web.Response(status=400, text="Character Incomplete.")
 
-    target_file = get_latest_sheet_path(character, costume)
+    force_cache = request.rel_url.query.get("force_cache", "") == "true"
+    
+    target_file = None
+    
+    # helper logic duplicated/inlined since we can't easily call instance static method from here without instance
+    # actually we can use ClothesDesigner.get_cache_paths
+    cache_file, _ = ClothesDesigner.get_cache_paths(character, costume)
+
+    # If force_cache is true, try cache first
+    if force_cache and os.path.exists(cache_file):
+        target_file = cache_file
+
+    # Otherwise, try costume sheet
     if not target_file:
-        c_path = os.path.join(character_dir(character), "cache", "preview.png")
-        if os.path.exists(c_path): target_file = c_path
+         target_file = get_latest_sheet_path(character, costume)
+    
+    # Fallback to cache if sheet not found (legacy behavior)
+    if not target_file:
+         if os.path.exists(cache_file): target_file = cache_file
+         
+    # Final fallback to base sheets
     if not target_file: target_file = naked_sheet if naked_sheet else original_sheet
 
     if target_file and os.path.exists(target_file):
@@ -542,7 +578,9 @@ async def clothes_preview(request):
         # process() returns (image_tensor, pipe, ...)
         
         # CAUTION: process() raises errors if models aren't found.
-        image_tensor, _, _, _, _, _, _ = designer.process(widget_data=widget_data_str, unique_id="api_preview")
+        # Now returns 6 values: (image, sheet, pipe, sheet_path, face_path, bg_color)
+        ret = designer.process(widget_data=widget_data_str, unique_id="api_preview")
+        image_tensor = ret[0]
         
         # Convert tensor to base64 for immediate frontend display
         i_pil = Image.fromarray(np.clip(255. * image_tensor.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
