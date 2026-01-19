@@ -229,6 +229,34 @@ const STYLE = `
     max-height: 80vh; /* Safety for tall content */
 }
 
+/* Loading Overlay */
+.vnccs-loading-overlay {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.9);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 1000; pointer-events: auto; gap: 20px;
+}
+.vnccs-spinner {
+    width: 50px; height: 50px;
+    border: 4px solid #333; border-top-color: #5b96f5;
+    border-radius: 50%;
+    animation: vnccs-spin 1s linear infinite;
+}
+@keyframes vnccs-spin { to { transform: rotate(360deg); } }
+.vnccs-loading-text {
+    color: #fff; font-size: 16px; font-weight: bold;
+}
+.vnccs-loading-dots::after {
+    content: '';
+    animation: vnccs-dots 1.5s steps(4, end) infinite;
+}
+@keyframes vnccs-dots {
+    0%, 20% { content: ''; }
+    40% { content: '.'; }
+    60% { content: '..'; }
+    80%, 100% { content: '...'; }
+}
+
 /* Tag Constructor Styles */
 .vnccs-tag-btn {
     width: 20px; height: 20px;
@@ -327,7 +355,7 @@ app.registerExtension({
                         hair: "", eyes: "", face: "", body: "", additional_details: "",
                         nsfw: false, aesthetics: "masterpiece, best quality",
                         negative_prompt: "bad quality, worst quality",
-                        lora_prompt: "", background_color: ""
+                        lora_prompt: "", background_color: "Green"
                     },
                     gen_settings: {
                         ckpt_name: "", sampler: "euler", scheduler: "normal",
@@ -853,7 +881,7 @@ app.registerExtension({
                 colCenter.className = "vnccs-col";
                 colCenter.innerHTML = '<div class="vnccs-section-title">Attributes</div>';
 
-                colCenter.appendChild(createField("Background Color", "background_color"));
+                colCenter.appendChild(createField("Background", "background_color", "select", ["Green", "Blue"]));
                 colCenter.appendChild(createField("Gender", "sex", "select", ["female", "male"]));
                 colCenter.appendChild(createSlider("Age", "age", 1, 100, 1, state.character_info));
                 colCenter.appendChild(createField("Race", "race"));
@@ -1132,7 +1160,10 @@ app.registerExtension({
                             els.charSelect.value = state.character;
                         }
 
-                        if (state.character) await loadChar(state.character);
+                        // If we have valid widget_data for this character, skip loading info from backend
+                        // to preserve user's unsaved edits from previous session
+                        const hasWidgetData = state.character_info && state.character_info.hair !== undefined;
+                        if (state.character) await loadChar(state.character, hasWidgetData);
 
                         // CRITICAL: Ensure the widget is synced with whatever state we just loaded/defaulted
                         // If we loaded a character, we assume the preview is valid (or at least we want to try to use cache)
@@ -1142,30 +1173,36 @@ app.registerExtension({
                     } catch (e) { console.error(e); }
                 };
 
-                const loadChar = async (n) => {
+                const loadChar = async (n, skipInfoLoad = false) => {
                     if (!n) return;
                     try {
-                        // 1. Fetch Info
-                        const r = await api.fetchApi(`/vnccs/character_info?character=${encodeURIComponent(n)}`);
-                        const i = await r.json();
+                        // 1. Fetch Info (skip if restoring from widget_data)
+                        if (!skipInfoLoad) {
+                            const r = await api.fetchApi(`/vnccs/character_info?character=${encodeURIComponent(n)}`);
+                            const i = await r.json();
 
-                        const defaultInfo = {
-                            sex: "female", age: 18, race: "human", skin_color: "",
-                            hair: "", eyes: "", face: "", body: "", additional_details: "",
-                            nsfw: false, aesthetics: "masterpiece, best quality",
-                            negative_prompt: "bad quality, worst quality",
-                            lora_prompt: "", background_color: ""
-                        };
+                            const defaultInfo = {
+                                sex: "female", age: 18, race: "human", skin_color: "",
+                                hair: "", eyes: "", face: "", body: "", additional_details: "",
+                                nsfw: false, aesthetics: "masterpiece, best quality",
+                                negative_prompt: "bad quality, worst quality",
+                                lora_prompt: "", background_color: "Green"
+                            };
 
-                        // Reset & Assign
-                        Object.assign(state.character_info, defaultInfo);
-                        Object.assign(state.character_info, i);
+                            // Reset & Assign
+                            Object.assign(state.character_info, defaultInfo);
+                            Object.assign(state.character_info, i);
+                        }
 
-                        // Update Fields
-                        // Update Fields
+                        // Update Fields from current state
                         Object.keys(state.character_info).forEach(k => {
                             if (els[k]) {
-                                const val = state.character_info[k];
+                                let val = state.character_info[k];
+                                // Normalize background_color case to match dropdown options
+                                if (k === "background_color" && typeof val === "string" && val) {
+                                    val = val.charAt(0).toUpperCase() + val.slice(1).toLowerCase();
+                                    state.character_info[k] = val; // Update state too
+                                }
                                 if (els[k].range && els[k].num) {
                                     // Slider Composite
                                     els[k].range.value = val;
@@ -1215,13 +1252,23 @@ app.registerExtension({
 
                 const doGenerate = async () => {
                     if (!state.gen_settings.ckpt_name) { alert("Select Checkpoint"); return; }
+                    if (els.btnGen.disabled) return;
 
                     if (state.gen_settings.seed_mode === "randomize") {
                         state.gen_settings.seed = Math.floor(Math.random() * 10000000000000);
                         if (els.seed) els.seed.value = state.gen_settings.seed;
                     }
 
-                    els.btnGen.innerText = "BUSY...";
+                    // Show loading overlay
+                    const loadingOverlay = document.createElement('div');
+                    loadingOverlay.className = 'vnccs-loading-overlay';
+                    loadingOverlay.innerHTML = `
+                        <div class="vnccs-spinner"></div>
+                        <div class="vnccs-loading-text">Generating preview<span class="vnccs-loading-dots"></span></div>
+                    `;
+                    container.appendChild(loadingOverlay);
+
+                    els.btnGen.innerText = "GENERATING...";
                     els.btnGen.disabled = true;
                     saveState();
 
@@ -1252,6 +1299,7 @@ app.registerExtension({
                         }
                     } catch (e) { alert("Error: " + e); }
                     finally {
+                        loadingOverlay.remove();
                         els.btnGen.innerText = "GENERATE PREVIEW";
                         els.btnGen.disabled = false;
                     }

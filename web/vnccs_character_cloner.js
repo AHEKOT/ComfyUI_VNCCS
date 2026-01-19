@@ -143,6 +143,34 @@ const STYLE = `
     box-shadow: 0 4px 15px rgba(0,0,0,0.5);
 }
 
+/* Loading Overlay */
+.vnccs-loading-overlay {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.9);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 1000; pointer-events: auto; gap: 20px;
+}
+.vnccs-spinner {
+    width: 50px; height: 50px;
+    border: 4px solid #333; border-top-color: #5b96f5;
+    border-radius: 50%;
+    animation: vnccs-spin 1s linear infinite;
+}
+@keyframes vnccs-spin { to { transform: rotate(360deg); } }
+.vnccs-loading-text {
+    color: #fff; font-size: 16px; font-weight: bold;
+}
+.vnccs-loading-dots::after {
+    content: '';
+    animation: vnccs-dots 1.5s steps(4, end) infinite;
+}
+@keyframes vnccs-dots {
+    0%, 20% { content: ''; }
+    40% { content: '.'; }
+    60% { content: '..'; }
+    80%, 100% { content: '...'; }
+}
+
 .vnccs-btn-row {
     display: flex;
     gap: 5px;
@@ -220,7 +248,7 @@ app.registerExtension({
                         hair: "", eyes: "", face: "", body: "", additional_details: "",
                         nsfw: false, aesthetics: "masterpiece, best quality",
                         negative_prompt: "bad quality, worst quality",
-                        lora_prompt: ""
+                        lora_prompt: "", background_color: "Green"
                     }
                 };
 
@@ -654,8 +682,10 @@ app.registerExtension({
                 autoGenBtn.style.padding = "10px 12px";
                 autoGenBtn.style.fontSize = "12px";
                 autoGenBtn.style.flex = "0 0 auto"; // Prevent stretching
-                autoGenBtn.innerText = "AUTO GENERATE (Qwen2-VL-7B)";
+                autoGenBtn.innerText = "Analyze Captions (Qwen2-VL-7B)";
                 autoGenBtn.onclick = async () => {
+                    if (autoGenBtn.disabled) return;
+
                     if (!state.source_images.length) {
                         showModal("No Images", (m) => {
                             const d = document.createElement("div");
@@ -669,12 +699,25 @@ app.registerExtension({
                     const selIdx = (typeof state.selected_idx === 'number') ? state.selected_idx : 0;
                     const imgName = state.source_images[selIdx];
 
+                    // Show loading overlay
+                    const loadingOverlay = document.createElement('div');
+                    loadingOverlay.className = 'vnccs-loading-overlay';
+                    loadingOverlay.innerHTML = `
+                        <div class="vnccs-spinner"></div>
+                        <div class="vnccs-loading-text">Analyzing image<span class="vnccs-loading-dots"></span></div>
+                    `;
+                    container.appendChild(loadingOverlay);
+
                     autoGenBtn.innerText = "ANALYZING...";
                     autoGenBtn.disabled = true;
 
                     // Visual feedback highlighting selected thumb
                     const thumbs = imgList.querySelectorAll("img");
-                    if (thumbs[selIdx]) thumbs[selIdx].classList.add("generating");
+                    let thumb = null;
+                    if (thumbs[selIdx]) {
+                        thumb = thumbs[selIdx];
+                        thumb.classList.add("generating");
+                    }
 
                     try {
                         const r = await api.fetchApi("/vnccs/cloner_auto_generate", {
@@ -775,6 +818,7 @@ app.registerExtension({
                             const d = document.createElement("div"); d.innerText = "Script Error: " + e; return d;
                         }, [{ text: "Close" }]);
                     } finally {
+                        loadingOverlay.remove();
                         autoGenBtn.innerText = "AUTO GENERATE (QWEN)";
                         autoGenBtn.disabled = false;
                         if (thumb) thumb.classList.remove("generating");
@@ -843,6 +887,7 @@ app.registerExtension({
                 // Other fields
                 // colAttr.appendChild(createField("Name", "character", "text", [], state)); // REMOVE THIS
 
+                colAttr.appendChild(createField("Background", "background_color", "select", ["Green", "Blue"]));
                 colAttr.appendChild(createField("Sex", "sex", "select", ["female", "male"]));
                 colAttr.appendChild(createField("Age", "age", "number"));
                 colAttr.appendChild(createField("Race", "race", "text"));

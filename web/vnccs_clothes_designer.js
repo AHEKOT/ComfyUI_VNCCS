@@ -66,6 +66,34 @@ const STYLE = `
     min-width: 300px; max-width: 90%; display: flex; flex-direction: column; gap: 15px;
     box-shadow: 0 10px 25px rgba(0,0,0,0.5);
 }
+
+/* Loading Overlay */
+.vnccs-loading-overlay {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.9);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 1000; pointer-events: auto; gap: 20px;
+}
+.vnccs-spinner {
+    width: 50px; height: 50px;
+    border: 4px solid #333; border-top-color: #5b96f5;
+    border-radius: 50%;
+    animation: vnccs-spin 1s linear infinite;
+}
+@keyframes vnccs-spin { to { transform: rotate(360deg); } }
+.vnccs-loading-text {
+    color: #fff; font-size: 16px; font-weight: bold;
+}
+.vnccs-loading-dots::after {
+    content: '';
+    animation: vnccs-dots 1.5s steps(4, end) infinite;
+}
+@keyframes vnccs-dots {
+    0%, 20% { content: ''; }
+    40% { content: '.'; }
+    60% { content: '..'; }
+    80%, 100% { content: '...'; }
+}
 `;
 
 app.registerExtension({
@@ -409,16 +437,27 @@ app.registerExtension({
                 // Generate Button
                 const btnGen = document.createElement("button");
                 btnGen.className = "vnccs-btn vnccs-btn-primary";
-                btnGen.innerText = "GENERATE PREVIEW / SAVE";
+                btnGen.innerText = "GENERATE PREVIEW";
                 btnGen.style.width = "100%"; btnGen.style.marginBottom = "5px";
                 btnGen.style.flex = "0 0 auto"; // Prevent vertical stretching
                 btnGen.onclick = async () => {
                     if (!state.character) { showInfo("Error", "Select Character"); return; }
+                    if (btnGen.disabled) return;
+
                     if (state.gen_settings.seed_mode === "randomize") {
                         state.gen_settings.seed = Math.floor(Math.random() * 10000000000000);
                         if (els.seed) els.seed.value = state.gen_settings.seed;
                     }
                     if (!state.gen_settings.unet_name) { showInfo("Error", "No UNET Selected"); return; }
+
+                    // Show loading overlay
+                    const loadingOverlay = document.createElement('div');
+                    loadingOverlay.className = 'vnccs-loading-overlay';
+                    loadingOverlay.innerHTML = `
+                        <div class="vnccs-spinner"></div>
+                        <div class="vnccs-loading-text">Generating preview<span class="vnccs-loading-dots"></span></div>
+                    `;
+                    container.appendChild(loadingOverlay);
 
                     saveCostumeToBackend();
                     saveState();
@@ -434,7 +473,10 @@ app.registerExtension({
                             }
                         } else showInfo("Error", "Failed");
                     } catch (e) { showInfo("Error", e.toString()); }
-                    btnGen.innerText = "GENERATE PREVIEW / SAVE"; btnGen.disabled = false;
+                    finally {
+                        loadingOverlay.remove();
+                        btnGen.innerText = "GENERATE PREVIEW / SAVE"; btnGen.disabled = false;
+                    }
                 };
                 els.btnGen = btnGen;
                 colLeft.appendChild(btnGen);

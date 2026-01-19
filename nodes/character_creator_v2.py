@@ -334,8 +334,8 @@ class CharacterCreatorV2:
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "VNCCS_PIPE", "STRING", "STRING", "STRING", "STRING", "STRING")
-    RETURN_NAMES = ("character", "pipe", "positive_prompt", "negative_prompt", "sheets_path", "faces_path", "face_details")
+    RETURN_TYPES = ("IMAGE", "VNCCS_PIPE", "STRING", "STRING", "STRING", "STRING", "STRING", "*")
+    RETURN_NAMES = ("character", "pipe", "positive_prompt", "negative_prompt", "sheets_path", "faces_path", "face_details", "background")
     FUNCTION = "process"
     CATEGORY = "VNCCS"
 
@@ -349,7 +349,7 @@ class CharacterCreatorV2:
         age = int(info.get("age", 18))
         
         # Base Prompt
-        positive_prompt = f"{aesthetics}, simple background, expressionless"
+        positive_prompt = f"{aesthetics}, simple background, expressionless, solo, cowboy_shot"
         positive_prompt, gender_negative = apply_sex(sex, positive_prompt, "")
         
         # NSWF / Clothing (Ensure bool casting)
@@ -610,6 +610,9 @@ class CharacterCreatorV2:
                 print(f"[VNCCS] Generation failed in process: {e}")
                 image = torch.zeros((1, 512, 512, 3))
 
+        # Get background color
+        background_color = info.get("background_color", "Green")
+
         return (
             image,
             pipe,
@@ -617,6 +620,7 @@ class CharacterCreatorV2:
             negative_prompt,
             sheets_path,
             faces_path,
-            face_details
+            face_details,
+            background_color
         )
 

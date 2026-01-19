@@ -39,8 +39,8 @@ class CharacterCloner:
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING", "STRING", "STRING", "STRING", "STRING")
-    RETURN_NAMES = ("character", "positive_prompt", "negative_prompt", "sheets_path", "faces_path", "face_details")
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING", "STRING", "STRING", "STRING", "*")
+    RETURN_NAMES = ("character", "positive_prompt", "negative_prompt", "sheets_path", "faces_path", "face_details", "background")
     FUNCTION = "process"
     CATEGORY = "VNCCS"
 
@@ -173,7 +173,10 @@ class CharacterCloner:
             }
             save_config(character_name, config)
 
-        return (final_image, positive_prompt, negative_prompt, sheets_path, faces_path, face_details)
+        # Get background color
+        background_color = info.get("background_color", "Green")
+
+        return (final_image, positive_prompt, negative_prompt, sheets_path, faces_path, face_details, background_color)
 
 
 # --------------------------------------------------------------------------------
