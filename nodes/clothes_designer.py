@@ -39,8 +39,8 @@ class ClothesDesigner:
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "VNCCS_PIPE", "STRING", "STRING", "STRING", "STRING", "STRING")
-    RETURN_NAMES = ("character", "pipe", "positive_prompt", "negative_prompt", "sheets_path", "faces_path", "costume_info")
+    RETURN_TYPES = ("IMAGE", "IMAGE", "VNCCS_PIPE", "STRING", "STRING", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("character", "sheet", "pipe", "positive_prompt", "negative_prompt", "sheets_path", "faces_path", "costume_info")
     FUNCTION = "process"
     CATEGORY = "VNCCS"
 
@@ -73,7 +73,7 @@ class ClothesDesigner:
             base = character_dir(character_name)
             path = os.path.join(base, "Sheets", "Naked", "neutral")
             files = glob.glob(os.path.join(path, "sheet_neutral_*.png"))
-            if not files: return None
+            if not files: return None, None
             def get_idx(f):
                 m = re.search(r'(\d+)', os.path.basename(f))
                 return int(m.group(1)) if m else 0
@@ -82,14 +82,28 @@ class ClothesDesigner:
             img = Image.open(best)
             w, h = img.size
             if w > 0 and h > 0:
+                # Full sheet
+                image_np = np.array(img).astype(np.float32) / 255.0
+                if image_np.shape[-1] == 4: image_np = image_np[..., :3]
+                full_sheet = torch.from_numpy(image_np).unsqueeze(0)
+
+                # Crop
                 item_w = w // 6; item_h = h // 2
                 left = 5 * item_w; upper = 1 * item_h
-                crop = img.crop((left, upper, left+item_w, upper+item_h))
-                return torch.from_numpy(np.array(crop).astype(np.float32) / 255.0).unsqueeze(0)
-            return None
-        except: return None
+                crop_img = img.crop((left, upper, left+item_w, upper+item_h))
+                crop_np = np.array(crop_img).astype(np.float32) / 255.0
+                if crop_np.shape[-1] == 4: crop_np = crop_np[..., :3]
+                crop_tensor = torch.from_numpy(crop_np).unsqueeze(0)
+                
+                return crop_tensor, full_sheet
+            return None, None
+        except: return None, None
 
     def process(self, widget_data="{}", unique_id=None):
+        # CRITICAL FIX: Ensure PromptServer has last_prompt_id for preview system
+        if not hasattr(server.PromptServer.instance, "last_prompt_id"):
+             server.PromptServer.instance.last_prompt_id = "vnccs_api_preview"
+
         try:
             if isinstance(widget_data, str):
                 data = json.loads(widget_data)
@@ -151,7 +165,7 @@ class ClothesDesigner:
                                 self.cfg = float(gen_settings.get("cfg", 1.0))
 
                         pipe = PipeContext()
-                        return (image_tensor, pipe, pos, neg, sheet_path, face_path, costume_json_str)
+                        return (image_tensor, image_tensor, pipe, pos, neg, sheet_path, face_path, costume_json_str)
                     except Exception as e:
                         print(f"[ClothesDesigner] Cache Load Error: {e}")
             except: pass
@@ -198,16 +212,44 @@ class ClothesDesigner:
         vae, = vae_loader.load_vae(vae_name)
 
         # 4. LoRAs
-        lora_loader = nodes.LoraLoader()
-        def safe_load_lora(m, c, name, strength):
-            if not name or name == "None": return m, c
-            print(f"[ClothesDesigner] Loading LoRA: {name} (s={strength})")
-            return lora_loader.load_lora(m, c, name, strength_model=strength, strength_clip=strength)
+        if "LoraLoaderModelOnly" not in nodes.NODE_CLASS_MAPPINGS:
+             raise RuntimeError("LoraLoaderModelOnly node not found. Please update ComfyUI.")
+        
+        lora_loader = nodes.NODE_CLASS_MAPPINGS["LoraLoaderModelOnly"]()
+        
+        def safe_load_lora(m, name, strength):
+            if not name or name == "None": 
+                print(f"[ClothesDesigner] LoRA Skipped (None): {name}")
+                return m
+            
+            try:
+                s_val = float(strength)
+            except:
+                s_val = 1.0
+                print(f"[ClothesDesigner] LoRA Strength Invalid ({strength}), defaulting to 1.0")
 
-        model, clip = safe_load_lora(model, clip, gen_settings.get("lightning_lora"), gen_settings.get("lightning_lora_strength", 1.0))
-        model, clip = safe_load_lora(model, clip, gen_settings.get("service_lora"), gen_settings.get("service_lora_strength", 1.0))
+            print(f"[ClothesDesigner] Loading LoRA (Model Only): {name} (Strength={s_val})")
+            # LoraLoaderModelOnly.load_lora_model_only(model, lora_name, strength_model) -> (MODEL,)
+            return lora_loader.load_lora_model_only(m, name, strength_model=s_val)[0]
+
+        # Log incoming settings
+        l_lora = gen_settings.get("lightning_lora")
+        l_str = gen_settings.get("lightning_lora_strength", 1.0)
+        s_lora = gen_settings.get("service_lora")
+        s_str = gen_settings.get("service_lora_strength", 1.0)
+        
+        print(f"[ClothesDesigner] LoRA Settings -> Lightning: {l_lora} ({l_str}), Service: {s_lora} ({s_str})")
+
+        model = safe_load_lora(model, l_lora, l_str)
+        
+        # Skip Service LoRA in Clone mode
+        if active_tab != "clone":
+            model = safe_load_lora(model, s_lora, s_str)
+        else:
+            print("[ClothesDesigner] Clone Mode: Skipping Service LoRA")
+            
         for item in gen_settings.get("lora_stack", []):
-             model, clip = safe_load_lora(model, clip, item.get("name"), item.get("strength", 1.0))
+             model = safe_load_lora(model, item.get("name"), item.get("strength", 1.0))
 
         # 5. VNCCS Qwen Encoder (Subclass defined above in previous tool call, assuming standard import logic)
         from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder, node_helpers
@@ -281,21 +323,26 @@ class ClothesDesigner:
 
         encoder = SafeQwenEncoder()
         
-        ref_image = self.get_naked_sheet_crop(character_name)
-        if ref_image is None: ref_image = torch.zeros((1, 512, 512, 3))
+        ref_image, full_naked_sheet = self.get_naked_sheet_crop(character_name)
+        if ref_image is None: 
+            ref_image = torch.zeros((1, 512, 512, 3))
+            full_naked_sheet = torch.zeros((1, 512, 512, 3))
         
         depth_img = None
-        if "AIO_Preprocessor" in nodes.NODE_CLASS_MAPPINGS:
-            try:
-                 if not hasattr(server.PromptServer.instance, "last_prompt_id"):
-                     server.PromptServer.instance.last_prompt_id = "manual_execution"
-                 aio = nodes.NODE_CLASS_MAPPINGS["AIO_Preprocessor"]()
-                 args = {"image": ref_image, "preprocessor": "DepthAnythingV2Preprocessor", "resolution": 512}
-                 out = getattr(aio, aio.FUNCTION)(**args)
-                 depth_img = out[0] if isinstance(out, (list, tuple)) else out
-            except Exception as e:
-                 print(f"[ClothesDesigner] Depth Gen Failed: {e}")
-        if depth_img is None: depth_img = torch.zeros_like(ref_image)
+        # Skip Depth Map in Clone mode
+        if active_tab != "clone":
+            if "AIO_Preprocessor" in nodes.NODE_CLASS_MAPPINGS:
+                try:
+                     if not hasattr(server.PromptServer.instance, "last_prompt_id"):
+                         server.PromptServer.instance.last_prompt_id = "manual_execution"
+                     aio = nodes.NODE_CLASS_MAPPINGS["AIO_Preprocessor"]()
+                     args = {"image": ref_image, "preprocessor": "DepthAnythingV2Preprocessor", "resolution": 512}
+                     out = getattr(aio, aio.FUNCTION)(**args)
+                     depth_img = out[0] if isinstance(out, (list, tuple)) else out
+                except Exception as e:
+                     print(f"[ClothesDesigner] Depth Gen Failed: {e}")
+        else:
+            print("[ClothesDesigner] Clone Mode: Skipping Depth Map")
 
         # Load Clone Image (Image 3)
         clone_image_tensor = None
@@ -328,7 +375,7 @@ class ClothesDesigner:
             clip=clip, prompt=positive_prompt, vae=vae,
             image1=ref_image, image2=depth_img, image3=clone_image_tensor,
             target_size=1344,
-            crop_method="pad",
+            crop_method="disabled",
             vl_size=384,
             qwen_2511=True
         )
@@ -364,10 +411,10 @@ class ClothesDesigner:
             positive=pos_cond, negative=neg_cond, latent_image=empty_latent, denoise=1.0
         )[0] # KSampler returns (LATENT,)
 
-        # 8. Decode (Standard VAE Decode Tiled)
+        # 8. Decode (Official VAE Decode Tiled)
         print("[ClothesDesigner] VAE Decoding (Tiled)...")
-        vae_decode = nodes.VAEDecodeTiled()
-        image, = vae_decode.decode(vae=vae, samples=latent_result, tile_size=512)
+        vae_decode_node = nodes.NODE_CLASS_MAPPINGS["VAEDecodeTiled"]()
+        image, = vae_decode_node.decode(vae=vae, samples=latent_result, tile_size=512, overlap=64)
 
         # Cache for UI preview
         try:
@@ -389,7 +436,7 @@ class ClothesDesigner:
         except: pass
 
         costume_json_str = json.dumps(data.get("costume_info", {}), indent=2)
-        return (image, pipe, positive_prompt, negative_prompt, sheet_path, face_path, costume_json_str)
+        return (image, full_naked_sheet, pipe, positive_prompt, negative_prompt, sheet_path, face_path, costume_json_str)
 
 # --- API ---
 
