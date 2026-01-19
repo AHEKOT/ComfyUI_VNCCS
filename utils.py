@@ -167,9 +167,11 @@ def sprites_dir(name: str, costume: str = "Naked", emotion: str = "neutral") -> 
 
 
 def ensure_character_structure(name: str, emotions: List[str] = None, main_dirs: List[str] = None) -> None:
-    """Create basic character directory structure."""
-    if emotions is None:
-        emotions = EMOTIONS
+    """Create basic character directory structure.
+    
+    Note: Emotion folders are NOT created here. They are created on-demand
+    when images are actually saved.
+    """
     if main_dirs is None:
         main_dirs = MAIN_DIRS
     
@@ -190,18 +192,15 @@ def ensure_character_structure(name: str, emotions: List[str] = None, main_dirs:
         naked_path = os.path.join(main_dir_path, "Naked")
         if not os.path.exists(naked_path):
             os.makedirs(naked_path)
-        
-        for emotion in emotions:
-            emotion_path = os.path.join(naked_path, emotion)
-            if not os.path.exists(emotion_path):
-                os.makedirs(emotion_path)
+
 
 
 def ensure_costume_structure(name: str, costume: str, emotions: List[str] = None) -> None:
-    """Create costume directory structure."""
-    if emotions is None:
-        emotions = EMOTIONS
+    """Create costume directory structure.
     
+    Note: Emotion folders are NOT created here. They are created on-demand
+    when images are actually saved.
+    """
     char_path = character_dir(name)
     
     for main_dir in MAIN_DIRS:
@@ -212,11 +211,7 @@ def ensure_costume_structure(name: str, costume: str, emotions: List[str] = None
         costume_path = os.path.join(main_dir_path, costume)
         if not os.path.exists(costume_path):
             os.makedirs(costume_path)
-        
-        for emotion in emotions:
-            emotion_path = os.path.join(costume_path, emotion)
-            if not os.path.exists(emotion_path):
-                os.makedirs(emotion_path)
+
 
 
 def list_characters() -> List[str]:
