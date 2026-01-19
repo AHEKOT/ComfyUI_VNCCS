@@ -1,0 +1,52 @@
+﻿﻿<!DOCTYPE html>
+<html>
+
+<head>
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<link rel="stylesheet" href="posture-editor.css">
+	<script type="importmap">
+		{
+			"imports": {
+				"three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+				"three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+				"mannequin": "../mannequin.js",
+				"mannequin/": "../"
+			}
+		}
+	</script>
+</head>
+
+<body>
+	<div class="panel" style="left:0">
+		<label><input id="inverse-kinematics" type="checkbox"
+				class="toggle"><span>Inverse<br>kinematics</span></label><br>
+		<label><input id="biological-constraints" type="checkbox" class="toggle"
+				checked><span>Biological<br>constraints</span></label>
+		<hr>
+		<label><input id="rot-z" type="checkbox" class="toggle" checked><span id="rot-z-name">N/A</span></label><br>
+		<label><input id="rot-x" type="checkbox" class="toggle"><span id="rot-x-name">N/A</span></label><br>
+		<label><input id="rot-y" type="checkbox" class="toggle"><span id="rot-y-name">N/A</span></label>
+		<hr>
+		<label><input id="mov-x" type="checkbox" class="toggle"><span>Move X</span></label><br>
+		<label><input id="mov-y" type="checkbox" class="toggle"><span>Move Y</span></label><br>
+		<label><input id="mov-z" type="checkbox" class="toggle"><span>Move Z</span></label><br>
+	</div>
+
+	<div class="panel" style="right:0; width:8em;">
+		<span class="button-group">Posture
+			<button id="gp">Get</button><br>
+			<button id="sp">Set</button><br>
+			<button id="ep">Export</button><br>
+		</span>
+		<hr>
+		<span class="button-group">Figure
+			<button id="am">Add</button><br>
+			<button id="rm">Remove</button><br>
+		</span>
+	</div>
+
+	<script type="module" src="posture-editor.js"></script>
+
+</body>
+
+</html>

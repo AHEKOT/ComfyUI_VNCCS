@@ -57,8 +57,12 @@ def _ensure_data_loaded():
     
     print(f"[VNCCS Character Studio] Loaded {len(CHARACTER_STUDIO_CACHE['targets'])} targets.")
     
-    # 3. Load Skeleton (for future use)
-    skel_path = os.path.join(mh_path, "makehuman", "data", "rigs", "default.mhskel")
+    # 3. Load Skeleton (Preference: game_engine > default)
+    # Check for game_engine.mhskel first (User provided)
+    skel_path = os.path.join(mh_path, "makehuman", "data", "rigs", "game_engine.mhskel")
+    if not os.path.exists(skel_path):
+        skel_path = os.path.join(mh_path, "makehuman", "data", "rigs", "default.mhskel")
+        
     if os.path.exists(skel_path):
         print(f"[VNCCS Character Studio] Loading skeleton from {skel_path}...")
         skel = Skeleton()

@@ -1,0 +1,134 @@
+﻿/* Toggle input based on https://codepen.io/avstorm/pen/jOEpBLW */
+
+input[type=checkbox] {
+	-webkit-appearance: none;
+	-moz-appearance: none;
+	appearance: none;
+	-webkit-tap-highlight-color: transparent;
+	outline: 0;
+}
+
+span.short {
+	display: inline-block;
+	width: 2em;
+	text-align: right;
+}
+
+.panel {
+	margin: 0.3em;
+	padding: 0.3em;
+	width: 12em;
+	position: fixed;
+	top: 0;
+	z-index: 10;
+	border-radius: 1em;
+	background: rgba(0, 0, 0, 0.01);
+	border: solid 1px rgba(0, 0, 0, 0.05);
+	box-shadow: inset 0 0 0.1em rgba(0, 0, 0, 0.1);
+	backdrop-filter: blur(0.3em);
+}
+
+hr {
+	margin-bottom: 1em;
+	border: 0;
+	height: 1px;
+	background-image: linear-gradient(to right, rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.1));
+}
+
+label {
+	cursor: pointer;
+	display: inline-block;
+	margin-bottom: 10px;
+	z-index: 10;
+}
+
+button,
+label span,
+.button-group {
+	font-size: 0.75em;
+	font-family: Sans-serif;
+	font-weight: bold;
+	display: inline-block;
+	margin-left: 5px;
+	text-transform: uppercase;
+	letter-spacing: 1px;
+	vertical-align: middle;
+	color: white;
+	text-shadow: 0 0 0.2em gray;
+}
+
+.button-group {
+	width: 100%;
+}
+
+button,
+.toggle {
+	height: 24px;
+	width: 56px;
+	border-radius: 12px;
+	display: inline-block;
+	position: relative;
+	margin: 0;
+	padding: 0;
+	border: 1px solid gray;
+	background: rgba(0, 0, 0, 3%);
+	vertical-align: middle;
+}
+
+button {
+	height: 28px;
+	width: 100%;
+	color: black;
+	margin: 0.5em 0;
+	font-size: 1em;
+}
+
+button:hover {
+	cursor: pointer;
+	background: seagreen;
+}
+
+.button-group:hover {
+	color: black;
+}
+
+.toggle:after {
+	content: "";
+	position: absolute;
+	top: 2px;
+	left: 2px;
+	width: 16px;
+	height: 16px;
+	border-radius: 50%;
+	background: rgba(0, 0, 0, 10%);
+	border: solid 1px gray;
+}
+
+/*
+.toggle:checked {
+	border-color: green;
+}
+*/
+
+:checked+span,
+:checked+span+span,
+:checked+span+span+span {
+	color: black;
+	font-weight: bold;
+	text-shadow: 0 0 0.1em dimgray;
+}
+
+.toggle:checked:after {
+	border-color: darkgreen;
+	background: seagreen;
+	transform: translatex(32px);
+}
+
+textarea {
+	z-index: -1;
+}
+
+
+/*#blurrer:hover {
+	backdrop-filter: blur(0.3em);
+}*/

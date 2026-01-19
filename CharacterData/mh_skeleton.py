@@ -139,12 +139,27 @@ def getMatrix(head, tail, normal):
     """
     mat = np.identity(4, dtype=np.float32)
     bone_direction = tail - head
-    bone_direction = matrix.normalize(bone_direction[:3])
+    
+    # Check for zero length bone
+    mag = matrix.magnitude(bone_direction[:3])
+    if mag < 1e-6:
+        # Zero length bone: Use identity rotation
+        mat[:3,3] = head[:3]
+        return mat
+        
+    bone_direction = bone_direction / mag # Already calc mag
     normal = matrix.normalize(normal[:3])
 
     # We want an orthonormal base
     # Take Z as perpendicular to normal and bone_direction
     z_axis = matrix.normalize(np.cross(normal, bone_direction))
+    
+    # If z_axis is 0 (normal parallel to bone), pick arbitrary
+    if matrix.magnitude(z_axis) < 1e-6:
+        z_axis = np.array([0,0,1], dtype=np.float32) 
+        if abs(np.dot(z_axis, bone_direction)) > 0.9:
+            z_axis = np.array([1,0,0], dtype=np.float32)
+        z_axis = matrix.normalize(np.cross(z_axis, bone_direction))
 
     # Calculate X as orthogonal on Y and Z
     x_axis = matrix.normalize(np.cross(bone_direction, z_axis))
@@ -319,6 +334,120 @@ class Skeleton(object):
                  self.vertexWeights = VertexBoneWeights.fromFile(w_path, count, self.roots[0].name)
              else:
                  print(f"Weights file not found: {w_path}")
+        else:
+             # Fallback: Try default_weights.mhw
+             w_path = os.path.join(os.path.dirname(filepath), "default_weights.mhw")
+             if os.path.exists(w_path):
+                 count = len(mesh.vertices) if mesh else None
+                 print(f"[Skeleton] Loading fallback weights from {w_path}")
+                 self.vertexWeights = VertexBoneWeights.fromFile(w_path, count, self.roots[0].name)
+                 
+        # Retarget weights if referencing is used (e.g. Game Engine config)
+        if self.vertexWeights:
+            self._retarget_weights()
+
+    def _retarget_weights(self):
+        """
+        Retarget weights from referenced bones (e.g. upperarm01+upperarm02) 
+        to the actual bone (upperarm_l), if 'weights_reference' structure is present.
+        """
+        # We work directly on self.vertexWeights.data (OrderedDict)
+        # Create a new dictionary for the retargeted weights
+        new_weights_data = OrderedDict()
+        
+        # Get source bone names available in loaded weights
+        source_bones = set(self.vertexWeights.data.keys())
+        
+        has_retargeting = False
+        
+        for bone in self.boneslist:
+            bname = bone.name
+            
+            # Use explicit weight reference if available, otherwise fallback to standard reference
+            refs = bone._weight_reference_bones
+            if not refs and bone.reference_bones:
+                refs = bone.reference_bones
+            
+            # If bone references other bones for weights (or position)
+            if refs:
+                has_retargeting = True
+                
+                # Collect weights from all referenced bones
+                combined_verts = {} # vert_idx -> weight
+                
+                for ref_name in refs:
+                    if ref_name in self.vertexWeights.data:
+                        vs, ws = self.vertexWeights.data[ref_name]
+                        for i, v in enumerate(vs):
+                            if v not in combined_verts:
+                                combined_verts[v] = 0.0
+                            combined_verts[v] += ws[i]
+                            
+                # Reconstruct arrays
+                if combined_verts:
+                    vs = np.array(list(combined_verts.keys()), dtype=np.uint32)
+                    ws = np.array(list(combined_verts.values()), dtype=np.float32)
+                    
+                    # Sort by vertex index
+                    idx_sorted = np.argsort(vs)
+                    vs = vs[idx_sorted]
+                    ws = ws[idx_sorted]
+                    
+                    new_weights_data[bname] = (vs, ws)
+            
+            # If no reference, check if bone name matches source directly
+            elif bname in source_bones:
+                new_weights_data[bname] = self.vertexWeights.data[bname]
+                
+        if has_retargeting:
+            # 2. ADDITIONAL CLEANUP: Map orphaned weight bones (muscles/helpers) to game_engine bones
+            # GameEngine skeleton typically ignores substantial helper bones found in Default.
+            # We must map them to prevent mesh collapsing (vertices with 0 weight).
+            extra_mapping = {
+                "clavicle_l": ["scapula.L", "trapezius.L"],
+                "clavicle_r": ["scapula.R", "trapezius.R"],
+                "upperarm_l": ["deltoid.L"],
+                "upperarm_r": ["deltoid.R"],
+                "spine_03": ["latissimus.L", "latissimus.R", "pectoralis.L", "pectoralis.R"],
+                "pelvis": ["gluteus.L", "gluteus.R"],
+                # Map major face bones to head to prevent face collapse
+                "head": [
+                    "jaw", "eye.L", "eye.R", 
+                    "tongue01", "tongue02", "tongue03", "tongue04",
+                    "upperlid.L", "upperlid.R", "lowerlid.L", "lowerlid.R"
+                ]
+            }
+            
+            for target_bone, sources in extra_mapping.items():
+                if target_bone in self.vertexWeights.data:
+                    # Get existing target weights
+                    t_vs, t_ws = new_weights_data.get(target_bone, (np.array([], dtype=np.uint32), np.array([], dtype=np.float32)))
+                    
+                    # Convert to dict for merging
+                    combined = dict(zip(t_vs, t_ws))
+                    
+                    added = False
+                    for src in sources:
+                        if src in self.vertexWeights.data:
+                            s_vs, s_ws = self.vertexWeights.data[src]
+                            for i, v in enumerate(s_vs):
+                                if v not in combined:
+                                    combined[v] = 0.0
+                                combined[v] += s_ws[i]
+                            added = True
+                            
+                    if added:
+                        # Reconstruct arrays
+                        vs = np.array(list(combined.keys()), dtype=np.uint32)
+                        ws = np.array(list(combined.values()), dtype=np.float32)
+                        idx_sorted = np.argsort(vs)
+                        new_weights_data[target_bone] = (vs[idx_sorted], ws[idx_sorted])
+            
+            print(f"[Skeleton] Retargeted weights for {len(new_weights_data)} bones (including cleanup).")
+            # Replace data
+            self.vertexWeights._data = new_weights_data
+            # Re-calculate metadata
+            self.vertexWeights._calculate_num_weights()
 
     def addBone(self, name, parentName, head, tail, roll, ref=None, w_ref=None):
         bone = Bone(self, name, parentName, head, tail, roll, ref, w_ref)

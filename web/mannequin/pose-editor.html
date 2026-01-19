@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VNCCS Pose Editor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #1a1a2e; 
+            color: #eee; 
+            overflow: hidden;
+        }
+        #container { width: 100vw; height: 100vh; display: flex; flex-direction: column; }
+        #toolbar { 
+            padding: 8px 16px; 
+            background: #16213e; 
+            display: flex; 
+            gap: 10px; 
+            align-items: center;
+            border-bottom: 1px solid #0f3460;
+        }
+        button { 
+            background: #0f3460; 
+            color: #e94560; 
+            border: 1px solid #e94560; 
+            padding: 8px 16px; 
+            cursor: pointer; 
+            border-radius: 4px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        button:hover { background: #e94560; color: #fff; }
+        #canvas-container { flex: 1; position: relative; }
+        #info { 
+            position: absolute; 
+            bottom: 10px; 
+            left: 10px; 
+            background: rgba(0,0,0,0.7); 
+            padding: 8px 12px; 
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        .panel { 
+            position: absolute; 
+            top: 60px; 
+            padding: 10px; 
+            background: rgba(22, 33, 62, 0.9);
+            border-radius: 8px;
+            font-size: 12px;
+        }
+        .panel.left { left: 10px; }
+        .panel.right { right: 10px; }
+        label { display: flex; align-items: center; gap: 6px; margin: 4px 0; cursor: pointer; }
+        input[type="checkbox"] { cursor: pointer; }
+        hr { border: none; border-top: 1px solid #0f3460; margin: 8px 0; }
+    </style>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+            "mannequin": "./mannequin.js",
+            "mannequin/": "./"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div id="container">
+        <div id="toolbar">
+            <span style="font-weight: bold; color: #e94560;">VNCCS Pose Editor</span>
+            <button id="btn-get-pose">📋 Get Pose</button>
+            <button id="btn-set-pose">📥 Set Pose</button>
+            <button id="btn-apply">✓ Apply to MakeHuman</button>
+            <button id="btn-reset">↺ Reset</button>
+        </div>
+        <div id="canvas-container"></div>
+        <div class="panel left">
+            <label><input type="checkbox" id="ik-mode"> Inverse Kinematics</label>
+            <label><input type="checkbox" id="bio-constraints" checked> Bio Constraints</label>
+            <hr>
+            <label><input type="checkbox" id="rot-z" checked> <span id="rot-z-name">Bend</span></label>
+            <label><input type="checkbox" id="rot-x"> <span id="rot-x-name">Tilt</span></label>
+            <label><input type="checkbox" id="rot-y"> <span id="rot-y-name">Turn</span></label>
+        </div>
+        <div id="info">Click and drag to pose. Right-click for camera.</div>
+    </div>
+
+    <script type="module">
+        import * as THREE from "three";
+        import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+        import { Male, Mannequin } from "./mannequin.js";
+        import { Torso } from "./organs/Torso.js";
+        import { Head } from "./organs/Head.js";
+        import { Pelvis } from "./organs/Pelvis.js";
+        import { Ankle } from "./organs/Ankle.js";
+        import { Wrist } from "./organs/Wrist.js";
+
+        const EPS = 0.00001;
+        
+        // Scene setup
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x1a1a2e);
+        
+        const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 1000);
+        camera.position.set(0, 12, 25);
+        
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.shadowMap.enabled = true;
+        container.appendChild(renderer.domElement);
+        
+        // Lights
+        const ambient = new THREE.AmbientLight(0x404040, 2);
+        scene.add(ambient);
+        
+        const directional = new THREE.DirectionalLight(0xffffff, 1.5);
+        directional.position.set(10, 20, 10);
+        directional.castShadow = true;
+        scene.add(directional);
+        
+        // Ground plane
+        const ground = new THREE.Mesh(
+            new THREE.PlaneGeometry(50, 50),
+            new THREE.MeshStandardMaterial({ color: 0x1a1a2e })
+        );
+        ground.rotation.x = -Math.PI / 2;
+        ground.receiveShadow = true;
+        scene.add(ground);
+        
+        // Grid
+        const grid = new THREE.GridHelper(20, 20, 0x0f3460, 0x0f3460);
+        scene.add(grid);
+        
+        // Controls
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.target.set(0, 10, 0);
+        controls.update();
+        
+        // Mannequin
+        window.scene = scene; // mannequin.js expects this
+        const model = new Male();
+        scene.add(model);
+        
+        // Setup body part names for raycasting
+        const names = [
+            ['body', 'tilt', 'turn', 'bend'],
+            ['pelvis', 'tilt', 'turn', 'bend'],
+            ['torso', 'tilt', 'turn', 'bend'],
+            ['neck', 'tilt', 'turn', 'nod'],
+            ['head', 'tilt', 'turn', 'nod'],
+            ['l_leg', 'straddle', 'turn', 'raise'],
+            ['l_knee', '', '', 'bend'],
+            ['l_ankle', 'tilt', 'turn', 'bend'],
+            ['l_arm', 'straddle', 'turn', 'raise'],
+            ['l_elbow', '', '', 'bend'],
+            ['l_wrist', 'tilt', 'turn', 'bend'],
+            ['r_leg', 'straddle', 'turn', 'raise'],
+            ['r_knee', '', '', 'bend'],
+            ['r_ankle', 'tilt', 'turn', 'bend'],
+            ['r_arm', 'straddle', 'turn', 'raise'],
+            ['r_elbow', '', '', 'bend'],
+            ['r_wrist', 'tilt', 'turn', 'bend'],
+        ];
+        
+        for (const nameData of names) {
+            const name = nameData[0];
+            if (!model[name]) continue;
+            for (const part of model[name].children[0]?.children || []) part.name = name;
+            for (const part of model[name].children[0]?.children[0]?.children || []) part.name = name;
+            if (model[name].children[0]?.children[1])
+                for (const part of model[name].children[0].children[1].children) part.name = name;
+            model[name].nameUI = { x: nameData[1], y: nameData[2], z: nameData[3] };
+        }
+        
+        // Picking
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        const dragPoint = new THREE.Mesh();
+        let selectedObj = null;
+        let isDragging = false;
+        
+        // UI elements
+        const cbIK = document.getElementById('ik-mode');
+        const cbBio = document.getElementById('bio-constraints');
+        const cbRotZ = document.getElementById('rot-z');
+        const cbRotX = document.getElementById('rot-x');
+        const cbRotY = document.getElementById('rot-y');
+        
+        // Rotation functions (from mannequin.js posture-editor)
+        function relativeTurn(joint, rotationalAngle, angle) {
+            if (joint.biologicallyImpossibleLevel) {
+                if (cbBio.checked) {
+                    const oldImpossibility = joint.biologicallyImpossibleLevel();
+                    joint[rotationalAngle] += angle;
+                    joint.updateMatrix();
+                    joint.updateWorldMatrix(true);
+                    const newImpossibility = joint.biologicallyImpossibleLevel();
+                    if (newImpossibility > EPS && newImpossibility >= oldImpossibility - EPS) {
+                        joint[rotationalAngle] -= angle;
+                        return;
+                    }
+                } else {
+                    joint.biologicallyImpossibleLevel();
+                    joint[rotationalAngle] += angle;
+                }
+            } else {
+                const val = joint[rotationalAngle] + angle;
+                const min = joint.minRot?.[rotationalAngle] ?? -Infinity;
+                const max = joint.maxRot?.[rotationalAngle] ?? Infinity;
+                if (cbBio.checked || min === max) {
+                    if (val < min - EPS && angle < 0) return;
+                    if (val > max + EPS && angle > 0) return;
+                    if (min === max) return;
+                }
+                joint[rotationalAngle] = val;
+            }
+            joint.updateMatrix();
+        }
+        
+        function kinematic2D(joint, rotationalAngle, angle, ignoreIfPositive) {
+            if (joint instanceof Wrist) {
+                if (rotationalAngle === 'x') rotationalAngle = 'z';
+                else if (rotationalAngle === 'z') rotationalAngle = 'x';
+            }
+            
+            const screenPoint = new THREE.Vector3().copy(dragPoint.position);
+            screenPoint.copy(selectedObj.localToWorld(screenPoint.clone())).project(camera);
+            const distOriginal = mouse.distanceTo(screenPoint);
+            const oldAngle = joint[rotationalAngle];
+            
+            if (joint instanceof Head) {
+                const oldParentAngle = joint.parentJoint[rotationalAngle];
+                relativeTurn(joint, rotationalAngle, angle / 2);
+                relativeTurn(joint.parentJoint, rotationalAngle, angle / 2);
+                joint.parentJoint.updateMatrixWorld(true);
+            } else {
+                relativeTurn(joint, rotationalAngle, angle);
+            }
+            
+            joint.updateMatrixWorld(true);
+            
+            const newScreenPoint = new THREE.Vector3().copy(dragPoint.position);
+            newScreenPoint.copy(selectedObj.localToWorld(newScreenPoint.clone())).project(camera);
+            const distProposed = mouse.distanceTo(newScreenPoint);
+            const dist = distOriginal - distProposed;
+            
+            if (ignoreIfPositive && dist > 0) return dist;
+            
+            joint[rotationalAngle] = oldAngle;
+            if (joint instanceof Head) {
+                joint.parentJoint[rotationalAngle] = oldParentAngle;
+            }
+            joint.updateMatrixWorld(true);
+            return dist;
+        }
+        
+        function inverseKinematics(joint, rotationalAngle, step) {
+            const kPos = kinematic2D(joint, rotationalAngle, 0.001);
+            const kNeg = kinematic2D(joint, rotationalAngle, -0.001);
+            if (kPos > 0 || kNeg > 0) {
+                if (kPos < kNeg) step = -step;
+                kinematic2D(joint, rotationalAngle, step, true);
+            }
+        }
+        
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            if (selectedObj && isDragging) {
+                const elemNone = !cbRotZ.checked && !cbRotX.checked && !cbRotY.checked;
+                let joint = selectedObj;
+                
+                do {
+                    for (let step = 5; step > 0.1; step *= 0.75) {
+                        if (cbRotZ.checked || elemNone) inverseKinematics(joint, 'z', step);
+                        if (cbRotX.checked) inverseKinematics(joint, 'x', step);
+                        if (cbRotY.checked) inverseKinematics(joint, 'y', step);
+                    }
+                    joint = joint.parentJoint;
+                } while (joint && !(joint instanceof Mannequin) && !(joint instanceof Pelvis) && !(joint instanceof Torso) && cbIK.checked);
+            }
+            
+            controls.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+        
+        // Event handlers
+        function onPointerDown(e) {
+            if (e.button !== 0) return; // Only left click
+            
+            const rect = renderer.domElement.getBoundingClientRect();
+            mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+            
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObject(model, true);
+            
+            if (intersects.length && (intersects[0].object.name || intersects[0].object.parent.name)) {
+                controls.enabled = false;
+                isDragging = true;
+                
+                let name = intersects[0].object.name || intersects[0].object.parent.name;
+                if (name === 'neck') name = 'head';
+                if (name === 'pelvis') name = 'body';
+                
+                selectedObj?.select(false);
+                selectedObj = model[name];
+                selectedObj?.select(true);
+                
+                // Update UI labels
+                if (selectedObj?.nameUI) {
+                    document.getElementById('rot-x-name').textContent = selectedObj.nameUI.x || 'Tilt';
+                    document.getElementById('rot-y-name').textContent = selectedObj.nameUI.y || 'Turn';
+                    document.getElementById('rot-z-name').textContent = selectedObj.nameUI.z || 'Bend';
+                }
+                
+                dragPoint.position.copy(selectedObj.worldToLocal(intersects[0].point.clone()));
+                selectedObj.image.add(dragPoint);
+            }
+        }
+        
+        function onPointerMove(e) {
+            if (!isDragging) return;
+            const rect = renderer.domElement.getBoundingClientRect();
+            mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        }
+        
+        function onPointerUp() {
+            controls.enabled = true;
+            isDragging = false;
+        }
+        
+        renderer.domElement.addEventListener('pointerdown', onPointerDown);
+        renderer.domElement.addEventListener('pointermove', onPointerMove);
+        renderer.domElement.addEventListener('pointerup', onPointerUp);
+        
+        // Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        });
+        
+        // Buttons
+        document.getElementById('btn-get-pose').addEventListener('click', () => {
+            const pose = model.postureString;
+            prompt('Copy pose JSON:', pose);
+            // Also send to parent if in iframe
+            if (window.parent !== window) {
+                window.parent.postMessage({ type: 'vnccs-pose', pose: model.posture }, '*');
+            }
+        });
+        
+        document.getElementById('btn-set-pose').addEventListener('click', () => {
+            const json = prompt('Paste pose JSON:');
+            if (json) {
+                try {
+                    model.postureString = json;
+                } catch (e) {
+                    alert('Invalid pose JSON');
+                }
+            }
+        });
+        
+        document.getElementById('btn-apply').addEventListener('click', () => {
+            // Send pose to ComfyUI backend
+            const pose = model.posture;
+            if (window.parent !== window) {
+                window.parent.postMessage({ type: 'vnccs-apply-pose', pose: pose }, '*');
+            } else {
+                console.log('Pose to apply:', pose);
+            }
+        });
+        
+        document.getElementById('btn-reset').addEventListener('click', () => {
+            model.posture = {"version":7,"data":[[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]};
+        });
+        
+        // Radio-style checkboxes
+        [cbRotZ, cbRotX, cbRotY].forEach(cb => {
+            cb.addEventListener('click', (e) => {
+                if (e.target.checked) {
+                    cbRotZ.checked = cbRotX.checked = cbRotY.checked = false;
+                    e.target.checked = true;
+                }
+            });
+        });
+    </script>
+</body>
+</html>
