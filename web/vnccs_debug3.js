@@ -1,9 +1,9 @@
 /**
- * VNCCS Debug2 - Three.js SkinnedMesh Viewer with mannequin.js IK
+ * VNCCS Debug3 - DOM-Based Three.js Widget
  * 
- * Uses stable jsdelivr loader pattern for Three.js.
- * Loads MakeHuman model as SkinnedMesh and applies screen-space IK.
- * Implements manual camera control to work on offscreen canvas.
+ * Uses addDOMWidget to embed a REAL canvas in the DOM.
+ * Native mouse events for better precision.
+ * Same IK logic as Debug2.
  */
 
 import { app } from "../../scripts/app.js";
@@ -11,13 +11,29 @@ import { api } from "../../scripts/api.js";
 
 const THREE_CDN = "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js";
 
+// Inject styles once
+const STYLE = `
+.vnccs-debug3-container {
+    width: 100%;
+    height: 100%;
+    background: #1a1a2e;
+    overflow: hidden;
+}
+.vnccs-debug3-container canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+`;
+const styleEl = document.createElement("style");
+styleEl.textContent = STYLE;
+document.head.appendChild(styleEl);
+
 class MakeHumanViewer {
-    constructor(width, height) {
-        this.width = width;
-        this.height = height;
-        this.canvas = document.createElement('canvas');
-        this.canvas.width = width;
-        this.canvas.height = height;
+    constructor(canvas) {
+        this.canvas = canvas;
+        this.width = canvas.width || 680;
+        this.height = canvas.height || 550;
 
         this.THREE = null;
         this.scene = null;
@@ -29,19 +45,22 @@ class MakeHumanViewer {
         this.bones = {};
         this.boneList = [];
         this.selectedBone = null;
+        this.dragPoint = null;
 
         // Interaction
         this.isDragging = false;
-        this.dragMode = null; // 'bone' or 'camera'
+        this.dragMode = null;
         this.mouse = { x: 0, y: 0 };
+        this.lastX = 0;
+        this.lastY = 0;
         this.initialized = false;
 
-        // Manual Camera State
+        // Camera State
         this.camState = {
             dist: 30,
             rotX: 0,
             rotY: 0,
-            center: { x: 0, y: 10, z: 0 } // simple object to avoid THREE dependency before init
+            center: { x: 0, y: 10, z: 0 }
         };
 
         this.init();
@@ -49,20 +68,35 @@ class MakeHumanViewer {
 
     async init() {
         try {
-            // Use same CDN as vnccs_pose_editor.js to avoid "Multiple instances" warning
             this.THREE = await import(THREE_CDN);
             this.camState.center = new this.THREE.Vector3(0, 10, 0);
 
             this.setupScene();
             this.initialized = true;
-            console.log('VNCCS: Three.js initialized via jsdelivr');
+            console.log('VNCCS Debug3: Three.js initialized');
 
-            if (!this.dataLoaded && this.requestModelLoad) {
+            // Auto-load
+            if (this.requestModelLoad) {
                 this.requestModelLoad();
             }
         } catch (e) {
-            console.error('VNCCS: Failed to init Three.js', e);
+            console.error('VNCCS Debug3: Failed to init', e);
         }
+    }
+
+    resize(w, h) {
+        this.width = w;
+        this.height = h;
+        this.canvas.width = w;
+        this.canvas.height = h;
+        if (this.renderer) {
+            this.renderer.setSize(w, h);
+        }
+        if (this.camera) {
+            this.camera.aspect = w / h;
+            this.camera.updateProjectionMatrix();
+        }
+        this.render();
     }
 
     setupScene() {
@@ -74,16 +108,14 @@ class MakeHumanViewer {
         this.camera = new THREE.PerspectiveCamera(45, this.width / this.height, 0.1, 1000);
         this.updateCamera();
 
-        this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, alpha: true });
+        this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true });
         this.renderer.setSize(this.width, this.height);
 
-        // Lights
         const light = new THREE.DirectionalLight(0xffffff, 2);
         light.position.set(10, 20, 30);
         this.scene.add(light);
         this.scene.add(new THREE.AmbientLight(0x505050));
 
-        // Grid
         this.scene.add(new THREE.GridHelper(20, 20, 0x0f3460, 0x0f3460));
     }
 
@@ -91,7 +123,6 @@ class MakeHumanViewer {
         if (!this.camera || !this.camState || !this.THREE) return;
         const s = this.camState;
 
-        // Spherical to Cartesian
         const y = Math.sin(s.rotX) * s.dist;
         const hDist = Math.cos(s.rotX) * s.dist;
         const x = Math.sin(s.rotY) * hDist;
@@ -103,7 +134,7 @@ class MakeHumanViewer {
 
     loadData(data) {
         if (!this.initialized || !data || !data.vertices || !data.bones) return;
-        console.log(`VNCCS: Loading Model. Verts: ${data.vertices.length}, Bones: ${data.bones.length}`);
+        console.log(`VNCCS Debug3: Loading. Verts: ${data.vertices.length}, Bones: ${data.bones.length}`);
 
         const THREE = this.THREE;
 
@@ -115,7 +146,7 @@ class MakeHumanViewer {
             if (this.skeletonHelper) this.scene.remove(this.skeletonHelper);
         }
 
-        // 1. Geometry
+        // Geometry
         const vertices = new Float32Array(data.vertices);
         const indices = new Uint32Array(data.indices);
         const geometry = new THREE.BufferGeometry();
@@ -123,7 +154,6 @@ class MakeHumanViewer {
         geometry.setIndex(new THREE.BufferAttribute(indices, 1));
         geometry.computeVertexNormals();
 
-        // Center camera on mesh
         geometry.computeBoundingBox();
         const center = geometry.boundingBox.getCenter(new THREE.Vector3());
         const size = geometry.boundingBox.getSize(new THREE.Vector3());
@@ -134,7 +164,8 @@ class MakeHumanViewer {
             this.updateCamera();
         }
 
-        // 2. Bones
+
+        // Bones
         this.bones = {};
         this.boneList = [];
         const rootBones = [];
@@ -163,7 +194,7 @@ class MakeHumanViewer {
 
         this.skeleton = new THREE.Skeleton(this.boneList);
 
-        // 3. Skins
+        // Skins
         const vCount = vertices.length / 3;
         const skinInds = new Float32Array(vCount * 4);
         const skinWgts = new Float32Array(vCount * 4);
@@ -204,7 +235,6 @@ class MakeHumanViewer {
         const material = new THREE.MeshPhongMaterial({
             color: 0x4a90d9,
             side: THREE.DoubleSide
-            // skinning property removed to fix warning
         });
 
         this.skinnedMesh = new THREE.SkinnedMesh(geometry, material);
@@ -218,42 +248,30 @@ class MakeHumanViewer {
         this.render();
     }
 
+    // IK Logic (copy from Debug2)
     kinematic2D(bone, axis, angle, ignoreIfPositive = false) {
         if (!bone) return 0;
         const THREE = this.THREE;
         const wPos = new THREE.Vector3();
 
-        // Measure before
-        // Use dragPoint if available, otherwise bone (fallback, though bone origin doesn't move)
         const target = (this.dragPoint && this.dragPoint.parent === bone) ? this.dragPoint : bone;
         target.getWorldPosition(wPos);
 
         const scrBefore = wPos.clone().project(this.camera);
-        // Mouse is in NDC [-1, 1]. Project assumes NDC.
-        // wait, mouse is NDC, scrBefore is NDC.
-        // dist is in NDC units.
         const distBefore = Math.sqrt((scrBefore.x - this.mouse.x) ** 2 + (scrBefore.y - this.mouse.y) ** 2);
 
-        // Rotate
         const oldRot = bone.rotation[axis];
         bone.rotation[axis] += angle;
         bone.updateMatrixWorld(true);
 
-        // Measure after
         target.getWorldPosition(wPos);
         const scrAfter = wPos.clone().project(this.camera);
         const distAfter = Math.sqrt((scrAfter.x - this.mouse.x) ** 2 + (scrAfter.y - this.mouse.y) ** 2);
 
         const improvement = distBefore - distAfter;
 
-        // Debug Log only for test moves (angle 0.001) to avoid spamming committed moves
-        if (Math.abs(angle) < 0.002 && Math.random() < 0.01) {
-            console.log(`IK Debug: ${axis} D:${distBefore.toFixed(6)}->${distAfter.toFixed(6)} Imp:${improvement.toFixed(8)}`);
-        }
-
         if (ignoreIfPositive && improvement > 0) return improvement;
 
-        // Revert
         bone.rotation[axis] = oldRot;
         bone.updateMatrixWorld(true);
         return improvement;
@@ -268,15 +286,22 @@ class MakeHumanViewer {
         }
     }
 
-    onPointerDown(x, y, button) {
-        if (!this.initialized || !this.skinnedMesh) return false;
+    onPointerDown(e) {
+        if (!this.initialized || !this.skinnedMesh) return;
+
+        const rect = this.canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        this.lastX = e.clientX;
+        this.lastY = e.clientY;
 
         this.isDragging = true;
         this.dragMode = 'camera';
 
-        if (button === 0) { // Left Click
+        if (e.button === 0) {
             const THREE = this.THREE;
-            const mouse = new THREE.Vector2((x / this.width) * 2 - 1, -(y / this.height) * 2 + 1);
+            const mouse = new THREE.Vector2((x / rect.width) * 2 - 1, -(y / rect.height) * 2 + 1);
             const ray = new THREE.Raycaster();
             ray.setFromCamera(mouse, this.camera);
             const intersects = ray.intersectObject(this.skinnedMesh, true);
@@ -296,30 +321,34 @@ class MakeHumanViewer {
                 if (nearest && minD < 2.0) {
                     this.selectedBone = nearest;
                     this.dragMode = 'bone';
-                    console.log("Selected:", nearest.name);
+                    console.log("Debug3 Selected:", nearest.name);
 
-                    // Attach dragPoint to the specific click location on the bone
                     if (!this.dragPoint) this.dragPoint = new THREE.Object3D();
                     nearest.attach(this.dragPoint);
                     this.dragPoint.position.copy(nearest.worldToLocal(point.clone()));
-
-                    return true;
                 }
             }
         }
-        return true;
     }
 
-    onPointerMove(x, y, dx, dy) {
-        this.mouse.x = (x / this.width) * 2 - 1;
-        this.mouse.y = -(y / this.height) * 2 + 1;
+    onPointerMove(e) {
+        if (!this.initialized) return;
+
+        const rect = this.canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        this.mouse.x = (x / rect.width) * 2 - 1;
+        this.mouse.y = -(y / rect.height) * 2 + 1;
+
+        const dx = e.clientX - this.lastX;
+        const dy = e.clientY - this.lastY;
+        this.lastX = e.clientX;
+        this.lastY = e.clientY;
 
         if (!this.isDragging) return;
 
         if (this.dragMode === 'bone' && this.selectedBone) {
-            // Log random sample to verify IK is running
-            if (Math.random() < 0.05) console.log("VNCCS: IK Running for", this.selectedBone.name);
-
             for (let step = 5 * Math.PI / 180; step > 0.1 * Math.PI / 180; step *= 0.75) {
                 this.inverseKinematics(this.selectedBone, 'x', step);
                 this.inverseKinematics(this.selectedBone, 'y', step);
@@ -335,7 +364,7 @@ class MakeHumanViewer {
         this.render();
     }
 
-    onPointerUp() {
+    onPointerUp(e) {
         this.isDragging = false;
     }
 
@@ -344,83 +373,68 @@ class MakeHumanViewer {
             this.renderer.render(this.scene, this.camera);
         }
     }
-
-    getPostures() {
-        const res = {};
-        for (const b of this.boneList) {
-            const rot = b.rotation;
-            if (Math.abs(rot.x) > 1e-4 || Math.abs(rot.y) > 1e-4 || Math.abs(rot.z) > 1e-4) {
-                res[b.name] = [rot.x * 180 / Math.PI, rot.y * 180 / Math.PI, rot.z * 180 / Math.PI];
-            }
-        }
-        return res;
-    }
 }
 
+// ComfyUI Extension
 app.registerExtension({
-    name: "VNCCS.Debug2",
+    name: "VNCCS.Debug3",
     async beforeRegisterNodeDef(nodeType, nodeData, _app) {
-        if (nodeData.name === "VNCCS_Debug2") {
+        if (nodeData.name === "VNCCS_Debug3") {
             const onCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 if (onCreated) onCreated.apply(this, arguments);
 
                 this.setSize([700, 650]);
-                this.viewer = new MakeHumanViewer(680, 550);
-                this.viewer.requestModelLoad = () => this.loadModel();
-                this.viewerRegion = { x: 10, y: 80, w: 680, h: 550 };
-                this.lastPos = [0, 0];
 
-                this.addWidget("button", "Load Model", null, () => this.loadModel());
-                this.addWidget("button", "Apply Pose", null, () => this.applyPose());
+                // Create container
+                const container = document.createElement("div");
+                container.className = "vnccs-debug3-container";
+
+                // Create canvas
+                const canvas = document.createElement("canvas");
+                canvas.width = 680;
+                canvas.height = 550;
+                container.appendChild(canvas);
+
+                // Add DOM widget
+                this.addDOMWidget("debug3_viewer", "ui", container, {
+                    serialize: false,
+                    hideOnZoom: false,
+                    getValue() { return undefined; },
+                    setValue(v) { }
+                });
+
+                // Create viewer
+                this.viewer = new MakeHumanViewer(canvas);
+                this.viewer.requestModelLoad = () => {
+                    api.fetchApi("/vnccs/character_studio/update_preview", {
+                        method: "POST", body: "{}"
+                    }).then(r => r.json()).then(d => this.viewer.loadData(d));
+                };
+
+                // Native event listeners
+                canvas.addEventListener("mousedown", e => {
+                    e.preventDefault();
+                    this.viewer.onPointerDown(e);
+                });
+                canvas.addEventListener("mousemove", e => {
+                    this.viewer.onPointerMove(e);
+                });
+                canvas.addEventListener("mouseup", e => {
+                    this.viewer.onPointerUp(e);
+                });
+                canvas.addEventListener("contextmenu", e => e.preventDefault());
+
+                // Store for resize
+                this._canvas = canvas;
+                this._container = container;
             };
 
-            nodeType.prototype.loadModel = function () {
-                api.fetchApi("/vnccs/character_studio/update_preview", {
-                    method: "POST", body: "{}"
-                }).then(r => r.json()).then(d => this.viewer.loadData(d));
-            };
-
-            nodeType.prototype.applyPose = function () {
-                const pose = this.viewer.getPostures();
-                api.fetchApi("/vnccs/character_studio/update_preview", {
-                    method: "POST",
-                    body: JSON.stringify({ manual_pose: pose, relative: false })
-                }).then(r => r.json()).then(d => console.log("Applied", d));
-            };
-
-            nodeType.prototype.onDrawForeground = function (ctx) {
-                if (!this.viewer || !this.viewer.canvas) return;
-                const r = this.viewerRegion;
-                ctx.drawImage(this.viewer.canvas, r.x, r.y, r.w, r.h);
-                if (this.viewer.initialized) {
-                    this.viewer.render();
-                    this.setDirtyCanvas(true);
-                }
-            };
-
-            nodeType.prototype.onMouseDown = function (e, pos) {
-                if (!this.viewer) return;
-                const r = this.viewerRegion;
-                const lx = pos[0] - r.x;
-                const ly = pos[1] - r.y;
-                if (lx >= 0 && ly >= 0 && lx <= r.w && ly <= r.h) {
-                    this.lastPos = [pos[0], pos[1]];
-                    return this.viewer.onPointerDown(lx, ly, e.button);
-                }
-            };
-
-            nodeType.prototype.onMouseMove = function (e, pos) {
-                if (!this.viewer) return;
-                const r = this.viewerRegion;
-                const dx = pos[0] - this.lastPos[0];
-                const dy = pos[1] - this.lastPos[1];
-                this.lastPos = [pos[0], pos[1]];
-                this.viewer.onPointerMove(pos[0] - r.x, pos[1] - r.y, dx, dy);
-            };
-
-            nodeType.prototype.onMouseUp = function (e, pos) {
-                if (this.viewer) this.viewer.onPointerUp();
+            nodeType.prototype.onResize = function (size) {
+                if (!this._canvas || !this.viewer) return;
+                const w = Math.max(200, size[0] - 20);
+                const h = Math.max(200, size[1] - 100);
+                this.viewer.resize(w, h);
             };
         }
     }
