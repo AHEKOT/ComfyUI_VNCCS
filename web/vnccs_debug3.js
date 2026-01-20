@@ -79,6 +79,12 @@ class MakeHumanViewer {
         this.boneList = [];
         this.selectedBone = null;
 
+        // Highlighting
+        this.jointMarkers = [];       // Spheres at bone heads
+        this.jointMarkersGroup = null;
+        this.vertexWeightsPerBone = {}; // {boneIdx: Float32Array of weights per vertex}
+        this.baseColor = new Float32Array(0); // Original vertex colors
+
         this.initialized = false;
         this.init();
     }
@@ -164,9 +170,12 @@ class MakeHumanViewer {
         if (!this.initialized || !this.skinnedMesh) return;
         if (e.button !== 0) return; // Left click only
 
-        // If Gizmo is hovered/active, don't re-select
-        // TransformControls usually consumes the event if it hits the gizmo handles.
-        // We need check if we clicked on a bone mesh.
+        // CRITICAL: Don't select bones if gizmo is being used
+        if (this.transform.dragging) return;
+
+        // Also check if we're clicking on the gizmo itself
+        // TransformControls has its own raycaster, but we can check axis property
+        if (this.transform.axis) return; // Gizmo is hovered
 
         const rect = this.canvas.getBoundingClientRect();
         const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -192,10 +201,6 @@ class MakeHumanViewer {
             if (nearest && minD < 2.0) { // Click near bone head
                 this.selectBone(nearest);
             }
-        } else {
-            // Optional: Deselect if clicked background?
-            // this.transform.detach();
-            // this.selectedBone = null;
         }
     }
 
@@ -204,6 +209,25 @@ class MakeHumanViewer {
         this.selectedBone = bone;
         console.log("Selected:", bone.name);
         this.transform.attach(bone);
+        this.updateHighlight();
+    }
+
+    updateHighlight() {
+        const THREE = this.THREE;
+        if (!this.skinnedMesh) return;
+
+        // Update joint markers only (mesh highlighting disabled)
+        const boneIdx = this.selectedBone ? this.boneList.indexOf(this.selectedBone) : -1;
+        for (let i = 0; i < this.jointMarkers.length; i++) {
+            const marker = this.jointMarkers[i];
+            if (i === boneIdx) {
+                marker.material.color.setHex(0x00ffff); // Cyan for selected
+                marker.scale.setScalar(1.8); // Bigger when selected
+            } else {
+                marker.material.color.setHex(0xffaa00); // Orange for others
+                marker.scale.setScalar(1.0);
+            }
+        }
     }
 
     resize(w, h) {
@@ -228,6 +252,10 @@ class MakeHumanViewer {
             this.skinnedMesh.geometry.dispose();
             this.skinnedMesh.material.dispose();
             if (this.skeletonHelper) this.scene.remove(this.skeletonHelper);
+        }
+        if (this.jointMarkersGroup) {
+            this.scene.remove(this.jointMarkersGroup);
+            this.jointMarkers = [];
         }
 
         // Geom
@@ -339,9 +367,25 @@ class MakeHumanViewer {
         geometry.setAttribute('skinIndex', new THREE.BufferAttribute(skinInds, 4));
         geometry.setAttribute('skinWeight', new THREE.BufferAttribute(skinWgts, 4));
 
+        // Store per-bone vertex weights for highlighting
+        this.vertexWeightsPerBone = {};
+        for (let bi = 0; bi < this.boneList.length; bi++) {
+            this.vertexWeightsPerBone[bi] = new Float32Array(vCount);
+        }
+        for (let v = 0; v < vCount; v++) {
+            for (let slot = 0; slot < 4; slot++) {
+                const bIdx = skinInds[v * 4 + slot];
+                const w = skinWgts[v * 4 + slot];
+                if (w > 0 && this.vertexWeightsPerBone[bIdx]) {
+                    this.vertexWeightsPerBone[bIdx][v] += w;
+                }
+            }
+        }
+
         const material = new THREE.MeshPhongMaterial({
             color: 0x4a90d9,
-            side: THREE.DoubleSide
+            side: THREE.DoubleSide,
+            vertexColors: false // Will be enabled on first selection
         });
 
         this.skinnedMesh = new THREE.SkinnedMesh(geometry, material);
@@ -351,6 +395,38 @@ class MakeHumanViewer {
 
         this.skeletonHelper = new THREE.SkeletonHelper(this.skinnedMesh);
         this.scene.add(this.skeletonHelper);
+
+        // Create Joint Markers (spheres at bone heads)
+        // Two sizes: normal (0.12) and smaller for fingers (0.06)
+        this.jointMarkersGroup = new THREE.Group();
+        const sphereGeoNormal = new THREE.SphereGeometry(0.12, 8, 6);
+        const sphereGeoFinger = new THREE.SphereGeometry(0.06, 6, 4); // 2x smaller for fingers
+
+        const fingerPatterns = ['finger', 'thumb', 'index', 'middle', 'ring', 'pinky', 'f_'];
+
+        for (let i = 0; i < this.boneList.length; i++) {
+            const bone = this.boneList[i];
+            const boneName = bone.name.toLowerCase();
+
+            // Check if this is a finger bone
+            const isFinger = fingerPatterns.some(p => boneName.includes(p));
+            const geo = isFinger ? sphereGeoFinger : sphereGeoNormal;
+
+            const mat = new THREE.MeshBasicMaterial({
+                color: 0xffaa00,
+                transparent: true,
+                opacity: 0.9,
+                depthTest: false  // SHOW THROUGH MESH
+            });
+            const sphere = new THREE.Mesh(geo, mat);
+            sphere.userData.boneIndex = i;
+            sphere.renderOrder = 999; // Render on top
+            // Attach to bone so it follows transforms
+            bone.add(sphere);
+            sphere.position.set(0, 0, 0); // At bone origin (head)
+            this.jointMarkers.push(sphere);
+        }
+        this.scene.add(this.jointMarkersGroup);
     }
 
     getPostures() {
