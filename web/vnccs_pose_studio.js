@@ -750,13 +750,75 @@ class PoseStudioWidget {
         const leftPanel = document.createElement("div");
         leftPanel.className = "vnccs-ps-left";
 
+        // Gender Switch
+        const genderGroup = document.createElement("div");
+        genderGroup.className = "vnccs-ps-slider-group";
+        genderGroup.style.marginBottom = "8px";
+
+        const genderLabel = document.createElement("div");
+        genderLabel.className = "vnccs-ps-slider-label";
+        genderLabel.innerText = "Gender";
+        genderGroup.appendChild(genderLabel);
+
+        const genderSwitch = document.createElement("div");
+        genderSwitch.style.display = "flex";
+        genderSwitch.style.gap = "2px";
+        genderSwitch.style.background = "#222";
+        genderSwitch.style.borderRadius = "4px";
+        genderSwitch.style.padding = "2px";
+
+        const btnMale = document.createElement("button");
+        btnMale.innerText = "Male";
+        btnMale.style.flex = "1";
+        btnMale.style.border = "none";
+        btnMale.style.padding = "4px";
+        btnMale.style.cursor = "pointer";
+        btnMale.style.borderRadius = "3px";
+
+        const btnFemale = document.createElement("button");
+        btnFemale.innerText = "Female";
+        btnFemale.style.flex = "1";
+        btnFemale.style.border = "none";
+        btnFemale.style.padding = "4px";
+        btnFemale.style.cursor = "pointer";
+        btnFemale.style.borderRadius = "3px";
+
+        this.updateGenderUI = () => {
+            // User requested swap: Male=1.0, Female=0.0
+            const isFemale = this.meshParams.gender < 0.5;
+            btnMale.style.background = isFemale ? "transparent" : "#4a90e2";
+            btnMale.style.color = isFemale ? "#888" : "white";
+            btnFemale.style.background = isFemale ? "#e24a90" : "transparent";
+            btnFemale.style.color = isFemale ? "white" : "#888";
+        };
+
+        btnMale.addEventListener("click", () => {
+            this.meshParams.gender = 1.0; // Male
+            this.updateGenderUI();
+            this.onMeshParamsChanged();
+        });
+
+        btnFemale.addEventListener("click", () => {
+            this.meshParams.gender = 0.0; // Female
+            this.updateGenderUI();
+            this.onMeshParamsChanged();
+        });
+
+        // Initial state
+        this.updateGenderUI();
+
+        genderSwitch.appendChild(btnMale);
+        genderSwitch.appendChild(btnFemale);
+        genderGroup.appendChild(genderSwitch);
+        leftPanel.appendChild(genderGroup);
+
         const sliderDefs = [
             { key: "age", label: "Age", min: 1, max: 90, step: 1 },
-            { key: "gender", label: "Gender (M-F)", min: 0, max: 1, step: 0.01 },
+            // Gender handled separately as switch
             { key: "weight", label: "Weight", min: 0, max: 1, step: 0.01 },
             { key: "muscle", label: "Muscle", min: 0, max: 1, step: 0.01 },
-            { key: "height", label: "Height", min: 0, max: 1, step: 0.01 },
-            { key: "breast_size", label: "Breast Size", min: 0, max: 1, step: 0.01 },
+            { key: "height", label: "Height", min: 0, max: 2, step: 0.01 },
+            { key: "breast_size", label: "Breast Size", min: 0, max: 2, step: 0.01 },
             { key: "genital_size", label: "Genital Size", min: 0, max: 1, step: 0.01 }
         ];
 
@@ -932,16 +994,11 @@ class PoseStudioWidget {
         pasteBtn.innerText = "Paste";
         pasteBtn.addEventListener("click", () => this.pastePose());
 
-        const deleteBtn = document.createElement("button");
-        deleteBtn.className = "vnccs-ps-btn danger";
-        deleteBtn.innerText = "Delete Tab";
-        deleteBtn.addEventListener("click", () => this.deleteTab());
-
         actions.appendChild(resetBtn);
         actions.appendChild(snapBtn);
         actions.appendChild(copyBtn);
         actions.appendChild(pasteBtn);
-        actions.appendChild(deleteBtn);
+
         rightPanel.appendChild(actions);
 
         this.container.appendChild(rightPanel);
@@ -958,7 +1015,32 @@ class PoseStudioWidget {
         for (let i = 0; i < this.poses.length; i++) {
             const tab = document.createElement("button");
             tab.className = "vnccs-ps-tab" + (i === this.activeTab ? " active" : "");
-            tab.innerText = `Pose ${i + 1}`;
+            tab.style.display = "flex";
+            tab.style.alignItems = "center";
+            tab.style.gap = "6px";
+            tab.style.paddingRight = "6px"; // Extra padding for close btn
+
+            const text = document.createElement("span");
+            text.innerText = `Pose ${i + 1}`;
+            tab.appendChild(text);
+
+            if (this.poses.length > 1) {
+                const close = document.createElement("span");
+                close.innerText = "×";
+                close.style.fontSize = "16px";
+                close.style.lineHeight = "12px";
+                close.style.color = "#888";
+                close.style.cursor = "pointer";
+                close.onmouseenter = () => close.style.color = "#ff4444";
+                close.onmouseleave = () => close.style.color = "#888";
+
+                close.onclick = (e) => {
+                    e.stopPropagation();
+                    this.deleteTab(i);
+                };
+                tab.appendChild(close);
+            }
+
             tab.addEventListener("click", () => this.switchTab(i));
             this.tabsContainer.appendChild(tab);
         }
@@ -1014,27 +1096,36 @@ class PoseStudioWidget {
         this.syncToNode(false);
     }
 
-    deleteTab() {
+    deleteTab(targetIndex = -1) {
         if (this.poses.length <= 1) return;
+        const idx = targetIndex === -1 ? this.activeTab : targetIndex;
 
         // Remove capture
-        if (this.poseCaptures && this.poseCaptures.length > this.activeTab) {
-            this.poseCaptures.splice(this.activeTab, 1);
+        if (this.poseCaptures && this.poseCaptures.length > idx) {
+            this.poseCaptures.splice(idx, 1);
         }
 
-        this.poses.splice(this.activeTab, 1);
-        if (this.activeTab >= this.poses.length) {
-            this.activeTab = this.poses.length - 1;
+        this.poses.splice(idx, 1);
+
+        // Adjust active tab logic
+        if (idx < this.activeTab) {
+            this.activeTab--;
+        } else if (idx === this.activeTab) {
+            if (this.activeTab >= this.poses.length) {
+                this.activeTab = this.poses.length - 1;
+            }
+            // Load new pose since active was deleted
+            if (this.viewer && this.viewer.initialized) {
+                this.viewer.setPose(this.poses[this.activeTab] || {});
+                this.updateRotationSliders();
+            }
         }
 
         this.updateTabs();
-
-        if (this.viewer && this.viewer.initialized) {
-            this.viewer.setPose(this.poses[this.activeTab] || {});
-        }
-
         this.syncToNode(false);
     }
+
+
 
     resetCurrentPose() {
         if (this.viewer) {
@@ -1200,6 +1291,8 @@ class PoseStudioWidget {
                         info.label.innerText = `${info.def.label}: ${key === 'age' ? Math.round(this.meshParams[key]) : parseFloat(this.meshParams[key]).toFixed(2)}`;
                     }
                 }
+                // Update gender switch
+                if (this.updateGenderUI) this.updateGenderUI();
             }
 
             if (data.export) {
@@ -1365,7 +1458,12 @@ class PoseStudioWidget {
             const g = parseInt(hex.slice(3, 5), 16);
             const b = parseInt(hex.slice(5, 7), 16);
             this.exportParams[key] = [r, g, b];
-            this.syncToNode();
+            // No live preview of BG color to avoid eye strain
+        });
+
+        input.addEventListener("change", () => {
+            // Full render on commit
+            this.syncToNode(true);
         });
 
         container.appendChild(input);
