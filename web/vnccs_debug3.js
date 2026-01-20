@@ -201,7 +201,18 @@ class MakeHumanViewer {
             if (nearest && minD < 2.0) { // Click near bone head
                 this.selectBone(nearest);
             }
+        } else {
+            // Click on background - deselect
+            this.deselectBone();
         }
+    }
+
+    deselectBone() {
+        if (!this.selectedBone) return;
+        this.selectedBone = null;
+        this.transform.detach();
+        this.updateHighlight();
+        console.log("Deselected");
     }
 
     selectBone(bone) {
@@ -382,10 +393,12 @@ class MakeHumanViewer {
             }
         }
 
+        // Skin-colored Phong material (matching character_studio.js)
         const material = new THREE.MeshPhongMaterial({
-            color: 0x4a90d9,
-            side: THREE.DoubleSide,
-            vertexColors: false // Will be enabled on first selection
+            color: 0xd4a574,        // Warm skin tone base
+            specular: 0x332211,     // Subtle warm specular
+            shininess: 15,          // Soft skin-like reflection
+            side: THREE.DoubleSide
         });
 
         this.skinnedMesh = new THREE.SkinnedMesh(geometry, material);
