@@ -286,6 +286,9 @@ class MakeHumanViewer {
         const skinInds = new Float32Array(vCount * 4);
         const skinWgts = new Float32Array(vCount * 4);
 
+        // Build bone head positions array for orphan vertex fallback
+        const boneHeads = this.boneList.map(b => b.userData.headPos);
+
         if (data.weights) {
             const vWeights = new Array(vCount).fill(null).map(() => []);
             const boneMap = {};
@@ -311,8 +314,25 @@ class MakeHumanViewer {
                     skinWgts[v * 4 + i] = vw[i].w;
                     tot += vw[i].w;
                 }
-                if (tot > 0) for (let i = 0; i < 4; i++) skinWgts[v * 4 + i] /= tot;
-                else skinWgts[v * 4] = 1;
+                if (tot > 0) {
+                    // Normalize
+                    for (let i = 0; i < 4; i++) skinWgts[v * 4 + i] /= tot;
+                } else {
+                    // Orphan vertex: find nearest bone
+                    const vx = vertices[v * 3];
+                    const vy = vertices[v * 3 + 1];
+                    const vz = vertices[v * 3 + 2];
+                    let nearestIdx = 0;
+                    let minDistSq = Infinity;
+                    for (let bi = 0; bi < boneHeads.length; bi++) {
+                        const h = boneHeads[bi];
+                        const dx = vx - h[0], dy = vy - h[1], dz = vz - h[2];
+                        const dSq = dx * dx + dy * dy + dz * dz;
+                        if (dSq < minDistSq) { minDistSq = dSq; nearestIdx = bi; }
+                    }
+                    skinInds[v * 4] = nearestIdx;
+                    skinWgts[v * 4] = 1;
+                }
             }
         }
 
