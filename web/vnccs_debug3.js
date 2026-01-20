@@ -1,28 +1,57 @@
 /**
  * VNCCS Debug3 - DOM-Based Three.js Widget
  * 
- * Uses addDOMWidget to embed a REAL canvas in the DOM.
- * Native mouse events for better precision.
- * Same IK logic as Debug2.
+ * Implementation adapted from web/pose_editor_3d.js
+ * Uses SkinnedMesh instead of stick figure, but same Gizmo/Orbit logic.
  */
 
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-const THREE_CDN = "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js";
+// --- From pose_editor_3d.js ---
+const THREE_VERSION = "0.160.0";
+const THREE_SOURCES = {
+    core: `https://esm.sh/three@${THREE_VERSION}?dev`,
+    orbit: `https://esm.sh/three@${THREE_VERSION}/examples/jsm/controls/OrbitControls?dev`,
+    transform: `https://esm.sh/three@${THREE_VERSION}/examples/jsm/controls/TransformControls?dev`
+};
 
-// Inject styles once
+const ThreeModuleLoader = {
+    promise: null,
+    async load() {
+        if (!this.promise) {
+            this.promise = Promise.all([
+                import(THREE_SOURCES.core),
+                import(THREE_SOURCES.orbit),
+                import(THREE_SOURCES.transform)
+            ]).then(([core, orbit, transform]) => ({
+                THREE: core,
+                OrbitControls: orbit.OrbitControls,
+                TransformControls: transform.TransformControls
+            }));
+        }
+        return this.promise;
+    }
+};
+
 const STYLE = `
 .vnccs-debug3-container {
     width: 100%;
     height: 100%;
     background: #1a1a2e;
     overflow: hidden;
+    position: relative;
+    outline: none;
 }
-.vnccs-debug3-container canvas {
-    display: block;
-    width: 100%;
-    height: 100%;
+.vnccs-hint {
+    position: absolute;
+    bottom: 5px;
+    left: 5px;
+    color: #888;
+    font-size: 10px;
+    pointer-events: none;
+    font-family: sans-serif;
+    opacity: 0.7;
 }
 `;
 const styleEl = document.createElement("style");
@@ -36,52 +65,145 @@ class MakeHumanViewer {
         this.height = canvas.height || 550;
 
         this.THREE = null;
+        this.OrbitControls = null;
+        this.TransformControls = null;
+
         this.scene = null;
         this.camera = null;
         this.renderer = null;
+        this.orbit = null;
+        this.transform = null;
 
         this.skinnedMesh = null;
         this.skeleton = null;
-        this.bones = {};
         this.boneList = [];
         this.selectedBone = null;
-        this.dragPoint = null;
 
-        // Interaction
-        this.isDragging = false;
-        this.dragMode = null;
-        this.mouse = { x: 0, y: 0 };
-        this.lastX = 0;
-        this.lastY = 0;
         this.initialized = false;
-
-        // Camera State
-        this.camState = {
-            dist: 30,
-            rotX: 0,
-            rotY: 0,
-            center: { x: 0, y: 10, z: 0 }
-        };
-
         this.init();
     }
 
     async init() {
         try {
-            this.THREE = await import(THREE_CDN);
-            this.camState.center = new this.THREE.Vector3(0, 10, 0);
+            const modules = await ThreeModuleLoader.load();
+            this.THREE = modules.THREE;
+            this.OrbitControls = modules.OrbitControls;
+            this.TransformControls = modules.TransformControls;
 
             this.setupScene();
             this.initialized = true;
-            console.log('VNCCS Debug3: Three.js initialized');
+            console.log('VNCCS Debug3: Initialized (pose_editor style)');
 
-            // Auto-load
+            this.animate();
+
             if (this.requestModelLoad) {
                 this.requestModelLoad();
             }
         } catch (e) {
-            console.error('VNCCS Debug3: Failed to init', e);
+            console.error('VNCCS Debug3: Init failed', e);
         }
+    }
+
+    setupScene() {
+        const THREE = this.THREE;
+
+        // Scene
+        this.scene = new THREE.Scene();
+        this.scene.background = new THREE.Color(0x1a1a2e); // Keep Debug theme
+
+        // Camera
+        this.camera = new THREE.PerspectiveCamera(45, this.width / this.height, 0.1, 1000);
+        this.camera.position.set(0, 10, 30);
+
+        // Renderer
+        this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, alpha: true });
+        this.renderer.setSize(this.width, this.height);
+        this.renderer.setPixelRatio(window.devicePixelRatio);
+
+        // Orbit Controls (Configs from pose_editor)
+        this.orbit = new this.OrbitControls(this.camera, this.canvas);
+        this.orbit.target.set(0, 10, 0);
+        this.orbit.enableDamping = true;
+        this.orbit.dampingFactor = 0.12;
+        this.orbit.rotateSpeed = 0.95;
+        this.orbit.update();
+
+        // Transform Controls (Gizmo)
+        this.transform = new this.TransformControls(this.camera, this.canvas);
+        this.transform.setMode("rotate"); // Default to rotate for bones
+        this.transform.setSpace("local"); // Bones rotate locally
+        this.transform.setSize(0.8);
+        this.scene.add(this.transform);
+
+        // Gizmo Logic
+        this.transform.addEventListener("dragging-changed", (event) => {
+            this.orbit.enabled = !event.value;
+        });
+
+        // Lights
+        const light = new THREE.DirectionalLight(0xffffff, 2);
+        light.position.set(10, 20, 30);
+        this.scene.add(light);
+        this.scene.add(new THREE.AmbientLight(0x505050));
+
+        this.scene.add(new THREE.GridHelper(20, 20, 0x0f3460, 0x0f3460)); // Debug grid
+
+        // Events
+        this.canvas.addEventListener("pointerdown", (e) => this.handlePointerDown(e));
+        // Note: OrbitControls/TransformControls handle their own events too
+    }
+
+    animate() {
+        if (!this.initialized) return;
+        requestAnimationFrame(() => this.animate());
+        this.orbit.update();
+        if (this.renderer) this.renderer.render(this.scene, this.camera);
+    }
+
+    handlePointerDown(e) {
+        if (!this.initialized || !this.skinnedMesh) return;
+        if (e.button !== 0) return; // Left click only
+
+        // If Gizmo is hovered/active, don't re-select
+        // TransformControls usually consumes the event if it hits the gizmo handles.
+        // We need check if we clicked on a bone mesh.
+
+        const rect = this.canvas.getBoundingClientRect();
+        const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+        const raycaster = new this.THREE.Raycaster();
+        raycaster.setFromCamera(new this.THREE.Vector2(x, y), this.camera);
+
+        const intersects = raycaster.intersectObject(this.skinnedMesh, true);
+
+        if (intersects.length > 0) {
+            const point = intersects[0].point;
+            let nearest = null;
+            let minD = Infinity;
+
+            const wPos = new this.THREE.Vector3();
+            for (const b of this.boneList) {
+                b.getWorldPosition(wPos);
+                const d = point.distanceTo(wPos);
+                if (d < minD) { minD = d; nearest = b; }
+            }
+
+            if (nearest && minD < 2.0) { // Click near bone head
+                this.selectBone(nearest);
+            }
+        } else {
+            // Optional: Deselect if clicked background?
+            // this.transform.detach();
+            // this.selectedBone = null;
+        }
+    }
+
+    selectBone(bone) {
+        if (this.selectedBone === bone) return;
+        this.selectedBone = bone;
+        console.log("Selected:", bone.name);
+        this.transform.attach(bone);
     }
 
     resize(w, h) {
@@ -89,56 +211,18 @@ class MakeHumanViewer {
         this.height = h;
         this.canvas.width = w;
         this.canvas.height = h;
-        if (this.renderer) {
-            this.renderer.setSize(w, h);
-        }
+        if (this.renderer) this.renderer.setSize(w, h);
         if (this.camera) {
             this.camera.aspect = w / h;
             this.camera.updateProjectionMatrix();
         }
-        this.render();
-    }
-
-    setupScene() {
-        const THREE = this.THREE;
-
-        this.scene = new THREE.Scene();
-        this.scene.background = new THREE.Color(0x1a1a2e);
-
-        this.camera = new THREE.PerspectiveCamera(45, this.width / this.height, 0.1, 1000);
-        this.updateCamera();
-
-        this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true });
-        this.renderer.setSize(this.width, this.height);
-
-        const light = new THREE.DirectionalLight(0xffffff, 2);
-        light.position.set(10, 20, 30);
-        this.scene.add(light);
-        this.scene.add(new THREE.AmbientLight(0x505050));
-
-        this.scene.add(new THREE.GridHelper(20, 20, 0x0f3460, 0x0f3460));
-    }
-
-    updateCamera() {
-        if (!this.camera || !this.camState || !this.THREE) return;
-        const s = this.camState;
-
-        const y = Math.sin(s.rotX) * s.dist;
-        const hDist = Math.cos(s.rotX) * s.dist;
-        const x = Math.sin(s.rotY) * hDist;
-        const z = Math.cos(s.rotY) * hDist;
-
-        this.camera.position.copy(s.center).add(new this.THREE.Vector3(x, y, z));
-        this.camera.lookAt(s.center);
     }
 
     loadData(data) {
         if (!this.initialized || !data || !data.vertices || !data.bones) return;
-        console.log(`VNCCS Debug3: Loading. Verts: ${data.vertices.length}, Bones: ${data.bones.length}`);
-
         const THREE = this.THREE;
 
-        // Cleanup
+        // Clean
         if (this.skinnedMesh) {
             this.scene.remove(this.skinnedMesh);
             this.skinnedMesh.geometry.dispose();
@@ -146,7 +230,7 @@ class MakeHumanViewer {
             if (this.skeletonHelper) this.scene.remove(this.skeletonHelper);
         }
 
-        // Geometry
+        // Geom
         const vertices = new Float32Array(data.vertices);
         const indices = new Uint32Array(data.indices);
         const geometry = new THREE.BufferGeometry();
@@ -154,16 +238,19 @@ class MakeHumanViewer {
         geometry.setIndex(new THREE.BufferAttribute(indices, 1));
         geometry.computeVertexNormals();
 
+        // Center Cam
         geometry.computeBoundingBox();
         const center = geometry.boundingBox.getCenter(new THREE.Vector3());
         const size = geometry.boundingBox.getSize(new THREE.Vector3());
-
-        if (size.length() > 0.1) {
-            this.camState.center.copy(center);
-            this.camState.dist = size.length() * 1.5;
-            this.updateCamera();
+        if (size.length() > 0.1 && this.orbit) {
+            this.orbit.target.copy(center);
+            const dist = size.length() * 1.5;
+            // Move cam back
+            const dir = this.camera.position.clone().sub(this.orbit.target).normalize();
+            if (dir.lengthSq() < 0.001) dir.set(0, 0, 1);
+            this.camera.position.copy(this.orbit.target).add(dir.multiplyScalar(dist));
+            this.orbit.update();
         }
-
 
         // Bones
         this.bones = {};
@@ -194,7 +281,7 @@ class MakeHumanViewer {
 
         this.skeleton = new THREE.Skeleton(this.boneList);
 
-        // Skins
+        // Weights
         const vCount = vertices.length / 3;
         const skinInds = new Float32Array(vCount * 4);
         const skinWgts = new Float32Array(vCount * 4);
@@ -244,138 +331,20 @@ class MakeHumanViewer {
 
         this.skeletonHelper = new THREE.SkeletonHelper(this.skinnedMesh);
         this.scene.add(this.skeletonHelper);
-
-        this.render();
     }
 
-    // IK Logic (copy from Debug2)
-    kinematic2D(bone, axis, angle, ignoreIfPositive = false) {
-        if (!bone) return 0;
-        const THREE = this.THREE;
-        const wPos = new THREE.Vector3();
-
-        const target = (this.dragPoint && this.dragPoint.parent === bone) ? this.dragPoint : bone;
-        target.getWorldPosition(wPos);
-
-        const scrBefore = wPos.clone().project(this.camera);
-        const distBefore = Math.sqrt((scrBefore.x - this.mouse.x) ** 2 + (scrBefore.y - this.mouse.y) ** 2);
-
-        const oldRot = bone.rotation[axis];
-        bone.rotation[axis] += angle;
-        bone.updateMatrixWorld(true);
-
-        target.getWorldPosition(wPos);
-        const scrAfter = wPos.clone().project(this.camera);
-        const distAfter = Math.sqrt((scrAfter.x - this.mouse.x) ** 2 + (scrAfter.y - this.mouse.y) ** 2);
-
-        const improvement = distBefore - distAfter;
-
-        if (ignoreIfPositive && improvement > 0) return improvement;
-
-        bone.rotation[axis] = oldRot;
-        bone.updateMatrixWorld(true);
-        return improvement;
-    }
-
-    inverseKinematics(bone, axis, step) {
-        const kPos = this.kinematic2D(bone, axis, 0.001);
-        const kNeg = this.kinematic2D(bone, axis, -0.001);
-        if (kPos > 0 || kNeg > 0) {
-            if (kPos < kNeg) step = -step;
-            this.kinematic2D(bone, axis, step, true);
-        }
-    }
-
-    onPointerDown(e) {
-        if (!this.initialized || !this.skinnedMesh) return;
-
-        const rect = this.canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-
-        this.lastX = e.clientX;
-        this.lastY = e.clientY;
-
-        this.isDragging = true;
-        this.dragMode = 'camera';
-
-        if (e.button === 0) {
-            const THREE = this.THREE;
-            const mouse = new THREE.Vector2((x / rect.width) * 2 - 1, -(y / rect.height) * 2 + 1);
-            const ray = new THREE.Raycaster();
-            ray.setFromCamera(mouse, this.camera);
-            const intersects = ray.intersectObject(this.skinnedMesh, true);
-
-            if (intersects.length > 0) {
-                const point = intersects[0].point;
-                let nearest = null;
-                let minD = Infinity;
-
-                for (const b of this.boneList) {
-                    const wPos = new THREE.Vector3();
-                    b.getWorldPosition(wPos);
-                    const d = point.distanceTo(wPos);
-                    if (d < minD) { minD = d; nearest = b; }
-                }
-
-                if (nearest && minD < 2.0) {
-                    this.selectedBone = nearest;
-                    this.dragMode = 'bone';
-                    console.log("Debug3 Selected:", nearest.name);
-
-                    if (!this.dragPoint) this.dragPoint = new THREE.Object3D();
-                    nearest.attach(this.dragPoint);
-                    this.dragPoint.position.copy(nearest.worldToLocal(point.clone()));
-                }
+    getPostures() {
+        const res = {};
+        for (const b of this.boneList) {
+            const rot = b.rotation;
+            if (Math.abs(rot.x) > 1e-4 || Math.abs(rot.y) > 1e-4 || Math.abs(rot.z) > 1e-4) {
+                res[b.name] = [rot.x * 180 / Math.PI, rot.y * 180 / Math.PI, rot.z * 180 / Math.PI];
             }
         }
-    }
-
-    onPointerMove(e) {
-        if (!this.initialized) return;
-
-        const rect = this.canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-
-        this.mouse.x = (x / rect.width) * 2 - 1;
-        this.mouse.y = -(y / rect.height) * 2 + 1;
-
-        const dx = e.clientX - this.lastX;
-        const dy = e.clientY - this.lastY;
-        this.lastX = e.clientX;
-        this.lastY = e.clientY;
-
-        if (!this.isDragging) return;
-
-        if (this.dragMode === 'bone' && this.selectedBone) {
-            for (let step = 5 * Math.PI / 180; step > 0.1 * Math.PI / 180; step *= 0.75) {
-                this.inverseKinematics(this.selectedBone, 'x', step);
-                this.inverseKinematics(this.selectedBone, 'y', step);
-                this.inverseKinematics(this.selectedBone, 'z', step);
-            }
-        } else if (this.dragMode === 'camera') {
-            const sensitivity = 0.01;
-            this.camState.rotY -= dx * sensitivity;
-            this.camState.rotX += dy * sensitivity;
-            this.camState.rotX = Math.max(-1.5, Math.min(1.5, this.camState.rotX));
-            this.updateCamera();
-        }
-        this.render();
-    }
-
-    onPointerUp(e) {
-        this.isDragging = false;
-    }
-
-    render() {
-        if (this.renderer && this.scene && this.camera) {
-            this.renderer.render(this.scene, this.camera);
-        }
+        return res;
     }
 }
 
-// ComfyUI Extension
 app.registerExtension({
     name: "VNCCS.Debug3",
     async beforeRegisterNodeDef(nodeType, nodeData, _app) {
@@ -386,55 +355,53 @@ app.registerExtension({
 
                 this.setSize([700, 650]);
 
-                // Create container
                 const container = document.createElement("div");
                 container.className = "vnccs-debug3-container";
 
-                // Create canvas
                 const canvas = document.createElement("canvas");
-                canvas.width = 680;
-                canvas.height = 550;
+                canvas.tabIndex = 1;
                 container.appendChild(canvas);
 
-                // Add DOM widget
-                this.addDOMWidget("debug3_viewer", "ui", container, {
+                const hint = document.createElement("div");
+                hint.className = "vnccs-hint";
+                hint.innerText = "Select Bone | Rotate Gizmo | Orbit Camera (Right Click)";
+                container.appendChild(hint);
+
+                this.addDOMWidget("debug3_ui", "ui", container, {
                     serialize: false,
-                    hideOnZoom: false,
-                    getValue() { return undefined; },
-                    setValue(v) { }
+                    hideOnZoom: false
                 });
 
-                // Create viewer
                 this.viewer = new MakeHumanViewer(canvas);
-                this.viewer.requestModelLoad = () => {
+
+                const load = () => {
                     api.fetchApi("/vnccs/character_studio/update_preview", {
                         method: "POST", body: "{}"
                     }).then(r => r.json()).then(d => this.viewer.loadData(d));
                 };
 
-                // Native event listeners
-                canvas.addEventListener("mousedown", e => {
-                    e.preventDefault();
-                    this.viewer.onPointerDown(e);
-                });
-                canvas.addEventListener("mousemove", e => {
-                    this.viewer.onPointerMove(e);
-                });
-                canvas.addEventListener("mouseup", e => {
-                    this.viewer.onPointerUp(e);
-                });
-                canvas.addEventListener("contextmenu", e => e.preventDefault());
+                this.viewer.requestModelLoad = load;
 
-                // Store for resize
-                this._canvas = canvas;
+                this.addWidget("button", "Load Model", null, load);
+                this.addWidget("button", "Apply Pose", null, () => {
+                    const pose = this.viewer.getPostures();
+                    api.fetchApi("/vnccs/character_studio/update_preview", {
+                        method: "POST",
+                        body: JSON.stringify({ manual_pose: pose, relative: false })
+                    }).then(r => r.json()).then(d => console.log("Applied", d));
+                });
+
                 this._container = container;
             };
 
             nodeType.prototype.onResize = function (size) {
-                if (!this._canvas || !this.viewer) return;
-                const w = Math.max(200, size[0] - 20);
-                const h = Math.max(200, size[1] - 100);
-                this.viewer.resize(w, h);
+                if (this.viewer && this._container) {
+                    const w = Math.max(200, size[0] - 20);
+                    const h = Math.max(200, size[1] - 80);
+                    this._container.style.width = w + "px";
+                    this._container.style.height = h + "px";
+                    this.viewer.resize(w, h);
+                }
             };
         }
     }
