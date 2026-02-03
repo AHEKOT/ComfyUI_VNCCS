@@ -963,7 +963,7 @@ format binary_little_endian 1.0
   async function At(E, t) {
     const n = E.body.getReader(), i = E.headers.get("content-length"), e = i && !isNaN(parseInt(i)) ? parseInt(i) : void 0, A = [];
     let o = 0;
-    for (; ; ) {
+    for (; ;) {
       const { done: Q, value: I } = await n.read();
       if (Q) break;
       if (A.push(I), o += I.length, t && e) {
@@ -1039,16 +1039,40 @@ format binary_little_endian 1.0
         ushort: 2,
         uchar: 1
       }, I = [];
-      for (const F of e.slice(0, o).split(`
-`).filter((g) => g.startsWith("property "))) {
-        const [g, B, C] = F.split(" ");
-        if (I.push({ name: C, type: B, offset: r }), !Q[B]) throw new Error(`Unsupported property type: ${B}`);
-        r += Q[B];
+
+      console.log("[GaussianViewer] 🔍 Parsing properties from header...");
+      for (const F of e.slice(0, o).split("\n").filter((g) => g.trim().startsWith("property "))) {
+        const parts = F.trim().split(/\s+/);
+        const type = parts[1];
+        const name = parts[2];
+        console.log(`[GaussianViewer] | Property found: ${name} (type: ${type})`);
+
+        if (!Q[type]) {
+          console.error(`[GaussianViewer] ❌ Unsupported property type: ${type} for property ${name}`);
+          throw new Error(`Unsupported property type: ${type}`);
+        }
+
+        I.push({ name: name, type: type, offset: r });
+        r += Q[type];
       }
+      console.log(`[GaussianViewer] ✅ Total vertex stride: ${r} bytes`);
+      const hasOpacity = I.some(p => p.name === "opacity" || p.name === "opacity_0");
+      const hasScale = I.some(p => p.name.includes("scale") || p.name.includes("scaling"));
+      if (!hasOpacity) console.log("[GaussianViewer] ℹ️ No opacity found in PLY, defaulting to 255");
+      if (!hasScale) console.log("[GaussianViewer] ℹ️ No scale found in PLY, defaulting to 0.01");
+
       const d = new DataView(t, o + A.length), a = new ArrayBuffer(Y.RowLength * s), U = y.FromEuler(new R(Math.PI / 2, 0, 0));
       for (let F = 0; F < s; F++) {
         const g = new Float32Array(a, F * Y.RowLength, 3), B = new Float32Array(a, F * Y.RowLength + 12, 3), C = new Uint8ClampedArray(a, F * Y.RowLength + 24, 4), c = new Uint8ClampedArray(a, F * Y.RowLength + 28, 4);
-        let p = 255, u = 0, S = 0, W = 0;
+
+        // Default values for point clouds
+        B[0] = B[1] = B[2] = 0.01; // Default scale
+        C[3] = 255;               // Default opacity
+        let p = 255, u = 0, S = 0, W = 0; // Default rotation (identity)
+
+        if (F === 0) console.log("[GaussianViewer] 🔄 Beginning vertex data extraction loop...");
+        if (F > 0 && F % 100000 === 0) console.log(`[GaussianViewer] ⏳ Processed ${F} / ${s} vertices...`);
+
         I.forEach((k) => {
           let f;
           switch (k.type) {
@@ -1057,6 +1081,21 @@ format binary_little_endian 1.0
               break;
             case "int":
               f = d.getInt32(k.offset + F * r, true);
+              break;
+            case "uint":
+              f = d.getUint32(k.offset + F * r, true);
+              break;
+            case "short":
+              f = d.getInt16(k.offset + F * r, true);
+              break;
+            case "ushort":
+              f = d.getUint16(k.offset + F * r, true);
+              break;
+            case "uchar":
+              f = d.getUint8(k.offset + F * r);
+              break;
+            case "double":
+              f = d.getFloat64(k.offset + F * r, true);
               break;
             default:
               throw new Error(`Unsupported property type: ${k.type}`);
@@ -1073,28 +1112,25 @@ format binary_little_endian 1.0
               break;
             case "scale_0":
             case "scaling_0":
-              B[0] = Math.exp(f);
+              f = Math.exp(f);
+              B[0] = f;
+              if (F < 5) console.log(`[GaussianViewer] |   Vertex #${F} Scale0: ${f.toFixed(4)} (raw: ${d.getFloat32(k.offset + F * r, true).toFixed(4)})`);
               break;
             case "scale_1":
             case "scaling_1":
-              B[1] = Math.exp(f);
+              f = Math.exp(f);
+              B[1] = f;
               break;
             case "scale_2":
             case "scaling_2":
-              B[2] = Math.exp(f);
-              break;
-            case "red":
-              C[0] = f;
-              break;
-            case "green":
-              C[1] = f;
-              break;
-            case "blue":
-              C[2] = f;
+              f = Math.exp(f);
+              B[2] = f;
               break;
             case "f_dc_0":
             case "features_0":
-              C[0] = (0.5 + et.SH_C0 * f) * 255;
+              f = (0.5 + et.SH_C0 * f) * 255;
+              C[0] = f;
+              if (F < 5) console.log(`[GaussianViewer] |   Vertex #${F} Red (SH): ${f.toFixed(0)}`);
               break;
             case "f_dc_1":
             case "features_1":
@@ -1107,9 +1143,21 @@ format binary_little_endian 1.0
             case "f_dc_3":
               C[3] = (0.5 + et.SH_C0 * f) * 255;
               break;
+            case "red":
+              C[0] = f;
+              if (F < 5) console.log(`[GaussianViewer] |   Vertex #${F} Red (Direct): ${f}`);
+              break;
+            case "green":
+              C[1] = f;
+              break;
+            case "blue":
+              C[2] = f;
+              break;
             case "opacity":
             case "opacity_0":
-              C[3] = 1 / (1 + Math.exp(-f)) * 255;
+              f = 1 / (1 + Math.exp(-f)) * 255;
+              C[3] = f;
+              if (F < 5) console.log(`[GaussianViewer] |   Vertex #${F} Opacity: ${f.toFixed(2)} (raw: ${d.getFloat32(k.offset + F * r, true).toFixed(4)})`);
               break;
             case "rot_0":
             case "rotation_0":
@@ -1209,8 +1257,8 @@ format binary_little_endian 1.0
         { size: 8, type: "magic", texwidth: 0, texheight: 0 }
       ];
       let r = s.shift(), Q = new Uint8Array(r.size), I = 0, d = 0;
-      for (; r; ) {
-        for (; I < r.size; ) {
+      for (; r;) {
+        for (; I < r.size;) {
           const a = Math.min(r.size - I, o.length - d);
           Q.set(o.subarray(d, d + a), I), I += a, d += a;
         }
@@ -1317,7 +1365,7 @@ format binary_little_endian 1.0
       );
     }
   }
-  var mt = function(E = {}) {
+  var mt = function (E = {}) {
     var t, n = E, i = import_meta.url, e = "", A;
     {
       try {
@@ -1337,7 +1385,7 @@ format binary_little_endian 1.0
     }
     function I() {
       if (n.preRun)
-        for (typeof n.preRun == "function" && (n.preRun = [n.preRun]); n.preRun.length; )
+        for (typeof n.preRun == "function" && (n.preRun = [n.preRun]); n.preRun.length;)
           L(n.preRun.shift());
       Z(H);
     }
@@ -1346,7 +1394,7 @@ format binary_little_endian 1.0
     }
     function a() {
       if (n.postRun)
-        for (typeof n.postRun == "function" && (n.postRun = [n.postRun]); n.postRun.length; )
+        for (typeof n.postRun == "function" && (n.postRun = [n.postRun]); n.postRun.length;)
           f(n.postRun.shift());
       Z(k);
     }
@@ -1399,7 +1447,7 @@ format binary_little_endian 1.0
       return h(x[0]);
     }
     for (var Z = (h) => {
-      for (; h.length > 0; )
+      for (; h.length > 0;)
         h.shift()(n);
     }, k = [], f = (h) => k.push(h), H = [], L = (h) => H.push(h), M = (h) => {
       for (var m, x, N = 0, v = 0, O = h.length, $ = new Uint8Array((O * 3 >> 2) - (h[O - 2] == "=") - (h[O - 1] == "=")); N < O; N += 4, v += 3)
@@ -1450,7 +1498,7 @@ format binary_little_endian 1.0
     }
     function G() {
       if (n.preInit)
-        for (typeof n.preInit == "function" && (n.preInit = [n.preInit]); n.preInit.length > 0; )
+        for (typeof n.preInit == "function" && (n.preInit = [n.preInit]); n.preInit.length > 0;)
           n.preInit.shift()();
     }
     return G(), q(), t = n, t;
@@ -1520,7 +1568,7 @@ format binary_little_endian 1.0
       }
       r();
       async function Q() {
-        for (; !s; )
+        for (; !s;)
           await new Promise((a) => setTimeout(a, 0));
       }
       const I = (a) => {

@@ -552,7 +552,14 @@ app.registerExtension({
 
                         // Critical: Sync state with visual default
                         // If state is empty, use first item in list
-                        const val = state.gen_settings[key] || list[0];
+                        let val = state.gen_settings[key] || list[0];
+
+                        // Normalize background_color case to match dropdown options
+                        if (key === "background_color" && typeof val === "string" && val) {
+                            val = val.charAt(0).toUpperCase() + val.slice(1).toLowerCase();
+                            state.gen_settings[key] = val;
+                        }
+
                         inp.value = val;
 
                         // Force update state if it was empty/undefined

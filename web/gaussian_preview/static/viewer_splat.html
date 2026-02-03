@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VNCCS Gaussian Splat Viewer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #1e1e1e;
+        }
+
+        #canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+            touch-action: none;
+        }
+
+        #info {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: #888;
+            font-family: monospace;
+            font-size: 12px;
+            pointer-events: none;
+            text-shadow: 0 0 3px #000;
+        }
+
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #aaa;
+            font-family: sans-serif;
+            font-size: 16px;
+            text-align: center;
+        }
+
+        #progress {
+            width: 200px;
+            height: 4px;
+            background: #333;
+            border-radius: 2px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+
+        #progress-bar {
+            height: 100%;
+            background: #4a9eff;
+            width: 0%;
+            transition: width 0.1s;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="canvas"></canvas>
+    <div id="info"></div>
+    <div id="loading">
+        <div>Loading Gaussian Splats...</div>
+        <div id="progress">
+            <div id="progress-bar"></div>
+        </div>
+    </div>
+
+    <script src="splat.js"></script>
+    <script>
+        (function () {
+            // Override the main function to integrate with ComfyUI
+            let isInitialized = false;
+            let pendingPlyData = null;
+
+            // Extend main() to support postMessage loading
+            const originalMain = window.main || main;
+
+            // Modified viewer state
+            let viewMatrix = [
+                0.47, 0.04, 0.88, 0,
+                -0.11, 0.99, 0.02, 0,
+                -0.88, -0.11, 0.47, 0,
+                0.07, 0.03, 6.55, 1
+            ];
+            let worker = null;
+            let gl = null;
+            let projectionMatrix = null;
+
+            // Listen for messages from ComfyUI
+            window.addEventListener('message', async function (event) {
+                const data = event.data;
+
+                // Handle LOAD_MESH_DATA from gaussian_preview.js widget
+                if (data.type === 'LOAD_MESH_DATA') {
+                    console.log('[VNCCS Splat Viewer] Received LOAD_MESH_DATA, size:', data.data?.byteLength || 'N/A');
+                    if (data.data) {
+                        loadPlyData(data.data);
+                    }
+                    return;
+                }
+
+                if (data.type === 'load_ply') {
+                    console.log('[VNCCS Splat Viewer] Received PLY data, size:', data.plyData?.byteLength || 'N/A');
+
+                    // Fetch PLY from URL
+                    if (data.plyUrl) {
+                        try {
+                            const response = await fetch(data.plyUrl);
+                            if (!response.ok) throw new Error('Failed to fetch PLY: ' + response.status);
+                            const arrayBuffer = await response.arrayBuffer();
+                            loadPlyData(arrayBuffer);
+                        } catch (err) {
+                            console.error('[VNCCS Splat Viewer] Error loading PLY:', err);
+                            document.getElementById('loading').innerHTML =
+                                '<div style="color:#f55">Error loading PLY file</div><div>' + err.message + '</div>';
+                        }
+                    } else if (data.plyData) {
+                        // Direct ArrayBuffer
+                        loadPlyData(data.plyData);
+                    }
+                } else if (data.type === 'set_camera') {
+                    // Set camera from extrinsics [4x4 matrix]
+                    if (data.matrix && data.matrix.length === 16) {
+                        viewMatrix = data.matrix;
+                    }
+                }
+            });
+
+            function loadPlyData(arrayBuffer) {
+                if (!worker) {
+                    console.error('[VNCCS Splat Viewer] Worker not initialized');
+                    pendingPlyData = arrayBuffer;
+                    return;
+                }
+
+                document.getElementById('loading').style.display = 'none';
+
+                // Send PLY to worker for processing
+                worker.postMessage({ ply: arrayBuffer });
+            }
+
+            // Notify parent we're ready
+            function notifyReady() {
+                window.parent.postMessage({ type: 'viewer_ready' }, '*');
+            }
+
+            // Initialize on load
+            window.addEventListener('DOMContentLoaded', async function () {
+                // Call original main if it handles everything
+                if (typeof originalMain === 'function') {
+                    try {
+                        // Don't call original main - we'll handle initialization ourselves
+                    } catch (err) {
+                        console.error('[VNCCS Splat Viewer] Error in main:', err);
+                    }
+                }
+
+                // Initialize WebGL and worker ourselves for ComfyUI integration
+                initViewer();
+            });
+
+            async function initViewer() {
+                const canvas = document.getElementById('canvas');
+                gl = canvas.getContext('webgl2', { antialias: false });
+
+                if (!gl) {
+                    document.getElementById('loading').innerHTML =
+                        '<div style="color:#f55">WebGL2 not supported</div>';
+                    return;
+                }
+
+                // Create worker from inline code (using the createWorker function from splat.js)
+                if (typeof createWorker === 'function') {
+                    worker = new Worker(
+                        URL.createObjectURL(
+                            new Blob(["(", createWorker.toString(), ")(self)"], {
+                                type: "application/javascript"
+                            })
+                        )
+                    );
+
+                    // Handle worker messages
+                    worker.onmessage = handleWorkerMessage;
+                }
+
+                // Setup WebGL program
+                setupWebGL();
+
+                // Setup controls
+                setupControls();
+
+                // Start render loop
+                requestAnimationFrame(render);
+
+                isInitialized = true;
+                notifyReady();
+
+                // Load pending PLY if any
+                if (pendingPlyData) {
+                    loadPlyData(pendingPlyData);
+                    pendingPlyData = null;
+                }
+            }
+
+            // WebGL setup - uses shaders from splat.js
+            let program, texture, indexBuffer, vertexBuffer;
+            let vertexCount = 0;
+            let splatData = null;
+
+            function setupWebGL() {
+                const vertexShaderSource = `#version 300 es
+precision highp float;
+precision highp int;
+
+uniform highp usampler2D u_texture;
+uniform mat4 projection, view;
+uniform vec2 focal;
+uniform vec2 viewport;
+
+in vec2 position;
+in int index;
+
+out vec4 vColor;
+out vec2 vPosition;
+
+void main () {
+    uvec4 cen = texelFetch(u_texture, ivec2((uint(index) & 0x3ffu) << 1, uint(index) >> 10), 0);
+    vec4 cam = view * vec4(uintBitsToFloat(cen.xyz), 1);
+    vec4 pos2d = projection * cam;
+
+    float clip = 1.2 * pos2d.w;
+    if (pos2d.z < -clip || pos2d.x < -clip || pos2d.x > clip || pos2d.y < -clip || pos2d.y > clip) {
+        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        return;
+    }
+
+    uvec4 cov = texelFetch(u_texture, ivec2(((uint(index) & 0x3ffu) << 1) | 1u, uint(index) >> 10), 0);
+    vec2 u1 = unpackHalf2x16(cov.x), u2 = unpackHalf2x16(cov.y), u3 = unpackHalf2x16(cov.z);
+    mat3 Vrk = mat3(u1.x, u1.y, u2.x, u1.y, u2.y, u3.x, u2.x, u3.x, u3.y);
+
+    mat3 J = mat3(
+        focal.x / cam.z, 0., -(focal.x * cam.x) / (cam.z * cam.z),
+        0., -focal.y / cam.z, (focal.y * cam.y) / (cam.z * cam.z),
+        0., 0., 0.
+    );
+
+    mat3 T = transpose(mat3(view)) * J;
+    mat3 cov2d = transpose(T) * Vrk * T;
+
+    float mid = (cov2d[0][0] + cov2d[1][1]) / 2.0;
+    float radius = length(vec2((cov2d[0][0] - cov2d[1][1]) / 2.0, cov2d[0][1]));
+    float lambda1 = mid + radius, lambda2 = mid - radius;
+
+    if(lambda2 < 0.0) return;
+    vec2 diagonalVector = normalize(vec2(cov2d[0][1], lambda1 - cov2d[0][0]));
+    vec2 majorAxis = min(sqrt(2.0 * lambda1), 1024.0) * diagonalVector;
+    vec2 minorAxis = min(sqrt(2.0 * lambda2), 1024.0) * vec2(diagonalVector.y, -diagonalVector.x);
+
+    vColor = clamp(pos2d.z/pos2d.w+1.0, 0.0, 1.0) * vec4((cov.w) & 0xffu, (cov.w >> 8) & 0xffu, (cov.w >> 16) & 0xffu, (cov.w >> 24) & 0xffu) / 255.0;
+    vPosition = position;
+
+    vec2 vCenter = vec2(pos2d) / pos2d.w;
+    gl_Position = vec4(
+        vCenter
+        + position.x * majorAxis / viewport
+        + position.y * minorAxis / viewport, 0.0, 1.0);
+}`;
+
+                const fragmentShaderSource = `#version 300 es
+precision highp float;
+
+in vec4 vColor;
+in vec2 vPosition;
+
+out vec4 fragColor;
+
+void main () {
+    float A = -dot(vPosition, vPosition);
+    if (A < -4.0) discard;
+    float B = exp(A) * vColor.a;
+    fragColor = vec4(B * vColor.rgb, B);
+}`;
+
+                const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+                gl.shaderSource(vertexShader, vertexShaderSource);
+                gl.compileShader(vertexShader);
+                if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+                    console.error(gl.getShaderInfoLog(vertexShader));
+                }
+
+                const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+                gl.shaderSource(fragmentShader, fragmentShaderSource);
+                gl.compileShader(fragmentShader);
+                if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+                    console.error(gl.getShaderInfoLog(fragmentShader));
+                }
+
+                program = gl.createProgram();
+                gl.attachShader(program, vertexShader);
+                gl.attachShader(program, fragmentShader);
+                gl.linkProgram(program);
+                gl.useProgram(program);
+
+                // Setup blend mode
+                gl.disable(gl.DEPTH_TEST);
+                gl.enable(gl.BLEND);
+                gl.blendFuncSeparate(gl.ONE_MINUS_DST_ALPHA, gl.ONE, gl.ONE_MINUS_DST_ALPHA, gl.ONE);
+                gl.blendEquationSeparate(gl.FUNC_ADD, gl.FUNC_ADD);
+
+                // Create texture
+                texture = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+                // Create buffers
+                const triangleVertices = new Float32Array([-2, -2, 2, -2, 2, 2, -2, 2]);
+                vertexBuffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+                gl.bufferData(gl.ARRAY_BUFFER, triangleVertices, gl.STATIC_DRAW);
+
+                indexBuffer = gl.createBuffer();
+            }
+
+            function handleWorkerMessage(e) {
+                if (e.data.texdata) {
+                    // Texture data from worker
+                    const { texdata, texwidth, texheight } = e.data;
+                    gl.bindTexture(gl.TEXTURE_2D, texture);
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32UI, texwidth, texheight, 0, gl.RGBA_INTEGER, gl.UNSIGNED_INT, texdata);
+                }
+
+                if (e.data.depthIndex) {
+                    // Depth-sorted indices
+                    const { depthIndex, viewProj, vertexCount: vc } = e.data;
+                    vertexCount = vc;
+
+                    gl.bindBuffer(gl.ARRAY_BUFFER, indexBuffer);
+                    gl.bufferData(gl.ARRAY_BUFFER, depthIndex, gl.DYNAMIC_DRAW);
+                }
+
+                if (e.data.buffer) {
+                    // Processed splat buffer
+                    splatData = e.data.buffer;
+                    const rowLength = 3 * 4 + 3 * 4 + 4 + 4;
+                    vertexCount = Math.floor(splatData.byteLength / rowLength);
+
+                    // Update info
+                    document.getElementById('info').textContent = `Splats: ${vertexCount.toLocaleString()}`;
+
+                    // Send buffer back to worker
+                    worker.postMessage({
+                        buffer: splatData,
+                        vertexCount: vertexCount
+                    }, [splatData]);
+                }
+            }
+
+            // Camera controls
+            let isDragging = false;
+            let lastX = 0, lastY = 0;
+
+            function setupControls() {
+                const canvas = document.getElementById('canvas');
+
+                canvas.addEventListener('mousedown', (e) => {
+                    isDragging = true;
+                    lastX = e.clientX;
+                    lastY = e.clientY;
+                });
+
+                canvas.addEventListener('mousemove', (e) => {
+                    if (!isDragging) return;
+
+                    const dx = e.clientX - lastX;
+                    const dy = e.clientY - lastY;
+                    lastX = e.clientX;
+                    lastY = e.clientY;
+
+                    // Orbit rotation
+                    viewMatrix = rotate4(viewMatrix, -dx * 0.005, 0, 1, 0);
+                    viewMatrix = rotate4(viewMatrix, -dy * 0.005, 1, 0, 0);
+
+                    // Trigger re-sort
+                    if (worker) {
+                        worker.postMessage({ view: getViewProj() });
+                    }
+                });
+
+                canvas.addEventListener('mouseup', () => { isDragging = false; });
+                canvas.addEventListener('mouseleave', () => { isDragging = false; });
+
+                // Zoom with wheel
+                canvas.addEventListener('wheel', (e) => {
+                    e.preventDefault();
+                    const delta = e.deltaY * 0.01;
+                    viewMatrix = translate4(viewMatrix, 0, 0, delta);
+
+                    if (worker) {
+                        worker.postMessage({ view: getViewProj() });
+                    }
+                }, { passive: false });
+
+                // Touch controls
+                let lastTouchDist = 0;
+                canvas.addEventListener('touchstart', (e) => {
+                    if (e.touches.length === 1) {
+                        isDragging = true;
+                        lastX = e.touches[0].clientX;
+                        lastY = e.touches[0].clientY;
+                    } else if (e.touches.length === 2) {
+                        lastTouchDist = Math.hypot(
+                            e.touches[0].clientX - e.touches[1].clientX,
+                            e.touches[0].clientY - e.touches[1].clientY
+                        );
+                    }
+                }, { passive: true });
+
+                canvas.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    if (e.touches.length === 1 && isDragging) {
+                        const dx = e.touches[0].clientX - lastX;
+                        const dy = e.touches[0].clientY - lastY;
+                        lastX = e.touches[0].clientX;
+                        lastY = e.touches[0].clientY;
+
+                        viewMatrix = rotate4(viewMatrix, -dx * 0.005, 0, 1, 0);
+                        viewMatrix = rotate4(viewMatrix, -dy * 0.005, 1, 0, 0);
+                    } else if (e.touches.length === 2) {
+                        const dist = Math.hypot(
+                            e.touches[0].clientX - e.touches[1].clientX,
+                            e.touches[0].clientY - e.touches[1].clientY
+                        );
+                        const delta = (lastTouchDist - dist) * 0.02;
+                        lastTouchDist = dist;
+                        viewMatrix = translate4(viewMatrix, 0, 0, delta);
+                    }
+
+                    if (worker) {
+                        worker.postMessage({ view: getViewProj() });
+                    }
+                }, { passive: false });
+
+                canvas.addEventListener('touchend', () => { isDragging = false; });
+            }
+
+            function getViewProj() {
+                return multiply4(projectionMatrix, viewMatrix);
+            }
+
+            function render() {
+                const canvas = document.getElementById('canvas');
+
+                // Resize canvas if needed
+                if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
+                    canvas.width = canvas.clientWidth;
+                    canvas.height = canvas.clientHeight;
+                    gl.viewport(0, 0, canvas.width, canvas.height);
+
+                    // Update projection
+                    const fx = 1164;
+                    const fy = 1164;
+                    projectionMatrix = getProjectionMatrix(fx, fy, canvas.width, canvas.height);
+
+                    // Trigger re-sort
+                    if (worker && vertexCount > 0) {
+                        worker.postMessage({ view: getViewProj() });
+                    }
+                }
+
+                // Clear
+                gl.clearColor(0.12, 0.12, 0.12, 1);
+                gl.clear(gl.COLOR_BUFFER_BIT);
+
+                if (vertexCount === 0 || !program) {
+                    requestAnimationFrame(render);
+                    return;
+                }
+
+                gl.useProgram(program);
+
+                // Set uniforms
+                gl.uniformMatrix4fv(gl.getUniformLocation(program, "projection"), false, projectionMatrix);
+                gl.uniformMatrix4fv(gl.getUniformLocation(program, "view"), false, viewMatrix);
+                gl.uniform2fv(gl.getUniformLocation(program, "focal"), new Float32Array([1164, 1164]));
+                gl.uniform2fv(gl.getUniformLocation(program, "viewport"), new Float32Array([canvas.width, canvas.height]));
+
+                // Bind texture
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+                gl.uniform1i(gl.getUniformLocation(program, "u_texture"), 0);
+
+                // Bind vertex buffer
+                const posLoc = gl.getAttribLocation(program, "position");
+                gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+                gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+                gl.enableVertexAttribArray(posLoc);
+
+                // Bind index buffer
+                const indexLoc = gl.getAttribLocation(program, "index");
+                gl.bindBuffer(gl.ARRAY_BUFFER, indexBuffer);
+                gl.vertexAttribIPointer(indexLoc, 1, gl.INT, 0, 0);
+                gl.vertexAttribDivisor(indexLoc, 1);
+                gl.enableVertexAttribArray(indexLoc);
+
+                // Draw
+                gl.drawArraysInstanced(gl.TRIANGLE_FAN, 0, 4, vertexCount);
+
+                requestAnimationFrame(render);
+            }
+
+            // Matrix utility functions (from splat.js)
+            function getProjectionMatrix(fx, fy, width, height) {
+                const znear = 0.2;
+                const zfar = 200;
+                return [
+                    (2 * fx) / width, 0, 0, 0,
+                    0, -(2 * fy) / height, 0, 0,
+                    0, 0, zfar / (zfar - znear), 1,
+                    0, 0, -(zfar * znear) / (zfar - znear), 0
+                ];
+            }
+
+            function multiply4(a, b) {
+                return [
+                    b[0] * a[0] + b[1] * a[4] + b[2] * a[8] + b[3] * a[12],
+                    b[0] * a[1] + b[1] * a[5] + b[2] * a[9] + b[3] * a[13],
+                    b[0] * a[2] + b[1] * a[6] + b[2] * a[10] + b[3] * a[14],
+                    b[0] * a[3] + b[1] * a[7] + b[2] * a[11] + b[3] * a[15],
+                    b[4] * a[0] + b[5] * a[4] + b[6] * a[8] + b[7] * a[12],
+                    b[4] * a[1] + b[5] * a[5] + b[6] * a[9] + b[7] * a[13],
+                    b[4] * a[2] + b[5] * a[6] + b[6] * a[10] + b[7] * a[14],
+                    b[4] * a[3] + b[5] * a[7] + b[6] * a[11] + b[7] * a[15],
+                    b[8] * a[0] + b[9] * a[4] + b[10] * a[8] + b[11] * a[12],
+                    b[8] * a[1] + b[9] * a[5] + b[10] * a[9] + b[11] * a[13],
+                    b[8] * a[2] + b[9] * a[6] + b[10] * a[10] + b[11] * a[14],
+                    b[8] * a[3] + b[9] * a[7] + b[10] * a[11] + b[11] * a[15],
+                    b[12] * a[0] + b[13] * a[4] + b[14] * a[8] + b[15] * a[12],
+                    b[12] * a[1] + b[13] * a[5] + b[14] * a[9] + b[15] * a[13],
+                    b[12] * a[2] + b[13] * a[6] + b[14] * a[10] + b[15] * a[14],
+                    b[12] * a[3] + b[13] * a[7] + b[14] * a[11] + b[15] * a[15]
+                ];
+            }
+
+            function rotate4(a, rad, x, y, z) {
+                let len = Math.hypot(x, y, z);
+                x /= len;
+                y /= len;
+                z /= len;
+                let s = Math.sin(rad);
+                let c = Math.cos(rad);
+                let t = 1 - c;
+                let b00 = x * x * t + c;
+                let b01 = y * x * t + z * s;
+                let b02 = z * x * t - y * s;
+                let b10 = x * y * t - z * s;
+                let b11 = y * y * t + c;
+                let b12 = z * y * t + x * s;
+                let b20 = x * z * t + y * s;
+                let b21 = y * z * t - x * s;
+                let b22 = z * z * t + c;
+                return [
+                    a[0] * b00 + a[4] * b01 + a[8] * b02,
+                    a[1] * b00 + a[5] * b01 + a[9] * b02,
+                    a[2] * b00 + a[6] * b01 + a[10] * b02,
+                    a[3] * b00 + a[7] * b01 + a[11] * b02,
+                    a[0] * b10 + a[4] * b11 + a[8] * b12,
+                    a[1] * b10 + a[5] * b11 + a[9] * b12,
+                    a[2] * b10 + a[6] * b11 + a[10] * b12,
+                    a[3] * b10 + a[7] * b11 + a[11] * b12,
+                    a[0] * b20 + a[4] * b21 + a[8] * b22,
+                    a[1] * b20 + a[5] * b21 + a[9] * b22,
+                    a[2] * b20 + a[6] * b21 + a[10] * b22,
+                    a[3] * b20 + a[7] * b21 + a[11] * b22,
+                    ...a.slice(12, 16)
+                ];
+            }
+
+            function translate4(a, x, y, z) {
+                return [
+                    ...a.slice(0, 12),
+                    a[0] * x + a[4] * y + a[8] * z + a[12],
+                    a[1] * x + a[5] * y + a[9] * z + a[13],
+                    a[2] * x + a[6] * y + a[10] * z + a[14],
+                    a[3] * x + a[7] * y + a[11] * z + a[15]
+                ];
+            }
+        })();
+    </script>
+</body>
+
+</html>

@@ -335,8 +335,14 @@ app.registerExtension({
                     // Fields
                     for (let k in state.character_info) {
                         if (els[k]) {
-                            if (els[k].type === "checkbox") els[k].checked = state.character_info[k];
-                            else els[k].value = state.character_info[k];
+                            let val = state.character_info[k];
+                            // Normalize background_color case to match dropdown options
+                            if (k === "background_color" && typeof val === "string" && val) {
+                                val = val.charAt(0).toUpperCase() + val.slice(1).toLowerCase();
+                                state.character_info[k] = val;
+                            }
+                            if (els[k].type === "checkbox") els[k].checked = val;
+                            else els[k].value = val;
                         }
                     }
                     // Images
@@ -371,20 +377,26 @@ app.registerExtension({
                     return { overlay, modal: m, content };
                 };
 
-                const loadChar = async (name) => {
+                const loadChar = async (name, skipInfoLoad = false) => {
                     if (!name || name === "None") {
                         state.char_preview_url = null;
                         updateUIFromState();
                         return;
                     }
                     try {
-                        const r = await api.fetchApi(`/vnccs/config?name=${encodeURIComponent(name)}`);
-                        if (r.ok) {
-                            const d = await r.json();
-                            if (d.character_info) {
-                                Object.assign(state.character_info, d.character_info);
-                                updateUIFromState();
+                        // Skip loading character_info if restoring from widget_data
+                        if (!skipInfoLoad) {
+                            const r = await api.fetchApi(`/vnccs/config?name=${encodeURIComponent(name)}`);
+                            if (r.ok) {
+                                const d = await r.json();
+                                if (d.character_info) {
+                                    Object.assign(state.character_info, d.character_info);
+                                    updateUIFromState();
+                                }
                             }
+                        } else {
+                            // Still update UI from current state
+                            updateUIFromState();
                         }
 
                         // Load Preview Image URL Logic
@@ -435,7 +447,9 @@ app.registerExtension({
                         }
 
                         // Wait for loadChar to finish so preview updates
-                        if (state.character) await loadChar(state.character);
+                        // Skip loading info if we already have widget_data (restoring session)
+                        const hasWidgetData = state.character_info && state.character_info.hair !== undefined;
+                        if (state.character) await loadChar(state.character, hasWidgetData);
 
                     } catch (e) { console.error(e); }
                 };

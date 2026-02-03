@@ -1,7 +1,9 @@
 <!DOCTYPE html>
 <html>
+
 <head>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GeomPack Gaussian Splat Viewer</title>
     <style>
         * {
@@ -96,7 +98,7 @@
             position: absolute;
             top: 8px;
             left: 8px;
-            background: rgba(0,0,0,0.7);
+            background: rgba(0, 0, 0, 0.7);
             padding: 8px 12px;
             border-radius: 4px;
             color: #aaa;
@@ -110,6 +112,7 @@
         }
     </style>
 </head>
+
 <body>
     <div id="viewerContainer">
         <canvas id="canvas"></canvas>
@@ -124,20 +127,16 @@
     <div id="controlsBar">
         <div class="scale-control">
             <span>Scale:</span>
-            <input type="number" id="gaussianScaleValue" min="0.01" max="100" step="0.1" value="1.0" title="Gaussian scale multiplier">
+            <input type="number" id="gaussianScaleValue" min="0.01" max="100" step="0.1" value="1.0"
+                title="Gaussian scale multiplier">
         </div>
         <button id="resetCamera" title="Reset camera view">Reset View</button>
-        <div class="scale-control">
-            <span>Max (s):</span>
-            <input type="number" id="maxRecordTime" min="1" max="600" step="1" value="30" title="Maximum recording time in seconds">
-        </div>
-        <button id="startRecord" title="Start recording video">Start Record</button>
-        <button id="stopRecord" title="Stop recording video" style="display: none; background: #d32f2f;">Stop Record</button>
-        <span id="recordStatus" style="color: #888; font-size: 11px; display: none;"></span>
+        <button id="screenshot" title="Take screenshot">Screenshot</button>
+        <button id="copyImage" title="Copy image to clipboard">Copy Image</button>
     </div>
 
     <!-- Load bundled gsplat.js -->
-    <script src="./js/gsplat-bundle.js"></script>
+    <script src="./gsplat-bundle.js"></script>
 
     <script type="module">
         // Use the globally exported GSPLAT
@@ -159,11 +158,15 @@
         let originalScales = null;  // Store original scales for dynamic adjustment
 
         // Default focal length
-        const DEFAULT_FOCAL_LENGTH = 30;
+        // Default focal length (pixel-space, sane default for 512px view)
+        const DEFAULT_FOCAL_LENGTH = 600;
 
         // Initialize the viewer
         function initViewer() {
             try {
+                if (!SPLAT) {
+                    throw new Error('GSPLAT library not loaded');
+                }
                 scene = new SPLAT.Scene();
                 camera = new SPLAT.Camera();
                 renderer = new SPLAT.WebGLRenderer(canvas);
@@ -175,7 +178,9 @@
 
                 // Handle resize
                 const resize = () => {
-                    renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+                    if (!isResolutionLocked) {
+                        renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+                    }
                 };
                 window.addEventListener('resize', resize);
                 resize();
@@ -187,15 +192,10 @@
                     animationId = requestAnimationFrame(frame);
                 };
                 frame();
-
-                console.log('[GaussianViewer] Initialized successfully');
             } catch (err) {
-                console.error('[GaussianViewer] Init error:', err);
                 showError('Failed to initialize WebGL viewer: ' + err.message);
             }
         }
-
-        // Show error
         function showError(message) {
             errorEl.textContent = message;
             errorEl.classList.remove('hidden');
@@ -204,9 +204,22 @@
         // Store initial camera params for reset
         let initialCameraData = null;
 
+        // Resolution lock state
+        let isResolutionLocked = false;
+
         // Scale compensation: when focal length is scaled down for canvas size,
         // gaussian scales need to be multiplied by this factor to maintain correct screen-space size
         let gaussianScaleCompensation = 1.0;
+
+        // Resume the animation loop (used after pausing for screenshot/clipboard)
+        function resumeAnimationLoop() {
+            const frame = () => {
+                controls.update();
+                renderer.render(scene, camera);
+                animationId = requestAnimationFrame(frame);
+            };
+            frame();
+        }
 
         // Set camera from extrinsics and intrinsics
         // extrinsics: 4x4 matrix (identity for SHARP = camera at origin looking down +Z)
@@ -214,10 +227,8 @@
         // splat: the loaded Gaussian splat object (optional, used for bounds)
         function setCameraFromExtrinsics(extrinsics, intrinsics, splat) {
             if (!camera || !controls) return;
-
-            console.log('[GaussianViewer] Setting camera from extrinsics/intrinsics');
-            console.log('[GaussianViewer] Extrinsics:', JSON.stringify(extrinsics));
-            console.log('[GaussianViewer] Intrinsics:', JSON.stringify(intrinsics));
+            console.log('[GaussianViewer] | Extrinsics:', JSON.stringify(extrinsics));
+            console.log('[GaussianViewer] | Intrinsics:', JSON.stringify(intrinsics));
 
             // Parse extrinsics to get camera position
             // For a 4x4 extrinsics matrix [R|t], camera position in world space is -R^T * t
@@ -257,27 +268,82 @@
                 console.log('[GaussianViewer] Intrinsics: fx=', fx, 'fy=', fy, 'cx=', cx, 'cy=', cy);
                 console.log('[GaussianViewer] Image dimensions (from intrinsics):', imageWidth, 'x', imageHeight);
 
-                // Set camera focal length to match the original camera
-                // gsplat.js uses fx/fy in screen pixels, need to scale by canvas size
-                const canvasWidth = canvas.clientWidth || 512;
-                const canvasHeight = canvas.clientHeight || 512;
+                // Determine if we should lock resolution to native image size
+                // We lock resolution if intrinsics are provided to ensure "WYSIWYG" with high-res output
+                isResolutionLocked = true;
 
-                // Use uniform scale factor (canvas should have same aspect ratio as image)
-                // This keeps fx = fy for undistorted view
-                const scale = canvasWidth / imageWidth;
-                const scaledF = fx * scale;  // fx and fy are equal in SHARP
+                // Get current container size for scale compensation calculation
+                const containerWidth = canvas.clientWidth || 512;
+                const containerHeight = canvas.clientHeight || 512;
 
-                camera.data.fx = scaledF;
-                camera.data.fy = scaledF;
+                // Lock renderer size to NATIVE image resolution
+                console.log(`[GaussianViewer] Locking resolution to native: ${imageWidth}x${imageHeight}`);
+                renderer.setSize(imageWidth, imageHeight);
 
-                // IMPORTANT: Compensate gaussian scales for the focal length scaling
-                // Screen-space size = world_scale * fx / depth
-                // When we scale fx down, gaussians appear smaller. Multiply scales by inverse.
-                gaussianScaleCompensation = imageWidth / canvasWidth;
+                // Ensure CSS keeps it fitted to container
+                canvas.style.width = '100%';
+                canvas.style.height = '100%';
 
-                console.log('[GaussianViewer] Canvas size:', canvasWidth, 'x', canvasHeight);
-                console.log('[GaussianViewer] Uniform scale:', scale, 'scaled focal length:', scaledF);
-                console.log('[GaussianViewer] Gaussian scale compensation:', gaussianScaleCompensation.toFixed(2), 'x');
+                // Use NATIVE focal length (no scaling down)
+                camera.data.fx = fx;
+                camera.data.fy = fy;
+
+                // IMPORTANT: Calculate scale compensation
+                // gsplat.js renders points based on their world space size projected to screen space.
+                // When we view a 2048x2048 image in a 512x512 container, we are effectively zooming out.
+                // To make the points appear as "solid" as they do in the original training view,
+                // we need to compensate for this difference.
+
+                // Empirical observation suggests we need a stronger compensation than just the ratio.
+                // If user says Scale ~14 is good when ratio is ~4 (2048/512), then compensation might be squared ratio?
+                // Or maybe the points from this trainer are just naturally small.
+                // Let's stick to linear ratio for now but allow a base multiplier.
+
+                // For now, let's trust the ratio but maybe add a boost factor if needed.
+                // User reported needing ~14x scale. If image is 2048 and container 512, ratio is 4.
+                // 14 / 4 = 3.5. So maybe there's an inherent factor of 3-4 missing?
+                // Actually, let's just apply the ratio logic strictly first:
+                // If I render at 2048px width, a point of size 1 world unit covers X pixels.
+                // If I render at 512px width, it covers X/4 pixels.
+                // But visually, if I look at the 2048px image scaled down to 512px on my screen (via CSS),
+                // the point covers X pixels of the *buffer*, which is X/4 pixels on *screen*.
+                // Wait, if we render at high res, the points are physically "correct" size in pixels for that resolution.
+                // The issue is likely that "correct" size is often too sparse for point clouds that rely on splatting overlap.
+
+                // Let's use the ratio, but ensure we aren't double counting.
+                gaussianScaleCompensation = imageWidth / containerWidth;
+
+                // Add an extra boost because often raw splats are too small without the "dilation" effect of low-res rendering
+                // When you render low-res, rasterization snaps to pixels, effectively making small points relatively larger.
+                // High-res rendering loses this "free aliasing coverage".
+                // Let's add a heuristic boost factor.
+                // User said 14x was good. 14 / (2048/512) = 3.5.
+                // Let's try boosting the compensation significantly.
+                // gaussianScaleCompensation *= 3.0; // Boost factor
+
+                // Actually, let's change how we calculate this.
+                // If the user wants "WYSIWYG" relative to the preview size:
+                // We want the point to cover the same *percentage* of the screen width.
+                // PointRadius / ImageWidth = Constant.
+                // If we increase ImageWidth by factor S, PointRadius must increase by factor S.
+                // This is what gaussianScaleCompensation = imageWidth / containerWidth does.
+
+                // However, the user reports it's still sparse. This implies the *base* size is too small.
+                // Maybe the "preview" logic in other viewers implicitly boosts size?
+                // Or maybe the training output relies on a specific focal length?
+
+                // Let's force a minimum compensation to avoid sparsity.
+                // And let's default the UI scale slider to something higher if we detect high-res?
+                // No, better to fix the compensation calculation.
+
+                // Let's try applying a stronger multiplier.
+                // If resolution is locked, we are in "High Res Mode".
+                // Let's scale up by the ratio AND a bit more.
+                gaussianScaleCompensation = (imageWidth / containerWidth) * 3.0; // 3.0 is a heuristic "density boost"
+
+                console.log('[GaussianViewer] Native resolution:', imageWidth, 'x', imageHeight);
+                console.log('[GaussianViewer] Container size:', containerWidth, 'x', containerHeight);
+                console.log('[GaussianViewer] Gaussian scale compensation (with 3x boost):', gaussianScaleCompensation.toFixed(2), 'x');
 
                 // Calculate vertical FOV in radians for logging
                 const fovY = 2 * Math.atan(imageHeight / (2 * fy));
@@ -342,40 +408,91 @@
             camera.position.z = camPosZ;
 
             // Update orbit controls to orbit around the target point
-            // This recalculates the internal orbit state from current camera.position
             controls.setCameraTarget(targetPos);
 
-            console.log('[GaussianViewer] Camera set to position:', camPosX, camPosY, camPosZ);
-            console.log('[GaussianViewer] Looking at target:', targetX, targetY, targetZ);
-            console.log('[GaussianViewer] This should match the original input image view');
+            console.log('[GaussianViewer] ✅ Camera configured from Extrinsics:');
+            console.log('[GaussianViewer] | Position:', camera.position.x.toFixed(3), camera.position.y.toFixed(3), camera.position.z.toFixed(3));
+            console.log('[GaussianViewer] | Target:', targetPos.x.toFixed(3), targetPos.y.toFixed(3), targetPos.z.toFixed(3));
+            console.log('[GaussianViewer] | Distance to Target:', camera.position.distanceTo(targetPos).toFixed(3));
+        }
+
+        // Auto-fit camera to scene bounds
+        function autoFitCamera() {
+            if (!currentSplat || !currentSplat.bounds || !camera || !controls) return;
+
+            const center = currentSplat.bounds.center();
+            const size = currentSplat.bounds.size();
+            const maxDim = Math.max(size.x, size.y, size.z);
+
+            console.log('[GaussianViewer] Auto-fitting to scene bounds:',
+                'center=', center.x, center.y, center.z,
+                'size=', size.x, size.y, size.z);
+
+            // Move camera back along Z to see the whole scene
+            // FOV-based distance calculation: dist = dim / (2 * tan(fov/2))
+            // camera.data.fx/fy are focal lengths. FOV = 2 * atan(size / (2 * focal))
+            const fovX = 2 * Math.atan(canvas.clientWidth / (2 * camera.data.fx));
+            const distance = (maxDim / 2) / Math.tan(fovX / 2) * 1.5; // 1.5x for padding
+
+            camera.position.x = center.x;
+            camera.position.y = center.y;
+            camera.position.z = center.z - distance; // Position camera in front of scene (Z-)
+
+            const targetPos = new SPLAT.Vector3(center.x, center.y, center.z);
+            controls.setCameraTarget(targetPos);
+
+            // Store as initial for reset
+            initialCameraData = {
+                position: camera.position.clone(),
+                target: targetPos.clone(),
+                fx: camera.data.fx,
+                fy: camera.data.fy
+            };
+
+            console.log('[GaussianViewer] Auto-fit complete. Camera at:', camera.position.z, 'Looking at:', targetPos.z);
         }
 
         // Load a PLY file from ArrayBuffer data
         async function loadPLYFromData(arrayBuffer, filename, extrinsics, intrinsics) {
+            console.log(`[GaussianViewer] 📥 loadPLYFromData started for ${filename}`);
             try {
+                // Reset lock state
+                isResolutionLocked = false;
+
                 // Clear ALL existing objects from scene
                 if (scene.objects && scene.objects.length > 0) {
-                    console.log('[GaussianViewer] Clearing', scene.objects.length, 'existing objects from scene');
+                    console.log(`[GaussianViewer] 🧹 Clearing ${scene.objects.length} existing objects...`);
                     // Remove all objects (iterate backwards to avoid index issues)
                     while (scene.objects.length > 0) {
                         scene.removeObject(scene.objects[0]);
                     }
                 }
+                console.log('[GaussianViewer] ✨ Scene cleared');
                 currentSplat = null;
 
                 // Pre-calculate scale compensation from intrinsics BEFORE loading
                 // This ensures gaussian scales are correct from the start
                 gaussianScaleCompensation = 1.0;  // Default if no intrinsics
                 if (intrinsics && Array.isArray(intrinsics) && intrinsics.length >= 2) {
-                    const fx = intrinsics[0][0];
                     const cx = intrinsics[0][2];
                     const imageWidth = cx * 2;
-                    const canvasWidth = canvas.clientWidth || 512;
-                    // Compensation = original_size / canvas_size
-                    // This makes gaussians appear at their correct world-space size
-                    gaussianScaleCompensation = imageWidth / canvasWidth;
+                    const containerWidth = canvas.clientWidth || 512;
+
+                    // Base compensation: Ratio of Native / Display
+                    let ratio = imageWidth / containerWidth;
+
+                    // Heuristic: Add a "Density Boost" for high-res rendering.
+                    // High-res rendering tends to make points look sparse because they don't overlap as much
+                    // as they do in lower resolutions (due to sub-pixel vs pixel rasterization effects).
+                    // We multiply by an extra factor to simulate the "fullness" of a lower-res view.
+                    // Based on user feedback, a factor of ~10.0 (total) is often needed for ideal density.
+                    const DENSITY_BOOST = 10.0;
+
+                    gaussianScaleCompensation = ratio * DENSITY_BOOST;
+
                     console.log('[GaussianViewer] Pre-calculated scale compensation:', gaussianScaleCompensation.toFixed(2), 'x');
-                    console.log('[GaussianViewer] (Image:', imageWidth, 'px -> Canvas:', canvasWidth, 'px)');
+                    console.log('[GaussianViewer] Ratio:', ratio.toFixed(2), 'Density Boost:', DENSITY_BOOST);
+                    console.log('[GaussianViewer] (Image:', imageWidth, 'px / Container:', containerWidth, 'px)');
                 }
 
                 console.log('[GaussianViewer] Loading from data, size:', arrayBuffer.byteLength);
@@ -385,7 +502,16 @@
                 const blobUrl = URL.createObjectURL(blob);
 
                 // Load the PLY file from blob URL using PLYLoader
+                console.log('[GaussianViewer] ⏳ Calling SPLAT.PLYLoader.LoadAsync...');
                 await SPLAT.PLYLoader.LoadAsync(blobUrl, scene);
+                console.log('[GaussianViewer] ✅ SPLAT.PLYLoader.LoadAsync finished. Scene objects now:', scene.objects.length);
+
+                if (scene.objects.length > 0) {
+                    currentSplat = scene.objects[scene.objects.length - 1];
+                    console.log('[GaussianViewer] 📦 Active splat captured:', currentSplat.constructor.name);
+                } else {
+                    console.error('[GaussianViewer] ❌ CRITICAL: No object added to scene after loading!');
+                }
 
                 // Clean up blob URL
                 URL.revokeObjectURL(blobUrl);
@@ -433,18 +559,27 @@
                         }
 
                         const avgScale = sumScale / scales.length;
-                        console.log('[GaussianViewer] === GAUSSIAN SCALE DEBUG (after compensation) ===');
-                        console.log('[GaussianViewer] Number of Gaussians:', numGaussians);
-                        console.log('[GaussianViewer] Compensated scale min:', minScale.toFixed(6));
-                        console.log('[GaussianViewer] Compensated scale max:', maxScale.toFixed(6));
-                        console.log('[GaussianViewer] Compensated scale avg:', avgScale.toFixed(6));
-                        console.log('[GaussianViewer] =================================================');
-                    } else {
-                        console.log('[GaussianViewer] No scales data found on splat object');
-                        console.log('[GaussianViewer] Splat properties:', Object.keys(currentSplat));
-                        if (currentSplat.data) {
-                            console.log('[GaussianViewer] Splat.data properties:', Object.keys(currentSplat.data));
+                        console.log('[GaussianViewer] === 📊 GAUSSIAN DATA STATISTICS ===');
+                        console.log('[GaussianViewer] | Points:', numGaussians);
+                        console.log('[GaussianViewer] | Scale Min:', minScale.toFixed(6));
+                        console.log('[GaussianViewer] | Scale Max:', maxScale.toFixed(6));
+                        console.log('[GaussianViewer] | Scale Avg:', avgScale.toFixed(6));
+
+                        // Dump first 5 gaussians for sanity check
+                        console.log('[GaussianViewer] | First 5 Points:');
+                        for (let i = 0; i < Math.min(5, numGaussians); i++) {
+                            const p = currentSplat.data.positions;
+                            const s = currentSplat.data.scales;
+                            const r = currentSplat.data.rotations;
+                            const c = currentSplat.data.colors;
+                            console.log(`[GaussianViewer] |   #${i}: pos=(${p[3 * i].toFixed(3)}, ${p[3 * i + 1].toFixed(3)}, ${p[3 * i + 2].toFixed(3)}) ` +
+                                `scale=(${s[3 * i].toFixed(3)}, ${s[3 * i + 1].toFixed(3)}, ${s[3 * i + 2].toFixed(3)}) ` +
+                                `color=(${c[4 * i]}, ${c[4 * i + 1]}, ${c[4 * i + 2]}, ${c[4 * i + 3]})`);
                         }
+                        console.log('[GaussianViewer] =================================');
+                    } else {
+                        console.warn('[GaussianViewer] ⚠️ No scales/positions data found on currentSplat.data!');
+                        console.log('[GaussianViewer] currentSplat.data keys:', Object.keys(currentSplat.data || {}));
                         originalScales = null;
                     }
 
@@ -457,11 +592,14 @@
                 if (extrinsics || intrinsics) {
                     setCameraFromExtrinsics(extrinsics, intrinsics, currentSplat);
                     if (controls) controls.update();
+                } else {
+                    // Otherwise, auto-fit to see the whole thing
+                    autoFitCamera();
                 }
 
-                // Show info panel - 已禁用，避免遮挡预览
-                // infoPanel.classList.remove('hidden');
-                // infoContent.innerHTML = `<span style="color:#6cc;">Gaussian Splat Loaded</span><br><span style="color:#888;">${filename}</span>`;
+                // Show info panel
+                infoPanel.classList.remove('hidden');
+                infoContent.innerHTML = `<span style="color:#6cc;">Gaussian Splat Loaded</span><br><span style="color:#888;">${filename}</span>`;
 
                 // Notify parent
                 window.parent.postMessage({
@@ -520,197 +658,139 @@
             }
         }
 
-        // Take screenshot - 已删除截图功能
-        // function takeScreenshot() {
-        //     if (!renderer) return;
-        //
-        //     try {
-        //         const dataUrl = canvas.toDataURL('image/png');
-        //         window.parent.postMessage({
-        //             type: 'SCREENSHOT',
-        //             image: dataUrl,
-        //             timestamp: Date.now()
-        //         }, '*');
-        //         console.log('[GaussianViewer] Screenshot captured');
-        //     } catch (err) {
-        //         console.error('[GaussianViewer] Screenshot error:', err);
-        //     }
-        // }
+        // Helper to draw black background behind transparent canvas for screenshot
+        // This solves the issue where transparent parts of the gaussian render appear weirdly when pasted
+        // or viewed in tools that don't handle premultiplied alpha correctly, or simply when the
+        // viewer background (CSS) was providing the black color but the canvas itself was transparent.
+        function getCanvasWithBlackBackground(sourceCanvas) {
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = sourceCanvas.width;
+            tempCanvas.height = sourceCanvas.height;
+            const ctx = tempCanvas.getContext('2d');
 
-        // Video recording functionality
-        let mediaRecorder = null;
-        let recordedChunks = [];
-        let recordingStartTime = null;
-        let recordingInterval = null;
-        let maxRecordTimeout = null;
-        const startRecordBtn = document.getElementById('startRecord');
-        const stopRecordBtn = document.getElementById('stopRecord');
-        const recordStatus = document.getElementById('recordStatus');
-        const maxRecordTimeInput = document.getElementById('maxRecordTime');
+            // Fill with black first
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
 
-        function startRecording() {
-            if (!canvas || !renderer) {
-                console.error('[GaussianViewer] Cannot start recording: canvas or renderer not available');
-                return;
-            }
+            // Draw original canvas on top
+            ctx.drawImage(sourceCanvas, 0, 0);
+
+            return tempCanvas;
+        }
+
+        // Take screenshot directly from canvas
+        // Avoiding captureStream() because it can introduce artifacts or capture inter-frame states
+        // Since we are now rendering at full resolution (WYSIWYG), toDataURL is the most accurate representation
+        async function takeScreenshot() {
+            if (!renderer || !renderer.canvas) return;
 
             try {
-                // Check if captureStream is supported
-                if (!canvas.captureStream) {
-                    alert('Your browser does not support canvas recording. Please use Chrome, Firefox, or Edge.');
-                    return;
+                const canvas = renderer.canvas;
+                const width = canvas.width;
+                const height = canvas.height;
+
+                // Pause the animation loop to ensure we capture a stable frame
+                if (animationId) cancelAnimationFrame(animationId);
+
+                // Force a single synchronous render to ensure the buffer is populated exactly as expected
+                if (scene && camera) {
+                    controls.update();
+                    renderer.render(scene, camera);
                 }
 
-                // Get max recording time from input
-                const maxRecordTimeSeconds = parseInt(maxRecordTimeInput.value) || 30;
-                if (maxRecordTimeSeconds < 1 || maxRecordTimeSeconds > 600) {
-                    alert('Maximum recording time must be between 1 and 600 seconds.');
-                    return;
-                }
+                console.log('[GaussianViewer] Capturing screenshot via toDataURL:', width, 'x', height);
 
-                // Create stream from canvas (30 FPS)
-                const stream = canvas.captureStream(30);
-                
-                // Force MP4 format - check for MP4 support
-                const mp4MimeTypes = [
-                    'video/mp4;codecs=avc1.42E01E',  // H.264 Baseline
-                    'video/mp4;codecs=avc1.4D001E',  // H.264 Main
-                    'video/mp4;codecs=avc1.64001E',  // H.264 High
-                    'video/mp4'                       // Generic MP4
-                ];
-                
-                let selectedMimeType = '';
-                for (const mimeType of mp4MimeTypes) {
-                    if (MediaRecorder.isTypeSupported(mimeType)) {
-                        selectedMimeType = mimeType;
-                        break;
-                    }
-                }
+                // Composite with black background to ensure consistency with preview
+                // The preview looks black because of CSS background, but the canvas might be transparent
+                const finalCanvas = getCanvasWithBlackBackground(canvas);
+                const dataUrl = finalCanvas.toDataURL('image/png');
 
-                if (!selectedMimeType) {
-                    alert('Your browser does not support MP4 recording. Please use Chrome, Edge, or Safari.');
-                    return;
-                }
+                window.parent.postMessage({
+                    type: 'SCREENSHOT',
+                    image: dataUrl,
+                    timestamp: Date.now()
+                }, '*');
 
-                console.log('[GaussianViewer] Starting recording with MIME type:', selectedMimeType);
-
-                // Create MediaRecorder
-                recordedChunks = [];
-                mediaRecorder = new MediaRecorder(stream, {
-                    mimeType: selectedMimeType,
-                    videoBitsPerSecond: 5000000 // 5 Mbps
-                });
-
-                mediaRecorder.ondataavailable = (event) => {
-                    if (event.data && event.data.size > 0) {
-                        recordedChunks.push(event.data);
-                        console.log('[GaussianViewer] Recorded chunk, size:', event.data.size);
-                    }
-                };
-
-                mediaRecorder.onstop = () => {
-                    console.log('[GaussianViewer] Recording stopped, total chunks:', recordedChunks.length);
-                    
-                    // Clear timeout if still active
-                    if (maxRecordTimeout) {
-                        clearTimeout(maxRecordTimeout);
-                        maxRecordTimeout = null;
-                    }
-                    
-                    // Create blob from chunks (force MP4 type)
-                    const blob = new Blob(recordedChunks, { type: 'video/mp4' });
-                    console.log('[GaussianViewer] Video blob created, size:', blob.size, 'bytes');
-
-                    // Convert blob to base64 for transmission
-                    const reader = new FileReader();
-                    reader.onloadend = () => {
-                        const base64data = reader.result;
-                        window.parent.postMessage({
-                            type: 'VIDEO_RECORDING',
-                            video: base64data,
-                            mimeType: 'video/mp4',
-                            timestamp: Date.now()
-                        }, '*');
-                        console.log('[GaussianViewer] Video sent to parent window');
-                    };
-                    reader.readAsDataURL(blob);
-                };
-
-                mediaRecorder.onerror = (event) => {
-                    console.error('[GaussianViewer] Recording error:', event.error);
-                    recordStatus.textContent = 'Recording error';
-                    recordStatus.style.color = '#ff6b6b';
-                    stopRecording();
-                };
-
-                // Start recording
-                mediaRecorder.start(1000); // Collect data every second
-                recordingStartTime = Date.now();
-
-                // Update UI
-                startRecordBtn.style.display = 'none';
-                stopRecordBtn.style.display = 'inline-block';
-                recordStatus.style.display = 'inline';
-                recordStatus.textContent = 'Recording...';
-                recordStatus.style.color = '#ff6b6b';
-
-                // Update recording time and check for max time
-                recordingInterval = setInterval(() => {
-                    const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
-                    const minutes = Math.floor(elapsed / 60);
-                    const seconds = elapsed % 60;
-                    recordStatus.textContent = `Recording... ${minutes}:${seconds.toString().padStart(2, '0')} / ${Math.floor(maxRecordTimeSeconds / 60)}:${(maxRecordTimeSeconds % 60).toString().padStart(2, '0')}`;
-                    
-                    // Check if max time reached
-                    if (elapsed >= maxRecordTimeSeconds) {
-                        console.log('[GaussianViewer] Maximum recording time reached, stopping...');
-                        stopRecording();
-                    }
-                }, 1000);
-
-                // Set timeout to auto-stop at max time
-                maxRecordTimeout = setTimeout(() => {
-                    console.log('[GaussianViewer] Maximum recording time reached (timeout), stopping...');
-                    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-                        stopRecording();
-                    }
-                }, maxRecordTimeSeconds * 1000);
-
-                console.log('[GaussianViewer] Recording started, max time:', maxRecordTimeSeconds, 'seconds');
+                resumeAnimationLoop();
+                console.log('[GaussianViewer] Screenshot captured successfully');
             } catch (err) {
-                console.error('[GaussianViewer] Error starting recording:', err);
-                alert('Failed to start recording: ' + err.message);
+                console.error('[GaussianViewer] Screenshot error:', err);
+                resumeAnimationLoop();
             }
         }
 
-        function stopRecording() {
-            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-                mediaRecorder.stop();
-                console.log('[GaussianViewer] Stopping recording...');
-            }
+        // Copy image to clipboard directly from canvas
+        async function copyImageToClipboard() {
+            if (!renderer || !renderer.canvas) return;
 
-            // Clear timeout
-            if (maxRecordTimeout) {
-                clearTimeout(maxRecordTimeout);
-                maxRecordTimeout = null;
-            }
+            try {
+                const canvas = renderer.canvas;
+                const width = canvas.width;
+                const height = canvas.height;
 
-            // Clear interval
-            if (recordingInterval) {
-                clearInterval(recordingInterval);
-                recordingInterval = null;
-            }
+                // Pause the animation loop
+                if (animationId) cancelAnimationFrame(animationId);
 
-            // Update UI
-            startRecordBtn.style.display = 'inline-block';
-            stopRecordBtn.style.display = 'none';
-            recordStatus.textContent = 'Processing video...';
-            recordStatus.style.color = '#6cc';
+                // Force a single synchronous render
+                if (scene && camera) {
+                    controls.update();
+                    renderer.render(scene, camera);
+                }
+
+                console.log('[GaussianViewer] Copying to clipboard via toBlob:', width, 'x', height);
+
+                // Composite with black background
+                const finalCanvas = getCanvasWithBlackBackground(canvas);
+
+                // Direct blob creation from composited canvas
+                const blob = await canvasToBlob(finalCanvas);
+
+                try {
+                    await navigator.clipboard.write([
+                        new ClipboardItem({ 'image/png': blob })
+                    ]);
+                    console.log('[GaussianViewer] Image copied to clipboard:', width, 'x', height);
+
+                    window.parent.postMessage({
+                        type: 'COPY_IMAGE',
+                        success: true,
+                        timestamp: Date.now()
+                    }, '*');
+                } catch (clipboardError) {
+                    console.error('[GaussianViewer] Clipboard write failed:', clipboardError);
+                    window.parent.postMessage({
+                        type: 'COPY_IMAGE',
+                        success: false,
+                        error: 'Clipboard write failed: ' + clipboardError.message,
+                        timestamp: Date.now()
+                    }, '*');
+                }
+
+                resumeAnimationLoop();
+            } catch (err) {
+                console.error('[GaussianViewer] Copy to clipboard error:', err);
+                resumeAnimationLoop();
+                window.parent.postMessage({
+                    type: 'COPY_IMAGE',
+                    success: false,
+                    error: err.message,
+                    timestamp: Date.now()
+                }, '*');
+            }
         }
 
-        // Event listeners for recording buttons
-        startRecordBtn.addEventListener('click', startRecording);
-        stopRecordBtn.addEventListener('click', stopRecording);
+        // Helper function to convert canvas to blob
+        function canvasToBlob(canvas) {
+            return new Promise((resolve, reject) => {
+                canvas.toBlob(blob => {
+                    if (blob) {
+                        resolve(blob);
+                    } else {
+                        reject(new Error('Canvas toBlob failed'));
+                    }
+                }, 'image/png');
+            });
+        }
 
         // Gaussian scale control
         const scaleInput = document.getElementById('gaussianScaleValue');
@@ -801,7 +881,7 @@
                 }
 
                 console.log('[GaussianViewer] Scale update complete. New scale[0]:', scales[0].toFixed(6),
-                            'original[0]:', originalScales[0].toFixed(6), 'multiplier:', newScale);
+                    'original[0]:', originalScales[0].toFixed(6), 'multiplier:', newScale);
             } else if (currentSplat) {
                 console.log('[GaussianViewer] Cannot update scales - missing data or originalScales');
                 console.log('[GaussianViewer] currentSplat.data:', !!currentSplat.data);
@@ -814,18 +894,19 @@
 
         // Event listeners
         document.getElementById('resetCamera').addEventListener('click', resetCamera);
-        // 截图按钮已删除，事件监听器已移除
-        // document.getElementById('screenshot').addEventListener('click', takeScreenshot);
+        document.getElementById('screenshot').addEventListener('click', takeScreenshot);
+        document.getElementById('copyImage').addEventListener('click', copyImageToClipboard);
 
         // Listen for messages from parent
         window.addEventListener('message', (event) => {
+            console.log('[GaussianViewer] 📨 Received message from parent:', event.data.type);
             const { type, data, filename, extrinsics, intrinsics } = event.data;
 
             if (type === 'LOAD_MESH_DATA' && data) {
-                console.log('[GaussianViewer] Received LOAD_MESH_DATA, size:', data.byteLength);
-                console.log('[GaussianViewer] Extrinsics:', extrinsics);
-                console.log('[GaussianViewer] Intrinsics:', intrinsics);
+                console.log('[GaussianViewer] 📦 Processing LOAD_MESH_DATA. Size:', (data.byteLength / (1024 * 1024)).toFixed(2), 'MB');
                 loadPLYFromData(data, filename || 'gaussian.ply', extrinsics, intrinsics);
+            } else {
+                console.warn('[GaussianViewer] ⚠️ Unknown message type or missing data:', type);
             }
         });
 
@@ -835,4 +916,5 @@
         console.log('[GaussianViewer] Ready - waiting for LOAD_MESH message');
     </script>
 </body>
+
 </html>

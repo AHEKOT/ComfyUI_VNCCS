@@ -1,255 +1,246 @@
 /**
- * VNCCS Background Preview - Gaussian Splat Preview Widget
+ * ComfyUI GeomPack - Gaussian Splat Preview Widget
  * Interactive 3D Gaussian Splatting viewer using gsplat.js
- * 
- * Implements Pattern 1: DOM Embedding (The "Manager" Pattern) from vnccs_widgets skill.
  */
 
 import { app } from "../../../scripts/app.js";
 
-// Path to viewer HTML
-const VIEWER_PATH = "/extensions/VNCCS/gaussian_preview/viewer_gaussian.html";
+// Auto-detect extension folder name (handles ComfyUI-GeometryPack or comfyui-geometrypack)
+const EXTENSION_FOLDER = (() => {
+    const url = import.meta.url;
+    const match = url.match(/\/extensions\/([^/]+)\//);
+    return match ? match[1] : "ComfyUI_VNCCS";
+})();
 
-console.log("[VNCCS.BackgroundPreview] Loading extension...");
+console.log("[VNCCS.GaussianPreview] Loading extension...");
 
 app.registerExtension({
-    name: "VNCCS.BackgroundPreview",
+    name: "vnccs.gaussianpreview",
 
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
         if (nodeData.name === "VNCCS_BackgroundPreview") {
-            console.log("[VNCCS.BackgroundPreview] Registering node handler");
+            console.log("[VNCCS.GaussianPreview] Registering Preview Gaussian node");
 
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
-                if (onNodeCreated) onNodeCreated.apply(this, arguments);
+                const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
 
-                // 1. Create container
+                // Create container for viewer + info panel
                 const container = document.createElement("div");
-                Object.assign(container.style, {
-                    width: "100%",
-                    height: "100%",
-                    display: "flex",
-                    flexDirection: "column",
-                    backgroundColor: "#1a1a1a",
-                    overflow: "hidden"
-                });
+                container.style.width = "100%";
+                container.style.height = "100%";
+                container.style.display = "flex";
+                container.style.flexDirection = "column";
+                container.style.backgroundColor = "#1a1a1a";
+                container.style.overflow = "hidden";
 
-                // 2. Add to node using addDOMWidget
-                this.addDOMWidget("preview_gaussian", "GAUSSIAN_PREVIEW", container, {
-                    serialize: false,
-                    hideOnZoom: false,
+                // Create iframe for gsplat.js viewer
+                const iframe = document.createElement("iframe");
+                iframe.style.width = "100%";
+                iframe.style.flex = "1 1 0";
+                iframe.style.minHeight = "0";
+                iframe.style.border = "none";
+                iframe.style.backgroundColor = "#1a1a1a";
+
+                // Point to gsplat.js HTML viewer (with cache buster)
+                iframe.src = `/extensions/${EXTENSION_FOLDER}/gaussian_preview/static/viewer_gaussian.html?v=` + Date.now();
+
+                // Create info panel
+                const infoPanel = document.createElement("div");
+                infoPanel.style.backgroundColor = "#1a1a1a";
+                infoPanel.style.borderTop = "1px solid #444";
+                infoPanel.style.padding = "6px 12px";
+                infoPanel.style.fontSize = "10px";
+                infoPanel.style.fontFamily = "monospace";
+                infoPanel.style.color = "#ccc";
+                infoPanel.style.lineHeight = "1.3";
+                infoPanel.style.flexShrink = "0";
+                infoPanel.style.overflow = "hidden";
+                infoPanel.innerHTML = '<span style="color: #888;">Gaussian splat info will appear here after execution</span>';
+
+                // Add iframe and info panel to container
+                container.appendChild(iframe);
+                container.appendChild(infoPanel);
+
+                // Add widget with required options
+                const widget = this.addDOMWidget("preview_gaussian", "GAUSSIAN_PREVIEW", container, {
                     getValue() { return ""; },
                     setValue(v) { }
                 });
 
-                // 3. Delegate logic to a helper class
-                this.widgetLogic = new GaussianPreviewWidget(this, container, app);
+                // Store reference to node for dynamic resizing
+                const node = this;
+                let currentNodeSize = [512, 580];
+
+                widget.computeSize = () => currentNodeSize;
+
+                // Store references
+                this.gaussianViewerIframe = iframe;
+                this.gaussianInfoPanel = infoPanel;
+
+                // Function to resize node dynamically
+                this.resizeToAspectRatio = function (imageWidth, imageHeight) {
+                    const aspectRatio = imageWidth / imageHeight;
+                    const nodeWidth = 512;
+                    const viewerHeight = Math.round(nodeWidth / aspectRatio);
+                    const nodeHeight = viewerHeight + 60;  // Add space for info panel
+
+                    currentNodeSize = [nodeWidth, nodeHeight];
+                    node.setSize(currentNodeSize);
+                    node.setDirtyCanvas(true, true);
+                    app.graph.setDirtyCanvas(true, true);
+
+                    console.log("[GeomPack Gaussian] Resized node to:", nodeWidth, "x", nodeHeight, "(aspect ratio:", aspectRatio.toFixed(2), ")");
+                };
+
+                // Track iframe load state
+                let iframeLoaded = false;
+                iframe.addEventListener('load', () => {
+                    iframeLoaded = true;
+                });
+
+                // Listen for messages from iframe
+                window.addEventListener('message', async (event) => {
+                    // Handle screenshot messages
+                    if (event.data.type === 'SCREENSHOT' && event.data.image) {
+                        try {
+                            // Convert base64 data URL to blob
+                            const base64Data = event.data.image.split(',')[1];
+                            const byteString = atob(base64Data);
+                            const arrayBuffer = new ArrayBuffer(byteString.length);
+                            const uint8Array = new Uint8Array(arrayBuffer);
+
+                            for (let i = 0; i < byteString.length; i++) {
+                                uint8Array[i] = byteString.charCodeAt(i);
+                            }
+
+                            const blob = new Blob([uint8Array], { type: 'image/png' });
+
+                            // Generate filename with timestamp
+                            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                            const filename = `gaussian-screenshot-${timestamp}.png`;
+
+                            // Create FormData for upload
+                            const formData = new FormData();
+                            formData.append('image', blob, filename);
+                            formData.append('type', 'output');
+                            formData.append('subfolder', '');
+
+                            // Upload to ComfyUI backend
+                            const response = await fetch('/upload/image', {
+                                method: 'POST',
+                                body: formData
+                            });
+
+                            if (response.ok) {
+                                const result = await response.json();
+                            } else {
+                                throw new Error(`Upload failed: ${response.status}`);
+                            }
+
+                        } catch (error) {
+                            console.error('[GeomPack Gaussian] Error saving screenshot:', error);
+                        }
+                    }
+                    // Handle copy image to clipboard messages
+                    else if (event.data.type === 'COPY_IMAGE' && event.data.success) {
+                    }
+                    else if (event.data.type === 'COPY_IMAGE' && !event.data.success) {
+                    }
+                    // Handle error messages from iframe
+                    else if (event.data.type === 'MESH_ERROR' && event.data.error) {
+                        if (infoPanel) {
+                            infoPanel.innerHTML = `<div style="color: #ff6b6b;">Error: ${event.data.error}</div>`;
+                        }
+                    }
+                });
+
+                // Set initial node size
+                this.setSize([512, 580]);
+
+                // Handle execution
+                const onExecuted = this.onExecuted;
+                this.onExecuted = function (message) {
+                    onExecuted?.apply(this, arguments);
+
+                    // Check for errors
+                    if (message?.error && message.error[0]) {
+                        infoPanel.innerHTML = `<div style="color: #ff6b6b;">Error: ${message.error[0]}</div>`;
+                        return;
+                    }
+
+                    // The message IS the UI data (not message.ui)
+                    if (message?.ply_path && message.ply_path[0]) {
+                        const filename = message.filename?.[0];
+                        const rel_path = message.ply_path[0];
+                        const fileSizeMb = message.file_size_mb?.[0] || 'N/A';
+                        const subfolder = message.subfolder?.[0] || "";
+                        const type = message.type?.[0] || "output";
+
+                        // Extract camera parameters if provided
+                        const extrinsics = message.extrinsics?.[0] || null;
+                        const intrinsics = message.intrinsics?.[0] || null;
+
+                        // Resize node to match image aspect ratio from intrinsics
+                        if (intrinsics && intrinsics[0] && intrinsics[1]) {
+                            const imageWidth = intrinsics[0][2] * 2;   // cx * 2
+                            const imageHeight = intrinsics[1][2] * 2;  // cy * 2
+                            this.resizeToAspectRatio(imageWidth, imageHeight);
+                        }
+
+                        // Update info panel
+                        infoPanel.innerHTML = `
+                            <div style="display: grid; grid-template-columns: auto 1fr; gap: 2px 8px;">
+                                <span style="color: #888;">File:</span>
+                                <span style="color: #6cc;">${filename}</span>
+                                <span style="color: #888;">Size:</span>
+                                <span>${fileSizeMb} MB</span>
+                            </div>
+                        `;
+
+                        // ComfyUI serves output files via /view API endpoint
+                        const filepath = `/view?filename=${encodeURIComponent(filename)}&type=${encodeURIComponent(type)}&subfolder=${encodeURIComponent(subfolder)}`;
+
+                        // Function to fetch and send data to iframe
+                        const fetchAndSend = async () => {
+                            if (!iframe.contentWindow) {
+                                return;
+                            }
+
+                            try {
+                                // Fetch the PLY file from parent context (authenticated)
+                                const response = await fetch(filepath);
+                                if (!response.ok) {
+                                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                                }
+                                const arrayBuffer = await response.arrayBuffer();
+
+                                // Send the data to iframe with camera parameters
+                                iframe.contentWindow.postMessage({
+                                    type: "LOAD_MESH_DATA",
+                                    data: arrayBuffer,
+                                    filename: filename,
+                                    extrinsics: extrinsics,
+                                    intrinsics: intrinsics,
+                                    timestamp: Date.now()
+                                }, "*", [arrayBuffer]);
+                            } catch (error) {
+                                console.error("[VNCCS.GaussianPreview] Error fetching PLY:", error);
+                                infoPanel.innerHTML = `<div style="color: #ff6b6b;">Error loading PLY: ${error.message}</div>`;
+                            }
+                        };
+
+                        // Fetch and send when iframe is ready
+                        if (iframeLoaded) {
+                            fetchAndSend();
+                        } else {
+                            setTimeout(fetchAndSend, 500);
+                        }
+                    }
+                };
+
+                return r;
             };
         }
     }
 });
-
-class GaussianPreviewWidget {
-    constructor(node, container, app) {
-        this.node = node;
-        this.container = container;
-        this.app = app;
-
-        this.iframe = null;
-        this.infoPanel = null;
-        this.previewWidth = 512;
-        this.currentNodeSize = [512, 580];
-        this.iframeLoaded = false;
-
-        this.initUI();
-        this.setupNodeSizing();
-        this.setupMessageHandling();
-        this.setupExecutionHandler();
-    }
-
-    initUI() {
-        // Create iframe
-        this.iframe = document.createElement("iframe");
-        Object.assign(this.iframe.style, {
-            width: "100%",
-            flex: "1 1 0",
-            minHeight: "0",
-            border: "none",
-            backgroundColor: "#1a1a1a"
-        });
-
-        // Auto-detect extension folder for the viewer path is tricky if we want to be 100% robust 
-        // without hardcoding, but here we expect VNCCS structure.
-        // Using the constant defined above.
-        this.iframe.src = VIEWER_PATH + "?v=" + Date.now();
-        this.iframe.addEventListener('load', () => { this.iframeLoaded = true; });
-
-        // Create info panel
-        this.infoPanel = document.createElement("div");
-        Object.assign(this.infoPanel.style, {
-            backgroundColor: "#1a1a1a",
-            borderTop: "1px solid #444",
-            padding: "6px 12px",
-            fontSize: "10px",
-            fontFamily: "monospace",
-            color: "#ccc",
-            lineHeight: "1.3",
-            flexShrink: "0",
-            overflow: "hidden"
-        });
-        this.infoPanel.innerHTML = '<span style="color: #888;">Gaussian splat info will appear here after execution</span>';
-
-        this.container.appendChild(this.iframe);
-        this.container.appendChild(this.infoPanel);
-    }
-
-    setupNodeSizing() {
-        // Find the widget we listed to hook computeSize, or hook the node directly if needed.
-        // The addDOMWidget returns the widget object, but we are inside the class now.
-        // We can iterate widgets to find ours or just rely on the node.
-
-        // Actually, in the pattern, we often hook the widget returned by addDOMWidget.
-        // But since we are outside `onNodeCreated`, we can find it.
-        const widget = this.node.widgets.find(w => w.name === "preview_gaussian");
-        if (widget) {
-            widget.computeSize = () => this.currentNodeSize;
-        }
-
-        this.node.setSize(this.currentNodeSize);
-    }
-
-    resizeToAspectRatio(imageWidth, imageHeight) {
-        const aspectRatio = imageWidth / imageHeight;
-        const nodeWidth = this.previewWidth;
-        const viewerHeight = Math.round(nodeWidth / aspectRatio);
-        const nodeHeight = viewerHeight + 60; // + info panel space
-
-        this.currentNodeSize = [nodeWidth, nodeHeight];
-        this.node.setSize(this.currentNodeSize);
-        this.node.setDirtyCanvas(true, true);
-        this.app.graph.setDirtyCanvas(true, true);
-    }
-
-    setupMessageHandling() {
-        window.addEventListener('message', async (event) => {
-            if (event.data.type === 'VIDEO_RECORDING' && event.data.video) {
-                await this.handleVideoRecording(event.data);
-            }
-        });
-    }
-
-    async handleVideoRecording(data) {
-        try {
-            const base64Data = data.video.split(',')[1];
-            const byteString = atob(base64Data);
-            const arrayBuffer = new ArrayBuffer(byteString.length);
-            const uint8Array = new Uint8Array(arrayBuffer);
-            for (let i = 0; i < byteString.length; i++) uint8Array[i] = byteString.charCodeAt(i);
-
-            const blob = new Blob([uint8Array], { type: 'video/mp4' });
-            const filename = `gaussian-recording-${new Date().toISOString().replace(/[:.]/g, '-')}.mp4`;
-
-            const formData = new FormData();
-            formData.append('image', blob, filename);
-            formData.append('type', 'output');
-            formData.append('subfolder', '');
-
-            const response = await fetch('/upload/image', { method: 'POST', body: formData });
-            if (response.ok) {
-                const result = await response.json();
-                this.updateInfoPanel(`<div style="color: #6cc;">Video saved: ${result.name}</div>`);
-                setTimeout(() => {
-                    this.updateInfoPanel('<span style="color: #888;">Gaussian splat info will appear here after execution</span>');
-                }, 5000);
-
-                this.node.setDirtyCanvas(true, true);
-            }
-        } catch (error) {
-            console.error('[VNCCS] Error saving video:', error);
-            this.updateInfoPanel(`<div style="color: #ff6b6b;">Error saving video: ${error.message}</div>`);
-        }
-    }
-
-    updateInfoPanel(html) {
-        if (this.infoPanel) this.infoPanel.innerHTML = html;
-    }
-
-    setupExecutionHandler() {
-        const self = this;
-        // Hook into onExecuted
-        const originalOnExecuted = this.node.onExecuted;
-        this.node.onExecuted = function (message) {
-            if (originalOnExecuted) originalOnExecuted.apply(this, arguments);
-            self.onNodeExecuted(message);
-        };
-    }
-
-    onNodeExecuted(message) {
-        if (message?.ply_file && message.ply_file[0]) {
-            const filename = message.ply_file[0];
-            const extrinsics = message.extrinsics?.[0] || null;
-            const intrinsics = message.intrinsics?.[0] || null;
-
-            // Update width if provided
-            const widthParam = message.preview_width?.[0];
-            if (widthParam) this.previewWidth = widthParam;
-
-            // Resize
-            if (intrinsics && intrinsics[0]) {
-                const cx = intrinsics[0][2] || (intrinsics[0] && intrinsics[0][2]); // Handle both 3x3 and flat
-                const cy = intrinsics[1] && intrinsics[1][2] || (intrinsics[0] && intrinsics[0][5]);
-
-                // Fallback if structure is unexpected, but assuming standard 3x3 matrix
-                // [ [fx, 0, cx], [0, fy, cy], [0, 0, 1] ]
-                const w = (intrinsics[0][2]) ? intrinsics[0][2] * 2 : 1024;
-                const h = (intrinsics[1][2]) ? intrinsics[1][2] * 2 : 1024;
-
-                this.resizeToAspectRatio(w, h);
-            } else {
-                const defaultHeight = Math.round(this.previewWidth * 0.75) + 60;
-                this.currentNodeSize = [this.previewWidth, defaultHeight];
-                this.node.setSize(this.currentNodeSize);
-            }
-
-            // Load mesh
-            this.loadMesh(filename, extrinsics, intrinsics);
-        }
-    }
-
-    async loadMesh(filename, extrinsics, intrinsics) {
-        const filepath = `/view?filename=${encodeURIComponent(filename)}&type=output&subfolder=`;
-
-        const fetchAndSend = async () => {
-            if (!this.iframe.contentWindow) return;
-            try {
-                const res = await fetch(filepath);
-                const buf = await res.arrayBuffer();
-                this.iframe.contentWindow.postMessage({
-                    type: "LOAD_MESH_DATA",
-                    data: buf,
-                    filename: filename,
-                    extrinsics: extrinsics,
-                    intrinsics: intrinsics
-                }, "*", [buf]);
-
-                const fileSizeMb = (buf.byteLength / (1024 * 1024)).toFixed(2);
-                this.updateInfoPanel(`
-                    <div style="display: grid; grid-template-columns: auto 1fr; gap: 2px 8px;">
-                        <span style="color: #888;">File:</span> <span style="color: #6cc;">${filename}</span>
-                        <span style="color: #888;">Size:</span> <span>${fileSizeMb} MB</span>
-                    </div>
-                `);
-
-            } catch (e) {
-                this.updateInfoPanel(`<div style="color: #ff6b6b;">Load Error: ${e.message}</div>`);
-            }
-        };
-
-        if (this.iframeLoaded) {
-            fetchAndSend();
-        } else {
-            // Retry a few times if iframe not ready
-            setTimeout(fetchAndSend, 500);
-        }
-    }
-}
