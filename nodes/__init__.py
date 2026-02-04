@@ -1,84 +1,93 @@
 """VNCCS Nodes - ComfyUI nodes for visual novel character creation."""
 
-from .character_creator import NODE_CLASS_MAPPINGS as CHARACTER_CREATOR_MAPPINGS
-from .character_selector import NODE_CLASS_MAPPINGS as CHARACTER_SELECTOR_MAPPINGS
-from .dataset_generator import NODE_CLASS_MAPPINGS as DATASET_GENERATOR_MAPPINGS
-from .emotion_generator import NODE_CLASS_MAPPINGS as EMOTION_GENERATOR_MAPPINGS
-from .emotion_generator_v2 import NODE_CLASS_MAPPINGS as EMOTION_GENERATOR_V2_MAPPINGS
-from .sheet_crop import NODE_CLASS_MAPPINGS as SHEET_CROP_MAPPINGS
-from .sheet_manager import NODE_CLASS_MAPPINGS as SHEET_MANAGER_MAPPINGS
-from .sprite_generator import NODE_CLASS_MAPPINGS as SPRITE_GENERATOR_MAPPINGS
-from .vnccs_pipe import NODE_CLASS_MAPPINGS as VNCCS_PIPE_MAPPINGS
-from .vnccs_qwen_encoder import NODE_CLASS_MAPPINGS as VNCCS_QWEN_ENCODER_MAPPINGS
-from .sampler_scheduler_picker import NODE_CLASS_MAPPINGS as SAMPLER_SCHEDULER_PICKER_MAPPINGS
-from .common_nodes import NODE_CLASS_MAPPINGS as COMMON_NODES_MAPPINGS
-from .pose_generator import NODE_CLASS_MAPPINGS as POSE_GENERATOR_CLASS_MAPPINGS
-from .vnccs_utils import NODE_CLASS_MAPPINGS as VNCCS_UTILS_MAPPINGS
-from .background_generator import NODE_CLASS_MAPPINGS as BACKGROUND_GENERATOR_MAPPINGS
-from .character_creator_v2 import CharacterCreatorV2
-from .character_cloner import CharacterCloner
-from .clothes_designer import ClothesDesigner
-from .clothes_designer import ClothesDesigner
-from .sprite_manager import SpriteManager
 
-from .character_creator import NODE_DISPLAY_NAME_MAPPINGS as CHARACTER_CREATOR_DISPLAY_MAPPINGS
-from .character_selector import NODE_DISPLAY_NAME_MAPPINGS as CHARACTER_SELECTOR_DISPLAY_MAPPINGS
-from .dataset_generator import NODE_DISPLAY_NAME_MAPPINGS as DATASET_GENERATOR_DISPLAY_MAPPINGS
-from .emotion_generator import NODE_DISPLAY_NAME_MAPPINGS as EMOTION_GENERATOR_DISPLAY_MAPPINGS
-from .emotion_generator_v2 import NODE_DISPLAY_NAME_MAPPINGS as EMOTION_GENERATOR_V2_DISPLAY_MAPPINGS
-from .sheet_crop import NODE_DISPLAY_NAME_MAPPINGS as SHEET_CROP_DISPLAY_MAPPINGS
-from .sheet_manager import NODE_DISPLAY_NAME_MAPPINGS as SHEET_MANAGER_DISPLAY_MAPPINGS
-from .sprite_generator import NODE_DISPLAY_NAME_MAPPINGS as SPRITE_GENERATOR_DISPLAY_MAPPINGS
-from .vnccs_pipe import NODE_DISPLAY_NAME_MAPPINGS as VNCCS_PIPE_DISPLAY_MAPPINGS
-from .vnccs_qwen_encoder import NODE_DISPLAY_NAME_MAPPINGS as VNCCS_QWEN_ENCODER_DISPLAY_MAPPINGS
-from .sampler_scheduler_picker import NODE_DISPLAY_NAME_MAPPINGS as SAMPLER_SCHEDULER_PICKER_DISPLAY_MAPPINGS
-from .common_nodes import NODE_DISPLAY_NAME_MAPPINGS as COMMON_NODES_DISPLAY_MAPPINGS
-from .pose_generator import NODE_DISPLAY_NAME_MAPPINGS as POSE_GENERATOR_DISPLAY_MAPPINGS
-from .vnccs_utils import NODE_DISPLAY_NAME_MAPPINGS as VNCCS_UTILS_DISPLAY_MAPPINGS
-from .background_generator import NODE_DISPLAY_NAME_MAPPINGS as BACKGROUND_GENERATOR_DISPLAY_MAPPINGS
+try:
+    from .character_creator import NODE_CLASS_MAPPINGS as CHARACTER_CREATOR_MAPPINGS
+    from .character_selector import NODE_CLASS_MAPPINGS as CHARACTER_SELECTOR_MAPPINGS
+    from .dataset_generator import NODE_CLASS_MAPPINGS as DATASET_GENERATOR_MAPPINGS
+    from .emotion_generator import NODE_CLASS_MAPPINGS as EMOTION_GENERATOR_MAPPINGS
+    from .emotion_generator_v2 import NODE_CLASS_MAPPINGS as EMOTION_GENERATOR_V2_MAPPINGS
+    from .sheet_crop import NODE_CLASS_MAPPINGS as SHEET_CROP_MAPPINGS
+    from .sheet_manager import NODE_CLASS_MAPPINGS as SHEET_MANAGER_MAPPINGS
+    from .sprite_generator import NODE_CLASS_MAPPINGS as SPRITE_GENERATOR_MAPPINGS
+    from .vnccs_pipe import NODE_CLASS_MAPPINGS as VNCCS_PIPE_MAPPINGS
+    from .vnccs_qwen_encoder import NODE_CLASS_MAPPINGS as VNCCS_QWEN_ENCODER_MAPPINGS
+    from .sampler_scheduler_picker import NODE_CLASS_MAPPINGS as SAMPLER_SCHEDULER_PICKER_MAPPINGS
+    from .common_nodes import NODE_CLASS_MAPPINGS as COMMON_NODES_MAPPINGS
+    from .pose_generator import NODE_CLASS_MAPPINGS as POSE_GENERATOR_CLASS_MAPPINGS
+    from .vnccs_utils import NODE_CLASS_MAPPINGS as VNCCS_UTILS_MAPPINGS
+    from .background_generator import NODE_CLASS_MAPPINGS as BACKGROUND_GENERATOR_MAPPINGS
+    from .character_creator_v2 import CharacterCreatorV2
+    from .character_cloner import CharacterCloner
+    from .clothes_designer import ClothesDesigner
+    from .sprite_manager import SpriteManager
+    from .vnccs_worldplay import NODE_CLASS_MAPPINGS as WORLDPLAY_MAPPINGS
 
-NODE_CLASS_MAPPINGS = {
-    **CHARACTER_CREATOR_MAPPINGS,
-    **CHARACTER_SELECTOR_MAPPINGS,
-    **DATASET_GENERATOR_MAPPINGS,
-    **EMOTION_GENERATOR_MAPPINGS,
-    **EMOTION_GENERATOR_V2_MAPPINGS,
-    **SHEET_CROP_MAPPINGS,
-    **SHEET_MANAGER_MAPPINGS,
-    **SPRITE_GENERATOR_MAPPINGS,
-    **VNCCS_PIPE_MAPPINGS,
-    **VNCCS_QWEN_ENCODER_MAPPINGS,
-    **SAMPLER_SCHEDULER_PICKER_MAPPINGS,
-    **COMMON_NODES_MAPPINGS,
-    **POSE_GENERATOR_CLASS_MAPPINGS,
-    **VNCCS_UTILS_MAPPINGS,
-    **BACKGROUND_GENERATOR_MAPPINGS,
-    "CharacterCreatorV2": CharacterCreatorV2,
-    "CharacterCloner": CharacterCloner,
-    "ClothesDesigner": ClothesDesigner,
-    "SpriteManager": SpriteManager,
-}
+    from .character_creator import NODE_DISPLAY_NAME_MAPPINGS as CHARACTER_CREATOR_DISPLAY_MAPPINGS
+    from .character_selector import NODE_DISPLAY_NAME_MAPPINGS as CHARACTER_SELECTOR_DISPLAY_MAPPINGS
+    from .dataset_generator import NODE_DISPLAY_NAME_MAPPINGS as DATASET_GENERATOR_DISPLAY_MAPPINGS
+    from .emotion_generator import NODE_DISPLAY_NAME_MAPPINGS as EMOTION_GENERATOR_DISPLAY_MAPPINGS
+    from .emotion_generator_v2 import NODE_DISPLAY_NAME_MAPPINGS as EMOTION_GENERATOR_V2_DISPLAY_MAPPINGS
+    from .sheet_crop import NODE_DISPLAY_NAME_MAPPINGS as SHEET_CROP_DISPLAY_MAPPINGS
+    from .sheet_manager import NODE_DISPLAY_NAME_MAPPINGS as SHEET_MANAGER_DISPLAY_MAPPINGS
+    from .sprite_generator import NODE_DISPLAY_NAME_MAPPINGS as SPRITE_GENERATOR_DISPLAY_MAPPINGS
+    from .vnccs_pipe import NODE_DISPLAY_NAME_MAPPINGS as VNCCS_PIPE_DISPLAY_MAPPINGS
+    from .vnccs_qwen_encoder import NODE_DISPLAY_NAME_MAPPINGS as VNCCS_QWEN_ENCODER_DISPLAY_MAPPINGS
+    from .sampler_scheduler_picker import NODE_DISPLAY_NAME_MAPPINGS as SAMPLER_SCHEDULER_PICKER_DISPLAY_MAPPINGS
+    from .common_nodes import NODE_DISPLAY_NAME_MAPPINGS as COMMON_NODES_DISPLAY_MAPPINGS
+    from .pose_generator import NODE_DISPLAY_NAME_MAPPINGS as POSE_GENERATOR_DISPLAY_MAPPINGS
+    from .vnccs_utils import NODE_DISPLAY_NAME_MAPPINGS as VNCCS_UTILS_DISPLAY_MAPPINGS
+    from .background_generator import NODE_DISPLAY_NAME_MAPPINGS as BACKGROUND_GENERATOR_DISPLAY_MAPPINGS
+    from .vnccs_worldplay import NODE_DISPLAY_NAME_MAPPINGS as WORLDPLAY_DISPLAY_MAPPINGS
 
-NODE_DISPLAY_NAME_MAPPINGS = {
-    **CHARACTER_CREATOR_DISPLAY_MAPPINGS,
-    **CHARACTER_SELECTOR_DISPLAY_MAPPINGS,
-    **DATASET_GENERATOR_DISPLAY_MAPPINGS,
-    **EMOTION_GENERATOR_DISPLAY_MAPPINGS,
-    **EMOTION_GENERATOR_V2_DISPLAY_MAPPINGS,
-    **SHEET_CROP_DISPLAY_MAPPINGS,
-    **SHEET_MANAGER_DISPLAY_MAPPINGS,
-    **SPRITE_GENERATOR_DISPLAY_MAPPINGS,
-    **VNCCS_PIPE_DISPLAY_MAPPINGS,
-    **VNCCS_QWEN_ENCODER_DISPLAY_MAPPINGS,
-    **SAMPLER_SCHEDULER_PICKER_DISPLAY_MAPPINGS,
-    **COMMON_NODES_DISPLAY_MAPPINGS,
-    **POSE_GENERATOR_DISPLAY_MAPPINGS,
-    **VNCCS_UTILS_DISPLAY_MAPPINGS,
-    **BACKGROUND_GENERATOR_DISPLAY_MAPPINGS,
-    "CharacterCreatorV2": "VNCCS Character Creator V2",
-    "CharacterCloner": "VNCCS Character Cloner",
-    "ClothesDesigner": "VNCCS Clothes Designer",
-    "SpriteManager": "VNCCS Sprite Manager",
-}
+    NODE_CLASS_MAPPINGS = {
+        **CHARACTER_CREATOR_MAPPINGS,
+        **CHARACTER_SELECTOR_MAPPINGS,
+        **DATASET_GENERATOR_MAPPINGS,
+        **EMOTION_GENERATOR_MAPPINGS,
+        **EMOTION_GENERATOR_V2_MAPPINGS,
+        **SHEET_CROP_MAPPINGS,
+        **SHEET_MANAGER_MAPPINGS,
+        **SPRITE_GENERATOR_MAPPINGS,
+        **VNCCS_PIPE_MAPPINGS,
+        **VNCCS_QWEN_ENCODER_MAPPINGS,
+        **SAMPLER_SCHEDULER_PICKER_MAPPINGS,
+        **COMMON_NODES_MAPPINGS,
+        **POSE_GENERATOR_CLASS_MAPPINGS,
+        **VNCCS_UTILS_MAPPINGS,
+        **BACKGROUND_GENERATOR_MAPPINGS,
+        **WORLDPLAY_MAPPINGS,
+        "CharacterCreatorV2": CharacterCreatorV2,
+        "CharacterCloner": CharacterCloner,
+        "ClothesDesigner": ClothesDesigner,
+        "SpriteManager": SpriteManager,
+    }
+
+    NODE_DISPLAY_NAME_MAPPINGS = {
+        **CHARACTER_CREATOR_DISPLAY_MAPPINGS,
+        **CHARACTER_SELECTOR_DISPLAY_MAPPINGS,
+        **DATASET_GENERATOR_DISPLAY_MAPPINGS,
+        **EMOTION_GENERATOR_DISPLAY_MAPPINGS,
+        **EMOTION_GENERATOR_V2_DISPLAY_MAPPINGS,
+        **SHEET_CROP_DISPLAY_MAPPINGS,
+        **SHEET_MANAGER_DISPLAY_MAPPINGS,
+        **SPRITE_GENERATOR_DISPLAY_MAPPINGS,
+        **VNCCS_PIPE_DISPLAY_MAPPINGS,
+        **VNCCS_QWEN_ENCODER_DISPLAY_MAPPINGS,
+        **SAMPLER_SCHEDULER_PICKER_DISPLAY_MAPPINGS,
+        **COMMON_NODES_DISPLAY_MAPPINGS,
+        **POSE_GENERATOR_DISPLAY_MAPPINGS,
+        **VNCCS_UTILS_DISPLAY_MAPPINGS,
+        **BACKGROUND_GENERATOR_DISPLAY_MAPPINGS,
+        **WORLDPLAY_DISPLAY_MAPPINGS,
+        "CharacterCreatorV2": "VNCCS Character Creator V2",
+        "CharacterCloner": "VNCCS Character Cloner",
+        "ClothesDesigner": "VNCCS Clothes Designer",
+        "SpriteManager": "VNCCS Sprite Manager",
+    }
+except ImportError:
+    NODE_CLASS_MAPPINGS = {}
+    NODE_DISPLAY_NAME_MAPPINGS = {}
+
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
