@@ -137,7 +137,9 @@ def parse_pose_string(pose_string):
         except ValueError:
             raise ValueError(f"Invalid duration in command: {cmd}")
 
-        num_frames = int(duration)
+        # FIX: Ensure at least 1 frame if duration is provided but small
+        # int(0.5) is 0, which results in no motion. Use max(1, round(duration)).
+        num_frames = max(1, int(round(duration)))
 
         # Parse action and create motion dict
         if action == "w":

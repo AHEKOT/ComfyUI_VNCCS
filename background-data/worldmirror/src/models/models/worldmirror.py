@@ -30,7 +30,8 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
                  fixed_patch_embed=False, 
                  sampling_strategy="uniform",
                  dpt_gradient_checkpoint=False, 
-                 condition_strategy=["token", "pow3r", "token"]):
+                 condition_strategy=["token", "pow3r", "token"],
+                 gs_params=None):
 
         super().__init__()
         # Configuration flags
@@ -63,7 +64,7 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
         )
         
         # Initialize prediction heads
-        self._init_heads(embed_dim, patch_size, gs_dim)
+        self._init_heads(embed_dim, patch_size, gs_dim, gs_params=gs_params)
 
     def _store_config(self):
         """Save the model configuration"""
@@ -83,7 +84,7 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
             "condition_strategy": self.cond_methods,
         }
 
-    def _init_heads(self, dim, patch_size, gs_dim):
+    def _init_heads(self, dim, patch_size, gs_dim, gs_params=None):
         """Initialize all prediction heads"""
         
         # Camera pose prediction head
@@ -128,11 +129,15 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
                 activation="exp+expp1"
             )
             if GSPLAT_AVAILABLE:
-                self.gs_renderer = GaussianSplatRenderer(
-                    sh_degree=0,
-                    enable_prune=True,
-                    voxel_size=0.002,
-                )
+                renderer_args = {
+                    "sh_degree": 0,
+                    "enable_prune": True,
+                    "voxel_size": 0.002,
+                }
+                if gs_params:
+                    renderer_args.update(gs_params)
+                
+                self.gs_renderer = GaussianSplatRenderer(**renderer_args)
             else:
                 import warnings
                 warnings.warn(
@@ -241,10 +246,6 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
             
             # Only render if gs_renderer is available (requires gsplat)
             if self.gs_renderer is not None:
-                # Update renderer settings dynamically
-                self.gs_renderer.enable_conf_filter = True
-                self.gs_renderer.conf_threshold_percent = confidence_percentile
-                
                 preds = self.gs_renderer.render(
                     gs_feats=gs_feat,
                     images=imgs,

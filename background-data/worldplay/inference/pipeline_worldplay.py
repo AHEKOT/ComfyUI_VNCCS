@@ -384,13 +384,20 @@ class WanPipeline(DiffusionPipeline, WanLoraLoaderMixin):
 
         return img_tensor
 
-    def init_decode_state(self, all_latents, chunk_i):
+    def init_decode_state(self, all_latents, chunk_i, generated_num=None):
         """
         Initialize the decoding state and set all latents required for decoding.
         """
-        self._decode_state["total_latents"] = all_latents.shape[2]  # all latent numbers
+        # Limit decoding to what has been generated so far
+        limit = generated_num if generated_num is not None else all_latents.shape[2]
+        self._decode_state["total_latents"] = limit
+        
         self._decode_state["all_latents"] = all_latents
-        self._decode_state["current_latent_idx"] = 0
+        
+        # Only reset index if starting fresh (chunk 0)
+        if chunk_i == 0:
+            self._decode_state["current_latent_idx"] = 0
+            
         self._decode_state["chunk_i"] = chunk_i
         
         # Determine which VAE to use for metadata
@@ -432,6 +439,11 @@ class WanPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         current_latent = all_latents[
             :, :, current_idx : current_idx + 1, :, :
         ]  # [B, C, 1, H, W]
+        
+        # DEBUG: Log if slicing fails
+        if current_latent.shape[2] == 0:
+            print(f"[Pipeline] decode_next_latent: Sliced Empty Tensor! Idx={current_idx}, Total={total_latents}, Shape={all_latents.shape}")
+            return None
 
         sp_world_size = self._decode_state["sp_world_size"]
         rank_in_sp_group = self._decode_state["rank_in_sp_group"]
@@ -467,7 +479,17 @@ class WanPipeline(DiffusionPipeline, WanLoraLoaderMixin):
             )
         else:
             # Single-GPU Standard VAE decode
-            video = self.vae.decode(current_latent, return_dict=False)[0]
+            # Fix: WanVAE Tiling crashes on T=1 inputs (torch.cat list empty).
+            # Since we are decoding frame-by-frame, tiling is unnecessary and buggy.
+            was_tiling = getattr(self.vae, "use_tiling", False)
+            if was_tiling:
+                self.vae.disable_tiling()
+            
+            try:
+                video = self.vae.decode(current_latent, return_dict=False)[0]
+            finally:
+                if was_tiling:
+                    self.vae.enable_tiling()
 
         # Post-process video frame
         # (This part is usually done via VideoProcessor, but we do a quick denorm here if needed)
@@ -593,6 +615,9 @@ class WanPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         """
 
         if chunk_i == 0:
+            # Set default context window length for memory-efficient generation on 16GB cards
+            if context_window_length is None:
+                context_window_length = 12
             # print("init run")
             # 1. Check inputs. Raise error if not correct
             self.check_inputs(
@@ -645,12 +670,15 @@ class WanPipeline(DiffusionPipeline, WanLoraLoaderMixin):
             else:
                 batch_size = prompt_embeds.shape[0]
 
-            # Ensure device is not meta after potential self.device usage
-            device = device if device is not None else self.device
-            if str(device) == "meta" or device.type == "meta":
+            # Aggressive device forcing to avoid meta tensor issues with accelerate
+            if device is None or str(device) == "meta" or (hasattr(device, "type") and device.type == "meta"):
+                 # Check self.device as a backup but sanitize it too
+                 device = self.device if (self.device and str(self.device) != "meta") else (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+            
+            if str(device) == "meta":
                  device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
                  
-            self.points_local = generate_points_in_sphere(50000, 8.0).to(device)
+            self.points_local = generate_points_in_sphere(50000, 8.0, device=device)
 
             # 3. Encode input prompt
             prompt_embeds, negative_prompt_embeds = self.encode_prompt(
@@ -740,31 +768,32 @@ class WanPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 latents_mean = (
                     torch.tensor(self.vae.config.latents_mean)
                     .view(1, self.vae.config.z_dim, 1, 1, 1)
-                    .to(latents.device, latents.dtype)
+                    .to(device, self.vae.dtype)
                 )
                 latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(
                     1, self.vae.config.z_dim, 1, 1, 1
-                ).to(latents.device, latents.dtype)
+                ).to(device, self.vae.dtype)
                 first_image_condition = (first_image_condition - latents_mean) * latents_std
 
 
-            self.init_kv_cache()
+            if chunk_i == 0:
+                self.init_kv_cache()
 
-            self._decode_state = {
-                "current_latent_idx": 0,
-                "total_latents": None,
-                "device": device,
-                "transformer_dtype": transformer_dtype,
-                "vae": self.vae,
-                "video_processor": self.video_processor,
-                "parallel_run": self.parallel_run,
-                "par_vae_decode": self.par_vae_decode,
-                "sp_world_size": sp_world_size,
-                "rank_in_sp_group": rank_in_sp_group,
-                "latents_mean": None,
-                "latents_std": None,
-                "is_initialized": False,
-            }
+                self._decode_state = {
+                    "current_latent_idx": 0,
+                    "total_latents": None,
+                    "device": device,
+                    "transformer_dtype": transformer_dtype,
+                    "vae": self.vae,
+                    "video_processor": self.video_processor,
+                    "parallel_run": self.parallel_run,
+                    "par_vae_decode": self.par_vae_decode,
+                    "sp_world_size": sp_world_size,
+                    "rank_in_sp_group": rank_in_sp_group,
+                    "latents_mean": None,
+                    "latents_std": None,
+                    "is_initialized": False,
+                }
 
 
             self.ctx = {
@@ -787,13 +816,13 @@ class WanPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 "first_chunk_size": first_chunk_size,
                 "n_latent": n_latent,
                 "viewmats": torch.zeros(
-                    1, n_latent, 4, 4, device=latents.device, dtype=latents.dtype
+                    1, n_latent, 4, 4, device=device, dtype=transformer_dtype
                 ),
                 "Ks": torch.zeros(
-                    1, n_latent, 3, 3, device=latents.device, dtype=latents.dtype
+                    1, n_latent, 3, 3, device=device, dtype=transformer_dtype
                 ),
                 "action": torch.zeros(
-                    1, n_latent, device=latents.device, dtype=latents.dtype
+                    1, n_latent, device=device, dtype=transformer_dtype
                 ),
                 "use_memory": use_memory,
                 "context_window_length": context_window_length,
@@ -822,6 +851,8 @@ class WanPipeline(DiffusionPipeline, WanLoraLoaderMixin):
             )
         prompt_embeds = self.ctx["prompt_embeds"]
         negative_prompt_embeds = self.ctx["negative_prompt_embeds"]
+        # Extract device immediately for guards
+        device = self.ctx["device"]
         guidance_scale = self.ctx["guidance_scale"]
         guidance_scale_2 = self.ctx["guidance_scale_2"]
         attention_kwargs = self.ctx["attention_kwargs"]
@@ -837,9 +868,17 @@ class WanPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         n_latent = self.ctx["n_latent"]
         stabilization_level = self.ctx["stabilization_level"]
 
-        # Fill the poses of the current chunk into the corresponding positions.
-        start_idx = chunk_i * chunk_size
-        end_idx = start_idx + chunk_size
+        # GUARD: Ensure inputs are not meta tensors from node/previous run offload
+        viewmats = viewmats.to(device)
+        Ks = Ks.to(device)
+        action = action.to(device)
+
+        if chunk_i == 0:
+            start_idx = 0
+            end_idx = first_chunk_size
+        else:
+            start_idx = first_chunk_size + (chunk_i - 1) * chunk_size
+            end_idx = start_idx + chunk_size
 
         self.ctx["viewmats"][:, start_idx:end_idx, ...] = viewmats
         self.ctx["Ks"][:, start_idx:end_idx, ...] = Ks
@@ -859,7 +898,6 @@ class WanPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         rank_in_sp_group_vae = self.ctx["rank_in_sp_group"]
         local_rank_in_sp_group_vae = self.ctx["local_rank_in_sp_group"]
 
-        device = self.ctx["device"]
         batch_size = self.ctx["batch_size"]
         few_step = self.ctx["few_step"]
         sigmas = self.ctx["sigmas"]
@@ -883,6 +921,7 @@ class WanPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         self._current_timestep = None
         self._interrupt = False
         self._num_timesteps = len(timesteps)
+        self.num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
 
         selected_frame_indices = None
         if chunk_i == 0:
@@ -920,216 +959,170 @@ class WanPipeline(DiffusionPipeline, WanLoraLoaderMixin):
                 and current_frame_idx < n_latent
             ):
                 selected_frame_indices = select_mem_frames_wan(
-                    viewmats[0].cpu().detach().numpy(),
+                    viewmats[0].cpu().detach().float().numpy(),
                     current_frame_idx,
                     memory_frames=context_window_length,
                     temporal_context_size=12,
                     pred_latent_size=4,
+                    device=device,
                     points_local=self.points_local,
-                    device=self.device,
                 )
+                # STRICT VRAM LIMIT: Clamp selection to context_window_length
+                # This guarantees attention input never exceeds user-defined budget
+                if len(selected_frame_indices) > context_window_length:
+                     selected_frame_indices = selected_frame_indices[-context_window_length:]
 
             elif use_memory:
                 selected_frame_indices = list(range(0, current_frame_idx))
 
         # 6. Denoising loop
-        self._num_timesteps = len(timesteps) - 1 # Adjusted to match actual steps
+        self._num_timesteps = len(timesteps) - 1
         with self.progress_bar(total=num_inference_steps if not few_step else 4) as progress_bar:
             for i, t in enumerate(timesteps[:-1]):
-                
-                # Check interrupt
-                if self.interrupt:
-                    continue
+                if self.interrupt: continue
 
                 current_model = self.transformer
-                current_guidance_scale = guidance_scale
-
-                if chunk_i > 0:  # context latent frame
-                    t_now = torch.full((batch_size, chunk_size), t, device=device, dtype=timesteps.dtype)
-                    t_ctx = torch.full((batch_size, first_chunk_size + (chunk_i - 1) * chunk_size),
-                        stabilization_level - 1,
-                        device=device,
-                        dtype=timesteps.dtype,
-                    )  # [B, F]
-                    timestep = torch.cat([t_ctx, t_now], dim=1)  # [B, F+1]: predict the next frame in timestep t
-                else:
-                    if first_image_condition is not None:
-                        t_now = torch.full((batch_size, chunk_size - 1), t, device=device, dtype=timesteps.dtype)
-                        t_ctx = torch.full((batch_size, 1), stabilization_level - 1,
-                            device=device,
-                            dtype=timesteps.dtype,
-                        )  # [B, F]
-                        timestep = torch.cat([t_ctx, t_now], dim=1)
-                    else:
-                        timestep = torch.full((batch_size, first_chunk_size), t,
-                            device=device,
-                            dtype=timesteps.dtype,
-                        )  # [B, 1]
-
-                all_window_latent_num = latents_curr.shape[2]
-
+                
                 # Calculate spatial size (tokens per frame) dynamically
-                # latents shape: [B, C, T, H, W]
-                # Account for model's spatial patch size (usually 2x2)
-                p_t, p_h, p_w = self.transformer.config.patch_size
+                p_t, p_h, p_w = current_model.config.patch_size
                 spatial_size = (latents.shape[3] // p_h) * (latents.shape[4] // p_w)
-
-                ## kv cache
-                if chunk_i > 0 and i == 0 and self.use_kv_cache:
-                    latents_cache = latents_curr.clone()
-                    latents_cache = latents_cache[:, :, selected_frame_indices]
-                    t_cache = timestep[:, selected_frame_indices]
-                    
-                    # Prepare cached condition/mask inputs
-                    cond_cache = full_cond_latents[:, :, selected_frame_indices].to(device=device, dtype=transformer_dtype)
-                    mask_cache = full_mask_latents[:, :, selected_frame_indices].to(device=device, dtype=transformer_dtype)
-                    
-                    latent_model_cache = latents_cache.to(transformer_dtype)
-                    
-                    # Concat for 48ch input [Noise, Cond, Mask]
-                    latent_model_cache = torch.cat([latent_model_cache, cond_cache, mask_cache], dim=1)
-                    
-                    # flatten the timestep for the transformer
-                    timestep_cache = t_cache.flatten()
-                    if action is not None:
-                        action_cache = action[:, selected_frame_indices]
-                        viewmats_cache = viewmats[:, selected_frame_indices]
-                        Ks_cache = Ks[:, selected_frame_indices]
-
-                    kv_start_rope = 0
-                    kv_end_rope = len(selected_frame_indices)
-
-                    torch.cuda.nvtx.range_push("kv_cache")
-                    self._kv_cache = current_model(
-                        hidden_states=latent_model_cache,
-                        timestep=timestep_cache,
-                        encoder_hidden_states=prompt_embeds,
-                        attention_kwargs=attention_kwargs,
-                        return_dict=False,
-                        current_start=kv_start_rope * spatial_size,
-                        current_end=kv_end_rope * spatial_size,
-                        kv_cache=self._kv_cache,
-                        is_cache=True,
-                        window_frames=n_latent,
-                        viewmats=(viewmats_cache if viewmats is not None else None),
-                        Ks=Ks_cache if Ks is not None else None,
-                        action=action_cache if action is not None else None,
-                    )
-
-                torch.cuda.nvtx.range_pop()
-
-                if not self.use_kv_cache:
-                    generate_latent_num = all_window_latent_num
-
-                if selected_frame_indices is not None:
-                    now_window_latent_num = len(selected_frame_indices) + generate_latent_num
-                else:
-                    now_window_latent_num = generate_latent_num
-
-                latent_model_input = latents_curr.clone()
-                # Get relevant slices for current generation window
-                latent_model_input = latent_model_input[:, :, -generate_latent_num:].to(transformer_dtype)
                 
-                # Calculate absolute indices for condition slicing
+                # PREPARE INPUT WINDOW (History + Current)
+                # Following bi_rollout: NO KV CACHE in the denoising loop, reprocess full window
                 if chunk_i == 0:
-                    abs_start = 0
-                    abs_end = generate_latent_num
+                    current_indices = list(range(already_generate_num))
+                    target_indices = current_indices
+                    t_now = torch.full((batch_size, len(target_indices)), t, device=device, dtype=timesteps.dtype)
+                    timestep_input = t_now
+                    generate_rope_start = 0
                 else:
-                    # chunk 1 starts after chunk 0 (size first_chunk_size)
-                    # chunk i starts after first + (i-1) chunks
-                    # Note: chunk_size is context_window_length from definition? 
-                    # check logic at line 905: t_ctx len = first_chunk_size + (chunk_i - 1) * chunk_size
-                    abs_start = first_chunk_size + (chunk_i - 1) * chunk_size
-                    abs_end = abs_start + generate_latent_num
+                    current_indices = list(range(already_generate_num - chunk_size, already_generate_num))
+                    now_chunk_size = len(current_indices)
+                    
+                    # Fix history timesteps at 14 (stabilization_level - 1)
+                    t_now = torch.full((batch_size, now_chunk_size), t, device=device, dtype=timesteps.dtype)
+                    t_ctx = torch.full((batch_size, len(selected_frame_indices)), 14, device=device, dtype=timesteps.dtype)
+                    timestep_input = torch.cat([t_ctx, t_now], dim=1)
+                    
+                    target_indices = selected_frame_indices + current_indices
+                    generate_rope_start = len(selected_frame_indices) * spatial_size
                 
-                cond_input = full_cond_latents[:, :, abs_start:abs_end].to(device=device, dtype=transformer_dtype)
-                mask_input = full_mask_latents[:, :, abs_start:abs_end].to(device=device, dtype=transformer_dtype)
-
-                # Concat [Noise, Cond, Mask] -> 48 Channels
-                latent_model_48ch = torch.cat([latent_model_input, cond_input, mask_input], dim=1)
-
-                timestep = timestep[:, -generate_latent_num:]
-                timestep = timestep.flatten()
-
-                generate_rope_start = (now_window_latent_num - generate_latent_num) * spatial_size
+                # Slice inputs according to the window
+                latent_model_input = latents_curr[:, :, target_indices].clone() # Clone to avoid in-place update of main latents_curr here
+                cond_input = full_cond_latents[:, :, target_indices]
+                mask_input = full_mask_latents[:, :, target_indices]
+                
+                viewmats_input = viewmats[:, target_indices]
+                Ks_input = Ks[:, target_indices]
+                action_input = action[:, target_indices]
+                
+                now_window_latent_num = len(target_indices)
                 generate_rope_end = now_window_latent_num * spatial_size
+
+                # CFG expansion
+                if self.do_classifier_free_guidance:
+                    latent_model_input = torch.cat([latent_model_input] * 2)
+                    cond_input = torch.cat([cond_input] * 2)
+                    mask_input = torch.cat([mask_input] * 2)
+                    timestep_input = torch.cat([timestep_input] * 2)
+                    
+                    viewmats_guidance = torch.cat([viewmats_input] * 2)
+                    Ks_guidance = torch.cat([Ks_input] * 2)
+                    action_guidance = torch.cat([action_input] * 2)
+                else:
+                    viewmats_guidance = viewmats_input
+                    Ks_guidance = Ks_input
+                    action_guidance = action_input
+
+                # Convert to transformer dtype & device
+                latent_model_input = latent_model_input.to(device=device, dtype=transformer_dtype)
+                cond_input = cond_input.to(device=device, dtype=transformer_dtype)
+                mask_input = mask_input.to(device=device, dtype=transformer_dtype)
+                timestep_flattened = timestep_input.to(device=device, dtype=transformer_dtype).flatten()
+                
+                # 48ch Concatenation [Noise, Cond, Mask]
+                if current_model.config.in_channels == 48:
+                    latent_model_final = torch.cat([latent_model_input, cond_input, mask_input], dim=1)
+                else:
+                    latent_model_final = latent_model_input
+
+                # Clear memory before heavy forward pass
+                if i % 10 == 0: 
+                    import gc
+                    gc.collect()
+                    torch.cuda.empty_cache()
 
                 torch.cuda.nvtx.range_push("noise_pred")
                 noise_pred = current_model(
-                    hidden_states=latent_model_48ch, # Passed concatenated 48ch input
-                    timestep=timestep,
+                    hidden_states=latent_model_final,
+                    timestep=timestep_flattened,
                     encoder_hidden_states=prompt_embeds,
                     attention_kwargs=attention_kwargs,
                     return_dict=False,
                     current_start=generate_rope_start,
                     current_end=generate_rope_end,
-                    kv_cache=self._kv_cache if self.use_kv_cache else None,
+                    kv_cache=None, # NO KV CACHE for strict alignment
                     is_cache=False,
-                    window_frames=n_latent,
-                    viewmats=viewmats[:, all_window_latent_num - generate_latent_num: all_window_latent_num],
-                    Ks=Ks[:, all_window_latent_num - generate_latent_num: all_window_latent_num],
-                    action=action[:, all_window_latent_num - generate_latent_num: all_window_latent_num],
+                    window_frames=now_window_latent_num,
+                    viewmats=viewmats_guidance.to(device=device, dtype=transformer_dtype),
+                    Ks=Ks_guidance.to(device=device, dtype=transformer_dtype),
+                    action=action_guidance.to(device=device, dtype=transformer_dtype).flatten(),
                 )[0]
-
                 torch.cuda.nvtx.range_pop()
-                
+
+                if self.do_classifier_free_guidance:
+                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                    noise_pred = noise_pred_uncond + guidance_scale * (
+                        noise_pred_text - noise_pred_uncond
+                    )
+
                 # SLICE NOISE PRED: 48ch model might output 48ch, but we only need 16ch noise pred
                 if noise_pred.shape[1] > latents.shape[1]:
                     noise_pred = noise_pred[:, :latents.shape[1]]
 
-                # compute the previous noisy sample x_t -> x_t-1
-                if chunk_i == 0:
-                    if not few_step:
-                        latent_model_input = self.scheduler.step( noise_pred, t, latent_model_input, return_dict=False)[0]
-                        if first_image_condition is not None:
-                            latents_curr[:, :, -first_chunk_size + 1:] = latent_model_input[:, :, 1:]
-                        else:
-                            latents_curr[:, :, -first_chunk_size:] = latent_model_input
-                    else:
-                        sigma = sigmas[i]
-                        sigma_next = sigmas[i + 1]
-                        dt = sigma_next - sigma
-                        prev_sample = latent_model_input + dt * noise_pred
-                        if first_image_condition is not None:
-                            latents_curr[:, :, -first_chunk_size + 1:] = prev_sample[:, :, 1:]
-                        else:
-                            latents_curr[:, :, -first_chunk_size:] = prev_sample
-                else:
-                    noise_pred_chunk = noise_pred[:, :, -chunk_size:]  # [B, C, chunk_size, H, W
-                    latents_curr_chunk = latent_model_input[:, :, -chunk_size:]  # [B, C, chunk_size, H, W]
-                    if not few_step:
-                        latent_curr_pred_chunk = self.scheduler.step(
-                            noise_pred_chunk,
-                            t,
-                            latents_curr_chunk,
-                            return_dict=False,
-                        )[0]  # [B, C, chunk_size, H, W]
-                    else:
-                        sigma = sigmas[i]
-                        sigma_next = sigmas[i + 1]
-                        dt = sigma_next - sigma
-                        latent_curr_pred_chunk = latents_curr_chunk + dt * noise_pred_chunk
+                # Scheduler step on the window
+                latent_model_single = latent_model_input.chunk(2)[0] if self.do_classifier_free_guidance else latent_model_input
+                
+                latent_model_step = self.scheduler.step(
+                    noise_pred, t, latent_model_single, return_dict=False
+                )[0]
+                
+                # Update current chunk in the main latents tensor
+                chunk_len = len(current_indices)
+                latents[:, :, current_indices] = latent_model_step[:, :, -chunk_len:].to(latents.dtype)
+                
+                # Also update latents_curr so the next timestep sees the updated frames
+                latents_curr[:, :, current_indices] = latents[:, :, current_indices].to(latents_curr.dtype)
 
-                    latents_curr[:, :, -chunk_size:] = latent_curr_pred_chunk  # update the latents
-
-                if callback_on_step_end is not None:
-                    callback_kwargs = {}
-                    for k in callback_on_step_end_tensor_inputs:
-                        callback_kwargs[k] = locals()[k]
-                    callback_outputs = callback_on_step_end(self, i, t, callback_kwargs)
-
-                    latents = callback_outputs.pop("latents", latents)
-                    prompt_embeds = callback_outputs.pop("prompt_embeds", prompt_embeds)
-                    negative_prompt_embeds = callback_outputs.pop(
-                        "negative_prompt_embeds", negative_prompt_embeds
-                    )
-
-                progress_bar.update()
+                if i == len(timesteps) - 1 or (
+                    (i + 1) > self.num_warmup_steps
+                    and (i + 1) % self.scheduler.order == 0
+                ):
+                    progress_bar.update()
 
                 if XLA_AVAILABLE:
                     xm.mark_step()
 
-        latents[:, :, :already_generate_num, :, :] = latents_curr
+
+                    
+            # Memory Cleanup after loop
+            del full_cond_latents
+            del full_mask_latents
+            if chunk_i > 0:
+                # Use get to avoid NameError if these weren't defined due to conditional branch
+                if 'cond_cache' in locals(): del cond_cache
+                if 'mask_cache' in locals(): del mask_cache
+                if 'latent_model_cache' in locals(): del latent_model_cache
+            
+            # Global cleanup
+            if 'noise_pred' in locals(): del noise_pred
+            if 'noise_pred_uncond' in locals(): del noise_pred_uncond
+            
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            latents[:, :, :already_generate_num, :, :] = latents_curr
 
         # ==========================================================
         # Save the state updated during this call back to self.ctx
@@ -1138,68 +1131,82 @@ class WanPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         self.ctx["kv_cache_neg"] = self._kv_cache_neg
         # ==========================================================
 
-        re_latents = latents
-        self._current_timestep = None
-        latents = latents[:, :, start_idx:end_idx, :, :]
-
         # Automatically initialize the decoding state (for subsequent frame-by-frame decoding)
         # Note: Must be initialized here because the latents will be modified later
         if output_type == "latent":
-            self.init_decode_state(latents, chunk_i)
+            # Pass already_generate_num to limit decoding to valid frames
+            # And prevent resetting the decoding index if chunk_i > 0
+            limit_frames = locals().get("already_generate_num", latents.shape[2])
+            self.init_decode_state(latents, chunk_i, generated_num=limit_frames)
 
         torch.cuda.synchronize()
         vae_decode_begin_time = time.time()
         if not output_type == "latent":
             if not self.par_vae_decode:
-                latents = latents.to(self.vae.dtype)
+                if not "video_list" in locals():
+                    video_list = []
+                    video_list = []
+                
+                # Decode the *current chunk's* latents?
+                # Wait, 'latents' variable here is likely 'latents_curr' (the denoised chunk).
+                # We should decode 'latents_curr' and append.
+                
+                # Check if we should reconstruct full latents first or decode chunk by chunk.
+                # If we decode chunk by chunk, we avoid OOM.
+                
+                # Prepare latents for VAE
+                latents_for_vae = latents_curr.clone() # Use current denoised chunk
+                
+                if self.vae.config.shift_factor is not None:
+                     latents_for_vae = latents_for_vae / self.vae.config.kln_pre_scale + self.vae.config.kln_pre_shift
+                else:
+                    latents_for_vae = latents_for_vae / self.vae.config.scaling_factor
+
+                latents_for_vae = latents_for_vae.to(self.vae.dtype)
+                
+                # Standardize
                 latents_mean = (
                     torch.tensor(self.vae.config.latents_mean)
                     .view(1, self.vae.config.z_dim, 1, 1, 1)
-                    .to(latents.device, latents.dtype)
+                    .to(latents_for_vae.device, latents_for_vae.dtype)
                 )
                 latents_std = 1.0 / torch.tensor(self.vae.config.latents_std).view(
-                    1, self.vae.config.z_dim, 1, 1, 1
-                ).to(latents.device, latents.dtype)
-                latents = latents / latents_std + latents_mean
-                video = self.vae.decode(
-                    latents, return_dict=False, is_first_chunk=chunk_i == 0
+                     1, self.vae.config.z_dim, 1, 1, 1
+                ).to(latents_for_vae.device, latents_for_vae.dtype)
+                
+                latents_for_vae = latents_for_vae / latents_std + latents_mean
+                
+                # Decode
+                video_chunk = self.vae.decode(
+                    latents_for_vae, return_dict=False, is_first_chunk=chunk_i == 0
                 )[0]
-            else:
-                latents = latents.to(self.dist_vae.pipe.dtype)
-                latents_mean = (
-                    torch.tensor(self.dist_vae.pipe.config.latents_mean)
-                    .view(1, self.dist_vae.pipe.config.z_dim, 1, 1, 1)
-                    .to(latents.device, latents.dtype)
+                
+                video_chunk = self.video_processor.postprocess_video(
+                    video_chunk, output_type=output_type
                 )
-                latents_std = 1.0 / torch.tensor(
-                    self.dist_vae.pipe.config.latents_std
-                ).view(1, self.dist_vae.pipe.config.z_dim, 1, 1, 1).to(
-                    latents.device, latents.dtype
-                )
-                latents = latents / latents_std + latents_mean
+                video_list.append(video_chunk)
 
-                # Accelerated VAE
-                decode_input = distribute_data_to_gpus(
-                    latents,
-                    dim=4,
-                    rank=rank_in_sp_group_vae,
-                    local_rank=local_rank_in_sp_group_vae,
-                    num_gpus=sp_world_size_vae,
-                    dtype=latents.dtype,
-                )
-                video = self.dist_vae.pipe.decode(
-                    decode_input, return_dict=False, is_first_chunk=chunk_i == 0
-                )
-                video = gather_results(
-                    video[0],
-                    dim=4,
-                    world_size=sp_world_size_vae,
-                )
-            video = self.video_processor.postprocess_video(
-                video, output_type=output_type
-            )
+            # END OF CHUNK LOOP
+            
+        # Concatenate all video chunks
+        if output_type == "latent":
+             return latents, None
+
+        if len(video_list) > 0:
+             # video_chunk is [B, C, F, H, W] or similar?
+             # postprocess_video usually returns [B, F, H, W, C] (NHWC) or [B, C, F, H, W]?
+             # If tensor, typically NCHW or similar.
+             # Diffusers video processor often returns PT tensor [B, C, F, H, W].
+             
+             # Concatenate along Frame dimension.
+             # If [B, C, F, H, W], dim=2.
+             # If [B, F, H, W, C], dim=1.
+             
+             # Let's assume standard layout from VAE decode.
+             video = torch.cat(video_list, dim=2) 
         else:
-            return None, None
+             video = None # Should not happen
+
 
         torch.cuda.synchronize()
         print("Vae decode time", time.time() - vae_decode_begin_time)
@@ -1208,7 +1215,7 @@ class WanPipeline(DiffusionPipeline, WanLoraLoaderMixin):
         if not return_dict:
             return (
                 video,
-                re_latents,
+                latents,
             )
 
         return WanPipelineOutput(frames=video)

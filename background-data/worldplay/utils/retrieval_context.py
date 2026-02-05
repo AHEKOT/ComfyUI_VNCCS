@@ -20,7 +20,7 @@ from typing import List, Tuple, Dict
 import math
 
 
-def generate_points_in_sphere(n_points: int, radius: float) -> torch.Tensor:
+def generate_points_in_sphere(n_points: int, radius: float, device=None) -> torch.Tensor:
     """
     Uniformly sample points within a sphere of a specified radius.
 
@@ -28,9 +28,9 @@ def generate_points_in_sphere(n_points: int, radius: float) -> torch.Tensor:
     :param radius: The radius of the sphere.
     :return: A tensor of shape (n_points, 3), representing the (x, y, z) coordinates of the points.
     """
-    samples_r = torch.rand(n_points)
-    samples_phi = torch.rand(n_points)
-    samples_u = torch.rand(n_points)
+    samples_r = torch.rand(n_points, device=device)
+    samples_phi = torch.rand(n_points, device=device)
+    samples_u = torch.rand(n_points, device=device)
 
     r = radius * torch.pow(samples_r, 1 / 3)
     phi = 2 * math.pi * samples_phi
@@ -154,18 +154,23 @@ def calculate_fov_overlap_similarity(
     :param num_samples, radius, fov_h_deg, fov_v_deg: Sampling and FOV parameters.
     :return: The overlap ratio (a float between 0.0 and 1.0).
     """
-    w2c_matrix_curr = torch.tensor(w2c_matrix_curr, device=device)
-    w2c_matrix_hist = torch.tensor(w2c_matrix_hist, device=device)
+    try:
+        w2c_matrix_curr = torch.as_tensor(w2c_matrix_curr, device=device, dtype=torch.float32)
+        w2c_matrix_hist = torch.as_tensor(w2c_matrix_hist, device=device, dtype=torch.float32)
 
-    c2w_matrix_curr = torch.linalg.inv(w2c_matrix_curr)
-    c2w_matrix_hist = torch.linalg.inv(w2c_matrix_hist)
-    C_inv = w2c_matrix_curr
+        # Use pseudo-inverse for robustness against singular matrices
+        c2w_matrix_curr = torch.linalg.pinv(w2c_matrix_curr)
+        c2w_matrix_hist = torch.linalg.pinv(w2c_matrix_hist)
+        C_inv = w2c_matrix_curr
 
-    w2c_matrix_curr = torch.linalg.inv(C_inv @ c2w_matrix_curr)
-    w2c_matrix_hist = torch.linalg.inv(C_inv @ c2w_matrix_hist)
+        w2c_matrix_curr = torch.linalg.pinv(C_inv @ c2w_matrix_curr)
+        w2c_matrix_hist = torch.linalg.pinv(C_inv @ c2w_matrix_hist)
 
-    R_curr, t_curr = w2c_matrix_curr[:3, :3], w2c_matrix_curr[:3, 3]
-    R_hist, t_hist = w2c_matrix_hist[:3, :3], w2c_matrix_hist[:3, 3]
+        R_curr, t_curr = w2c_matrix_curr[:3, :3], w2c_matrix_curr[:3, 3]
+        R_hist, t_hist = w2c_matrix_hist[:3, :3], w2c_matrix_hist[:3, 3]
+    except Exception as e:
+        # If matrix math fails due to singular/NaN matrices, return 0 similarity
+        return 0.0
     P_w_curr = -R_curr.T @ t_curr
     P_w_hist = -R_hist.T @ t_hist
 
@@ -175,6 +180,9 @@ def calculate_fov_overlap_similarity(
 
     fov_half_h = torch.tensor(fov_h_deg / 2.0, device=device)
     fov_half_v = torch.tensor(fov_v_deg / 2.0, device=device)
+
+    if points_local is not None:
+        points_local = points_local.to(device)
 
     # move to P_w_curr (N, 3)
     points_world = points_local + P_w_curr[None, :]

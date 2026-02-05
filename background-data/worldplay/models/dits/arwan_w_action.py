@@ -76,7 +76,6 @@ class CausalCameraPRopeWanAttnProcessor2_0:
         idx: Optional[int] = None,
         viewmats: Optional[torch.Tensor] = None,
         Ks: Optional[torch.Tensor] = None,
-        context_frames_list: Optional[List[int]] = None,
     ) -> torch.Tensor:
         encoder_hidden_states_img = None
         if attn.add_k_proj is not None:
@@ -109,8 +108,24 @@ class CausalCameraPRopeWanAttnProcessor2_0:
             ):
                 x = hidden_states.view(*hidden_states.shape[:-1], -1, 2)
                 x1, x2 = x[..., 0], x[..., 1]
+                
+                # Dynamic matching of RoPE sequence length
+                seq_len = x1.shape[-2]
+                rope_len = freqs_cos.shape[-2]
+                
                 cos = freqs_cos[..., 0::2]
                 sin = freqs_sin[..., 1::2]
+                
+                # If RoPE is longer (context window padding), slice it
+                if rope_len > seq_len:
+                    cos = cos[:, :, :seq_len, :]
+                    sin = sin[:, :, :seq_len, :]
+                # if RoPE is shorter (e.g. repeated sequence), repeat it
+                elif seq_len > rope_len:
+                    repeats = seq_len // rope_len
+                    cos = cos.repeat(1, 1, repeats, 1)
+                    sin = sin.repeat(1, 1, repeats, 1)
+
                 out = torch.empty_like(hidden_states)
                 out[..., 0::2] = x1 * cos - x2 * sin
                 out[..., 1::2] = x1 * sin + x2 * cos
@@ -146,20 +161,34 @@ class CausalCameraPRopeWanAttnProcessor2_0:
 
         value_rope = value
 
+        # Dynamic patch calculation based on spatial shape (e.g. 60x60)
+        # We infer the number of spatial patches by dividing seqlen by number of cameras
         query_prope, key_prope, value_prope, apply_fn_o = prope_qkv(
             query,
             key,
             value,
             viewmats=viewmats,
             Ks=Ks,
-            patches_x=40,  # hard code
-            patches_y=22,  # hard code
+            # Pass None to trigger automatic shape inference in prope_qkv
+            patches_x=None,
+            patches_y=None,
         )  # [batch, num_heads, seqlen, head_dim]
 
 
         kv_cache_return = {}
-        cache_key = kv_cache["k"]
-        cache_value = kv_cache["v"]
+        if kv_cache is not None:
+            cache_key = kv_cache["k"]
+            cache_value = kv_cache["v"]
+        else:
+            cache_key = None
+            cache_value = None
+        
+        # CPU Offloading Logic: Move cache slice to GPU if needed
+        device = query.device
+        if cache_key is not None and cache_key.device != device:
+             cache_key = cache_key.to(device)
+        if cache_value is not None and cache_value.device != device:
+             cache_value = cache_value.to(device)
 
 
         if cache_value is not None and not is_cache:
@@ -176,23 +205,59 @@ class CausalCameraPRopeWanAttnProcessor2_0:
             kv_cache_return["k"] = torch.cat([key_rope, key_prope], dim=-1)
             kv_cache_return["v"] = torch.cat([value_rope, value_prope], dim=-1)
 
+        # INCREMENTAL CONCATENATION to minimize peak VRAM
+        # Doing cat([A, B]) then del A, B is safer than cat for all Q, K, V at once.
         query_all = torch.cat([query_rope, query_prope], dim=0)
+        del query_rope, query_prope, query
+        
         key_all = torch.cat([key_rope, key_prope], dim=0)
+        del key_rope, key_prope, key
+        
         value_all = torch.cat([value_rope, value_prope], dim=0)
+        del value_rope, value_prope, value
+        
+        # Save dtype for later use
+        query_dtype = query_all.dtype
 
-        hidden_states_all = sageattn(
-            query_all, key_all, value_all, tensor_layout="HND", is_causal=False
-        )
-
-        # hidden_states_all = F.scaled_dot_product_attention(
-        #    query_all, key_all, value_all, dropout_p=0.0
-        # )
+        # FORCE SDPA with Chunking for maximum stability on 16GB VRAM
+        # SageAttention causes OOM due to large quantization buffers.
+        # Even standard SDPA can OOM if it falls back to math backend (approx 20GB for full ctx).
+        # We chunk queries to reduce peak memory usage.
+        
+        q_len = query_all.shape[-2]
+        # Chunk size: 256 tokens seems safe (reduces 20GB -> ~5GB peak)
+        SDPA_CHUNK_SIZE = 256
+        
+        if q_len > SDPA_CHUNK_SIZE:
+            # Pre-allocate output tensor to avoid list accumulation and cat spike
+            hidden_states_all = torch.empty_like(query_all)
+            
+            for i in range(0, q_len, SDPA_CHUNK_SIZE):
+                q_chunk = query_all[..., i : i + SDPA_CHUNK_SIZE, :]
+                
+                # In-place write
+                hidden_states_all[..., i : i + SDPA_CHUNK_SIZE, :] = F.scaled_dot_product_attention(
+                    q_chunk, key_all, value_all, dropout_p=0.0
+                )
+                
+                # Explicit cleanup
+                del q_chunk
+        else:
+            hidden_states_all = F.scaled_dot_product_attention(
+                query_all, key_all, value_all, dropout_p=0.0
+            )
 
         hidden_states_all = hidden_states_all.transpose(
             1, 2
         )  # [batch * 2, seqlen, per_sp_num_heads, head_dim]
+        
+        # Cleanup SDPA inputs
+        del query_all, key_all, value_all
 
         hidden_states_rope, hidden_states_prope = hidden_states_all.chunk(2, dim=0)
+        
+        # Cleanup large combined tensor
+        del hidden_states_all
         hidden_states_prope = apply_fn_o(hidden_states_prope.transpose(1, 2)).transpose(
             1, 2
         )
@@ -214,15 +279,17 @@ class CausalCameraPRopeWanAttnProcessor2_0:
             )
 
         hidden_states_prope = hidden_states_prope.flatten(2, 3)
-        hidden_states_prope = hidden_states_prope.type_as(query)
+        hidden_states_prope = hidden_states_prope.to(query_dtype)
         hidden_states_prope = attn.to_out_prope[0](hidden_states_prope)
 
         hidden_states_rope = hidden_states_rope.flatten(2, 3)
-        hidden_states_rope = hidden_states_rope.type_as(query)
+        hidden_states_rope = hidden_states_rope.to(query_dtype)
         hidden_states_rope = attn.to_out[0](hidden_states_rope)
         hidden_states_rope = attn.to_out[1](hidden_states_rope)
 
-        hidden_states = hidden_states_rope + hidden_states_prope
+        # In-place addition to save memory
+        hidden_states_rope.add_(hidden_states_prope)
+        hidden_states = hidden_states_rope
 
         return hidden_states, kv_cache_return
 
@@ -398,7 +465,7 @@ class WanActionTimeTextImageEmbedding(nn.Module):
         encoder_hidden_states_image: Optional[torch.Tensor] = None,
     ):
         timestep = self.timesteps_proj(timestep)
-        action = self.timesteps_proj(action.squeeze(0))
+        action = self.timesteps_proj(action)
         action_embedder_dtype = next(iter(self.action_embedder.parameters())).dtype
         if (
             action.dtype != action_embedder_dtype
@@ -520,6 +587,9 @@ class WanRotaryPosEmbed(nn.Module):
         batch_size, num_channels, num_frames, height, width = hidden_states.shape
         p_t, p_h, p_w = self.patch_size
         ppf, pph, ppw = num_frames // p_t, height // p_h, width // p_w
+        ppf = max(1, ppf) # Fix for single-frame latent when p_t > 1
+        pph = max(1, pph)
+        ppw = max(1, ppw)
 
         split_sizes = [
             self.attention_head_dim - 2 * (self.attention_head_dim // 3),
@@ -875,6 +945,10 @@ class WanTransformer3DModel(
         post_patch_height = height // p_h
         post_patch_width = width // p_w
 
+        # Fix for single-frame latent when p_t > 1
+        # Ensures RoPE is generated for at least one temporal patch
+        post_patch_num_frames = max(1, post_patch_num_frames)
+
 
         ## if hidden_states is smaller than the window size, we need to pad it
         if post_patch_num_frames < window_frames:
@@ -890,7 +964,7 @@ class WanTransformer3DModel(
             padding_hidden_states = hidden_states[:, :, :window_frames, :, :]
 
         # 得到所有的rope参数
-        rotary_emb = self.rope(padding_hidden_states)  # 2 * [1, ,1 , T' * H' * W']([1, 1, 21 * 30 * 52])
+        rotary_emb = self.rope(padding_hidden_states)
 
         hidden_states = self.patch_embedding(hidden_states)  # [B, C, T, H, W] -> [B, C', T', H', W']
         hidden_states = hidden_states.flatten(2).transpose(1, 2)
@@ -915,6 +989,7 @@ class WanTransformer3DModel(
 
         rotary_emb0 = rotary_emb[0][:, :, current_start:current_end, :]
         rotary_emb1 = rotary_emb[1][:, :, current_start:current_end, :]
+        del rotary_emb
 
         # SP
         if os.getenv("WORLD_SIZE", "0") != "0":

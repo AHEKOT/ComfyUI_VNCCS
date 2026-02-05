@@ -11,6 +11,7 @@ import math
 import torch
 import numpy as np
 from PIL import Image
+import cv2
 import folder_paths
 
 
@@ -21,12 +22,46 @@ if WORLDMIRROR_DIR not in sys.path:
     sys.path.insert(0, WORLDMIRROR_DIR)
 
 # Import FastPLYRenderer after setting up sys.path
+# Import FastPLYRenderer after setting up sys.path
 try:
     from src.utils.fast_ply_render import FastPLYRenderer
+    # Import ported utils for advanced filtering
+    from src.utils.visual_util import segment_sky, download_file_from_url
+    from src.utils.geometry import depth_edge, normals_edge
 except ImportError:
     # If using direct import (e.g. dev environment)
     from background_data.worldmirror.src.utils.fast_ply_render import FastPLYRenderer
+    from background_data.worldmirror.src.utils.visual_util import segment_sky, download_file_from_url
+    from background_data.worldmirror.src.utils.geometry import depth_edge, normals_edge
 
+try:
+    import onnxruntime
+    SKYSEG_AVAILABLE = True
+except ImportError:
+    SKYSEG_AVAILABLE = False
+    print("⚠️ [VNCCS] onnxruntime not found. Sky segmentation will be disabled.")
+
+
+# ----------------------------------------------------------------------------
+# GSPLAT DIAGNOSTICS
+# ----------------------------------------------------------------------------
+try:
+    import gsplat
+    print(f"✅ [VNCCS] gsplat library detected: Version {gsplat.__version__}")
+    GSPLAT_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ [VNCCS] gsplat library NOT found: {e}")
+    GSPLAT_AVAILABLE = False
+except Exception as e:
+    print(f"❌ [VNCCS] Error loading gsplat: {e}")
+    GSPLAT_AVAILABLE = False
+
+if torch.cuda.is_available():
+    print(f"✅ [VNCCS] CUDA is available: {torch.version.cuda}")
+    print(f"   Device: {torch.cuda.get_device_name(0)}")
+else:
+    print("⚠️ [VNCCS] CUDA is NOT available. gsplat requires CUDA.")
+# ----------------------------------------------------------------------------
 
 
 # ============================================================================
@@ -35,7 +70,7 @@ except ImportError:
 
 def equirect_to_perspective(equirect_img, fov_deg, yaw_deg, pitch_deg, output_size=(512, 512)):
     """
-    Extract a perspective view from an equirectangular panorama.
+    Extract a perspective view from an equirectangular panorama using PyTorch grid_sample.
     
     Args:
         equirect_img: PIL Image of equirectangular panorama (2:1 aspect ratio)
@@ -47,90 +82,169 @@ def equirect_to_perspective(equirect_img, fov_deg, yaw_deg, pitch_deg, output_si
     Returns:
         PIL Image of the perspective view
     """
-    equirect = np.array(equirect_img)
-    h_eq, w_eq = equirect.shape[:2]
-    
+    # Convert image to tensor [1, C, H, W]
+    if isinstance(equirect_img, Image.Image):
+        img_np = np.array(equirect_img.convert("RGB"))
+        img_tensor = torch.from_numpy(img_np).float().permute(2, 0, 1).unsqueeze(0) / 255.0
+    else:
+        # Assume tensor input if needed, but for now stick to PIL interop
+        img_np = np.array(equirect_img)
+        img_tensor = torch.from_numpy(img_np).float().permute(2, 0, 1).unsqueeze(0) / 255.0
+
+    B, C, H, W = img_tensor.shape
     out_w, out_h = output_size
     
-    # Convert FOV to radians
-    fov = math.radians(fov_deg)
+    # Create ray grid
+    # We essentially want to verify "rays_z = f" logic in a vectorized way
     
-    # Convert yaw and pitch to radians
-    yaw = math.radians(yaw_deg)
-    pitch = math.radians(pitch_deg)
+    fov_rad = math.radians(fov_deg)
+    yaw_rad = math.radians(yaw_deg)
+    pitch_rad = math.radians(pitch_deg)
     
-    # Create output pixel grid
-    x = np.linspace(-1, 1, out_w)
-    y = np.linspace(-1, 1, out_h)
-    xv, yv = np.meshgrid(x, y)
+    f = 1.0 / math.tan(fov_rad / 2)
     
-    # Calculate 3D ray directions for each output pixel
-    f = 1.0 / math.tan(fov / 2)  # focal length
+    # 1. Create meshgrid for output pixels (normalized -1 to 1)
+    # y is down in image coords but we want y up for 3D logic usually. 
+    # original code: yv is linspace(-1, 1), rays_y = -yv.
+    # Let's match typical conventions: x right, y down (image) -> y up (world)? 
+    # Let's stick to the previous code's coordinate system to minimize regression risk.
+    # Previous: rays_x = xv, rays_y = -yv, rays_z = -f
     
-    # Ray directions in camera space (looking down -Z axis)
-    rays_x = xv
-    rays_y = -yv  # flip y
-    rays_z = -np.ones_like(xv) * f
+    # Use torch meshgrid
+    device = torch.device('cpu') # or 'cuda' if we want speed, but stay safe on CPU for image ops
+    
+    xv = torch.linspace(-1, 1, out_w, device=device)
+    yv = torch.linspace(-1, 1, out_h, device=device)
+    
+    grid_y, grid_x = torch.meshgrid(yv, xv, indexing='ij')
+    
+    rays_x = grid_x
+    rays_y = -grid_y
+    rays_z = torch.full_like(grid_x, -f)
     
     # Normalize rays
-    rays_len = np.sqrt(rays_x**2 + rays_y**2 + rays_z**2)
-    rays_x /= rays_len
-    rays_y /= rays_len
-    rays_z /= rays_len
+    rays_norm = torch.sqrt(rays_x**2 + rays_y**2 + rays_z**2)
+    rays_x = rays_x / rays_norm
+    rays_y = rays_y / rays_norm
+    rays_z = rays_z / rays_norm
     
-    # Rotation matrix for pitch (around X axis)
-    cos_p, sin_p = math.cos(pitch), math.sin(pitch)
-    # Rotation matrix for yaw (around Y axis)
-    cos_y, sin_y = math.cos(yaw), math.sin(yaw)
-    
-    # Apply pitch rotation first
+    # Apply Rotations
+    # Pitch (X axis)
+    cos_p, sin_p = math.cos(pitch_rad), math.sin(pitch_rad)
     rays_y_p = rays_y * cos_p - rays_z * sin_p
     rays_z_p = rays_y * sin_p + rays_z * cos_p
-    rays_x_p = rays_x
+    rays_x_p = rays_x # Unchanged
     
-    # Apply yaw rotation
+    # Yaw (Y axis)
+    cos_y, sin_y = math.cos(yaw_rad), math.sin(yaw_rad)
     rays_x_r = rays_x_p * cos_y + rays_z_p * sin_y
     rays_z_r = -rays_x_p * sin_y + rays_z_p * cos_y
-    rays_y_r = rays_y_p
+    rays_y_r = rays_y_p # Unchanged
     
-    # Convert 3D rays to spherical coordinates
-    theta = np.arctan2(rays_x_r, -rays_z_r)  # [-pi, pi]
-    phi = np.arcsin(np.clip(rays_y_r, -1, 1))  # [-pi/2, pi/2]
+    # XYZ -> Spherical (theta, phi)
+    # theta = atan2(x, -z) -> [-pi, pi]
+    # phi = asin(y) -> [-pi/2, pi/2]
     
-    # Convert spherical to equirectangular pixel coordinates
-    u = (theta / math.pi + 1) / 2 * w_eq  # [0, w_eq]
-    v = (0.5 - phi / math.pi) * h_eq  # [0, h_eq]
+    theta = torch.atan2(rays_x_r, -rays_z_r)
+    phi = torch.asin(torch.clamp(rays_y_r, -1.0, 1.0))
     
-    # Clamp coordinates
-    u = np.clip(u, 0, w_eq - 1).astype(np.float32)
-    v = np.clip(v, 0, h_eq - 1).astype(np.float32)
+    # Spherical -> UV Grid [-1, 1] for grid_sample
+    # u = theta / pi
+    # v = - (2 * phi / pi) ? 
+    # Recall v=0 is top (-1), v=1 is bottom (1)?
+    # Previous code: v = (0.5 - phi/pi) * H -> 
+    # If phi = pi/2 (up), v = 0.
+    # If phi = -pi/2 (down), v = H.
+    # In grid_sample: -1 is top, 1 is bottom.
+    # So we want map phi (pi/2 -> -pi/2) to (-1 -> 1)
     
-    # Bilinear interpolation
-    u0 = np.floor(u).astype(int)
-    v0 = np.floor(v).astype(int)
-    u1 = np.minimum(u0 + 1, w_eq - 1)
-    v1 = np.minimum(v0 + 1, h_eq - 1)
+    u = theta / math.pi # [-1, 1]
+    v = -2.0 * phi / math.pi # [-1 (up), 1 (down)]
     
-    du = u - u0
-    dv = v - v0
+    grid = torch.stack((u, v), dim=-1).unsqueeze(0) # [1, H, W, 2]
     
-    # Get pixel values
-    if len(equirect.shape) == 3:
-        du = du[:, :, np.newaxis]
-        dv = dv[:, :, np.newaxis]
+    # Sampling
+    # Bicubic is smoother but requires align_corners=True/False checks
+    # align_corners=True matches typical geometric implementations better
+    
+    out_tensor = torch.nn.functional.grid_sample(
+        img_tensor, 
+        grid, 
+        mode='bicubic', 
+        padding_mode='border', 
+        align_corners=True
+    )
+    
+    out_np = (out_tensor.squeeze().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+    return Image.fromarray(out_np)
+
+
+def create_filter_mask(
+    pts3d_conf: np.ndarray,
+    depth_preds: np.ndarray, 
+    normal_preds: np.ndarray,
+    sky_mask: np.ndarray,
+    confidence_percentile: float = 10.0,
+    edge_normal_threshold: float = 5.0,
+    edge_depth_threshold: float = 0.03,
+    apply_confidence_mask: bool = True,
+    apply_edge_mask: bool = True,
+    apply_sky_mask: bool = False,
+) -> np.ndarray:
+    """
+    Create comprehensive filter mask based on confidence, edges, and sky segmentation.
+    Ported from HunyuanWorld-Mirror infer.py.
+    """
+    S, H, W = pts3d_conf.shape[:3]
+    final_mask_list = []
+    
+    for i in range(S):
+        final_mask = None
         
-    p00 = equirect[v0, u0]
-    p01 = equirect[v0, u1]
-    p10 = equirect[v1, u0]
-    p11 = equirect[v1, u1]
+        if apply_confidence_mask:
+            # Compute confidence mask based on the pointmap confidence
+            confidences = pts3d_conf[i, :, :]  # [H, W]
+            percentile_threshold = np.quantile(confidences, confidence_percentile / 100.0)
+            conf_mask = confidences >= percentile_threshold
+            if final_mask is None:
+                final_mask = conf_mask
+            else:
+                final_mask = final_mask & conf_mask
+        
+        if apply_edge_mask:
+            # Compute edge mask based on the normalmap
+            normal_pred = normal_preds[i]  # [H, W, 3]
+            normal_edges = normals_edge(
+                normal_pred, tol=edge_normal_threshold, mask=final_mask
+            )
+            # Compute depth mask based on the depthmap
+            depth_pred = depth_preds[i, :, :, 0]  # [H, W]
+            depth_edges = depth_edge(
+                depth_pred, rtol=edge_depth_threshold, mask=final_mask
+            )
+            edge_mask = ~(depth_edges & normal_edges)
+            if final_mask is None:
+                final_mask = edge_mask
+            else:
+                final_mask = final_mask & edge_mask
+        
+        if apply_sky_mask and sky_mask is not None:
+            # Apply sky mask filtering (sky_mask is already inverted: True = non-sky)
+            sky_mask_frame = sky_mask[i]  # [H, W]
+            if final_mask is None:
+                final_mask = sky_mask_frame
+            else:
+                final_mask = final_mask & sky_mask_frame
+        
+        final_mask_list.append(final_mask)
     
-    # Bilinear interpolation
-    output = (1 - du) * (1 - dv) * p00 + \
-             du * (1 - dv) * p01 + \
-             (1 - du) * dv * p10 + \
-             du * dv * p11
+    # Stack all frame masks
+    if final_mask_list[0] is not None:
+        final_mask = np.stack(final_mask_list, axis=0)  # [S, H, W]
+    else:
+        final_mask = np.ones(pts3d_conf.shape[:3], dtype=bool)  # [S, H, W]
     
-    return Image.fromarray(output.astype(np.uint8))
+    return final_mask
 
 
 # ============================================================================
@@ -146,6 +260,9 @@ class VNCCS_LoadWorldMirrorModel:
             "required": {},
             "optional": {
                 "device": (["cuda", "cpu"], {"default": "cpu"}),
+                "sampling_strategy": (["conservative", "uniform"], {"default": "uniform"}),
+                "enable_conf_filter": ("BOOLEAN", {"default": False}), 
+                "conf_threshold_percent": ("FLOAT", {"default": 30.0, "min": 0.0, "max": 100.0}),
             }
         }
     
@@ -154,11 +271,21 @@ class VNCCS_LoadWorldMirrorModel:
     FUNCTION = "load_model"
     CATEGORY = "VNCCS/3D"
     
-    def load_model(self, device="cuda"):
+    def load_model(self, device="cuda", sampling_strategy="uniform", enable_conf_filter=False, conf_threshold_percent=30.0):
         from src.models.models.worldmirror import WorldMirror
         
-        print("🔄 Loading WorldMirror model...")
-        model = WorldMirror.from_pretrained("tencent/HunyuanWorld-Mirror")
+        print(f"🔄 Loading WorldMirror model (Strategy: {sampling_strategy}, Conf Filter: {enable_conf_filter}, Thresh: {conf_threshold_percent}%)")
+        
+        gs_params = {
+            "enable_conf_filter": enable_conf_filter,
+            "conf_threshold_percent": conf_threshold_percent
+        }
+        
+        model = WorldMirror.from_pretrained(
+            "tencent/HunyuanWorld-Mirror", 
+            sampling_strategy=sampling_strategy,
+            gs_params=gs_params
+        )
         model = model.to(device)
         model.eval()
         print("✅ WorldMirror model loaded")
@@ -175,12 +302,17 @@ class VNCCS_WorldMirror3D:
             "required": {
                 "model": ("WORLDMIRROR_MODEL",),
                 "images": ("IMAGE",),
+                "use_gsplat": ("BOOLEAN", {"default": True, "tooltip": "Enable Gaussian Splatting renderer (High Quality). If disabled, falls back to Point Cloud."}),
             },
             "optional": {
                 "target_size": ("INT", {"default": 518, "min": 252, "max": 1024, "step": 14}),
                 "offload_scheme": (["none", "model_cpu_offload", "sequential_cpu_offload"], {"default": "none"}),
                 "stabilization": (["none", "panorama_lock"], {"default": "none"}),
                 "confidence_percentile": ("FLOAT", {"default": 10.0, "min": 0.0, "max": 100.0, "step": 1.0}),
+                "apply_sky_mask": ("BOOLEAN", {"default": False, "tooltip": "Remove sky regions (requires onnxruntime and skyseg.onnx)"}),
+                "filter_edges": ("BOOLEAN", {"default": True, "tooltip": "Remove artifact points at object boundaries"}),
+                "edge_normal_threshold": ("FLOAT", {"default": 5.0, "min": 0.1, "max": 90.0, "step": 0.5}),
+                "edge_depth_threshold": ("FLOAT", {"default": 0.03, "min": 0.001, "max": 0.5, "step": 0.001}),
             }
         }
     
@@ -189,8 +321,14 @@ class VNCCS_WorldMirror3D:
     FUNCTION = "run_inference"
     CATEGORY = "VNCCS/3D"
     
-    def run_inference(self, model, images, target_size=518, offload_scheme="none", stabilization="none", confidence_percentile=10.0):
+    def run_inference(self, model, images, use_gsplat=True, target_size=518, offload_scheme="none", stabilization="none", 
+                      confidence_percentile=10.0, apply_sky_mask=False, filter_edges=True,
+                      edge_normal_threshold=5.0, edge_depth_threshold=0.03):
         from torchvision import transforms
+        
+        if apply_sky_mask and not SKYSEG_AVAILABLE:
+            print("⚠️ Sky segmentation requested but onnxruntime is missing. Ignoring.")
+            apply_sky_mask = False
         
         # Ensure target_size is divisible by 14
         target_size = (target_size // 14) * 14
@@ -313,10 +451,24 @@ class VNCCS_WorldMirror3D:
         cond_flags = [0, 0, 0]
         
         try:
+            # Override GS State based on toggle
+            original_gs_state = getattr(worldmirror, "enable_gs", True)
+            
+            # Force disable if gsplat lib is missing
+            if use_gsplat and not GSPLAT_AVAILABLE:
+                print("⚠️ gsplat requested but library not found. Falling back to Point Cloud.")
+                worldmirror.enable_gs = False
+            else:
+                worldmirror.enable_gs = use_gsplat
+
             with torch.no_grad():
                 with torch.amp.autocast('cuda', enabled=True, dtype=torch.bfloat16):
                     predictions = worldmirror(views=views, cond_flags=cond_flags, stabilization=stabilization, confidence_percentile=confidence_percentile)
         finally:
+            # Restore original state to avoid side effects
+            if hasattr(worldmirror, "enable_gs"):
+                worldmirror.enable_gs = original_gs_state
+
             # Cleanup for Manual Sequential Offload
             if offload_scheme == "sequential_cpu_offload":
                  # Move heads back to CPU
@@ -348,14 +500,126 @@ class VNCCS_WorldMirror3D:
 
         print("✅ Inference complete")
         
+        # ============================================================================
+        # Post-Processing: Filtering & Sky Masking (Ported)
+        # ============================================================================
+        
+        S, H, W = predictions["depth"].shape[1:4] # Get dimensions from depth map
+        B_batch = predictions["depth"].shape[0]   # Although we usually have B=1 in this node structure
+
+        # 1. Compute Sky Mask
+        sky_mask_np = None
+        if apply_sky_mask:
+            print("🌤️ Computing sky masks...")
+            sky_model_path = os.path.join(folder_paths.models_dir, "skyseg.onnx")
+            
+            # Download if missing
+            if not os.path.exists(sky_model_path):
+                print(f"⬇️ Downloading skyseg.onnx to {sky_model_path}...")
+                download_file_from_url(
+                    "https://huggingface.co/JianyuanWang/skyseg/resolve/main/skyseg.onnx", 
+                    sky_model_path
+                )
+            
+            if os.path.exists(sky_model_path):
+                try:
+                    skyseg_session = onnxruntime.InferenceSession(sky_model_path)
+                    sky_mask_list = []
+                    
+                    # We need original images for sky seg ideally, but using tensor inputs converted back is fine
+                    # images is [B, H_orig, W_orig, 3] or similar? No, images is [B, H, W, 3] from Comfy
+                    # But note: we need the images that match the INFERENCE resolution (H,W) for mask consistency
+                    
+                    # Convert input tensor images to numpy for skyseg
+                    # imgs_tensor is [1, S, 3, H, W]
+                    for i in range(S):
+                        img_np = imgs_tensor[0, i].permute(1, 2, 0).cpu().numpy() # [H, W, 3]
+                        img_np = (img_np * 255).astype(np.uint8)
+                        
+                        sky_mask_frame = segment_sky(img_np, skyseg_session)
+                        # Resize mask to match H×W if needed (segment_sky handles it but double check)
+                        if sky_mask_frame.shape[0] != H or sky_mask_frame.shape[1] != W:
+                            sky_mask_frame = cv2.resize(sky_mask_frame, (W, H))
+                        sky_mask_list.append(sky_mask_frame)
+                    
+                    sky_mask_np = np.stack(sky_mask_list, axis=0) # [S, H, W]
+                    sky_mask_np = sky_mask_np > 0 # Binary: True = non-sky
+                    print(f"✅ Sky masks computed for {S} frames")
+                except Exception as e:
+                    print(f"❌ Sky segmentation failed: {e}")
+                    sky_mask_np = None
+            else:
+                print("❌ Failed to download skyseg.onnx")
+
+        # 2. Compute Filter Mask
+        print("🔍 Computing geometric filter mask...")
+        pts3d_conf_np = predictions["pts3d_conf"][0].detach().cpu().numpy()
+        depth_preds_np = predictions["depth"][0].detach().cpu().numpy()
+        normal_preds_np = predictions["normals"][0].detach().cpu().numpy()
+        
+        final_mask = create_filter_mask(
+            pts3d_conf=pts3d_conf_np,
+            depth_preds=depth_preds_np,
+            normal_preds=normal_preds_np,
+            sky_mask=sky_mask_np,
+            confidence_percentile=confidence_percentile,
+            edge_normal_threshold=edge_normal_threshold,
+            edge_depth_threshold=edge_depth_threshold,
+            apply_confidence_mask=True,
+            apply_edge_mask=filter_edges,
+            apply_sky_mask=apply_sky_mask
+        ) # [S, H, W] bool array
+        
+        # 3. Apply Limit to outputs
+        # We need to filter 'pts3d' (point cloud) AND 'splats' (gaussians)
+        
+        # Filter Point Cloud [1, S, H, W, 3] -> Flat List of valid points
+        # Actually, ComfyUI style output keeps structure usually, but for PLY saving we want list
+        # We will RETURN the mask or filtered points. 
+        # Existing code accesses predictions["pts3d"] which is [1, S, H, W, 3]
+        
+        # Let's flatten and filter pts3d for the output dictionary
+        # BUT: predictions["pts3d"] maps to pixels. If we remove pixels, we lose grid structure.
+        # The PLY saver handles flattening. We should zero out invalid points or mark them.
+        # Or better: Provide the filtered list directly in ply_data.
+        
+        all_pts_list = []
+        all_conf_list = []
+        
+        if "splats" in predictions:
+            # Note: We DO NOT filter splats here with final_mask!
+            # Why: If enable_prune=True (default), splats are a sparse point cloud and do not map 1:1 to pixels.
+            # Using a pixel-grid mask (final_mask) on sparse splats is mathematically wrong and causes size mismatches.
+            # We pass splats raw, trusting the Model's internal GaussianSplatRenderer to have pruned/filtered them.
+            print(f"ℹ️ Passing native Gaussian Splats (Pruned/Internal Filter).")
+            # Ensure consistency of list vs tensor
+            pass
+        
+        # Prepare mask for Point Cloud filtering
+        final_mask_flat = torch.from_numpy(final_mask.reshape(-1)).to(execution_device)
+
+        # Filter Points 3D (for PLY_DATA)
+        # pts3d is [1, S, H, W, 3]. Flatten to [S*H*W, 3] and filter
+        filtered_pts = None
+        if "pts3d" in predictions:
+            pts = predictions["pts3d"][0].reshape(-1, 3)
+            # pts_conf = predictions["pts3d_conf"][0].reshape(-1)
+            
+            filtered_pts = pts[final_mask_flat.to(pts.device)]
+            # filtered_conf = pts_conf[final_mask_flat]
+
         ply_data = {
-            "pts3d": predictions.get("pts3d"),
+            "pts3d": predictions.get("pts3d"), # Raw structured points (useful for depth maps)
+            "pts3d_filtered": filtered_pts, # Filtered flat points
             "pts3d_conf": predictions.get("pts3d_conf"),
-            "splats": predictions.get("splats"),
+            "splats": predictions.get("splats"), # Now contains FILTERED splats
             "images": imgs_tensor,
+            "filter_mask": final_mask_flat, # Pass mask for color filtering in fallback
             "camera_poses": predictions.get("camera_poses"),
             "camera_intrs": predictions.get("camera_intrs"),
-        }
+        } 
+        
+
         
         depth_tensor = predictions.get("depth")
         if depth_tensor is not None:
@@ -398,8 +662,10 @@ class VNCCS_Equirect360ToViews:
                 "panorama": ("IMAGE",),
             },
             "optional": {
-                "fov": ("INT", {"default": 90, "min": 30, "max": 120}),
-                "yaw_step": ("INT", {"default": 45, "min": 15, "max": 90}),
+                # FOV 60 minimizes edge distortion ("stretching") which is critical for SfM/Gaussian consistency
+                "fov": ("INT", {"default": 60, "min": 30, "max": 120}),
+                # Smaller step (30) ensures overlap despite narrower FOV
+                "yaw_step": ("INT", {"default": 30, "min": 15, "max": 90}),
                 "pitches": ("STRING", {"default": "0,-30,30"}),
                 "output_size": ("INT", {"default": 518, "min": 252, "max": 1022, "step": 14}),
             }
@@ -546,18 +812,26 @@ def extract_splat_params(data):
                     colors_data = torch.ones(means.shape[0], 3) * 0.5
                 
                 print(f"📊 [extract_splat_params] Gaussian Stats:")
-                print(f"   - Means:  min={means.min(dim=0)[0].tolist()}, max={means.max(dim=0)[0].tolist()}")
-                print(f"   - Scales: min={scales.min(dim=0)[0].tolist()}, max={scales.max(dim=0)[0].tolist()}, mean={scales.mean(dim=0).tolist()}")
-                print(f"   - Opacity: min={opacities.min().item():.3f}, max={opacities.max().item():.3f}, mean={opacities.mean().item():.3f}")
+                print(f"   - Means:  {means.shape} min={means.min(dim=0)[0].tolist()}, max={means.max(dim=0)[0].tolist()}")
+                if scales is not None: print(f"   - Scales: {scales.shape}")
+                if quats is not None: print(f"   - Quats:  {quats.shape}")
+                if colors_data is not None: print(f"   - Colors: {colors_data.shape}")
+                if opacities is not None: print(f"   - Opacity:{opacities.shape} min={opacities.min().item():.3f}")
                 
                 return means, scales, quats, colors_data, opacities
         else:
             print(f"⚠️ [extract_splat_params] splats is {type(splats)}, not a valid dict")
     
     # Fallback: Convert point cloud to dummy Gaussians
-    if pts3d is not None:
+    if pts3d is not None or data.get("pts3d_filtered") is not None:
         print("🔍 [extract_splat_params] Using pts3d fallback (point cloud mode)")
-        means = pts3d[0].view(-1, 3).detach().cpu().float()
+        
+        if data.get("pts3d_filtered") is not None:
+             print("✨ Using FILTERED point cloud")
+             means = data["pts3d_filtered"].detach().cpu().float()
+        else:
+             means = pts3d[0].view(-1, 3).detach().cpu().float()
+             
         N = means.shape[0]
         
         # Cap at 2M to avoid crashing viewers
@@ -576,13 +850,27 @@ def extract_splat_params(data):
         if images is not None:
             S = pts3d.shape[1]
             colors_data = images[0, :S].permute(0, 2, 3, 1).reshape(-1, 3)
+            
+            # Apply filter mask if available (Crucial for mismatch fix)
+            mask = data.get("filter_mask")
+            if mask is not None:
+                # Ensure mask matches raw size
+                if mask.shape[0] == colors_data.shape[0]:
+                    print(f"✨ [extract_splat_params] Applying filter mask to colors | Mask: {mask.shape} | Colors: {colors_data.shape}")
+                    colors_data = colors_data[mask.to(colors_data.device)]
+                else:
+                    print(f"⚠️ [extract_splat_params] Mask size {mask.shape[0]} != Colors size {colors_data.shape[0]}, ignoring")
+            
             if idx is not None:
                 colors_data = colors_data[idx]
             colors_data = colors_data.detach().cpu().float()
+            
+            # DEBUG: Color Stats
+            print(f"🎨 [extract_splat_params] Colors Stats: Min={colors_data.min():.3f}, Max={colors_data.max():.3f}, Mean={colors_data.mean():.3f}")
         else:
             colors_data = torch.ones(N, 3) * 0.5
         
-        print(f"📊 [extract_splat_params] Point Cloud Stats: {N:,} points")
+        print(f"📊 [extract_splat_params] Point Cloud Stats: {N:,} points | GSPLAT_AVAILABLE={GSPLAT_AVAILABLE}")
             
         return means, scales, quats, colors_data, opacities
         
@@ -640,6 +928,66 @@ class VNCCS_SavePLY:
         
         return Rz @ Ry @ Rx
 
+    def _rotate_quaternions(self, quats, R):
+        """
+        Rotate quaternions by rotation matrix R.
+        quats: [N, 4] (w, x, y, z) or (x, y, z, w)? gsplat usually (w, x, y, z) or (x, y, z, w).
+        3DGS usually uses (w, x, y, z).
+        """
+        # Convert R to quaternion q_R checking typical conversion math
+        # Minimal implementation of Matrix to Quat (assuming R is pure rotation)
+        # R is [3, 3]
+        
+        # We need batch multiplication.
+        # Use pytorch3d or similar logic if available? No, simple math.
+        # q_new = q_R * q_old
+        
+        # 1. R -> q_R (w, x, y, z)
+        # http://www.euclideanspace.com/maths/geometry/rotations/conversions/matrixToQuaternion/
+        trace = R[0,0] + R[1,1] + R[2,2]
+        if trace > 0:
+            s = 0.5 / math.sqrt(trace + 1.0)
+            w = 0.25 / s
+            x = (R[2,1] - R[1,2]) * s
+            y = (R[0,2] - R[2,0]) * s
+            z = (R[1,0] - R[0,1]) * s
+        else:
+            if R[0,0] > R[1,1] and R[0,0] > R[2,2]:
+                s = 2.0 * math.sqrt(1.0 + R[0,0] - R[1,1] - R[2,2])
+                w = (R[2,1] - R[1,2]) / s
+                x = 0.25 * s
+                y = (R[0,1] + R[1,0]) / s
+                z = (R[0,2] + R[2,0]) / s
+            elif R[1,1] > R[2,2]:
+                s = 2.0 * math.sqrt(1.0 + R[1,1] - R[0,0] - R[2,2])
+                w = (R[0,2] - R[2,0]) / s
+                x = (R[0,1] + R[1,0]) / s
+                y = 0.25 * s
+                z = (R[1,2] + R[2,1]) / s
+            else:
+                s = 2.0 * math.sqrt(1.0 + R[2,2] - R[0,0] - R[1,1])
+                w = (R[1,0] - R[0,1]) / s
+                x = (R[0,2] + R[2,0]) / s
+                y = (R[1,2] + R[2,1]) / s
+                z = 0.25 * s
+        
+        q_R = torch.tensor([w, x, y, z], device=quats.device, dtype=quats.dtype)
+        
+        # 2. Quaternion Multiplication (Hamilton Product)
+        # (w1, x1, y1, z1) * (w2, x2, y2, z2)
+        # Input quats is [N, 4]
+        
+        # q_R is [4]
+        w1, x1, y1, z1 = q_R[0], q_R[1], q_R[2], q_R[3]
+        w2, x2, y2, z2 = quats[:, 0], quats[:, 1], quats[:, 2], quats[:, 3]
+        
+        w = w1*w2 - x1*x2 - y1*y2 - z1*z2
+        x = w1*x2 + x1*w2 + y1*z2 - z1*y2
+        y = w1*y2 - x1*z2 + y1*w2 + z1*x2
+        z = w1*z2 + x1*y2 - y1*x2 + z1*w2
+        
+        return torch.stack([w, x, y, z], dim=1)
+
     def _get_unique_path(self, directory, filename, suffix, extension):
         counter = 1
         while True:
@@ -664,20 +1012,83 @@ class VNCCS_SavePLY:
             print(f"🔄 Applying rotation: X={rotate_x}°, Y={rotate_y}°, Z={rotate_z}°")
         
         if save_gaussians:
-            params = extract_splat_params(ply_data)
-            if params:
-                means, scales, quats, colors, opacities = params
-                if R is not None:
-                    means = (means.to(torch.float32) @ R.T).cpu()
-                
-                # Use unique path generation to avoid overwriting
-                gs_path = self._get_unique_path(output_dir, filename, "gaussians", "ply")
-                print(f"⏳ [SavePLY] Saving Gaussian PLY to: {gs_path}")
-                save_gs_ply(gs_path, means, scales, quats, colors, opacities)
-                saved_files.append(gs_path)
-                print(f"💾 [SavePLY] SUCCESS: Saved gaussians: {os.path.basename(gs_path)} ({len(means)} pts)")
-            else:
-                print("⚠️ [SavePLY] No splat data available after extraction")
+            # 1. Try Native Extraction (Primary)
+            splats = ply_data.get("splats")
+            native_success = False
+            
+            if splats is not None and isinstance(splats, dict):
+                try:
+                    # Native extraction matching infer.py
+                    def get_tensor(k, dim):
+                         v = splats.get(k)
+                         if v is None: return None
+                         if isinstance(v, list): v = v[0]
+                         # if v.dim() > 2: v = v[0]  <-- REMOVED: broken for SH [N, 1, 3]
+                         return v.reshape(-1, dim).detach().cpu().float()
+                         
+                    means = get_tensor("means", 3)
+                    scales = get_tensor("scales", 3)
+                    quats = get_tensor("quats", 4)
+                    
+                    print(f"🔍 [SavePLY] Inspecting Native Splats: Means={means.shape if means is not None else 'None'}")
+                    
+                    # Colors logic from infer.py
+                    if "sh" in splats:
+                        # Use SH if available (infer.py prefers SH)
+                        colors = get_tensor("sh", 3) 
+                    else:
+                        colors = get_tensor("colors", 3)
+                        
+                    # FIX: Handle broadcasting if colors are global (1, C) but means are (N, 3)
+                    if colors is not None and means is not None:
+                        if colors.shape[0] == 1 and means.shape[0] > 1:
+                            print(f"🎨 [SavePLY] Broadcasting global color {colors.shape} to {means.shape[0]} points")
+                            colors = colors.repeat(means.shape[0], 1)
+                         
+                    opacities = get_tensor("opacities", 1).reshape(-1)
+                    
+                    if means is not None and scales is not None and quats is not None:
+                         # Debug Stats
+                         print(f"📊 [SavePLY Native] Stats:")
+                         print(f"   - Means: {means.shape} [Min: {means.min():.3f}, Max: {means.max():.3f}]")
+                         print(f"   - Scales: {scales.shape} [Min: {scales.min():.3f}, Max: {scales.max():.3f}, Mean: {scales.mean():.3f}]")
+                         print(f"   - Opacity: {opacities.shape} [Min: {opacities.min():.3f}, Max: {opacities.max():.3f}]")
+
+                         # Apply rotation to means AND quaternions
+                         if R is not None:
+                             means = (means @ R.T)
+                             quats = self._rotate_quaternions(quats, R)
+                         
+                         gs_path = self._get_unique_path(output_dir, filename, "gaussians", "ply")
+                         save_gs_ply(gs_path, means, scales, quats, colors, opacities)
+                         saved_files.append(gs_path)
+                         print(f"💾 [SavePLY] SUCCESS: Saved gaussians (Native): {os.path.basename(gs_path)} ({len(means)} pts)")
+                         native_success = True
+                except Exception as e:
+                    print(f"⚠️ [SavePLY] Native extraction failed, falling back: {e}")
+            
+            # 2. Fallback to Helper (if splats missing or native failed)
+            if not native_success:
+                print("⚠️ [SavePLY] Using fallback extraction...")
+                params = extract_splat_params(ply_data)
+                if params:
+                    means, scales, quats, colors, opacities = params
+                    if R is not None:
+                        means = (means.to(torch.float32) @ R.T).cpu()
+                    
+                    # FIX: Convert RGB to SH for correct color rendering in splat viewers
+                    # Viewer: Color = 0.5 + 0.282 * SH
+                    # Inverse: SH = (Color - 0.5) / 0.282
+                    print("🎨 [SavePLY] Converting RGB to SH for Fallback Splats...")
+                    SH_C0 = 0.28209479177387814
+                    colors = (colors - 0.5) / SH_C0
+
+                    gs_path = self._get_unique_path(output_dir, filename, "gaussians", "ply")
+                    save_gs_ply(gs_path, means, scales, quats, colors, opacities)
+                    saved_files.append(gs_path)
+                    print(f"💾 [SavePLY] SUCCESS: Saved gaussians (Fallback): {os.path.basename(gs_path)} ({len(means)} pts)")
+                else:
+                    print("⚠️ [SavePLY] No splat data available after extraction")
 
         if save_pointcloud and ply_data.get("pts3d") is not None:
             pts3d = ply_data["pts3d"]
@@ -692,7 +1103,26 @@ class VNCCS_SavePLY:
             # Use unique path generation to avoid overwriting
             pc_path = self._get_unique_path(output_dir, filename, "pointcloud", "ply")
             print(f"⏳ [SavePLY] Saving PointCloud PLY to: {pc_path}")
-            save_scene_ply(pc_path, means, colors)
+            
+            # CRITICAL FIX for Pale Colors:
+            # save_gs_ply expects SH coefficients. Viewer does: Color = 0.5 + 0.282 * SH
+            # We have RGB [0..1]. So we need to Inverse Transform: SH = (RGB - 0.5) / 0.282
+            # Otherwise 0->0.5 (Gray), 1->0.78 (Light Gray).
+            SH_C0 = 0.28209479177387814
+            colors_sh = (colors - 0.5) / SH_C0
+            
+            # We use save_gs_ply even for fallback points to get splat visualization
+            # Creating dummy scales/quats/opacity for the point cloud
+            from src.utils.save_utils import save_gs_ply
+            
+            N = len(means)
+            dummy_scales = torch.ones(N, 3) * -4.6 # exp(-4.6) ~ 0.01
+            dummy_quats = torch.zeros(N, 4); dummy_quats[:, 0] = 1.0
+            dummy_opacities = torch.ones(N) * 100.0 # Opaque
+            
+            save_gs_ply(pc_path, means, dummy_scales, dummy_quats, colors_sh, dummy_opacities)
+            # save_scene_ply(pc_path, means, colors) # OLD method (simple points)
+            
             saved_files.append(pc_path)
             print(f"💾 [SavePLY] SUCCESS: Saved pointcloud: {os.path.basename(pc_path)} ({len(means)} pts)")
         

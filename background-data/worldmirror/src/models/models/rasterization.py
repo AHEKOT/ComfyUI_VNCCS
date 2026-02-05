@@ -175,7 +175,23 @@ class GaussianSplatRenderer(nn.Module):
 
         # 1) Predict GS features from tokens, then convert to Gaussian parameters
         gs_feats_reshape = rearrange(gs_feats, "b s c h w -> (b s) c h w")
-        gs_params = self.gs_head(gs_feats_reshape)
+        
+        # OOM FIX: Process gs_head in chunks to avoid moving all feats to GPU at once
+        # gs_feats (256ch) is much larger than gs_params (~60ch).
+        device = self.gs_head[0].weight.device
+        chunk_size = 2  # Conservative chunk size (2 views at a time)
+        total_views = gs_feats_reshape.shape[0]
+        gs_params_list = []
+        
+        for i in range(0, total_views, chunk_size):
+            end_i = min(i + chunk_size, total_views)
+            feat_chunk = gs_feats_reshape[i:end_i].to(device)
+            with torch.no_grad():
+                param_chunk = self.gs_head(feat_chunk)
+            gs_params_list.append(param_chunk)
+            
+        gs_params = torch.cat(gs_params_list, dim=0)
+
         gt_colors = images.permute(0, 1, 3, 4, 2)
         
         # 2) Select rendering cameras
@@ -300,14 +316,14 @@ class GaussianSplatRenderer(nn.Module):
             if key in mask_keys and key in splats:
                 x = splats[key]
                 if x.ndim == 2:  # [B, N]
-                    filtered[key] = torch.gather(x, 1, topk_idx)
+                    filtered[key] = torch.gather(x, 1, topk_idx.to(x.device))
                 else:
                     # Expand indices to match tensor dimensions
                     expand_idx = topk_idx.clone()
                     for i in range(x.ndim - 2):
                         expand_idx = expand_idx.unsqueeze(-1)
                     expand_idx = expand_idx.expand(-1, -1, *x.shape[2:])
-                    filtered[key] = torch.gather(x, 1, expand_idx)
+                    filtered[key] = torch.gather(x, 1, expand_idx.to(x.device))
             else:
                 filtered[key] = splats[key]
 
@@ -330,7 +346,9 @@ class GaussianSplatRenderer(nn.Module):
 
         for i in range(B):
             # Extract splats for current batch
-            splats_i = {k: splats[k][i] for k in ["means", "quats", "scales", "opacities", "sh", "weights"]}
+            # Fix Mixed Device Issue: usage of weights.device as anchor
+            target_device = splats["weights"].device 
+            splats_i = {k: splats[k][i].to(target_device) for k in ["means", "quats", "scales", "opacities", "sh", "weights"]}
             
             # Compute voxel indices
             coords = splats_i["means"]
@@ -349,17 +367,18 @@ class GaussianSplatRenderer(nn.Module):
             K = len(unique_voxels)
 
             # Initialize merged splats
+            # Initialize merged splats
             merged = {
-                "means": torch.zeros((K, 3), device=device),
-                "quats": torch.zeros((K, 4), device=device),
-                "scales": torch.zeros((K, 3), device=device),
-                "opacities": torch.zeros(K, device=device),
-                "sh": torch.zeros((K, self.nums_sh, 3), device=device)
+                "means": torch.zeros((K, 3), device=target_device),
+                "quats": torch.zeros((K, 4), device=target_device),
+                "scales": torch.zeros((K, 3), device=target_device),
+                "opacities": torch.zeros(K, device=target_device),
+                "sh": torch.zeros((K, self.nums_sh, 3), device=target_device)
             }
             
             # Get weights and compute weight sums per voxel
             weights = splats_i["weights"]
-            weight_sums = torch.zeros(K, device=device)
+            weight_sums = torch.zeros(K, device=target_device)
             weight_sums.scatter_add_(0, inverse_indices, weights)
             weight_sums = torch.clamp(weight_sums, min=1e-8)
 

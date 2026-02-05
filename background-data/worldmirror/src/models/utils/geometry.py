@@ -18,8 +18,8 @@ def depth_to_camera_coords(depthmap, camera_intrinsics):
     device = depthmap.device
     dtype = depthmap.dtype
     
-    # Ensure intrinsics are float
-    camera_intrinsics = camera_intrinsics.float()
+    # Ensure intrinsics are float and ON THE SAME DEVICE
+    camera_intrinsics = camera_intrinsics.to(device=device, dtype=torch.float32)
     
     # Extract focal lengths and principal points
     fx = camera_intrinsics[:, 0, 0]  # (B,)
@@ -72,6 +72,11 @@ def depth_to_world_coords_points(
     """
     if depth_map is None:
         return None, None, None
+
+    # Ensure all inputs are on the same device
+    device = depth_map.device
+    extrinsic = extrinsic.to(device=device, dtype=torch.float32)
+    intrinsic = intrinsic.to(device=device, dtype=torch.float32)
 
     # Valid depth mask (B, H, W)
     point_mask = depth_map > eps

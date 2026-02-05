@@ -19,6 +19,23 @@ import diffusers
 from huggingface_hub import hf_hub_download, snapshot_download
 from comfy.utils import ProgressBar
 
+class VideoOutput:
+    def __init__(self, tensor):
+        self.tensor = tensor
+    
+    def get_dimensions(self):
+        # [T, H, W, C]
+        if self.tensor.dim() == 4:
+            return self.tensor.shape[2], self.tensor.shape[1] # width, height
+        return 0, 0
+    
+    # Proxy all other attribute access to the tensor
+    def __getattr__(self, name):
+        return getattr(self.tensor, name)
+        
+    def __getitem__(self, key):
+         return self.tensor[key]
+
 class VNCCS_LoadWorldPlay5B:
     @classmethod
     def INPUT_TYPES(s):
@@ -341,6 +358,7 @@ class VNCCS_WorldPlay5B:
                 "guidance_scale": ("FLOAT", {"default": 5.0, "min": 1.0, "max": 20.0}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "turbo": ("BOOLEAN", {"default": True}),
+                "context_window": ("INT", {"default": 12, "min": 1, "max": 48, "step": 1}),
             },
             "optional": {
                 "prompt": ("STRING", {"multiline": True, "default": "A cinematic shot of..."}),
@@ -350,12 +368,12 @@ class VNCCS_WorldPlay5B:
             }
         }
 
-    RETURN_TYPES = ("VIDEO", "IMAGE")
-    RETURN_NAMES = ("video", "images")
+    RETURN_TYPES = ("IMAGE", "IMAGE")
+    RETURN_NAMES = ("all_frames", "first_frame")
     FUNCTION = "generate"
     CATEGORY = "VNCCS/WorldPlay"
 
-    def generate(self, model, image, trajectory, width, height, num_frames, steps, guidance_scale, seed, turbo, prompt="", negative_prompt="", offload_scheme="sequential"):
+    def generate(self, model, image, trajectory, width, height, num_frames, steps, guidance_scale, seed, turbo, context_window=12, prompt="", negative_prompt="", offload_scheme="sequential"):
         # Single source of truth for trajectory
         final_trajectory = trajectory
         
@@ -369,15 +387,24 @@ class VNCCS_WorldPlay5B:
                 actual_num_frames = num_latents * 4 - 3
                 
                 if actual_num_frames != num_frames:
-                    print(f"[VNCCS] Overriding num_frames: User={num_frames} -> Trajectory={actual_num_frames}")
-                    logging.warning(f"Overriding num_frames from {num_frames} to {actual_num_frames} to match trajectory length.")
-                    num_frames = actual_num_frames
+                     if num_frames < actual_num_frames:
+                          print(f"[VNCCS] Preview Mode: Slicing trajectory to {num_frames} frames (Full: {actual_num_frames})")
+                     else:
+                          # EXTEND MODE: User wants more frames than trajectory has.
+                          # We will hold the last pose.
+                          print(f"[VNCCS] Extension Mode: Extending trajectory from {actual_num_frames} to {num_frames} frames (Holding last pose)")
+                          # Do NOT override num_frames. Keep user selection.
             except Exception as e:
                 logging.error(f"Failed to parse trajectory for frame count: {e}")
                 # Fallthrough to manual num_frames, might crash in pose_to_input
         
         pipe = model
+        # Aggressive device sanitization for trajectory and internal state
+        import comfy.model_management as mm
         device = pipe.device
+        if device is None or str(device) == "meta" or (hasattr(device, "type") and device.type == "meta"):
+            device = mm.get_torch_device()
+            
         dtype = pipe.transformer.dtype
         
         # Default chunk settings
@@ -405,7 +432,7 @@ class VNCCS_WorldPlay5B:
             logging.warning(f"Failed to enable Offloading ({offload_scheme}): {e}")
             pass 
         FIRST_CHUNK_SIZE = 1 # Reference default
-        CONTEXT_WINDOW = 16 # User requested & Reference default
+        CONTEXT_WINDOW = context_window 
         
         # Calculate latent dimensions
         vae_scale_temporal = 4 # Wan2.1 default
@@ -416,7 +443,27 @@ class VNCCS_WorldPlay5B:
         needed_chunks = math.ceil(max(0, num_latent_frames - FIRST_CHUNK_SIZE) / CHUNK_SIZE) + 1
         
         # Trajectory Parsing
-        w2c, K, action = pose_to_input(final_trajectory, num_latent_frames)
+        # Trajectory Parsing
+        # If slicing, we parse full trajectory then slice tensors
+        traj_latents = num_latents if 'num_latents' in locals() else num_latent_frames
+        w2c, K, action = pose_to_input(final_trajectory, traj_latents)
+        
+        # Slice to requested length
+        # Slice to requested length
+        if w2c.shape[0] > num_latent_frames:
+             w2c = w2c[:num_latent_frames]
+             K = K[:num_latent_frames]
+             action = action[:num_latent_frames]
+        # Extend to requested length
+        elif w2c.shape[0] < num_latent_frames:
+             last_w2c = w2c[-1:]
+             last_K = K[-1:]
+             last_action = action[-1:]
+             
+             missing = num_latent_frames - w2c.shape[0]
+             w2c = torch.cat([w2c, last_w2c.repeat(missing, 1, 1)], dim=0)
+             K = torch.cat([K, last_K.repeat(missing, 1, 1)], dim=0)
+             action = torch.cat([action, last_action.repeat(missing)], dim=0)
         w2c = w2c.to(device=device, dtype=dtype).unsqueeze(0) # (1, T, 4, 4)
         K = K.to(device=device, dtype=dtype).unsqueeze(0) # (1, T, 3, 3)
         action = action.to(device=device, dtype=dtype).unsqueeze(0)
@@ -487,8 +534,12 @@ class VNCCS_WorldPlay5B:
                 # It assigns the PASSED 'viewmats' to the context slice.
                 # So we MUST pass only the CURRENT chunk's viewmats.
                 
-                start_idx = chunk_i * CHUNK_SIZE
-                end_idx = start_idx + CHUNK_SIZE
+                if chunk_i == 0:
+                    start_idx = 0
+                    end_idx = FIRST_CHUNK_SIZE
+                else:
+                    start_idx = FIRST_CHUNK_SIZE + (chunk_i - 1) * CHUNK_SIZE
+                    end_idx = start_idx + CHUNK_SIZE
                 
                 # Handle boundaries
                 # Note: Reference generate.py just slices [start:end]. 
@@ -516,7 +567,7 @@ class VNCCS_WorldPlay5B:
                     action=curr_action,
                     chunk_i=chunk_i,
                     few_step=turbo,
-                    first_chunk_size=CHUNK_SIZE, 
+                    first_chunk_size=FIRST_CHUNK_SIZE, 
                     context_window_length=CONTEXT_WINDOW,
                     output_type="latent", # Return latents so we can decode or accumulate
                     return_dict=False
@@ -531,7 +582,12 @@ class VNCCS_WorldPlay5B:
                 for _ in range(4): # Try to decode up to 4 frames for this chunk
                     video_frame = pipe.decode_next_latent(output_type="np")
                     if video_frame is not None:
-                        all_video_frames.append(torch.from_numpy(video_frame))
+                        # video_frame is [B, T, H, W, C], B=1
+                        # We want [T, H, W, C]
+                        tensor_frame = torch.from_numpy(video_frame)
+                        if tensor_frame.ndim == 5:
+                            tensor_frame = tensor_frame.squeeze(0) 
+                        all_video_frames.append(tensor_frame)
                     else:
                         break # No more frames to decode for now
         
@@ -551,10 +607,8 @@ class VNCCS_WorldPlay5B:
         # Cat to [T, H, W, C]
         video_tensor = torch.cat(all_video_frames, dim=0) 
         
-        # Ensure it's [T, H, W, C]
-        # video_frame from decode_next_latent (np) is [1, H, W, C] usually?
-        # Actually pipeline postprocess: [B, H, W, C]. B=1. 
-        # So yes, cat dim 0 gives [T, H, W, C].
+        # In ComfyUI, a tensor [T, H, W, C] is treated as a batch of T images.
+        # This will show up as a sequence of frames in a Preview Image node.
         
         return (video_tensor, video_tensor[0].unsqueeze(0))
 

@@ -164,11 +164,35 @@ def _apply_tiled_projmat(
     D = matrix.shape[-1]
     assert matrix.shape == (batch, cameras, D, D)
     assert feat_dim % D == 0
-    return torch.einsum(
-        "bcij,bncpkj->bncpki",
-        matrix,
-        feats.reshape((batch, num_heads, cameras, -1, feat_dim // D, D)),
-    ).reshape(feats.shape)
+    # Chunking by heads to avoid OOM
+    # einsum can be memory intensive for large sequences.
+    # We split feats along dim 1 (num_heads) and process sequentially.
+    
+    reshaped_feats = feats.reshape((batch, num_heads, cameras, -1, feat_dim // D, D))
+    
+    # Create output tensor directly to avoid list accumulation and cat overhead
+    # reshaped_out shape will be same as reshaped_feats: (batch, num_heads, cameras, -1, feat_dim // D, D)
+    
+    out = torch.empty_like(reshaped_feats)
+    
+    # Process 1 head at a time (aggressive memory saving)
+    # You could tune CHUNK_SIZE if performance is too slow
+    HEAD_CHUNK_SIZE = 1 
+    
+    for i in range(0, num_heads, HEAD_CHUNK_SIZE):
+        f_chunk = reshaped_feats[:, i : i + HEAD_CHUNK_SIZE]
+        
+        # In-place write to slice
+        out[:, i : i + HEAD_CHUNK_SIZE] = torch.einsum(
+            "bcij,bncpkj->bncpki",
+            matrix,
+            f_chunk,
+        )
+        
+        # Optional: Del f_chunk to free graph refs immediately if possible?
+        del f_chunk
+
+    return out.reshape(feats.shape)
 
 
 def _apply_block_diagonal(
