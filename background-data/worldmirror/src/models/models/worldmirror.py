@@ -146,8 +146,8 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
                 )
                 self.gs_renderer = None
 
-
-    def forward(self, views: Dict[str, torch.Tensor], cond_flags: List[int]=[0, 0, 0], is_inference=True, stabilization="none", confidence_percentile=10.0):
+    
+    def forward(self, views: Dict[str, torch.Tensor], cond_flags: List[int]=[0, 0, 0], is_inference=True, stabilization="none", confidence_percentile=10.0, filter_mask: torch.Tensor=None, use_direct_points: bool=False, use_consensus: bool=False):
         """
         Execute forward pass through the WorldMirror model.
 
@@ -156,6 +156,7 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
             cond_flags: Conditioning flags [depth, rays, camera]
             stabilization: Stabilization mode ("none", "panorama_lock")
             confidence_percentile: Percentage of low-confidence points to discard (0-100)
+            use_direct_points: If True, uses predicted 3D points directly instead of projecting depth (PTS3D mode)
 
         Returns:
             dict: Prediction results dictionary
@@ -178,13 +179,13 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
         with torch.amp.autocast('cuda', dtype=torch.float32):
             # Generate all predictions
             preds = self._gen_all_preds(
-                token_list, imgs, patch_start_idx, views, cond_flags, is_inference, stabilization, confidence_percentile
+                token_list, imgs, patch_start_idx, views, cond_flags, is_inference, stabilization, confidence_percentile, filter_mask, use_direct_points, use_consensus
             )
 
         return preds
 
     def _gen_all_preds(self, token_list, imgs, patch_start_idx, 
-                       views, cond_flags, is_inference, stabilization="none", confidence_percentile=10.0):
+                       views, cond_flags, is_inference, stabilization="none", confidence_percentile=10.0, filter_mask=None, use_direct_points=False, use_consensus=False):
         """Generate all enabled predictions"""
         preds = {}
 
@@ -244,6 +245,9 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
             preds["gs_depth"] = gs_depth
             preds["gs_depth_conf"] = gs_depth_conf
             
+            # Determine position mode
+            pos_mode = "pts3d" if use_direct_points else "gsdepth+predcamera"
+            
             # Only render if gs_renderer is available (requires gsplat)
             if self.gs_renderer is not None:
                 preds = self.gs_renderer.render(
@@ -252,7 +256,10 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
                     predictions=preds,
                     views=views,
                     context_predictions=context_preds,
-                    is_inference=is_inference
+                    is_inference=is_inference,
+                    filter_mask=filter_mask,
+                    position_mode=pos_mode,
+                    use_consensus=use_consensus
                 )
             else:
                 # gsplat not available - store gs_feats for potential external use

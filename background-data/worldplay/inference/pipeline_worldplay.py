@@ -452,6 +452,23 @@ class WanPipeline(DiffusionPipeline, WanLoraLoaderMixin):
 
         # Normalize latents
         current_latent = current_latent.to(self.vae.dtype)
+
+        # Apply scaling/shifting logic matching __call__ (Fix for WorldPlay VAE)
+        # Robust access for FrozenDict which might not support attribute access for keys
+        def get_cfg(key, default=None):
+            val = getattr(self.vae.config, key, None)
+            if val is None and hasattr(self.vae.config, "get"):
+                val = self.vae.config.get(key, None)
+            return val if val is not None else default
+
+        if get_cfg("shift_factor") is not None:
+            kln_pre_scale = get_cfg("kln_pre_scale", 1.0)
+            kln_pre_shift = get_cfg("kln_pre_shift", 0.0)
+            current_latent = current_latent / kln_pre_scale + kln_pre_shift
+        else:
+            scaling_factor = get_cfg("scaling_factor", 1.0)
+            current_latent = current_latent / scaling_factor
+
         latents_mean = latents_mean.to(current_latent.dtype)
         latents_std = latents_std.to(current_latent.dtype)
         current_latent = current_latent / latents_std + latents_mean

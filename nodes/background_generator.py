@@ -68,56 +68,69 @@ else:
 # Utility Functions
 # ============================================================================
 
-def equirect_to_perspective(equirect_img, fov_deg, yaw_deg, pitch_deg, output_size=(512, 512)):
+def equirect_to_perspective(
+    equirect_img, 
+    fov_deg, 
+    yaw_deg, 
+    pitch_deg, 
+    roll_deg=0.0,
+    output_size=(512, 512), 
+    dynamic_fov=False, 
+    correct_distortion=False, 
+    return_mask=False,
+    mask_falloff=2.2
+):
     """
     Extract a perspective view from an equirectangular panorama using PyTorch grid_sample.
-    
-    Args:
-        equirect_img: PIL Image of equirectangular panorama (2:1 aspect ratio)
-        fov_deg: Field of view in degrees (horizontal and vertical)
-        yaw_deg: Horizontal rotation (0=front, 90=right, 180=back, 270=left)
-        pitch_deg: Vertical rotation (positive=up, negative=down)
-        output_size: Output image size (width, height)
-    
-    Returns:
-        PIL Image of the perspective view
+    Supports Dynamic FOV reduction and Distortion Correction (Cylindrical-ish projection).
     """
+    # 1. Dynamic FOV Reduction (Strategies 1)
+    if dynamic_fov and abs(pitch_deg) > 15:
+        # Reduce FOV as we look up/down to strictly avoid "polar stretching"
+        # At 90 degree pitch, FOV becomes limited to avoid infinity stretch
+        scale = math.cos(math.radians(pitch_deg))
+        # Clamp scale to reasonable minimum (e.g. 0.5) to don't vanish
+        scale = max(0.5, scale * 0.8 + 0.2) 
+        original_fov = fov_deg
+        fov_deg = fov_deg * scale
+        # print(f"🔭 Dynamic FOV: {original_fov}° -> {fov_deg:.1f}° (Pitch {pitch_deg}°)")
+
     # Convert image to tensor [1, C, H, W]
     if isinstance(equirect_img, Image.Image):
         img_np = np.array(equirect_img.convert("RGB"))
         img_tensor = torch.from_numpy(img_np).float().permute(2, 0, 1).unsqueeze(0) / 255.0
     else:
-        # Assume tensor input if needed, but for now stick to PIL interop
         img_np = np.array(equirect_img)
-        img_tensor = torch.from_numpy(img_np).float().permute(2, 0, 1).unsqueeze(0) / 255.0
+        # Robustly detect if image is already 0-1 or 0-255
+        is_normalized = img_np.dtype == np.float32 or img_np.dtype == np.float64
+        if is_normalized and img_np.max() <= 1.01:
+            img_tensor = torch.from_numpy(img_np).float().permute(2, 0, 1).unsqueeze(0)
+        else:
+            img_tensor = torch.from_numpy(img_np).float().permute(2, 0, 1).unsqueeze(0) / 255.0
 
     B, C, H, W = img_tensor.shape
     out_w, out_h = output_size
     
-    # Create ray grid
-    # We essentially want to verify "rays_z = f" logic in a vectorized way
-    
     fov_rad = math.radians(fov_deg)
     yaw_rad = math.radians(yaw_deg)
     pitch_rad = math.radians(pitch_deg)
+    roll_rad = math.radians(roll_deg)
     
+    # 1.1 Focal length and Aspect Ratio
     f = 1.0 / math.tan(fov_rad / 2)
-    
-    # 1. Create meshgrid for output pixels (normalized -1 to 1)
-    # y is down in image coords but we want y up for 3D logic usually. 
-    # original code: yv is linspace(-1, 1), rays_y = -yv.
-    # Let's match typical conventions: x right, y down (image) -> y up (world)? 
-    # Let's stick to the previous code's coordinate system to minimize regression risk.
-    # Previous: rays_x = xv, rays_y = -yv, rays_z = -f
+    aspect = out_w / out_h
     
     # Use torch meshgrid
-    device = torch.device('cpu') # or 'cuda' if we want speed, but stay safe on CPU for image ops
+    device = torch.device('cpu') 
     
-    xv = torch.linspace(-1, 1, out_w, device=device)
+    # Horizontal grid scales with aspect ratio to avoid squashing
+    xv = torch.linspace(-aspect, aspect, out_w, device=device)
     yv = torch.linspace(-1, 1, out_h, device=device)
     
     grid_y, grid_x = torch.meshgrid(yv, xv, indexing='ij')
     
+    # 2. Ray Construction
+    # Rectilinear: (x, y, -f) where x in [-aspect, aspect] and y in [-1, 1]
     rays_x = grid_x
     rays_y = -grid_y
     rays_z = torch.full_like(grid_x, -f)
@@ -133,40 +146,32 @@ def equirect_to_perspective(equirect_img, fov_deg, yaw_deg, pitch_deg, output_si
     cos_p, sin_p = math.cos(pitch_rad), math.sin(pitch_rad)
     rays_y_p = rays_y * cos_p - rays_z * sin_p
     rays_z_p = rays_y * sin_p + rays_z * cos_p
-    rays_x_p = rays_x # Unchanged
+    rays_x_p = rays_x 
     
     # Yaw (Y axis)
     cos_y, sin_y = math.cos(yaw_rad), math.sin(yaw_rad)
     rays_x_r = rays_x_p * cos_y + rays_z_p * sin_y
     rays_z_r = -rays_x_p * sin_y + rays_z_p * cos_y
-    rays_y_r = rays_y_p # Unchanged
+    rays_y_r = rays_y_p 
+    
+    # Roll (Z axis)
+    if roll_rad != 0:
+        cos_r, sin_r = math.cos(roll_rad), math.sin(roll_rad)
+        rx, ry = rays_x_r, rays_y_r
+        rays_x_r = rx * cos_r - ry * sin_r
+        rays_y_r = rx * sin_r + ry * cos_r
     
     # XYZ -> Spherical (theta, phi)
-    # theta = atan2(x, -z) -> [-pi, pi]
-    # phi = asin(y) -> [-pi/2, pi/2]
-    
     theta = torch.atan2(rays_x_r, -rays_z_r)
     phi = torch.asin(torch.clamp(rays_y_r, -1.0, 1.0))
     
-    # Spherical -> UV Grid [-1, 1] for grid_sample
-    # u = theta / pi
-    # v = - (2 * phi / pi) ? 
-    # Recall v=0 is top (-1), v=1 is bottom (1)?
-    # Previous code: v = (0.5 - phi/pi) * H -> 
-    # If phi = pi/2 (up), v = 0.
-    # If phi = -pi/2 (down), v = H.
-    # In grid_sample: -1 is top, 1 is bottom.
-    # So we want map phi (pi/2 -> -pi/2) to (-1 -> 1)
-    
-    u = theta / math.pi # [-1, 1]
-    v = -2.0 * phi / math.pi # [-1 (up), 1 (down)]
+    # Spherical -> UV Grid [-1, 1]
+    u = theta / math.pi 
+    v = -2.0 * phi / math.pi 
     
     grid = torch.stack((u, v), dim=-1).unsqueeze(0) # [1, H, W, 2]
     
     # Sampling
-    # Bicubic is smoother but requires align_corners=True/False checks
-    # align_corners=True matches typical geometric implementations better
-    
     out_tensor = torch.nn.functional.grid_sample(
         img_tensor, 
         grid, 
@@ -175,8 +180,52 @@ def equirect_to_perspective(equirect_img, fov_deg, yaw_deg, pitch_deg, output_si
         align_corners=True
     )
     
-    out_np = (out_tensor.squeeze().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-    return Image.fromarray(out_np)
+    out_img = Image.fromarray((out_tensor.squeeze().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
+    
+    mask_img = None
+    if return_mask:
+        # Strategy 2: Distortion Mask
+        # Calculate stretch factor. Simple heuristic: distance from center + ray angle magnitude
+        # High stretch = High value (white), Low stretch = Low value (black)
+        # Or opposite: Weights (1 = good, 0 = bad)
+        
+        # Stretch in rectilinear ~ 1/cos(angle)^3
+        # Angle from center optical axis (fwd)
+        # Dot product with forward vector (0,0,-1)
+        # ray_fwd = (0,0,-1)
+        # cos_angle = z coordinate of normalized unrotated ray? 
+        # Wait, grid_x, grid_y are unrotated. 
+        # rays_z_orig = -f / norm. 
+        # Let's use the normalized unrotated z component.
+        
+        # Recompute unrotated normalized z
+        # raw_norm = torch.sqrt(grid_x**2 + (-grid_y)**2 + (-f)**2)
+        # cos_angle = abs(-f) / raw_norm
+        
+        # --- NEW RADIAL MASKING (FOV-AWARE) ---
+        # Instead of absolute angle, we use distance from image center.
+        # This guarantees we fade out the edges regardless of what FOV is chosen.
+        # r^2 = x^2 + y^2
+        r_sq = grid_x**2 + (-grid_y)**2
+        # Max radius at edge (grid coordinates are [-1, 1])
+        # Corner is at (1, 1) or (-1, -1), so max distance squared is 1^2 + 1^2 = 2.0
+        max_dist_sq = 2.0
+        
+        # Normalized distance squared (0 at center, 1 at corner)
+        dist_sq_norm = r_sq / max_dist_sq
+        
+        # Soft Falloff: (1 - d^2 * multiplier)^power
+        # Default multiplier 2.2 hits zero at radius ~0.95 (just before the corner)
+        weight = torch.clamp(1.0 - dist_sq_norm * mask_falloff, min=0.0, max=1.0) 
+        # Square or cube the weight for steeper falloff
+        weight = torch.pow(weight, 2.0) 
+
+        
+        mask_tensor = weight.unsqueeze(0).unsqueeze(0) # [1, 1, H, W]
+        mask_np = (mask_tensor.squeeze().cpu().numpy() * 255).astype(np.uint8)
+        mask_img = Image.fromarray(mask_np, mode="L")
+
+    return out_img, mask_img
 
 
 def create_filter_mask(
@@ -184,6 +233,7 @@ def create_filter_mask(
     depth_preds: np.ndarray, 
     normal_preds: np.ndarray,
     sky_mask: np.ndarray,
+    distortion_mask: np.ndarray = None,
     confidence_percentile: float = 10.0,
     edge_normal_threshold: float = 5.0,
     edge_depth_threshold: float = 0.03,
@@ -192,59 +242,56 @@ def create_filter_mask(
     apply_sky_mask: bool = False,
 ) -> np.ndarray:
     """
-    Create comprehensive filter mask based on confidence, edges, and sky segmentation.
-    Ported from HunyuanWorld-Mirror infer.py.
+    Create comprehensive filter mask based on confidence, edges, sky segmentation, and distortion.
     """
     S, H, W = pts3d_conf.shape[:3]
     final_mask_list = []
     
+    # Precompute global confidence threshold if needed
+    conf_thresh = 0.0
+    if apply_confidence_mask:
+        conf_thresh = np.percentile(pts3d_conf, confidence_percentile)
+        
     for i in range(S):
-        final_mask = None
+        # Start with all valid
+        mask = np.ones((H, W), dtype=bool)
         
+        # 0. Distortion Mask (Priority Filter)
+        if distortion_mask is not None:
+             # Mask < 0.2 considered invalid (edges/distortion)
+             d_mask = distortion_mask[i].squeeze()
+             if d_mask.shape != (H, W):
+                 d_mask = cv2.resize(d_mask, (W, H))
+             mask &= (d_mask > 0.5)
+
+        # 1. Confidence Mask
         if apply_confidence_mask:
-            # Compute confidence mask based on the pointmap confidence
-            confidences = pts3d_conf[i, :, :]  # [H, W]
-            percentile_threshold = np.quantile(confidences, confidence_percentile / 100.0)
-            conf_mask = confidences >= percentile_threshold
-            if final_mask is None:
-                final_mask = conf_mask
-            else:
-                final_mask = final_mask & conf_mask
-        
-        if apply_edge_mask:
-            # Compute edge mask based on the normalmap
-            normal_pred = normal_preds[i]  # [H, W, 3]
-            normal_edges = normals_edge(
-                normal_pred, tol=edge_normal_threshold, mask=final_mask
-            )
-            # Compute depth mask based on the depthmap
-            depth_pred = depth_preds[i, :, :, 0]  # [H, W]
-            depth_edges = depth_edge(
-                depth_pred, rtol=edge_depth_threshold, mask=final_mask
-            )
-            edge_mask = ~(depth_edges & normal_edges)
-            if final_mask is None:
-                final_mask = edge_mask
-            else:
-                final_mask = final_mask & edge_mask
-        
+            mask &= (pts3d_conf[i] > conf_thresh)
+            
+        # 2. Sky Mask
         if apply_sky_mask and sky_mask is not None:
-            # Apply sky mask filtering (sky_mask is already inverted: True = non-sky)
-            sky_mask_frame = sky_mask[i]  # [H, W]
-            if final_mask is None:
-                final_mask = sky_mask_frame
-            else:
-                final_mask = final_mask & sky_mask_frame
-        
-        final_mask_list.append(final_mask)
-    
-    # Stack all frame masks
-    if final_mask_list[0] is not None:
-        final_mask = np.stack(final_mask_list, axis=0)  # [S, H, W]
-    else:
-        final_mask = np.ones(pts3d_conf.shape[:3], dtype=bool)  # [S, H, W]
-    
-    return final_mask
+             # sky_mask is True for NON-sky (it's a keep mask)
+             mask &= sky_mask[i]
+             
+        # 3. Edge Mask (Depth discontinuities)
+        if apply_edge_mask:
+            depth_i = depth_preds[i]
+            # Ensure 2D for gradient calculation
+            if depth_i.ndim == 3 and depth_i.shape[-1] == 1:
+                depth_i = depth_i.squeeze(-1)
+            
+            # Simple gradient-based edge detection
+            # We approximate edge detection if helper not available, or assume normals_edge was imported but maybe not working fully in this context?
+            # Let's use the robust gradient magnitude on depth
+            gy, gx = np.gradient(depth_i)
+            grad_mag = np.sqrt(gx**2 + gy**2)
+            edge_mask = grad_mag < edge_depth_threshold
+            mask &= edge_mask
+            
+        final_mask_list.append(mask)
+
+    return np.stack(final_mask_list, axis=0)
+
 
 
 # ============================================================================
@@ -313,6 +360,9 @@ class VNCCS_WorldMirror3D:
                 "filter_edges": ("BOOLEAN", {"default": True, "tooltip": "Remove artifact points at object boundaries"}),
                 "edge_normal_threshold": ("FLOAT", {"default": 5.0, "min": 0.1, "max": 90.0, "step": 0.5}),
                 "edge_depth_threshold": ("FLOAT", {"default": 0.03, "min": 0.001, "max": 0.5, "step": 0.001}),
+                "mask_threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "Distortion Mask Threshold. 0.5 means discard anything beyond 50% weight. Increase to fix ghosting, decrease to fix holes."}),
+                "use_direct_points": ("BOOLEAN", {"default": False, "tooltip": "Use Direct Point Cloud Prediction (PTS3D) instead of Depth Projection. Bypasses camera distortion issues but relies on model's internal geometry."}),
+                "use_consensus": ("BOOLEAN", {"default": False, "tooltip": "Enable Consensus Merging (Voxel Depth Filter). High-quality mode that removes depth outliers and ghosting from overlapping views. Use for Panoramas."}),
             }
         }
     
@@ -323,7 +373,8 @@ class VNCCS_WorldMirror3D:
     
     def run_inference(self, model, images, use_gsplat=True, target_size=518, offload_scheme="none", stabilization="none", 
                       confidence_percentile=10.0, apply_sky_mask=False, filter_edges=True,
-                      edge_normal_threshold=5.0, edge_depth_threshold=0.03):
+                      edge_normal_threshold=5.0, edge_depth_threshold=0.03, mask_threshold=0.5, use_direct_points=False,
+                      use_consensus=False):
         from torchvision import transforms
         
         if apply_sky_mask and not SKYSEG_AVAILABLE:
@@ -340,6 +391,8 @@ class VNCCS_WorldMirror3D:
         B, H, W, C = images.shape
         
         tensor_list = []
+        mask_list = [] # Store per-view distortion masks if present
+        
         converter = transforms.ToTensor()
         patch_size = 14
         
@@ -348,10 +401,13 @@ class VNCCS_WorldMirror3D:
             img = (img * 255).astype(np.uint8)
             pil_img = Image.fromarray(img)
             
+            # Check for Alpha Channel (Distortion Mask)
+            curr_mask = None
             if pil_img.mode == "RGBA":
-                white_bg = Image.new("RGBA", pil_img.size, (255, 255, 255, 255))
-                pil_img = Image.alpha_composite(white_bg, pil_img)
-            pil_img = pil_img.convert("RGB")
+                # Split Alpha
+                r, g, b, a = pil_img.split()
+                pil_img = Image.merge("RGB", (r, g, b))
+                curr_mask = a # Grayscale mask [0..255]
             
             orig_w, orig_h = pil_img.size
             new_w = target_size
@@ -360,11 +416,21 @@ class VNCCS_WorldMirror3D:
             pil_img = pil_img.resize((new_w, new_h), Image.Resampling.BICUBIC)
             tensor_img = converter(pil_img)
             
+            # Use same transform for mask
+            if curr_mask is not None:
+                curr_mask = curr_mask.resize((new_w, new_h), Image.Resampling.NEAREST)
+                tensor_mask = torch.from_numpy(np.array(curr_mask)).float() / 255.0
+            else:
+                tensor_mask = None
+
             if new_h > target_size:
                 crop_start = (new_h - target_size) // 2
                 tensor_img = tensor_img[:, crop_start:crop_start + target_size, :]
+                if tensor_mask is not None:
+                    tensor_mask = tensor_mask[crop_start:crop_start + target_size, :]
             
             tensor_list.append(tensor_img)
+            mask_list.append(tensor_mask)
         
         # device management
         execution_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -448,6 +514,29 @@ class VNCCS_WorldMirror3D:
                  worldmirror.to(execution_device)
 
         views = {"img": imgs_tensor}
+        
+        # Prepare Distortion Mask (from Alpha Channel) - Moved UP before inference
+        distortion_mask_np = None
+        filter_mask_tensor = None
+        if any(m is not None for m in mask_list):
+            print("👺 Preparing distortion masks for filter...")
+            clean_masks = []
+            for m in mask_list:
+                if m is not None:
+                     clean_masks.append(m.numpy())
+                else:
+                     clean_masks.append(np.ones((target_size, target_size), dtype=np.float32))
+            distortion_mask_np = np.stack(clean_masks, axis=0) # [S, H, W]
+            
+            # Create logic mask for Splat Filtering
+            # S, H, W -> Boolean Tensor on GPU
+            # AGGRESSIVE: We treat > mask_threshold as Valid.
+            filter_mask_tensor = torch.from_numpy(distortion_mask_np > mask_threshold).to(execution_device)
+            # Flatten is handled inside renderer, but shape must match (B, S, H, W)
+            # Current shape is (S, H, W). We need (B, S, H, W) where B=1.
+            filter_mask_tensor = filter_mask_tensor.unsqueeze(0)
+
+
         cond_flags = [0, 0, 0]
         
         try:
@@ -463,7 +552,15 @@ class VNCCS_WorldMirror3D:
 
             with torch.no_grad():
                 with torch.amp.autocast('cuda', enabled=True, dtype=torch.bfloat16):
-                    predictions = worldmirror(views=views, cond_flags=cond_flags, stabilization=stabilization, confidence_percentile=confidence_percentile)
+                    predictions = worldmirror(
+                        views=views, 
+                        cond_flags=cond_flags, 
+                        stabilization=stabilization, 
+                        confidence_percentile=confidence_percentile,
+                        filter_mask=filter_mask_tensor,
+                        use_direct_points=use_direct_points,
+                        use_consensus=use_consensus
+                    )
         finally:
             # Restore original state to avoid side effects
             if hasattr(worldmirror, "enable_gs"):
@@ -552,6 +649,12 @@ class VNCCS_WorldMirror3D:
                 print("❌ Failed to download skyseg.onnx")
 
         # 2. Compute Filter Mask
+        
+        # Prepare Distortion Mask (Moved up)
+        # distortion_mask_np is already computed above
+        if distortion_mask_np is not None:
+             print("👺 Re-using pre-computed distortion mask for post-filtering...")
+        
         print("🔍 Computing geometric filter mask...")
         pts3d_conf_np = predictions["pts3d_conf"][0].detach().cpu().numpy()
         depth_preds_np = predictions["depth"][0].detach().cpu().numpy()
@@ -562,6 +665,7 @@ class VNCCS_WorldMirror3D:
             depth_preds=depth_preds_np,
             normal_preds=normal_preds_np,
             sky_mask=sky_mask_np,
+            distortion_mask=distortion_mask_np,
             confidence_percentile=confidence_percentile,
             edge_normal_threshold=edge_normal_threshold,
             edge_depth_threshold=edge_depth_threshold,
@@ -662,12 +766,16 @@ class VNCCS_Equirect360ToViews:
                 "panorama": ("IMAGE",),
             },
             "optional": {
-                # FOV 60 minimizes edge distortion ("stretching") which is critical for SfM/Gaussian consistency
-                "fov": ("INT", {"default": 60, "min": 30, "max": 120}),
-                # Smaller step (30) ensures overlap despite narrower FOV
-                "yaw_step": ("INT", {"default": 30, "min": 15, "max": 90}),
+                # Unlocked limits for Brute Force/Consensus experiments
+                "fov": ("INT", {"default": 60, "min": 1, "max": 179}),
+                "yaw_step": ("INT", {"default": 30, "min": 1, "max": 180}),
                 "pitches": ("STRING", {"default": "0,-30,30"}),
                 "output_size": ("INT", {"default": 518, "min": 252, "max": 1022, "step": 14}),
+                "dynamic_fov": ("BOOLEAN", {"default": True, "tooltip": "Automatically reduce FOV looking up/down to minimize stretching"}),
+                "correct_distortion": ("BOOLEAN", {"default": False, "tooltip": "Apply cylindrical-like warping to straighten vertical lines"}),
+                "output_distortion_mask": ("BOOLEAN", {"default": False, "tooltip": "Output a mask indicating highly stretched areas (edges)"}),
+                "mask_falloff": ("FLOAT", {"default": 2.2, "min": 0.5, "max": 5.0, "step": 0.1, "tooltip": "Controls how fast the distortion mask fades. Higher = smaller visible area per view (removes more edges)."}),
+                "yaw_offset": ("FLOAT", {"default": 0.0, "min": -180.0, "max": 180.0, "step": 1.0, "tooltip": "Global rotation offset to align walls with cardinal directions (0, 90, 180, 270)"}),
             }
         }
     
@@ -676,7 +784,8 @@ class VNCCS_Equirect360ToViews:
     FUNCTION = "extract_views"
     CATEGORY = "VNCCS/3D"
     
-    def extract_views(self, panorama, fov=90, yaw_step=45, pitches="0,-30,30", output_size=518):
+    def extract_views(self, panorama, fov=90, yaw_step=45, pitches="0,-30,30", output_size=518, 
+                      dynamic_fov=True, correct_distortion=False, output_distortion_mask=False, mask_falloff=2.2, yaw_offset=0.0):
         pitch_list = [int(p.strip()) for p in pitches.split(",")]
         
         img_np = (panorama[0].cpu().numpy() * 255).astype(np.uint8)
@@ -685,25 +794,66 @@ class VNCCS_Equirect360ToViews:
         yaw_angles = list(range(0, 360, yaw_step))
         
         views = []
+        masks = []
         total = len(yaw_angles) * len(pitch_list)
         
         print(f"🔄 Extracting {total} views from 360° panorama...")
-        
+        print(f"   - Settings: FOV={fov}, Step={yaw_step}, Output={output_size}")
+        print(f"   - Features: DynamicFOV={dynamic_fov}, DistortionCorrection={correct_distortion}, Mask={output_distortion_mask}")
+
         for yaw in yaw_angles:
             for pitch in pitch_list:
-                view = equirect_to_perspective(
+                
+                # Smart Projection Logic:
+                # Cylindrical correction is great for the horizon (Pitch ~0) but distorts poles.
+                # Standard Rectilinear is better for looking up/down (Ceiling/Floor).
+                # If correct_distortion is requested, we apply it ONLY to the horizon views.
+                use_correction = correct_distortion and (abs(pitch) < 20)
+                proj_name = "Cylindrical-ish" if use_correction else "Rectilinear"
+                
+                view, mask = equirect_to_perspective(
                     pil_img,
                     fov_deg=fov,
-                    yaw_deg=yaw,
+                    yaw_deg=(yaw + yaw_offset) % 360, # Apply Offset and Wrap
                     pitch_deg=pitch,
-                    output_size=(output_size, output_size)
+                    output_size=(output_size, output_size),
+                    dynamic_fov=dynamic_fov,
+                    correct_distortion=use_correction, # Pass calculated flag
+                    return_mask=output_distortion_mask,
+                    mask_falloff=mask_falloff
                 )
+                
                 view_np = np.array(view).astype(np.float32) / 255.0
+                
+                mask_stat = ""
+                if output_distortion_mask and mask is not None:
+                    # Append Mask as Alpha Channel
+                    mask_np = np.array(mask).astype(np.float32) / 255.0  # [H, W]
+                    
+                    # Log stat
+                    valid_pixels = np.count_nonzero(mask_np > 0.1)
+                    total_pixels = mask_np.size
+                    coverage = (valid_pixels / total_pixels) * 100
+                    mask_stat = f"| Mask Valid: {coverage:.1f}%"
+                    
+                    mask_np = mask_np[:, :, None] # [H, W, 1]
+                    # Ensure view is [H, W, 3]
+                    if view_np.shape[2] == 3:
+                        view_np = np.concatenate([view_np, mask_np], axis=2) # [H, W, 4]
+                elif view_np.shape[2] == 3:
+                     pass
+                
+                print(f"   - View: Pitch={pitch:3d}, Yaw={yaw:3d} | Proj: {proj_name:12s} {mask_stat}")
+                     
                 views.append(view_np)
+
+        # Handle mixed channel counts if some failed? No, consistent.
+        # But if output_distortion_mask is False, we return RGB.
+        # If True, we return RGBA.
         
         views_tensor = torch.from_numpy(np.stack(views, axis=0))
         
-        print(f"✅ Extracted {total} views")
+        print(f"✅ Extracted {total} views (Channels: {views_tensor.shape[-1]})")
         
         return (views_tensor,)
 
@@ -1362,10 +1512,11 @@ class VNCCS_PLYSceneRenderer:
                 "ply_path": ("STRING", {"forceInput": True, "tooltip": "Path to Gaussian PLY file from SavePLY node"}),
             },
             "optional": {
-                "coverage_mode": (["minimal", "balanced", "ideal", "testing"], {"default": "balanced"}),
+                "coverage_mode": (["minimal", "balanced", "ideal", "testing", "camera_control"], {"default": "balanced"}),
                 "width": ("INT", {"default": 1024, "min": 256, "max": 2048, "step": 64}),
                 "height": ("INT", {"default": 1024, "min": 256, "max": 2048, "step": 64}),
                 "fov": ("FLOAT", {"default": 90.0, "min": 30.0, "max": 120.0, "step": 5.0}),
+                "use_gsplat": ("BOOLEAN", {"default": True, "tooltip": "Use official gsplat library for faster/better rendering if available."}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffff}),
             }
         }
@@ -1469,6 +1620,7 @@ class VNCCS_PLYSceneRenderer:
         c, s = math.cos(angle), math.sin(angle)
         return torch.tensor([
             [c, 0, s],
+            [0, 1, 0],
             [0, 1, 0],
             [-s, 0, c]
         ], dtype=torch.float32, device=device)
@@ -1680,6 +1832,29 @@ class VNCCS_PLYSceneRenderer:
                  pose = self._make_look_at_pose(cam_pos_center, target_pos, device)
                  views.append(pose)
         
+        elif coverage_mode == "camera_control":
+             # "camera_control" mode: 4 Cardinal Views (0, 90, 180, 270)
+             # Designed for creating training datasets that match panorama unrolling.
+             
+             # Camera position is CENTER
+             cam_pos_center = center.clone()
+             cam_pos_center[1] = base_height
+             
+             # 4 Directions: Front (+Z), Right (+X), Back (-Z), Left (-X)
+             # Matches standard panorama unwrapping:
+             # Front (0°), Right (90°), Back (180°), Left (270°)
+             
+             targets = [
+                 cam_pos_center + torch.tensor([0, 0, 1], device=device),  # Front (+Z)
+                 cam_pos_center + torch.tensor([1, 0, 0], device=device),  # Right (+X)
+                 cam_pos_center + torch.tensor([0, 0, -1], device=device), # Back (-Z)
+                 cam_pos_center + torch.tensor([-1, 0, 0], device=device), # Left (-X)
+             ]
+             
+             for target in targets:
+                 pose = self._make_look_at_pose(cam_pos_center, target, device)
+                 views.append(pose)
+
         return views
     
     def _get_scene_bounds(self, means):
@@ -1688,8 +1863,8 @@ class VNCCS_PLYSceneRenderer:
         bounds_max = means.max(axis=0)
         return {"min": torch.from_numpy(bounds_min), "max": torch.from_numpy(bounds_max)}
     
-    def render_views(self, ply_path, coverage_mode="balanced", width=1024, height=1024, fov=90.0, seed=0):
-        """Render multiple views from PLY file using ModernGL renderer."""
+    def render_views(self, ply_path, coverage_mode="balanced", width=1024, height=1024, fov=90.0, seed=0, use_gsplat=True):
+        """Render multiple views from PLY file using ModernGL or gsplat renderer."""
         import time
         import os
         
@@ -1697,6 +1872,7 @@ class VNCCS_PLYSceneRenderer:
         print(f"   - PLY File: {os.path.basename(ply_path)}")
         print(f"   - Coverage Mode: {coverage_mode}")
         print(f"   - Resolution: {width}x{height}, FOV: {fov}")
+        print(f"   - Engine: {'gsplat' if use_gsplat and GSPLAT_AVAILABLE else ('FastPLY' if not use_gsplat else 'FastPLY (fallback)')}")
         
         if not os.path.exists(ply_path):
             raise ValueError(f"PLY file not found: {ply_path}")
@@ -1729,10 +1905,7 @@ class VNCCS_PLYSceneRenderer:
         
         print(f"   Rendering {len(all_poses)} views at {width}x{height}...")
         
-        
-        # Initialize Fast Renderer
-        print(f"   - Initializing FastPLYRenderer...")
-        renderer = FastPLYRenderer(device)
+        rendered_images = []
         
         # Prepare Tensors on GPU
         print(f"   - Moving {N:,} points to GPU...")
@@ -1740,40 +1913,150 @@ class VNCCS_PLYSceneRenderer:
         colors_t = torch.from_numpy(colors_np).to(device)
         opacities_t = torch.from_numpy(opacities_np).to(device)
         scales_t = torch.from_numpy(scales_np).to(device)
-        
-        # Render each view
-        rendered_images = []
+        quats_t = torch.from_numpy(quats_np).to(device) # Needed for gsplat
         
         print(f"   📊 Gaussian Stats:")
         print(f"      - Points: {N:,}")
         print(f"      - Means:  avg={means_np.mean(axis=0)}, range=[{means_np.min(axis=0)}, {means_np.max(axis=0)}]")
         
         render_start = time.time()
+        
+        # --------------------------------------------------------------------
+        # RENDER ENGINE 1: gsplat (Official Implementation)
+        # --------------------------------------------------------------------
+        if use_gsplat and GSPLAT_AVAILABLE:
+            try:
+                from gsplat import rasterization
+                
+                # gsplat expects view-matrices (world-to-camera) and specific conventions
+                # c2w is camera-to-world. w2c = inverse(c2w)
+                
+                for i, pose in enumerate(all_poses):
+                    # Compute World-to-Camera (Extrinsics)
+                    w2c = torch.inverse(pose) # [4, 4]
+                    
+                    # gsplat expects [B, 4, 4] or single view
+                    # We render one by one to save VRAM (just in case) or batched?
+                    # Let's do one by one to be safe and consistent with loop structure
+                    
+                    # Prepare arguments for gsplat.rasterization
+                    # Note: gsplat API varies by version (v0.1 vs v1.0)
+                    # Assuming v1.0 convention: means, quats, scales, opacities, colors, viewmats, Ks, width, height
+                    
+                    # Check gsplat version signature roughly by try-catch or assumption
+                    # We'll assume standard 1.0ish signature
+                    
+                    # Need to handle SH vs Color?
+                    # colors_t is RGB [N, 3]. gsplat supports 'colors' arg if sh_degree=None?
+                    # Actually, usually 'colors' is not a direct arg in rasterization if SHs are expected.
+                    # But if we pass sh_degree=0, we can pass SHs (which are just RGB / 0.282...)
+                    # Or maybe pre-computed colors?
+                    
+                    # Let's try simple call. If fails, user will see error.
+                    # Actually, gsplat usually takes 'means', 'quats', 'scales', 'opacities', 'colors' (if provided?)
+                    
+                    # Wait, 'colors' are view-dependent. gsplat usually takes 'shs'.
+                    # We have RGB colors. We can convert them to SH degree 0.
+                    # SH_0 = RGB / 0.28209479177387814 - 0.5/0.282... ?
+                    # Wait, formula earlier was RGB = SH * C0 + 0.5.
+                    # So SH = (RGB - 0.5) / C0.
+                    
+                    # But we can also use 'colors' argument in some versions?
+                    # Let's try to assume we can pass colors if we set sh_degree=None or something.
+                    # Re-checking worldmirror usage...
+                    # WorldMirror uses `gsplat.project_gaussians` then `gsplat.rasterize_gaussians`.
+                    # Let's stick to simple Rasterizer wrapper from WorldMirror if accessible?
+                    # No, we don't have access to the wrapper easily here (different context).
+                    
+                    # Let's fallback to FastPLYRenderer logic but powered by gsplat if I can't guess API?
+                    # No, user wants gsplat specifically.
+                    
+                    # Let's use the simplest efficient method: batch processing if possible?
+                    # No, let's keep loop.
+                    
+                    viewmat = w2c.unsqueeze(0) # [1, 4, 4]
+                    K_in = K.unsqueeze(0) # [1, 3, 3]
+                    
+                    # Convert colors to SH (deg 0)
+                    # RGB to SH0: (RGB - 0.5) / 0.28209479177387814
+                    shs_0 = (colors_t - 0.5) / 0.28209479177387814
+                    shs_view = shs_0.unsqueeze(1) # [N, 1, 3] (deg 0)
+                    
+                    # Call rasterization
+                    # (means, quats, scales, opacities, colors, viewmats, Ks, width, height)
+                    # WARNING: signature depends on version.
+                    # v1.0.0+: rasterization(means, quats, scales, opacities, colors, viewmats, Ks, width, height, ...)
+                    
+                    render_colors, render_alphas, info = rasterization(
+                        means=means_t,
+                        quats=quats_t,
+                        scales=scales_t,
+                        opacities=opacities_t, # flatten?
+                        colors=shs_view, # pass SHs here? Or is there a 'colors' arg?
+                        # If we pass 'colors' it usually expects pre-computed colors.
+                        # Let's try passing 'shs' if keyword arg? 
+                        # Actually, looking at docs (mental check):
+                        # rasterization(means, quats, scales, opacities, colors=None, shs=None, ...)
+                        # If colors is None and shs is None, it fails.
+                        # If shs provided, it computes colors.
+                        shs=shs_view,
+                        viewmats=viewmat,
+                        Ks=K_in,
+                        width=width,
+                        height=height,
+                        packed=False # usually False for simple batch
+                    )
+                    
+                    # render_colors: [1, H, W, 3]
+                    img_tensor = render_colors[0] # [H, W, 3]
+                    
+                    # Clamp
+                    img_tensor = torch.clamp(img_tensor, 0.0, 1.0)
+                    
+                    rendered_images.append(img_tensor.cpu().unsqueeze(0))
+                    
+                    if (i + 1) % 5 == 0:
+                        print(f"   ✓ [gsplat] Rendered {i + 1}/{len(all_poses)} views")
             
-        for i, pose in enumerate(all_poses):
-            # Render using Fast PyTorch Splatter
-            img_tensor = renderer.render(
-                means=means_t,
-                colors=colors_t,
-                opacities=opacities_t,
-                scales=scales_t,
-                c2w=pose,
-                width=width,
-                height=height,
-                fov_deg=fov
-            )
+            except Exception as e:
+                print(f"❌ [VNCCS] gsplat rendering failed: {e}")
+                print("   ⚠️ Falling back to FastPLYRenderer...")
+                # Fallback logic below
+                use_gsplat = False # Trigger fallback
+        
+        # --------------------------------------------------------------------
+        # RENDER ENGINE 2: FastPLYRenderer (Fallback / Default)
+        # --------------------------------------------------------------------
+        if not use_gsplat or not GSPLAT_AVAILABLE:
+            if use_gsplat:
+                 print("   ⚠️ gsplat requested but not available/failed. Using FastPLYRenderer.")
             
-            # DEBUG: Check if image is not black
-            mean_val = img_tensor.mean().item()
-            if (i + 1) % 5 == 0 or i == 0:
-                 print(f"      - View {i}: mean pixel value {mean_val:.2f}")
-                 
-            # FastPLYRenderer returns float [H, W, 3] on GPU
-            # ComfyUI expects [1, H, W, 3] on CPU (usually)
-            rendered_images.append(img_tensor.cpu().unsqueeze(0))
+            # Initialize Fast Renderer
+            print(f"   - Initializing FastPLYRenderer...")
+            renderer = FastPLYRenderer(device)
             
-            if (i + 1) % 5 == 0:
-                print(f"   ✓ Rendered {i + 1}/{len(all_poses)} views")
+            for i, pose in enumerate(all_poses):
+                # Render using Fast PyTorch Splatter
+                img_tensor = renderer.render(
+                    means=means_t,
+                    colors=colors_t,
+                    opacities=opacities_t,
+                    scales=scales_t,
+                    c2w=pose,
+                    width=width,
+                    height=height,
+                    fov_deg=fov
+                )
+                
+                # DEBUG: Check if image is not black
+                mean_val = img_tensor.mean().item()
+                if (i + 1) % 5 == 0 or i == 0:
+                     print(f"      - View {i}: mean pixel value {mean_val:.2f}")
+                     
+                rendered_images.append(img_tensor.cpu().unsqueeze(0))
+                
+                if (i + 1) % 5 == 0:
+                    print(f"   ✓ [FastPLY] Rendered {i + 1}/{len(all_poses)} views")
         
         # Cleanup large tensors before finishing
         if device.type == "cuda":

@@ -76,6 +76,7 @@ class CausalCameraPRopeWanAttnProcessor2_0:
         idx: Optional[int] = None,
         viewmats: Optional[torch.Tensor] = None,
         Ks: Optional[torch.Tensor] = None,
+        context_frames_list: Optional[List[int]] = None,
     ) -> torch.Tensor:
         encoder_hidden_states_img = None
         if attn.add_k_proj is not None:

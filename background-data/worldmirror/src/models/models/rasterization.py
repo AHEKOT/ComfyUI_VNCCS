@@ -162,6 +162,9 @@ class GaussianSplatRenderer(nn.Module):
         views: Dict[str, torch.Tensor],
         context_predictions: Dict[str, torch.Tensor],
         is_inference: bool=True,
+        filter_mask: torch.Tensor=None,            # [B, S, H, W] Optional Geometric Mask
+        position_mode: str="gsdepth+predcamera",   # "pts3d" or "gsdepth+predcamera"
+        use_consensus: bool=False                  # Consensus Merging (Voxel Depth Filter)
     ) -> Dict[str, torch.Tensor]:
         """
         Returns predictions with the following fields filled:
@@ -220,16 +223,34 @@ class GaussianSplatRenderer(nn.Module):
         if self.training:
             splats = self.prepare_splats(views, predictions, images, gs_params, S, position_from="gsdepth+gtcamera")
         elif not is_inference:
-            splats = self.prepare_splats(views, predictions, images, gs_params, S, context_predictions, position_from="gsdepth+predcamera")
+            splats = self.prepare_splats(views, predictions, images, gs_params, S, context_predictions, position_from=position_mode)
         else:
-            splats = self.prepare_splats(views, predictions, images, gs_params, S, position_from="gsdepth+predcamera")
+            splats = self.prepare_splats(views, predictions, images, gs_params, S, position_from=position_mode)
+
+        # --- NEW: GEOMETRIC MASK FILTERING ---
+        if filter_mask is not None:
+             # filter_mask is [B, S, H, W]. Flatten to match splats (which are B*S*H*W, C)
+             # NOTE: prepare_splats rearranges to (B*S, H, W, C) then flattens.
+             # We must flatten consistently.
+             flat_mask = filter_mask.reshape(-1)
+             
+             # Check shapes compatibility
+             if flat_mask.shape[0] == splats["means"].shape[0]:
+                 before = splats["means"].shape[0]
+                 for k in splats.keys():
+                     if isinstance(splats[k], torch.Tensor) and splats[k].shape[0] == before:
+                         splats[k] = splats[k][flat_mask]
+                 after = splats["means"].shape[0]
+                 print(f"👺 [Rasterizer] Applied Geometric Mask: {before} -> {after} splats.")
+             else:
+                 print(f"⚠️ [Rasterizer] Mask shape mismatch! Mask: {flat_mask.shape[0]}, Splats: {splats['means'].shape[0]}. Skipping filter.")
 
         # Apply confidence filtering before pruning
         if self.enable_conf_filter and "gs_depth_conf" in predictions:
             splats = self.apply_confidence_filter(splats, predictions["gs_depth_conf"])
         
         if self.enable_prune:
-            splats = self.prune_gs(splats, voxel_size=self.voxel_size)
+            splats = self.prune_gs(splats, voxel_size=self.voxel_size, use_consensus=use_consensus)
         
         predictions["splats"] = splats
         if is_inference:
@@ -329,16 +350,10 @@ class GaussianSplatRenderer(nn.Module):
 
         return filtered
 
-    def prune_gs(self, splats, voxel_size=0.002):
+    def prune_gs(self, splats, voxel_size=0.002, use_consensus=False, consensus_tolerance=0.15):
         """
         Prune Gaussian splats by merging those in the same voxel.
-        
-        Args:
-            splats: Dictionary containing Gaussian parameters
-            voxel_size: Size of voxels for spatial grouping
-            
-        Returns:
-            Dictionary with pruned splats
+        Optional: Apply Consensus Merging to remove depth outliers.
         """
         B = splats["means"].shape[0]
         merged_splats_list = []
@@ -378,6 +393,33 @@ class GaussianSplatRenderer(nn.Module):
             
             # Get weights and compute weight sums per voxel
             weights = splats_i["weights"]
+            
+            # --- CONSENSUS MERGING LOGIC ---
+            if use_consensus:
+                # 1. Compute radial depth of each point
+                depths = torch.norm(coords, dim=-1)
+                
+                # 2. Compute weighted consensus depth per voxel
+                voxel_weighted_depth_sum = torch.zeros(K, device=target_device)
+                voxel_weighted_depth_sum.scatter_add_(0, inverse_indices, depths * weights)
+                
+                voxel_weight_sum = torch.zeros(K, device=target_device)
+                voxel_weight_sum.scatter_add_(0, inverse_indices, weights)
+                
+                voxel_consensus_depth = voxel_weighted_depth_sum / (voxel_weight_sum + 1e-8)
+                consensus_depth_per_point = voxel_consensus_depth[inverse_indices]
+                
+                # 3. Calculate deviation and penalize weights
+                # dev = abs(d - d_cons) / d_cons
+                rel_diff = torch.abs(depths - consensus_depth_per_point) / (consensus_depth_per_point + 1e-6)
+                
+                # Use smoothstep-like falloff for consensus weight
+                depth_weight = (1.0 - rel_diff / consensus_tolerance).clamp(0, 1)
+                depth_weight = depth_weight * depth_weight * (3 - 2 * depth_weight)
+                
+                # Apply penalty to original weights (points with low consensus will contribute less or zero)
+                weights = weights * depth_weight
+
             weight_sums = torch.zeros(K, device=target_device)
             weight_sums.scatter_add_(0, inverse_indices, weights)
             weight_sums = torch.clamp(weight_sums, min=1e-8)
