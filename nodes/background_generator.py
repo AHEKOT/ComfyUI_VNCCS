@@ -922,8 +922,8 @@ class VNCCS_Equirect360ToViews:
             "optional": {
                 "quality": (["Standard (518)", "Marble HD (1022)", "Marble Ultra (1526)"], {"default": "Standard (518)"}),
                 # Unlocked limits for Brute Force/Consensus experiments
-                "fov": ("INT", {"default": 60, "min": 1, "max": 179}),
-                "yaw_step": ("INT", {"default": 30, "min": 1, "max": 180}),
+                "fov": ("INT", {"default": 90, "min": 1, "max": 179}),
+                "yaw_step": ("INT", {"default": 45, "min": 1, "max": 180}),
                 "pitches": ("STRING", {"default": "0,-30,30"}),
                 "output_size": ("INT", {"default": 518, "min": 252, "max": 1022, "step": 14}),
                 "dynamic_fov": ("BOOLEAN", {"default": True, "tooltip": "Automatically reduce FOV looking up/down to minimize stretching"}),
