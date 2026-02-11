@@ -1,8 +1,0 @@
-
-transformers>=4.56.0
-diffusers>=0.35.0
-scipy
-imageio
-imageio-ffmpeg
-huggingface_hub
-einops

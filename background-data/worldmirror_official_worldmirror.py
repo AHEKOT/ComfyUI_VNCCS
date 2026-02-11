@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from src.models.models.visual_transformer import VisualGeometryTransformer
 from src.models.heads.camera_head import CameraHead
 from src.models.heads.dense_head import DPTHead
-from src.models.models.rasterization import GaussianSplatRenderer, GSPLAT_AVAILABLE
+from src.models.models.rasterization import GaussianSplatRenderer
 from src.models.utils.camera_utils import vector_to_camera_matrices, extrinsics_to_vector
 from src.models.utils.priors import normalize_depth, normalize_poses
 
@@ -30,8 +30,7 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
                  fixed_patch_embed=False, 
                  sampling_strategy="uniform",
                  dpt_gradient_checkpoint=False, 
-                 condition_strategy=["token", "pow3r", "token"],
-                 gs_params=None):
+                 condition_strategy=["token", "pow3r", "token"]):
 
         super().__init__()
         # Configuration flags
@@ -64,7 +63,7 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
         )
         
         # Initialize prediction heads
-        self._init_heads(embed_dim, patch_size, gs_dim, gs_params=gs_params)
+        self._init_heads(embed_dim, patch_size, gs_dim)
 
     def _store_config(self):
         """Save the model configuration"""
@@ -84,7 +83,7 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
             "condition_strategy": self.cond_methods,
         }
 
-    def _init_heads(self, dim, patch_size, gs_dim, gs_params=None):
+    def _init_heads(self, dim, patch_size, gs_dim):
         """Initialize all prediction heads"""
         
         # Camera pose prediction head
@@ -128,35 +127,19 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
                 is_gsdpt=True,
                 activation="exp+expp1"
             )
-            if GSPLAT_AVAILABLE:
-                renderer_args = {
-                    "sh_degree": 0,
-                    "enable_prune": True,
-                    "voxel_size": 0.002,
-                }
-                if gs_params:
-                    renderer_args.update(gs_params)
-                
-                self.gs_renderer = GaussianSplatRenderer(**renderer_args)
-            else:
-                import warnings
-                warnings.warn(
-                    "gsplat is not installed. Gaussian splat parameters will be generated "
-                    "but video rendering will be disabled. To enable rendering, install gsplat."
-                )
-                self.gs_renderer = None
+            self.gs_renderer = GaussianSplatRenderer(
+                sh_degree=0,
+                enable_prune=True,
+                voxel_size=0.002,
+            )
 
-    
-    def forward(self, views: Dict[str, torch.Tensor], cond_flags: List[int]=[0, 0, 0], is_inference=True, stabilization="none", confidence_percentile=10.0, filter_mask: torch.Tensor=None, use_direct_points: bool=False, use_consensus: bool=False, consensus_tolerance: float=0.15):
+    def forward(self, views: Dict[str, torch.Tensor], cond_flags: List[int]=[0, 0, 0], is_inference=True):
         """
         Execute forward pass through the WorldMirror model.
 
         Args:
             views: Input data dictionary
             cond_flags: Conditioning flags [depth, rays, camera]
-            stabilization: Stabilization mode ("none", "panorama_lock")
-            confidence_percentile: Percentage of low-confidence points to discard (0-100)
-            use_direct_points: If True, uses predicted 3D points directly instead of projecting depth (PTS3D mode)
 
         Returns:
             dict: Prediction results dictionary
@@ -179,13 +162,13 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
         with torch.amp.autocast('cuda', dtype=torch.float32):
             # Generate all predictions
             preds = self._gen_all_preds(
-                token_list, imgs, patch_start_idx, views, cond_flags, is_inference, stabilization, confidence_percentile, filter_mask, use_direct_points, use_consensus, consensus_tolerance
+                token_list, imgs, patch_start_idx, views, cond_flags, is_inference
             )
 
         return preds
 
     def _gen_all_preds(self, token_list, imgs, patch_start_idx, 
-                       views, cond_flags, is_inference, stabilization="none", confidence_percentile=10.0, filter_mask=None, use_direct_points=False, use_consensus=False, consensus_tolerance=0.15):
+                       views, cond_flags, is_inference):
         """Generate all enabled predictions"""
         preds = {}
 
@@ -193,13 +176,6 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
         if self.enable_cam:
             cam_seq = self.cam_head(token_list)
             cam_params = cam_seq[-1]
-            
-            # Apply Stabilization
-            if stabilization == "panorama_lock":
-                # Force translation to zero (pure rotation for panoramas)
-                # cam_params is [B, S, 9] or similar. Translation is first 3.
-                cam_params[..., :3] = 0.0
-                
             preds["camera_params"] = cam_params
             c2w_mat, int_mat = self.transform_camera_vector(cam_params, imgs.shape[-2], imgs.shape[-1])
             preds["camera_poses"] = c2w_mat  # C2W pose (OpenCV) in world coordinates: [B, S, 4, 4]
@@ -209,7 +185,6 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
         if self.enable_depth:
             depth, depth_conf = self.depth_head(
                 token_list, images=imgs, patch_start_idx=patch_start_idx, 
-                frames_chunk_size=1  # Minimize peak VRAM for high-res
             )
             preds["depth"] = depth
             preds["depth_conf"] = depth_conf
@@ -218,7 +193,6 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
         if self.enable_pts:
             pts, pts_conf = self.pts_head(
                 token_list, images=imgs, patch_start_idx=patch_start_idx,
-                frames_chunk_size=1
             )
             preds["pts3d"] = pts
             preds["pts3d_conf"] = pts_conf
@@ -227,7 +201,6 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
         if self.enable_norm:
             normals, norm_conf = self.norm_head(
                 token_list, images=imgs, patch_start_idx=patch_start_idx,
-                frames_chunk_size=1
             )
             preds["normals"] = normals
             preds["normals_conf"] = norm_conf
@@ -238,35 +211,20 @@ class WorldMirror(nn.Module, PyTorchModelHubMixin):
             gs_feat, gs_depth, gs_depth_conf = self.gs_head(
                 context_preds.get("token_list", token_list), 
                 images=context_preds.get("imgs", imgs), 
-                patch_start_idx=patch_start_idx,
-                frames_chunk_size=1  # Enforce smallest chunk for GS head
+                patch_start_idx=patch_start_idx
             )
 
             preds["gs_depth"] = gs_depth
             preds["gs_depth_conf"] = gs_depth_conf
-            
-            # Determine position mode
-            pos_mode = "pts3d" if use_direct_points else "gsdepth+predcamera"
-            
-            # Only render if gs_renderer is available (requires gsplat)
-            if self.gs_renderer is not None:
-                preds = self.gs_renderer.render(
-                    gs_feats=gs_feat,
-                    images=imgs,
-                    predictions=preds,
-                    views=views,
-                    context_predictions=context_preds,
-                    is_inference=is_inference,
-                    filter_mask=filter_mask,
-                    position_mode=pos_mode,
-                    use_consensus=use_consensus,
-                    consensus_tolerance=consensus_tolerance
-                )
-            else:
-                # gsplat not available - store gs_feats for potential external use
-                preds["gs_feats"] = gs_feat
+            preds = self.gs_renderer.render(
+                gs_feats=gs_feat,
+                images=imgs,
+                predictions=preds,
+                views=views,
+                context_predictions=context_preds,
+                is_inference=is_inference
+            )
         return preds
-
     
     def extract_priors(self, views):
         """

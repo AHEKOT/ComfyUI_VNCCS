@@ -5,15 +5,8 @@ import torch.nn as nn
 from torch import Tensor
 from einops import rearrange
 
-# Make gsplat optional - only needed for video rendering
-try:
-    from gsplat.rendering import rasterization
-    from gsplat.strategy import DefaultStrategy
-    GSPLAT_AVAILABLE = True
-except ImportError:
-    GSPLAT_AVAILABLE = False
-    rasterization = None
-    DefaultStrategy = object  # Placeholder for type hints
+from gsplat.rendering import rasterization
+from gsplat.strategy import DefaultStrategy
 
 from src.models.utils.frustum import calculate_unprojected_mask
 from src.models.utils.geometry import depth_to_world_coords_points
@@ -22,9 +15,7 @@ from src.models.utils import sh_utils, act_gs
 
 class Rasterizer:
     def __init__(self, rasterization_mode="classic", packed=True, abs_grad=True, with_eval3d=False,
-                 camera_model="pinhole", sparse_grad=False, distributed=False, grad_strategy=None):
-        if grad_strategy is None and GSPLAT_AVAILABLE:
-            grad_strategy = DefaultStrategy
+                 camera_model="pinhole", sparse_grad=False, distributed=False, grad_strategy=DefaultStrategy):
         self.rasterization_mode = rasterization_mode
         self.packed = packed
         self.abs_grad = abs_grad
@@ -47,16 +38,6 @@ class Rasterizer:
         height: int,
         **kwargs,
     ) -> Tuple[Tensor, Tensor, Dict]:
-        if not GSPLAT_AVAILABLE:
-            raise RuntimeError("gsplat is not installed. Video rendering requires gsplat. "
-                             "Install with: pip install gsplat")
-        # COMPATIBILITY FIX: Some gsplat versions don't support 'shs' in the high-level wrapper,
-        # or they crash if 'colors' is [N, 1, 3] instead of [N, 3].
-        # We manually convert SH degree 0 to pre-computed colors.
-        if colors is not None and colors.dim() == 3:
-            from src.models.utils.sh_utils import C0
-            colors = colors[:, 0, :] * C0 + 0.5 # [N, 3]
-
         render_colors, render_alphas, _ = rasterization(
             means=means,
             quats=quats,
@@ -77,16 +58,17 @@ class Rasterizer:
             rasterize_mode=self.rasterization_mode,
             distributed=self.distributed,
             camera_model=self.camera_model,
-            with_eval3d=self.with_eval3d,
             render_mode="RGB+ED",
             **kwargs,
         )
         return render_colors[..., :3], render_colors[..., 3:], render_alphas
 
-
     def rasterize_batches(self, means, quats, scales, opacities, colors, viewmats, Ks, width, height, **kwargs):
         rendered_colors, rendered_depths, rendered_alphas = [], [], []
         batch_size = len(means)
+        # Ensure CUDA current device matches input tensors to avoid ordinal errors
+        if torch.cuda.is_available() and viewmats.is_cuda:
+            torch.cuda.set_device(viewmats.get_device())
         
         for i in range(batch_size):
             means_i = means[i]  # [N, 4]
@@ -169,10 +151,6 @@ class GaussianSplatRenderer(nn.Module):
         views: Dict[str, torch.Tensor],
         context_predictions: Dict[str, torch.Tensor],
         is_inference: bool=True,
-        filter_mask: torch.Tensor=None,            # [B, S, H, W] Optional Geometric Mask
-        position_mode: str="gsdepth+predcamera",   # "pts3d" or "gsdepth+predcamera"
-        use_consensus: bool=False,                 # Consensus Merging (Voxel Depth Filter)
-        consensus_tolerance: float=0.15            # Tolerance for consensus filtering
     ) -> Dict[str, torch.Tensor]:
         """
         Returns predictions with the following fields filled:
@@ -186,23 +164,7 @@ class GaussianSplatRenderer(nn.Module):
 
         # 1) Predict GS features from tokens, then convert to Gaussian parameters
         gs_feats_reshape = rearrange(gs_feats, "b s c h w -> (b s) c h w")
-        
-        # OOM FIX: Process gs_head in chunks to avoid moving all feats to GPU at once
-        # gs_feats (256ch) is much larger than gs_params (~60ch).
-        device = self.gs_head[0].weight.device
-        chunk_size = 2  # Conservative chunk size (2 views at a time)
-        total_views = gs_feats_reshape.shape[0]
-        gs_params_list = []
-        
-        for i in range(0, total_views, chunk_size):
-            end_i = min(i + chunk_size, total_views)
-            feat_chunk = gs_feats_reshape[i:end_i].to(device)
-            with torch.no_grad():
-                param_chunk = self.gs_head(feat_chunk)
-            gs_params_list.append(param_chunk)
-            
-        gs_params = torch.cat(gs_params_list, dim=0)
-
+        gs_params = self.gs_head(gs_feats_reshape)
         gt_colors = images.permute(0, 1, 3, 4, 2)
         
         # 2) Select rendering cameras
@@ -216,14 +178,17 @@ class GaussianSplatRenderer(nn.Module):
         else:
             # Re-predict the camera for novel views and perform translation scale alignment
             pred_all_extrinsic, pred_all_intrinsic = self.prepare_cameras(predictions, S + V)
-            scale_factor = 1.0
+            # Default to a per-batch scale tensor so downstream math never hits Python floats
+            scale_factor = torch.ones(
+                (B, 1), device=pred_all_extrinsic.device, dtype=pred_all_extrinsic.dtype
+            )
             if "camera_poses" in context_predictions:
                 pred_context_extrinsic, _ = self.prepare_cameras(context_predictions, S)
                 scale_factor = pred_context_extrinsic[:, :, :3, 3].norm(dim=-1).mean(dim=1, keepdim=True) / (
                     pred_all_extrinsic[:, :S, :3, 3].norm(dim=-1).mean(dim=1, keepdim=True) + 1e-6
                 )
 
-            pred_all_extrinsic[..., :3, 3] = pred_all_extrinsic[..., :3, 3] * torch.as_tensor(scale_factor, device=pred_all_extrinsic.device).unsqueeze(-1)
+            pred_all_extrinsic[..., :3, 3] = pred_all_extrinsic[..., :3, 3] * scale_factor.unsqueeze(-1)
             render_viewmats, render_Ks = pred_all_extrinsic, pred_all_intrinsic
             valid_masks = views.get("valid_mask", torch.ones(B, S + V, H, W, dtype=bool, device=images.device))
         
@@ -231,39 +196,18 @@ class GaussianSplatRenderer(nn.Module):
         if self.training:
             splats = self.prepare_splats(views, predictions, images, gs_params, S, position_from="gsdepth+gtcamera")
         elif not is_inference:
-            splats = self.prepare_splats(views, predictions, images, gs_params, S, context_predictions, position_from=position_mode)
+            splats = self.prepare_splats(views, predictions, images, gs_params, S, context_predictions, position_from="gsdepth+predcamera")
         else:
-            splats = self.prepare_splats(views, predictions, images, gs_params, S, position_from=position_mode)
-
-        # --- NEW: GEOMETRIC MASK FILTERING ---
-        if filter_mask is not None:
-             # filter_mask is [B, S, H, W]. Flatten to match splats (which are B*S*H*W, C)
-             # NOTE: prepare_splats rearranges to (B*S, H, W, C) then flattens.
-             # We must flatten consistently.
-             flat_mask = filter_mask.reshape(-1)
-             
-             # Check shapes compatibility
-             if flat_mask.shape[0] == splats["means"].shape[0]:
-                 before = splats["means"].shape[0]
-                 for k in splats.keys():
-                     if isinstance(splats[k], torch.Tensor) and splats[k].shape[0] == before:
-                         splats[k] = splats[k][flat_mask]
-                 after = splats["means"].shape[0]
-                 print(f"👺 [Rasterizer] Applied Geometric Mask: {before} -> {after} splats.")
-             else:
-                 print(f"⚠️ [Rasterizer] Mask shape mismatch! Mask: {flat_mask.shape[0]}, Splats: {splats['means'].shape[0]}. Skipping filter.")
+            splats = self.prepare_splats(views, predictions, images, gs_params, S, position_from="gsdepth+predcamera")
 
         # Apply confidence filtering before pruning
         if self.enable_conf_filter and "gs_depth_conf" in predictions:
             splats = self.apply_confidence_filter(splats, predictions["gs_depth_conf"])
         
         if self.enable_prune:
-            splats = self.prune_gs(splats, voxel_size=self.voxel_size, use_consensus=use_consensus, consensus_tolerance=consensus_tolerance)
+            splats = self.prune_gs(splats, voxel_size=self.voxel_size)
         
         predictions["splats"] = splats
-        predictions["rendered_extrinsics"] = render_viewmats
-        predictions["rendered_intrinsics"] = render_Ks
-
         if is_inference:
             return predictions
         
@@ -348,23 +292,29 @@ class GaussianSplatRenderer(nn.Module):
             if key in mask_keys and key in splats:
                 x = splats[key]
                 if x.ndim == 2:  # [B, N]
-                    filtered[key] = torch.gather(x, 1, topk_idx.to(x.device))
+                    filtered[key] = torch.gather(x, 1, topk_idx)
                 else:
                     # Expand indices to match tensor dimensions
                     expand_idx = topk_idx.clone()
                     for i in range(x.ndim - 2):
                         expand_idx = expand_idx.unsqueeze(-1)
                     expand_idx = expand_idx.expand(-1, -1, *x.shape[2:])
-                    filtered[key] = torch.gather(x, 1, expand_idx.to(x.device))
+                    filtered[key] = torch.gather(x, 1, expand_idx)
             else:
                 filtered[key] = splats[key]
 
         return filtered
 
-    def prune_gs(self, splats, voxel_size=0.002, use_consensus=False, consensus_tolerance=0.15):
+    def prune_gs(self, splats, voxel_size=0.002):
         """
         Prune Gaussian splats by merging those in the same voxel.
-        Optional: Apply Consensus Merging to remove depth outliers.
+        
+        Args:
+            splats: Dictionary containing Gaussian parameters
+            voxel_size: Size of voxels for spatial grouping
+            
+        Returns:
+            Dictionary with pruned splats
         """
         B = splats["means"].shape[0]
         merged_splats_list = []
@@ -372,9 +322,7 @@ class GaussianSplatRenderer(nn.Module):
 
         for i in range(B):
             # Extract splats for current batch
-            # Fix Mixed Device Issue: usage of weights.device as anchor
-            target_device = splats["weights"].device 
-            splats_i = {k: splats[k][i].to(target_device) for k in ["means", "quats", "scales", "opacities", "sh", "weights"]}
+            splats_i = {k: splats[k][i] for k in ["means", "quats", "scales", "opacities", "sh", "weights"]}
             
             # Compute voxel indices
             coords = splats_i["means"]
@@ -393,45 +341,17 @@ class GaussianSplatRenderer(nn.Module):
             K = len(unique_voxels)
 
             # Initialize merged splats
-            # Initialize merged splats
             merged = {
-                "means": torch.zeros((K, 3), device=target_device),
-                "quats": torch.zeros((K, 4), device=target_device),
-                "scales": torch.zeros((K, 3), device=target_device),
-                "opacities": torch.zeros(K, device=target_device),
-                "sh": torch.zeros((K, self.nums_sh, 3), device=target_device)
+                "means": torch.zeros((K, 3), device=device),
+                "quats": torch.zeros((K, 4), device=device),
+                "scales": torch.zeros((K, 3), device=device),
+                "opacities": torch.zeros(K, device=device),
+                "sh": torch.zeros((K, self.nums_sh, 3), device=device)
             }
             
             # Get weights and compute weight sums per voxel
             weights = splats_i["weights"]
-            
-            # --- CONSENSUS MERGING LOGIC ---
-            if use_consensus:
-                # 1. Compute radial depth of each point
-                depths = torch.norm(coords, dim=-1)
-                
-                # 2. Compute weighted consensus depth per voxel
-                voxel_weighted_depth_sum = torch.zeros(K, device=target_device)
-                voxel_weighted_depth_sum.scatter_add_(0, inverse_indices, depths * weights)
-                
-                voxel_weight_sum = torch.zeros(K, device=target_device)
-                voxel_weight_sum.scatter_add_(0, inverse_indices, weights)
-                
-                voxel_consensus_depth = voxel_weighted_depth_sum / (voxel_weight_sum + 1e-8)
-                consensus_depth_per_point = voxel_consensus_depth[inverse_indices]
-                
-                # 3. Calculate deviation and penalize weights
-                # dev = abs(d - d_cons) / d_cons
-                rel_diff = torch.abs(depths - consensus_depth_per_point) / (consensus_depth_per_point + 1e-6)
-                
-                # Use smoothstep-like falloff for consensus weight
-                depth_weight = (1.0 - rel_diff / consensus_tolerance).clamp(0, 1)
-                depth_weight = depth_weight * depth_weight * (3 - 2 * depth_weight)
-                
-                # Apply penalty to original weights (points with low consensus will contribute less or zero)
-                weights = weights * depth_weight
-
-            weight_sums = torch.zeros(K, device=target_device)
+            weight_sums = torch.zeros(K, device=device)
             weight_sums.scatter_add_(0, inverse_indices, weights)
             weight_sums = torch.clamp(weight_sums, min=1e-8)
 

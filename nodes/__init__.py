@@ -22,9 +22,6 @@ try:
     from .character_cloner import CharacterCloner
     from .clothes_designer import ClothesDesigner
     from .sprite_manager import SpriteManager
-    from .vnccs_worldplay import NODE_CLASS_MAPPINGS as WORLDPLAY_MAPPINGS
-    from .worldgen_nodes import NODE_CLASS_MAPPINGS as WORLDGEN_MAPPINGS
-    from .worldgen_sampler_node import NODE_CLASS_MAPPINGS as WORLDGEN_SAMPLER_MAPPINGS
 
 
     from .character_creator import NODE_DISPLAY_NAME_MAPPINGS as CHARACTER_CREATOR_DISPLAY_MAPPINGS
@@ -43,9 +40,6 @@ try:
     from .vnccs_utils import NODE_DISPLAY_NAME_MAPPINGS as VNCCS_UTILS_DISPLAY_MAPPINGS
     from .background_generator import NODE_DISPLAY_NAME_MAPPINGS as BACKGROUND_GENERATOR_DISPLAY_MAPPINGS
     from .vnccs_panorama_mapper import NODE_DISPLAY_NAME_MAPPINGS as PANORAMA_MAPPER_DISPLAY_MAPPINGS
-    from .vnccs_worldplay import NODE_DISPLAY_NAME_MAPPINGS as WORLDPLAY_DISPLAY_MAPPINGS
-    from .worldgen_nodes import NODE_DISPLAY_NAME_MAPPINGS as WORLDGEN_DISPLAY_MAPPINGS
-    from .worldgen_sampler_node import NODE_DISPLAY_NAME_MAPPINGS as WORLDGEN_SAMPLER_DISPLAY_MAPPINGS
 
 
     NODE_CLASS_MAPPINGS = {
@@ -65,9 +59,6 @@ try:
         **VNCCS_UTILS_MAPPINGS,
         **BACKGROUND_GENERATOR_MAPPINGS,
         **PANORAMA_MAPPER_MAPPINGS,
-        **WORLDPLAY_MAPPINGS,
-        **WORLDGEN_MAPPINGS,
-        **WORLDGEN_SAMPLER_MAPPINGS,
 
         "CharacterCreatorV2": CharacterCreatorV2,
         "CharacterCloner": CharacterCloner,
@@ -92,16 +83,16 @@ try:
         **VNCCS_UTILS_DISPLAY_MAPPINGS,
         **BACKGROUND_GENERATOR_DISPLAY_MAPPINGS,
         **PANORAMA_MAPPER_DISPLAY_MAPPINGS,
-        **WORLDPLAY_DISPLAY_MAPPINGS,
-        **WORLDGEN_DISPLAY_MAPPINGS,
-        **WORLDGEN_SAMPLER_DISPLAY_MAPPINGS,
 
         "CharacterCreatorV2": "VNCCS Character Creator V2",
         "CharacterCloner": "VNCCS Character Cloner",
         "ClothesDesigner": "VNCCS Clothes Designer",
         "SpriteManager": "VNCCS Sprite Manager",
     }
-except ImportError:
+except Exception as e:
+    import traceback
+    print(f"❌ [VNCCS] CRITICAL REGISTRATION ERROR in nodes/__init__.py: {e}")
+    traceback.print_exc()
     NODE_CLASS_MAPPINGS = {}
     NODE_DISPLAY_NAME_MAPPINGS = {}
 

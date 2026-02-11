@@ -9,6 +9,7 @@ import os
 import sys
 import math
 import torch
+import torch.nn.functional as F
 import numpy as np
 from PIL import Image
 import cv2
@@ -67,6 +68,45 @@ else:
 # ============================================================================
 # Utility Functions
 # ============================================================================
+
+def build_rotation_matrix(pitch_deg, yaw_deg, roll_deg=0.0):
+    """
+    Build a 3x3 rotation matrix from pitch, yaw, and roll (in degrees).
+    Order of application: Pitch (X) -> Yaw (Y) -> Roll (Z)
+    Matches equirect_to_perspective logic.
+    """
+    p = math.radians(pitch_deg)
+    y = math.radians(yaw_deg)
+    r = math.radians(roll_deg)
+    
+    # Rx (Pitch)
+    cp, sp = math.cos(p), math.sin(p)
+    Rx = np.array([
+        [1, 0, 0],
+        [0, cp, -sp],
+        [0, sp, cp]
+    ], dtype=np.float32)
+    
+    # Ry (Yaw)
+    cy, sy = math.cos(y), math.sin(y)
+    Ry = np.array([
+        [cy, 0, sy],
+        [0, 1, 0],
+        [-sy, 0, cy]
+    ], dtype=np.float32)
+    
+    # Rz (Roll)
+    R = Ry @ Rx # Order: v' = Ry @ Rx @ v
+    if roll_deg != 0:
+        cr, sr = math.cos(r), math.sin(r)
+        Rz = np.array([
+            [cr, -sr, 0],
+            [sr, cr, 0],
+            [0, 0, 1]
+        ], dtype=np.float32)
+        R = Rz @ R
+        
+    return R
 
 def equirect_to_perspective(
     equirect_img, 
@@ -129,11 +169,11 @@ def equirect_to_perspective(
     
     grid_y, grid_x = torch.meshgrid(yv, xv, indexing='ij')
     
-    # 2. Ray Construction
-    # Rectilinear: (x, y, -f) where x in [-aspect, aspect] and y in [-1, 1]
+    # 2. Ray Construction (OpenCV Convention: X-Right, Y-Down, Z-Forward)
+    # Rectilinear: (x, y, f) where x in [-aspect, aspect] and y in [-1, 1]
     rays_x = grid_x
-    rays_y = -grid_y
-    rays_z = torch.full_like(grid_x, -f)
+    rays_y = grid_y # Y-down (grid_y -1 is Top, 1 is Bottom)
+    rays_z = torch.full_like(grid_x, f)
     
     # Normalize rays
     rays_norm = torch.sqrt(rays_x**2 + rays_y**2 + rays_z**2)
@@ -162,8 +202,12 @@ def equirect_to_perspective(
         rays_y_r = rx * sin_r + ry * cos_r
     
     # XYZ -> Spherical (theta, phi)
-    theta = torch.atan2(rays_x_r, -rays_z_r)
-    phi = torch.asin(torch.clamp(rays_y_r, -1.0, 1.0))
+    # Theta: Atan2(X, Z) in OpenCV world
+    theta = torch.atan2(rays_x_r, rays_z_r)
+    # Phi: Asin(-Y / Norm) because standard equirect has -Up to +Down? 
+    # Actually most panoramas have +Up (phi > 0) towards the top.
+    # In OpenCV, -Y is Up.
+    phi = torch.asin(torch.clamp(-rays_y_r, -1.0, 1.0))
     
     # Spherical -> UV Grid [-1, 1]
     u = theta / math.pi 
@@ -225,7 +269,7 @@ def equirect_to_perspective(
         mask_np = (mask_tensor.squeeze().cpu().numpy() * 255).astype(np.uint8)
         mask_img = Image.fromarray(mask_np, mode="L")
 
-    return out_img, mask_img
+    return out_img, mask_img, f
 
 
 def create_filter_mask(
@@ -363,18 +407,22 @@ class VNCCS_WorldMirror3D:
                 "mask_threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05, "tooltip": "Distortion Mask Threshold. 0.5 means discard anything beyond 50% weight. Increase to fix ghosting, decrease to fix holes."}),
                 "use_direct_points": ("BOOLEAN", {"default": False, "tooltip": "Use Direct Point Cloud Prediction (PTS3D) instead of Depth Projection. Bypasses camera distortion issues but relies on model's internal geometry."}),
                 "use_consensus": ("BOOLEAN", {"default": False, "tooltip": "Enable Consensus Merging (Voxel Depth Filter). High-quality mode that removes depth outliers and ghosting from overlapping views. Use for Panoramas."}),
+                "consensus_tolerance": ("FLOAT", {"default": 0.15, "min": 0.01, "max": 0.5, "step": 0.01, "tooltip": "Depth deviation threshold for consensus merging. Lower = tighter/cleaner walls, Higher = more forgiving."}),
+                "resolution_mode": (["Standard", "HD", "Ultra"], {"default": "Standard", "tooltip": "Standard: Single-pass 518px. HD: Multi-pass tiling for 1024px backgrounds. Ultra: Overlapping patches for maximum detail."}),
+                "camera_intrinsics": ("TENSOR", {"tooltip": "Optional: Intrinsics matrices from 'Equirect 360 to Views' node. REQUIRED for correct geometry at high FOVs."}),
+                "camera_poses": ("TENSOR", {"tooltip": "Optional: Extrinsic matrices (poses) from 'Equirect 360 to Views' node. REQUIRED for correct patch alignment in HD/Ultra modes."}),
             }
         }
     
-    RETURN_TYPES = ("PLY_DATA", "IMAGE", "IMAGE", "TENSOR", "TENSOR")
-    RETURN_NAMES = ("ply_data", "depth_maps", "normal_maps", "camera_poses", "camera_intrinsics")
+    RETURN_TYPES = ("PLY_DATA", "IMAGE", "IMAGE", "TENSOR", "TENSOR", "VNCCS_SPLAT")
+    RETURN_NAMES = ("ply_data", "depth_maps", "normal_maps", "camera_poses", "camera_intrinsics", "raw_splats")
     FUNCTION = "run_inference"
     CATEGORY = "VNCCS/3D"
     
     def run_inference(self, model, images, use_gsplat=True, target_size=518, offload_scheme="none", stabilization="none", 
                       confidence_percentile=10.0, apply_sky_mask=False, filter_edges=True,
                       edge_normal_threshold=5.0, edge_depth_threshold=0.03, mask_threshold=0.5, use_direct_points=False,
-                      use_consensus=False):
+                      use_consensus=False, consensus_tolerance=0.15, resolution_mode="Standard", camera_intrinsics=None, camera_poses=None):
         from torchvision import transforms
         
         if apply_sky_mask and not SKYSEG_AVAILABLE:
@@ -428,9 +476,92 @@ class VNCCS_WorldMirror3D:
                 tensor_img = tensor_img[:, crop_start:crop_start + target_size, :]
                 if tensor_mask is not None:
                     tensor_mask = tensor_mask[crop_start:crop_start + target_size, :]
+                
+                # Update Intrinsics for Crop center shift
+                if camera_intrinsics is not None:
+                    camera_intrinsics[i, 1, 2] -= crop_start
+
+            # --- CRITICAL FIX: Intrinsic Scaling ---
+            # If we resized from orig_w/h to new_w/h, we MUST scale the geometric priors
+            # Otherwise the model thinks the FOV is different than what is shown (Maznya bug)
+            if camera_intrinsics is not None:
+                scale_x = new_w / orig_w
+                scale_y = new_h / orig_h
+                camera_intrinsics[i, 0, 0] *= scale_x # fx
+                camera_intrinsics[i, 1, 1] *= scale_y # fy
+                camera_intrinsics[i, 0, 2] *= scale_x # cx
+                camera_intrinsics[i, 1, 2] *= scale_y # cy
             
             tensor_list.append(tensor_img)
             mask_list.append(tensor_mask)
+
+        # --- HD Tiling Logic ---
+        # If HD/Ultra is enabled, we slice EACH view into multiple overlapping 518px patches.
+        # This effectively increases point density by 4x (HD) or 9x (Ultra).
+        if resolution_mode in ["HD", "Ultra"]:
+            print(f"👺 [WorldMirror] HD Tiling Enabled ({resolution_mode}). Slicing views...")
+            new_tensor_list = []
+            new_mask_list = []
+            new_intrinsics_list = []
+            new_poses_list = [] # Trace poses for each patch
+            
+            # Grid size: HD = 2x2, Ultra = 3x3
+            grid_n = 2 if resolution_mode == "HD" else 3
+            
+            for i in range(len(tensor_list)):
+                img_t = tensor_list[i] # [C, H, W]
+                mask_t = mask_list[i] # [H, W] or None
+                
+                _, h, w = img_t.shape
+                
+                # We want grid_n x grid_n patches of size 518
+                patch_w, patch_h = 518, 518
+                
+                # Calculate step to cover the image with grid_n patches
+                # step = (w - patch_w) / (grid_n - 1)
+                step_x = (w - patch_w) / (grid_n - 1) if grid_n > 1 else 0
+                step_y = (h - patch_h) / (grid_n - 1) if grid_n > 1 else 0
+                
+                for row in range(grid_n):
+                    for col in range(grid_n):
+                        oy = int(row * step_y)
+                        ox = int(col * step_x)
+                        
+                        # Extract Patch
+                        p_img = img_t[:, oy:oy+patch_h, ox:ox+patch_w]
+                        p_mask = mask_t[oy:oy+patch_h, ox:ox+patch_w] if mask_t is not None else None
+                        
+                        new_tensor_list.append(p_img)
+                        new_mask_list.append(p_mask)
+                        
+                        # Correct Intrinsics if provided
+                        if camera_intrinsics is not None:
+                            # camera_intrinsics is already scaled to full-size patch parent
+                            orig_K = camera_intrinsics[i].clone()
+                            # Correction: cx' = cx - ox, cy' = cy - oy
+                            orig_K[0, 2] -= ox
+                            orig_K[1, 2] -= oy
+                            new_intrinsics_list.append(orig_K)
+                        
+                        # Correct/Inject Poses if provided
+                        if camera_poses is not None:
+                            # Each patch inherits the same orientation as its parent view
+                            # This staples them together in 3D space
+                            orig_P = camera_poses[i].clone()
+                            new_poses_list.append(orig_P)
+            
+            tensor_list = new_tensor_list
+            mask_list = new_mask_list
+            if camera_intrinsics is not None:
+                camera_intrinsics = torch.stack(new_intrinsics_list)
+            if camera_poses is not None:
+                camera_poses = torch.stack(new_poses_list)
+            
+            # Update B and target_size for the rest of the function
+            B = len(tensor_list)
+            target_size = 518 # Patches are always 518
+            print(f"   -> Result: {B} patches of {target_size}px.")
+
         
         # device management
         execution_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -514,6 +645,10 @@ class VNCCS_WorldMirror3D:
                  worldmirror.to(execution_device)
 
         views = {"img": imgs_tensor}
+        if camera_poses is not None:
+             # camera_poses is [S, 4, 4]. Model expects [B, S, 4, 4]
+             # Note: logic in worldmirror.py strips it to [B, S, 3, 4] internally
+             views["camera_poses"] = camera_poses.unsqueeze(0).to(execution_device)
         
         # Prepare Distortion Mask (from Alpha Channel) - Moved UP before inference
         distortion_mask_np = None
@@ -528,16 +663,27 @@ class VNCCS_WorldMirror3D:
                      clean_masks.append(np.ones((target_size, target_size), dtype=np.float32))
             distortion_mask_np = np.stack(clean_masks, axis=0) # [S, H, W]
             
-            # Create logic mask for Splat Filtering
-            # S, H, W -> Boolean Tensor on GPU
-            # AGGRESSIVE: We treat > mask_threshold as Valid.
+            # Create logic mask for Splat Filtering (Thresholded)
             filter_mask_tensor = torch.from_numpy(distortion_mask_np > mask_threshold).to(execution_device)
-            # Flatten is handled inside renderer, but shape must match (B, S, H, W)
-            # Current shape is (S, H, W). We need (B, S, H, W) where B=1.
             filter_mask_tensor = filter_mask_tensor.unsqueeze(0)
+            
+            # Store RAW masks (0..1) for Refinement Weighted Loss
+            raw_distortion_masks = torch.from_numpy(distortion_mask_np).unsqueeze(0).to(execution_device)
+        else:
+            raw_distortion_masks = None
 
 
         cond_flags = [0, 0, 0]
+        if camera_intrinsics is not None:
+             print("👺 [WorldMirror] Enabling Camera Intrinsics Conditioning...")
+             # camera_intrinsics is [S, 3, 3]. Model expects [B, S, 3, 3]
+             views["camera_intrs"] = camera_intrinsics.unsqueeze(0).to(execution_device)
+             cond_flags[2] = 1 # Enable Rays/Intrinsics conditioning
+        
+        if camera_poses is not None:
+             print("👺 [WorldMirror] Enabling Camera Pose Conditioning...")
+             # Since we injected views["camera_poses"] above, we just enable the flag
+             cond_flags[0] = 1 # Enable Pose conditioning
         
         try:
             # Override GS State based on toggle
@@ -559,8 +705,13 @@ class VNCCS_WorldMirror3D:
                         confidence_percentile=confidence_percentile,
                         filter_mask=filter_mask_tensor,
                         use_direct_points=use_direct_points,
-                        use_consensus=use_consensus
+                        use_consensus=use_consensus,
+                        consensus_tolerance=consensus_tolerance
                     )
+            
+            # Post-inference: Attach distortion masks for the Refiner
+            if raw_distortion_masks is not None:
+                predictions["distortion_masks"] = raw_distortion_masks
         finally:
             # Restore original state to avoid side effects
             if hasattr(worldmirror, "enable_gs"):
@@ -743,17 +894,20 @@ class VNCCS_WorldMirror3D:
         else:
             normals_out = torch.zeros(B, target_size, target_size, 3)
         
-        # Extract camera data for separate outputs
+        # Move to CPU for ComfyUI compatibility
         camera_poses_out = predictions.get("camera_poses")
         camera_intrs_out = predictions.get("camera_intrs")
         
-        # Move to CPU for ComfyUI compatibility
         if camera_poses_out is not None:
             camera_poses_out = camera_poses_out.cpu().float()
         if camera_intrs_out is not None:
             camera_intrs_out = camera_intrs_out.cpu().float()
         
-        return (ply_data, depth_out, normals_out, camera_poses_out, camera_intrs_out)
+        # Add internal images to predictions for SplatRefiner
+        predictions["images"] = imgs_tensor
+        predictions["raw_images"] = images
+
+        return (ply_data, depth_out, normals_out, camera_poses_out, camera_intrs_out, predictions)
 
 
 class VNCCS_Equirect360ToViews:
@@ -766,6 +920,7 @@ class VNCCS_Equirect360ToViews:
                 "panorama": ("IMAGE",),
             },
             "optional": {
+                "quality": (["Standard (518)", "Marble HD (1022)", "Marble Ultra (1526)"], {"default": "Standard (518)"}),
                 # Unlocked limits for Brute Force/Consensus experiments
                 "fov": ("INT", {"default": 60, "min": 1, "max": 179}),
                 "yaw_step": ("INT", {"default": 30, "min": 1, "max": 180}),
@@ -779,13 +934,22 @@ class VNCCS_Equirect360ToViews:
             }
         }
     
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("views",)
+    RETURN_TYPES = ("IMAGE", "TENSOR", "TENSOR")
+    RETURN_NAMES = ("views", "intrinsics", "camera_poses")
     FUNCTION = "extract_views"
     CATEGORY = "VNCCS/3D"
     
-    def extract_views(self, panorama, fov=90, yaw_step=45, pitches="0,-30,30", output_size=518, 
+    def extract_views(self, panorama, quality="Standard (518)", fov=90, yaw_step=45, pitches="0,-30,30", output_size=518, 
                       dynamic_fov=True, correct_distortion=False, output_distortion_mask=False, mask_falloff=2.2, yaw_offset=0.0):
+        
+        # Override output_size if Marble quality is selected
+        if "Standard" in quality:
+            output_size = 518
+        elif "HD" in quality:
+            output_size = 1022
+        elif "Ultra" in quality:
+            output_size = 1526
+            
         pitch_list = [int(p.strip()) for p in pitches.split(",")]
         
         img_np = (panorama[0].cpu().numpy() * 255).astype(np.uint8)
@@ -801,6 +965,9 @@ class VNCCS_Equirect360ToViews:
         print(f"   - Settings: FOV={fov}, Step={yaw_step}, Output={output_size}")
         print(f"   - Features: DynamicFOV={dynamic_fov}, DistortionCorrection={correct_distortion}, Mask={output_distortion_mask}")
 
+        intrinsics_list = []
+        poses_list = []
+
         for yaw in yaw_angles:
             for pitch in pitch_list:
                 
@@ -811,7 +978,7 @@ class VNCCS_Equirect360ToViews:
                 use_correction = correct_distortion and (abs(pitch) < 20)
                 proj_name = "Cylindrical-ish" if use_correction else "Rectilinear"
                 
-                view, mask = equirect_to_perspective(
+                view, mask, focal = equirect_to_perspective(
                     pil_img,
                     fov_deg=fov,
                     yaw_deg=(yaw + yaw_offset) % 360, # Apply Offset and Wrap
@@ -822,6 +989,32 @@ class VNCCS_Equirect360ToViews:
                     return_mask=output_distortion_mask,
                     mask_falloff=mask_falloff
                 )
+
+                # Construct Intrinsics Matrix [3, 3]
+                # [ fx,  0, cx ]
+                # [  0, fy, cy ]
+                # [  0,  0,  1 ]
+                # WorldMirror expects intrinsics normalized by image size? 
+                # According to worldmirror.py line 306: intrinsics[:, :, 0, 0] / w
+                # So here we store absolute pixels, worldmirror will normalize them.
+                cx, cy = output_size / 2.0, output_size / 2.0
+                fx = focal * (output_size / 2.0) / math.tan(math.radians(fov)/2) # Wait, f is 1/tan(fov_rad/2)
+                # Correct calculation: f_pixels = (output_size / 2.0) * focal
+                f_pixels = (output_size / 2.0) * focal
+                intra = np.array([
+                    [f_pixels, 0, cx],
+                    [0, f_pixels, cy],
+                    [0, 0, 1]
+                ], dtype=np.float32)
+                intrinsics_list.append(intra)
+                
+                # Construct Pose Matrix [4, 4] (C2W)
+                # Based on Yaw/Pitch/Roll logic in equirect_to_perspective
+                # We use (yaw + yaw_offset) to match the view rotation
+                R = build_rotation_matrix(pitch, yaw + yaw_offset, 0.0)
+                pose = np.eye(4, dtype=np.float32)
+                pose[:3, :3] = R
+                poses_list.append(pose)
                 
                 view_np = np.array(view).astype(np.float32) / 255.0
                 
@@ -852,10 +1045,12 @@ class VNCCS_Equirect360ToViews:
         # If True, we return RGBA.
         
         views_tensor = torch.from_numpy(np.stack(views, axis=0))
+        intrinsics_tensor = torch.from_numpy(np.stack(intrinsics_list, axis=0))
+        poses_tensor = torch.from_numpy(np.stack(poses_list, axis=0))
         
         print(f"✅ Extracted {total} views (Channels: {views_tensor.shape[-1]})")
         
-        return (views_tensor,)
+        return (views_tensor, intrinsics_tensor, poses_tensor)
 
 
 def extract_splat_params(data):
@@ -2075,6 +2270,481 @@ class VNCCS_PLYSceneRenderer:
         return (rendered_images, poses_out, Ks_out)
 
 
+class VNCCS_SplatRefiner:
+    """
+    Post-inference Gaussian Splatting Refinement.
+    Uses backpropagation to tune splat parameters against the source images.
+    """
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "raw_splats": ("VNCCS_SPLAT",),
+                "iterations": ("INT", {"default": 100, "min": 1, "max": 10000, "step": 10}),
+                "lr": ("FLOAT", {"default": 0.001, "min": 0.0001, "max": 0.1, "step": 0.0001}),
+            },
+            "optional": {
+                "images": ("IMAGE",),
+                "optimize_means": ("BOOLEAN", {"default": True}),
+                "optimize_scales": ("BOOLEAN", {"default": True}),
+                "optimize_opacities": ("BOOLEAN", {"default": True}),
+                "optimize_colors": ("BOOLEAN", {"default": True}),
+                "consensus_bonus": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.1, "tooltip": "Experimental: Penalize points that move too far from their consensus neighbors. Range 1.0-5.0 recommended for V2."}),
+                "optimize_camera": ("BOOLEAN", {"default": True, "tooltip": "V2+: Allow minor camera pose adjustments to fix ghosting (doubled objects)."}),
+                "geometry_source": (["gaussians", "direct_pts3d"], {"default": "gaussians", "tooltip": "gaussians: use positions from input splats. direct_pts3d: RE-SYNC to raw 3D head (fixes broken/ghosted objects if projection failed)."}),
+            }
+        }
+    
+    RETURN_TYPES = ("PLY_DATA", "TENSOR")
+    RETURN_NAMES = ("ply_data", "camera_poses")
+    FUNCTION = "refine"
+    CATEGORY = "VNCCS/3D"
+    
+    def refine(self, raw_splats, images, iterations=100, lr=0.001, 
+               optimize_means=True, optimize_scales=True, optimize_opacities=True, optimize_colors=True, 
+               consensus_bonus=1.0, optimize_camera=True, geometry_source="gaussians"):
+        import torch.optim as optim
+        
+        # 1. Prepare Data
+        # raw_splats is the 'predictions' dict from WorldMirror
+        splats = raw_splats.get("splats")
+        if splats is None:
+            raise ValueError("No splat data found in raw_splats input.")
+            
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # 2. Prepare Ground Truth Images
+        # Priority: use 'images' stored inside raw_splats (already tiled/resized/aligned)
+        # Fallback: use external 'images' input
+        internal_imgs = raw_splats.get("images")
+        
+        if internal_imgs is not None:
+            # internal_imgs is [1, V, 3, H, W]
+            gt_images_raw = internal_imgs[0]
+            print(f"   - Found internal tiled images: {gt_images_raw.shape}")
+        elif images is not None:
+             # ComfyUI images are [V, H, W, 3] -> [V, 3, H, W]
+             gt_images_raw = images.permute(0, 3, 1, 2)
+             print(f"   - Using external source images: {gt_images_raw.shape}")
+        else:
+            raise ValueError("No ground truth images provided (neither internal nor external).")
+        
+        # 2. Setup Parameters for Optimization
+        # CRITICAL: Prepare ALL data inside inference_mode(False) to avoid "Inference tensor" errors
+        with torch.inference_mode(False):
+            # 2.1 Prepare Ground Truth with explicit clone to break inference bond
+            gt_images = gt_images_raw.detach().clone().to(device).float()
+            
+            # CRITICAL FIX: Match batch size for HD/Ultra tiling
+            # Note: viewmats might not be on GPU yet, using raw_splats key as proxy
+            V_render = raw_splats["rendered_extrinsics"][0].shape[0]
+            if gt_images.shape[0] != V_render:
+                print(f"⚠️ [SplatRefiner] Batch mismatch! Ground Truth={gt_images.shape[0]}, Render={V_render}.")
+                if V_render % gt_images.shape[0] == 0:
+                    repeat_val = V_render // gt_images.shape[0]
+                    gt_images = gt_images.repeat_interleave(repeat_val, dim=0)
+                    print(f"   -> Broadcasted to {gt_images.shape}")
+                else:
+                    raise ValueError(f"Cannot match GT images {gt_images.shape[0]} to render views {V_render}.")
+            
+            B_views = gt_images.shape[0]
+            # STABLE OPTIMIZATION: Convert to unbounded space
+            # 1. Means (Positions) - reduced LR later
+            means = splats["means"][0].detach().clone().float().to(device).requires_grad_(optimize_means)
+            quats = splats["quats"][0].detach().clone().float().to(device) # Rotation remains fixed for stability
+            
+            # 2. Scales - Optimize in log-space to ensure they stay positive
+            log_scales = torch.log(splats["scales"][0].detach().clone().float().to(device) + 1e-8)
+            if optimize_scales:
+                log_scales.requires_grad_(True)
+                
+            # 3. Opacities - Optimize in logit-space to ensure they stay in [0, 1]
+            # WorldMirror opacities are already sigmoid-activated.
+            opacities_raw = splats["opacities"][0].detach().clone().float().to(device)
+            logit_opacities = torch.logit(opacities_raw.clamp(1e-6, 1.0 - 1e-6))
+            if optimize_opacities:
+                logit_opacities.requires_grad_(True)
+                
+            # 4. Colors (SH) - Boosted LR later
+            sh = splats["sh"][0].detach().clone().float().to(device).requires_grad_(optimize_colors)
+            
+            # V3.2: GEOMETRIC RESCUE MODE
+            # If user wants to re-sync to the Direct 3D branch, we swap the means before starting.
+            if geometry_source == "direct_pts3d" and "pts3d" in raw_splats:
+                # pts3d is [1, S, H, W, 3]. Flatten to match dense splats
+                direct_means = raw_splats["pts3d"][0].detach().clone().reshape(-1, 3).to(device).float()
+                if direct_means.shape[0] == means.shape[0]:
+                    print(f"   🎯 [SplatRefiner] GEOMETRIC RESCUE: Re-syncing Gaussians to Direct 3D head.")
+                    means = direct_means.requires_grad_(optimize_means)
+                else:
+                    print(f"   ⚠️ [SplatRefiner] Rescue failed: shape mismatch. Pruned splats not supported for re-sync.")
+            
+            # 3. Setup Camera Data (Rendered Views)
+            viewmats = raw_splats["rendered_extrinsics"][0].detach().clone().to(device).float() # [V, 4, 4]
+            if optimize_camera:
+                viewmats.requires_grad_(True)
+            
+            Ks = raw_splats["rendered_intrinsics"][0].detach().clone().to(device).float()       # [V, 3, 3]
+            H, W = gt_images.shape[2], gt_images.shape[3]
+            
+            # 3.2 Prepare Distortion Masks (if available from WorldMirror)
+            distortion_masks = raw_splats.get("distortion_masks")
+            if distortion_masks is not None:
+                distortion_masks = distortion_masks[0].detach().clone().to(device).float() # [V, H, W]
+                print(f"   - Active Distortion Correction: weighted loss enabled.")
+
+            # 4. Optimization Loop with Parameter-Specific Learning Rates (V3 Force-Sync)
+            param_groups = []
+            if optimize_means:
+                param_groups.append({"params": [means], "lr": lr * 0.5})      
+            if optimize_scales:
+                param_groups.append({"params": [log_scales], "lr": lr * 1.0})
+            if optimize_opacities:
+                param_groups.append({"params": [logit_opacities], "lr": lr * 1.0})
+            if optimize_colors:
+                param_groups.append({"params": [sh], "lr": lr * 1.0})         
+            if optimize_camera:
+                # BOOSTED LR: Camera poses are the primary source of ghosting in V3 deep-dive
+                param_groups.append({"params": [viewmats], "lr": lr * 2.0})   
+            
+            if not param_groups:
+                print("⚠️ [SplatRefiner] No parameters selected for optimization. Skipping.")
+                return (raw_splats, raw_splats["camera_poses"])
+
+            optimizer = optim.Adam(param_groups)
+            
+            # Determine actual renderer to use
+            from src.models.models.rasterization import Rasterizer
+            rasterizer = Rasterizer()
+            
+            print(f"🔥 [SplatRefiner] Marble Stable Refinement V2 Start: {iterations} iterations")
+            print(f"   - Target: {B_views} views at {W}x{H}")
+            print(f"   - Points: {len(means):,}")
+            print(f"   - Features: SSIM+L1 Hybrid, Camera Opt={optimize_camera}, Strict Anchoring")
+            
+            # Helper for SSIM Loss (Distortion-Weighted V3)
+            def ssim(img1, img2, window_size=11, size_average=True, mask=None):
+                import torch.nn.functional as F
+                mu1 = F.avg_pool2d(img1, window_size, stride=1, padding=window_size//2)
+                mu2 = F.avg_pool2d(img2, window_size, stride=1, padding=window_size//2)
+                mu1_sq = mu1.pow(2)
+                mu2_sq = mu2.pow(2)
+                mu1_mu2 = mu1 * mu2
+                sigma1_sq = F.avg_pool2d(img1 * img1, window_size, stride=1, padding=window_size//2) - mu1_sq
+                sigma2_sq = F.avg_pool2d(img2 * img2, window_size, stride=1, padding=window_size//2) - mu2_sq
+                sigma12 = F.avg_pool2d(img1 * img2, window_size, stride=1, padding=window_size//2) - mu1_mu2
+                C1 = 0.01 ** 2
+                C2 = 0.03 ** 2
+                ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
+                
+                if mask is not None:
+                    # Weight map by distortion mask
+                    if mask.dim() == 3: mask = mask.unsqueeze(1)
+                    return (ssim_map * mask).sum() / (mask.sum() * ssim_map.shape[1] + 1e-8)
+                
+                return ssim_map.mean() if size_average else ssim_map.mean(1).mean(1).mean(1)
+
+            # Epsilon-Anchor for positions (Relaxed for V2.1: 15cm radius)
+            EPSILON_RADIUS = 0.15 
+            original_means = means.clone().detach() 
+            
+            with torch.enable_grad():
+                for i in range(iterations):
+                    optimizer.zero_grad()
+                    
+                    # TRANSFORM PARAMETERS
+                    curr_scales = torch.exp(log_scales)
+                    curr_opacities = torch.sigmoid(logit_opacities)
+                    
+                    # Render
+                    rendered_colors, _, _ = rasterizer.rasterize_batches(
+                        [means], [quats], [curr_scales], [curr_opacities], [sh], 
+                        viewmats.unsqueeze(0), Ks.unsqueeze(0), W, H
+                    )
+                    
+                    # [V, 3, H, W]
+                    pred = rendered_colors[0].permute(0, 3, 1, 2)
+                    
+                    # HYBRID LOSS: L1 + SSIM (Distortion-Weighted V3)
+                    l1_diff = torch.abs(pred - gt_images)
+                    if distortion_masks is not None:
+                        mask_w = distortion_masks.unsqueeze(1)
+                        l1_loss = (l1_diff * mask_w).sum() / (mask_w.sum() * 3 + 1e-8)
+                        ssim_val = ssim(pred, gt_images, mask=distortion_masks)
+                    else:
+                        l1_loss = l1_diff.mean()
+                        ssim_val = ssim(pred, gt_images)
+                    
+                    loss = 0.8 * l1_loss + 0.2 * (1.0 - ssim_val)
+                    
+                    # Strict Geometric Anchoring (L2 penalty if outside epsilon)
+                    if optimize_means:
+                        diff = means - original_means
+                        dist = torch.norm(diff, dim=-1)
+                        # Penalize points moving > EPSILON_RADIUS
+                        penalty = torch.mean(torch.clamp(dist - EPSILON_RADIUS, min=0)**2)
+                        loss += penalty * 10.0
+                    
+                    # Consensus Bonus (Local density/structure maintenance)
+                    if consensus_bonus > 0:
+                        # Re-using the distance-from-origin penalty but scaled by user
+                        loss += torch.mean(torch.norm(means - original_means, dim=-1)) * consensus_bonus * 0.1
+                    
+                    # Optimization step
+                    loss.backward()
+                    optimizer.step()
+                    
+                    # POST-STEP CLAMPING
+                    with torch.no_grad():
+                        # Keep points within logical bounds (Relaxed for V2.1: 1.5m limit)
+                        diff = means - original_means
+                        dist = torch.norm(diff, dim=-1, keepdim=True)
+                        clip_mask = (dist > 1.5).squeeze(-1) 
+                        if clip_mask.any():
+                            means[clip_mask] = original_means[clip_mask] + (diff[clip_mask] / dist[clip_mask]) * 1.5
+                    
+                    if (i+1) % 50 == 0 or i == 0:
+                        print(f"   [Iter {i+1:4d}] Loss: {loss.item():.6f} (L1: {l1_loss.item():.4f}, SSIM: {ssim_val.item():.4f})")
+
+            # FINAL CLAMPING AND ACTIVATION
+            final_means = means.detach()
+            final_scales = torch.exp(log_scales).detach()
+            final_opacities = torch.sigmoid(logit_opacities).detach()
+            final_sh = sh.detach()
+            final_poses = viewmats.detach().cpu()
+        
+        # 5. Pack results back into a PLY-compatible structure
+        # We mimic the WorldMirror output structure so SavePLY works
+        new_splats = {
+            "means": [final_means.cpu()],
+            "quats": [quats.detach().cpu()],
+            "scales": [final_scales.cpu()],
+            "opacities": [final_opacities.cpu()],
+            "sh": [final_sh.cpu()],
+        }
+        
+        refined_ply_data = {
+            "splats": new_splats,
+            "images": images.detach().cpu().permute(0, 3, 1, 2).unsqueeze(0) # Store as [1, V, 3, H, W]
+        }
+        
+        print("✅ [SplatRefiner] Refinement Complete.")
+        
+        return (refined_ply_data, final_poses)
+
+
+
+class VNCCS_WorldMirror3D_Official:
+    """
+    Clean WorldMirror 3D Reconstruction — mirrors the official Tencent infer.py exactly.
+    No conditioning, no tiling, no consensus. Standard 'crop' preprocessing.
+    Only use_direct_points is kept as an enhancement option.
+    """
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("WORLDMIRROR_MODEL",),
+                "images": ("IMAGE",),
+            },
+            "optional": {
+                "target_size": ("INT", {"default": 518, "min": 252, "max": 1024, "step": 14}),
+                "use_gsplat": ("BOOLEAN", {"default": True, "tooltip": "Enable Gaussian Splatting renderer. If disabled, falls back to Point Cloud only."}),
+                "use_direct_points": ("BOOLEAN", {"default": False, "tooltip": "Use pts3d (globally consistent pointmap) for Gaussian positions instead of depth reprojection. May improve multi-view overlap alignment."}),
+                "confidence_percentile": ("FLOAT", {"default": 10.0, "min": 0.0, "max": 100.0, "step": 1.0, "tooltip": "Filter bottom X% low-confidence points."}),
+                "filter_edges": ("BOOLEAN", {"default": True, "tooltip": "Remove artifact points at depth discontinuities."}),
+                "edge_depth_threshold": ("FLOAT", {"default": 0.03, "min": 0.001, "max": 0.5, "step": 0.001}),
+            }
+        }
+    
+    RETURN_TYPES = ("PLY_DATA", "IMAGE", "IMAGE", "TENSOR", "TENSOR", "VNCCS_SPLAT")
+    RETURN_NAMES = ("ply_data", "depth_maps", "normal_maps", "camera_poses", "camera_intrinsics", "raw_splats")
+    FUNCTION = "run_inference"
+    CATEGORY = "VNCCS/3D"
+    
+    def run_inference(self, model, images, target_size=518, use_gsplat=True,
+                      use_direct_points=False, confidence_percentile=10.0,
+                      filter_edges=True, edge_depth_threshold=0.03):
+        from torchvision import transforms
+        
+        # Ensure target_size is divisible by 14
+        target_size = (target_size // 14) * 14
+        
+        worldmirror = model["model"]
+        device = model["device"]
+        
+        # =====================================================================
+        # Image Preprocessing — EXACT replica of official prepare_images_to_tensor
+        # Strategy: "crop" — resize width to target_size, center-crop height
+        # =====================================================================
+        B, H_orig, W_orig, C = images.shape
+        
+        converter = transforms.ToTensor()
+        patch_size = 14
+        tensor_list = []
+        
+        for i in range(B):
+            img = images[i].cpu().numpy()
+            img = (img * 255).astype(np.uint8)
+            pil_img = Image.fromarray(img)
+            
+            # Handle RGBA (blend with white background, like official)
+            if pil_img.mode == "RGBA":
+                white_bg = Image.new("RGBA", pil_img.size, (255, 255, 255, 255))
+                pil_img = Image.alpha_composite(white_bg, pil_img)
+            pil_img = pil_img.convert("RGB")
+            
+            orig_w, orig_h = pil_img.size
+            
+            # Official "crop" strategy: set width to target_size, proportional height
+            new_w = target_size
+            new_h = round(orig_h * (new_w / orig_w) / patch_size) * patch_size
+            
+            pil_img = pil_img.resize((new_w, new_h), Image.Resampling.BICUBIC)
+            tensor_img = converter(pil_img)  # [3, H, W] in [0, 1]
+            
+            # Center crop height if larger than target_size
+            if new_h > target_size:
+                crop_start = (new_h - target_size) // 2
+                tensor_img = tensor_img[:, crop_start:crop_start + target_size, :]
+            
+            tensor_list.append(tensor_img)
+        
+        # Stack and batch — official format: [1, S, 3, H, W]
+        imgs_tensor = torch.stack(tensor_list).unsqueeze(0)
+        
+        # =====================================================================
+        # Device Management (simple — no offload complexity)
+        # =====================================================================
+        execution_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        original_device = next(worldmirror.parameters()).device
+        
+        if original_device != execution_device:
+            worldmirror.to(execution_device)
+        
+        imgs_tensor = imgs_tensor.to(execution_device)
+        
+        B_batch, S, C_ch, H, W = imgs_tensor.shape
+        print(f"🚀 [Official] Running WorldMirror inference on {S} images ({H}x{W})...")
+        
+        # =====================================================================
+        # Inference — EXACT replica of official infer.py
+        # cond_flags = [0, 0, 0] — NO conditioning
+        # No stabilization, no filter_mask, no consensus
+        # =====================================================================
+        views = {"img": imgs_tensor}
+        cond_flags = [0, 0, 0]  # Official default — no conditioning
+        
+        # Override GS state
+        original_gs_state = getattr(worldmirror, "enable_gs", True)
+        
+        try:
+            if use_gsplat and not GSPLAT_AVAILABLE:
+                print("⚠️ gsplat requested but library not found. Falling back to Point Cloud.")
+                worldmirror.enable_gs = False
+            else:
+                worldmirror.enable_gs = use_gsplat
+            
+            use_amp = execution_device.type == "cuda"
+            amp_dtype = torch.bfloat16 if use_amp and torch.cuda.is_bf16_supported() else torch.float32
+            
+            with torch.no_grad():
+                with torch.amp.autocast('cuda', enabled=use_amp, dtype=amp_dtype):
+                    predictions = worldmirror(
+                        views=views,
+                        cond_flags=cond_flags,
+                        use_direct_points=use_direct_points,
+                    )
+        finally:
+            worldmirror.enable_gs = original_gs_state
+            if original_device.type == "cpu":
+                worldmirror.to("cpu")
+                torch.cuda.empty_cache()
+        
+        print("✅ [Official] Inference complete")
+        
+        # =====================================================================
+        # Post-Processing — matching official infer.py filter logic
+        # =====================================================================
+        S = predictions["depth"].shape[1]
+        H = predictions["depth"].shape[2]
+        W = predictions["depth"].shape[3]
+        
+        # Compute filter mask (confidence + edges)
+        pts3d_conf_np = predictions["pts3d_conf"][0].detach().cpu().numpy()
+        depth_preds_np = predictions["depth"][0].detach().cpu().numpy()
+        normal_preds_np = predictions["normals"][0].detach().cpu().numpy()
+        
+        final_mask = create_filter_mask(
+            pts3d_conf=pts3d_conf_np,
+            depth_preds=depth_preds_np,
+            normal_preds=normal_preds_np,
+            sky_mask=None,
+            distortion_mask=None,
+            confidence_percentile=confidence_percentile,
+            edge_normal_threshold=5.0,
+            edge_depth_threshold=edge_depth_threshold,
+            apply_confidence_mask=True,
+            apply_edge_mask=filter_edges,
+            apply_sky_mask=False,
+        )
+        
+        final_mask_flat = torch.from_numpy(final_mask.reshape(-1)).to(execution_device)
+        
+        # Filter Point Cloud
+        filtered_pts = None
+        if "pts3d" in predictions:
+            pts = predictions["pts3d"][0].reshape(-1, 3)
+            filtered_pts = pts[final_mask_flat.to(pts.device)]
+        
+        # Build PLY data output
+        ply_data = {
+            "pts3d": predictions.get("pts3d"),
+            "pts3d_filtered": filtered_pts,
+            "pts3d_conf": predictions.get("pts3d_conf"),
+            "splats": predictions.get("splats"),
+            "images": imgs_tensor,
+            "filter_mask": final_mask_flat,
+            "camera_poses": predictions.get("camera_poses"),
+            "camera_intrs": predictions.get("camera_intrs"),
+        }
+        
+        # Depth maps
+        depth_tensor = predictions.get("depth")
+        if depth_tensor is not None:
+            depth = depth_tensor[0]
+            depth_min = depth.min()
+            depth_max = depth.max()
+            depth_norm = (depth - depth_min) / (depth_max - depth_min + 1e-8)
+            depth_rgb = depth_norm.repeat(1, 1, 1, 3)
+            depth_out = depth_rgb.cpu().float()
+        else:
+            depth_out = torch.zeros(S, target_size, target_size, 3)
+        
+        # Normal maps
+        normal_tensor = predictions.get("normals")
+        if normal_tensor is not None:
+            normals = normal_tensor[0]
+            normals_out = ((normals + 1) / 2).cpu().float()
+        else:
+            normals_out = torch.zeros(S, target_size, target_size, 3)
+        
+        # Camera outputs
+        camera_poses_out = predictions.get("camera_poses")
+        camera_intrs_out = predictions.get("camera_intrs")
+        if camera_poses_out is not None:
+            camera_poses_out = camera_poses_out.cpu().float()
+        if camera_intrs_out is not None:
+            camera_intrs_out = camera_intrs_out.cpu().float()
+        
+        # Store images in predictions for downstream compatibility
+        predictions["images"] = imgs_tensor
+        predictions["raw_images"] = images
+        
+        return (ply_data, depth_out, normals_out, camera_poses_out, camera_intrs_out, predictions)
+
 
 # ============================================================================
 # Node Registration
@@ -2083,29 +2753,36 @@ class VNCCS_PLYSceneRenderer:
 NODE_CLASS_MAPPINGS = {
     "VNCCS_LoadWorldMirrorModel": VNCCS_LoadWorldMirrorModel,
     "VNCCS_WorldMirror3D": VNCCS_WorldMirror3D,
+    "VNCCS_WorldMirror3D_Official": VNCCS_WorldMirror3D_Official,
     "VNCCS_Equirect360ToViews": VNCCS_Equirect360ToViews,
     "VNCCS_SavePLY": VNCCS_SavePLY,
     "VNCCS_BackgroundPreview": VNCCS_BackgroundPreview,
     "VNCCS_DecomposePLYData": VNCCS_DecomposePLYData,
     "VNCCS_PLYSceneRenderer": VNCCS_PLYSceneRenderer,
+    "VNCCS_SplatRefiner": VNCCS_SplatRefiner,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_LoadWorldMirrorModel": "🌐 Load WorldMirror Model",
     "VNCCS_WorldMirror3D": "🏔️ WorldMirror 3D Reconstruction",
+    "VNCCS_WorldMirror3D_Official": "🔬 WorldMirror 3D (Official)",
     "VNCCS_Equirect360ToViews": "🔄 360° Panorama to Views",
     "VNCCS_SavePLY": "💾 Save PLY File",
     "VNCCS_BackgroundPreview": "👁️ Background Preview",
     "VNCCS_DecomposePLYData": "📦 Decompose PLY Data",
     "VNCCS_PLYSceneRenderer": "🎥 PLY Scene Renderer",
+    "VNCCS_SplatRefiner": "🔥 Splat Refiner (Backprop)",
 }
 
 NODE_CATEGORY_MAPPINGS = {
     "VNCCS_LoadWorldMirrorModel": "VNCCS/3D",
     "VNCCS_WorldMirror3D": "VNCCS/3D",
+    "VNCCS_WorldMirror3D_Official": "VNCCS/3D",
     "VNCCS_Equirect360ToViews": "VNCCS/3D",
     "VNCCS_SavePLY": "VNCCS/3D",
     "VNCCS_BackgroundPreview": "VNCCS/3D",
     "VNCCS_DecomposePLYData": "VNCCS/3D",
     "VNCCS_PLYSceneRenderer": "VNCCS/3D",
+    "VNCCS_SplatRefiner": "VNCCS/3D",
 }
+
