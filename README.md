@@ -67,6 +67,21 @@ All models must be placed in the standard ComfyUI directories according to their
 
 You can download them from my huggingface: https://huggingface.co/MIUProject/VNCCS/tree/main
 
+You can execute the following command directly inside your ComfyUI folder. It will automatically download the required model files and place them into the correct directories.
+```bash
+# Make sure jq is installed first
+export HF_TOKEN=your_token
+curl -s -H "Authorization: Bearer $HF_TOKEN" \
+https://huggingface.co/api/models/MIUProject/VNCCS \
+| jq -r '.siblings[].rfilename' \
+| grep '^models/' \
+| awk '{print "https://huggingface.co/MIUProject/VNCCS/resolve/main/"$0"?download=true\n  out="$0}' \
+| aria2c -x16 -s16 -j4 -c \
+    --header="Authorization: Bearer $HF_TOKEN" \
+    --allow-overwrite=true \
+    -i -
+```
+
 # Usage 
 ![Welcome](images/v2/v2_welcome.png)
 
