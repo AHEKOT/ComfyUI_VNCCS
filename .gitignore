@@ -419,3 +419,4 @@ FodyWeavers.xsd
 *.DS_Store
 node.zip
 /.idea/
+/.claude/
