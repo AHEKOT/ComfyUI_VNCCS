@@ -418,3 +418,4 @@ FodyWeavers.xsd
 *.msp
 *.DS_Store
 node.zip
+/.idea/
