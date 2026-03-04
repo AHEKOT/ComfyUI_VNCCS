@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VNCCS Advanced PLY Viewer</title>
+    <style>
+        /* ===== VNCCS Pose Studio Theme ===== */
+        :root {
+            --ps-bg: #1e1e1e;
+            --ps-panel: #252525;
+            --ps-border: #333;
+            --ps-accent: #3558c7;
+            --ps-accent-hover: #4264d9;
+            --ps-success: #2e7d32;
+            --ps-danger: #d32f2f;
+            --ps-text: #e0e0e0;
+            --ps-text-muted: #888;
+            --ps-input-bg: #151515;
+            --ps-input-border: #444;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            background: var(--ps-bg);
+            color: var(--ps-text);
+            overflow: hidden;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 11px;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        #viewerContainer {
+            position: relative;
+            flex: 1;
+            min-height: 0;
+            cursor: grab;
+        }
+
+        #viewerContainer:active {
+            cursor: grabbing;
+        }
+
+        canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        /* === Precision UI Panel === */
+        #uiPanel {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 240px;
+            background: rgba(37, 37, 37, 0.85); /* var(--ps-panel) with transparency */
+            backdrop-filter: blur(4px);
+            border: 1px solid var(--ps-border);
+            border-radius: 6px;
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+            overflow: hidden;
+            z-index: 10;
+        }
+
+        .section-header {
+            background: rgba(26, 26, 26, 0.9);
+            padding: 6px 10px;
+            font-weight: bold;
+            font-size: 10px;
+            color: #fff;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid var(--ps-border);
+        }
+
+        .control-group {
+            padding: 8px 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            border-bottom: 1px solid var(--ps-border);
+        }
+        
+        .control-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .label {
+            color: var(--ps-text-muted);
+            width: 45px;
+        }
+
+        /* Input styling */
+        .number-input-wrap {
+            display: flex;
+            align-items: center;
+            background: var(--ps-input-bg);
+            border: 1px solid var(--ps-input-border);
+            border-radius: 3px;
+            overflow: hidden;
+            width: 130px;
+        }
+
+        .number-input-wrap input {
+            background: transparent;
+            border: none;
+            color: var(--ps-text);
+            font-family: monospace;
+            font-size: 11px;
+            width: 100%;
+            text-align: right;
+            padding: 3px 6px;
+            outline: none;
+        }
+
+        /* Number Spinners */
+        input[type=number]::-webkit-inner-spin-button, 
+        input[type=number]::-webkit-outer-spin-button { 
+            -webkit-appearance: none; 
+            margin: 0; 
+        }
+
+        /* Buttons */
+        .btn {
+            background: var(--ps-accent);
+            color: #fff;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 11px;
+            transition: background 0.1s;
+            text-align: center;
+            flex: 1;
+        }
+        .btn:hover { background: var(--ps-accent-hover); }
+        .btn:active { transform: translateY(1px); }
+        .btn-danger { background: var(--ps-danger); }
+        .btn-danger:hover { background: #b71c1c; }
+
+        /* Saved Cameras List */
+        #savedCamerasList {
+            max-height: 150px;
+            overflow-y: auto;
+            padding: 4px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        #savedCamerasList::-webkit-scrollbar { width: 4px; }
+        #savedCamerasList::-webkit-scrollbar-thumb { background: #555; border-radius: 2px; }
+
+        .saved-camera-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--ps-bg);
+            border: 1px solid var(--ps-border);
+            padding: 3px 6px;
+            border-radius: 3px;
+        }
+        
+        .saved-camera-name {
+            cursor: pointer;
+            flex: 1;
+        }
+        .saved-camera-name:hover {
+            color: #fff;
+            text-decoration: underline;
+        }
+        
+        .btn-icon {
+            background: transparent;
+            color: var(--ps-text-muted);
+            border: none;
+            cursor: pointer;
+            padding: 2px 4px;
+        }
+        .btn-icon:hover { color: var(--ps-danger); }
+
+        .overlay-message {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8);
+            padding: 10px 20px;
+            border-radius: 5px;
+            display: none;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body>
+    <div id="viewerContainer">
+        <canvas id="canvas"></canvas>
+        <div id="loadingMsg" class="overlay-message">Loading PLY Data...</div>
+        
+        <div id="uiPanel">
+            <!-- Transform Section -->
+            <div class="section-header">Camera Transform</div>
+            <div class="control-group">
+                <div class="control-row">
+                    <span class="label">Pos X</span>
+                    <div class="number-input-wrap">
+                        <input type="number" id="camX" step="0.1" value="0.0">
+                    </div>
+                </div>
+                <div class="control-row">
+                    <span class="label">Pos Y</span>
+                    <div class="number-input-wrap">
+                        <input type="number" id="camY" step="0.1" value="0.0">
+                    </div>
+                </div>
+                <div class="control-row">
+                    <span class="label">Pos Z</span>
+                    <div class="number-input-wrap">
+                        <input type="number" id="camZ" step="0.1" value="0.0">
+                    </div>
+                </div>
+            </div>
+            <div class="control-group">
+                <div class="control-row">
+                    <span class="label">Pitch X</span>
+                    <div class="number-input-wrap">
+                        <input type="number" id="camPitch" step="1.0" value="0.0">
+                    </div>
+                </div>
+                <div class="control-row">
+                    <span class="label">Yaw Y</span>
+                    <div class="number-input-wrap">
+                        <input type="number" id="camYaw" step="1.0" value="0.0">
+                    </div>
+                </div>
+                <!-- Roll omitted for simplicity unless needed -->
+            </div>
+            
+            <!-- Controls Section -->
+            <div class="section-header">Controls</div>
+            <div class="control-group" style="font-size: 10px; color: var(--ps-text-muted);">
+                LMB Drag: Look around<br>
+                RMB Drag: Pan up/down/left/right<br>
+                Scroll: Move forward/backward
+            </div>
+
+            <!-- Views Section -->
+            <div class="section-header">Saved Views</div>
+            <div class="control-group">
+                <button class="btn" id="btnSaveView">Save Current View</button>
+            </div>
+            <div id="savedCamerasList">
+                <!-- Items added dynamically -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Script imports -->
+    <script src="../../gaussian_preview/static/gsplat-bundle.js"></script>
+
+    <script type="module">
+        const SPLAT = window.GSPLAT;
+        
+        const canvas = document.getElementById('canvas');
+        const loadingMsg = document.getElementById('loadingMsg');
+        const camerasList = document.getElementById('savedCamerasList');
+        
+        // UI Elements
+        const uiCoords = {
+            x: document.getElementById('camX'),
+            y: document.getElementById('camY'),
+            z: document.getElementById('camZ'),
+            pitch: document.getElementById('camPitch'),
+            yaw: document.getElementById('camYaw')
+        };
+
+        // Core variables
+        let scene, camera, renderer, animationId;
+        let isDragging = false;
+        let dragMode = 0; // 0=none, 1=left(look), 2=right(pan)
+        let lastMouse = { x: 0, y: 0 };
+        
+        // Camera angles
+        let euler = { pitch: 0, yaw: 0, roll: 0 };
+        
+        // Data State
+        let currentSplat = null;
+        let originalScales = null;
+        let savedCameras = []; 
+        let currentFocalLength = 600;
+
+        // Initialize WebGL
+        function initViewer() {
+            scene = new SPLAT.Scene();
+            camera = new SPLAT.Camera();
+            renderer = new SPLAT.WebGLRenderer(canvas);
+            
+            // Set defaults
+            camera.data.fx = currentFocalLength;
+            camera.data.fy = currentFocalLength;
+            
+            // Move camera back a bit to see origin
+            camera.position.z = 5;
+
+            // Handle resize
+            const resize = () => {
+                renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+            };
+            window.addEventListener('resize', resize);
+            resize();
+
+            // Render loop
+            const frame = () => {
+                // Apply rotation to camera data before rendering
+                // Note: gsplat expects rotation as quaternion in camera.data.rotation for the renderer
+                // But typically it reads from camera.position and camera.rotation if we sync them
+                updateCameraRotMatrix();
+                
+                renderer.render(scene, camera);
+                animationId = requestAnimationFrame(frame);
+            };
+            frame();
+            
+            setupEvents();
+        }
+
+        function updateCameraRotMatrix() {
+            // Apply FPS rotation
+            // We want Yaw (Y axis) and Pitch (X axis)
+            const cY = Math.cos(euler.yaw);
+            const sY = Math.sin(euler.yaw);
+            const cP = Math.cos(euler.pitch);
+            const sP = Math.sin(euler.pitch);
+
+            // Standard rotation matrix R = Ry * Rx
+            // This is roughly equivalent to THREE.Euler(pitch, yaw, 0, "YXZ")
+            camera.rotation.set(
+                [cY, sY * sP, sY * cP],
+                [0, cP, -sP],
+                [-sY, cY * sP, cY * cP]
+            );
+        }
+
+        // Send state back to ComfyUI node
+        function syncStateToParent() {
+            // Compute Extrinsics 4x4
+            // camera.rotation is a 3x3 array
+            // camera.position is {x,y,z}
+            
+            // Actually, to construct extrinsics correctly:
+            // Extrinsics = [R | t]
+            // R = camera.rotation
+            // t = -R * position (camera center in world space -> world to camera translation)
+            
+            const R = camera.rotation;
+            const px = camera.position.x;
+            const py = camera.position.y;
+            const pz = camera.position.z;
+            
+            const tx = -(R[0][0]*px + R[0][1]*py + R[0][2]*pz);
+            const ty = -(R[1][0]*px + R[1][1]*py + R[1][2]*pz);
+            const tz = -(R[2][0]*px + R[2][1]*py + R[2][2]*pz);
+            
+            const extrinsics = [
+                [R[0][0], R[0][1], R[0][2], tx],
+                [R[1][0], R[1][1], R[1][2], ty],
+                [R[2][0], R[2][1], R[2][2], tz],
+                [0,       0,       0,       1]
+            ];
+            
+            const intrinsics = [
+                [camera.data.fx, 0, canvas.clientWidth/2],
+                [0, camera.data.fy, canvas.clientHeight/2],
+                [0, 0, 1]
+            ];
+
+            const state = {
+                version: "1.0",
+                update_id: Date.now().toString(),
+                position: {x: px, y: py, z: pz},
+                euler: {pitch: euler.pitch, yaw: euler.yaw, roll: euler.roll},
+                extrinsics: extrinsics,
+                intrinsics: intrinsics
+            };
+
+            window.parent.postMessage({
+                type: 'CAMERA_STATE_UPDATE',
+                state: state
+            }, '*');
+        }
+
+        // Update UI panels with current values
+        function updateUI() {
+            uiCoords.x.value = camera.position.x.toFixed(3);
+            uiCoords.y.value = camera.position.y.toFixed(3);
+            uiCoords.z.value = camera.position.z.toFixed(3);
+            
+            uiCoords.pitch.value = (euler.pitch * 180 / Math.PI).toFixed(1);
+            uiCoords.yaw.value   = (euler.yaw * 180 / Math.PI).toFixed(1);
+        }
+
+        // Handle inputs typed directly
+        function setupUIInputs() {
+            const updateFromUI = () => {
+                camera.position.x = parseFloat(uiCoords.x.value) || 0;
+                camera.position.y = parseFloat(uiCoords.y.value) || 0;
+                camera.position.z = parseFloat(uiCoords.z.value) || 0;
+                
+                euler.pitch = (parseFloat(uiCoords.pitch.value) || 0) * Math.PI / 180;
+                euler.yaw = (parseFloat(uiCoords.yaw.value) || 0) * Math.PI / 180;
+                
+                syncStateToParent();
+            };
+
+            Object.values(uiCoords).forEach(el => {
+                el.addEventListener('change', updateFromUI);
+                el.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') updateFromUI();
+                });
+            });
+
+            document.getElementById('btnSaveView').addEventListener('click', () => {
+                const name = "View " + (savedCameras.length + 1);
+                savedCameras.push({
+                    name: name,
+                    px: camera.position.x, py: camera.position.y, pz: camera.position.z,
+                    pitch: euler.pitch, yaw: euler.yaw
+                });
+                renderSavedCameras();
+                window.parent.postMessage({ type: 'SAVED_CAMERAS_UPDATE', cameras: savedCameras }, '*');
+            });
+        }
+
+        function renderSavedCameras() {
+            camerasList.innerHTML = '';
+            savedCameras.forEach((cam, idx) => {
+                const div = document.createElement('div');
+                div.className = 'saved-camera-item';
+                
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'saved-camera-name';
+                nameSpan.textContent = cam.name;
+                nameSpan.onclick = () => {
+                    camera.position.x = cam.px;
+                    camera.position.y = cam.py;
+                    camera.position.z = cam.pz;
+                    euler.pitch = cam.pitch;
+                    euler.yaw = cam.yaw;
+                    updateUI();
+                    syncStateToParent();
+                };
+
+                const delBtn = document.createElement('button');
+                delBtn.className = 'btn-icon';
+                delBtn.innerHTML = '✖';
+                delBtn.title = "Delete view";
+                delBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    savedCameras.splice(idx, 1);
+                    renderSavedCameras();
+                    window.parent.postMessage({ type: 'SAVED_CAMERAS_UPDATE', cameras: savedCameras }, '*');
+                };
+
+                div.appendChild(nameSpan);
+                div.appendChild(delBtn);
+                camerasList.appendChild(div);
+            });
+        }
+
+        // Custom mouse flight controls
+        function setupEvents() {
+            const container = document.getElementById('viewerContainer');
+            
+            // Prevent context menu
+            container.addEventListener('contextmenu', e => e.preventDefault());
+
+            container.addEventListener('mousedown', e => {
+                if (e.target !== canvas) return; // Don't drag if clicking UI
+                isDragging = true;
+                dragMode = e.button === 0 ? 1 : 2; // 1=left, 2=right
+                lastMouse.x = e.clientX;
+                lastMouse.y = e.clientY;
+            });
+
+            window.addEventListener('mouseup', () => {
+                if (isDragging) syncStateToParent();
+                isDragging = false;
+                dragMode = 0;
+            });
+
+            window.addEventListener('mousemove', e => {
+                if (!isDragging) return;
+                
+                const dx = e.clientX - lastMouse.x;
+                const dy = e.clientY - lastMouse.y;
+                lastMouse.x = e.clientX;
+                lastMouse.y = e.clientY;
+
+                if (dragMode === 1) { // Left click: Look
+                    const sensitivity = 0.005;
+                    euler.yaw += dx * sensitivity;
+                    euler.pitch += dy * sensitivity;
+                    
+                    // Clamp pitch
+                    const limit = Math.PI / 2 - 0.01;
+                    euler.pitch = Math.max(-limit, Math.min(limit, euler.pitch));
+                } 
+                else if (dragMode === 2) { // Right click: Pan
+                    // Translate ALONG the camera plane
+                    const cY = Math.cos(euler.yaw);
+                    const sY = Math.sin(euler.yaw);
+                    
+                    // Create right and up vectors
+                    // up vector is roughly Y (0,1,0), right is (cY, 0, -sY)
+                    const panSpeed = 0.02; // Tune based on scene scale
+                    
+                    // Move right
+                    camera.position.x -= cY * dx * panSpeed;
+                    camera.position.z -= -sY * dx * panSpeed;
+                    
+                    // Move up
+                    camera.position.y += dy * panSpeed; // Negative because WebGL Y goes up, mouse Y goes down
+                }
+                
+                updateUI();
+            });
+
+            // Scroll to Dolly (Move forward/back)
+            container.addEventListener('wheel', e => {
+                const speed = 0.005;
+                const dist = Math.max(-10, Math.min(10, e.deltaY));
+                
+                // Move along view vector
+                const cY = Math.cos(euler.yaw);
+                const sY = Math.sin(euler.yaw);
+                const cP = Math.cos(euler.pitch);
+                const sP = Math.sin(euler.pitch);
+                
+                // Forward vector = (sin(Yaw)*cos(Pitch), -sin(Pitch), cos(Yaw)*cos(Pitch))
+                const fdx = sY * cP;
+                const fdy = -sP;
+                const fdz = cY * cP;
+                
+                camera.position.x += fdx * dist * speed;
+                camera.position.y += fdy * dist * speed;
+                camera.position.z += fdz * dist * speed;
+                
+                updateUI();
+                syncStateToParent(); // Trigger update on scroll end mostly
+            }, { passive: true });
+        }
+
+        async function loadPLY(url) {
+            console.log("[AdvancedViewer] Loading PLY from", url);
+            loadingMsg.style.display = 'block';
+            
+            try {
+                // Fetch ArrayBuffer
+                const res = await fetch(url);
+                if (!res.ok) throw new Error("Fetch failed: " + res.statusText);
+                const arrayBuffer = await res.arrayBuffer();
+                
+                // Clear existing
+                while (scene.objects.length > 0) {
+                    scene.removeObject(scene.objects[0]);
+                }
+                
+                const blob = new Blob([arrayBuffer], { type: 'application/octet-stream' });
+                const blobUrl = URL.createObjectURL(blob);
+                
+                await SPLAT.PLYLoader.LoadAsync(blobUrl, scene);
+                URL.revokeObjectURL(blobUrl);
+                
+                console.log("[AdvancedViewer] Loaded PLY.");
+                
+            } catch (err) {
+                console.error("[AdvancedViewer] Error:", err);
+            } finally {
+                loadingMsg.style.display = 'none';
+            }
+        }
+
+        // Iframe Communications
+        window.addEventListener('message', (e) => {
+            const msg = e.data;
+            if (!msg || !msg.type) return;
+            
+            if (msg.type === "LOAD_MESH_DATA" && msg.filepath) {
+                loadPLY(msg.filepath);
+            }
+            if (msg.type === "SET_SAVED_CAMERAS" && msg.data) {
+                try {
+                    savedCameras = JSON.parse(msg.data);
+                    renderSavedCameras();
+                } catch(err) { console.error(err); }
+            }
+        });
+
+        // Initialize everything
+        initViewer();
+        setupUIInputs();
+        updateUI();
+
+    </script>
+</body>
+</html>

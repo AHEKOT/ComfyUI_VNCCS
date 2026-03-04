@@ -22,6 +22,7 @@ try:
     from .character_cloner import CharacterCloner
     from .clothes_designer import ClothesDesigner
     from .sprite_manager import SpriteManager
+    from .advanced_ply_viewer import VNCCS_AdvancedPlyViewer
 
 
     from .character_creator import NODE_DISPLAY_NAME_MAPPINGS as CHARACTER_CREATOR_DISPLAY_MAPPINGS
@@ -64,6 +65,7 @@ try:
         "CharacterCloner": CharacterCloner,
         "ClothesDesigner": ClothesDesigner,
         "SpriteManager": SpriteManager,
+        "VNCCS_AdvancedPlyViewer": VNCCS_AdvancedPlyViewer,
     }
 
     NODE_DISPLAY_NAME_MAPPINGS = {
@@ -88,6 +90,7 @@ try:
         "CharacterCloner": "VNCCS Character Cloner",
         "ClothesDesigner": "VNCCS Clothes Designer",
         "SpriteManager": "VNCCS Sprite Manager",
+        "VNCCS_AdvancedPlyViewer": "👁️ Advanced PLY Viewer",
     }
 except Exception as e:
     import traceback
