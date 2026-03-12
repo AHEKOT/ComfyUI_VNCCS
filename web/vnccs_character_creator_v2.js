@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { debounce, registerCleanup, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed } from "./vnccs_common.js";
 
 // --- STYLES: 3-Column Grid Layout ---
 const STYLE = `
@@ -372,6 +373,8 @@ app.registerExtension({
                     }
                 };
 
+                const debouncedSave = debounce(() => saveState(), 300);
+
                 let TAG_DATA = null;
 
                 const els = {};
@@ -495,7 +498,7 @@ app.registerExtension({
                     } else {
                         inp = document.createElement("input"); inp.className = "vnccs-input";
                         inp.value = targetObj[key] || "";
-                        inp.onchange = (e) => { targetObj[key] = e.target.value; saveState(); };
+                        inp.oninput = (e) => { targetObj[key] = e.target.value; debouncedSave(); };
                     }
                     els[key] = inp; // Register for updates
                     wrap.appendChild(inp);
@@ -524,7 +527,7 @@ app.registerExtension({
                     range.oninput = (e) => {
                         num.value = e.target.value;
                         targetObj[key] = parseFloat(e.target.value);
-                        saveState();
+                        debouncedSave();
                     };
                     num.onchange = (e) => {
                         let v = parseFloat(e.target.value);
@@ -609,37 +612,14 @@ app.registerExtension({
                 const btnDel = document.createElement("button");
                 btnDel.className = "vnccs-btn vnccs-btn-danger";
                 btnDel.innerText = "DELETE";
-                // Shared Modal Helper
+                // Modal Helper — delegates to vnccs_common showModal
                 const showModal = (title, contentFunc, buttons) => {
-                    const overlay = document.createElement("div"); overlay.className = "vnccs-modal-overlay";
-                    const m = document.createElement("div"); m.className = "vnccs-modal";
-                    m.innerHTML = `<div class="vnccs-section-title">${title}</div>`;
-
-                    // Content
-                    const content = contentFunc(m);
-                    if (content) m.appendChild(content);
-
-                    // Buttons
-                    const row = document.createElement("div"); row.className = "vnccs-btn-row";
-                    buttons.forEach(b => {
-                        const btn = document.createElement("button");
-                        btn.className = `vnccs-btn ${b.class || ""}`;
-                        btn.innerText = b.text;
-                        btn.onclick = async () => {
-                            if (b.action) {
-                                const keepOpen = await b.action(overlay, btn);
-                                if (!keepOpen) overlay.remove();
-                            } else {
-                                overlay.remove();
-                            }
-                        }
-                        row.appendChild(btn);
-                    });
-                    m.appendChild(row);
-
-                    overlay.appendChild(m);
-                    container.appendChild(overlay);
-                    return { overlay, modal: m, content };
+                    // Map widget-specific button classes to common classes
+                    const mappedButtons = buttons.map(b => ({
+                        ...b,
+                        class: b.class?.includes("danger") ? "danger" : b.class?.includes("primary") ? "primary" : undefined
+                    }));
+                    return showCommonModal(container, title, contentFunc, mappedButtons);
                 };
 
                 const doCreate = () => {
@@ -927,7 +907,7 @@ app.registerExtension({
                 seedRow.style.width = "100%"; // Ensure fill
 
                 const seedInp = document.createElement("input"); seedInp.className = "vnccs-input";
-                seedInp.type = "number"; seedInp.value = state.gen_settings.seed || 0;
+                seedInp.type = "number"; seedInp.value = state.gen_settings.seed || generateRandomSeed();
                 seedInp.style.flex = "1.5"; // Give seed more space, but not overwhelming
                 seedInp.onchange = (e) => {
                     state.gen_settings.seed = parseInt(e.target.value);
@@ -1043,7 +1023,7 @@ app.registerExtension({
                     w.innerHTML = `<div class="vnccs-textarea-label">${lbl}</div>`;
                     const t = document.createElement("textarea");
                     t.value = state.character_info[key] || "";
-                    t.oninput = (e) => { state.character_info[key] = e.target.value; saveState(); };
+                    t.oninput = (e) => { state.character_info[key] = e.target.value; debouncedSave(); };
                     w.appendChild(t);
                     els[key] = t;
                     return w;
@@ -1060,28 +1040,23 @@ app.registerExtension({
                 // 6. Logic
 
                 // EVENT LISTENER for Backend Updates
-                api.addEventListener("vnccs.preview.updated", (e) => {
-                    // Check if this event is for ME
-                    // Note: node.id is string or int depending on context, usually string in api inputs.
+                const previewUpdateHandler = (e) => {
                     if (e.detail.node_id == node.id) {
                         const charName = e.detail.character;
                         console.log(`[VNCCS] Preview Update Event received for '${charName}' (Node ${node.id})`);
-                        // Optional: verify character matches current state
                         if (charName === state.character) {
                             console.log("[VNCCS] Character matches. Refreshing local preview...");
-                            // Force reload from cache endpoint
                             els.previewImg.src = `/vnccs/get_cached_preview?character=${encodeURIComponent(charName)}&t=${Date.now()}`;
                             els.previewImg.style.display = "block";
                             els.placeholder.style.display = "none";
-
                             state.preview_valid = true;
-                            // state.preview_source = "gen"; // Logic suggests we are now up to date
+                            state.preview_source = "gen";
                             saveState(true);
-                        } else {
-                            console.warn(`[VNCCS] Ignoring update: Current character '${state.character}' != Update character '${charName}'`);
                         }
                     }
-                });
+                };
+                api.addEventListener("vnccs.preview.updated", previewUpdateHandler);
+                registerCleanup(node, () => api.removeEventListener("vnccs.preview.updated", previewUpdateHandler));
 
                 const init = async () => {
                     loadState();
@@ -1126,6 +1101,10 @@ app.registerExtension({
                         if (g.steps && els.steps) { els.steps.range.value = g.steps; els.steps.num.value = g.steps; }
                         if (g.cfg && els.cfg) { els.cfg.range.value = g.cfg; els.cfg.num.value = g.cfg; }
 
+                        // Auto-generate seed if still 0 (first use or unset)
+                        if ((!g.seed || g.seed === 0) && g.seed_mode !== "randomize") {
+                            g.seed = generateRandomSeed();
+                        }
                         if (g.seed !== undefined && els.seed) els.seed.value = g.seed;
                         if (g.seed_mode && els.seed_mode) els.seed_mode.value = g.seed_mode;
 
@@ -1165,10 +1144,8 @@ app.registerExtension({
                         const hasWidgetData = state.character_info && state.character_info.hair !== undefined;
                         if (state.character) await loadChar(state.character, hasWidgetData);
 
-                        // CRITICAL: Ensure the widget is synced with whatever state we just loaded/defaulted
-                        // If we loaded a character, we assume the preview is valid (or at least we want to try to use cache)
-                        // AND we explicitly set source to 'sheet' because loadChar does that.
-                        saveState(!!state.character);
+                        // Sync widget state. Preview validity is set by image onload handler, not preemptively.
+                        saveState();
 
                     } catch (e) { console.error(e); }
                 };
@@ -1221,19 +1198,23 @@ app.registerExtension({
                             console.log("[VNCCS] Trying to load cached preview...");
                             const cacheUrl = `/vnccs/get_cached_preview?character=${encodeURIComponent(n)}&t=${Date.now()}`;
 
-                            // Set up one-time error handler for cache failure
                             els.previewImg.onerror = () => {
                                 console.warn("[VNCCS] Both sheet and cache preview failed.");
                                 els.previewImg.style.display = "none";
                                 els.placeholder.innerText = "No Preview Image";
                                 els.placeholder.style.display = "block";
-                                // Clear onerror to prevent potential loop
                                 els.previewImg.onerror = null;
+                                state.preview_valid = false;
+                                state.preview_source = "gen";
+                                saveState(false);
+                            };
+                            els.previewImg.onload = () => {
+                                state.preview_valid = true;
+                                state.preview_source = "gen";
+                                saveState(true);
                             };
 
                             els.previewImg.src = cacheUrl;
-                            // Update state to reflect we are trying/using gen(cache) source
-                            state.preview_source = "gen";
                         };
 
                         // First try Sheet
@@ -1241,11 +1222,15 @@ app.registerExtension({
                             console.warn("[VNCCS] Sheet preview load failed. Fallback to cache.");
                             tryCache();
                         };
+                        els.previewImg.onload = () => {
+                            state.preview_valid = true;
+                            state.preview_source = "sheet";
+                            saveState(true);
+                        };
 
                         els.previewImg.src = `/vnccs/get_character_sheet_preview?character=${encodeURIComponent(n)}&t=${Date.now()}`;
                         els.previewImg.style.display = "block";
                         els.placeholder.style.display = "none";
-                        state.preview_source = "sheet";
 
                     } catch (e) { console.error(e); }
                 };
@@ -1260,13 +1245,7 @@ app.registerExtension({
                     }
 
                     // Show loading overlay
-                    const loadingOverlay = document.createElement('div');
-                    loadingOverlay.className = 'vnccs-loading-overlay';
-                    loadingOverlay.innerHTML = `
-                        <div class="vnccs-spinner"></div>
-                        <div class="vnccs-loading-text">Generating preview<span class="vnccs-loading-dots"></span></div>
-                    `;
-                    container.appendChild(loadingOverlay);
+                    const loading = createLoadingOverlay(container, "Generating preview");
 
                     els.btnGen.innerText = "GENERATING...";
                     els.btnGen.disabled = true;
@@ -1297,9 +1276,9 @@ app.registerExtension({
                             state.preview_source = "gen";
                             saveState(true);
                         }
-                    } catch (e) { alert("Error: " + e); }
+                    } catch (e) { showMessage(container, "Error: " + e, true); }
                     finally {
-                        loadingOverlay.remove();
+                        loading.remove();
                         els.btnGen.innerText = "GENERATE PREVIEW";
                         els.btnGen.disabled = false;
                     }

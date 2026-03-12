@@ -496,7 +496,7 @@ class CharacterCreatorV2:
             vae=vae,
             pos=conditioning_pos,
             neg=conditioning_neg,
-            seed_int=int(gen_settings.get("seed", 0)),
+            seed_int=generate_seed(int(gen_settings.get("seed", 0))),
             sample_steps=int(gen_settings.get("steps", 20)),
             cfg=float(gen_settings.get("cfg", 8.0)),
             denoise=1.0,
@@ -582,7 +582,7 @@ class CharacterCreatorV2:
             try:
                 samples = nodes.common_ksampler(
                     model=model, 
-                    seed=int(gen_settings.get("seed", 0)), 
+                    seed=generate_seed(int(gen_settings.get("seed", 0))),
                     steps=int(gen_settings.get("steps", 20)), 
                     cfg=float(gen_settings.get("cfg", 8.0)), 
                     sampler_name=gen_settings.get("sampler", "euler"), 

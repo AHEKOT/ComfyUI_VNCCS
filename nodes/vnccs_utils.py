@@ -29,10 +29,10 @@ except ImportError:
 # Device selection used by RMBG models
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Ensure RMBG model folder path is registered
+# Ensure RMBG model folder paths are registered
 if folder_paths:
     folder_paths.add_model_folder_path("rmbg", os.path.join(folder_paths.models_dir, "RMBG"))
-
+    folder_paths.add_model_folder_path("birefnet", os.path.join(folder_paths.models_dir, "RMBG", "BiRefNet"))
 
 # --- Shared helpers ---
 def tensor2pil(image):
@@ -58,6 +58,52 @@ def _ensure_float01(tensor: torch.Tensor) -> torch.Tensor:
     return t.clamp(0.0, 1.0)
 
 
+
+
+
+# --- Guided Filter Helper ---
+class FastGuidedFilter:
+    """
+    Fast Guided Filter implementation in PyTorch.
+    Used for mask refinement (matting) by using the original image as guidance.
+    """
+    def __init__(self, r: int, eps: float):
+        self.r = r
+        self.eps = eps
+
+    def box_filter(self, x: torch.Tensor):
+        return F.avg_pool2d(x, self.r * 2 + 1, stride=1, padding=self.r)
+
+    def filter(self, guidance: torch.Tensor, input_mask: torch.Tensor):
+        """
+        guidance: [1, 3, H, W]
+        input_mask: [1, 1, H, W]
+        """
+        # guidance should be luminance or handled per-channel, 
+        # but for matting we usually use the RGB channels to build the model
+        
+        # Mean
+        mean_I = self.box_filter(guidance)
+        mean_p = self.box_filter(input_mask)
+        mean_Ip = self.box_filter(guidance * input_mask)
+        cov_Ip = mean_Ip - mean_I * mean_p
+        
+        mean_II = self.box_filter(guidance * guidance)
+        var_I = mean_II - mean_I * mean_I
+        
+        # Linear coefficients
+        a = cov_Ip / (var_I + self.eps)
+        b = mean_p - a * mean_I
+        
+        # Average coefficients
+        mean_a = self.box_filter(a)
+        mean_b = self.box_filter(b)
+        
+        # Resulting sharpened mask
+        output = (mean_a * guidance + mean_b).mean(dim=1, keepdim=True)
+        return torch.clamp(output, 0.0, 1.0)
+
+
 # --- Chroma Key Node ---
 class VNCCSChromaKey:
     """VNCCS Chroma Key - simple RGB-based green screen removal."""
@@ -69,8 +115,8 @@ class VNCCSChromaKey:
                 "image": ("IMAGE",),
                 "tolerance": ("FLOAT", {"default": 0.2, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "despill_strength": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "despill_kernel_size": ("INT", {"default": 3, "min": 1, "max": 9, "step": 2}),
-                "despill_color": (["interior_average", "black"], {"default": "interior_average"}),
+                "despill_kernel_size": ("INT", {"default": 3, "min": 1, "max": 31, "step": 1}),
+                "despill_color": (["limit", "interior_average", "guided_filter", "difference_trim", "black"], {"default": "limit"}),
             }
         }
 
@@ -100,65 +146,277 @@ class VNCCSChromaKey:
             return (rgba.unsqueeze(0),)
 
     def chroma_key_single(self, image, tolerance, despill_strength, despill_kernel_size, despill_color):
+        image = _ensure_float01(image)
         height, width, _ = image.shape
-        border_width = max(1, min(height, width) // 10)
         
-        top_border = image[:border_width, :, :]
-        bottom_border = image[-border_width:, :, :]
-        left_border = image[:, :border_width, :]
-        right_border = image[:, -border_width:, :]
+        # Detection of background color by analyzing corners for "flatness" (low variance)
+        # sampled as 5% of height/width
+        ch = max(1, height // 20)
+        cw = max(1, width // 20)
         
-        border_pixels = torch.cat([
-            top_border.reshape(-1, 3),
-            bottom_border.reshape(-1, 3),
-            left_border.reshape(-1, 3),
-            right_border.reshape(-1, 3)
-        ], dim=0)
+        corners = [
+            image[0:ch, 0:cw, :3],           # Top-Left
+            image[0:ch, width-cw:width, :3], # Top-Right
+            image[height-ch:height, 0:cw, :3], # Bottom-Left
+            image[height-ch:height, width-cw:width, :3] # Bottom-Right
+        ]
         
-        key_color = border_pixels.median(dim=0)[0]
+        stable_colors = []
+        std_threshold = 0.015 # More conservative threshold for "flatness"
+        
+        for patch in corners:
+            pixels = patch.reshape(-1, 3)
+            # Calculate standard deviation per channel, then take mean
+            std = pixels.std(dim=0).mean()
+            if std < std_threshold:
+                stable_colors.append(pixels.mean(dim=0))
+        
+        if stable_colors:
+            # Use average of stable corners
+            key_color = torch.stack(stable_colors).mean(dim=0)
+        else:
+            # Fallback: Sampling 10% from each border (current logic)
+            y_margin = height // 10
+            x_margin = width // 10
+            
+            top_border = image[0:y_margin, :, :3]
+            bottom_border = image[height-y_margin:height, :, :3]
+            left_border = image[:, 0:x_margin, :3]
+            right_border = image[:, width-x_margin:width, :3]
+            
+            border_pixels = torch.cat([
+                top_border.reshape(-1, 3),
+                bottom_border.reshape(-1, 3),
+                left_border.reshape(-1, 3),
+                right_border.reshape(-1, 3)
+            ], dim=0)
+            
+            key_color = border_pixels.median(dim=0)[0]
+
         key_r, key_g, key_b = key_color[0], key_color[1], key_color[2]
         
         r, g, b = image[..., 0], image[..., 1], image[..., 2]
         distance = torch.sqrt((r - key_r)**2 + (g - key_g)**2 + (b - key_b)**2)
         
-        mask = (distance <= tolerance).float()
-        corrected_image = self.apply_dispill(image, mask, despill_strength, despill_kernel_size, despill_color)
+        if despill_color == "guided_filter":
+            # Soft mask generation for Guided Filter
+            # Transition zone from tolerance to tolerance + 0.1
+            soft_tol = tolerance
+            hard_tol = tolerance + 0.1
+            mask = torch.clamp((hard_tol - distance) / (hard_tol - soft_tol + 1e-6), 0.0, 1.0)
+            
+            # Refine mask using Guided Filter
+            # Guidance is the original image
+            guidance = image.permute(2, 0, 1).unsqueeze(0) # [1, 3, H, W]
+            input_mask = mask.unsqueeze(0).unsqueeze(0)    # [1, 1, H, W]
+            
+            gf = FastGuidedFilter(r=despill_kernel_size, eps=0.01)
+            mask = gf.filter(guidance, input_mask).squeeze().clamp(0.0, 1.0)
+        elif despill_color == "difference_trim":
+            # 1. Start with standard binary mask (1.0 = background, 0.0 = foreground)
+            mask = (distance <= tolerance).float()
+            
+            # 2. Identify the Halo Zone (foreground edges where green spill lives)
+            # We dilate the background mask into the foreground to find the fringe
+            mask_chw = mask.unsqueeze(0).unsqueeze(0)
+            dilation_kernel = torch.ones(1, 1, 5, 5, device=image.device)
+            bg_near_fg = (torch.nn.functional.conv2d(mask_chw, dilation_kernel, padding=2) > 0).float()
+            halo_mask = (bg_near_fg * (1.0 - mask_chw)).squeeze() # 1.0 at foreground edges
+            
+            # 2.1. Residual Green Cleanup (Edge-Only)
+            # Find obviously green pixels in the halo that the distance check missed
+            key_r, key_g, key_b = key_color[0], key_color[1], key_color[2]
+            if key_g > key_r and key_g > key_b: dom_idx, others = 1, [0, 2]
+            elif key_b > key_r and key_b > key_g: dom_idx, others = 2, [0, 1]
+            else: dom_idx, others = 0, [1, 2]
+            
+            chan_dom = image[..., dom_idx]
+            limit_ref = (image[..., others[0]] + image[..., others[1]]) / 2.0
+            # Higher threshold for "obviously green" to avoid eating face
+            is_stubborn_green = (chan_dom > limit_ref + 0.1).float() 
+            extra_trim = (is_stubborn_green * halo_mask)
+            mask = torch.clamp(mask + extra_trim * despill_strength, 0.0, 1.0)
+            
+            # 3. Get limit-based de-spilled version for comparison
+            limit_image = self.apply_dispill(image, mask, 1.0, despill_kernel_size, "limit", key_color)
+            
+            # 4. Calculate difference (where the "spill" was removed)
+            diff = torch.abs(image - limit_image).sum(dim=-1)
+            # Spill diff mask: pixels that changed significantly
+            spill_diff_mask = (diff > 0.05).float() 
+            
+            # 5. Restricted Trimming: Only trim if pixels are in the Halo Zone
+            mask = torch.clamp(mask + (spill_diff_mask * halo_mask) * despill_strength, 0.0, 1.0)
+        else:
+            mask = (distance <= tolerance).float()
+
+        corrected_image = self.apply_dispill(image, mask, despill_strength, despill_kernel_size, despill_color, key_color)
         final_image = corrected_image * (1 - mask.unsqueeze(-1))
         
         return final_image, mask
 
-    def apply_dispill(self, image, mask, despill_strength, despill_kernel_size, despill_color):
+    def apply_dispill(self, image, mask, despill_strength, despill_kernel_size, despill_color, key_color):
         foreground_mask = (mask == 0).float()
-        kernel_size = despill_kernel_size
-        kernel = torch.ones(1, 1, kernel_size, kernel_size, device=mask.device)
-        padding = kernel_size // 2
         
-        eroded_conv = torch.nn.functional.conv2d(foreground_mask.unsqueeze(0).unsqueeze(0), kernel, padding=padding)
-        eroded = (eroded_conv == kernel_size * kernel_size).float().squeeze()
-        
-        edges = foreground_mask * (1 - eroded)
-        edges_bool = edges > 0
-        
-        if despill_color == "black":
-            despill_color_tensor = torch.zeros(3, device=image.device, dtype=image.dtype)
+        # Determine the dominant channel from the key color
+        key_r, key_g, key_b = key_color[0], key_color[1], key_color[2]
+        if key_g > key_r and key_g > key_b:
+            dominant_idx = 1
+            other_indices = [0, 2]
+        elif key_b > key_r and key_b > key_g:
+            dominant_idx = 2
+            other_indices = [0, 1]
         else:
-            if eroded.sum() > 0:
-                interior_pixels = image[eroded > 0]
-                despill_color_tensor = interior_pixels.mean(dim=0)
-            else:
-                interior_pixels = image[foreground_mask > 0]
-                if interior_pixels.numel() > 0:
-                    despill_color_tensor = interior_pixels.mean(dim=0)
-                else:
-                    return image
-        
-        blended = image.clone()
-        edges_expanded = edges_bool.unsqueeze(-1)
-        blended = torch.where(edges_expanded, 
-                            (1 - despill_strength) * image + despill_strength * despill_color_tensor, 
-                            image)
-        
-        return blended
+            dominant_idx = 0
+            other_indices = [1, 2]
+
+        # Limit method: identify pixels where dominant channel is higher than it should be
+        # compared to other channels, and limit it.
+        if despill_color == "guided_filter":
+            # Production-Grade Edge Decontamination (Unpremultiply-based)
+            # A (Alpha) = 1 - mask (where mask is background probability)
+            alpha = (1.0 - mask).unsqueeze(-1).clamp(0.001, 1.0)
+            
+            # Reconstruction: Pixel = A * Foreground + (1 - A) * Background
+            # Foreground = (Pixel - (1 - A) * Background) / A
+            bg_component = (1.0 - alpha) * key_color
+            decontaminated = (image - bg_component) / alpha
+            decontaminated = torch.clamp(decontaminated, 0.0, 1.0)
+            
+            # We apply this primarily to the edges (semi-transparent areas)
+            # The mask itself is the background probability, so it's a good weight
+            result = torch.lerp(image, decontaminated, despill_strength * mask.unsqueeze(-1))
+            return result
+
+        elif despill_color == "limit":
+            result = image.clone()
+            chan_dom = image[..., dominant_idx]
+            chan_other1 = image[..., other_indices[0]]
+            chan_other2 = image[..., other_indices[1]]
+            
+            # Limit dominant channel to the average of others (standard despill)
+            limit = (chan_other1 + chan_other2) / 2.0
+            spill_mask = (chan_dom > limit).float()
+            corrected_chan = torch.lerp(chan_dom, limit, despill_strength)
+            result[..., dominant_idx] = torch.where(spill_mask > 0, corrected_chan, chan_dom)
+            return result
+            
+        elif despill_color == "interior_average":
+            # Corrected Foreground Color Dilation
+            img_chw = image.permute(2, 0, 1).unsqueeze(0) # [1, 3, H, W]
+            mask_chw = foreground_mask.unsqueeze(0).unsqueeze(0) # [1, 1, H, W]
+            
+            # 1. Identify the Halo Zone (foreground edges where green spill lives)
+            # We dilate the background mask into the foreground to find the fringe
+            # Use iterations to match the width of the dilation
+            iterations = max(2, despill_kernel_size * 2)
+            
+            current_bg_mask = 1.0 - mask_chw
+            dilation_kernel = torch.ones(1, 1, 3, 3, device=image.device)
+            for _ in range(max(1, iterations // 2)): # Expand halo slightly less than dilation
+                current_bg_mask = (torch.nn.functional.conv2d(current_bg_mask, dilation_kernel, padding=1) > 0).float()
+            
+            halo_mask = (current_bg_mask * mask_chw).squeeze(0).permute(1, 2, 0)
+            
+            # 2. Identify "Safe" pixels (definitely foreground, definitely not green)
+            # A pixel is safe if it's deep inside AND its distance to green is large
+            # (distance is already calculated in chroma_key_single, but we'll use a simple heuristic here)
+            chan_dom = image[..., dominant_idx]
+            limit_ref = (image[..., other_indices[0]] + image[..., other_indices[1]]) / 2.0
+            is_not_green = (chan_dom < limit_ref + 0.05).float().unsqueeze(0).unsqueeze(0)
+            
+            # Safe = (Inside foreground) AND (Not green-heavy)
+            safe_mask = (mask_chw * is_not_green).float()
+            
+            # 3. Iterative Dilation of Safe Colors
+            current_color = img_chw * safe_mask
+            current_weight = safe_mask
+            
+            iterations = max(2, despill_kernel_size * 2) # More iterations for better reach
+            expand_kernel = torch.ones(1, 1, 3, 3, device=image.device)
+            
+            for _ in range(iterations):
+                sum_color = torch.nn.functional.conv2d(current_color, 
+                                                     torch.ones(3, 1, 3, 3, device=image.device), 
+                                                     padding=1, groups=3)
+                sum_weight = torch.nn.functional.conv2d(current_weight, expand_kernel, padding=1)
+                
+                new_color = sum_color / (sum_weight + 1e-6)
+                fill_mask = (current_weight < 0.1).float()
+                
+                # Expand colors only to where we have neighbors
+                can_fill = (sum_weight > 0).float()
+                current_color = current_color + fill_mask * new_color * can_fill
+                current_weight = current_weight + fill_mask * can_fill
+            
+            dilated_fg = current_color.squeeze(0).permute(1, 2, 0)
+            
+            # 4. Final Replacement in the Halo Zone
+            # We replace the color of the "halo" pixels with the dilated clean color
+            # Use despill_strength to control the intensity of replacement
+            result = torch.where(halo_mask > 0.5, 
+                               torch.lerp(image, dilated_fg, despill_strength), 
+                               image)
+            return result
+
+        elif despill_color == "difference_trim":
+            # Combined Color Fix for Difference Trim
+            # 1. Identify the Halo Zone (again, for color restriction)
+            mask_chw = mask.unsqueeze(0).unsqueeze(0)
+            dilation_kernel = torch.ones(1, 1, 5, 5, device=image.device)
+            bg_near_fg = (torch.nn.functional.conv2d(mask_chw, dilation_kernel, padding=2) > 0).float()
+            halo_mask = (bg_near_fg * (1.0 - mask_chw)).squeeze().unsqueeze(-1)
+            
+            # 2. Apply standard limit despill ONLY to the halo zone
+            # This protects green hair/clothes inside the subject
+            limit_full = self.apply_dispill(image, mask, despill_strength, despill_kernel_size, "limit", key_color)
+            result = torch.lerp(image, limit_full, halo_mask)
+            
+            # 3. Detect "Ultra-Thin" details (1-2 pixels) in the foreground
+            mask_chw_fg = foreground_mask.unsqueeze(0).unsqueeze(0)
+            kernel_3x3 = torch.ones(1, 1, 3, 3, device=image.device)
+            # Pixels that vanish when eroded are "thin"
+            eroded_fg = (torch.nn.functional.conv2d(mask_chw_fg, kernel_3x3, padding=1) == 9).float().squeeze()
+            thin_mask = (foreground_mask * (1.0 - eroded_fg)).unsqueeze(-1)
+            
+            # 4. Apply "Ink Outline" (darken thin details)
+            black_color = torch.zeros_like(result)
+            result = torch.lerp(result, black_color, despill_strength * thin_mask)
+            
+            return result
+
+        elif despill_color == "black":
+            despill_color_tensor = torch.zeros(3, device=image.device, dtype=image.dtype)
+            # Original blending logic for "black"
+            kernel_size = despill_kernel_size
+            kernel = torch.ones(1, 1, kernel_size, kernel_size, device=mask.device)
+            # Standard padding to keep size for conv2d
+            padding = kernel_size // 2 
+            
+            # Use functional padding to handle even/odd kernels for conv2d if needed, 
+            # though usually //2 is fine for odd. For even, we might need more care.
+            # However, the crash reported was: edges = foreground_mask * (1 - eroded)
+            # implying 'eroded' didn't match 'foreground_mask' shape.
+            
+            eroded_conv = torch.nn.functional.conv2d(foreground_mask.unsqueeze(0).unsqueeze(0), kernel, padding=padding)
+            eroded = (eroded_conv == kernel_size * kernel_size).float().squeeze()
+            
+            # Crop eroded to match foreground_mask if padding caused misalignment
+            if eroded.shape != foreground_mask.shape:
+                eroded = eroded[:foreground_mask.shape[0], :foreground_mask.shape[1]]
+            
+            edges = foreground_mask * (1 - eroded)
+            edges_bool = edges > 0
+            
+            blended = image.clone()
+            edges_expanded = edges_bool.unsqueeze(-1)
+            blended = torch.where(edges_expanded, 
+                                (1 - despill_strength) * image + despill_strength * despill_color_tensor, 
+                                image)
+            
+            return blended
+        else:
+            return image
 
 
 # --- Color Fix Node ---
@@ -605,6 +863,112 @@ class RMBGModel(BaseModelLoader):
             handle_model_error(f"Error in batch processing: {str(e)}")
 
 
+class CustomBiRefNetModel(RMBGModel):
+    def load_model(self, model_name):
+        if self.current_model_version != model_name:
+            self.clear_model()
+            
+            model_path = folder_paths.get_full_path("birefnet", model_name) if folder_paths else None
+            if not model_path or not os.path.exists(model_path):
+                raise RuntimeError(f"Custom model file {model_name} not found")
+
+            if os.path.isdir(model_path):
+                try:
+                    from transformers import AutoModelForImageSegmentation
+                    self.model = AutoModelForImageSegmentation.from_pretrained(
+                        model_path,
+                        trust_remote_code=True,
+                        local_files_only=True
+                    )
+                except Exception as e:
+                    handle_model_error(f"Failed to load local HuggingFace BiRefNet directory: {e}")
+            else:
+                arch_cache_dir = self.get_cache_dir("RMBG-2.0")
+                cache_status, _ = self.check_model_cache("RMBG-2.0")
+                if not cache_status:
+                    print("Downloading required BiRefNet architecture files from RMBG-2.0...")
+                    self.download_model("RMBG-2.0")
+                
+                try:
+                    from transformers import PreTrainedModel
+                    import json
+
+                    config_path = os.path.join(arch_cache_dir, "config.json")
+                    with open(config_path, 'r') as f:
+                        config = json.load(f)
+
+                    birefnet_path = os.path.join(arch_cache_dir, "birefnet.py")
+                    BiRefNetConfig_path = os.path.join(arch_cache_dir, "BiRefNet_config.py")
+
+                    config_spec = importlib.util.spec_from_file_location("BiRefNetConfig", BiRefNetConfig_path)
+                    config_module = importlib.util.module_from_spec(config_spec)
+                    sys.modules["BiRefNetConfig"] = config_module
+                    config_spec.loader.exec_module(config_module)
+
+                    with open(birefnet_path, 'r') as f:
+                        birefnet_content = f.read()
+
+                    birefnet_content = birefnet_content.replace(
+                        "from .BiRefNet_config import BiRefNetConfig",
+                        "from BiRefNetConfig import BiRefNetConfig"
+                    )
+
+                    module_name = f"custom_birefnet_{hash(model_name)}"
+                    module = types.ModuleType(module_name)
+                    sys.modules[module_name] = module
+                    exec(birefnet_content, module.__dict__)
+
+                    for attr_name in dir(module):
+                        attr = getattr(module, attr_name)
+                        if isinstance(attr, type) and issubclass(attr, PreTrainedModel) and attr != PreTrainedModel:
+                            BiRefNetConfig = getattr(config_module, "BiRefNetConfig")
+                            model_config = BiRefNetConfig()
+                            self.model = attr(model_config)
+
+                            weights_path = model_path
+                            try:
+                                if weights_path.endswith(".safetensors"):
+                                    try:
+                                        import safetensors.torch
+                                        state_dict = safetensors.torch.load_file(weights_path)
+                                    except ImportError:
+                                        from transformers.modeling_utils import load_state_dict
+                                        state_dict = load_state_dict(weights_path)
+                                else:
+                                    state_dict = torch.load(weights_path, map_location="cpu")
+                                    
+                                if "state_dict" in state_dict:
+                                    state_dict = state_dict["state_dict"]
+                                elif "net" in state_dict:
+                                    state_dict = state_dict["net"]
+                                
+                                unwrapped_state_dict = {}
+                                for k, v in state_dict.items():
+                                    if k.startswith('module.'):
+                                        unwrapped_state_dict[k[7:]] = v
+                                    else:
+                                        unwrapped_state_dict[k] = v
+
+                                self.model.load_state_dict(unwrapped_state_dict)
+                            except Exception as load_error:
+                                raise RuntimeError(f"Failed to load weights from {weights_path}: {str(load_error)}")
+                            break
+
+                    if self.model is None:
+                        raise RuntimeError("Could not find suitable model class in birefnet.py")
+
+                except Exception as e:
+                    handle_model_error(f"Error loading custom BiRefNet file {model_name}: {str(e)}")
+
+            self.model.eval()
+            for param in self.model.parameters():
+                param.requires_grad = False
+
+            torch.set_float32_matmul_precision('high')
+            self.model.to(device)
+            self.current_model_version = model_name
+
+
 class InspyrenetModel(BaseModelLoader):
     def __init__(self):
         super().__init__()
@@ -843,10 +1207,13 @@ class VNCCS_RMBG2:
             "refine_foreground": "Use Fast Foreground Colour Estimation."
         }
         
+        birefnet_models = [f for f in folder_paths.get_filename_list("birefnet") if f.endswith((".safetensors", ".pth"))] if folder_paths else []
+        all_models = list(AVAILABLE_MODELS.keys()) + birefnet_models
+        
         return {
             "required": {
                 "image": ("IMAGE", {"tooltip": tooltips["image"]}),
-                "model": (list(AVAILABLE_MODELS.keys()), {"tooltip": tooltips["model"]}),
+                "model": (all_models, {"tooltip": tooltips["model"]}),
             },
             "optional": {
                 "sensitivity": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
@@ -855,7 +1222,7 @@ class VNCCS_RMBG2:
                 "mask_offset": ("INT", {"default": 0, "min": -64, "max": 64, "step": 1}),
                 "invert_output": ("BOOLEAN", {"default": False}),
                 "refine_foreground": ("BOOLEAN", {"default": False}),
-                "background": (["Alpha", "Green", "Blue"], {"default": "Alpha"}),
+                "background": (["Alpha", "Green", "Blue", "White"], {"default": "Alpha"}),
             }
         }
 
@@ -869,18 +1236,24 @@ class VNCCS_RMBG2:
             processed_images = []
             processed_masks = []
             
-            model_instance = self.models[model]
-            
-            cache_status, message = model_instance.check_model_cache(model)
-            if not cache_status:
-                print(f"Cache check: {message}")
-                print("Downloading required model files...")
-                download_status, download_message = model_instance.download_model(model)
-                if not download_status:
-                    handle_model_error(download_message)
-                print("Model files downloaded successfully")
-            
-            model_type = AVAILABLE_MODELS[model]["type"]
+            if model in AVAILABLE_MODELS:
+                model_instance = self.models[model]
+                
+                cache_status, message = model_instance.check_model_cache(model)
+                if not cache_status:
+                    print(f"Cache check: {message}")
+                    print("Downloading required model files...")
+                    download_status, download_message = model_instance.download_model(model)
+                    if not download_status:
+                        handle_model_error(download_message)
+                    print("Model files downloaded successfully")
+                
+                model_type = AVAILABLE_MODELS[model]["type"]
+            else:
+                if not hasattr(self, "custom_birefnet_model"):
+                    self.custom_birefnet_model = CustomBiRefNetModel()
+                model_instance = self.custom_birefnet_model
+                model_type = "rmbg" # BiRefNet behaves identical to rmbg output-wise
             
             def _process_pair(img, mask):
                 if isinstance(mask, list):
@@ -943,6 +1316,11 @@ class VNCCS_RMBG2:
                     processed_images.append(pil2tensor(composite_image.convert("RGB")))
                 elif params["background"] == "Blue":
                     rgba = hex_to_rgba("#0000FF")
+                    bg_image = Image.new('RGBA', orig_image_local.size, rgba)
+                    composite_image = Image.alpha_composite(bg_image, foreground_local)
+                    processed_images.append(pil2tensor(composite_image.convert("RGB")))
+                elif params["background"] == "White":
+                    rgba = hex_to_rgba("#FFFFFF")
                     bg_image = Image.new('RGBA', orig_image_local.size, rgba)
                     composite_image = Image.alpha_composite(bg_image, foreground_local)
                     processed_images.append(pil2tensor(composite_image.convert("RGB")))

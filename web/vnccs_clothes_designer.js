@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { registerCleanup, showModal as showCommonModal, showMessage } from "./vnccs_common.js";
 
 const STYLE = `
 /* Reusing core consistency styles from V2 */
@@ -157,7 +158,7 @@ app.registerExtension({
                         const ls = localStorage.getItem("VNCCS_ClothesDesigner_State");
                         if (ls) saved = JSON.parse(ls);
                     }
-                } catch (e) { }
+                } catch (e) { console.warn("[VNCCS] ClothesDesigner: Error loading state", e); }
 
                 const state = {
                     ...defaultState,
@@ -173,7 +174,7 @@ app.registerExtension({
                     if (dataWidget) dataWidget.value = JSON.stringify(state);
                     try {
                         localStorage.setItem("VNCCS_ClothesDesigner_State", JSON.stringify(state));
-                    } catch (e) { }
+                    } catch (e) { console.warn("[VNCCS] ClothesDesigner: Error saving to localStorage", e); }
                 };
 
                 const saveCostumeToBackend = async () => {
@@ -190,34 +191,13 @@ app.registerExtension({
                     } catch (e) { console.error("Save failed", e); }
                 };
 
-                // Shared Modal Helper
+                // Modal Helper — delegates to vnccs_common showModal
                 const showModal = (title, contentFunc, buttons) => {
-                    const overlay = document.createElement("div"); overlay.className = "vnccs-modal-overlay";
-                    const m = document.createElement("div"); m.className = "vnccs-modal";
-                    m.innerHTML = `<div class="vnccs-section-title">${title}</div>`;
-
-                    const content = contentFunc(m);
-                    if (content) m.appendChild(content);
-
-                    const row = document.createElement("div"); row.className = "vnccs-btn-row";
-                    buttons.forEach(b => {
-                        const btn = document.createElement("button");
-                        btn.className = `vnccs-btn ${b.class || ""}`;
-                        btn.innerText = b.text;
-                        btn.onclick = async () => {
-                            if (b.action) {
-                                const keepOpen = await b.action(overlay, btn);
-                                if (!keepOpen) overlay.remove();
-                            } else {
-                                overlay.remove();
-                            }
-                        }
-                        row.appendChild(btn);
-                    });
-                    m.appendChild(row);
-                    overlay.appendChild(m);
-                    container.appendChild(overlay);
-                    return { overlay, modal: m, content };
+                    const mappedButtons = buttons.map(b => ({
+                        ...b,
+                        class: b.class?.includes("danger") ? "danger" : b.class?.includes("primary") ? "primary" : undefined
+                    }));
+                    return showCommonModal(container, title, contentFunc, mappedButtons);
                 };
 
                 const showInfo = (title, msg) => {
@@ -640,7 +620,7 @@ app.registerExtension({
                         const d3 = await r3.json();
                         els.clip_name.innerHTML = "";
                         d3.CLIPLoader.input.required.clip_name[0].forEach(o => els.clip_name.add(new Option(o, o)));
-                    } catch (e) { }
+                    } catch (e) { console.warn("[VNCCS] ClothesDesigner: Error loading CLIP models", e); }
 
                     createSetting("VAE", "vae_name", "select", []);
                     try {
@@ -648,7 +628,7 @@ app.registerExtension({
                         const d4 = await r4.json();
                         els.vae_name.innerHTML = "";
                         d4.VAELoader.input.required.vae_name[0].forEach(o => els.vae_name.add(new Option(o, o)));
-                    } catch (e) { }
+                    } catch (e) { console.warn("[VNCCS] ClothesDesigner: Error loading VAE models", e); }
 
                     // LoRAs
                     const loraList = ["None", ...d.loras];
@@ -852,7 +832,7 @@ app.registerExtension({
                             els.placeholder.style.display = "block";
                             return;
                         }
-                    } catch (e) { }
+                    } catch (e) { console.warn("[VNCCS] ClothesDesigner: Error in preview update", e); }
 
                     els.previewImg.src = url;
                     els.previewImg.style.display = "block";
@@ -872,6 +852,7 @@ app.registerExtension({
                     }
                 };
                 api.addEventListener("vnccs.preview.updated", onPreviewUpdated);
+                registerCleanup(node, () => api.removeEventListener("vnccs.preview.updated", onPreviewUpdated));
 
                 node.addDOMWidget("clothes_designer_ui", "ui", container, {
                     serialize: false,

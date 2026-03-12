@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { registerCleanup, showMessage, injectStyles } from "./vnccs_common.js";
 
 const STYLE = `
 .vnccs-pm-container {
@@ -95,9 +96,7 @@ app.registerExtension({
                 const container = document.createElement("div");
                 container.className = "vnccs-pm-container";
 
-                const style = document.createElement("style");
-                style.innerHTML = STYLE;
-                document.head.appendChild(style);
+                injectStyles(STYLE, "vnccs-panorama-mapper");
 
                 const canvasWrap = document.createElement("div");
                 canvasWrap.className = "vnccs-pm-canvas-wrap";
@@ -162,7 +161,8 @@ app.registerExtension({
                         loadPreview();
                         save();
                     } catch (err) {
-                        alert("Upload failed: " + err);
+                        console.warn("[VNCCS] Upload failed:", err);
+                        showMessage(container, "Upload failed: " + err, true);
                     }
                 };
 
@@ -340,7 +340,7 @@ app.registerExtension({
                     }
                 };
 
-                window.onmousemove = (e) => {
+                const handleMouseMove = (e) => {
                     if (!dragging) return;
                     const pos = getMousePos(e);
                     const mx = pos.x, my = pos.y;
@@ -366,7 +366,6 @@ app.registerExtension({
                             const dx = (mx - (ix + iw / 2)) / (iw / 2);
                             state.roll = dx * 45;
                         } else {
-                            // Pitch
                             let val = (my - (iy + ih / 2)) / (ih / 2);
                             state.pitch = val * 90;
                         }
@@ -375,12 +374,19 @@ app.registerExtension({
                     draw();
                 };
 
-                window.onmouseup = () => {
+                const handleMouseUp = () => {
                     if (dragging) {
                         dragging = null;
                         save();
                     }
                 };
+
+                window.addEventListener('mousemove', handleMouseMove);
+                window.addEventListener('mouseup', handleMouseUp);
+                registerCleanup(node, () => {
+                    window.removeEventListener('mousemove', handleMouseMove);
+                    window.removeEventListener('mouseup', handleMouseUp);
+                });
 
                 node.onConfigure = function () {
                     syncState();

@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { showModal as showCommonModal, createLoadingOverlay, injectStyles } from "./vnccs_common.js";
 
 // --- STYLES: 2-Column Grid Layout (Source / Attributes) ---
 const STYLE = `
@@ -213,9 +214,7 @@ app.registerExtension({
                 node.setSize([900, 700]); // 2-Column fitting
 
                 // 1. Setup CSS
-                const style = document.createElement("style");
-                style.innerHTML = STYLE;
-                document.head.appendChild(style);
+                injectStyles(STYLE, "vnccs-character-cloner");
 
                 // 2. Cleanup Widgets
                 const cleanup = () => {
@@ -350,31 +349,13 @@ app.registerExtension({
                 };
 
                 // --- Helpers (Hoisted) ---
+                // Modal Helper — delegates to vnccs_common showModal
                 const showModal = (title, contentFunc, buttons) => {
-                    const overlay = document.createElement("div"); overlay.className = "vnccs-modal-overlay";
-                    const m = document.createElement("div"); m.className = "vnccs-modal";
-                    m.innerHTML = `<div class="vnccs-section-title">${title}</div>`;
-                    const content = contentFunc(m);
-                    if (content) m.appendChild(content);
-                    const row = document.createElement("div"); row.className = "vnccs-btn-row";
-                    buttons.forEach(b => {
-                        const btn = document.createElement("button");
-                        btn.className = `vnccs-btn ${b.class || ""}`;
-                        btn.innerText = b.text;
-                        btn.onclick = async () => {
-                            if (b.action) {
-                                const keepOpen = await b.action(overlay, btn);
-                                if (!keepOpen) overlay.remove();
-                            } else {
-                                overlay.remove();
-                            }
-                        }
-                        row.appendChild(btn);
-                    });
-                    m.appendChild(row);
-                    overlay.appendChild(m);
-                    container.appendChild(overlay);
-                    return { overlay, modal: m, content };
+                    const mappedButtons = buttons.map(b => ({
+                        ...b,
+                        class: b.class?.includes("danger") ? "danger" : b.class?.includes("primary") ? "primary" : undefined
+                    }));
+                    return showCommonModal(container, title, contentFunc, mappedButtons);
                 };
 
                 const loadChar = async (name, skipInfoLoad = false) => {
@@ -714,13 +695,7 @@ app.registerExtension({
                     const imgName = state.source_images[selIdx];
 
                     // Show loading overlay
-                    const loadingOverlay = document.createElement('div');
-                    loadingOverlay.className = 'vnccs-loading-overlay';
-                    loadingOverlay.innerHTML = `
-                        <div class="vnccs-spinner"></div>
-                        <div class="vnccs-loading-text">Analyzing image<span class="vnccs-loading-dots"></span></div>
-                    `;
-                    container.appendChild(loadingOverlay);
+                    const loading = createLoadingOverlay(container, "Analyzing image");
 
                     autoGenBtn.innerText = "ANALYZING...";
                     autoGenBtn.disabled = true;
@@ -832,7 +807,7 @@ app.registerExtension({
                             const d = document.createElement("div"); d.innerText = "Script Error: " + e; return d;
                         }, [{ text: "Close" }]);
                     } finally {
-                        loadingOverlay.remove();
+                        loading.remove();
                         autoGenBtn.innerText = "AUTO GENERATE (QWEN)";
                         autoGenBtn.disabled = false;
                         if (thumb) thumb.classList.remove("generating");

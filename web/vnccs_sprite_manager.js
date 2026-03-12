@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { registerCleanup } from "./vnccs_common.js";
 
 const STYLE = `
 /* VNCCS Sprite Manager Styles */
@@ -457,6 +458,7 @@ app.registerExtension({
 
             const node = this;
             node.setSize([1000, 450]);
+            const _timeouts = [];
 
             // Hide all widgets except widget_data
             const cleanup = () => {
@@ -644,9 +646,9 @@ app.registerExtension({
                 });
 
                 // Update scroll buttons after render (multiple times to handle image loading)
-                setTimeout(updateScrollButtons, 100);
-                setTimeout(updateScrollButtons, 300);
-                setTimeout(updateScrollButtons, 500);
+                _timeouts.push(setTimeout(updateScrollButtons, 100));
+                _timeouts.push(setTimeout(updateScrollButtons, 300));
+                _timeouts.push(setTimeout(updateScrollButtons, 500));
             }
 
             function renderEmotionSelect() {
@@ -755,6 +757,13 @@ app.registerExtension({
             };
 
             costumesScroll.addEventListener("scroll", updateScrollButtons);
+
+            // Register cleanup for timeouts and event listeners
+            registerCleanup(node, () => {
+                _timeouts.forEach(id => clearTimeout(id));
+                _timeouts.length = 0;
+                costumesScroll.removeEventListener("scroll", updateScrollButtons);
+            });
 
             // Cleanup button handler
             btnCleanup.onclick = async () => {
@@ -934,11 +943,12 @@ app.registerExtension({
                 api.addEventListener('execution_error', onError);
 
                 // Fallback timeout (60 seconds)
-                setTimeout(() => {
+                const fallbackTimer = setTimeout(() => {
                     if (loadingOverlay.parentNode) {
                         cleanup();
                     }
                 }, 60000);
+                _timeouts.push(fallbackTimer);
             };
 
             // === WIDGET REGISTRATION ===
