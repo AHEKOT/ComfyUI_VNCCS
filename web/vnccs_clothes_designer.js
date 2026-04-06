@@ -3,97 +3,217 @@ import { api } from "../../scripts/api.js";
 import { registerCleanup, showModal as showCommonModal, showMessage } from "./vnccs_common.js";
 
 const STYLE = `
-/* Reusing core consistency styles from V2 */
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+    --bg-primary: #0a0a0f;
+    --bg-secondary: #12121a;
+    --bg-elevated: #1a1a26;
+    --bg-surface: #22222e;
+    --bg-hover: #2a2a38;
+    --text-primary: #e8e8f0;
+    --text-secondary: #9898a8;
+    --text-muted: #5e5e70;
+    --accent: #ff8fa3;
+    --accent-hover: #ffb6c8;
+    --accent-glow: rgba(255,143,163,0.3);
+    --accent-subtle: rgba(255,143,163,0.1);
+    --accent-border: rgba(255,143,163,0.22);
+    --accent-lavender: #b8a9e8;
+    --success: #00d68f;
+    --warning: #ffaa00;
+    --error: #ff4757;
+    --border: rgba(255,255,255,0.06);
+    --border-hover: rgba(255,255,255,0.12);
+    --font: 'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 20px;
+    --transition: 0.2s ease;
+}
+
 .vnccs-container {
-    display: flex; flex-direction: column; background: #1e1e1e; color: #e0e0e0;
-    font-family: 'Consolas', 'Monaco', monospace; font-size: 16px;
+    display: flex; flex-direction: column;
+    background: var(--bg-primary); color: var(--text-primary);
+    font-family: var(--font); font-size: 13px;
     width: 100%; height: 100%; overflow: hidden; box-sizing: border-box;
-    padding: 10px; gap: 10px; pointer-events: none; zoom: 0.67;
+    padding: 12px; gap: 12px; pointer-events: none; zoom: 0.67;
 }
 .vnccs-top-row {
-    display: grid; grid-template-columns: 30% 35% 35%; gap: 10px;
+    display: grid; grid-template-columns: 30% 35% 35%; gap: 12px;
     flex: 1; min-height: 0; width: 100%;
 }
 .vnccs-col {
-    display: flex; flex-direction: column; background: #252525;
-    border: 1px solid #333; border-radius: 6px; padding: 10px; gap: 10px;
+    display: flex; flex-direction: column;
+    background: rgba(20,16,30,0.88);
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-lg);
+    padding: 16px; gap: 10px;
     overflow-y: auto; height: 100%; box-sizing: border-box; pointer-events: auto;
+    position: relative; box-shadow: 0 8px 32px rgba(0,0,0,0.35);
 }
+.vnccs-col::before {
+    content: '';
+    position: absolute; top: 0; left: 18%; right: 18%; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,143,163,0.5), transparent);
+    border-radius: 1px;
+}
+.vnccs-col::-webkit-scrollbar { width: 4px; }
+.vnccs-col::-webkit-scrollbar-thumb { background: var(--accent-border); border-radius: 2px; }
+
 .vnccs-section-title {
-    font-size: 14px; font-weight: bold; color: #fff; border-bottom: 2px solid #444;
-    padding-bottom: 5px; margin-bottom: 5px; text-transform: uppercase; flex-shrink: 0;
+    font-size: 10px; font-weight: 700; color: var(--accent);
+    text-transform: uppercase; letter-spacing: 1.5px;
+    margin-bottom: 6px; flex-shrink: 0;
+    display: flex; align-items: center; gap: 8px;
 }
-.vnccs-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 5px; flex-shrink: 0; }
-.vnccs-label { color: #aaa; font-size: 11px; font-weight: 600; }
-.vnccs-input, .vnccs-textarea, .vnccs-select {
-    background: #151515; border: 1px solid #444; color: #fff;
-    border-radius: 4px; padding: 6px; font-family: inherit; font-size: 12px;
-    width: 100%; box-sizing: border-box;
+.vnccs-section-title::before {
+    content: ''; width: 3px; height: 12px; flex-shrink: 0;
+    background: linear-gradient(180deg, var(--accent), var(--accent-lavender));
+    border-radius: 2px; box-shadow: 0 0 8px var(--accent-glow);
 }
-.vnccs-textarea { resize: vertical; min-height: 40px; }
-.vnccs-select { zoom: 1.5; padding: 4px; } 
+
+.vnccs-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 6px; flex-shrink: 0; }
+.vnccs-label {
+    color: var(--text-secondary); font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.06em;
+}
+
+.vnccs-input, .vnccs-textarea {
+    background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+    color: var(--text-primary); border-radius: var(--radius-md);
+    padding: 8px 12px; font-family: var(--font); font-size: 12px;
+    width: 100%; box-sizing: border-box; transition: all var(--transition);
+}
+.vnccs-textarea { resize: none; min-height: 40px; }
+.vnccs-select {
+    background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+    color: var(--text-primary); border-radius: var(--radius-md);
+    padding: 8px 12px; font-family: var(--font); font-size: 12px;
+    width: 100%; box-sizing: border-box; zoom: 1.5; transition: all var(--transition);
+}
+.vnccs-input:focus, .vnccs-select:focus, .vnccs-textarea:focus {
+    outline: none; border-color: var(--accent-border);
+    background: rgba(255,143,163,0.04);
+    box-shadow: 0 0 0 3px rgba(255,143,163,0.06);
+}
 
 .vnccs-btn {
-    padding: 8px; border: none; border-radius: 4px; cursor: pointer;
-    font-weight: bold; text-transform: uppercase; font-size: 12px; color: white;
-    text-align: center; flex: 1; /* Match V2 flex buttons */
+    padding: 10px; border: none; border-radius: var(--radius-md); cursor: pointer;
+    font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+    font-size: 11px; font-family: var(--font); color: white;
+    text-align: center; flex: 1; transition: all var(--transition);
+    position: relative; overflow: hidden;
 }
-.vnccs-btn-primary { background: #3558c7; } .vnccs-btn-primary:hover { background: #4264d9; }
-.vnccs-btn-success { background: #2e7d32; } .vnccs-btn-success:hover { background: #388e3c; }
-.vnccs-btn-danger { background: #d32f2f; } .vnccs-btn-danger:hover { background: #b71c1c; }
-.vnccs-btn:disabled { background: #555 !important; color: #888 !important; cursor: not-allowed !important; opacity: 0.6; }
+.vnccs-btn-primary {
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+    color: #1a1525; box-shadow: 0 4px 16px rgba(255,143,163,0.25);
+}
+.vnccs-btn-primary::after {
+    content: ''; position: absolute; inset: 0;
+    background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.2) 50%, transparent 100%);
+    transform: translateX(-120%) skewX(-15deg);
+    animation: cd-shimmer 3.5s ease-in-out infinite; pointer-events: none;
+}
+@keyframes cd-shimmer {
+    0% { transform: translateX(-120%) skewX(-15deg); opacity: 1; }
+    35% { transform: translateX(120%) skewX(-15deg); opacity: 1; }
+    100% { transform: translateX(120%) skewX(-15deg); opacity: 0; }
+}
+.vnccs-btn-primary:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 28px rgba(255,143,163,0.4); }
+.vnccs-btn-success {
+    background: rgba(0,214,143,0.15); color: var(--success); border: 1px solid rgba(0,214,143,0.3);
+}
+.vnccs-btn-success:hover:not(:disabled) { background: rgba(0,214,143,0.25); transform: translateY(-1px); }
+.vnccs-btn-danger {
+    background: rgba(255,71,87,0.15); color: var(--error); border: 1px solid rgba(255,71,87,0.3);
+}
+.vnccs-btn-danger:hover:not(:disabled) { background: rgba(255,71,87,0.25); transform: translateY(-1px); }
+.vnccs-btn:disabled {
+    background: rgba(255,255,255,0.04) !important; color: var(--text-muted) !important;
+    cursor: not-allowed; box-shadow: none !important; transform: none !important;
+}
 
-.vnccs-btn-row { display: flex; gap: 10px; margin-top: auto; flex-shrink: 0; flex-wrap: wrap; }
-
-.vnccs-row { display: flex; gap: 5px; align-items: center; }
+.vnccs-btn-row { display: flex; gap: 8px; margin-top: auto; flex-shrink: 0; flex-wrap: wrap; }
+.vnccs-row { display: flex; gap: 8px; align-items: center; }
 
 /* Preview */
 .vnccs-preview-container {
-    flex: 1; background: #000; border: 1px solid #333; border-radius: 4px;
-    display: flex; align-items: center; justify-content: center; overflow: hidden;
-    position: relative; min-height: 0;
+    flex: 1;
+    background: radial-gradient(circle, rgba(255,143,163,0.04) 1px, transparent 1px), rgba(10,10,15,0.7);
+    background-size: 20px 20px, 100% 100%;
+    border: 1px solid var(--border); border-radius: var(--radius-md);
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden; position: relative; min-height: 0;
 }
-.vnccs-preview-img { width: 100%; height: 100%; object-fit: contain; }
-.vnccs-placeholder { color: #555; text-align: center; }
+.vnccs-preview-img {
+    width: 100%; height: 100%; object-fit: contain;
+    animation: cd-fadein 0.4s ease;
+}
+@keyframes cd-fadein { from { opacity: 0; } to { opacity: 1; } }
+.vnccs-placeholder {
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    color: var(--text-muted); font-size: 11px; letter-spacing: 0.05em;
+}
+.vnccs-placeholder-icon { width: 48px; height: 48px; opacity: 0.25; }
 
-/* Modal */
-.vnccs-modal-overlay {
-    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center;
-    z-index: 1000; pointer-events: auto;
+/* Tab bar */
+.cd-tab-bar {
+    display: flex; border-bottom: 1px solid var(--border);
+    margin: 0 -16px 12px; background: transparent;
 }
-.vnccs-modal {
-    background: #252525; border: 1px solid #444; padding: 20px; border-radius: 8px;
-    min-width: 300px; max-width: 90%; display: flex; flex-direction: column; gap: 15px;
-    box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+.cd-tab {
+    flex: 1; text-align: center; padding: 10px 8px; cursor: pointer;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase;
+    color: var(--text-muted); border-bottom: 2px solid transparent;
+    transition: all var(--transition);
 }
+.cd-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.cd-tab:hover:not(.active) { color: var(--text-secondary); }
 
-/* Loading Overlay */
+/* Clone upload area */
+.cd-upload-area {
+    border: 1px dashed rgba(255,143,163,0.3);
+    background: rgba(255,143,163,0.04);
+    border-radius: var(--radius-md);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; transition: all var(--transition); position: relative;
+    min-height: 200px; overflow: hidden;
+}
+.cd-upload-area:hover { border-color: var(--accent); background: rgba(255,143,163,0.08); }
+.cd-upload-hint { color: var(--text-muted); font-size: 11px; text-align: center; }
+
+/* Loading overlay */
 .vnccs-loading-overlay {
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(0,0,0,0.9);
+    background: rgba(10,10,15,0.92); backdrop-filter: blur(8px);
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    z-index: 1000; pointer-events: auto; gap: 20px;
+    z-index: 1000; pointer-events: auto; gap: 16px; border-radius: var(--radius-lg);
 }
 .vnccs-spinner {
-    width: 50px; height: 50px;
-    border: 4px solid #333; border-top-color: #5b96f5;
-    border-radius: 50%;
-    animation: vnccs-spin 1s linear infinite;
+    width: 44px; height: 44px; position: relative;
 }
-@keyframes vnccs-spin { to { transform: rotate(360deg); } }
-.vnccs-loading-text {
-    color: #fff; font-size: 16px; font-weight: bold;
+.vnccs-spinner::before, .vnccs-spinner::after {
+    content: ''; position: absolute; inset: 0; border-radius: 50%; border: 3px solid transparent;
 }
+.vnccs-spinner::before {
+    border-top-color: var(--accent); border-right-color: rgba(255,143,163,0.3);
+    animation: cd-spin 1s linear infinite;
+    box-shadow: 0 0 18px rgba(255,143,163,0.2);
+}
+.vnccs-spinner::after {
+    inset: 7px;
+    border-bottom-color: rgba(184,169,232,0.6); border-left-color: rgba(184,169,232,0.2);
+    animation: cd-spin 1.4s linear infinite reverse;
+}
+@keyframes cd-spin { to { transform: rotate(360deg); } }
+.vnccs-loading-text { color: var(--text-primary); font-size: 13px; font-weight: 600; }
 .vnccs-loading-dots::after {
-    content: '';
-    animation: vnccs-dots 1.5s steps(4, end) infinite;
+    content: ''; animation: cd-dots 1.5s steps(4,end) infinite;
 }
-@keyframes vnccs-dots {
-    0%, 20% { content: ''; }
-    40% { content: '.'; }
-    60% { content: '..'; }
-    80%, 100% { content: '...'; }
+@keyframes cd-dots {
+    0%,20% { content: ''; } 40% { content: '.'; } 60% { content: '..'; } 80%,100% { content: '...'; }
 }
 `;
 
@@ -175,6 +295,15 @@ app.registerExtension({
                     try {
                         localStorage.setItem("VNCCS_ClothesDesigner_State", JSON.stringify(state));
                     } catch (e) { console.warn("[VNCCS] ClothesDesigner: Error saving to localStorage", e); }
+                };
+
+                // Randomize seed on each workflow run if mode is "randomize"
+                node.onSerialize = function (o) {
+                    if (state.gen_settings.seed_mode === "randomize") {
+                        state.gen_settings.seed = Math.floor(Math.random() * 10000000000000);
+                        if (els.seed) els.seed.value = state.gen_settings.seed;
+                    }
+                    if (dataWidget) dataWidget.value = JSON.stringify(state);
                 };
 
                 const saveCostumeToBackend = async () => {
@@ -372,7 +501,8 @@ app.registerExtension({
 
                 const btnNewCostume = document.createElement("button");
                 btnNewCostume.className = "vnccs-btn vnccs-btn-success";
-                btnNewCostume.innerText = "NEW COSTUME";
+                btnNewCostume.innerText = "NEW";
+                btnNewCostume.style.fontSize = "10px";
                 btnNewCostume.onclick = () => {
                     showModal("New Costume Name", () => {
                         const inp = document.createElement("input"); inp.className = "vnccs-input";
@@ -400,7 +530,8 @@ app.registerExtension({
 
                 const btnDelCostume = document.createElement("button");
                 btnDelCostume.className = "vnccs-btn vnccs-btn-danger";
-                btnDelCostume.innerText = "DELETE COSTUME";
+                btnDelCostume.innerText = "DELETE";
+                btnDelCostume.style.fontSize = "10px";
                 btnDelCostume.onclick = () => {
                     if (state.costume === "Naked") { showInfo("Warning", "Cannot delete Naked costume."); return; }
                     showModal("Delete", () => {
@@ -464,7 +595,13 @@ app.registerExtension({
                 // Preview
                 const frame = document.createElement("div"); frame.className = "vnccs-preview-container";
                 frame.style.marginTop = "5px";
-                frame.innerHTML = '<div class="vnccs-placeholder">No Preview</div>';
+                frame.innerHTML = `<div class="vnccs-placeholder">
+                    <svg class="vnccs-placeholder-icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M16 12h16M12 20l4-8h16l4 8v20H12V20z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                        <path d="M20 40V28h8v12" stroke="currentColor" stroke-width="2"/>
+                    </svg>
+                    No Preview
+                </div>`;
                 const pImg = document.createElement("img"); pImg.className = "vnccs-preview-img"; pImg.style.display = "none";
                 pImg.onclick = () => window.open(pImg.src, "_blank");
                 frame.appendChild(pImg);
@@ -479,19 +616,12 @@ app.registerExtension({
 
                 // Tab Header
                 const tabBar = document.createElement("div");
-                tabBar.style.display = "flex"; tabBar.style.borderBottom = "1px solid #444";
-                tabBar.style.marginBottom = "10px"; tabBar.style.margin = "0 -10px 10px -10px"; // edge-to-edge
-                tabBar.style.background = "#1e1e1e";
+                tabBar.className = "cd-tab-bar";
 
                 const createTab = (id, label) => {
                     const t = document.createElement("div");
+                    t.className = "cd-tab" + (state.activeTab === id ? " active" : "");
                     t.innerText = label;
-                    t.style.flex = "1"; t.style.textAlign = "center"; t.style.padding = "10px";
-                    t.style.cursor = "pointer"; t.style.fontSize = "12px"; t.style.fontWeight = "bold";
-                    t.style.color = (state.activeTab === id) ? "#fff" : "#888";
-                    t.style.borderBottom = (state.activeTab === id) ? "3px solid #3558c7" : "3px solid transparent";
-                    t.style.background = (state.activeTab === id) ? "#252525" : "#1e1e1e";
-
                     t.onclick = () => {
                         state.activeTab = id;
                         saveState();

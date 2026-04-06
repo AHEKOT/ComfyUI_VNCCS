@@ -2,164 +2,395 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { showModal as showCommonModal, createLoadingOverlay, injectStyles } from "./vnccs_common.js";
 
-// --- STYLES: 2-Column Grid Layout (Source / Attributes) ---
+// --- STYLES: Sakura Archive Design System ---
 const STYLE = `
-/* Main Host */
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+/* ── Variables ── */
+.vnccs-cloner-container {
+    --bg-primary: #0a0a0f;
+    --bg-secondary: #12121a;
+    --bg-elevated: #1a1a26;
+    --bg-surface: #22222e;
+    --bg-hover: #2a2a38;
+    --text-primary: #e8e8f0;
+    --text-secondary: #9898a8;
+    --text-muted: #5e5e70;
+    --accent: #ff8fa3;
+    --accent-hover: #ffb6c8;
+    --accent-glow: rgba(255, 143, 163, 0.3);
+    --accent-subtle: rgba(255, 143, 163, 0.1);
+    --accent-border: rgba(255, 143, 163, 0.22);
+    --accent-lavender: #b8a9e8;
+    --success: #00d68f;
+    --warning: #ffaa00;
+    --error: #ff4757;
+    --border: rgba(255, 255, 255, 0.06);
+    --border-hover: rgba(255, 255, 255, 0.12);
+    --font: 'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 20px;
+    --shadow-subtle: 0 2px 8px rgba(0, 0, 0, 0.3);
+    --shadow-elevated: 0 8px 32px rgba(0, 0, 0, 0.5);
+    --transition: 0.2s ease;
+}
+
+/* ── Container ── */
 .vnccs-cloner-container {
     display: flex;
     flex-direction: column;
-    background: #1e1e1e;
-    color: #e0e0e0;
-    font-family: 'Consolas', 'Monaco', monospace;
-    font-size: 16px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: var(--font);
+    font-size: 13px;
     width: 100%;
     height: 100%;
     overflow: hidden;
     box-sizing: border-box;
-    padding: 10px;
+    padding: 12px;
     gap: 10px;
-    zoom: 0.67; 
+    zoom: 0.67;
+    background-image: radial-gradient(ellipse at 20% 0%, rgba(255, 143, 163, 0.04) 0%, transparent 60%),
+                      radial-gradient(ellipse at 80% 100%, rgba(184, 169, 232, 0.03) 0%, transparent 60%);
 }
 
-/* TOP ROW: 2 Columns now */
+/* ── Rows ── */
 .vnccs-top-row {
     display: grid;
-    grid-template-columns: 40% 60%; 
+    grid-template-columns: 40% 60%;
     gap: 10px;
     flex: 1;
     min-height: 0;
     width: 100%;
 }
 
-/* BOTTOM ROW: Prompts - aligned with Top Row */
 .vnccs-bottom-row {
     display: grid;
     grid-template-columns: 40% 60%;
     gap: 10px;
-    height: 75px; 
-    min-height: 75px;
+    height: 80px;
+    min-height: 80px;
     width: 100%;
     flex-shrink: 0;
 }
 
-/* Common Section/Column Styles */
+/* ── Columns ── */
 .vnccs-col {
     display: flex;
     flex-direction: column;
-    background: #252525;
-    border: 1px solid #333;
-    border-radius: 6px;
-    padding: 10px;
-    gap: 10px;
+    background: rgba(20, 16, 30, 0.88);
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-lg);
+    padding: 14px 16px;
+    gap: 8px;
     overflow-y: auto;
     height: 100%;
     box-sizing: border-box;
+    position: relative;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
 }
+.vnccs-col::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 18%; right: 18%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 143, 163, 0.6), transparent);
+    border-radius: 1px;
+}
+.vnccs-col::-webkit-scrollbar { width: 4px; }
+.vnccs-col::-webkit-scrollbar-thumb { background: var(--accent-border); border-radius: 2px; }
 
+/* ── Section Titles ── */
 .vnccs-section-title {
-    font-size: 14px;
-    font-weight: bold;
-    color: #fff;
-    border-bottom: 2px solid #444;
-    padding-bottom: 5px;
-    margin-bottom: 5px;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--accent);
     text-transform: uppercase;
+    letter-spacing: 1.5px;
     flex-shrink: 0;
-    display: flex; 
-    justify-content: space-between;
+    display: flex;
     align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 2px;
+}
+.vnccs-section-title::before {
+    content: '';
+    width: 3px;
+    height: 12px;
+    background: linear-gradient(180deg, var(--accent), var(--accent-lavender));
+    border-radius: 2px;
+    box-shadow: 0 0 8px var(--accent-glow);
+    flex-shrink: 0;
 }
 
-/* Scrollbar */
-.vnccs-col::-webkit-scrollbar { width: 6px; }
-.vnccs-col::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+/* ── Fields ── */
+.vnccs-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 3px;
+    flex-shrink: 0;
+}
+.vnccs-label {
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
 
-/* Fields */
-.vnccs-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 5px; flex-shrink: 0; }
-.vnccs-label { color: #aaa; font-size: 11px; font-weight: 600; }
+/* ── Inputs ── */
 .vnccs-input, .vnccs-textarea {
-    background: #151515; border: 1px solid #444; color: #fff;
-    border-radius: 4px; padding: 6px; font-family: inherit; font-size: 12px;
-    width: 100%; box-sizing: border-box;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: var(--text-primary);
+    border-radius: var(--radius-md);
+    padding: 8px 12px;
+    font-family: var(--font);
+    font-size: 12px;
+    width: 100%;
+    box-sizing: border-box;
+    transition: all var(--transition);
 }
 .vnccs-select {
-    background: #151515; border: 1px solid #444; color: #fff;
-    border-radius: 4px; padding: 6px; font-family: inherit; 
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: var(--text-primary);
+    border-radius: var(--radius-md);
+    padding: 8px 12px;
+    font-family: var(--font);
     font-size: 12px;
-    width: 100%; box-sizing: border-box;
-    zoom: 1.5;
-    padding: 4px;
+    width: 100%;
+    box-sizing: border-box;
+    transition: all var(--transition);
 }
-.vnccs-input:focus, .vnccs-select:focus, .vnccs-textarea:focus { border-color: #5b96f5; outline: none; }
-
-/* Buttons */
-.vnccs-btn-row { display: flex; gap: 10px; margin-top: auto; flex-shrink: 0; }
-.vnccs-btn {
-    flex: 1; padding: 10px; border: none; border-radius: 4px;
-    cursor: pointer; font-weight: bold; text-transform: uppercase;
-    font-size: 12px; color: white;
-    text-align: center;
-}
-.vnccs-btn-primary { background: #3558c7; } .vnccs-btn-primary:hover { background: #4264d9; }
-.vnccs-btn-success { background: #2e7d32; } .vnccs-btn-success:hover { background: #388e3c; }
-.vnccs-btn-danger { background: #d32f2f; } .vnccs-btn-danger:hover { background: #b71c1c; }
-.vnccs-btn-upload { background: #555; border: 1px dashed #777; } .vnccs-btn-upload:hover { background: #666; border-color: #999; }
-
-/* Image List */
-.vnccs-img-list {
-    display: flex; flex-wrap: wrap; gap: 5px;
-}
-.vnccs-thumb {
-    width: 80px; height: 80px; object-fit: cover;
-    border: 1px solid #444; border-radius: 4px;
-    cursor: pointer;
-}
-.vnccs-thumb:hover { border-color: #fff; }
-.vnccs-thumb.generating {
-    border: 2px solid #3558c7;
-    animation: pulse 1s infinite alternate;
+.vnccs-input:focus, .vnccs-select:focus, .vnccs-textarea:focus {
+    outline: none;
+    border-color: var(--accent-border);
+    background: rgba(255, 143, 163, 0.03);
+    box-shadow: 0 0 0 3px rgba(255, 143, 163, 0.05);
 }
 
-@keyframes pulse { from { opacity: 0.6; } to { opacity: 1; } }
-
-/* Tag Styles */
-.vnccs-tag-btn {
-    width: 20px; height: 20px;
-    background: #333; color: #fff; border: 1px solid #555;
-    border-radius: 4px; cursor: pointer;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 14px; margin-left: auto;
+/* ── Buttons ── */
+.vnccs-btn-row {
+    display: flex;
+    gap: 6px;
+    margin-top: auto;
     flex-shrink: 0;
 }
-
-/* Modal */
-.vnccs-modal-overlay {
-    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(0,0,0,0.7); z-index: 100;
-    display: flex; align-items: center; justify-content: center;
+.vnccs-btn {
+    flex: 1;
+    padding: 8px 12px;
+    border: none;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    font-family: var(--font);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    font-size: 10px;
+    color: white;
+    text-align: center;
+    transition: all var(--transition);
 }
-.vnccs-modal {
-    background: #252525; border: 1px solid #555; border-radius: 6px;
-    padding: 15px; width: 300px; display: flex; flex-direction: column; gap: 10px;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+.vnccs-btn-primary {
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+    color: #1a1525;
+    box-shadow: 0 4px 20px rgba(255, 143, 163, 0.25);
+    position: relative;
+    overflow: hidden;
+}
+.vnccs-btn-primary::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.22) 45%, rgba(255,255,255,0.32) 50%, rgba(255,255,255,0.22) 55%, transparent 100%);
+    transform: translateX(-120%) skewX(-15deg);
+    animation: clonerBtnShimmer 3.5s ease-in-out infinite;
+    pointer-events: none;
+}
+@keyframes clonerBtnShimmer {
+    0%   { transform: translateX(-120%) skewX(-15deg); opacity: 1; }
+    35%  { transform: translateX(120%)  skewX(-15deg); opacity: 1; }
+    100% { transform: translateX(120%)  skewX(-15deg); opacity: 0; }
+}
+.vnccs-btn-primary:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 30px rgba(255, 143, 163, 0.45), 0 0 0 1px var(--accent-glow);
+}
+.vnccs-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+.vnccs-btn-success {
+    background: rgba(0, 214, 143, 0.15);
+    border: 1px solid rgba(0, 214, 143, 0.3);
+    color: var(--success);
+}
+.vnccs-btn-success:hover { background: rgba(0, 214, 143, 0.25); border-color: var(--success); }
+
+.vnccs-btn-danger {
+    background: rgba(255, 71, 87, 0.15);
+    border: 1px solid rgba(255, 71, 87, 0.3);
+    color: var(--error);
+}
+.vnccs-btn-danger:hover { background: rgba(255, 71, 87, 0.25); border-color: var(--error); }
+
+.vnccs-btn-upload {
+    background: rgba(255, 143, 163, 0.08);
+    border: 1px dashed var(--accent-border);
+    color: var(--accent);
+    border-radius: var(--radius-md);
+    padding: 12px 24px;
+    cursor: pointer;
+    font-family: var(--font);
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    transition: all var(--transition);
+}
+.vnccs-btn-upload:hover {
+    background: rgba(255, 143, 163, 0.15);
+    border-color: var(--accent);
+    box-shadow: 0 0 16px var(--accent-subtle);
 }
 
-/* Loading Overlay */
+/* ── Image Grid ── */
+.vnccs-img-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.vnccs-thumb {
+    width: 60px;
+    height: 60px;
+    object-fit: cover;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all var(--transition);
+}
+.vnccs-thumb:hover { border-color: var(--accent); box-shadow: 0 0 8px var(--accent-subtle); }
+.vnccs-thumb.generating {
+    border: 2px solid var(--accent);
+    animation: clonerPulse 1s infinite alternate;
+    box-shadow: 0 0 12px var(--accent-glow);
+}
+@keyframes clonerPulse { from { opacity: 0.6; } to { opacity: 1; } }
+
+/* ── Toggle Switch ── */
+.vnccs-toggle-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    user-select: none;
+}
+.vnccs-toggle-wrap span {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+}
+.vnccs-toggle {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    flex-shrink: 0;
+}
+.vnccs-toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+.vnccs-toggle-track {
+    position: absolute;
+    inset: 0;
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    transition: all var(--transition);
+}
+.vnccs-toggle input:checked + .vnccs-toggle-track {
+    background: rgba(255, 143, 163, 0.25);
+    border-color: var(--accent-border);
+    box-shadow: 0 0 8px var(--accent-subtle);
+}
+.vnccs-toggle-thumb {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    transition: all var(--transition);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.4);
+}
+.vnccs-toggle input:checked ~ .vnccs-toggle-thumb {
+    transform: translateX(16px);
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent-glow);
+}
+
+/* ── Preview Container ── */
+.vnccs-preview-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: var(--text-muted);
+    pointer-events: none;
+}
+.vnccs-preview-placeholder svg { opacity: 0.35; }
+.vnccs-preview-placeholder-text {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+/* ── Loading Overlay ── */
 .vnccs-loading-overlay {
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(0,0,0,0.9);
+    background: rgba(10, 10, 15, 0.92);
+    backdrop-filter: blur(10px);
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    z-index: 1000; pointer-events: auto; gap: 20px;
+    z-index: 1000; pointer-events: auto; gap: 16px;
+    border-radius: var(--radius-lg);
 }
 .vnccs-spinner {
-    width: 50px; height: 50px;
-    border: 4px solid #333; border-top-color: #5b96f5;
+    width: 44px;
+    height: 44px;
+    position: relative;
+}
+.vnccs-spinner::before, .vnccs-spinner::after {
+    content: '';
+    position: absolute;
+    inset: 0;
     border-radius: 50%;
+    border: 3px solid transparent;
+}
+.vnccs-spinner::before {
+    border-top-color: var(--accent);
+    border-right-color: rgba(255, 143, 163, 0.3);
     animation: vnccs-spin 1s linear infinite;
+    box-shadow: 0 0 18px rgba(255, 143, 163, 0.2);
+}
+.vnccs-spinner::after {
+    inset: 7px;
+    border-bottom-color: rgba(184, 169, 232, 0.6);
+    border-left-color: rgba(184, 169, 232, 0.2);
+    animation: vnccs-spin 1.4s linear infinite reverse;
 }
 @keyframes vnccs-spin { to { transform: rotate(360deg); } }
 .vnccs-loading-text {
-    color: #fff; font-size: 16px; font-weight: bold;
+    color: var(--text-secondary);
+    font-family: var(--font);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
 }
 .vnccs-loading-dots::after {
     content: '';
@@ -171,35 +402,6 @@ const STYLE = `
     60% { content: '..'; }
     80%, 100% { content: '...'; }
 }
-
-.vnccs-btn-row {
-    display: flex;
-    gap: 5px;
-    margin-top: 5px;
-    width: 100%;
-}
-.vnccs-btn {
-    flex: 1;
-    padding: 6px;
-    background: #444; color: white;
-    border: 1px solid #666; border-radius: 4px;
-    cursor: pointer;
-    font-size: 12px;
-}
-.vnccs-btn:hover { background: #555; }
-.vnccs-btn-primary { background: #007bff; border-color: #0056b3; }
-.vnccs-btn-primary:hover { background: #0056b3; }
-.vnccs-btn-success { background: #28a745; border-color: #1e7e34; }
-.vnccs-btn-success:hover { background: #218838; }
-.vnccs-btn-danger { background: #dc3545; border-color: #bd2130; }
-.vnccs-btn-danger:hover { background: #c82333; }
-
-.vnccs-thumb {
-    width: 80px; height: 80px; object-fit: cover;
-    border: 1px solid #555; border-radius: 4px;
-    cursor: pointer;
-}
-.vnccs-thumb:hover { opacity: 0.8; border-color: #f00; }
 `;
 
 app.registerExtension({
@@ -288,15 +490,32 @@ app.registerExtension({
                     wrap.className = "vnccs-field";
 
                     if (type === "checkbox") {
-                        wrap.style.flexDirection = "row";
-                        wrap.style.alignItems = "center";
-                        wrap.style.gap = "8px";
+                        const toggleWrap = document.createElement("label");
+                        toggleWrap.className = "vnccs-toggle-wrap";
+
+                        const toggle = document.createElement("div");
+                        toggle.className = "vnccs-toggle";
+
                         const inp = document.createElement("input");
                         inp.type = "checkbox";
                         inp.checked = !!targetObj[key];
                         inp.onchange = (e) => { targetObj[key] = e.target.checked; saveState(); };
-                        wrap.appendChild(inp);
-                        wrap.appendChild(document.createTextNode(lbl));
+
+                        const track = document.createElement("div");
+                        track.className = "vnccs-toggle-track";
+                        const thumb = document.createElement("div");
+                        thumb.className = "vnccs-toggle-thumb";
+
+                        toggle.appendChild(inp);
+                        toggle.appendChild(track);
+                        toggle.appendChild(thumb);
+
+                        const labelSpan = document.createElement("span");
+                        labelSpan.textContent = lbl;
+
+                        toggleWrap.appendChild(toggle);
+                        toggleWrap.appendChild(labelSpan);
+                        wrap.appendChild(toggleWrap);
                         els[key] = inp;
                         return wrap;
                     }
@@ -567,9 +786,10 @@ app.registerExtension({
                 previewContainer.className = "vnccs-preview-container";
                 previewContainer.style.flex = "1";
                 previewContainer.style.position = "relative";
-                previewContainer.style.border = "1px solid #444";
-                previewContainer.style.borderRadius = "4px";
-                previewContainer.style.background = "#151515";
+                previewContainer.style.border = "1px solid rgba(255, 143, 163, 0.15)";
+                previewContainer.style.borderRadius = "12px";
+                previewContainer.style.background = "radial-gradient(circle, rgba(255, 143, 163, 0.04) 1px, transparent 1px), rgba(15, 12, 22, 0.6)";
+                previewContainer.style.backgroundSize = "20px 20px, 100% 100%";
                 previewContainer.style.display = "flex";
                 previewContainer.style.flexDirection = "column";
                 previewContainer.style.alignItems = "center";
@@ -584,6 +804,19 @@ app.registerExtension({
                 previewImg.style.objectFit = "contain";
                 previewImg.style.display = "none";
                 previewContainer.appendChild(previewImg);
+
+                // Placeholder (shown when no image)
+                const previewPlaceholder = document.createElement("div");
+                previewPlaceholder.className = "vnccs-preview-placeholder";
+                previewPlaceholder.innerHTML = `
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="12" cy="7" r="4" stroke="#ff8fa3" stroke-width="1.5"/>
+                        <path d="M4 20c0-4 3.582-7 8-7s8 3 8 7" stroke="#ff8fa3" stroke-width="1.5" stroke-linecap="round"/>
+                        <rect x="1" y="1" width="22" height="22" rx="4" stroke="#ff8fa3" stroke-width="1" stroke-dasharray="3 3" opacity="0.4"/>
+                    </svg>
+                    <div class="vnccs-preview-placeholder-text">Source Preview</div>
+                `;
+                previewContainer.appendChild(previewPlaceholder);
 
                 // Overlay Controls (Upload Button) - Always visible or overlay?
                 // User wants standard behaviour: Empty -> Upload Button. Filled -> Image + Mini Overlay?
@@ -808,7 +1041,7 @@ app.registerExtension({
                         }, [{ text: "Close" }]);
                     } finally {
                         loading.remove();
-                        autoGenBtn.innerText = "AUTO GENERATE (QWEN)";
+                        autoGenBtn.innerText = "Analyze Captions (Qwen2-VL-7B)";
                         autoGenBtn.disabled = false;
                         if (thumb) thumb.classList.remove("generating");
                     }
@@ -948,12 +1181,14 @@ app.registerExtension({
                         if (state.char_preview_url) {
                             previewImg.src = state.char_preview_url;
                             previewImg.style.display = "block";
+                            previewPlaceholder.style.display = "none";
                             uploadOverlay.style.opacity = "0";
                             previewContainer.onmouseenter = () => uploadOverlay.style.opacity = "1";
                             previewContainer.onmouseleave = () => uploadOverlay.style.opacity = "0";
                         } else {
                             previewImg.style.display = "none";
                             previewImg.src = "";
+                            previewPlaceholder.style.display = "flex";
                             uploadOverlay.style.opacity = "1";
                             uploadOverlay.style.background = "transparent";
                             uploadBtn.style.display = "block";
@@ -974,6 +1209,7 @@ app.registerExtension({
                             if (sub) params.append("subfolder", sub);
                             previewImg.src = api.apiURL("/view?" + params.toString());
                             previewImg.style.display = "block";
+                            previewPlaceholder.style.display = "none";
                             uploadOverlay.style.opacity = "0";
                             previewContainer.onmouseenter = () => uploadOverlay.style.opacity = "1";
                             previewContainer.onmouseleave = () => uploadOverlay.style.opacity = "0";
@@ -992,9 +1228,10 @@ app.registerExtension({
                         wrap.style.display = "inline-block";
                         wrap.style.margin = "2px";
                         wrap.style.border = "2px solid transparent";
+                        wrap.style.borderRadius = "8px";
                         if (idx === state.selected_idx) {
-                            wrap.style.borderColor = "#3558c7";
-                            wrap.style.borderRadius = "4px";
+                            wrap.style.borderColor = "#ff8fa3";
+                            wrap.style.boxShadow = "0 0 10px rgba(255, 143, 163, 0.3)";
                         }
 
                         const img = document.createElement("img");

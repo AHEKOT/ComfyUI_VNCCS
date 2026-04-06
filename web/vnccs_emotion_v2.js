@@ -1,27 +1,60 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-// --- CSS STYLES ---
+// --- CSS STYLES: Sakura Archive Design System ---
 const STYLE = `
-.vnccs-container {
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+/* ── Variables ── */
+:root {
+    --bg-primary: #0a0a0f;
+    --bg-secondary: #12121a;
+    --bg-elevated: #1a1a26;
+    --bg-surface: #22222e;
+    --bg-hover: #2a2a38;
+    --text-primary: #e8e8f0;
+    --text-secondary: #9898a8;
+    --text-muted: #5e5e70;
+    --accent: #ff8fa3;
+    --accent-hover: #ffb6c8;
+    --accent-glow: rgba(255, 143, 163, 0.3);
+    --accent-subtle: rgba(255, 143, 163, 0.1);
+    --accent-border: rgba(255, 143, 163, 0.22);
+    --accent-lavender: #b8a9e8;
+    --success: #00d68f;
+    --error: #ff4757;
+    --border: rgba(255, 255, 255, 0.06);
+    --border-hover: rgba(255, 255, 255, 0.12);
+    --font: 'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 20px;
+    --transition: 0.2s ease;
+}
+
+/* ── Container ── */
+.ems-container {
     display: flex;
     flex-direction: row;
     gap: 10px;
-    background: #1e1e1e;
-    color: white;
-    font-family: monospace;
-    font-size: 24px; /* Base size doubled (was implicit ~12px) */
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: var(--font);
+    font-size: 24px;
     padding: 10px;
     border-radius: 8px;
     width: 100%;
     height: 100%;
     max-height: 100%;
     box-sizing: border-box;
-    overflow: hidden; 
+    overflow: hidden;
+    background-image: radial-gradient(ellipse at 15% 0%, rgba(255, 143, 163, 0.05) 0%, transparent 55%),
+                      radial-gradient(ellipse at 85% 100%, rgba(184, 169, 232, 0.04) 0%, transparent 55%);
 }
 
-/* Left Column */
-.vnccs-left-col {
+/* ── Columns ── */
+.ems-left-col {
     flex: 1;
     display: flex;
     flex-direction: column;
@@ -30,8 +63,7 @@ const STYLE = `
     overflow: hidden;
 }
 
-/* Right Column */
-.vnccs-right-col {
+.ems-right-col {
     flex: 3;
     display: flex;
     flex-direction: column;
@@ -40,175 +72,310 @@ const STYLE = `
     overflow: hidden;
 }
 
-/* Sections - Gray Theme */
-.vnccs-section {
-    border: 2px solid #555; 
-    border-radius: 12px;
-    background: #333;
-    padding: 5px;
+/* ── Sections ── */
+.ems-section {
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-lg);
+    background: rgba(20, 16, 30, 0.88);
+    padding: 8px;
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    position: relative;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+.ems-section::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 18%; right: 18%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 143, 163, 0.6), transparent);
+    border-radius: 1px;
+    pointer-events: none;
 }
 
-/* Character Header inside Left Col */
-.vnccs-char-header {
-    background: #444;
-    color: white;
-    padding: 5px 10px;
-    font-weight: bold;
-    font-size: 16px; /* Reduced to match user request */
-    border-bottom: 2px solid #555;
-    margin-bottom: 5px;
-    border-radius: 8px 8px 0 0;
+/* ── Character Header ── */
+.ems-char-header {
+    color: var(--accent);
+    padding: 4px 8px 8px;
+    font-weight: 700;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-bottom: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
 }
 
-.vnccs-char-preview-container {
+.ems-char-preview-container {
     flex: 1;
-    background: #222; /* Dark bg for image */
+    background: radial-gradient(circle, rgba(255, 143, 163, 0.04) 1px, transparent 1px), rgba(10, 8, 16, 0.6);
+    background-size: 18px 18px, 100% 100%;
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 0 0 8px 8px;
-    padding: 10px;
-    overflow: hidden; 
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    overflow: hidden;
+    position: relative;
 }
 
-.vnccs-char-preview {
+.ems-char-preview {
     width: 100%;
     height: 100%;
     object-fit: contain;
 }
 
-/* Costumes (Top Right) */
-.vnccs-costumes-header {
-    font-weight: bold;
-    color: #ddd;
-    margin-bottom: 5px;
-    padding-left: 5px;
-    /* Inherits base font-size 24px */
-}
-.vnccs-costumes-list {
-    background: #444;
-    border-radius: 8px;
-    padding: 10px;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    color: white;
-    max-height: 150px;
-    overflow-y: auto;
-}
-.vnccs-checkbox-item {
+/* ── Costumes ── */
+.ems-costumes-header {
+    font-weight: 700;
+    color: var(--accent);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-bottom: 6px;
+    padding-left: 4px;
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 8px;
+}
+.ems-costumes-header::before {
+    content: '';
+    width: 3px;
+    height: 10px;
+    background: linear-gradient(180deg, var(--accent), var(--accent-lavender));
+    border-radius: 2px;
+    box-shadow: 0 0 6px var(--accent-glow);
+    flex-shrink: 0;
+}
+.ems-costumes-list {
+    background: rgba(10, 8, 16, 0.5);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 8px 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    color: var(--text-primary);
+    max-height: 120px;
+    overflow-y: auto;
+}
+.ems-costumes-list::-webkit-scrollbar { height: 3px; width: 3px; }
+.ems-costumes-list::-webkit-scrollbar-thumb { background: var(--accent-border); border-radius: 2px; }
+
+/* ── Costume Toggle Items ── */
+.ems-checkbox-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     cursor: pointer;
-    font-weight: bold;
     user-select: none;
-    margin-right: 15px; /* Increase spacing for larger text */
+}
+.ems-checkbox-item span {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.em-toggle {
+    position: relative;
+    width: 34px;
+    height: 18px;
+    flex-shrink: 0;
+}
+.em-toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+.em-toggle-track {
+    position: absolute;
+    inset: 0;
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    transition: all var(--transition);
+}
+.em-toggle input:checked + .em-toggle-track {
+    background: rgba(255, 143, 163, 0.22);
+    border-color: var(--accent-border);
+    box-shadow: 0 0 8px var(--accent-subtle);
+}
+.em-toggle-thumb {
+    position: absolute;
+    top: 3px; left: 3px;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    transition: all var(--transition);
+}
+.em-toggle input:checked ~ .em-toggle-thumb {
+    transform: translateX(16px);
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent-glow);
 }
 
-/* Emotions (Bottom Right) */
-.vnccs-emotions-container {
+/* ── Emotions Grid ── */
+.ems-emotions-container {
     flex: 1;
-    background: #2a2a2a; /* Darker gray for grid bg */
-    border-radius: 8px;
+    background: rgba(8, 6, 14, 0.5);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
     padding: 10px;
     overflow-y: auto;
     display: grid;
-    /* 4 Columns for larger preview */
     grid-template-columns: repeat(4, 1fr);
-    gap: 10px;
+    gap: 8px;
     min-height: 200px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--accent-border) transparent;
 }
+.ems-emotions-container::-webkit-scrollbar { width: 4px; }
+.ems-emotions-container::-webkit-scrollbar-thumb { background: var(--accent-border); border-radius: 2px; }
 
-.vnccs-emotion-item {
+.ems-emotion-item {
     display: flex;
     flex-direction: column;
     align-items: center;
     cursor: pointer;
-    transition: all 0.1s ease;
-    width: 100%; 
-    padding: 5px;
-    border-radius: 8px;
-    border: 2px solid transparent;
+    transition: all 0.15s ease;
+    width: 100%;
+    padding: 6px;
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
     box-sizing: border-box;
+    background: transparent;
 }
-.vnccs-emotion-item:hover {
-    background-color: #444; /* Subtle highlight on hover */
+.ems-emotion-item:hover {
+    background: rgba(255, 143, 163, 0.06);
+    border-color: var(--accent-border);
 }
-.vnccs-emotion-item.selected {
-    background-color: #007bff; /* Bright Blue Background */
-    border-color: #0056b3;
-    transform: scale(0.98);
+.ems-emotion-item.selected {
+    background: rgba(255, 143, 163, 0.15);
+    border-color: var(--accent);
+    box-shadow: 0 0 12px var(--accent-subtle), inset 0 0 8px rgba(255, 143, 163, 0.05);
 }
-
-.vnccs-emotion-item.selected .vnccs-emotion-img {
-    border: none; /* Remove image border */
-    box-shadow: none;
-}
-
-.vnccs-emotion-item.selected .vnccs-emotion-label {
-    color: white; /* White text on blue bg */
-    font-weight: bold;
+.ems-emotion-item.selected .ems-emotion-label {
+    color: var(--accent-hover);
+    font-weight: 600;
 }
 
-.vnccs-emotion-img {
-    width: 100%; 
-    aspect-ratio: 1 / 1; 
+.ems-emotion-img {
+    width: 100%;
+    aspect-ratio: 1 / 1;
     object-fit: cover;
-    border-radius: 4px; 
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    transition: border-color var(--transition);
 }
-.vnccs-emotion-label {
-    font-size: 22px; /* Doubled from 11px */
-    color: #ccc;
+.ems-emotion-item.selected .ems-emotion-img {
+    border-color: var(--accent-border);
+}
+.ems-emotion-label {
+    font-size: 20px;
+    color: var(--text-secondary);
     text-align: center;
-    margin-top: 5px;
-    font-family: monospace;
+    margin-top: 4px;
+    font-family: var(--font);
+    font-weight: 500;
     word-break: break-word;
     width: 100%;
-    line-height: 1.1; /* Tighter line height for large text */
+    line-height: 1.2;
 }
 
-/* Footer (Select All) */
-.vnccs-footer {
-    margin-top: 5px;
+/* ── Footer / Button ── */
+.ems-footer {
+    margin-top: 6px;
     display: flex;
     justify-content: center;
 }
-.vnccs-btn {
-    background: #555;
-    color: white;
-    border: 2px solid #333;
-    border-radius: 5px;
-    padding: 10px 30px; /* Larger padding */
-    font-weight: bold;
+.ems-btn {
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+    color: #1a1525;
+    border: none;
+    border-radius: var(--radius-md);
+    padding: 10px 32px;
+    font-family: var(--font);
+    font-weight: 700;
+    font-size: 22px;
+    letter-spacing: 0.5px;
     cursor: pointer;
-    font-family: monospace;
-    font-size: 24px; /* Doubled */
+    box-shadow: 0 4px 20px rgba(255, 143, 163, 0.25);
+    position: relative;
+    overflow: hidden;
+    transition: all var(--transition);
+    text-transform: uppercase;
 }
-.vnccs-btn:hover {
-    background: #777;
+.ems-btn::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.2) 45%, rgba(255,255,255,0.28) 50%, rgba(255,255,255,0.2) 55%, transparent 100%);
+    transform: translateX(-120%) skewX(-15deg);
+    animation: emBtnShimmer 3.5s ease-in-out infinite;
+    pointer-events: none;
+}
+@keyframes emBtnShimmer {
+    0%   { transform: translateX(-120%) skewX(-15deg); opacity: 1; }
+    35%  { transform: translateX(120%)  skewX(-15deg); opacity: 1; }
+    100% { transform: translateX(120%)  skewX(-15deg); opacity: 0; }
+}
+.ems-btn:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 30px rgba(255, 143, 163, 0.45);
+}
+.ems-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+.ems-btn.cancel {
+    background: rgba(255, 71, 87, 0.15);
+    color: var(--error);
+    border: 1px solid rgba(255, 71, 87, 0.3);
+    box-shadow: none;
+}
+.ems-btn.cancel::after { display: none; }
+.ems-btn.cancel:hover:not(:disabled) {
+    background: rgba(255, 71, 87, 0.28);
+    box-shadow: 0 4px 16px rgba(255, 71, 87, 0.2);
 }
 
-/* Search Input */
-.vnccs-search-input {
+/* ── Search Input ── */
+.ems-search-input {
     width: 100%;
-    padding: 8px;
-    margin-top: 5px;
-    margin-bottom: 5px;
-    background: #444;
-    color: white;
-    border: 1px solid #555;
-    border-radius: 4px;
-    font-size: 16px;
-    font-family: monospace;
+    padding: 8px 14px;
+    margin-top: 6px;
+    margin-bottom: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-primary);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: var(--radius-md);
+    font-size: 14px;
+    font-family: var(--font);
     box-sizing: border-box;
+    transition: all var(--transition);
 }
-.vnccs-search-input:focus {
+.ems-search-input:focus {
     outline: none;
-    border-color: #007bff;
+    border-color: var(--accent-border);
+    background: rgba(255, 143, 163, 0.03);
+    box-shadow: 0 0 0 3px rgba(255, 143, 163, 0.05);
+}
+.ems-search-input::placeholder { color: var(--text-muted); }
+
+/* ── Custom Select Style ── */
+.em-select {
+    width: 100%;
+    padding: 6px 10px;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-primary);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: var(--radius-md);
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 500;
+    transition: all var(--transition);
+    cursor: pointer;
+}
+.em-select:focus {
+    outline: none;
+    border-color: var(--accent-border);
+    box-shadow: 0 0 0 2px rgba(255, 143, 163, 0.08);
 }
 `;
 
@@ -253,27 +420,43 @@ app.registerExtension({
 
                 // Create UI Container
                 const container = document.createElement("div");
-                container.className = "vnccs-container";
+                container.className = "ems-container";
 
                 // --- LEFT COL ---
                 const leftCol = document.createElement("div");
-                leftCol.className = "vnccs-left-col";
+                leftCol.className = "ems-left-col";
 
                 // Character Header
                 const charSection = document.createElement("div");
-                charSection.className = "vnccs-section";
+                charSection.className = "ems-section";
                 charSection.style.flex = "1";
 
                 const charHeader = document.createElement("div");
-                charHeader.className = "vnccs-char-header";
+                charHeader.className = "ems-char-header";
                 charHeader.innerText = "Character select";
 
                 const previewContainer = document.createElement("div");
-                previewContainer.className = "vnccs-char-preview-container";
+                previewContainer.className = "ems-char-preview-container";
 
                 const charImg = document.createElement("img");
-                charImg.className = "vnccs-char-preview";
+                charImg.className = "ems-char-preview";
+                charImg.style.display = "none";
                 previewContainer.appendChild(charImg);
+
+                const charPlaceholder = document.createElement("div");
+                charPlaceholder.style.cssText = "display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:rgba(255,143,163,0.35);pointer-events:none;";
+                charPlaceholder.innerHTML = `
+                    <svg width="52" height="52" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="12" cy="7" r="4" stroke="#ff8fa3" stroke-width="1.5"/>
+                        <path d="M4 20c0-4 3.582-7 8-7s8 3 8 7" stroke="#ff8fa3" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                    <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;font-family:'Sora',sans-serif;">Character</div>
+                `;
+                previewContainer.appendChild(charPlaceholder);
+
+                // Show/hide placeholder when image loads
+                charImg.onload = () => { charImg.style.display = "block"; charPlaceholder.style.display = "none"; };
+                charImg.onerror = () => { charImg.style.display = "none"; charPlaceholder.style.display = "flex"; };
 
                 charSection.appendChild(charHeader);
                 charSection.appendChild(previewContainer);
@@ -283,35 +466,35 @@ app.registerExtension({
 
                 // --- RIGHT COL ---
                 const rightCol = document.createElement("div");
-                rightCol.className = "vnccs-right-col";
+                rightCol.className = "ems-right-col";
 
                 // Costumes
                 const costumesSection = document.createElement("div");
-                costumesSection.className = "vnccs-section";
+                costumesSection.className = "ems-section";
 
                 const costumesHeader = document.createElement("div");
-                costumesHeader.className = "vnccs-costumes-header";
+                costumesHeader.className = "ems-costumes-header";
                 costumesHeader.innerText = "Selected costumes";
                 costumesSection.appendChild(costumesHeader);
 
                 const costumesList = document.createElement("div");
-                costumesList.className = "vnccs-costumes-list";
+                costumesList.className = "ems-costumes-list";
                 costumesSection.appendChild(costumesList);
 
                 rightCol.appendChild(costumesSection);
 
                 // Emotions
                 const emotionsSection = document.createElement("div");
-                emotionsSection.className = "vnccs-section";
+                emotionsSection.className = "ems-section";
                 emotionsSection.style.flex = "1";
 
                 const emotionsGrid = document.createElement("div");
-                emotionsGrid.className = "vnccs-emotions-container";
+                emotionsGrid.className = "ems-emotions-container";
                 emotionsSection.appendChild(emotionsGrid);
 
                 // Search Input
                 const searchInput = document.createElement("input");
-                searchInput.className = "vnccs-search-input";
+                searchInput.className = "ems-search-input";
                 searchInput.placeholder = "Search emotions (name or description)...";
                 searchInput.oninput = (e) => {
                     state.searchTerm = e.target.value;
@@ -322,9 +505,9 @@ app.registerExtension({
 
                 // Footer (Select All)
                 const footer = document.createElement("div");
-                footer.className = "vnccs-footer";
+                footer.className = "ems-footer";
                 const btnAll = document.createElement("button");
-                btnAll.className = "vnccs-btn";
+                btnAll.className = "ems-btn";
                 btnAll.innerText = "Select ALL";
                 footer.appendChild(btnAll);
                 emotionsSection.appendChild(footer);
@@ -334,14 +517,7 @@ app.registerExtension({
 
                 // Custom Select in Header
                 const charSelect = document.createElement("select");
-                charSelect.style.width = "100%";
-                charSelect.style.marginTop = "5px";
-                charSelect.style.padding = "5px";
-                charSelect.style.fontWeight = "bold";
-                // Style select for dark theme
-                charSelect.style.background = "#555";
-                charSelect.style.color = "white";
-                charSelect.style.border = "1px solid #333";
+                charSelect.className = "em-select";
 
                 charHeader.appendChild(charSelect);
 
@@ -368,17 +544,12 @@ app.registerExtension({
                 const styleWidget = node.widgets.find(w => w.name === "prompt_style");
 
                 const styleContainer = document.createElement("div");
-                styleContainer.className = "vnccs-section";
+                styleContainer.className = "ems-section";
                 styleContainer.style.marginBottom = "10px";
                 styleContainer.style.padding = "5px 10px";
 
                 const styleSelect = document.createElement("select");
-                styleSelect.style.width = "100%";
-                styleSelect.style.padding = "5px";
-                styleSelect.style.fontWeight = "bold";
-                styleSelect.style.background = "#555";
-                styleSelect.style.color = "white";
-                styleSelect.style.border = "1px solid #333";
+                styleSelect.className = "em-select";
 
                 if (styleWidget && styleWidget.options.values) {
                     styleWidget.options.values.forEach(v => {
@@ -409,6 +580,20 @@ app.registerExtension({
                     setValue(v) { }
                 });
 
+                // Fix layout after tab switch: ComfyUI detaches/reattaches DOM widgets
+                // without triggering onResize. Use ResizeObserver on the node's canvas
+                // element to detect when the widget becomes visible again and reapply sizes.
+                function applySize() {
+                    const [w, h] = node.size;
+                    container.style.width = (w - 20) + "px";
+                    container.style.height = (h - 60) + "px";
+                }
+
+                const origDraw = node.onDrawBackground;
+                node.onDrawBackground = function (ctx) {
+                    applySize();
+                    if (origDraw) origDraw.apply(this, arguments);
+                };
 
                 function restoreStateFromWidgets() {
                     // 1. Character
@@ -442,11 +627,9 @@ app.registerExtension({
                     }
                 }
 
-                // Explicitly set dimensions on resize
+                // Apply size on explicit resize too
                 node.onResize = function (size) {
-                    const [w, h] = size;
-                    container.style.width = (w - 20) + "px";
-                    container.style.height = (h - 60) + "px";
+                    applySize();
                 }
 
                 // Helper
@@ -466,7 +649,7 @@ app.registerExtension({
                     if (filtered.length === 0) {
                         btnAll.innerText = "No Emotions Found";
                         btnAll.disabled = true;
-                        btnAll.style.background = "#333";
+                        btnAll.classList.remove("cancel");
                         return;
                     }
                     btnAll.disabled = false;
@@ -475,10 +658,10 @@ app.registerExtension({
 
                     if (allFilteredSelected) {
                         btnAll.innerText = "Cancel Selection";
-                        btnAll.style.background = "#d32f2f"; // Red for cancel
+                        btnAll.classList.add("cancel");
                     } else {
                         btnAll.innerText = "Select ALL";
-                        btnAll.style.background = "#555"; // Default gray
+                        btnAll.classList.remove("cancel");
                     }
                 }
 
@@ -524,7 +707,11 @@ app.registerExtension({
                     costumesList.innerHTML = "";
                     state.costumes.forEach(c => {
                         const lbl = document.createElement("label");
-                        lbl.className = "vnccs-checkbox-item";
+                        lbl.className = "ems-checkbox-item";
+
+                        const toggle = document.createElement("div");
+                        toggle.className = "em-toggle";
+
                         const chk = document.createElement("input");
                         chk.type = "checkbox";
                         chk.checked = state.selectedCostumes.has(c);
@@ -533,9 +720,20 @@ app.registerExtension({
                             else state.selectedCostumes.delete(c);
                             updateCostumesData();
                         };
+
+                        const track = document.createElement("div");
+                        track.className = "em-toggle-track";
+                        const thumb = document.createElement("div");
+                        thumb.className = "em-toggle-thumb";
+
+                        toggle.appendChild(chk);
+                        toggle.appendChild(track);
+                        toggle.appendChild(thumb);
+
                         const span = document.createElement("span");
                         span.innerText = c;
-                        lbl.appendChild(chk);
+
+                        lbl.appendChild(toggle);
                         lbl.appendChild(span);
                         costumesList.appendChild(lbl);
                     });
@@ -547,16 +745,16 @@ app.registerExtension({
                     filtered.forEach(e => {
                         const div = document.createElement("div");
                         const selected = state.selectedEmotions.has(e.safe_name);
-                        div.className = "vnccs-emotion-item" + (selected ? " selected" : "");
+                        div.className = "ems-emotion-item" + (selected ? " selected" : "");
                         div.title = e.description || "";
 
                         const img = document.createElement("img");
-                        img.className = "vnccs-emotion-img";
+                        img.className = "ems-emotion-img";
                         img.src = `/vnccs/get_emotion_image?name=${encodeURIComponent(e.safe_name)}`;
                         img.onerror = () => { img.style.display = 'none'; };
 
                         const lbl = document.createElement("div");
-                        lbl.className = "vnccs-emotion-label";
+                        lbl.className = "ems-emotion-label";
                         lbl.innerText = e.safe_name;
 
                         div.appendChild(img);

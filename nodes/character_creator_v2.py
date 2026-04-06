@@ -212,7 +212,7 @@ if server:
             cfg = float(gen_settings.get("cfg", 8.0))
             sampler_name = gen_settings.get("sampler", "euler")
             scheduler = gen_settings.get("scheduler", "normal")
-            seed = int(gen_settings.get("seed", 0))
+            seed = generate_seed(int(gen_settings.get("seed", 0)))
 
             # Resolution
             width = 640
@@ -352,9 +352,9 @@ class CharacterCreatorV2:
         positive_prompt = f"{aesthetics}, simple background, expressionless, solo, cowboy_shot"
         positive_prompt, gender_negative = apply_sex(sex, positive_prompt, "")
         
-        # NSWF / Clothing (Ensure bool casting)
-        is_nsfw = bool(info.get("nsfw", False))
-        if str(info.get("nsfw")).lower() == "false": is_nsfw = False 
+        # NSFW / Clothing
+        nsfw_val = info.get("nsfw", False)
+        is_nsfw = nsfw_val if isinstance(nsfw_val, bool) else str(nsfw_val).lower() in ("true", "1", "yes")
         
         if is_nsfw:
              nude_phrase = "(naked, nude, penis)" if sex == "male" else "(naked, nude, vagina, nipples)"

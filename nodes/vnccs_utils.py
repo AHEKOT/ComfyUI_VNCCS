@@ -750,6 +750,7 @@ class RMBGModel(BaseModelLoader):
 
                     module_name = f"custom_birefnet_model_{hash(birefnet_path)}"
                     module = types.ModuleType(module_name)
+                    module.__file__ = birefnet_path  # required for transformers model registration
                     sys.modules[module_name] = module
                     exec(birefnet_content, module.__dict__)
 
@@ -786,7 +787,8 @@ class RMBGModel(BaseModelLoader):
                         self.model = AutoModelForImageSegmentation.from_pretrained(
                             cache_dir,
                             trust_remote_code=True,
-                            local_files_only=True
+                            local_files_only=True,
+                            low_cpu_mem_usage=False  # prevent meta-device init that breaks .item() calls
                         )
                     except Exception as standard_e:
                         handle_model_error(f"Failed to load model. Modern error: {str(modern_e)}. Standard error: {str(standard_e)}")
@@ -915,6 +917,7 @@ class CustomBiRefNetModel(RMBGModel):
 
                     module_name = f"custom_birefnet_{hash(model_name)}"
                     module = types.ModuleType(module_name)
+                    module.__file__ = birefnet_path  # required for transformers model registration
                     sys.modules[module_name] = module
                     exec(birefnet_content, module.__dict__)
 

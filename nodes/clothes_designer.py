@@ -362,7 +362,8 @@ class ClothesDesigner:
                      print(f"[ClothesDesigner] Depth Gen Failed: {e}")
         else:
             print("[ClothesDesigner] Clone Mode: Skipping Depth Map")
-
+        # Disable Depth Map but remain compatible with encoder input.   
+        depth_img = None
         # Load Clone Image (Image 3)
         clone_image_tensor = None
         if active_tab == "clone" and data.get("clone_image"):
@@ -430,10 +431,22 @@ class ClothesDesigner:
             positive=pos_cond, negative=neg_cond, latent_image=empty_latent, denoise=1.0
         )[0] # KSampler returns (LATENT,)
 
-        # 8. Decode (Official VAE Decode Tiled)
-        print("[ClothesDesigner] VAE Decoding (Tiled)...")
-        vae_decode_node = nodes.NODE_CLASS_MAPPINGS["VAEDecodeTiled"]()
-        image, = vae_decode_node.decode(vae=vae, samples=latent_result, tile_size=512, overlap=64)
+        # 8. Decode
+        print("[ClothesDesigner] VAE Decoding...")
+        try:
+            vae_decode_node = nodes.NODE_CLASS_MAPPINGS["VAEDecodeTiled"]()
+            decode_kwargs = dict(vae=vae, samples=latent_result, tile_size=512, overlap=64)
+            # Newer ComfyUI versions added temporal params; pass them if accepted
+            import inspect
+            sig = inspect.signature(vae_decode_node.decode)
+            if "temporal_size" in sig.parameters:
+                decode_kwargs["temporal_size"] = 0
+                decode_kwargs["temporal_overlap"] = 0
+            image, = vae_decode_node.decode(**decode_kwargs)
+        except Exception as e:
+            print(f"[ClothesDesigner] VAEDecodeTiled failed ({e}), falling back to VAEDecode...")
+            vae_decode_node = nodes.NODE_CLASS_MAPPINGS["VAEDecode"]()
+            image, = vae_decode_node.decode(vae=vae, samples=latent_result)
 
         # Cache for UI preview
         try:
