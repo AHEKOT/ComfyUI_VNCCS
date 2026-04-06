@@ -377,6 +377,85 @@ const STYLE = `
     border-color: var(--accent-border);
     box-shadow: 0 0 0 2px rgba(255, 143, 163, 0.08);
 }
+
+/* ── Confirm Modal ── */
+.ems-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    border-radius: 8px;
+}
+.ems-modal {
+    background: rgba(22, 18, 34, 0.98);
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-lg);
+    padding: 24px 28px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-width: 280px;
+    max-width: 360px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 143, 163, 0.08);
+    position: relative;
+}
+.ems-modal::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 18%; right: 18%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 143, 163, 0.6), transparent);
+    border-radius: 1px;
+}
+.ems-modal-text {
+    font-family: var(--font);
+    font-size: 13px;
+    color: var(--text-primary);
+    line-height: 1.6;
+}
+.ems-modal-text strong {
+    color: var(--accent);
+    font-weight: 700;
+}
+.ems-modal-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+.ems-modal-btn {
+    padding: 8px 20px;
+    border-radius: var(--radius-md);
+    font-family: var(--font);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    cursor: pointer;
+    border: none;
+    transition: all var(--transition);
+}
+.ems-modal-btn--cancel {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+}
+.ems-modal-btn--cancel:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+}
+.ems-modal-btn--confirm {
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+    color: #1a1525;
+    box-shadow: 0 4px 16px rgba(255, 143, 163, 0.25);
+}
+.ems-modal-btn--confirm:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 20px rgba(255, 143, 163, 0.4);
+}
 `;
 
 // Inject Styles
@@ -388,6 +467,20 @@ document.head.appendChild(styleEl);
 
 app.registerExtension({
     name: "VNCCS.EmotionGeneratorV2",
+
+    async setup() {
+        const origQueuePrompt = app.queuePrompt.bind(app);
+        app.queuePrompt = async function(...args) {
+            const nodes = app.graph?._nodes?.filter(n => n.type === "EmotionGeneratorV2") || [];
+            for (const node of nodes) {
+                if (node._validateBeforeQueue && !node._validateBeforeQueue()) {
+                    return; // block queue, modal already shown inside _validateBeforeQueue
+                }
+            }
+            return origQueuePrompt(...args);
+        };
+    },
+
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
         if (nodeData.name === "EmotionGeneratorV2") {
             const onNodeCreated = nodeType.prototype.onNodeCreated;
@@ -595,6 +688,81 @@ app.registerExtension({
                     if (origDraw) origDraw.apply(this, arguments);
                 };
 
+                function showAlert(html) {
+                    const backdrop = document.createElement("div");
+                    backdrop.className = "ems-modal-backdrop";
+
+                    const modal = document.createElement("div");
+                    modal.className = "ems-modal";
+
+                    const text = document.createElement("div");
+                    text.className = "ems-modal-text";
+                    text.innerHTML = html;
+
+                    const actions = document.createElement("div");
+                    actions.className = "ems-modal-actions";
+
+                    const btnOk = document.createElement("button");
+                    btnOk.className = "ems-modal-btn ems-modal-btn--confirm";
+                    btnOk.innerText = "OK";
+                    btnOk.onclick = () => backdrop.remove();
+
+                    actions.appendChild(btnOk);
+                    modal.appendChild(text);
+                    modal.appendChild(actions);
+                    backdrop.appendChild(modal);
+                    container.appendChild(backdrop);
+                    btnOk.focus();
+                }
+
+                node._validateBeforeQueue = function() {
+                    if (state.selectedCostumes.size === 0 && state.selectedEmotions.size === 0) {
+                        showAlert(`<strong>Nothing selected</strong><br>Please select at least one costume and one emotion before running.`);
+                        return false;
+                    }
+                    if (state.selectedCostumes.size === 0) {
+                        showAlert(`<strong>No costumes selected</strong><br>Please enable at least one costume.`);
+                        return false;
+                    }
+                    if (state.selectedEmotions.size === 0) {
+                        showAlert(`<strong>No emotions selected</strong><br>Please select at least one emotion.`);
+                        return false;
+                    }
+                    return true;
+                };
+
+                function showConfirm(html, onConfirm) {
+                    const backdrop = document.createElement("div");
+                    backdrop.className = "ems-modal-backdrop";
+
+                    const modal = document.createElement("div");
+                    modal.className = "ems-modal";
+
+                    const text = document.createElement("div");
+                    text.className = "ems-modal-text";
+                    text.innerHTML = html;
+
+                    const actions = document.createElement("div");
+                    actions.className = "ems-modal-actions";
+
+                    const btnCancel = document.createElement("button");
+                    btnCancel.className = "ems-modal-btn ems-modal-btn--cancel";
+                    btnCancel.innerText = "Cancel";
+                    btnCancel.onclick = () => backdrop.remove();
+
+                    const btnOk = document.createElement("button");
+                    btnOk.className = "ems-modal-btn ems-modal-btn--confirm";
+                    btnOk.innerText = "Proceed";
+                    btnOk.onclick = () => { backdrop.remove(); onConfirm(); };
+
+                    actions.appendChild(btnCancel);
+                    actions.appendChild(btnOk);
+                    modal.appendChild(text);
+                    modal.appendChild(actions);
+                    backdrop.appendChild(modal);
+                    container.appendChild(backdrop);
+                }
+
                 function restoreStateFromWidgets() {
                     // 1. Character
                     if (charWidget && charWidget.value) {
@@ -682,12 +850,12 @@ app.registerExtension({
                         const numCostumes = state.selectedCostumes.size;
                         const total = numEmotions * numCostumes;
 
-                        const msg = `Select all ${numEmotions} visible emotions for ${numCostumes} costume(s)?\nTotal: ${total} images.\n\nProceed?`;
-                        if (confirm(msg)) {
+                        const html = `Select <strong>${numEmotions}</strong> visible emotion(s) for <strong>${numCostumes}</strong> costume(s)?<br>Total: <strong>${total}</strong> images.`;
+                        showConfirm(html, () => {
                             filtered.forEach(e => state.selectedEmotions.add(e.safe_name));
                             renderEmotions();
                             updateEmotionsData();
-                        }
+                        });
                     }
                 };
 

@@ -550,7 +550,9 @@ def load_character_sheet(character: str, costume: str = "Naked", emotion: str = 
         if with_mask:
             if has_alpha:
                 img_tensor = torch.from_numpy(image_np[..., :3])[None,]
-                mask_alpha_channel = image_np[..., 3]
+                # ComfyUI mask convention: 1.0 = inpaint area, 0.0 = keep.
+                # PNG alpha: 1.0 = opaque (keep), 0.0 = transparent (inpaint). Invert.
+                mask_alpha_channel = 1.0 - image_np[..., 3]
                 mask_tensor = torch.from_numpy(mask_alpha_channel).unsqueeze(0)
                 print(f"[VNCCS Utils] Loaded sheet with mask: {best_path}")
                 return img_tensor, mask_tensor
