@@ -431,11 +431,24 @@ class ClothesDesigner:
             positive=pos_cond, negative=neg_cond, latent_image=empty_latent, denoise=1.0
         )[0] # KSampler returns (LATENT,)
 
+        def normalize_decode_input(value):
+            if torch.is_tensor(value):
+                return value.detach().clone()
+            if isinstance(value, dict):
+                return {k: normalize_decode_input(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [normalize_decode_input(v) for v in value]
+            if isinstance(value, tuple):
+                return tuple(normalize_decode_input(v) for v in value)
+            return value
+
+        latent_for_decode = normalize_decode_input(latent_result)
+
         # 8. Decode
         print("[ClothesDesigner] VAE Decoding...")
         try:
             vae_decode_node = nodes.NODE_CLASS_MAPPINGS["VAEDecodeTiled"]()
-            decode_kwargs = dict(vae=vae, samples=latent_result, tile_size=512, overlap=64)
+            decode_kwargs = dict(vae=vae, samples=latent_for_decode, tile_size=512, overlap=64)
             # Newer ComfyUI versions added temporal params; pass them if accepted
             import inspect
             sig = inspect.signature(vae_decode_node.decode)
@@ -446,7 +459,7 @@ class ClothesDesigner:
         except Exception as e:
             print(f"[ClothesDesigner] VAEDecodeTiled failed ({e}), falling back to VAEDecode...")
             vae_decode_node = nodes.NODE_CLASS_MAPPINGS["VAEDecode"]()
-            image, = vae_decode_node.decode(vae=vae, samples=latent_result)
+            image, = vae_decode_node.decode(vae=vae, samples=latent_for_decode)
 
         # Cache for UI preview
         try:
