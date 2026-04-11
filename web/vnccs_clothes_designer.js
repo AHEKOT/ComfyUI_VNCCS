@@ -258,12 +258,9 @@ app.registerExtension({
                         top: "", bottom: "", head: "", shoes: "", face: ""
                     },
                     gen_settings: {
-                        unet_name: "", vae_name: "", clip_name: "",
-                        lightning_lora: "None", lightning_lora_strength: 1.0,
-                        service_lora: "None", service_lora_strength: 1.0,
                         background_color: "Green",
-                        seed: 0, seed_mode: "fixed", steps: 4, cfg: 1.0, sampler: "euler", scheduler: "simple",
-                        lora_stack: [{ name: "", strength: 1.0 }, { name: "", strength: 1.0 }, { name: "", strength: 1.0 }]
+                        seed: 0,
+                        seed_mode: "fixed"
                     }
                 };
 
@@ -336,6 +333,48 @@ app.registerExtension({
                         d.style.padding = "10px 0";
                         return d;
                     }, [{ text: "OK", class: "vnccs-btn-primary" }]);
+                };
+
+                const getConnectedControlCenterState = () => {
+                    const resolveUpstreamNode = (startNode, inputName, maxDepth = 20) => {
+                        let currentNode = startNode;
+                        let currentInputName = inputName;
+
+                        for (let depth = 0; depth < maxDepth; depth++) {
+                            const input = currentNode?.inputs?.find((item) => item.name === currentInputName)
+                                ?? currentNode?.inputs?.[0];
+                            const linkId = input?.link;
+                            if (linkId == null) return null;
+
+                            const link = app.graph?.links?.[linkId];
+                            const originId = link?.origin_id ?? link?.originId;
+                            if (originId == null) return null;
+
+                            const upstream = app.graph?.getNodeById?.(originId) ?? app.graph?._nodes_by_id?.[originId] ?? null;
+                            if (!upstream) return null;
+
+                            const comfyClass = upstream.comfyClass || upstream.type || "";
+                            if (comfyClass === "VNCCS_ControlCenter") return upstream;
+
+                            currentNode = upstream;
+                            currentInputName = "pipe";
+                        }
+
+                        return null;
+                    };
+
+                    const upstream = resolveUpstreamNode(node, "pipe");
+                    if (!upstream) return null;
+
+                    const repoWidget = upstream.widgets?.find((w) => w.name === "repo_id");
+                    const stateWidget = upstream.widgets?.find((w) => w.name === "node_state");
+                    const repo_id = String(repoWidget?.value ?? "").trim();
+                    const node_state = typeof stateWidget?.value === "string"
+                        ? stateWidget.value
+                        : JSON.stringify(stateWidget?.value ?? {});
+
+                    if (!repo_id || !node_state) return null;
+                    return { repo_id, node_state };
                 };
 
                 // UI Builders
@@ -559,7 +598,12 @@ app.registerExtension({
                         state.gen_settings.seed = Math.floor(Math.random() * 10000000000000);
                         if (els.seed) els.seed.value = state.gen_settings.seed;
                     }
-                    if (!state.gen_settings.unet_name) { showInfo("Error", "No UNET Selected"); return; }
+
+                    const controlCenter = getConnectedControlCenterState();
+                    if (!controlCenter) {
+                        showInfo("Error", "Connect Clothes Designer pipe input to VNCCS Control Center.");
+                        return;
+                    }
 
                     // Show loading overlay
                     const loadingOverlay = document.createElement('div');
@@ -574,7 +618,14 @@ app.registerExtension({
                     saveState();
                     btnGen.innerText = "GENERATING..."; btnGen.disabled = true;
                     try {
-                        const r = await api.fetchApi("/vnccs/clothes_preview", { method: "POST", body: JSON.stringify(state) });
+                        const r = await api.fetchApi("/vnccs/control_center/clothes_preview", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                ...controlCenter,
+                                clothes_state: state,
+                            })
+                        });
                         if (r.ok) {
                             const d = await r.json();
                             if (d.image) {
@@ -650,7 +701,7 @@ app.registerExtension({
 
                 // --- COL 3: SETTINGS ---
                 const colRight = document.createElement("div"); colRight.className = "vnccs-col";
-                colRight.innerHTML = '<div class="vnccs-section-title">Settings (Qwen)</div>';
+                colRight.innerHTML = '<div class="vnccs-section-title">Settings</div>';
 
                 const createSetting = (lbl, key, type = "text", list = []) => {
                     const w = document.createElement("div"); w.className = "vnccs-field";
@@ -691,82 +742,14 @@ app.registerExtension({
                     colRight.appendChild(w);
                 };
 
-                // Helper for LoRA with strength
-                const createLoraField = (lbl, keyName, keyStr, loras) => {
-                    const w = document.createElement("div"); w.className = "vnccs-field";
-                    w.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
-
-                    const row = document.createElement("div"); row.className = "vnccs-row";
-
-                    const sel = document.createElement("select"); sel.className = "vnccs-select"; sel.style.flex = "1";
-                    loras.forEach(l => sel.add(new Option(l, l)));
-                    sel.value = state.gen_settings[keyName] || "None";
-                    sel.onchange = (e) => { state.gen_settings[keyName] = e.target.value; saveState(); };
-
-                    const num = document.createElement("input"); num.className = "vnccs-input";
-                    num.type = "number"; num.step = "0.01"; num.style.width = "60px";
-                    num.value = state.gen_settings[keyStr] !== undefined ? state.gen_settings[keyStr] : 1.0;
-                    num.onchange = (e) => { state.gen_settings[keyStr] = Number(e.target.value); saveState(); };
-
-                    row.appendChild(sel);
-                    row.appendChild(num);
-                    w.appendChild(row);
-                    colRight.appendChild(w);
-
-                    els[keyName] = sel; els[keyStr] = num;
-                };
-
                 // Initial Load
                 (async () => {
                     const r = await api.fetchApi("/vnccs/context_lists");
                     const d = await r.json();
 
-                    // 1. Try UnetLoaderGGUF (Custom Node) - Primary for GGUF
-                    let unets = [];
-                    try {
-                        const rGGUF = await api.fetchApi("/object_info/UnetLoaderGGUF");
-                        const dGGUF = await rGGUF.json();
-                        unets = dGGUF.UnetLoaderGGUF.input.required.unet_name[0];
-                        console.log("VNCCS: Loaded GGUF models from UnetLoaderGGUF");
-                    } catch (e) {
-                        console.log("VNCCS: UnetLoaderGGUF not found, trying UNETLoader.");
-                        // 2. Try Standard UNETLoader
-                        try {
-                            const rStd = await api.fetchApi("/object_info/UNETLoader");
-                            const dStd = await rStd.json();
-                            unets = dStd.UNETLoader.input.required.unet_name[0];
-                        } catch (e2) {
-                            console.warn("VNCCS: No UNET loader found, list empty.");
-                            unets = []; // Do NOT use checkpoints
-                        }
-                    }
-
-                    colRight.innerHTML = '<div class="vnccs-section-title">Settings (Qwen)</div>';
-
-                    createSetting("UNET (GGUF)", "unet_name", "select", unets.length ? unets : ["No Models Found"]);
-                    createSetting("CLIP", "clip_name", "select", d.checkpoints);
-                    try {
-                        const r3 = await api.fetchApi("/object_info/CLIPLoader");
-                        const d3 = await r3.json();
-                        els.clip_name.innerHTML = "";
-                        d3.CLIPLoader.input.required.clip_name[0].forEach(o => els.clip_name.add(new Option(o, o)));
-                    } catch (e) { console.warn("[VNCCS] ClothesDesigner: Error loading CLIP models", e); }
-
-                    createSetting("VAE", "vae_name", "select", []);
-                    try {
-                        const r4 = await api.fetchApi("/object_info/VAELoader");
-                        const d4 = await r4.json();
-                        els.vae_name.innerHTML = "";
-                        d4.VAELoader.input.required.vae_name[0].forEach(o => els.vae_name.add(new Option(o, o)));
-                    } catch (e) { console.warn("[VNCCS] ClothesDesigner: Error loading VAE models", e); }
-
-                    // LoRAs
-                    const loraList = ["None", ...d.loras];
-                    createLoraField("Lightning LoRA", "lightning_lora", "lightning_lora_strength", loraList);
-                    createLoraField("Service LoRA", "service_lora", "service_lora_strength", loraList);
+                    colRight.innerHTML = '<div class="vnccs-section-title">Settings</div>';
 
                     createSetting("Background", "background_color", "select", ["Green", "Blue"]);
-                    // createSetting("Seed", "seed", "number");
 
                     // --- Custom Seed Control ---
                     const seedWrap = document.createElement("div"); seedWrap.className = "vnccs-field";
@@ -799,37 +782,7 @@ app.registerExtension({
                     seedRow.appendChild(seedMode);
                     seedWrap.appendChild(seedRow);
                     colRight.appendChild(seedWrap);
-                    createSetting("Steps", "steps", "number");
-                    createSetting("CFG", "cfg", "number");
-
-                    // Restore values
-                    if (state.gen_settings.unet_name) els.unet_name.value = state.gen_settings.unet_name;
-                    if (state.gen_settings.clip_name) els.clip_name.value = state.gen_settings.clip_name;
-                    if (state.gen_settings.vae_name) els.vae_name.value = state.gen_settings.vae_name;
-
-                    // Restore LoRAs
-                    if (els.lightning_lora) els.lightning_lora.value = state.gen_settings.lightning_lora || "None";
-                    if (els.lightning_lora_strength) els.lightning_lora_strength.value = state.gen_settings.lightning_lora_strength || 1.0;
-                    if (els.service_lora) els.service_lora.value = state.gen_settings.service_lora || "None";
-                    if (els.service_lora_strength) els.service_lora_strength.value = state.gen_settings.service_lora_strength || 1.0;
-
-                    if (state.gen_settings.steps) els.steps.value = state.gen_settings.steps;
-                    if (state.gen_settings.cfg) els.cfg.value = state.gen_settings.cfg;
                     if (state.gen_settings.seed_mode && els.seed_mode) els.seed_mode.value = state.gen_settings.seed_mode;
-
-                    // SYNC Defaults for Models (Critical Fix for Empty String error)
-                    if (!state.gen_settings.unet_name && els.unet_name.options.length) {
-                        state.gen_settings.unet_name = els.unet_name.options[0].value;
-                        els.unet_name.value = state.gen_settings.unet_name;
-                    }
-                    if (!state.gen_settings.clip_name && els.clip_name.options.length) {
-                        state.gen_settings.clip_name = els.clip_name.options[0].value;
-                        els.clip_name.value = state.gen_settings.clip_name;
-                    }
-                    if (!state.gen_settings.vae_name && els.vae_name.options.length) {
-                        state.gen_settings.vae_name = els.vae_name.options[0].value;
-                        els.vae_name.value = state.gen_settings.vae_name;
-                    }
                     saveState(); // Ensure defaults are persisted immediately
 
                     // Char List

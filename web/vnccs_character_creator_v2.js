@@ -617,6 +617,12 @@ app.registerExtension({
                     const w = node.widgets.find(x => x.name === "widget_data");
                     if (w) w.value = JSON.stringify(state);
                 };
+
+                const clearPreviewHandlers = () => {
+                    if (!els.previewImg) return;
+                    els.previewImg.onload = null;
+                    els.previewImg.onerror = null;
+                };
                 const loadState = () => {
                     // 1. Try Widget Data (Graph Persistence)
                     const w = node.widgets.find(x => x.name === "widget_data");
@@ -1287,7 +1293,10 @@ app.registerExtension({
                 container.appendChild(bottomRow);
 
                 // Inject UI
-                this.addDOMWidget("ui", "ui", container, { serialize: false });
+                this.addDOMWidget("ui", "ui", container, {
+                    serialize: false,
+                    hideOnZoom: false,
+                });
 
                 // 6. Logic
 
@@ -1298,6 +1307,7 @@ app.registerExtension({
                         console.log(`[VNCCS] Preview Update Event received for '${charName}' (Node ${node.id})`);
                         if (charName === state.character) {
                             console.log("[VNCCS] Character matches. Refreshing local preview...");
+                            clearPreviewHandlers();
                             els.previewImg.src = `/vnccs/get_cached_preview?character=${encodeURIComponent(charName)}&t=${Date.now()}`;
                             els.previewImg.style.display = "block";
                             els.placeholder.style.display = "none";
@@ -1524,6 +1534,7 @@ app.registerExtension({
 
                         const d = await r.json();
                         if (d.image) {
+                            clearPreviewHandlers();
                             els.previewImg.src = "data:image/png;base64," + d.image;
                             els.previewImg.style.display = "block";
                             els.placeholder.style.display = "none";

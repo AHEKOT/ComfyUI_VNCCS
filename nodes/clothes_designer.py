@@ -3,25 +3,38 @@ import os
 import json
 import torch
 import folder_paths
-import comfy.sd
-import comfy.utils
-import comfy.model_management
 import nodes
 import server
 from aiohttp import web
 from PIL import Image
 import io
-import base64
 import numpy as np
 import traceback
 import glob
 import re
 
 from ..utils import (
-    character_dir, base_output_dir, load_character_info, save_costume_info,
-    load_costume_info, list_costumes, ensure_costume_structure, 
-    sheets_dir, faces_dir, dedupe_tokens
+    character_dir, save_costume_info,
+    load_costume_info, list_costumes, ensure_costume_structure,
+    sheets_dir, faces_dir
 )
+
+
+class PipeContext:
+    def __init__(self, source=None, **updates):
+        self.model = getattr(source, "model", None) if source is not None else None
+        self.clip = getattr(source, "clip", None) if source is not None else None
+        self.vae = getattr(source, "vae", None) if source is not None else None
+        self.pos = getattr(source, "pos", None) if source is not None else None
+        self.neg = getattr(source, "neg", None) if source is not None else None
+        self.seed_int = getattr(source, "seed_int", getattr(source, "seed", 0)) if source is not None else 0
+        self.sample_steps = getattr(source, "sample_steps", getattr(source, "steps", 0)) if source is not None else 0
+        self.cfg = getattr(source, "cfg", 0.0) if source is not None else 0.0
+        self.denoise = getattr(source, "denoise", 1.0) if source is not None else 1.0
+        self.sampler_name = getattr(source, "sampler_name", None) if source is not None else None
+        self.scheduler = getattr(source, "scheduler", None) if source is not None else None
+        for key, value in updates.items():
+            setattr(self, key, value)
 
 class ClothesDesigner:
     """
@@ -32,7 +45,9 @@ class ClothesDesigner:
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "required": {},
+            "optional": {
+                "pipe": ("VNCCS_PIPE",),
+            },
             "hidden": {
                 "widget_data": ("STRING", {"default": "{}"}), 
                 "unique_id": "UNIQUE_ID",
@@ -112,7 +127,7 @@ class ClothesDesigner:
             return None, None
         except: return None, None
 
-    def process(self, widget_data="{}", unique_id=None):
+    def process(self, pipe=None, widget_data="{}", unique_id=None):
         # CRITICAL FIX: Ensure PromptServer has last_prompt_id for preview system
         if not hasattr(server.PromptServer.instance, "last_prompt_id"):
              server.PromptServer.instance.last_prompt_id = "vnccs_api_preview"
@@ -128,6 +143,15 @@ class ClothesDesigner:
         costume_name = data.get("costume", "Naked")
         gen_settings = data.get("gen_settings", {})
         active_tab = data.get("activeTab", "generate")
+
+        if pipe is None:
+            raise ValueError("Clothes Designer requires an incoming VNCCS pipe from Control Center.")
+
+        model = getattr(pipe, "model", None)
+        clip = getattr(pipe, "clip", None)
+        vae = getattr(pipe, "vae", None)
+        if model is None or clip is None or vae is None:
+            raise ValueError("Incoming VNCCS pipe is missing model, clip, or vae.")
         
         # 0. Cache Check
         import hashlib
@@ -146,40 +170,6 @@ class ClothesDesigner:
         except:
              input_hash = "INVALID"
 
-        if os.path.exists(cache_info_path) and os.path.exists(cache_img_path):
-            try:
-                with open(cache_info_path, "r") as f:
-                    cached_info = json.load(f)
-                
-                cached_hash = cached_info.get("hash")
-                
-                if cached_hash == input_hash:
-                    # Cache Hit
-                    print(f"[ClothesDesigner] Cache Hit! Loading preview from {cache_img_path}")
-                    try:
-                        CACHE_IMG = Image.open(cache_img_path)
-                        image_np = np.array(CACHE_IMG).astype(np.float32) / 255.0
-                        if image_np.shape[-1] == 4: image_np = image_np[..., :3]
-                        
-                        image_tensor = torch.from_numpy(image_np).unsqueeze(0)
-                        
-                        pos, neg = self.construct_prompt(data)
-                        sheet_path = sheets_dir(character_name, costume_name, "neutral") 
-                        face_path = faces_dir(character_name, costume_name, "neutral")
-                        costume_json_str = json.dumps(data.get("costume_info", {}), indent=2)
-                        
-                        class PipeContext:
-                            def __init__(self): 
-                                self.seed_int = int(gen_settings.get("seed", 0))
-                                self.steps = int(gen_settings.get("steps", 4))
-                                self.cfg = float(gen_settings.get("cfg", 1.0))
-
-                        bg_color = gen_settings.get("background_color", "Green")
-                        return (image_tensor, image_tensor, pipe, sheet_path, face_path, bg_color)
-                    except Exception as e:
-                        print(f"[ClothesDesigner] Cache Load Error: {e}")
-            except: pass
-
         # 0. Validation
         def has_base_sheet(c):
              p1 = os.path.join(character_dir(c), "Sheets", "Naked", "neutral")
@@ -197,80 +187,8 @@ class ClothesDesigner:
         # 2. Paths
         sheet_path = sheets_dir(character_name, costume_name, "neutral") 
         face_path = faces_dir(character_name, costume_name, "neutral")
-        
-        # 3. Load Models (WRAPPER CALLS)
-        unet_name = gen_settings.get("unet_name")
-        clip_name = gen_settings.get("clip_name")
-        vae_name = gen_settings.get("vae_name")
-        
-        if not all([unet_name, clip_name, vae_name]):
-            raise ValueError("All model fields (UNET, CLIP, VAE) must be set.")
-            
-        print(f"[ClothesDesigner] Loading UNET: {unet_name}")
-        if "UnetLoaderGGUF" not in nodes.NODE_CLASS_MAPPINGS:
-            raise RuntimeError("UnetLoaderGGUF node not found. Please install ComfyUI-GGUF.")
-        
-        gguf_loader = nodes.NODE_CLASS_MAPPINGS["UnetLoaderGGUF"]()
-        model, = gguf_loader.load_unet(unet_name)
-        
-        print(f"[ClothesDesigner] Loading CLIP: {clip_name}")
-        clip_loader = nodes.CLIPLoader()
-        clip, = clip_loader.load_clip(clip_name, type="qwen_image")
-        
-        print(f"[ClothesDesigner] Loading VAE: {vae_name}")
-        vae_loader = nodes.VAELoader()
-        vae, = vae_loader.load_vae(vae_name)
 
-        # 4. LoRAs
-        if "LoraLoaderModelOnly" not in nodes.NODE_CLASS_MAPPINGS:
-             raise RuntimeError("LoraLoaderModelOnly node not found. Please update ComfyUI.")
-        
-        lora_loader = nodes.NODE_CLASS_MAPPINGS["LoraLoaderModelOnly"]()
-        
-        def safe_load_lora(m, name, strength):
-            if not name or name == "None": 
-                print(f"[ClothesDesigner] LoRA Skipped (None): {name}")
-                return m
-            
-            try:
-                s_val = float(strength)
-            except:
-                s_val = 1.0
-                print(f"[ClothesDesigner] LoRA Strength Invalid ({strength}), defaulting to 1.0")
-
-            print(f"[ClothesDesigner] Loading LoRA (Model Only): {name} (Strength={s_val})")
-            # LoraLoaderModelOnly.load_lora_model_only(model, lora_name, strength_model) -> (MODEL,)
-            return lora_loader.load_lora_model_only(m, name, strength_model=s_val)[0]
-
-        # Log incoming settings
-        l_lora = gen_settings.get("lightning_lora")
-        l_str = gen_settings.get("lightning_lora_strength", 1.0)
-        s_lora = gen_settings.get("service_lora")
-        s_str = gen_settings.get("service_lora_strength", 1.0)
-        
-        print(f"[ClothesDesigner] LoRA Settings -> Lightning: {l_lora} ({l_str}), Service: {s_lora} ({s_str})")
-
-        model = safe_load_lora(model, l_lora, l_str)
-        
-        # Fork Model: gen_model for Preview, pipe_model for Output Pipe
-        gen_model = model
-        pipe_model = model
-
-        # Apply Service LoRA ONLY to gen_model (Preview)
-        # Excluded from pipe_model as per requirements
-        if active_tab != "clone":
-            gen_model = safe_load_lora(gen_model, s_lora, s_str)
-        else:
-            print("[ClothesDesigner] Clone Mode: Skipping Service LoRA")
-            
-        # Apply Stack LoRAs to BOTH
-        for item in gen_settings.get("lora_stack", []):
-             n = item.get("name")
-             s = item.get("strength", 1.0)
-             gen_model = safe_load_lora(gen_model, n, s)
-             pipe_model = safe_load_lora(pipe_model, n, s)
-
-        # 5. VNCCS Qwen Encoder (Subclass defined above in previous tool call, assuming standard import logic)
+        # 3. VNCCS Qwen Encoder using model objects from the incoming pipe
         from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder, node_helpers
         
         class SafeQwenEncoder(VNCCS_QWEN_Encoder):
@@ -400,36 +318,34 @@ class ClothesDesigner:
             qwen_2511=True
         )
         
-        # 6. Pipe Construct
-        class PipeContext:
-            def __init__(self, **kwargs):
-                for k, v in kwargs.items(): setattr(self, k, v)
-                    
-        pipe = PipeContext(
-            model=pipe_model, clip=clip, vae=vae,
+        seed_int = int(gen_settings.get("seed", 0)) or int(getattr(pipe, "seed_int", getattr(pipe, "seed", 0)) or 0)
+        sample_steps = int(getattr(pipe, "sample_steps", getattr(pipe, "steps", 0)) or 4)
+        cfg = float(getattr(pipe, "cfg", 1.0) or 1.0)
+        denoise = float(getattr(pipe, "denoise", 1.0) or 1.0)
+        sampler_name = getattr(pipe, "sampler_name", None) or "euler"
+        scheduler = getattr(pipe, "scheduler", None) or "normal"
+
+        out_pipe = PipeContext(
+            source=pipe,
+            model=model, clip=clip, vae=vae,
             pos=pos_cond, neg=neg_cond,
-            seed_int=int(gen_settings.get("seed", 0)),
-            sample_steps=int(gen_settings.get("steps", 4)),
-            cfg=float(gen_settings.get("cfg", 1.0)),
-            denoise=1.0,
-            sampler_name=gen_settings.get("sampler", "euler"),
-            scheduler=gen_settings.get("scheduler", "simple") 
+            seed_int=seed_int,
+            sample_steps=sample_steps,
+            cfg=cfg,
+            denoise=denoise,
+            sampler_name=sampler_name,
+            scheduler=scheduler,
         )
 
-        # 7. Sampling (Standard KSampler)
-        # nodes.KSampler.sample -> common_ksampler
+        # 4. Sampling using the incoming Control Center pipe configuration
         k_sampler = nodes.KSampler()
-        # Create latent image input (empty)
-        # VNCCS_QWEN_Encoder returns 'latent' which is a dict {"samples": tensor} or just the tensor?
-        # Checking qwen encoder source: returns (..., ..., latent_out) where latent_out = {"samples": samples}
-        # KSampler expects 'latent_image' which is {"samples": ...}
-        
+
         print("[ClothesDesigner] Sampling...")
         latent_result = k_sampler.sample(
-            model=gen_model, seed=pipe.seed_int, steps=pipe.sample_steps, 
-            cfg=pipe.cfg, sampler_name=pipe.sampler_name, scheduler=pipe.scheduler,
-            positive=pos_cond, negative=neg_cond, latent_image=empty_latent, denoise=1.0
-        )[0] # KSampler returns (LATENT,)
+            model=model, seed=out_pipe.seed_int, steps=out_pipe.sample_steps,
+            cfg=out_pipe.cfg, sampler_name=out_pipe.sampler_name, scheduler=out_pipe.scheduler,
+            positive=pos_cond, negative=neg_cond, latent_image=empty_latent, denoise=out_pipe.denoise
+        )[0]
 
         def normalize_decode_input(value):
             if torch.is_tensor(value):
@@ -444,7 +360,7 @@ class ClothesDesigner:
 
         latent_for_decode = normalize_decode_input(latent_result)
 
-        # 8. Decode
+        # 5. Decode
         print("[ClothesDesigner] VAE Decoding...")
         try:
             vae_decode_node = nodes.NODE_CLASS_MAPPINGS["VAEDecodeTiled"]()
@@ -481,7 +397,7 @@ class ClothesDesigner:
              traceback.print_exc()
 
         bg_color = gen_settings.get("background_color", "Green")
-        return (image, full_naked_sheet, pipe, sheet_path, face_path, bg_color)
+        return (image, full_naked_sheet, out_pipe, sheet_path, face_path, bg_color)
 
 # --- API ---
 
@@ -584,37 +500,3 @@ async def vnccs_get_preview(request):
              
     return web.Response(status=404)
 
-@server.PromptServer.instance.routes.post("/vnccs/clothes_preview")
-async def clothes_preview(request):
-    try:
-        # Re-use the ClothesDesigner class logic to generate a preview
-        # This ensures we use the exact same pipeline (Standard Nodes)
-        data = await request.json()
-        
-        # We need to create a dummy instance or static method to run the generation
-        # But `process` is an instance method and returns a lot of stuff.
-        # Let's extract the core logic to a helper or just instantiate ClothesDesigner.
-        
-        # Create canonical string to match process() hashing logic
-        widget_data_str = json.dumps(data, sort_keys=True, separators=(',', ':'))
-        
-        designer = ClothesDesigner()
-        # Run process. This will do the standard node calls.
-        # It also saves to cache/preview.png
-        # process() returns (image_tensor, pipe, ...)
-        
-        # CAUTION: process() raises errors if models aren't found.
-        # Now returns 6 values: (image, sheet, pipe, sheet_path, face_path, bg_color)
-        ret = designer.process(widget_data=widget_data_str, unique_id="api_preview")
-        image_tensor = ret[0]
-        
-        # Convert tensor to base64 for immediate frontend display
-        i_pil = Image.fromarray(np.clip(255. * image_tensor.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
-        buffered = io.BytesIO()
-        i_pil.save(buffered, format="PNG")
-        b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
-        
-        return web.json_response({"image": b64})
-    except Exception as e:
-        traceback.print_exc()
-        return web.Response(status=500, text=str(e))

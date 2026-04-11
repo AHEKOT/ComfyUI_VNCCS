@@ -57,7 +57,7 @@ const STYLE = `
 }
 
 /* ── Rows ── */
-.vnccs-top-row {
+.vnccs-cloner-top-row {
     display: grid;
     grid-template-columns: 40% 60%;
     gap: 10px;
@@ -66,7 +66,7 @@ const STYLE = `
     width: 100%;
 }
 
-.vnccs-bottom-row {
+.vnccs-cloner-bottom-row {
     display: grid;
     grid-template-columns: 40% 60%;
     gap: 10px;
@@ -77,7 +77,7 @@ const STYLE = `
 }
 
 /* ── Columns ── */
-.vnccs-col {
+.vnccs-cloner-col {
     display: flex;
     flex-direction: column;
     background: rgba(20, 16, 30, 0.88);
@@ -91,7 +91,7 @@ const STYLE = `
     position: relative;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
 }
-.vnccs-col::before {
+.vnccs-cloner-col::before {
     content: '';
     position: absolute;
     top: 0; left: 18%; right: 18%;
@@ -99,11 +99,11 @@ const STYLE = `
     background: linear-gradient(90deg, transparent, rgba(255, 143, 163, 0.6), transparent);
     border-radius: 1px;
 }
-.vnccs-col::-webkit-scrollbar { width: 4px; }
-.vnccs-col::-webkit-scrollbar-thumb { background: var(--accent-border); border-radius: 2px; }
+.vnccs-cloner-col::-webkit-scrollbar { width: 4px; }
+.vnccs-cloner-col::-webkit-scrollbar-thumb { background: var(--accent-border); border-radius: 2px; }
 
 /* ── Section Titles ── */
-.vnccs-section-title {
+.vnccs-cloner-section-title {
     font-size: 10px;
     font-weight: 700;
     color: var(--accent);
@@ -116,7 +116,7 @@ const STYLE = `
     gap: 10px;
     margin-bottom: 2px;
 }
-.vnccs-section-title::before {
+.vnccs-cloner-section-title::before {
     content: '';
     width: 3px;
     height: 12px;
@@ -127,14 +127,14 @@ const STYLE = `
 }
 
 /* ── Fields ── */
-.vnccs-field {
+.vnccs-cloner-field {
     display: flex;
     flex-direction: column;
     gap: 4px;
     margin-bottom: 3px;
     flex-shrink: 0;
 }
-.vnccs-label {
+.vnccs-cloner-label {
     color: var(--text-secondary);
     font-size: 10px;
     font-weight: 600;
@@ -143,7 +143,7 @@ const STYLE = `
 }
 
 /* ── Inputs ── */
-.vnccs-input, .vnccs-textarea {
+.vnccs-cloner-input, .vnccs-cloner-textarea {
     background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.08);
     color: var(--text-primary);
@@ -155,7 +155,7 @@ const STYLE = `
     box-sizing: border-box;
     transition: all var(--transition);
 }
-.vnccs-select {
+.vnccs-cloner-select {
     background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.08);
     color: var(--text-primary);
@@ -167,7 +167,7 @@ const STYLE = `
     box-sizing: border-box;
     transition: all var(--transition);
 }
-.vnccs-input:focus, .vnccs-select:focus, .vnccs-textarea:focus {
+.vnccs-cloner-input:focus, .vnccs-cloner-select:focus, .vnccs-cloner-textarea:focus {
     outline: none;
     border-color: var(--accent-border);
     background: rgba(255, 143, 163, 0.03);
@@ -175,13 +175,13 @@ const STYLE = `
 }
 
 /* ── Buttons ── */
-.vnccs-btn-row {
+.vnccs-cloner-btn-row {
     display: flex;
     gap: 6px;
     margin-top: auto;
     flex-shrink: 0;
 }
-.vnccs-btn {
+.vnccs-cloner-btn {
     flex: 1;
     padding: 8px 12px;
     border: none;
@@ -196,14 +196,14 @@ const STYLE = `
     text-align: center;
     transition: all var(--transition);
 }
-.vnccs-btn-primary {
+.vnccs-cloner-btn-primary {
     background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
     color: #1a1525;
     box-shadow: 0 4px 20px rgba(255, 143, 163, 0.25);
     position: relative;
     overflow: hidden;
 }
-.vnccs-btn-primary::after {
+.vnccs-cloner-btn-primary::after {
     content: '';
     position: absolute;
     inset: 0;
@@ -217,27 +217,27 @@ const STYLE = `
     35%  { transform: translateX(120%)  skewX(-15deg); opacity: 1; }
     100% { transform: translateX(120%)  skewX(-15deg); opacity: 0; }
 }
-.vnccs-btn-primary:hover:not(:disabled) {
+.vnccs-cloner-btn-primary:hover:not(:disabled) {
     transform: translateY(-2px);
     box-shadow: 0 8px 30px rgba(255, 143, 163, 0.45), 0 0 0 1px var(--accent-glow);
 }
-.vnccs-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+.vnccs-cloner-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 
-.vnccs-btn-success {
+.vnccs-cloner-btn-success {
     background: rgba(0, 214, 143, 0.15);
     border: 1px solid rgba(0, 214, 143, 0.3);
     color: var(--success);
 }
-.vnccs-btn-success:hover { background: rgba(0, 214, 143, 0.25); border-color: var(--success); }
+.vnccs-cloner-btn-success:hover { background: rgba(0, 214, 143, 0.25); border-color: var(--success); }
 
-.vnccs-btn-danger {
+.vnccs-cloner-btn-danger {
     background: rgba(255, 71, 87, 0.15);
     border: 1px solid rgba(255, 71, 87, 0.3);
     color: var(--error);
 }
-.vnccs-btn-danger:hover { background: rgba(255, 71, 87, 0.25); border-color: var(--error); }
+.vnccs-cloner-btn-danger:hover { background: rgba(255, 71, 87, 0.25); border-color: var(--error); }
 
-.vnccs-btn-upload {
+.vnccs-cloner-btn-upload {
     background: rgba(255, 143, 163, 0.08);
     border: 1px dashed var(--accent-border);
     color: var(--accent);
@@ -251,19 +251,19 @@ const STYLE = `
     letter-spacing: 0.8px;
     transition: all var(--transition);
 }
-.vnccs-btn-upload:hover {
+.vnccs-cloner-btn-upload:hover {
     background: rgba(255, 143, 163, 0.15);
     border-color: var(--accent);
     box-shadow: 0 0 16px var(--accent-subtle);
 }
 
 /* ── Image Grid ── */
-.vnccs-img-list {
+.vnccs-cloner-img-list {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
 }
-.vnccs-thumb {
+.vnccs-cloner-thumb {
     width: 60px;
     height: 60px;
     object-fit: cover;
@@ -272,8 +272,8 @@ const STYLE = `
     cursor: pointer;
     transition: all var(--transition);
 }
-.vnccs-thumb:hover { border-color: var(--accent); box-shadow: 0 0 8px var(--accent-subtle); }
-.vnccs-thumb.generating {
+.vnccs-cloner-thumb:hover { border-color: var(--accent); box-shadow: 0 0 8px var(--accent-subtle); }
+.vnccs-cloner-thumb.generating {
     border: 2px solid var(--accent);
     animation: clonerPulse 1s infinite alternate;
     box-shadow: 0 0 12px var(--accent-glow);
@@ -281,28 +281,28 @@ const STYLE = `
 @keyframes clonerPulse { from { opacity: 0.6; } to { opacity: 1; } }
 
 /* ── Toggle Switch ── */
-.vnccs-toggle-wrap {
+.vnccs-cloner-toggle-wrap {
     display: flex;
     align-items: center;
     gap: 10px;
     cursor: pointer;
     user-select: none;
 }
-.vnccs-toggle-wrap span {
+.vnccs-cloner-toggle-wrap span {
     font-size: 10px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--text-secondary);
 }
-.vnccs-toggle {
+.vnccs-cloner-toggle {
     position: relative;
     width: 36px;
     height: 20px;
     flex-shrink: 0;
 }
-.vnccs-toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
-.vnccs-toggle-track {
+.vnccs-cloner-toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+.vnccs-cloner-toggle-track {
     position: absolute;
     inset: 0;
     border-radius: 20px;
@@ -310,12 +310,12 @@ const STYLE = `
     border: 1px solid rgba(255, 255, 255, 0.12);
     transition: all var(--transition);
 }
-.vnccs-toggle input:checked + .vnccs-toggle-track {
+.vnccs-cloner-toggle input:checked + .vnccs-cloner-toggle-track {
     background: rgba(255, 143, 163, 0.25);
     border-color: var(--accent-border);
     box-shadow: 0 0 8px var(--accent-subtle);
 }
-.vnccs-toggle-thumb {
+.vnccs-cloner-toggle-thumb {
     position: absolute;
     top: 3px;
     left: 3px;
@@ -326,14 +326,14 @@ const STYLE = `
     transition: all var(--transition);
     box-shadow: 0 1px 4px rgba(0,0,0,0.4);
 }
-.vnccs-toggle input:checked ~ .vnccs-toggle-thumb {
+.vnccs-cloner-toggle input:checked ~ .vnccs-cloner-toggle-thumb {
     transform: translateX(16px);
     background: var(--accent);
     box-shadow: 0 0 6px var(--accent-glow);
 }
 
 /* ── Preview Container ── */
-.vnccs-preview-placeholder {
+.vnccs-cloner-preview-placeholder {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -342,8 +342,8 @@ const STYLE = `
     color: var(--text-muted);
     pointer-events: none;
 }
-.vnccs-preview-placeholder svg { opacity: 0.35; }
-.vnccs-preview-placeholder-text {
+.vnccs-cloner-preview-placeholder svg { opacity: 0.35; }
+.vnccs-cloner-preview-placeholder-text {
     font-size: 10px;
     font-weight: 600;
     text-transform: uppercase;
@@ -351,7 +351,7 @@ const STYLE = `
 }
 
 /* ── Loading Overlay ── */
-.vnccs-loading-overlay {
+.vnccs-cloner-loading-overlay {
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
     background: rgba(10, 10, 15, 0.92);
     backdrop-filter: blur(10px);
@@ -359,32 +359,32 @@ const STYLE = `
     z-index: 1000; pointer-events: auto; gap: 16px;
     border-radius: var(--radius-lg);
 }
-.vnccs-spinner {
+.vnccs-cloner-spinner {
     width: 44px;
     height: 44px;
     position: relative;
 }
-.vnccs-spinner::before, .vnccs-spinner::after {
+.vnccs-cloner-spinner::before, .vnccs-cloner-spinner::after {
     content: '';
     position: absolute;
     inset: 0;
     border-radius: 50%;
     border: 3px solid transparent;
 }
-.vnccs-spinner::before {
+.vnccs-cloner-spinner::before {
     border-top-color: var(--accent);
     border-right-color: rgba(255, 143, 163, 0.3);
-    animation: vnccs-spin 1s linear infinite;
+    animation: clonerSpin 1s linear infinite;
     box-shadow: 0 0 18px rgba(255, 143, 163, 0.2);
 }
-.vnccs-spinner::after {
+.vnccs-cloner-spinner::after {
     inset: 7px;
     border-bottom-color: rgba(184, 169, 232, 0.6);
     border-left-color: rgba(184, 169, 232, 0.2);
-    animation: vnccs-spin 1.4s linear infinite reverse;
+    animation: clonerSpin 1.4s linear infinite reverse;
 }
-@keyframes vnccs-spin { to { transform: rotate(360deg); } }
-.vnccs-loading-text {
+@keyframes clonerSpin { to { transform: rotate(360deg); } }
+.vnccs-cloner-loading-text {
     color: var(--text-secondary);
     font-family: var(--font);
     font-size: 11px;
@@ -392,11 +392,11 @@ const STYLE = `
     text-transform: uppercase;
     letter-spacing: 1px;
 }
-.vnccs-loading-dots::after {
+.vnccs-cloner-loading-dots::after {
     content: '';
-    animation: vnccs-dots 1.5s steps(4, end) infinite;
+    animation: clonerDots 1.5s steps(4, end) infinite;
 }
-@keyframes vnccs-dots {
+@keyframes clonerDots {
     0%, 20% { content: ''; }
     40% { content: '.'; }
     60% { content: '..'; }
@@ -487,14 +487,14 @@ app.registerExtension({
                 // UI Builders
                 const createField = (lbl, key, type = "text", opts = [], targetObj = state.character_info) => {
                     const wrap = document.createElement("div");
-                    wrap.className = "vnccs-field";
+                    wrap.className = "vnccs-cloner-field";
 
                     if (type === "checkbox") {
                         const toggleWrap = document.createElement("label");
-                        toggleWrap.className = "vnccs-toggle-wrap";
+                        toggleWrap.className = "vnccs-cloner-toggle-wrap";
 
                         const toggle = document.createElement("div");
-                        toggle.className = "vnccs-toggle";
+                        toggle.className = "vnccs-cloner-toggle";
 
                         const inp = document.createElement("input");
                         inp.type = "checkbox";
@@ -502,9 +502,9 @@ app.registerExtension({
                         inp.onchange = (e) => { targetObj[key] = e.target.checked; saveState(); };
 
                         const track = document.createElement("div");
-                        track.className = "vnccs-toggle-track";
+                        track.className = "vnccs-cloner-toggle-track";
                         const thumb = document.createElement("div");
-                        thumb.className = "vnccs-toggle-thumb";
+                        thumb.className = "vnccs-cloner-toggle-thumb";
 
                         toggle.appendChild(inp);
                         toggle.appendChild(track);
@@ -522,22 +522,22 @@ app.registerExtension({
 
                     const header = document.createElement("div");
                     header.style.display = "flex"; header.style.justifyContent = "space-between";
-                    header.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
+                    header.innerHTML = `<div class="vnccs-cloner-label">${lbl}</div>`;
                     wrap.appendChild(header);
 
                     let inp;
                     if (type === "select") {
-                        inp = document.createElement("select"); inp.className = "vnccs-select";
+                        inp = document.createElement("select"); inp.className = "vnccs-cloner-select";
                         opts.forEach(v => inp.add(new Option(v, v)));
                         inp.value = targetObj[key] || opts[0];
                         inp.onchange = (e) => { targetObj[key] = e.target.value; saveState(); };
                     } else if (type === "number") {
-                        inp = document.createElement("input"); inp.className = "vnccs-input";
+                        inp = document.createElement("input"); inp.className = "vnccs-cloner-input";
                         inp.type = "number";
                         inp.value = targetObj[key];
                         inp.onchange = (e) => { targetObj[key] = parseFloat(e.target.value); saveState(); };
                     } else {
-                        inp = document.createElement("input"); inp.className = "vnccs-input";
+                        inp = document.createElement("input"); inp.className = "vnccs-cloner-input";
                         inp.value = targetObj[key] || "";
                         inp.onchange = (e) => { targetObj[key] = e.target.value; saveState(); };
                     }
@@ -658,7 +658,7 @@ app.registerExtension({
                     let inpRef;
                     showModal("New Character", () => {
                         const inp = document.createElement("input");
-                        inp.className = "vnccs-input";
+                        inp.className = "vnccs-cloner-input";
                         inp.placeholder = "Name...";
                         inpRef = inp;
                         return inp;
@@ -726,21 +726,21 @@ app.registerExtension({
 
                 // Top Row
                 const topRow = document.createElement("div");
-                topRow.className = "vnccs-top-row";
+                topRow.className = "vnccs-cloner-top-row";
 
                 // COL 1: SOURCE IMAGES
                 // COL 1: SOURCE IMAGES (Left Column)
                 const colSrc = document.createElement("div");
-                colSrc.className = "vnccs-col";
+                colSrc.className = "vnccs-cloner-col";
 
                 // --- CHARACTER SELECTOR (Moved to Left Top) ---
-                colSrc.innerHTML = '<div class="vnccs-section-title">Character Select</div>';
+                colSrc.innerHTML = '<div class="vnccs-cloner-section-title">Character Select</div>';
 
                 const charRow = document.createElement("div");
-                charRow.className = "vnccs-field";
+                charRow.className = "vnccs-cloner-field";
 
                 const charSel = document.createElement("select");
-                charSel.className = "vnccs-select";
+                charSel.className = "vnccs-cloner-select";
                 charSel.onchange = async (e) => {
                     state.character = e.target.value;
                     await loadChar(state.character);
@@ -753,15 +753,15 @@ app.registerExtension({
                 // (Preview removed: Using Native Preview Window below)
 
                 const btnRow = document.createElement("div");
-                btnRow.className = "vnccs-btn-row";
+                btnRow.className = "vnccs-cloner-btn-row";
 
                 const btnNew = document.createElement("button");
-                btnNew.className = "vnccs-btn vnccs-btn-success";
+                btnNew.className = "vnccs-cloner-btn vnccs-cloner-btn-success";
                 btnNew.innerText = "NEW";
                 btnNew.onclick = doCreate;
 
                 const btnDel = document.createElement("button");
-                btnDel.className = "vnccs-btn vnccs-btn-danger";
+                btnDel.className = "vnccs-cloner-btn vnccs-cloner-btn-danger";
                 btnDel.innerText = "DEL";
                 btnDel.onclick = doDelete;
 
@@ -771,19 +771,19 @@ app.registerExtension({
 
                 // --- SOURCE IMAGES SECTION ---
                 const srcHeader = document.createElement("div");
-                srcHeader.className = "vnccs-section-title";
+                srcHeader.className = "vnccs-cloner-section-title";
                 srcHeader.innerText = "Source Images";
                 srcHeader.style.marginTop = "15px";
                 colSrc.appendChild(srcHeader);
 
                 const imgList = document.createElement("div");
-                imgList.className = "vnccs-img-list";
+                imgList.className = "vnccs-cloner-img-list";
                 colSrc.appendChild(imgList);
 
                 // --- IMAGE PREVIEW/UPLOAD AREA ---
                 // Container for the Large Preview
                 const previewContainer = document.createElement("div");
-                previewContainer.className = "vnccs-preview-container";
+                previewContainer.className = "vnccs-cloner-preview-container";
                 previewContainer.style.flex = "1";
                 previewContainer.style.position = "relative";
                 previewContainer.style.border = "1px solid rgba(255, 143, 163, 0.15)";
@@ -807,14 +807,14 @@ app.registerExtension({
 
                 // Placeholder (shown when no image)
                 const previewPlaceholder = document.createElement("div");
-                previewPlaceholder.className = "vnccs-preview-placeholder";
+                previewPlaceholder.className = "vnccs-cloner-preview-placeholder";
                 previewPlaceholder.innerHTML = `
                     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <circle cx="12" cy="7" r="4" stroke="#ff8fa3" stroke-width="1.5"/>
                         <path d="M4 20c0-4 3.582-7 8-7s8 3 8 7" stroke="#ff8fa3" stroke-width="1.5" stroke-linecap="round"/>
                         <rect x="1" y="1" width="22" height="22" rx="4" stroke="#ff8fa3" stroke-width="1" stroke-dasharray="3 3" opacity="0.4"/>
                     </svg>
-                    <div class="vnccs-preview-placeholder-text">Source Preview</div>
+                    <div class="vnccs-cloner-preview-placeholder-text">Source Preview</div>
                 `;
                 previewContainer.appendChild(previewPlaceholder);
 
@@ -825,7 +825,7 @@ app.registerExtension({
                 // User said "Huge square with +upload images IS the place for preview"
 
                 const uploadOverlay = document.createElement("div");
-                uploadOverlay.className = "vnccs-upload-overlay";
+                uploadOverlay.className = "vnccs-cloner-upload-overlay";
                 uploadOverlay.style.position = "absolute";
                 uploadOverlay.style.inset = "0";
                 uploadOverlay.style.display = "flex";
@@ -837,7 +837,7 @@ app.registerExtension({
                 // If image exists, make overlay transparent or subtle?
                 // Let's replicate the Button look but centered
                 const uploadBtn = document.createElement("button");
-                uploadBtn.className = "vnccs-btn vnccs-btn-upload";
+                uploadBtn.className = "vnccs-cloner-btn vnccs-cloner-btn-upload";
                 uploadBtn.innerText = "+ UPLOAD IMAGES";
                 uploadBtn.style.padding = "10px 20px";
                 uploadOverlay.appendChild(uploadBtn);
@@ -899,14 +899,14 @@ app.registerExtension({
 
                 // COL 2: ATTRIBUTES (Auto Gen)
                 const colAttr = document.createElement("div");
-                colAttr.className = "vnccs-col";
+                colAttr.className = "vnccs-cloner-col";
 
                 const attrHeader = document.createElement("div");
-                attrHeader.className = "vnccs-section-title";
+                attrHeader.className = "vnccs-cloner-section-title";
                 attrHeader.innerText = "Attributes";
 
                 const autoGenBtn = document.createElement("button");
-                autoGenBtn.className = "vnccs-btn vnccs-btn-primary";
+                autoGenBtn.className = "vnccs-cloner-btn vnccs-cloner-btn-primary";
                 autoGenBtn.style.padding = "10px 12px";
                 autoGenBtn.style.fontSize = "12px";
                 autoGenBtn.style.flex = "0 0 auto"; // Prevent stretching
@@ -1129,16 +1129,16 @@ app.registerExtension({
 
                 // --- BOTTOM ROW (Prompts) --
                 const botRow = document.createElement("div");
-                botRow.className = "vnccs-bottom-row";
+                botRow.className = "vnccs-cloner-bottom-row";
 
                 // Read-only Prompts? Or generated?
                 // Standard textareas
                 const createTA = (lbl, key) => {
                     const w = document.createElement("div");
-                    w.className = "vnccs-col";
-                    w.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
+                    w.className = "vnccs-cloner-col";
+                    w.innerHTML = `<div class="vnccs-cloner-label">${lbl}</div>`;
                     const t = document.createElement("textarea");
-                    t.className = "vnccs-textarea";
+                    t.className = "vnccs-cloner-textarea";
                     t.style.flex = "1";
                     t.style.resize = "none";
                     // We don't bind this to state input, but output?
@@ -1240,7 +1240,7 @@ app.registerExtension({
                         params.append("type", type);
                         if (sub) params.append("subfolder", sub);
                         img.src = api.apiURL("/view?" + params.toString());
-                        img.className = "vnccs-thumb";
+                        img.className = "vnccs-cloner-thumb";
                         img.style.width = "60px"; // Ensure styling
                         img.style.height = "60px";
                         img.style.objectFit = "cover";

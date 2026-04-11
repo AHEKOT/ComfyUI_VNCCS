@@ -19,6 +19,7 @@ try:
     from .background_generator import NODE_CLASS_MAPPINGS as BACKGROUND_GENERATOR_MAPPINGS
     from .vnccs_panorama_mapper import NODE_CLASS_MAPPINGS as PANORAMA_MAPPER_MAPPINGS
     from .vnccs_api import NODE_CLASS_MAPPINGS as VNCCS_API_MAPPINGS
+    from .vnccs_control_center import NODE_CLASS_MAPPINGS as VNCCS_CONTROL_CENTER_MAPPINGS
     from .character_creator_v2 import CharacterCreatorV2
     from .character_cloner import CharacterCloner
     from .clothes_designer import ClothesDesigner
@@ -43,6 +44,7 @@ try:
     from .background_generator import NODE_DISPLAY_NAME_MAPPINGS as BACKGROUND_GENERATOR_DISPLAY_MAPPINGS
     from .vnccs_panorama_mapper import NODE_DISPLAY_NAME_MAPPINGS as PANORAMA_MAPPER_DISPLAY_MAPPINGS
     from .vnccs_api import NODE_DISPLAY_NAME_MAPPINGS as VNCCS_API_DISPLAY_MAPPINGS
+    from .vnccs_control_center import NODE_DISPLAY_NAME_MAPPINGS as VNCCS_CONTROL_CENTER_DISPLAY_MAPPINGS
 
 
     NODE_CLASS_MAPPINGS = {
@@ -63,6 +65,7 @@ try:
         **BACKGROUND_GENERATOR_MAPPINGS,
         **PANORAMA_MAPPER_MAPPINGS,
         **VNCCS_API_MAPPINGS,
+        **VNCCS_CONTROL_CENTER_MAPPINGS,
 
         "CharacterCreatorV2": CharacterCreatorV2,
         "CharacterCloner": CharacterCloner,
@@ -89,6 +92,7 @@ try:
         **BACKGROUND_GENERATOR_DISPLAY_MAPPINGS,
         **PANORAMA_MAPPER_DISPLAY_MAPPINGS,
         **VNCCS_API_DISPLAY_MAPPINGS,
+        **VNCCS_CONTROL_CENTER_DISPLAY_MAPPINGS,
 
         "CharacterCreatorV2": "VNCCS Character Creator V2",
         "CharacterCloner": "VNCCS Character Cloner",
