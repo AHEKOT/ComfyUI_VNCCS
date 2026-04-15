@@ -82,6 +82,16 @@ class VNCCS_Pipe:
             }
         }
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, sampler_name=PIPE_INHERIT, scheduler=PIPE_INHERIT, **kwargs):
+        valid_samplers = [PIPE_INHERIT] + list(SAMPLER_ENUM)
+        valid_schedulers = [PIPE_INHERIT] + list(SCHEDULER_ENUM)
+        if sampler_name not in valid_samplers:
+            return f"sampler_name '{sampler_name}' is not valid"
+        if scheduler not in valid_schedulers:
+            return f"scheduler '{scheduler}' is not valid"
+        return True
+
     def process_pipe(self, model=None, clip=None, vae=None, pos=None, neg=None, seed_int=0,
                      sample_steps=0, cfg=0.0, denoise=0.0, pipe=None,
                      sampler_name=PIPE_INHERIT, scheduler=PIPE_INHERIT):

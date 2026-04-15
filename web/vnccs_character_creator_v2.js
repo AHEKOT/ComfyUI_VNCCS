@@ -506,6 +506,18 @@ const STYLE = `
 
 app.registerExtension({
     name: "VNCCS.CharacterCreatorV2",
+
+    async setup() {
+        const origQueuePrompt = app.queuePrompt.bind(app);
+        app.queuePrompt = async function(...args) {
+            const nodes = app.graph?._nodes?.filter(n => n.type === "CharacterCreatorV2") || [];
+            for (const node of nodes) {
+                node._randomizeSeedIfNeeded?.();
+            }
+            return origQueuePrompt(...args);
+        };
+    },
+
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name === "CharacterCreatorV2") {
             const onNodeCreated = nodeType.prototype.onNodeCreated;
@@ -539,16 +551,18 @@ app.registerExtension({
                     if (origDraw) origDraw.apply(this, arguments);
                 };
 
+                node._randomizeSeedIfNeeded = () => {
+                    if (state.gen_settings.seed_mode === "randomize") {
+                        state.gen_settings.seed = generateRandomSeed();
+                        if (els.seed) els.seed.value = state.gen_settings.seed;
+                        saveState();
+                    }
+                };
+
                 // Override onSerialize to guarantee state is written to widget before execution
                 const origSerialize = node.onSerialize;
                 node.onSerialize = function (o) {
                     if (origSerialize) origSerialize.apply(this, arguments);
-
-                    // Randomize seed on each workflow run if mode is "randomize"
-                    if (state.gen_settings.seed_mode === "randomize") {
-                        state.gen_settings.seed = generateRandomSeed();
-                        if (els.seed) els.seed.value = state.gen_settings.seed;
-                    }
 
                     // Critical Sync: Ensure widget_data receives latest state
                     const w = node.widgets ? node.widgets.find(w => w.name === "widget_data") : null;
@@ -1504,10 +1518,7 @@ app.registerExtension({
                     if (!state.gen_settings.ckpt_name) { alert("Select Checkpoint"); return; }
                     if (els.btnGen.disabled) return;
 
-                    if (state.gen_settings.seed_mode === "randomize") {
-                        state.gen_settings.seed = Math.floor(Math.random() * 10000000000000);
-                        if (els.seed) els.seed.value = state.gen_settings.seed;
-                    }
+                    node._randomizeSeedIfNeeded();
 
                     // Show loading overlay
                     const loading = createLoadingOverlay(container, "Generating preview");

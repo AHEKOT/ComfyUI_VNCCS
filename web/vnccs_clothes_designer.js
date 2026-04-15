@@ -219,6 +219,18 @@ const STYLE = `
 
 app.registerExtension({
     name: "VNCCS.ClothesDesigner",
+
+    async setup() {
+        const origQueuePrompt = app.queuePrompt.bind(app);
+        app.queuePrompt = async function(...args) {
+            const nodes = app.graph?._nodes?.filter(n => n.type === "ClothesDesigner") || [];
+            for (const node of nodes) {
+                node._randomizeSeedIfNeeded?.();
+            }
+            return origQueuePrompt(...args);
+        };
+    },
+
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name === "ClothesDesigner") {
             const onNodeCreated = nodeType.prototype.onNodeCreated;
@@ -294,12 +306,15 @@ app.registerExtension({
                     } catch (e) { console.warn("[VNCCS] ClothesDesigner: Error saving to localStorage", e); }
                 };
 
-                // Randomize seed on each workflow run if mode is "randomize"
-                node.onSerialize = function (o) {
+                node._randomizeSeedIfNeeded = () => {
                     if (state.gen_settings.seed_mode === "randomize") {
                         state.gen_settings.seed = Math.floor(Math.random() * 10000000000000);
                         if (els.seed) els.seed.value = state.gen_settings.seed;
+                        saveState();
                     }
+                };
+
+                node.onSerialize = function (o) {
                     if (dataWidget) dataWidget.value = JSON.stringify(state);
                 };
 
@@ -594,10 +609,7 @@ app.registerExtension({
                     if (!state.character) { showInfo("Error", "Select Character"); return; }
                     if (btnGen.disabled) return;
 
-                    if (state.gen_settings.seed_mode === "randomize") {
-                        state.gen_settings.seed = Math.floor(Math.random() * 10000000000000);
-                        if (els.seed) els.seed.value = state.gen_settings.seed;
-                    }
+                    node._randomizeSeedIfNeeded();
 
                     const controlCenter = getConnectedControlCenterState();
                     if (!controlCenter) {

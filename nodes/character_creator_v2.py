@@ -613,6 +613,12 @@ class CharacterCreatorV2:
         # Get background color
         background_color = info.get("background_color", "Green")
 
+        # Resize full sheet (1024x3072) to single character size (512x1536)
+        if torch.is_tensor(image) and image.shape[1] == 3072 and image.shape[2] == 1024:
+            pil_img = tensor2pil(image)
+            pil_img = pil_img.resize((512, 1536), Image.LANCZOS)
+            image = pil2tensor(pil_img)
+
         return (
             image,
             pipe,

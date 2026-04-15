@@ -772,6 +772,57 @@ def _build_control_center_pipe(repo_id, node_state):
     return pipe
 
 
+def _get_nunchaku_path():
+    """Find ComfyUI-nunchaku installation in ComfyUI's custom_nodes directory."""
+    comfyui_root = os.path.dirname(os.path.abspath(folder_paths.__file__))
+    custom_nodes = os.path.join(comfyui_root, "custom_nodes")
+    for name in ["ComfyUI-nunchaku", "comfyui-nunchaku", "ComfyUI_nunchaku"]:
+        path = os.path.join(custom_nodes, name)
+        if os.path.isdir(path):
+            return path
+    return None
+
+
+def _check_nunchaku_qwen_fix():
+    """Return whether the timestep_zero_index fix is present in qwenimage.py."""
+    nunchaku_path = _get_nunchaku_path()
+    if not nunchaku_path:
+        return {"installed": False, "nunchaku_missing": True}
+    qwen_file = os.path.join(nunchaku_path, "models", "qwenimage.py")
+    if not os.path.isfile(qwen_file):
+        return {"installed": False, "nunchaku_missing": False}
+    with open(qwen_file, "r", encoding="utf-8") as f:
+        content = f.read()
+    return {"installed": "timestep_zero_index" in content, "nunchaku_missing": False}
+
+
+def _apply_nunchaku_qwen_fix():
+    """Download and apply the timestep_zero_index fix from PR #790."""
+    nunchaku_path = _get_nunchaku_path()
+    if not nunchaku_path:
+        return {"ok": False, "message": "ComfyUI-nunchaku not found in custom_nodes"}
+    qwen_file = os.path.join(nunchaku_path, "models", "qwenimage.py")
+    url = "https://raw.githubusercontent.com/nunchaku-ai/ComfyUI-nunchaku/refs/pull/790/head/models/qwenimage.py"
+    try:
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        with open(qwen_file, "w", encoding="utf-8") as f:
+            f.write(resp.text)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@server.PromptServer.instance.routes.get("/vnccs/control_center/nunchaku_fix_status")
+async def cc_nunchaku_fix_status(request):
+    return web.json_response(_check_nunchaku_qwen_fix())
+
+
+@server.PromptServer.instance.routes.post("/vnccs/control_center/nunchaku_apply_fix")
+async def cc_nunchaku_apply_fix(request):
+    return web.json_response(_apply_nunchaku_qwen_fix())
+
+
 @server.PromptServer.instance.routes.post("/vnccs/control_center/dependencies")
 async def cc_dependencies(request):
     try:

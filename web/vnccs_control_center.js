@@ -800,7 +800,76 @@ class VNCCSControlCenterWidget {
             this._lastDependencyModalMessage = "";
         }
 
+        // Auto-modal: if Qwen model selected and fix not installed
+        if (showModal && selectedType === "nunchaku" && selectedModelEntry) {
+            const modelId = ((selectedModelEntry.name || "") + " " + (selectedModelEntry.local_path || "")).toLowerCase();
+            if (modelId.includes("qwen")) {
+                try {
+                    const fixResp = await api.fetchApi("/vnccs/control_center/nunchaku_fix_status");
+                    if (fixResp.ok) {
+                        const fixStatus = await fixResp.json();
+                        if (!fixStatus.installed && !fixStatus.nunchaku_missing) {
+                            const fixKey = "__qwen_fix_modal__";
+                            if (this._lastDependencyModalMessage !== fixKey) {
+                                this._lastDependencyModalMessage = fixKey;
+                                this._showQwenFixModal();
+                            }
+                        }
+                    }
+                } catch (_) {}
+            }
+        }
+
         return this.dependencyStatus;
+    }
+
+    _showQwenFixModal() {
+        const ov = document.createElement("div");
+        ov.style.cssText = `
+            position: absolute; top:0; left:0; width:100%; height:100%;
+            background: rgba(0,0,0,0.75); display:flex; align-items:center;
+            justify-content:center; z-index:1000; padding:16px; box-sizing:border-box;
+        `;
+        const box = document.createElement("div");
+        box.style.cssText = `
+            background: #12121a; border: 1px solid rgba(255,143,163,0.25);
+            border-radius: 10px; padding: 16px; max-width: 280px; width:100%;
+            text-align:center; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+        `;
+        box.innerHTML = `<div style="color:#e8e8f0;font-size:12px;margin-bottom:14px;line-height:1.5;font-family:'Sora',sans-serif;">
+            Qwen-Image model requires the PR&#xA0;#790 fix to work correctly.<br><br>Install it now?
+        </div>`;
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;gap:8px;justify-content:center;";
+        const cancelBtn = document.createElement("button");
+        cancelBtn.textContent = "Later";
+        cancelBtn.className = "vnccs-cc-btn";
+        cancelBtn.onclick = () => ov.remove();
+        const installBtn = document.createElement("button");
+        installBtn.textContent = "Install Fix";
+        installBtn.className = "vnccs-cc-btn vnccs-cc-btn--save";
+        installBtn.onclick = async () => {
+            installBtn.textContent = "Installing…";
+            installBtn.disabled = true;
+            try {
+                const res = await api.fetchApi("/vnccs/control_center/nunchaku_apply_fix", { method: "POST" });
+                const result = await res.json();
+                ov.remove();
+                if (result.ok) {
+                    this.showMessage("Fix applied. Please restart ComfyUI to apply changes.");
+                } else {
+                    this.showMessage("Failed: " + (result.message || "Unknown error"), true);
+                }
+            } catch (e) {
+                ov.remove();
+                this.showMessage("Error: " + e.message, true);
+            }
+        };
+        row.append(cancelBtn, installBtn);
+        box.appendChild(row);
+        ov.appendChild(box);
+        ov.onclick = e => { if (e.target === ov) ov.remove(); };
+        this.container.appendChild(ov);
     }
 
     // ── Polling ───────────────────────────────────────────────────────────────
@@ -1864,6 +1933,57 @@ class VNCCSControlCenterWidget {
             mkInput("vnccs-cc-nun-blocks", "number", 1, 60, 1, nun.num_blocks_on_gpu ?? 1)));
         nunDet.appendChild(field("Pinned Memory",
             mkSel("vnccs-cc-nun-pin", ["enable","disable"], nun.use_pin_memory ?? "disable")));
+
+        // Qwen Fix button
+        const fixField = document.createElement("div");
+        fixField.className = "vnccs-cc-settings-field";
+        const fixLabel = document.createElement("label");
+        fixLabel.textContent = "Qwen Fix (PR #790)";
+        const fixBtn = this._btn("Checking…", () => {});
+        fixBtn.disabled = true;
+        fixBtn.style.fontSize = "10px";
+        fixField.append(fixLabel, fixBtn);
+        nunDet.appendChild(fixField);
+
+        const applyQwenFix = async () => {
+            fixBtn.textContent = "Installing…";
+            fixBtn.disabled = true;
+            try {
+                const res = await api.fetchApi("/vnccs/control_center/nunchaku_apply_fix", { method: "POST" });
+                const result = await res.json();
+                if (result.ok) {
+                    fixBtn.textContent = "✓ Installed";
+                    fixBtn.style.color = "#4caf50";
+                    fixBtn.style.borderColor = "rgba(76,175,80,0.4)";
+                    this.showMessage("Fix applied. Please restart ComfyUI to apply changes.");
+                } else {
+                    fixBtn.textContent = "Install Fix";
+                    fixBtn.disabled = false;
+                    this.showMessage("Failed: " + (result.message || "Unknown error"), true);
+                }
+            } catch (e) {
+                fixBtn.textContent = "Install Fix";
+                fixBtn.disabled = false;
+                this.showMessage("Error: " + e.message, true);
+            }
+        };
+
+        api.fetchApi("/vnccs/control_center/nunchaku_fix_status").then(async r => {
+            if (!r.ok) { fixBtn.textContent = "N/A"; return; }
+            const status = await r.json();
+            if (status.nunchaku_missing) {
+                fixBtn.textContent = "N/A";
+            } else if (status.installed) {
+                fixBtn.textContent = "✓ Installed";
+                fixBtn.style.color = "#4caf50";
+                fixBtn.style.borderColor = "rgba(76,175,80,0.4)";
+            } else {
+                fixBtn.textContent = "Install Fix";
+                fixBtn.disabled = false;
+                fixBtn.onclick = applyQwenFix;
+            }
+        }).catch(() => { fixBtn.textContent = "N/A"; });
+
         panel.appendChild(nunDet);
 
         // Tokens
