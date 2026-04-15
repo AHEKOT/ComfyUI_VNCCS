@@ -1079,8 +1079,8 @@ app.registerExtension({
                             action: () => {
                                 const final = Array.from(selected).join(", ");
                                 inputEl.value = final;
-                                // Trigger change
-                                inputEl.dispatchEvent(new Event('change'));
+                                // Trigger oninput so state.character_info is updated
+                                inputEl.dispatchEvent(new Event('input'));
                                 return false; // Close
                             }
                         }
