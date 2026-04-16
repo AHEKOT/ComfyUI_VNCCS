@@ -1,0 +1,29 @@
+gradio==5.49.1
+moviepy==1.0.3
+jaxtyping
+typeguard
+torch
+torchvision
+tqdm
+omegaconf
+plyfile
+colorspacious
+pydantic
+opencv-python
+scipy
+requests
+trimesh
+matplotlib
+spaces
+pillow_heif
+onnxruntime 
+# onnxruntime-gpu==1.19.2 for Windows
+einops
+torchmetrics
+uniception
+safetensors
+numpy<2.0.0
+open3d==0.18.0
+pycolmap==3.10.0
+gsplat @ https://github.com/nerfstudio-project/gsplat/releases/download/v1.5.3/gsplat-1.5.3+pt24cu124-cp310-cp310-linux_x86_64.whl
+# gsplat @ https://github.com/nerfstudio-project/gsplat/releases/download/v1.5.3/gsplat-1.5.3+pt24cu124-cp310-cp310-win_amd64.whl for Windows
