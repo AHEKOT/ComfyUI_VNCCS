@@ -1,1 +1,0 @@
-# WorldMirror src package

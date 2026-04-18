@@ -1,1 +1,0 @@
-# WorldMirror heads package
