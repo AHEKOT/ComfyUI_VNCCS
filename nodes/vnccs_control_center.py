@@ -784,32 +784,63 @@ def _get_nunchaku_path():
 
 
 def _check_nunchaku_qwen_fix():
-    """Return whether the timestep_zero_index fix is present in qwenimage.py."""
+    print("[VNCCS Qwen Fix] Checking fix status...")
     nunchaku_path = _get_nunchaku_path()
     if not nunchaku_path:
+        print("[VNCCS Qwen Fix] ComfyUI-nunchaku not found in custom_nodes")
         return {"installed": False, "nunchaku_missing": True}
     qwen_file = os.path.join(nunchaku_path, "models", "qwenimage.py")
+    print(f"[VNCCS Qwen Fix] Checking file: {qwen_file}")
     if not os.path.isfile(qwen_file):
+        print("[VNCCS Qwen Fix] qwenimage.py not found")
         return {"installed": False, "nunchaku_missing": False}
     with open(qwen_file, "r", encoding="utf-8") as f:
         content = f.read()
-    return {"installed": "timestep_zero_index" in content, "nunchaku_missing": False}
+    installed = "timestep_zero_index=None" in content
+    print(f"[VNCCS Qwen Fix] Fix {'is' if installed else 'is NOT'} applied")
+    return {"installed": installed, "nunchaku_missing": False}
 
 
 def _apply_nunchaku_qwen_fix():
-    """Download and apply the timestep_zero_index fix from PR #790."""
+    """Fetch PR #790 diff and apply it to qwenimage.py via git apply."""
+    import tempfile, subprocess
+    print("[VNCCS Qwen Fix] Starting fix application...")
     nunchaku_path = _get_nunchaku_path()
     if not nunchaku_path:
+        print("[VNCCS Qwen Fix] ERROR: ComfyUI-nunchaku not found in custom_nodes")
         return {"ok": False, "message": "ComfyUI-nunchaku not found in custom_nodes"}
-    qwen_file = os.path.join(nunchaku_path, "models", "qwenimage.py")
-    url = "https://raw.githubusercontent.com/nunchaku-ai/ComfyUI-nunchaku/refs/pull/790/head/models/qwenimage.py"
+    print(f"[VNCCS Qwen Fix] nunchaku path: {nunchaku_path}")
+    diff_url = "https://github.com/nunchaku-ai/ComfyUI-nunchaku/pull/790.diff"
     try:
-        resp = requests.get(url, timeout=30)
+        print(f"[VNCCS Qwen Fix] Downloading diff from {diff_url}")
+        resp = requests.get(diff_url, timeout=30, allow_redirects=True)
         resp.raise_for_status()
-        with open(qwen_file, "w", encoding="utf-8") as f:
+        print(f"[VNCCS Qwen Fix] Diff downloaded ({len(resp.text)} chars)")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".diff", delete=False, encoding="utf-8") as f:
             f.write(resp.text)
+            tmp_path = f.name
+        print(f"[VNCCS Qwen Fix] Saved diff to temp file: {tmp_path}")
+        try:
+            print(f"[VNCCS Qwen Fix] Running: git apply --whitespace=fix {tmp_path}")
+            result = subprocess.run(
+                ["git", "apply", "--whitespace=fix", tmp_path],
+                cwd=nunchaku_path,
+                capture_output=True, text=True
+            )
+        finally:
+            os.unlink(tmp_path)
+            print("[VNCCS Qwen Fix] Temp file removed")
+        print(f"[VNCCS Qwen Fix] git apply exit code: {result.returncode}")
+        if result.stdout:
+            print(f"[VNCCS Qwen Fix] git stdout: {result.stdout}")
+        if result.stderr:
+            print(f"[VNCCS Qwen Fix] git stderr: {result.stderr}")
+        if result.returncode != 0:
+            return {"ok": False, "message": result.stderr or result.stdout}
+        print("[VNCCS Qwen Fix] Fix applied successfully")
         return {"ok": True}
     except Exception as e:
+        print(f"[VNCCS Qwen Fix] Exception: {e}")
         return {"ok": False, "message": str(e)}
 
 

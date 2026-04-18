@@ -371,11 +371,13 @@ class ClothesDesigner:
             if "temporal_size" in sig.parameters:
                 decode_kwargs["temporal_size"] = 0
                 decode_kwargs["temporal_overlap"] = 0
-            image, = vae_decode_node.decode(**decode_kwargs)
+            with torch.inference_mode():
+                image, = vae_decode_node.decode(**decode_kwargs)
         except Exception as e:
             print(f"[ClothesDesigner] VAEDecodeTiled failed ({e}), falling back to VAEDecode...")
             vae_decode_node = nodes.NODE_CLASS_MAPPINGS["VAEDecode"]()
-            image, = vae_decode_node.decode(vae=vae, samples=latent_for_decode)
+            with torch.inference_mode():
+                image, = vae_decode_node.decode(vae=vae, samples=latent_for_decode)
 
         # Cache for UI preview
         try:
