@@ -265,23 +265,6 @@ class ClothesDesigner:
             ref_image = torch.zeros((1, 512, 512, 3))
             full_naked_sheet = torch.zeros((1, 512, 512, 3))
         
-        depth_img = None
-        # Skip Depth Map in Clone mode
-        if active_tab != "clone":
-            if "AIO_Preprocessor" in nodes.NODE_CLASS_MAPPINGS:
-                try:
-                     if not hasattr(server.PromptServer.instance, "last_prompt_id"):
-                         server.PromptServer.instance.last_prompt_id = "manual_execution"
-                     aio = nodes.NODE_CLASS_MAPPINGS["AIO_Preprocessor"]()
-                     args = {"image": ref_image, "preprocessor": "DepthAnythingV2Preprocessor", "resolution": 512}
-                     out = getattr(aio, aio.FUNCTION)(**args)
-                     depth_img = out[0] if isinstance(out, (list, tuple)) else out
-                except Exception as e:
-                     print(f"[ClothesDesigner] Depth Gen Failed: {e}")
-        else:
-            print("[ClothesDesigner] Clone Mode: Skipping Depth Map")
-        # Disable Depth Map but remain compatible with encoder input.   
-        depth_img = None
         # Load Clone Image (Image 3)
         clone_image_tensor = None
         if active_tab == "clone" and data.get("clone_image"):
@@ -311,7 +294,7 @@ class ClothesDesigner:
 
         pos_cond, neg_cond, empty_latent = encoder.encode(
             clip=clip, prompt=positive_prompt, vae=vae,
-            image1=ref_image, image2=depth_img, image3=clone_image_tensor,
+            image1=ref_image, image2=None, image3=clone_image_tensor,
             target_size=1024,
             crop_method="disabled",
             vl_size=384,
