@@ -20,7 +20,7 @@ ComfyUI custom nodes package for creating consistent visual novel character spri
 
 - Nodes follow ComfyUI convention: class with INPUT_TYPES, RETURN_TYPES, FUNCTION, CATEGORY
 - Each node file exports `NODE_CLASS_MAPPINGS` and `NODE_DISPLAY_NAME_MAPPINGS` dicts
-- Character data stored as JSON configs in `output/VN_CharacterCreatorSuit/{name}/`
+- Character data stored as JSON configs in `output/VNCCS/Characters/{name}/`
 - `utils.py` functions handle all path resolution and config I/O - always use them
 - API endpoints registered via `@PromptServer.instance.routes` decorator
 

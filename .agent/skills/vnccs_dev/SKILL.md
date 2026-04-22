@@ -30,10 +30,8 @@ This skill encapsulates the knowledge required to effectively work with the VNCC
 ## 2. Key Architectural Decisions
 
 ### A. Data Storage & Paths
-*   **Old Path (Legacy)**: `output/VN_CharacterCreatorSuit`
-*   **New Path (Standard)**: `output/VNCCS/Characters`
+*   **Path**: `output/VNCCS/Characters`
 *   **Rule**: NEVER hardcode paths. Always use `utils.base_output_dir()` to get the current correct root.
-*   **Migration**: The `utils.migrate_legacy_data()` function handles moving data. The `vnccs_migration.js` script triggers this on startup.
 
 ### B. Node Registration
 Two-step process:

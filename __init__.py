@@ -1,5 +1,23 @@
 """VNCCS - Visual Novel Character Creator Suite for ComfyUI."""
 
+import os, json, inspect
+import traceback
+
+def _vnccs_auto_migrate():
+    """Silently migrate legacy VN_CharacterCreatorSuit → VNCCS/Characters on startup."""
+    try:
+        from .utils import migrate_legacy_data
+        result = migrate_legacy_data()
+        if result.get("migrated"):
+            names = ", ".join(result.get("details", []))
+            print(f"[VNCCS] Auto-migrated {result['count']} character(s) to VNCCS/Characters: {names}")
+        elif result.get("error"):
+            print(f"[VNCCS] Migration error: {result['error']}")
+    except Exception as e:
+        print(f"[VNCCS] Migration skipped: {e}")
+
+_vnccs_auto_migrate()
+
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
@@ -8,8 +26,6 @@ __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
 
 WEB_DIRECTORY = "web"
 
-import os, json, inspect
-import traceback
 def _vnccs_register_endpoint():  # lazy registration to avoid import errors in analysis tools
     try:
         from server import PromptServer
@@ -22,26 +38,12 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         name = request.rel_url.query.get("name")
         if not name:
             return web.json_response({"error": "name required"}, status=400)
-        
-        # 1. Try New Path
-        try:
-            from .utils import base_output_dir, get_legacy_output_dir
-            base = base_output_dir()
-            legacy_base = get_legacy_output_dir()
-        except ImportError:
-             # Fallback if utils fail to import (shouldn't happen but safe)
-             base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "output", "VNCCS", "Characters"))
-             legacy_base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "output", "VN_CharacterCreatorSuit"))
 
-        cfg_path = os.path.join(base, name, f"{name}_config.json")
-        
-        # 2. Try Legacy Path if New not found
+        from .utils import base_output_dir
+        cfg_path = os.path.join(base_output_dir(), name, f"{name}_config.json")
+
         if not os.path.exists(cfg_path):
-             legacy_cfg_path = os.path.join(legacy_base, name, f"{name}_config.json")
-             if os.path.exists(legacy_cfg_path):
-                 cfg_path = legacy_cfg_path
-             else:
-                 return web.json_response({"error": "not found", "path": cfg_path}, status=404)
+            return web.json_response({"error": "not found", "path": cfg_path}, status=404)
 
         try:
             with open(cfg_path, 'r', encoding='utf-8') as f:

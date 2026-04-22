@@ -194,7 +194,7 @@ So, let focus of the nuances of settings:**
 - If the character is generated without clothes, fix the prompt – the model doesn't understand what to draw.
 ---
 
-Create as many costumes as you need. All data is saved in `ComfyUI/output/VN_CharacterCreatorSuit/YOUR_CHARACTER_NAME`, parameters are in the JSON config.
+Create as many costumes as you need. All data is saved in `ComfyUI/output/VNCCS/Characters/YOUR_CHARACTER_NAME`, parameters are in the JSON config.
 
 After creating costumes, proceed to emotions.
 
@@ -211,7 +211,7 @@ This step is similar to the previous ones, but focuses on creating emotions for 
 
 After setting the parameters, click "Run".
 
-Emotions will be generated and saved in the `ComfyUI/output/VN_CharacterCreatorSuit/YOUR_CHARACTER_NAME/Sheets/spaceman/EMOTION_NAME` folder for your character.
+Emotions will be generated and saved in the `ComfyUI/output/VNCCS/Characters/YOUR_CHARACTER_NAME/Sheets/spaceman/EMOTION_NAME` folder for your character.
 
 ---
 ### Step 4: Generate Finished Sprites
@@ -227,7 +227,7 @@ Open the workflow `VN_Step4_SpritesGenerator`.
 - **Select character** - choose the character for which you want to generate sprites.
 Click "Run" and wait for the process to finish.
 
-The finished sprites will appear in the folder `ComfyUI/output/VN_CharacterCreatorSuit/YOUR_CHARACTER/Sprites`
+The finished sprites will appear in the folder `ComfyUI/output/VNCCS/Characters/YOUR_CHARACTER/Sprites`
 
 ---
 ### Step 5: Create a Dataset for LoRA Training (Optional)
@@ -241,7 +241,7 @@ Open the workflow `VN_Step5_DatasetCreator`.
 - **Select characters** – choose the characters you want to include in the dataset.
 - **Game Name** – a prefix that will be added to the character's name in the dataset, e.g. VN_your_character_name.
 Click "Run" and wait for the process to finish.
-The dataset will appear in the folder `ComfyUI/output/VN_CharacterCreatorSuit/YOUR_CHARACTER/Lora`
+The dataset will appear in the folder `ComfyUI/output/VNCCS/Characters/YOUR_CHARACTER/Lora`
 
 
 

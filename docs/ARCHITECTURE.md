@@ -70,7 +70,7 @@ Registered in `__init__.py`:
 ## Key Utilities (utils.py)
 
 ### Path Management
-- `base_output_dir()` - Get base output directory (`output/VN_CharacterCreatorSuit`)
+- `base_output_dir()` - Get base output directory (`output/VNCCS/Characters`)
 - `character_dir(name)` - Get character directory path
 - `faces_dir(name, costume, emotion)` - Get faces directory path
 - `sheets_dir(name, costume, emotion)` - Get sheets directory path

@@ -29,13 +29,10 @@
     }
     // Fallbacks
     const encName = encodeURIComponent(name);
-    // New Path
     const rawPath = `VNCCS/Characters/${name}/${name}_config.json`;
     const candidates = [
       `/output/VNCCS/Characters/${encName}/${encName}_config.json`,
       `/view?filename=${encodeURIComponent(rawPath)}&type=output`,
-      // Keep legacy path as last resort fallback for 1-2 seconds during migration race conditions
-      `/output/VN_CharacterCreatorSuit/${encName}/${encName}_config.json`,
     ];
     for (const url of candidates) {
       try {

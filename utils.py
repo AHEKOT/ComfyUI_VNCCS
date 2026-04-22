@@ -103,13 +103,30 @@ def migrate_legacy_data() -> dict:
         for char_name in chars_to_move:
             src = os.path.join(old_dir, char_name)
             dst = os.path.join(new_dir, char_name)
-            
+
             if os.path.exists(dst):
-                msg = f"Skipped {char_name}: already exists in new location"
-                print(f"[VNCCS Migration] {msg}")
-                errors.append(msg)
+                # Destination exists — remove src only if dst has actual content (config file)
+                dst_config = os.path.join(dst, f"{char_name}_config.json")
+                if os.path.exists(dst_config):
+                    print(f"[VNCCS Migration] {char_name}: already in new location, removing legacy copy")
+                    try:
+                        shutil.rmtree(src)
+                        moved_count += 1
+                        moved_names.append(char_name)
+                    except Exception as e:
+                        errors.append(f"Failed to remove legacy {char_name}: {e}")
+                else:
+                    # dst exists but is empty/broken — overwrite with src
+                    print(f"[VNCCS Migration] {char_name}: dst exists but incomplete, replacing")
+                    try:
+                        shutil.rmtree(dst)
+                        shutil.move(src, dst)
+                        moved_count += 1
+                        moved_names.append(char_name)
+                    except Exception as e:
+                        errors.append(f"Failed to replace {char_name}: {e}")
                 continue
-                
+
             try:
                 print(f"[VNCCS Migration] Moving {src} -> {dst}")
                 shutil.move(src, dst)
@@ -215,12 +232,22 @@ def ensure_costume_structure(name: str, costume: str, emotions: List[str] = None
 
 
 def list_characters() -> List[str]:
-    """Get list of existing characters."""
+    """Get list of existing characters from new and (as fallback) legacy paths."""
     base_path = base_output_dir()
     try:
-        return sorted([d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))])
+        chars = sorted([d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))])
     except Exception:
-        return []
+        chars = []
+    if not chars:
+        try:
+            legacy = get_legacy_output_dir()
+            legacy_chars = sorted([d for d in os.listdir(legacy) if os.path.isdir(os.path.join(legacy, d))])
+            if legacy_chars:
+                print(f"[VNCCS] list_characters: new path empty, falling back to legacy. Run migration to fix.")
+            chars = legacy_chars
+        except Exception:
+            pass
+    return chars
 
 
 def generate_seed(value: int) -> int:

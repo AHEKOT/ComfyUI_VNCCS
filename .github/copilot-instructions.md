@@ -21,7 +21,7 @@ CATEGORY = "VNCCS"
 ```
 
 ### Character Data Management
-Character configuration uses a hierarchical JSON structure stored at `ComfyUI/output/VN_CharacterCreatorSuit/{character_name}/{character_name}_config.json`:
+Character configuration uses a hierarchical JSON structure stored at `ComfyUI/output/VNCCS/Characters/{character_name}/{character_name}_config.json`:
 
 ```python
 {
