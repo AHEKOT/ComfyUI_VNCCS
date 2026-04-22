@@ -910,12 +910,19 @@ def _apply_nunchaku_qwen_fix():
             tmp_path = f.name
         print(f"[VNCCS Qwen Fix] Saved filtered diff to temp file: {tmp_path}")
         try:
-            print(f"[VNCCS Qwen Fix] Running: git apply --whitespace=fix {tmp_path}")
+            # First attempt: strict apply with whitespace tolerance
+            print(f"[VNCCS Qwen Fix] Attempt 1: git apply --whitespace=fix")
             result = subprocess.run(
                 ["git", "apply", "--whitespace=fix", tmp_path],
-                cwd=nunchaku_path,
-                capture_output=True, text=True
+                cwd=nunchaku_path, capture_output=True, text=True
             )
+            if result.returncode != 0:
+                # Second attempt: 3-way merge — tolerates context mismatches (different nunchaku version)
+                print(f"[VNCCS Qwen Fix] Attempt 1 failed, trying 3-way merge: git apply --3way --ignore-space-change")
+                result = subprocess.run(
+                    ["git", "apply", "--3way", "--ignore-space-change", "--whitespace=fix", tmp_path],
+                    cwd=nunchaku_path, capture_output=True, text=True
+                )
         finally:
             os.unlink(tmp_path)
             print("[VNCCS Qwen Fix] Temp file removed")
@@ -925,7 +932,11 @@ def _apply_nunchaku_qwen_fix():
         if result.stderr:
             print(f"[VNCCS Qwen Fix] git stderr: {result.stderr}")
         if result.returncode != 0:
-            return {"ok": False, "message": result.stderr or result.stdout}
+            msg = result.stderr or result.stdout or "patch does not apply"
+            if "does not apply" in msg or "patch failed" in msg:
+                msg = (f"Patch failed — your nunchaku version differs from the one this fix targets. "
+                       f"Detail: {msg.strip()}")
+            return {"ok": False, "message": msg}
         print("[VNCCS Qwen Fix] Fix applied successfully")
         return {"ok": True}
     except Exception as e:
