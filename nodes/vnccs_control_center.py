@@ -59,6 +59,8 @@ _FOLDER_MAP = {
     "diffusion_models": ["diffusion_models", "unet"],
 }
 
+_CC_ALWAYS_APPLY_LORA_NAME = "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
+
 
 def _get_node_class_mappings():
     import nodes as comfy_nodes
@@ -675,6 +677,10 @@ class VNCCSPipeProxy:
         self.denoise = 0.0
         self.sampler_name = None
         self.scheduler = None
+        self.loader_type = None        # "standard" | "nunchaku"
+        self.nunchaku_kind = None      # "flux" | "qwen-image" | None
+        self.nunchaku_settings = None  # dict or None
+        self.model_entry = None        # config model entry dict or None
 
 
 class VNCCS_ControlCenter:
@@ -749,16 +755,35 @@ def _build_control_center_pipe(repo_id, node_state):
         all_clip_names,
         first_vae_name,
     )
-    model, clip = _apply_loras(
-        model,
-        clip,
-        loras,
-        config,
-        selected_type,
-        type_settings=type_settings,
-        model_entry=model_entry,
-    )
+    for entry in config.get("lora", []):
+        if os.path.basename(entry.get("local_path", "")) != _CC_ALWAYS_APPLY_LORA_NAME:
+            continue
+        full_path, exists = _find_model_on_disk(entry["local_path"])
+        if not exists:
+            print(f"[VNCCS Control Center] Mandatory LoRA not on disk: '{_CC_ALWAYS_APPLY_LORA_NAME}', skipping.")
+            continue
+        print(f"[VNCCS Control Center] Applying mandatory LoRA: {_CC_ALWAYS_APPLY_LORA_NAME} (strength=1.0)")
+        if selected_type == "nunchaku":
+            model = _apply_lora_nunchaku(model, full_path, 1.0,
+                                         settings=type_settings.get("nunchaku", {}),
+                                         model_entry=model_entry)
+        else:
+            model, clip = _apply_lora_standard(model, clip, full_path, 1.0)
+
     pipe = VNCCSPipeProxy(model, clip, vae)
+
+    if selected_type == "nunchaku":
+        pipe.loader_type = "nunchaku"
+        pipe.nunchaku_kind = _detect_nunchaku_model_kind(
+            model_entry=model_entry,
+            full_path=model_entry.get("local_path", "") if model_entry else "",
+        )
+        pipe.nunchaku_settings = type_settings.get("nunchaku", {})
+    else:
+        pipe.loader_type = "standard"
+        pipe.nunchaku_kind = None
+        pipe.nunchaku_settings = None
+    pipe.model_entry = model_entry
 
     if model_params.get("steps"):
         pipe.sample_steps = int(model_params["steps"])
@@ -783,22 +808,48 @@ def _get_nunchaku_path():
     return None
 
 
+def _fetch_pr790_diff():
+    """Download PR #790 diff. Returns diff text or None on failure."""
+    import tempfile
+    diff_url = "https://github.com/nunchaku-ai/ComfyUI-nunchaku/pull/790.diff"
+    print(f"[VNCCS Qwen Fix] Downloading diff from {diff_url}")
+    resp = requests.get(diff_url, timeout=30, allow_redirects=True)
+    resp.raise_for_status()
+    print(f"[VNCCS Qwen Fix] Diff downloaded ({len(resp.text)} chars)")
+    return resp.text
+
+
 def _check_nunchaku_qwen_fix():
+    import tempfile, subprocess
     print("[VNCCS Qwen Fix] Checking fix status...")
     nunchaku_path = _get_nunchaku_path()
     if not nunchaku_path:
         print("[VNCCS Qwen Fix] ComfyUI-nunchaku not found in custom_nodes")
         return {"installed": False, "nunchaku_missing": True}
-    qwen_file = os.path.join(nunchaku_path, "models", "qwenimage.py")
-    print(f"[VNCCS Qwen Fix] Checking file: {qwen_file}")
-    if not os.path.isfile(qwen_file):
-        print("[VNCCS Qwen Fix] qwenimage.py not found")
+    print(f"[VNCCS Qwen Fix] nunchaku path: {nunchaku_path}")
+    try:
+        diff_text = _fetch_pr790_diff()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".diff", delete=False, encoding="utf-8") as f:
+            f.write(diff_text)
+            tmp_path = f.name
+        try:
+            # If the reverse patch applies cleanly, the PR is already merged into the file
+            result = subprocess.run(
+                ["git", "apply", "--reverse", "--check", tmp_path],
+                cwd=nunchaku_path,
+                capture_output=True, text=True
+            )
+        finally:
+            os.unlink(tmp_path)
+        installed = result.returncode == 0
+        print(f"[VNCCS Qwen Fix] git apply --reverse --check exit code: {result.returncode}")
+        if result.stderr:
+            print(f"[VNCCS Qwen Fix] git stderr: {result.stderr}")
+        print(f"[VNCCS Qwen Fix] Fix {'is' if installed else 'is NOT'} applied")
+        return {"installed": installed, "nunchaku_missing": False}
+    except Exception as e:
+        print(f"[VNCCS Qwen Fix] Check failed: {e}")
         return {"installed": False, "nunchaku_missing": False}
-    with open(qwen_file, "r", encoding="utf-8") as f:
-        content = f.read()
-    installed = "timestep_zero_index=None" in content
-    print(f"[VNCCS Qwen Fix] Fix {'is' if installed else 'is NOT'} applied")
-    return {"installed": installed, "nunchaku_missing": False}
 
 
 def _apply_nunchaku_qwen_fix():
@@ -810,14 +861,10 @@ def _apply_nunchaku_qwen_fix():
         print("[VNCCS Qwen Fix] ERROR: ComfyUI-nunchaku not found in custom_nodes")
         return {"ok": False, "message": "ComfyUI-nunchaku not found in custom_nodes"}
     print(f"[VNCCS Qwen Fix] nunchaku path: {nunchaku_path}")
-    diff_url = "https://github.com/nunchaku-ai/ComfyUI-nunchaku/pull/790.diff"
     try:
-        print(f"[VNCCS Qwen Fix] Downloading diff from {diff_url}")
-        resp = requests.get(diff_url, timeout=30, allow_redirects=True)
-        resp.raise_for_status()
-        print(f"[VNCCS Qwen Fix] Diff downloaded ({len(resp.text)} chars)")
+        diff_text = _fetch_pr790_diff()
         with tempfile.NamedTemporaryFile(mode="w", suffix=".diff", delete=False, encoding="utf-8") as f:
-            f.write(resp.text)
+            f.write(diff_text)
             tmp_path = f.name
         print(f"[VNCCS Qwen Fix] Saved diff to temp file: {tmp_path}")
         try:

@@ -751,6 +751,26 @@ class VNCCSControlCenterWidget {
         const w = this._getStateWidget();
         if (w) w.value = JSON.stringify(this.state);
         this.node.setDirtyCanvas(true, true);
+        this._dispatchLoraOptions();
+    }
+
+    _dispatchLoraOptions() {
+        if (!this.config?.lora) return;
+        const ALWAYS_APPLY = "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors";
+        const stateByName = Object.fromEntries(
+            (this.state.loras ?? []).map(l => [l.name, l])
+        );
+        const options = [];
+        for (const entry of this.config.lora) {
+            const basename = (entry.local_path || "").replace(/\\/g, "/").split("/").pop();
+            if (basename === ALWAYS_APPLY) continue;
+            const st = stateByName[entry.name] ?? {};
+            if (st.enabled === false) continue;
+            const norm = (entry.local_path || "").replace(/\\/g, "/");
+            const rel = norm.startsWith("models/loras/") ? norm.slice("models/loras/".length) : norm.split("/").pop();
+            options.push(rel);
+        }
+        window.dispatchEvent(new CustomEvent("vnccs-lora-options-updated", { detail: { options } }));
     }
 
     restoreState() {
@@ -1200,6 +1220,7 @@ class VNCCSControlCenterWidget {
             this.statusText.textContent = this.config.name || "Control Center";
             if (!this.state.output_slot_names) this.state.output_slot_names = [];
             this._renderAll();
+            this._dispatchLoraOptions();
         }
 
         // Debounce: reuse in-flight fetch for same repo
@@ -1210,6 +1231,7 @@ class VNCCSControlCenterWidget {
                 this.statusText.textContent = data.name || "Control Center";
                 if (!this.state.output_slot_names) this.state.output_slot_names = [];
                 this._renderAll();
+                this._dispatchLoraOptions();
             } catch { /* already shown by the original caller */ }
             return;
         }
@@ -1237,6 +1259,7 @@ class VNCCSControlCenterWidget {
             this._syncCnetSlots(data);
             await this._refreshDependencyStatus(true);
             this._renderAll();
+            this._dispatchLoraOptions();
             window.dispatchEvent(new CustomEvent("vnccs-cc-registry-updated", {
                 detail: { repo_id: repoId }
             }));

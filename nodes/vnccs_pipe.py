@@ -13,10 +13,16 @@ Sampler / scheduler:
 
 
 """Prepare enumeration lists once so both inputs and outputs share identical types."""
+import os
+import folder_paths
 from .sampler_scheduler_picker import (
     fetch_sampler_scheduler_lists,
     DEFAULT_SAMPLERS,
     DEFAULT_SCHEDULERS,
+)
+from .vnccs_control_center import (
+    _apply_lora_standard,
+    _apply_lora_nunchaku,
 )
 
 
@@ -79,6 +85,9 @@ class VNCCS_Pipe:
                 # PIPE_INHERIT sentinel = pass the pipe value through unchanged
                 "sampler_name": (sampler_input, {"default": PIPE_INHERIT}),
                 "scheduler": (scheduler_input, {"default": PIPE_INHERIT}),
+                "lora_name": (["none"] + folder_paths.get_filename_list("loras"),),
+                "lora_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
+                "lora_options_json": ("STRING", {"default": '["none"]'}),
             }
         }
 
@@ -94,7 +103,8 @@ class VNCCS_Pipe:
 
     def process_pipe(self, model=None, clip=None, vae=None, pos=None, neg=None, seed_int=0,
                      sample_steps=0, cfg=0.0, denoise=0.0, pipe=None,
-                     sampler_name=PIPE_INHERIT, scheduler=PIPE_INHERIT):
+                     sampler_name=PIPE_INHERIT, scheduler=PIPE_INHERIT,
+                     lora_name="none", lora_strength=1.0, lora_options_json='["none"]', **_):
         """Aggregate pipe values, inheriting from upstream pipe if not provided."""
         # Inherit object references when not connected
         model = self._inherit(model, pipe, "model", zero_is_empty=False)
@@ -124,6 +134,22 @@ class VNCCS_Pipe:
         if not scheduler or scheduler == PIPE_INHERIT:
             scheduler = SCHEDULER_ENUM[0] if SCHEDULER_ENUM else DEFAULT_SCHEDULERS[0]
 
+        if lora_name and lora_name != "none" and model is not None:
+            loader_type = getattr(pipe, "loader_type", "standard") if pipe else "standard"
+            full_path = folder_paths.get_full_path("loras", lora_name)
+            if full_path and os.path.exists(full_path):
+                print(f"[VNCCS Pipe] Applying LoRA: {lora_name} (strength={lora_strength}, loader={loader_type})")
+                if loader_type == "nunchaku":
+                    model = _apply_lora_nunchaku(
+                        model, full_path, lora_strength,
+                        settings=getattr(pipe, "nunchaku_settings", None) or {},
+                        model_entry=getattr(pipe, "model_entry", None),
+                    )
+                else:
+                    model, clip = _apply_lora_standard(model, clip, full_path, lora_strength)
+            else:
+                print(f"[VNCCS Pipe] LoRA not found on disk: '{lora_name}', skipping.")
+
         # Store on self for return
         self.model = model
         self.clip = clip
@@ -136,6 +162,10 @@ class VNCCS_Pipe:
         self.denoise = denoise
         self.sampler_name = sampler_name
         self.scheduler = scheduler
+        self.loader_type = getattr(pipe, "loader_type", None)
+        self.nunchaku_kind = getattr(pipe, "nunchaku_kind", None)
+        self.nunchaku_settings = getattr(pipe, "nunchaku_settings", None)
+        self.model_entry = getattr(pipe, "model_entry", None)
 
         return (
             self.model,

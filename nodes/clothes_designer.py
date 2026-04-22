@@ -16,23 +16,29 @@ import re
 from ..utils import (
     character_dir, save_costume_info,
     load_costume_info, list_costumes, ensure_costume_structure,
-    sheets_dir, faces_dir
+    sheets_dir, faces_dir, load_character_info
 )
+from .vnccs_control_center import _apply_lora_standard, _apply_lora_nunchaku
 
 
 class PipeContext:
     def __init__(self, source=None, **updates):
-        self.model = getattr(source, "model", None) if source is not None else None
-        self.clip = getattr(source, "clip", None) if source is not None else None
-        self.vae = getattr(source, "vae", None) if source is not None else None
-        self.pos = getattr(source, "pos", None) if source is not None else None
-        self.neg = getattr(source, "neg", None) if source is not None else None
-        self.seed_int = getattr(source, "seed_int", getattr(source, "seed", 0)) if source is not None else 0
-        self.sample_steps = getattr(source, "sample_steps", getattr(source, "steps", 0)) if source is not None else 0
-        self.cfg = getattr(source, "cfg", 0.0) if source is not None else 0.0
-        self.denoise = getattr(source, "denoise", 1.0) if source is not None else 1.0
-        self.sampler_name = getattr(source, "sampler_name", None) if source is not None else None
-        self.scheduler = getattr(source, "scheduler", None) if source is not None else None
+        s = source
+        self.model = getattr(s, "model", None) if s is not None else None
+        self.clip = getattr(s, "clip", None) if s is not None else None
+        self.vae = getattr(s, "vae", None) if s is not None else None
+        self.pos = getattr(s, "pos", None) if s is not None else None
+        self.neg = getattr(s, "neg", None) if s is not None else None
+        self.seed_int = getattr(s, "seed_int", getattr(s, "seed", 0)) if s is not None else 0
+        self.sample_steps = getattr(s, "sample_steps", getattr(s, "steps", 0)) if s is not None else 0
+        self.cfg = getattr(s, "cfg", 0.0) if s is not None else 0.0
+        self.denoise = getattr(s, "denoise", 1.0) if s is not None else 1.0
+        self.sampler_name = getattr(s, "sampler_name", None) if s is not None else None
+        self.scheduler = getattr(s, "scheduler", None) if s is not None else None
+        self.loader_type = getattr(s, "loader_type", None) if s is not None else None
+        self.nunchaku_kind = getattr(s, "nunchaku_kind", None) if s is not None else None
+        self.nunchaku_settings = getattr(s, "nunchaku_settings", None) if s is not None else None
+        self.model_entry = getattr(s, "model_entry", None) if s is not None else None
         for key, value in updates.items():
             setattr(self, key, value)
 
@@ -60,26 +66,58 @@ class ClothesDesigner:
     CATEGORY = "VNCCS"
 
     @staticmethod
+    def _find_breasts_desc(char_info):
+        """Search all string fields in character info for a breast/chest description."""
+        # Prioritise 'body' field, then check the rest
+        fields = ["body"] + [k for k in char_info if k != "body"]
+        for key in fields:
+            val = char_info.get(key)
+            if not isinstance(val, str):
+                continue
+            m = re.search(r'[a-zA-Z\s]*(?:breasts?|flat\s+chest)[a-zA-Z\s]*', val, re.IGNORECASE)
+            if m:
+                return m.group(0).strip().strip(",").strip()
+        return None
+
+    @staticmethod
     def construct_prompt(data):
         active_tab = data.get("activeTab", "generate")
-        
+        character_name = data.get("character", "")
+
+        # Determine breasts suffix for female characters
+        breasts_suffix = ""
+        if character_name:
+            char_info = load_character_info(character_name) or {}
+            sex = char_info.get("sex") or char_info.get("gender") or "female"
+            if sex == "female":
+                desc = ClothesDesigner._find_breasts_desc(char_info)
+                if desc:
+                    breasts_suffix = f", Girl with {desc}"
+
         if active_tab == "clone" and data.get("clone_image"):
-             bg_col = data.get("gen_settings", {}).get("background_color", "Green")
-             hex_col = "00FF00" if bg_col == "Green" else "0000FF"
-             return f"Put clothes, footwear and accessories from Picture 3 to character on Picture 1\nsolid {bg_col.lower()} ({hex_col}) background", ""
+            bg_col = data.get("gen_settings", {}).get("background_color", "Green")
+            hex_col = "00FF00" if bg_col == "Green" else "0000FF"
+            return (
+                f"Put clothes, footwear and accessories from Picture 3 to character on Picture 1\n"
+                f"solid {bg_col.lower()} ({hex_col}) background{breasts_suffix}",
+                ""
+            )
 
         info = data.get("costume_info", {})
         parts = []
         for k in ["top", "bottom", "head", "shoes", "face"]:
             v = info.get(k, "").strip()
             if v: parts.append(v)
-            
+
         clothes_desc = "\n".join(parts)
         bg_col = data.get("gen_settings", {}).get("background_color", "Green")
         if bg_col not in ["Green", "Blue"]: bg_col = "Green"
         hex_col = "00FF00" if bg_col == "Green" else "0000FF"
-        
-        positive_prompt = f"Dress the character in the following clothes, keeping the body proportions the same:\n{clothes_desc}\nsolid {bg_col.lower()} ({hex_col}) background"
+
+        positive_prompt = (
+            f"Dress the character:\n{clothes_desc}\n"
+            f"solid {bg_col.lower()} ({hex_col}) background{breasts_suffix}"
+        )
         negative_prompt = "bad quality, worst quality, (naked, nude, nipple, penis, vagina:2.0)"
         return positive_prompt, negative_prompt
 
@@ -320,12 +358,33 @@ class ClothesDesigner:
             scheduler=scheduler,
         )
 
+        # Apply LoRA temporarily for generation only — output pipe keeps the original model
+        lora_name = gen_settings.get("lora_name", "none") or "none"
+        lora_strength = float(gen_settings.get("lora_strength", 1.0) or 1.0)
+        gen_model = model
+        gen_clip = clip
+        if lora_name != "none":
+            full_path = folder_paths.get_full_path("loras", lora_name)
+            if full_path and os.path.exists(full_path):
+                print(f"[ClothesDesigner] Applying LoRA for generation: {lora_name} (strength={lora_strength})")
+                loader_type = getattr(pipe, "loader_type", "standard") or "standard"
+                if loader_type == "nunchaku":
+                    gen_model = _apply_lora_nunchaku(
+                        gen_model, full_path, lora_strength,
+                        settings=getattr(pipe, "nunchaku_settings", None) or {},
+                        model_entry=getattr(pipe, "model_entry", None),
+                    )
+                else:
+                    gen_model, gen_clip = _apply_lora_standard(gen_model, gen_clip, full_path, lora_strength)
+            else:
+                print(f"[ClothesDesigner] LoRA not found: '{lora_name}', skipping.")
+
         # 4. Sampling using the incoming Control Center pipe configuration
         k_sampler = nodes.KSampler()
 
         print("[ClothesDesigner] Sampling...")
         latent_result = k_sampler.sample(
-            model=model, seed=out_pipe.seed_int, steps=out_pipe.sample_steps,
+            model=gen_model, seed=out_pipe.seed_int, steps=out_pipe.sample_steps,
             cfg=out_pipe.cfg, sampler_name=out_pipe.sampler_name, scheduler=out_pipe.scheduler,
             positive=pos_cond, negative=neg_cond, latent_image=empty_latent, denoise=out_pipe.denoise
         )[0]

@@ -763,6 +763,27 @@ app.registerExtension({
 
                     createSetting("Background", "background_color", "select", ["Green", "Blue"]);
 
+                    // --- LoRA Selector ---
+                    const loraWrap = document.createElement("div"); loraWrap.className = "vnccs-field";
+                    loraWrap.innerHTML = '<div class="vnccs-label">LoRA</div>';
+                    const loraSel = document.createElement("select"); loraSel.className = "vnccs-select";
+                    loraSel.add(new Option("none", "none"));
+                    loraSel.value = state.gen_settings.lora_name || "none";
+                    loraSel.onchange = (e) => { state.gen_settings.lora_name = e.target.value; saveState(); };
+                    els.lora_name = loraSel;
+                    loraWrap.appendChild(loraSel);
+                    colRight.appendChild(loraWrap);
+
+                    const loraStrWrap = document.createElement("div"); loraStrWrap.className = "vnccs-field";
+                    loraStrWrap.innerHTML = '<div class="vnccs-label">LoRA Strength</div>';
+                    const loraStrInp = document.createElement("input"); loraStrInp.className = "vnccs-input";
+                    loraStrInp.type = "number"; loraStrInp.min = 0; loraStrInp.max = 2; loraStrInp.step = 0.01;
+                    loraStrInp.value = state.gen_settings.lora_strength ?? 1.0;
+                    loraStrInp.onchange = (e) => { state.gen_settings.lora_strength = Number(e.target.value); saveState(); };
+                    els.lora_strength = loraStrInp;
+                    loraStrWrap.appendChild(loraStrInp);
+                    colRight.appendChild(loraStrWrap);
+
                     // --- Custom Seed Control ---
                     const seedWrap = document.createElement("div"); seedWrap.className = "vnccs-field";
                     seedWrap.innerHTML = '<div class="vnccs-label">Seed</div>';
@@ -809,6 +830,24 @@ app.registerExtension({
 
                 topRow.appendChild(colRight);
                 container.appendChild(topRow);
+
+                // Sync LoRA options from Control Center
+                const _onLoraOptions = (e) => {
+                    const options = e.detail?.options;
+                    if (!Array.isArray(options) || !els.lora_name) return;
+                    const full = ["none", ...options];
+                    const cur = state.gen_settings.lora_name || "none";
+                    els.lora_name.innerHTML = "";
+                    full.forEach(o => {
+                        const label = o === "none" ? "none" : o.split("/").pop().replace(/\.safetensors$/i, "");
+                        els.lora_name.add(new Option(label, o));
+                    });
+                    els.lora_name.value = full.includes(cur) ? cur : "none";
+                    state.gen_settings.lora_name = els.lora_name.value;
+                    saveState();
+                };
+                window.addEventListener("vnccs-lora-options-updated", _onLoraOptions);
+                registerCleanup(node, () => window.removeEventListener("vnccs-lora-options-updated", _onLoraOptions));
 
                 // Functions
                 const loadCostumes = async () => {
