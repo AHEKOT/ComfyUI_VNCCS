@@ -810,7 +810,6 @@ def _get_nunchaku_path():
 
 def _fetch_pr790_diff():
     """Download PR #790 diff. Returns diff text or None on failure."""
-    import tempfile
     diff_url = "https://github.com/nunchaku-ai/ComfyUI-nunchaku/pull/790.diff"
     print(f"[VNCCS Qwen Fix] Downloading diff from {diff_url}")
     resp = requests.get(diff_url, timeout=30, allow_redirects=True)
@@ -819,8 +818,37 @@ def _fetch_pr790_diff():
     return resp.text
 
 
+def _filter_diff_py_only(diff_text):
+    """Keep only hunks for .py files — strips test_data/, config files, etc."""
+    out = []
+    include = False
+    for line in diff_text.splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            include = line.endswith(".py\n") or line.endswith(".py")
+        if include:
+            out.append(line)
+    return "".join(out)
+
+
+def _parse_added_lines_by_file(diff_text):
+    """Return {rel_path: [added_line, ...]} for .py files only."""
+    result = {}
+    current_file = None
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            parts = line.split(" b/")
+            if len(parts) >= 2:
+                rel = parts[-1].strip()
+                current_file = rel if rel.endswith(".py") else None
+                if current_file:
+                    result.setdefault(current_file, [])
+        elif current_file and line.startswith("+") and not line.startswith("+++"):
+            result[current_file].append(line[1:])  # strip leading '+'
+    return result
+
+
 def _check_nunchaku_qwen_fix():
-    import tempfile, subprocess
+    """Check if PR #790 is applied by looking for its added lines in actual files."""
     print("[VNCCS Qwen Fix] Checking fix status...")
     nunchaku_path = _get_nunchaku_path()
     if not nunchaku_path:
@@ -829,31 +857,41 @@ def _check_nunchaku_qwen_fix():
     print(f"[VNCCS Qwen Fix] nunchaku path: {nunchaku_path}")
     try:
         diff_text = _fetch_pr790_diff()
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".diff", delete=False, encoding="utf-8") as f:
-            f.write(diff_text)
-            tmp_path = f.name
-        try:
-            # If the reverse patch applies cleanly, the PR is already merged into the file
-            result = subprocess.run(
-                ["git", "apply", "--reverse", "--check", tmp_path],
-                cwd=nunchaku_path,
-                capture_output=True, text=True
-            )
-        finally:
-            os.unlink(tmp_path)
-        installed = result.returncode == 0
-        print(f"[VNCCS Qwen Fix] git apply --reverse --check exit code: {result.returncode}")
-        if result.stderr:
-            print(f"[VNCCS Qwen Fix] git stderr: {result.stderr}")
-        print(f"[VNCCS Qwen Fix] Fix {'is' if installed else 'is NOT'} applied")
-        return {"installed": installed, "nunchaku_missing": False}
+        added_by_file = _parse_added_lines_by_file(diff_text)
+        if not added_by_file:
+            print("[VNCCS Qwen Fix] No Python additions found in diff — assuming fix not needed")
+            return {"installed": True, "nunchaku_missing": False}
+
+        for rel_path, added_lines in added_by_file.items():
+            # Only check lines that are distinctive (non-trivial content)
+            distinctive = [l for l in added_lines if len(l.strip()) > 15]
+            if not distinctive:
+                continue
+            full_path = os.path.join(nunchaku_path, rel_path)
+            if not os.path.exists(full_path):
+                print(f"[VNCCS Qwen Fix] File not found: {full_path}")
+                return {"installed": False, "nunchaku_missing": False}
+            try:
+                content = open(full_path, encoding="utf-8").read()
+            except Exception as e:
+                print(f"[VNCCS Qwen Fix] Could not read {full_path}: {e}")
+                return {"installed": False, "nunchaku_missing": False}
+            found = sum(1 for l in distinctive if l.rstrip() in content)
+            threshold = max(1, int(len(distinctive) * 0.7))
+            installed = found >= threshold
+            print(f"[VNCCS Qwen Fix] {rel_path}: {found}/{len(distinctive)} distinctive lines found "
+                  f"(threshold {threshold}) → {'installed' if installed else 'NOT installed'}")
+            if not installed:
+                return {"installed": False, "nunchaku_missing": False}
+
+        return {"installed": True, "nunchaku_missing": False}
     except Exception as e:
         print(f"[VNCCS Qwen Fix] Check failed: {e}")
         return {"installed": False, "nunchaku_missing": False}
 
 
 def _apply_nunchaku_qwen_fix():
-    """Fetch PR #790 diff and apply it to qwenimage.py via git apply."""
+    """Fetch PR #790 diff and apply only .py changes via git apply."""
     import tempfile, subprocess
     print("[VNCCS Qwen Fix] Starting fix application...")
     nunchaku_path = _get_nunchaku_path()
@@ -863,10 +901,14 @@ def _apply_nunchaku_qwen_fix():
     print(f"[VNCCS Qwen Fix] nunchaku path: {nunchaku_path}")
     try:
         diff_text = _fetch_pr790_diff()
+        filtered = _filter_diff_py_only(diff_text)
+        if not filtered.strip():
+            return {"ok": False, "message": "No Python-file hunks found in PR diff"}
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".diff", delete=False, encoding="utf-8") as f:
-            f.write(diff_text)
+            f.write(filtered)
             tmp_path = f.name
-        print(f"[VNCCS Qwen Fix] Saved diff to temp file: {tmp_path}")
+        print(f"[VNCCS Qwen Fix] Saved filtered diff to temp file: {tmp_path}")
         try:
             print(f"[VNCCS Qwen Fix] Running: git apply --whitespace=fix {tmp_path}")
             result = subprocess.run(
