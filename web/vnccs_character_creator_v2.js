@@ -173,6 +173,11 @@ const STYLE = `
     box-sizing: border-box;
     zoom: 1.5;
     transition: all var(--transition);
+    color-scheme: dark;
+}
+.vnccs-select option {
+    background: #1e1e2e;
+    color: #e8e8f0;
 }
 .vnccs-input:focus, .vnccs-select:focus, .vnccs-textarea:focus {
     outline: none;

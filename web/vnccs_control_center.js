@@ -378,7 +378,9 @@ function _injectVNCCSControlCenterStyles() {
     padding: 4px 6px;
     font-size: 10px;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    color-scheme: dark;
 }
+.vnccs-cc-model-card-select option { background: #1e1e2e; color: #e8e8f0; }
 .vnccs-cc-model-card-select:focus {
     outline: none;
     border-color: rgba(0,214,143,0.5);
@@ -434,7 +436,9 @@ function _injectVNCCSControlCenterStyles() {
     padding: 3px 4px;
     font-size: 10px;
     transition: border-color 0.18s;
+    color-scheme: dark;
 }
+.vnccs-cc-select option { background: #1e1e2e; color: #e8e8f0; }
 .vnccs-cc-select:focus {
     outline: none;
     border-color: rgba(255,143,163,0.35);
@@ -530,7 +534,9 @@ function _injectVNCCSControlCenterStyles() {
     padding: 5px 6px;
     font-size: 10px;
     transition: border-color 0.18s;
+    color-scheme: dark;
 }
+.vnccs-cc-settings-select option { background: #1e1e2e; color: #e8e8f0; }
 .vnccs-cc-settings-select:focus {
     outline: none;
     border-color: rgba(255,143,163,0.35);
@@ -1275,6 +1281,14 @@ class VNCCSControlCenterWidget {
 
     // ── Rendering ─────────────────────────────────────────────────────────────
 
+    // dlStatus carries transient states (queued/downloading/error/auth_required).
+    // "success" from dlStatus is NOT authoritative — server decides installed/missing.
+    _resolveStatus(dlsStatus, serverStatus) {
+        const transient = new Set(["queued", "downloading", "error", "auth_required"]);
+        if (dlsStatus && transient.has(dlsStatus)) return dlsStatus;
+        return serverStatus || "missing";
+    }
+
     _renderAll() {
         if (!this.config) return;
         this.scrollArea.innerHTML = "";
@@ -1452,7 +1466,7 @@ class VNCCSControlCenterWidget {
 
         const key    = `cc_models_${cur.name}`;
         const dls    = this.dlStatus[key] ?? {};
-        const status = dls.status || cur.status || "missing";
+        const status = this._resolveStatus(dls.status, cur.status);
 
         const card = document.createElement("div");
         card.className = "vnccs-cc-model-card";
@@ -1512,7 +1526,7 @@ class VNCCSControlCenterWidget {
             sel.className = "vnccs-cc-model-card-select";
             variants.forEach(v => {
                 const vDls = this.dlStatus[`cc_models_${v.name}`] ?? {};
-                const vSt  = vDls.status || v.status || "missing";
+                const vSt  = this._resolveStatus(vDls.status, v.status);
                 const op = document.createElement("option");
                 op.value = v.name;
                 op.textContent = (v.name.slice(prefixLen) || v.name) + "  " + icon(vSt);
@@ -1606,7 +1620,7 @@ class VNCCSControlCenterWidget {
         const isClip = entry._cat === "clip";
         const cat    = isClip ? "clip" : "vae";
         const dls    = this.dlStatus[`cc_${cat}_${entry.name}`] ?? {};
-        const status = dls.status || entry.status;
+        const status = this._resolveStatus(dls.status, entry.status);
 
         const key2 = `cc_${cat}_${entry.name}`;
         const row = document.createElement("div");
@@ -1660,7 +1674,7 @@ class VNCCSControlCenterWidget {
         const ls  = (this.state.loras ?? []).find(l => l.name === entry.name)
             ?? { name: entry.name, enabled: true, strength: 1.0 };
         const dls = this.dlStatus[`cc_lora_${entry.name}`] ?? {};
-        const status = dls.status || entry.status;
+        const status = this._resolveStatus(dls.status, entry.status);
 
         const loraKey = `cc_lora_${entry.name}`;
         const row = document.createElement("div");
@@ -1764,7 +1778,7 @@ class VNCCSControlCenterWidget {
     _renderCnetEntry(cat, entry) {
         const cnetKey = `cc_${cat}_${entry.name}`;
         const dls    = this.dlStatus[cnetKey] ?? {};
-        const status = dls.status || entry.status;
+        const status = this._resolveStatus(dls.status, entry.status);
 
         const row = document.createElement("div");
         row.className = "vnccs-cc-row vnccs-cc-row--cnet-sel";
