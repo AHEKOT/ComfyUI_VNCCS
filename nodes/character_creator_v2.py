@@ -426,9 +426,14 @@ class CharacterCreatorV2:
             "config_version": "2.0"
         }
 
+        info["name"] = character_name
+        info["seed"] = gen_settings.get("seed", 0)
         config["character_info"] = info
         config["character_path"] = character_path
+        if "costumes" not in config:
+            config["costumes"] = {}
         save_config(character_name, config)
+
 
         # 3. Load Models & Construct Pipe
         # ----------------------------------------------------------------
