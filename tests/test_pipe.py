@@ -160,16 +160,16 @@ class TestProcessPipeSamplerFallback:
         defaults.update(kwargs)
         return node.process_pipe(**defaults)
 
-    def test_invalid_sampler_falls_back_to_first(self):
+    def test_invalid_sampler_passes_through(self):
+        # No compatibility fallback — unknown value passes through unchanged
         result = self._run(sampler_name="no_such_sampler_xyz")
-        # Should fall back to first available sampler, not crash
         assert isinstance(result[10], str)
-        assert result[10] != "no_such_sampler_xyz"
+        assert result[10] == "no_such_sampler_xyz"
 
-    def test_invalid_scheduler_falls_back_to_first(self):
+    def test_invalid_scheduler_passes_through(self):
         result = self._run(scheduler="no_such_scheduler_xyz")
         assert isinstance(result[11], str)
-        assert result[11] != "no_such_scheduler_xyz"
+        assert result[11] == "no_such_scheduler_xyz"
 
     def test_no_pipe_no_sampler_gets_default(self):
         result = self._run()

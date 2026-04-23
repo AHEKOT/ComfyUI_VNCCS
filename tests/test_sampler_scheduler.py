@@ -9,7 +9,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from nodes.sampler_scheduler_picker import (
     fetch_sampler_scheduler_lists,
-    _DynamicReturnTypes,
     DEFAULT_SAMPLERS,
     DEFAULT_SCHEDULERS,
     VNCCSSamplerSchedulerPicker,
@@ -51,63 +50,6 @@ class TestFetchSamplerSchedulerLists:
         samplers, schedulers = fetch_sampler_scheduler_lists()
         assert samplers == DEFAULT_SAMPLERS
         assert schedulers == DEFAULT_SCHEDULERS
-
-
-# ── _DynamicReturnTypes descriptor ───────────────────────────────────────────
-
-class TestDynamicReturnTypes:
-    def test_returns_tuple(self):
-        drt = _DynamicReturnTypes(("MODEL", None, None), sampler_idx=1, scheduler_idx=2)
-
-        class Holder:
-            RETURN_TYPES = drt
-
-        rt = Holder.RETURN_TYPES
-        assert isinstance(rt, tuple)
-
-    def test_fills_sampler_slot(self):
-        drt = _DynamicReturnTypes(("MODEL", None, None), sampler_idx=1, scheduler_idx=2)
-
-        class Holder:
-            RETURN_TYPES = drt
-
-        rt = Holder.RETURN_TYPES
-        samplers, _ = fetch_sampler_scheduler_lists()
-        assert rt[1] == samplers
-
-    def test_fills_scheduler_slot(self):
-        drt = _DynamicReturnTypes(("MODEL", None, None), sampler_idx=1, scheduler_idx=2)
-
-        class Holder:
-            RETURN_TYPES = drt
-
-        rt = Holder.RETURN_TYPES
-        _, schedulers = fetch_sampler_scheduler_lists()
-        assert rt[2] == schedulers
-
-    def test_non_sampler_slots_preserved(self):
-        drt = _DynamicReturnTypes(("MODEL", None, None), sampler_idx=1, scheduler_idx=2)
-
-        class Holder:
-            RETURN_TYPES = drt
-
-        assert Holder.RETURN_TYPES[0] == "MODEL"
-
-    def test_reads_current_list_after_extension(self, monkeypatch):
-        import comfy.samplers
-        original = list(comfy.samplers.KSampler.SAMPLERS)
-        comfy.samplers.KSampler.SAMPLERS = original + ["my_custom_sampler"]
-
-        drt = _DynamicReturnTypes((None, None), sampler_idx=0, scheduler_idx=1)
-
-        class Holder:
-            RETURN_TYPES = drt
-
-        rt = Holder.RETURN_TYPES
-        assert "my_custom_sampler" in rt[0]
-
-        # Restore
-        comfy.samplers.KSampler.SAMPLERS = original
 
 
 # ── VNCCSSamplerSchedulerPicker.pick ─────────────────────────────────────────

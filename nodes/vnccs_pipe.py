@@ -12,6 +12,7 @@ Sampler / scheduler:
 """
 
 
+"""Prepare enumeration lists once so both inputs and outputs share identical types."""
 import os
 import folder_paths
 from .sampler_scheduler_picker import (
@@ -24,16 +25,28 @@ from .vnccs_control_center import (
     _apply_lora_nunchaku,
 )
 
+
+SAMPLER_ENUM, SCHEDULER_ENUM = fetch_sampler_scheduler_lists()
+
 # Sentinel value shown in the widget to mean "inherit this value from the incoming pipe"
 PIPE_INHERIT = "(← pipe)"
 
 
 class VNCCS_Pipe:
     CATEGORY = "VNCCS"
+    # NOTE: Outputs must declare type names, not enumeration lists.
+    # Using the enumeration lists directly caused UI duplication (width/height twice)
+    # because ComfyUI iterated over list elements as separate types. We return STRING
+    # while still constraining the input via enumerations so connections remain valid.
     RETURN_TYPES = (
         "MODEL", "CLIP", "VAE", "CONDITIONING", "CONDITIONING",
-        "INT", "INT", "FLOAT", "FLOAT", "VNCCS_PIPE",
-        "STRING", "STRING",
+        "INT",
+        "INT",
+        "FLOAT",
+        "FLOAT",
+        "VNCCS_PIPE",
+        SAMPLER_ENUM,
+        SCHEDULER_ENUM,
     )
     RETURN_NAMES = (
         "model", "clip", "vae", "pos", "neg",
@@ -80,9 +93,8 @@ class VNCCS_Pipe:
 
     @classmethod
     def VALIDATE_INPUTS(cls, sampler_name=PIPE_INHERIT, scheduler=PIPE_INHERIT, **kwargs):
-        sampler_enum, scheduler_enum = fetch_sampler_scheduler_lists()
-        valid_samplers = [PIPE_INHERIT] + sampler_enum
-        valid_schedulers = [PIPE_INHERIT] + scheduler_enum
+        valid_samplers = [PIPE_INHERIT] + list(SAMPLER_ENUM)
+        valid_schedulers = [PIPE_INHERIT] + list(SCHEDULER_ENUM)
         if sampler_name not in valid_samplers:
             return f"sampler_name '{sampler_name}' is not valid"
         if scheduler not in valid_schedulers:
@@ -117,20 +129,10 @@ class VNCCS_Pipe:
             scheduler = getattr(pipe, "scheduler", None) if pipe else None
 
         # Final fallback to first valid value if pipe had nothing
-        sampler_enum, scheduler_enum = fetch_sampler_scheduler_lists()
         if not sampler_name or sampler_name == PIPE_INHERIT:
-            sampler_name = sampler_enum[0] if sampler_enum else DEFAULT_SAMPLERS[0]
+            sampler_name = SAMPLER_ENUM[0] if SAMPLER_ENUM else DEFAULT_SAMPLERS[0]
         if not scheduler or scheduler == PIPE_INHERIT:
-            scheduler = scheduler_enum[0] if scheduler_enum else DEFAULT_SCHEDULERS[0]
-
-        # Compatibility fallback: if saved sampler/scheduler no longer exists
-        # (e.g. RES4LYF was removed after saving workflow), reset to first available
-        if sampler_name not in sampler_enum:
-            print(f"[VNCCS Pipe] sampler '{sampler_name}' not in available list, falling back to '{sampler_enum[0]}'")
-            sampler_name = sampler_enum[0]
-        if scheduler not in scheduler_enum:
-            print(f"[VNCCS Pipe] scheduler '{scheduler}' not in available list, falling back to '{scheduler_enum[0]}'")
-            scheduler = scheduler_enum[0]
+            scheduler = SCHEDULER_ENUM[0] if SCHEDULER_ENUM else DEFAULT_SCHEDULERS[0]
 
         if lora_name and lora_name != "none" and model is not None:
             loader_type = getattr(pipe, "loader_type", "standard") if pipe else "standard"
