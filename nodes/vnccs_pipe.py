@@ -18,7 +18,6 @@ from .sampler_scheduler_picker import (
     fetch_sampler_scheduler_lists,
     DEFAULT_SAMPLERS,
     DEFAULT_SCHEDULERS,
-    _DynamicReturnTypes,
 )
 from .vnccs_control_center import (
     _apply_lora_standard,
@@ -31,15 +30,10 @@ PIPE_INHERIT = "(← pipe)"
 
 class VNCCS_Pipe:
     CATEGORY = "VNCCS"
-    # RETURN_TYPES is a descriptor that reads KSampler.SAMPLERS/.SCHEDULERS at
-    # access time — ensures compatibility with extensions (e.g. RES4LYF) that
-    # extend these lists after VNCCS imports.
-    RETURN_TYPES = _DynamicReturnTypes(
-        ("MODEL", "CLIP", "VAE", "CONDITIONING", "CONDITIONING",
-         "INT", "INT", "FLOAT", "FLOAT", "VNCCS_PIPE",
-         None, None),
-        sampler_idx=10,
-        scheduler_idx=11,
+    RETURN_TYPES = (
+        "MODEL", "CLIP", "VAE", "CONDITIONING", "CONDITIONING",
+        "INT", "INT", "FLOAT", "FLOAT", "VNCCS_PIPE",
+        "STRING", "STRING",
     )
     RETURN_NAMES = (
         "model", "clip", "vae", "pos", "neg",
