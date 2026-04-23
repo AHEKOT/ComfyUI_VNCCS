@@ -414,6 +414,8 @@ class CharacterCreatorV2:
         sheets_path = sheets_dir(character_name) # Uses default "Naked", "neutral", "sheet_neutral"
         faces_path = faces_dir(character_name)   # Uses default "Naked", "neutral", "face_neutral"
 
+        ensure_character_structure(character_name)
+
         config = load_config(character_name) or {
             "character_info": {},
             "folder_structure": {
@@ -424,10 +426,9 @@ class CharacterCreatorV2:
             "config_version": "2.0"
         }
 
-        # Update config with current info (omitted full mapping for brevity, assuming 'info' is up to date)
-        # In a real scenario, we might want to ensure 'config' is perfectly synced.
-        # But 'process' is triggered by the run button, so we should trust 'widget_data' as truth.
-        # ... (Save logic kept minimal as requested focus is on Outputs)
+        config["character_info"] = info
+        config["character_path"] = character_path
+        save_config(character_name, config)
 
         # 3. Load Models & Construct Pipe
         # ----------------------------------------------------------------
