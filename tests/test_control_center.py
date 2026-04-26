@@ -14,7 +14,6 @@ from nodes.vnccs_control_center import (
     _find_model_on_disk,
     _build_dynamic_paths,
     VNCCSPipeProxy,
-    _CC_ALWAYS_APPLY_LORA_NAME,
 )
 
 
@@ -179,10 +178,3 @@ class TestVNCCSPipeProxy:
         assert proxy.nunchaku_settings is None
         assert proxy.model_entry is None
 
-
-# ── _CC_ALWAYS_APPLY_LORA_NAME constant ──────────────────────────────────────
-
-class TestAlwaysApplyLoraName:
-    def test_constant_is_qwen_lora(self):
-        assert "Qwen" in _CC_ALWAYS_APPLY_LORA_NAME
-        assert _CC_ALWAYS_APPLY_LORA_NAME.endswith(".safetensors")
