@@ -588,7 +588,14 @@ def _load_vae(vae_entries, selected_name):
     return comfy.sd.VAE(sd=sd, metadata=metadata)
 
 
-def _load_model_block(model_entry, selected_type, type_settings, config, selected_clips, selected_vae):
+def _load_model_block(model_entry, selected_type, type_settings, config, selected_clips, selected_vae, custom_model=None):
+    if selected_type == "custom":
+        if custom_model is None:
+            raise RuntimeError("[VNCCS Control Center] Custom model input is not connected.")
+        clip = _load_clips(config.get("clip", []), selected_clips)
+        vae = _load_vae(config.get("vae", []), selected_vae)
+        return custom_model, clip, vae
+
     if not model_entry:
         raise RuntimeError("[VNCCS Control Center] No model selected.")
 
@@ -812,6 +819,9 @@ class VNCCS_ControlCenter:
             "required": {
                 "repo_id": ("STRING", {"default": "MIUProject/VNCCS_V2", "multiline": False}),
                 "node_state": ("STRING", {"default": "{}"}),
+            },
+            "optional": {
+                "model": ("MODEL",),
             }
         }
 
@@ -824,9 +834,9 @@ class VNCCS_ControlCenter:
     FUNCTION = "execute"
     CATEGORY = "VNCCS/manager"
 
-    def execute(self, repo_id, node_state="{}"):
+    def execute(self, repo_id, node_state="{}", model=None):
         config = _get_cc_config(repo_id)
-        pipe = _build_control_center_pipe(repo_id, node_state)
+        pipe = _build_control_center_pipe(repo_id, node_state, custom_model=model)
 
         try:
             state = json.loads(node_state) if node_state and node_state != "{}" else {}
@@ -838,7 +848,7 @@ class VNCCS_ControlCenter:
         return (pipe, *dynamic)
 
 
-def _build_control_center_pipe(repo_id, node_state):
+def _build_control_center_pipe(repo_id, node_state, custom_model=None):
     try:
         state = json.loads(node_state) if isinstance(node_state, str) and node_state and node_state != "{}" else (node_state or {})
     except Exception:
@@ -851,7 +861,11 @@ def _build_control_center_pipe(repo_id, node_state):
     model_params = state.get("model_params", {})
 
     config = _get_cc_config(repo_id)
-    model_entry = _find_entry(config.get("models", []), selected_model)
+    if selected_type == "custom":
+        selected_model = ""
+        model_entry = None
+    else:
+        model_entry = _find_entry(config.get("models", []), selected_model)
     has_enabled_loras = any(
         item.get("name") and item.get("auto_apply", False) and abs(float(item.get("strength", 1.0))) > 1e-6
         for item in loras
@@ -876,6 +890,7 @@ def _build_control_center_pipe(repo_id, node_state):
         config,
         all_clip_names,
         first_vae_name,
+        custom_model=custom_model,
     )
     model, clip = _apply_loras(
         model,

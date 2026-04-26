@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from nodes.vnccs_control_center import (
+    _build_control_center_pipe,
     _detect_nunchaku_model_kind,
     _find_entry,
     _rel_within_folder,
@@ -243,4 +244,44 @@ class TestVNCCSPipeProxy:
         assert proxy.nunchaku_kind is None
         assert proxy.nunchaku_settings is None
         assert proxy.model_entry is None
+
+
+class TestControlCenterCustomModel:
+    def test_custom_type_uses_model_input_and_standard_loader(self, monkeypatch):
+        custom_model = object()
+        custom_clip = object()
+        custom_vae = object()
+
+        monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
+            "models": [],
+            "clip": [{"name": "clip_a"}],
+            "vae": [{"name": "vae_a"}],
+            "lora": [],
+        })
+
+        def fake_load_model_block(model_entry, selected_type, type_settings, config, selected_clips, selected_vae, custom_model=None):
+            assert selected_type == "custom"
+            assert model_entry is None
+            assert custom_model is not None
+            return custom_model, custom_clip, custom_vae
+
+        monkeypatch.setattr("nodes.vnccs_control_center._load_model_block", fake_load_model_block)
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._apply_loras",
+            lambda model, clip, lora_states, config, model_type, **kwargs: (model, clip),
+        )
+
+        pipe = _build_control_center_pipe(
+            "demo/repo",
+            {"selected_type": "custom", "loras": [], "type_settings": {}, "model_params": {}},
+            custom_model=custom_model,
+        )
+
+        assert pipe.model is custom_model
+        assert pipe.clip is custom_clip
+        assert pipe.vae is custom_vae
+        assert pipe.loader_type == "standard"
+        assert pipe.nunchaku_kind is None
+        assert pipe.nunchaku_settings is None
+        assert pipe.model_entry is None
 

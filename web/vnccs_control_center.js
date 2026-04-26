@@ -338,9 +338,21 @@ function _injectVNCCSControlCenterStyles() {
     position: relative;
     overflow: hidden;
 }
+.vnccs-cc-model-card--placeholder {
+    border-color: rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.03);
+    min-height: 108px;
+    justify-content: center;
+}
+.vnccs-cc-model-card-placeholder-text {
+    font-size: 11px;
+    line-height: 1.45;
+    color: #9da3b8;
+    text-align: center;
+}
 .vnccs-cc-model-tabs {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 6px;
     padding: 6px;
     border-bottom: 1px solid rgba(255,255,255,0.04);
@@ -993,10 +1005,33 @@ class VNCCSControlCenterWidget {
     }
 
     _getModelTypeTabs() {
-        const preferred = ["gguf", "nunchaku", "unet"];
+        const preferred = ["gguf", "nunchaku", "unet", "custom"];
         const available = new Set(this.config?.available_types ?? []);
+        available.add("custom");
         const preferredTabs = preferred.filter(type => available.has(type));
         return preferredTabs.length ? preferredTabs : Array.from(available);
+    }
+
+    _getCustomModelInputIndex() {
+        return (this.node.inputs ?? []).findIndex(input => input?.name === "model");
+    }
+
+    _syncCustomModelInput() {
+        const selectedType = this.state.selected_type || this._getSelectedType();
+        const inputIndex = this._getCustomModelInputIndex();
+
+        if (selectedType === "custom") {
+            if (inputIndex === -1) {
+                this.node.addInput("model", "MODEL");
+                this.node.setDirtyCanvas(true, true);
+            }
+            return;
+        }
+
+        if (inputIndex !== -1) {
+            this.node.removeInput(inputIndex);
+            this.node.setDirtyCanvas(true, true);
+        }
     }
 
     _setSelectedType(nextType) {
@@ -1004,11 +1039,18 @@ class VNCCSControlCenterWidget {
         this.state.selected_type = nextType;
 
         const variants = (this.config?.models || []).filter(m => !m.type || m.type === nextType);
-        const selectedModel = this._getSelectedModelName(nextType);
-        if (!variants.find(m => m.name === selectedModel) && variants.length) {
-            this._setSelectedModelName(nextType, variants[0].name);
+        if (nextType === "custom") {
+            this.state.selected_model = "";
+        } else {
+            const selectedModel = this._getSelectedModelName(nextType);
+            if (!variants.find(m => m.name === selectedModel) && variants.length) {
+                this._setSelectedModelName(nextType, variants[0].name);
+            } else if (selectedModel) {
+                this.state.selected_model = selectedModel;
+            }
         }
 
+        this._syncCustomModelInput();
         this._saveState();
         this._renderAll();
         this._scheduleDependencyRefresh(true);
@@ -1069,6 +1111,7 @@ class VNCCSControlCenterWidget {
     _getSelectedModelEntry() {
         if (!this.config?.models?.length) return null;
         const selectedType = this._getSelectedType();
+        if (selectedType === "custom") return null;
         const selectedModel = this._getSelectedModelName(selectedType);
         const variants = this.config.models.filter(m => !m.type || m.type === selectedType);
         return variants.find(m => m.name === selectedModel) ?? variants[0] ?? null;
@@ -1120,6 +1163,7 @@ class VNCCSControlCenterWidget {
         }
         // Rebuild dynamic output slots from saved state
         this._syncOutputSlots();
+        this._syncCustomModelInput();
         const repo = this._getRepoId();
         if (repo) this.fetchConfig(repo);
     }
@@ -1637,26 +1681,31 @@ class VNCCSControlCenterWidget {
 
         const selType = this._getSelectedType();
         const isCP    = selType === "checkpoint";
+        const isCustom = selType === "custom";
 
         // Only variants of the selected type (set in Settings)
-        const variants = (this.config.models || []).filter(m => !m.type || m.type === selType);
+        const variants = isCustom ? [] : (this.config.models || []).filter(m => !m.type || m.type === selType);
 
         // Auto-select first variant of this type if current selection doesn't match
-        const selectedModel = this._getSelectedModelName(selType);
-        const curOk = variants.find(m => m.name === selectedModel);
-        if (!curOk && variants.length) {
-            this._setSelectedModelName(selType, variants[0].name);
-        } else if (curOk) {
-            this._setSelectedModelName(selType, curOk.name);
+        if (!isCustom) {
+            const selectedModel = this._getSelectedModelName(selType);
+            const curOk = variants.find(m => m.name === selectedModel);
+            if (!curOk && variants.length) {
+                this._setSelectedModelName(selType, variants[0].name);
+            } else if (curOk) {
+                this._setSelectedModelName(selType, curOk.name);
+            }
         }
 
         // MODEL — 2-column block: one big card for the selected type's variants
         this._renderTwoColBlockSingle(
             "MODEL", variants.length, "models",
-            () => this._renderModelCard(selType, variants),
+            () => isCustom ? this._renderCustomModelPlaceholder() : this._renderModelCard(selType, variants),
             () => this._renderModelParams(),
             () => this._renderModelSamplerParams(),
-            () => this._renderModelTabs(selType)
+            () => this._renderModelTabs(selType),
+            !isCustom,
+            isCustom
         );
 
         // CLIP + VAE — horizontal cards
@@ -1950,7 +1999,7 @@ class VNCCSControlCenterWidget {
     }
 
     // Two-column block with a single pre-built row (MODEL slot)
-    _renderTwoColBlockSingle(title, count, key, rowFn, rightFn, rightFn2 = null, topFn = null) {
+    _renderTwoColBlockSingle(title, count, key, rowFn, rightFn, rightFn2 = null, topFn = null, showEmptyLeft = true, renderLeftWhenEmpty = false) {
         const collapsed = this.state.collapsed?.[key] ?? false;
         const block = this._blockShell(title, count, key, collapsed);
         if (!collapsed) {
@@ -1961,21 +2010,27 @@ class VNCCSControlCenterWidget {
             const wrap = document.createElement("div");
             wrap.className = "vnccs-cc-twocol";
 
-            const left = document.createElement("div");
-            left.className = "vnccs-cc-twocol-left";
-            if (count) left.appendChild(rowFn());
-            else {
+            const leftContent = (count || renderLeftWhenEmpty) ? rowFn() : null;
+            if (leftContent) {
+                const left = document.createElement("div");
+                left.className = "vnccs-cc-twocol-left";
+                left.appendChild(leftContent);
+                wrap.appendChild(left);
+            } else if (showEmptyLeft) {
+                const left = document.createElement("div");
+                left.className = "vnccs-cc-twocol-left";
                 const empty = document.createElement("div");
                 empty.className = "vnccs-cc-block-empty";
                 empty.textContent = "No entries";
                 left.appendChild(empty);
+                wrap.appendChild(left);
             }
 
             const right = document.createElement("div");
             right.className = "vnccs-cc-twocol-right";
             right.appendChild(rightFn());
 
-            wrap.append(left, right);
+            wrap.appendChild(right);
 
             if (rightFn2) {
                 const right2 = document.createElement("div");
@@ -2060,7 +2115,9 @@ class VNCCSControlCenterWidget {
             if (tabType === type) button.classList.add("vnccs-cc-model-tab--active");
             button.textContent = tabType.toUpperCase();
 
-            const hasVariants = (this.config?.models || []).some(m => !m.type || m.type === tabType);
+            const hasVariants = tabType === "custom"
+                ? true
+                : (this.config?.models || []).some(m => !m.type || m.type === tabType);
             if (!hasVariants) button.classList.add("vnccs-cc-model-tab--missing");
 
             button.onclick = () => this._setSelectedType(tabType);
@@ -2165,6 +2222,18 @@ class VNCCSControlCenterWidget {
         }
 
         if (footer.children.length) card.appendChild(footer);
+        return card;
+    }
+
+    _renderCustomModelPlaceholder() {
+        const card = document.createElement("div");
+        card.className = "vnccs-cc-model-card vnccs-cc-model-card--placeholder";
+
+        const text = document.createElement("div");
+        text.className = "vnccs-cc-model-card-placeholder-text";
+        text.textContent = "Pass-through mode is enabled. Connect the desired model to the node input.";
+        card.appendChild(text);
+
         return card;
     }
 
