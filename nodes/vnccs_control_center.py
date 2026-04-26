@@ -59,9 +59,6 @@ _FOLDER_MAP = {
     "diffusion_models": ["diffusion_models", "unet"],
 }
 
-_CC_ALWAYS_APPLY_LORA_NAME = "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
-
-
 def _get_node_class_mappings():
     import nodes as comfy_nodes
 
@@ -542,7 +539,7 @@ def _apply_loras(model, clip, lora_states, config, model_type, type_settings=Non
         if not name:
             continue
         state = state_by_name.get(name, {})
-        if not state.get("enabled", True):
+        if not state.get("auto_apply", False):
             continue
         strength = float(state.get("strength", 1.0))
         if abs(strength) < 1e-6:
@@ -731,7 +728,7 @@ def _build_control_center_pipe(repo_id, node_state):
     config = _get_cc_config(repo_id)
     model_entry = _find_entry(config.get("models", []), selected_model)
     has_enabled_loras = any(
-        item.get("name") and item.get("enabled", True) and abs(float(item.get("strength", 1.0))) > 1e-6
+        item.get("name") and item.get("auto_apply", False) and abs(float(item.get("strength", 1.0))) > 1e-6
         for item in loras
     )
 
@@ -755,20 +752,15 @@ def _build_control_center_pipe(repo_id, node_state):
         all_clip_names,
         first_vae_name,
     )
-    for entry in config.get("lora", []):
-        if os.path.basename(entry.get("local_path", "")) != _CC_ALWAYS_APPLY_LORA_NAME:
-            continue
-        full_path, exists = _find_model_on_disk(entry["local_path"])
-        if not exists:
-            print(f"[VNCCS Control Center] Mandatory LoRA not on disk: '{_CC_ALWAYS_APPLY_LORA_NAME}', skipping.")
-            continue
-        print(f"[VNCCS Control Center] Applying mandatory LoRA: {_CC_ALWAYS_APPLY_LORA_NAME} (strength=1.0)")
-        if selected_type == "nunchaku":
-            model = _apply_lora_nunchaku(model, full_path, 1.0,
-                                         settings=type_settings.get("nunchaku", {}),
-                                         model_entry=model_entry)
-        else:
-            model, clip = _apply_lora_standard(model, clip, full_path, 1.0)
+    model, clip = _apply_loras(
+        model,
+        clip,
+        loras,
+        config,
+        selected_type,
+        type_settings=type_settings,
+        model_entry=model_entry,
+    )
 
     pipe = VNCCSPipeProxy(model, clip, vae)
 

@@ -206,6 +206,16 @@ function _injectVNCCSControlCenterStyles() {
     font-size: 10px;
     padding: 4px;
 }
+.vnccs-cc-card-grid {
+    padding: 6px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    background: rgba(8,8,12,0.5);
+}
+.vnccs-cc-card-grid--triple {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
 
 /* Two-column layout */
 .vnccs-cc-twocol {
@@ -221,7 +231,8 @@ function _injectVNCCSControlCenterStyles() {
     border-right: 1px solid rgba(255,255,255,0.04);
     min-width: 0;
 }
-.vnccs-cc-twocol-right {
+.vnccs-cc-twocol-right,
+.vnccs-cc-twocol-right2 {
     width: 130px;
     flex-shrink: 0;
     padding: 7px 8px;
@@ -231,13 +242,6 @@ function _injectVNCCSControlCenterStyles() {
     background: rgba(26,26,38,0.3);
 }
 .vnccs-cc-twocol-right2 {
-    width: 130px;
-    flex-shrink: 0;
-    padding: 7px 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    background: rgba(26,26,38,0.3);
     border-left: 1px solid rgba(255,255,255,0.04);
 }
 
@@ -334,10 +338,54 @@ function _injectVNCCSControlCenterStyles() {
     position: relative;
     overflow: hidden;
 }
+.vnccs-cc-model-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    padding: 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    background: rgba(8,8,12,0.5);
+}
+.vnccs-cc-model-tab {
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px;
+    background: rgba(18,18,26,0.8);
+    color: #8e93a8;
+    padding: 7px 6px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.18s ease;
+}
+.vnccs-cc-model-tab:hover {
+    border-color: rgba(255,143,163,0.28);
+    color: #f4c2ce;
+}
+.vnccs-cc-model-tab--active {
+    background: linear-gradient(135deg, rgba(255,143,163,0.22) 0%, rgba(184,169,232,0.16) 100%);
+    border-color: rgba(255,143,163,0.4);
+    color: #fff3f6;
+    box-shadow: inset 0 0 0 1px rgba(255,143,163,0.12);
+}
+.vnccs-cc-model-tab--missing {
+    opacity: 0.45;
+}
 .vnccs-cc-model-card-top {
     display: flex;
     align-items: center;
     gap: 7px;
+}
+.vnccs-cc-model-card-top--start {
+    align-items: flex-start;
+}
+.vnccs-cc-model-card-kicker {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #b8a9e8;
 }
 .vnccs-cc-model-card-name {
     font-size: 12px;
@@ -348,6 +396,12 @@ function _injectVNCCSControlCenterStyles() {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+.vnccs-cc-model-card-name--wrap {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    line-height: 1.25;
 }
 .vnccs-cc-model-card-status {
     font-size: 10px;
@@ -368,6 +422,139 @@ function _injectVNCCSControlCenterStyles() {
     align-items: center;
     gap: 6px;
     margin-top: 2px;
+}
+.vnccs-cc-model-card-footer--stack {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+}
+.vnccs-cc-lora-sections {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 6px;
+    background: rgba(8,8,12,0.5);
+}
+.vnccs-cc-lora-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.vnccs-cc-lora-section-title {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #ff8fa3;
+    padding: 0 2px;
+}
+.vnccs-cc-lora-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+}
+.vnccs-cc-lora-grid--compact {
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    align-items: start;
+}
+.vnccs-cc-lora-card {
+    gap: 5px;
+    padding: 7px 8px;
+    cursor: pointer;
+    transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+.vnccs-cc-lora-card:hover {
+    border-color: rgba(255,143,163,0.32);
+    transform: translateY(-1px);
+}
+.vnccs-cc-lora-card--active {
+    border-color: rgba(255,143,163,0.52);
+    background: linear-gradient(180deg, rgba(255,143,163,0.14) 0%, rgba(10,26,22,0.92) 100%);
+    box-shadow: inset 0 0 0 1px rgba(255,143,163,0.14);
+    padding-right: 72px;
+}
+.vnccs-cc-lora-card--compact {
+    padding: 4px 52px 4px 7px;
+    gap: 2px;
+    height: 56px;
+    min-height: 56px;
+    max-height: 56px;
+    overflow: hidden;
+}
+.vnccs-cc-lora-card--compact .vnccs-cc-lora-card-meta {
+    gap: 1px;
+}
+.vnccs-cc-lora-card-top {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+}
+.vnccs-cc-lora-card-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex: 1;
+    min-width: 0;
+}
+.vnccs-cc-lora-card-name {
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #e8e8f0;
+    line-height: 1.2;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+}
+.vnccs-cc-lora-card--compact .vnccs-cc-lora-card-name {
+    font-size: 10px;
+}
+.vnccs-cc-lora-card-status {
+    font-size: 8.5px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+.vnccs-cc-lora-card-status--active {
+    color: #ff8fa3;
+}
+.vnccs-cc-lora-card-status--pipe {
+    color: #00d68f;
+}
+.vnccs-cc-lora-card-status--corner {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    line-height: 1;
+}
+.vnccs-cc-lora-card-desc {
+    font-size: 8.5px;
+    color: #a3a3b3;
+    line-height: 1.3;
+    white-space: normal;
+    overflow: visible;
+}
+.vnccs-cc-lora-card--compact .vnccs-cc-lora-card-desc {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+}
+.vnccs-cc-lora-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: auto;
+}
+.vnccs-cc-lora-strength-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: auto;
+}
+.vnccs-cc-model-card-note {
+    font-size: 9px;
+    color: #5e5e70;
+    letter-spacing: 0.03em;
 }
 .vnccs-cc-model-card-select {
     flex: 1;
@@ -395,14 +582,33 @@ function _injectVNCCSControlCenterStyles() {
 
 /* Params panel */
 .vnccs-cc-params {
+    display: grid;
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    align-content: start;
+}
+.vnccs-cc-params--right {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 12px;
+    align-content: normal;
+}
+.vnccs-cc-params--right .vnccs-cc-select {
+    -webkit-appearance: none;
+    appearance: none;
+    height: auto;
+    min-height: 0;
+    line-height: 1.2;
+    padding: 3px 30px 3px 4px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='20' viewBox='0 0 12 20'%3E%3Cpath d='M1 8l5-5 5 5' fill='none' stroke='%23f1eef7' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M1 12l5 5 5-5' fill='none' stroke='%23f1eef7' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    background-size: 12px 20px;
 }
 .vnccs-cc-param-field {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 4px;
 }
 .vnccs-cc-param-label {
     font-size: 9px;
@@ -435,6 +641,7 @@ function _injectVNCCSControlCenterStyles() {
     border-radius: 5px;
     padding: 3px 4px;
     font-size: 10px;
+    box-sizing: border-box;
     transition: border-color 0.18s;
     color-scheme: dark;
 }
@@ -444,21 +651,15 @@ function _injectVNCCSControlCenterStyles() {
     border-color: rgba(255,143,163,0.35);
 }
 
-/* LoRA */
-.vnccs-cc-lora-chk {
-    cursor: pointer;
-    accent-color: #ff8fa3;
-    flex-shrink: 0;
-}
 .vnccs-cc-lora-slider {
-    width: 65px;
+    width: 100%;
     accent-color: #ff8fa3;
-    flex-shrink: 0;
+    flex: 1;
 }
 .vnccs-cc-lora-val {
     min-width: 32px;
     text-align: right;
-    color: #5e5e70;
+    color: #c3a2ab;
     font-size: 9px;
     flex-shrink: 0;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
@@ -670,6 +871,8 @@ app.registerExtension({
             onRemoved?.apply(this, arguments);
             if (this._cc_widget?.pollingInterval)
                 clearInterval(this._cc_widget.pollingInterval);
+            if (this._cc_widget?._onGlobalPointerUp)
+                window.removeEventListener("pointerup", this._cc_widget._onGlobalPointerUp);
             if (this._cc_widget?._onRegistryUpdate)
                 window.removeEventListener("vnccs-cc-registry-updated", this._cc_widget._onRegistryUpdate);
         };
@@ -686,6 +889,10 @@ class VNCCSControlCenterWidget {
         this.dlStatus = {};
         this.dependencyStatus = { ok: true, message: "" };
         this._lastDependencyModalMessage = "";
+        this._dependencyRefreshTimer = null;
+        this._dependencyRefreshSeq = 0;
+        this._draggingLoraSlider = false;
+        this._onGlobalPointerUp = null;
         this.downloadStartTimes = {};  // for fake progress bars
         this._samplers   = DEFAULT_SAMPLERS;
         this._schedulers = DEFAULT_SCHEDULERS;
@@ -720,6 +927,47 @@ class VNCCSControlCenterWidget {
             }
         };
         window.addEventListener("vnccs-cc-registry-updated", this._onRegistryUpdate);
+
+        this._onGlobalPointerUp = () => {
+            this._draggingLoraSlider = false;
+        };
+        window.addEventListener("pointerup", this._onGlobalPointerUp);
+    }
+
+    _getModelTypeTabs() {
+        const preferred = ["gguf", "nunchaku", "unet"];
+        const available = new Set(this.config?.available_types ?? []);
+        const preferredTabs = preferred.filter(type => available.has(type));
+        return preferredTabs.length ? preferredTabs : Array.from(available);
+    }
+
+    _setSelectedType(nextType) {
+        if (!nextType || this._getSelectedType() === nextType) return;
+        this.state.selected_type = nextType;
+
+        const variants = (this.config?.models || []).filter(m => !m.type || m.type === nextType);
+        const selectedModel = this._getSelectedModelName(nextType);
+        if (!variants.find(m => m.name === selectedModel) && variants.length) {
+            this._setSelectedModelName(nextType, variants[0].name);
+        }
+
+        this._saveState();
+        this._renderAll();
+        this._scheduleDependencyRefresh(true);
+    }
+
+    _scheduleDependencyRefresh(showModal = false, delay = 120, rerender = true) {
+        if (this._dependencyRefreshTimer) {
+            clearTimeout(this._dependencyRefreshTimer);
+        }
+
+        const refreshSeq = ++this._dependencyRefreshSeq;
+        this._dependencyRefreshTimer = setTimeout(async () => {
+            this._dependencyRefreshTimer = null;
+            await this._refreshDependencyStatus(showModal);
+            if (refreshSeq !== this._dependencyRefreshSeq) return;
+            if (rerender) this._renderAll();
+        }, delay);
     }
 
     // ── Sampler/scheduler lists ───────────────────────────────────────────────
@@ -739,18 +987,37 @@ class VNCCSControlCenterWidget {
 
     _getRepoId()     { return (this.node.widgets?.find(w => w.name === "repo_id")?.value ?? "").trim(); }
     _getStateWidget(){ return this.node.widgets?.find(w => w.name === "node_state"); }
-    _getSelectedType(){ return this.state.selected_type || (this.config?.available_types?.[0] ?? ""); }
+    _getSelectedType(){
+        const visibleTabs = this._getModelTypeTabs();
+        const selected = this.state.selected_type;
+        if (selected && visibleTabs.includes(selected)) return selected;
+        return visibleTabs[0] || (this.config?.available_types?.[0] ?? "");
+    }
+
+    _getSelectedModelName(type = this._getSelectedType()) {
+        const selectedByType = this.state.selected_models ?? {};
+        return selectedByType[type] ?? this.state.selected_model ?? "";
+    }
+
+    _setSelectedModelName(type, modelName) {
+        if (!type || !modelName) return;
+        if (!this.state.selected_models) this.state.selected_models = {};
+        this.state.selected_models[type] = modelName;
+        if (type === this._getSelectedType()) {
+            this.state.selected_model = modelName;
+        }
+    }
 
     _getSelectedModelEntry() {
         if (!this.config?.models?.length) return null;
         const selectedType = this._getSelectedType();
-        const selectedModel = this.state.selected_model;
+        const selectedModel = this._getSelectedModelName(selectedType);
         const variants = this.config.models.filter(m => !m.type || m.type === selectedType);
         return variants.find(m => m.name === selectedModel) ?? variants[0] ?? null;
     }
 
     _hasEnabledLoras() {
-        return (this.state.loras ?? []).some(l => l?.name && l.enabled !== false && Math.abs(Number(l.strength ?? 1)) > 1e-6);
+        return (this.state.loras ?? []).some(l => l?.name && l.auto_apply === true && Math.abs(Number(l.strength ?? 1)) > 1e-6);
     }
 
     _saveState() {
@@ -762,16 +1029,13 @@ class VNCCSControlCenterWidget {
 
     _dispatchLoraOptions() {
         if (!this.config?.lora) return;
-        const ALWAYS_APPLY = "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors";
         const stateByName = Object.fromEntries(
             (this.state.loras ?? []).map(l => [l.name, l])
         );
         const options = [];
         for (const entry of this.config.lora) {
-            const basename = (entry.local_path || "").replace(/\\/g, "/").split("/").pop();
-            if (basename === ALWAYS_APPLY) continue;
             const st = stateByName[entry.name] ?? {};
-            if (st.enabled === false) continue;
+            if (st.auto_apply === true) continue;
             const norm = (entry.local_path || "").replace(/\\/g, "/");
             const rel = norm.startsWith("models/loras/") ? norm.slice("models/loras/".length) : norm.split("/").pop();
             options.push(rel);
@@ -783,6 +1047,18 @@ class VNCCSControlCenterWidget {
         const w = this._getStateWidget();
         if (w?.value && w.value !== "{}") {
             try { this.state = JSON.parse(w.value); } catch { this.state = {}; }
+        }
+        if (Array.isArray(this.state.loras)) {
+            this.state.loras = this.state.loras.map(lora => {
+                if (lora && typeof lora === "object" && lora.auto_apply === undefined && lora.enabled !== undefined) {
+                    return { ...lora, auto_apply: lora.enabled !== false };
+                }
+                return lora;
+            });
+        }
+        if (this.state.selected_model && !this.state.selected_models) {
+            const selectedType = this.state.selected_type;
+            this.state.selected_models = selectedType ? { [selectedType]: this.state.selected_model } : {};
         }
         // Rebuild dynamic output slots from saved state
         this._syncOutputSlots();
@@ -903,6 +1179,7 @@ class VNCCSControlCenterWidget {
     _isUserInteracting() {
         // Skip re-render if any focusable element inside our container is active
         // (e.g. an open <select> dropdown, a focused input)
+        if (this._draggingLoraSlider) return true;
         const active = document.activeElement;
         return active && this.container?.contains(active);
     }
@@ -1300,16 +1577,19 @@ class VNCCSControlCenterWidget {
             this.scrollArea.appendChild(err);
         }
 
-        const selType = this.state.selected_type || (this.config.available_types?.[0] ?? "");
+        const selType = this._getSelectedType();
         const isCP    = selType === "checkpoint";
 
         // Only variants of the selected type (set in Settings)
         const variants = (this.config.models || []).filter(m => !m.type || m.type === selType);
 
         // Auto-select first variant of this type if current selection doesn't match
-        const curOk = variants.find(m => m.name === this.state.selected_model);
+        const selectedModel = this._getSelectedModelName(selType);
+        const curOk = variants.find(m => m.name === selectedModel);
         if (!curOk && variants.length) {
-            this.state.selected_model = variants[0].name;
+            this._setSelectedModelName(selType, variants[0].name);
+        } else if (curOk) {
+            this._setSelectedModelName(selType, curOk.name);
         }
 
         // MODEL — 2-column block: one big card for the selected type's variants
@@ -1317,22 +1597,17 @@ class VNCCSControlCenterWidget {
             "MODEL", variants.length, "models",
             () => this._renderModelCard(selType, variants),
             () => this._renderModelParams(),
-            () => this._renderModelSamplerParams()
+            () => this._renderModelSamplerParams(),
+            () => this._renderModelTabs(selType)
         );
 
-        // CLIP + VAE — single column (no params)
+        // CLIP + VAE — horizontal cards
         if (!isCP) {
-            const entries = [
-                ...this.config.clip.map(e => ({ ...e, _cat: "clip" })),
-                { _divider: true },
-                ...this.config.vae.map(e => ({ ...e, _cat: "vae" })),
-            ];
-            this._renderBlock("CLIP + VAE", entries, "clip_vae",
-                e => e._divider ? this._divider() : this._renderClipVaeEntry(e));
+            this._renderClipVaeBlock();
         }
 
         // LORA
-        this._renderBlock("LORA", this.config.lora, "lora", e => this._renderLoraEntry(e));
+        this._renderLoraBlock();
 
         // CONTROLNET / OTHER
         this._renderBlock("CONTROLNET", this.config.controlnet, "controlnet",
@@ -1366,11 +1641,127 @@ class VNCCSControlCenterWidget {
         this.scrollArea.appendChild(block);
     }
 
+    _buildClipVaeBlock() {
+        const entries = [
+            ...(this.config.clip || []).map(entry => ({ ...entry, _cat: "clip" })),
+            ...(this.config.vae || []).map(entry => ({ ...entry, _cat: "vae" })),
+        ];
+        const collapsed = this.state.collapsed?.clip_vae ?? false;
+        const block = this._blockShell("CLIP + VAE", entries.length, "clip_vae", collapsed);
+
+        if (!collapsed) {
+            const body = document.createElement("div");
+            body.className = "vnccs-cc-card-grid";
+
+            entries.forEach(entry => body.appendChild(this._renderClipVaeCard(entry)));
+
+            if (!entries.length) {
+                const empty = document.createElement("div");
+                empty.className = "vnccs-cc-block-empty";
+                empty.textContent = "No entries";
+                body.appendChild(empty);
+            }
+
+            block.appendChild(body);
+        }
+
+        return block;
+    }
+
+    _renderClipVaeBlock() {
+        this.scrollArea.appendChild(this._buildClipVaeBlock());
+    }
+
+    _buildLoraBlock() {
+        const entries = this.config.lora || [];
+        const collapsed = this.state.collapsed?.lora ?? false;
+        const block = this._blockShell("LORA", entries.length, "lora", collapsed);
+
+        if (!collapsed) {
+            const body = document.createElement("div");
+            body.className = "vnccs-cc-lora-sections";
+
+            const activeEntries = [];
+            const inactiveEntries = [];
+            entries.forEach(entry => {
+                const ls = (this.state.loras ?? []).find(l => l.name === entry.name)
+                    ?? { name: entry.name, auto_apply: false, strength: 1.0 };
+                if (ls.auto_apply === true) activeEntries.push(entry);
+                else inactiveEntries.push(entry);
+            });
+
+            if (activeEntries.length) {
+                const activeSection = document.createElement("div");
+                activeSection.className = "vnccs-cc-lora-section";
+
+                const activeTitle = document.createElement("div");
+                activeTitle.className = "vnccs-cc-lora-section-title";
+                activeTitle.textContent = `Active (${activeEntries.length})`;
+
+                const activeGrid = document.createElement("div");
+                activeGrid.className = "vnccs-cc-lora-grid";
+                activeEntries.forEach(entry => activeGrid.appendChild(this._renderLoraCard(entry, { active: true })));
+
+                activeSection.append(activeTitle, activeGrid);
+                body.appendChild(activeSection);
+            }
+
+            if (inactiveEntries.length) {
+                const inactiveSection = document.createElement("div");
+                inactiveSection.className = "vnccs-cc-lora-section";
+
+                const inactiveTitle = document.createElement("div");
+                inactiveTitle.className = "vnccs-cc-lora-section-title";
+                inactiveTitle.textContent = `Available (${inactiveEntries.length})`;
+
+                const inactiveGrid = document.createElement("div");
+                inactiveGrid.className = "vnccs-cc-lora-grid vnccs-cc-lora-grid--compact";
+                inactiveEntries.forEach(entry => inactiveGrid.appendChild(this._renderLoraCard(entry, { compact: true })));
+
+                inactiveSection.append(inactiveTitle, inactiveGrid);
+                body.appendChild(inactiveSection);
+            }
+
+            if (!entries.length) {
+                const empty = document.createElement("div");
+                empty.className = "vnccs-cc-block-empty";
+                empty.textContent = "No entries";
+                body.appendChild(empty);
+            }
+
+            block.appendChild(body);
+        }
+
+        return block;
+    }
+
+    _renderLoraBlock() {
+        this.scrollArea.appendChild(this._buildLoraBlock());
+    }
+
+    _replaceBlock(key, nextBlock) {
+        const current = this.scrollArea?.querySelector(`.vnccs-cc-block[data-block-key="${key}"]`);
+        if (current?.parentNode) {
+            current.parentNode.replaceChild(nextBlock, current);
+        } else if (nextBlock) {
+            this.scrollArea?.appendChild(nextBlock);
+        }
+    }
+
+    _refreshLoraBlock() {
+        if (!this.config) return;
+        this._replaceBlock("lora", this._buildLoraBlock());
+    }
+
     // Two-column block with a single pre-built row (MODEL slot)
-    _renderTwoColBlockSingle(title, count, key, rowFn, rightFn, rightFn2 = null) {
+    _renderTwoColBlockSingle(title, count, key, rowFn, rightFn, rightFn2 = null, topFn = null) {
         const collapsed = this.state.collapsed?.[key] ?? false;
         const block = this._blockShell(title, count, key, collapsed);
         if (!collapsed) {
+            if (topFn) {
+                block.appendChild(topFn());
+            }
+
             const wrap = document.createElement("div");
             wrap.className = "vnccs-cc-twocol";
 
@@ -1433,6 +1824,7 @@ class VNCCSControlCenterWidget {
     _blockShell(title, count, key, collapsed) {
         const block = document.createElement("div");
         block.className = "vnccs-cc-block";
+        block.dataset.blockKey = key;
 
         const hdr = document.createElement("div");
         hdr.className = "vnccs-cc-block-hdr";
@@ -1460,8 +1852,30 @@ class VNCCSControlCenterWidget {
 
     // ── MODEL big card ────────────────────────────────────────────────────────
 
+    _renderModelTabs(type) {
+        const tabs = this._getModelTypeTabs();
+        const tabsRow = document.createElement("div");
+        tabsRow.className = "vnccs-cc-model-tabs";
+
+        tabs.forEach(tabType => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "vnccs-cc-model-tab";
+            if (tabType === type) button.classList.add("vnccs-cc-model-tab--active");
+            button.textContent = tabType.toUpperCase();
+
+            const hasVariants = (this.config?.models || []).some(m => !m.type || m.type === tabType);
+            if (!hasVariants) button.classList.add("vnccs-cc-model-tab--missing");
+
+            button.onclick = () => this._setSelectedType(tabType);
+            tabsRow.appendChild(button);
+        });
+
+        return tabsRow;
+    }
+
     _renderModelCard(type, variants) {
-        const cur = variants.find(v => v.name === this.state.selected_model) ?? variants[0];
+        const cur = variants.find(v => v.name === this._getSelectedModelName(type)) ?? variants[0];
         if (!cur) return document.createElement("div");
 
         const key    = `cc_models_${cur.name}`;
@@ -1536,13 +1950,11 @@ class VNCCSControlCenterWidget {
             sel.onchange = () => {
                 const chosen = variants.find(v => v.name === sel.value);
                 if (chosen) {
-                    this.state.selected_model = chosen.name;
+                    this._setSelectedModelName(type, chosen.name);
                     this.state.selected_type  = chosen.type || type;
                     this._saveState();
-                    setTimeout(async () => {
-                        await this._refreshDependencyStatus(true);
-                        this._renderAll();
-                    }, 0);
+                    this._renderAll();
+                    this._scheduleDependencyRefresh(true);
                 }
             };
             footer.appendChild(sel);
@@ -1557,6 +1969,66 @@ class VNCCSControlCenterWidget {
         }
 
         if (footer.children.length) card.appendChild(footer);
+        return card;
+    }
+
+    _renderClipVaeCard(entry) {
+        const isClip = entry._cat === "clip";
+        const cat = isClip ? "clip" : "vae";
+        const key = `cc_${cat}_${entry.name}`;
+        const dls = this.dlStatus[key] ?? {};
+        const status = this._resolveStatus(dls.status, entry.status);
+
+        const card = document.createElement("div");
+        card.className = "vnccs-cc-model-card";
+        this._applyProgressLayer(card, key, dls);
+
+        const top = document.createElement("div");
+        top.className = "vnccs-cc-model-card-top";
+        top.appendChild(this._badge(status));
+
+        const kicker = document.createElement("span");
+        kicker.className = "vnccs-cc-model-card-kicker";
+        kicker.textContent = isClip ? "CLIP" : "VAE";
+        top.appendChild(kicker);
+
+        const nameEl = document.createElement("span");
+        nameEl.className = "vnccs-cc-model-card-name";
+        nameEl.textContent = entry.name;
+        top.appendChild(nameEl);
+
+        const statusLbl = document.createElement("span");
+        statusLbl.className = "vnccs-cc-model-card-status";
+        if (status === "installed") {
+            statusLbl.textContent = "✓ Installed";
+            statusLbl.classList.add("vnccs-cc-model-card-status--ok");
+        } else if (status === "downloading" || status === "queued") {
+            statusLbl.textContent = status === "queued" ? "⏳ Queued" : (dls.message || "Downloading…");
+            statusLbl.classList.add("vnccs-cc-model-card-status--progress");
+        } else if (status === "auth_required") {
+            statusLbl.textContent = "⚠ Key Required";
+            statusLbl.classList.add("vnccs-cc-model-card-status--missing");
+        } else {
+            statusLbl.textContent = "↓ Missing";
+            statusLbl.classList.add("vnccs-cc-model-card-status--missing");
+        }
+        top.appendChild(statusLbl);
+        card.appendChild(top);
+
+        if (entry.description) {
+            const desc = document.createElement("div");
+            desc.className = "vnccs-cc-model-card-desc";
+            desc.textContent = entry.description;
+            card.appendChild(desc);
+        }
+
+        if (status === "missing" || status === "error") {
+            const footer = document.createElement("div");
+            footer.className = "vnccs-cc-model-card-footer";
+            footer.appendChild(this._btn("⬇ Download", () => this._downloadEntry(cat, entry)));
+            card.appendChild(footer);
+        }
+
         return card;
     }
 
@@ -1596,7 +2068,7 @@ class VNCCSControlCenterWidget {
         const mp = { sampler: "euler", scheduler: "karras", ...p };
 
         const panel = document.createElement("div");
-        panel.className = "vnccs-cc-params";
+        panel.className = "vnccs-cc-params vnccs-cc-params--right";
 
         const field = (labelText, el) => {
             const wrap = document.createElement("div");
@@ -1670,106 +2142,136 @@ class VNCCSControlCenterWidget {
 
     // ── LORA entry ────────────────────────────────────────────────────────────
 
-    _renderLoraEntry(entry) {
+    _renderLoraCard(entry, options = {}) {
+        const { active = false, compact = false } = options;
         const ls  = (this.state.loras ?? []).find(l => l.name === entry.name)
-            ?? { name: entry.name, enabled: true, strength: 1.0 };
+            ?? { name: entry.name, auto_apply: false, strength: 1.0 };
         const dls = this.dlStatus[`cc_lora_${entry.name}`] ?? {};
         const status = this._resolveStatus(dls.status, entry.status);
 
         const loraKey = `cc_lora_${entry.name}`;
-        const row = document.createElement("div");
-        row.className = "vnccs-cc-row";
-        this._applyProgressLayer(row, loraKey, dls);
-
-        row.appendChild(this._badge(status));
-
-        if (status === "missing" || status === "error" || status === "queued" || status === "downloading" || status === "auth_required") {
-            const nameWrap = document.createElement("div");
-            nameWrap.className = "vnccs-cc-row-name-wrap";
-            const name = document.createElement("span");
-            name.className = "vnccs-cc-row-name";
-            name.style.color = "#5e5e70";
-            name.textContent = entry.name;
-            nameWrap.appendChild(name);
-            if (entry.description) {
-                const desc = document.createElement("span");
-                desc.className = "vnccs-cc-row-desc";
-                desc.textContent = entry.description;
-                nameWrap.appendChild(desc);
-            }
-            row.appendChild(nameWrap);
-            if (status === "downloading") {
-                const p = document.createElement("span");
-                p.className = "vnccs-cc-row-progress";
-                p.textContent = dls.message;
-                row.appendChild(p);
-            } else if (status === "queued") {
-                const p = document.createElement("span");
-                p.className = "vnccs-cc-row-progress";
-                p.textContent = "⏳ Queued";
-                row.appendChild(p);
-            } else if (status === "auth_required") {
-                const b = this._btn("⚠ Enter Key", () => this.showApiKeyDialog("lora", entry));
-                b.style.color = "#ffaa00"; b.style.borderColor = "rgba(255,170,0,0.4)";
-                row.appendChild(b);
-            } else {
-                row.appendChild(this._btn("↓", () => this._downloadEntry("lora", entry)));
-            }
-            return row;
+        const card = document.createElement("div");
+        card.className = "vnccs-cc-model-card vnccs-cc-lora-card";
+        if (active) card.classList.add("vnccs-cc-lora-card--active");
+        if (compact) card.classList.add("vnccs-cc-lora-card--compact");
+        this._applyProgressLayer(card, loraKey, dls);
+        if (status === "installed") {
+            card.onclick = () => this._updateLora(entry.name, { auto_apply: !ls.auto_apply }, { commit: true, rerender: "lora" });
         }
 
-        const chk = document.createElement("input");
-        chk.type = "checkbox"; chk.checked = ls.enabled;
-        chk.className = "vnccs-cc-lora-chk";
-        chk.onchange = () => this._updateLora(entry.name, { enabled: chk.checked }, { commit: true });
+        const top = document.createElement("div");
+        top.className = "vnccs-cc-lora-card-top";
+        top.appendChild(this._badge(status));
 
-        const nameWrap = document.createElement("div");
-        nameWrap.className = "vnccs-cc-row-name-wrap";
-        const name = document.createElement("span");
-        name.className = "vnccs-cc-row-name";
-        name.textContent = entry.name;
-        nameWrap.appendChild(name);
+        const meta = document.createElement("div");
+        meta.className = "vnccs-cc-lora-card-meta";
+
+        const nameEl = document.createElement("span");
+        nameEl.className = "vnccs-cc-lora-card-name";
+        nameEl.textContent = entry.name;
+        meta.appendChild(nameEl);
+
+        const statusLbl = document.createElement("span");
+        statusLbl.className = "vnccs-cc-lora-card-status";
+        if (status === "installed") {
+            statusLbl.textContent = ls.auto_apply ? "Active" : "Pipe";
+            statusLbl.classList.add(ls.auto_apply ? "vnccs-cc-lora-card-status--active" : "vnccs-cc-lora-card-status--pipe");
+        } else if (status === "downloading" || status === "queued") {
+            statusLbl.textContent = status === "queued" ? "⏳ Queued" : (dls.message || "Downloading…");
+            statusLbl.classList.add("vnccs-cc-model-card-status--progress");
+        } else {
+            statusLbl.textContent = "↓ Missing";
+            statusLbl.classList.add("vnccs-cc-model-card-status--missing");
+        }
+        if ((compact && status === "installed" && ls.auto_apply !== true) ||
+            (active && status === "installed" && ls.auto_apply === true)) {
+            statusLbl.classList.add("vnccs-cc-lora-card-status--corner");
+            card.appendChild(statusLbl);
+        } else {
+            meta.appendChild(statusLbl);
+        }
+        top.appendChild(meta);
+        card.appendChild(top);
+
         if (entry.description) {
-            const desc = document.createElement("span");
-            desc.className = "vnccs-cc-row-desc";
+            const desc = document.createElement("div");
+            desc.className = "vnccs-cc-lora-card-desc";
             desc.textContent = entry.description;
-            nameWrap.appendChild(desc);
+            card.appendChild(desc);
         }
 
-        const slider = document.createElement("input");
-        slider.type = "range"; slider.min = -2; slider.max = 2; slider.step = 0.05;
-        slider.value = ls.strength ?? 1.0;
-        slider.className = "vnccs-cc-lora-slider";
+        const footer = document.createElement("div");
+        footer.className = active ? "vnccs-cc-lora-strength-row" : "vnccs-cc-lora-card-actions";
+        footer.onclick = e => e.stopPropagation();
 
-        const val = document.createElement("span");
-        val.className = "vnccs-cc-lora-val";
-        val.textContent = parseFloat(slider.value).toFixed(2);
+        if (status === "missing" || status === "error") {
+            const btn = this._btn("⬇ Download", () => this._downloadEntry("lora", entry));
+            btn.addEventListener("click", e => e.stopPropagation());
+            footer.appendChild(btn);
+        } else if (status === "auth_required") {
+            const b = this._btn("⚠ Enter Key", () => this.showApiKeyDialog("lora", entry));
+            b.style.color = "#ffaa00";
+            b.style.borderColor = "rgba(255,170,0,0.4)";
+            b.addEventListener("click", e => e.stopPropagation());
+            footer.appendChild(b);
+        } else if (status === "installed" && active) {
+                const slider = document.createElement("input");
+                slider.type = "range";
+                slider.min = -2;
+                slider.max = 2;
+                slider.step = 0.05;
+                slider.value = ls.strength ?? 1.0;
+                slider.className = "vnccs-cc-lora-slider";
 
-        slider.oninput = () => {
-            const strength = parseFloat(slider.value);
-            val.textContent = strength.toFixed(2);
-            this._updateLora(entry.name, { strength }, { commit: false });
-        };
+                slider.onpointerdown = () => {
+                    this._draggingLoraSlider = true;
+                };
 
-        slider.onchange = () => {
-            const strength = parseFloat(slider.value);
-            val.textContent = strength.toFixed(2);
-            this._updateLora(entry.name, { strength }, { commit: true });
-        };
+                const finishSliderDrag = () => {
+                    this._draggingLoraSlider = false;
+                };
 
-        row.append(chk, nameWrap, slider, val);
-        return row;
+                slider.onpointerup = finishSliderDrag;
+                slider.onpointercancel = finishSliderDrag;
+                slider.onblur = () => {
+                    this._draggingLoraSlider = false;
+                };
+
+                const val = document.createElement("span");
+                val.className = "vnccs-cc-lora-val";
+                val.textContent = parseFloat(slider.value).toFixed(2);
+
+                slider.oninput = () => {
+                    const strength = parseFloat(slider.value);
+                    val.textContent = strength.toFixed(2);
+                    this._updateLora(entry.name, { strength }, { commit: false, persist: false });
+                };
+
+                slider.onchange = () => {
+                    const strength = parseFloat(slider.value);
+                    val.textContent = strength.toFixed(2);
+                    this._updateLora(entry.name, { strength }, { commit: true, rerender: null });
+                };
+
+                footer.append(slider, val);
+        }
+
+        if (footer.children.length) card.appendChild(footer);
+        return card;
     }
 
     _updateLora(name, patch, options = {}) {
-        const { commit = true } = options;
+        const { commit = true, persist = true, rerender = null } = options;
         if (!this.state.loras) this.state.loras = [];
         const idx = this.state.loras.findIndex(l => l.name === name);
         idx >= 0 ? Object.assign(this.state.loras[idx], patch)
-                 : this.state.loras.push({ name, enabled: true, strength: 1.0, ...patch });
-        this._saveState();
+                 : this.state.loras.push({ name, auto_apply: false, strength: 1.0, ...patch });
+        if (persist) this._saveState();
+        if (rerender === "lora") {
+            this._refreshLoraBlock();
+        }
         if (commit) {
-            this._refreshDependencyStatus(true).then(() => this._renderAll());
+            this._scheduleDependencyRefresh(true, 120, false);
         }
     }
 
@@ -1886,10 +2388,8 @@ class VNCCSControlCenterWidget {
         const panel = document.createElement("div");
         panel.className = "vnccs-cc-settings-panel";
 
-        // All supported model types — always shown regardless of what's in the config
-        const ALL_TYPES = ["gguf", "unet", "checkpoint", "nunchaku"];
         const ts   = this.state.type_settings ?? {};
-        const sel  = this.state.selected_type ?? (this.config?.available_types?.[0] ?? "gguf");
+        const sel  = this._getSelectedType() || "gguf";
         const gguf = ts.gguf ?? {};
         const unet = ts.unet ?? {};
         const nun  = ts.nunchaku ?? {};
@@ -1929,8 +2429,6 @@ class VNCCSControlCenterWidget {
         title.className = "vnccs-cc-settings-title";
         title.textContent = "⚙ Settings";
         panel.appendChild(title);
-
-        panel.appendChild(field("Model Type", mkSel("vnccs-cc-type", ALL_TYPES, sel)));
 
         // UNet
         const unetDet = document.createElement("details");
@@ -2043,8 +2541,7 @@ class VNCCSControlCenterWidget {
         const cancelBtn = this._btn("Cancel", () => ov.remove());
 
         const saveBtn = this._btn("Save", async () => {
-            const newType = panel.querySelector("#vnccs-cc-type")?.value ?? sel;
-            this.state.selected_type = newType;
+            this.state.selected_type = this._getSelectedType();
             if (!this.state.type_settings) this.state.type_settings = {};
             this.state.type_settings.unet = {
                 weight_dtype: panel.querySelector("#vnccs-cc-unet-dtype")?.value ?? "default",
@@ -2115,7 +2612,7 @@ class VNCCSControlCenterWidget {
         const tasks = [];
 
         // MODEL: only the currently selected variant
-        const selModel = this.state.selected_model;
+        const selModel = this._getSelectedModelName();
         const modelEntry = (this.config.models ?? []).find(e => e.name === selModel);
         if (modelEntry && (modelEntry.status === "missing" || modelEntry.status === "error")) {
             tasks.push({ cat: "models", e: modelEntry });
