@@ -13,6 +13,9 @@ from nodes.vnccs_control_center import (
     _rel_within_folder,
     _find_model_on_disk,
     _build_dynamic_paths,
+    _build_custom_lora_name,
+    _merge_custom_loras,
+    _remove_custom_lora,
     VNCCSPipeProxy,
 )
 
@@ -151,6 +154,69 @@ class TestBuildDynamicPaths:
         }
         result = _build_dynamic_paths(config, ["Missing"])
         assert result == [""]
+
+
+# ── custom LoRA helpers ──────────────────────────────────────────────────────
+
+class TestCustomLoraHelpers:
+    def test_build_custom_lora_name_disambiguates_parent_folder(self):
+        result = _build_custom_lora_name("portraits/my_style.safetensors", {"my_style"})
+        assert result == "my_style (portraits)"
+
+    def test_merge_custom_loras_appends_non_duplicate_entries(self, monkeypatch):
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._load_custom_loras",
+            lambda: [
+                {
+                    "name": "custom_one",
+                    "local_path": "models/loras/custom_one.safetensors",
+                    "description": "Custom LoRA",
+                    "custom": True,
+                },
+                {
+                    "name": "duplicate_path",
+                    "local_path": "models/loras/base.safetensors",
+                    "description": "Duplicate",
+                    "custom": True,
+                },
+            ],
+        )
+
+        merged = _merge_custom_loras({
+            "lora": [
+                {"name": "base", "local_path": "models/loras/base.safetensors"},
+            ]
+        })
+
+        assert [entry["name"] for entry in merged["lora"]] == ["base", "custom_one"]
+
+    def test_remove_custom_lora_by_path(self, monkeypatch):
+        stored = [
+            {"name": "keep", "local_path": "models/loras/keep.safetensors", "custom": True},
+            {"name": "drop", "local_path": "models/loras/drop.safetensors", "custom": True},
+        ]
+        saved = {}
+
+        monkeypatch.setattr("nodes.vnccs_control_center._load_custom_loras", lambda: stored)
+        monkeypatch.setattr("nodes.vnccs_control_center._get_custom_loras_path", lambda: "/tmp/vnccs_custom_loras.json")
+        monkeypatch.setattr("nodes.vnccs_control_center.os.makedirs", lambda *args, **kwargs: None)
+
+        class _FakeFile:
+            def __enter__(self):
+                return self
+            def __exit__(self, exc_type, exc, tb):
+                return False
+            def write(self, text):
+                saved.setdefault("text", "")
+                saved["text"] += text
+
+        monkeypatch.setattr("builtins.open", lambda *args, **kwargs: _FakeFile())
+
+        removed = _remove_custom_lora(local_path="models/loras/drop.safetensors")
+
+        assert removed is True
+        assert "drop.safetensors" not in saved["text"]
+        assert "keep.safetensors" in saved["text"]
 
 
 # ── VNCCSPipeProxy ────────────────────────────────────────────────────────────

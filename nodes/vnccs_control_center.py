@@ -46,6 +46,7 @@ class _ByPassTypeTuple(tuple):
 _CC_CONFIG_CACHE = {}
 _DOWNLOAD_STATUS = {}
 _DOWNLOAD_QUEUE = queue.Queue()
+_CUSTOM_LORAS_FILE = "vnccs_custom_loras.json"
 _FOLDER_MAP = {
     "unet": ["unet", "diffusion_models"],
     "checkpoints": ["checkpoints"],
@@ -141,6 +142,130 @@ def save_vnccs_config(new_data):
         json.dump(data, handle, indent=2)
 
 
+def _get_custom_loras_path():
+    return resolve_path(_CUSTOM_LORAS_FILE)
+
+
+def _load_custom_loras():
+    path = _get_custom_loras_path()
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, dict):
+            data = data.get("lora", [])
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_custom_loras(entries):
+    path = _get_custom_loras_path()
+    current = _load_custom_loras()
+    by_path = {
+        entry.get("local_path", "").replace("\\", "/"): entry
+        for entry in current
+        if isinstance(entry, dict) and entry.get("local_path")
+    }
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        local_path = entry.get("local_path", "").replace("\\", "/")
+        if not local_path:
+            continue
+        by_path[local_path] = entry
+
+    payload = {"lora": list(by_path.values())}
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=False)
+
+
+def _remove_custom_lora(local_path=None, name=None):
+    normalized_path = (local_path or "").replace("\\", "/")
+    normalized_name = (name or "").strip().lower()
+    current = _load_custom_loras()
+    kept = []
+    removed = False
+
+    for entry in current:
+        if not isinstance(entry, dict):
+            continue
+        entry_path = entry.get("local_path", "").replace("\\", "/")
+        entry_name = entry.get("name", "").strip().lower()
+        if (normalized_path and entry_path == normalized_path) or (normalized_name and entry_name == normalized_name):
+            removed = True
+            continue
+        kept.append(entry)
+
+    payload = {"lora": kept}
+    path = _get_custom_loras_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=False)
+    return removed
+
+
+def _build_custom_lora_name(rel_path, used_names=None):
+    used_names = used_names or set()
+    normalized = rel_path.replace("\\", "/").strip("/")
+    base_name = os.path.splitext(os.path.basename(normalized))[0]
+    candidate = base_name
+    parent = os.path.dirname(normalized)
+    if candidate in used_names and parent:
+        candidate = f"{base_name} ({parent})"
+    if candidate in used_names:
+        candidate = normalized
+
+    suffix = 2
+    unique = candidate
+    while unique in used_names:
+        unique = f"{candidate} [{suffix}]"
+        suffix += 1
+    return unique
+
+
+def _build_custom_lora_entry(rel_path, used_names=None):
+    normalized = rel_path.replace("\\", "/").strip("/")
+    if not normalized:
+        raise ValueError("LoRA path is empty")
+
+    full_path = folder_paths.get_full_path("loras", normalized)
+    if not full_path or not os.path.exists(full_path):
+        raise FileNotFoundError(f"LoRA '{normalized}' not found in ComfyUI loras folder")
+
+    return {
+        "name": _build_custom_lora_name(normalized, used_names=used_names),
+        "local_path": f"models/loras/{normalized}",
+        "description": f"Custom LoRA from ComfyUI folder: {normalized}",
+        "custom": True,
+    }
+
+
+def _merge_custom_loras(config):
+    base_loras = list(config.get("lora", []))
+    merged = dict(config)
+    merged_loras = list(base_loras)
+    existing_paths = {
+        entry.get("local_path", "").replace("\\", "/")
+        for entry in base_loras
+        if isinstance(entry, dict) and entry.get("local_path")
+    }
+
+    for entry in _load_custom_loras():
+        if not isinstance(entry, dict):
+            continue
+        local_path = entry.get("local_path", "").replace("\\", "/")
+        if not local_path or local_path in existing_paths:
+            continue
+        merged_loras.append(entry)
+        existing_paths.add(local_path)
+
+    merged["lora"] = merged_loras
+    return merged
+
+
 def get_installed_version_info():
     registry_path = resolve_path("vnccs_installed_models.json")
     if not os.path.exists(registry_path):
@@ -164,7 +289,7 @@ def _get_cc_config(repo_id):
     cached = _CC_CONFIG_CACHE.get(repo_id)
     now = time.time()
     if cached and now - cached.get("ts", 0) < 300:
-        return cached["data"]
+        return _merge_custom_loras(cached["data"])
 
     user_config = get_vnccs_config()
     hf_token = user_config.get("hf_token") or os.environ.get("HF_TOKEN")
@@ -177,7 +302,7 @@ def _get_cc_config(repo_id):
     with open(path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
     _CC_CONFIG_CACHE[repo_id] = {"ts": now, "data": data}
-    return data
+    return _merge_custom_loras(data)
 
 
 def _find_entry(entries, name):
@@ -1053,6 +1178,101 @@ async def cc_check(request):
         "controlnet": enrich(config.get("controlnet", []), "controlnet"),
         "other": enrich(config.get("other", []), "other"),
     })
+
+
+@server.PromptServer.instance.routes.get("/vnccs/control_center/lora_files")
+async def cc_lora_files(request):
+    repo_id = request.rel_url.query.get("repo_id", "").strip()
+    try:
+        available = folder_paths.get_filename_list("loras") or []
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+    added_paths = set()
+    if repo_id and " " not in repo_id:
+        try:
+            config = _get_cc_config(repo_id)
+            added_paths = {
+                _rel_within_folder(entry.get("local_path", ""))
+                for entry in config.get("lora", [])
+                if isinstance(entry, dict) and entry.get("local_path")
+            }
+        except Exception:
+            added_paths = set()
+
+    items = []
+    for rel_path in sorted(set(available), key=lambda value: value.lower()):
+        items.append({
+            "path": rel_path,
+            "label": os.path.basename(rel_path),
+            "already_added": rel_path in added_paths,
+        })
+    return web.json_response({"items": items})
+
+
+@server.PromptServer.instance.routes.post("/vnccs/control_center/custom_lora")
+async def cc_add_custom_lora(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    repo_id = (data.get("repo_id") or "").strip()
+    rel_path = (data.get("path") or "").strip().replace("\\", "/")
+    if not repo_id or " " in repo_id:
+        return web.json_response({"error": "Invalid repo_id"}, status=400)
+    if not rel_path:
+        return web.json_response({"error": "LoRA path is required"}, status=400)
+
+    try:
+        config = _get_cc_config(repo_id)
+        existing_paths = {
+            entry.get("local_path", "").replace("\\", "/")
+            for entry in config.get("lora", [])
+            if isinstance(entry, dict) and entry.get("local_path")
+        }
+        target_local_path = f"models/loras/{rel_path}"
+        if target_local_path in existing_paths:
+            return web.json_response({"error": "LoRA already exists in the list"}, status=409)
+
+        used_names = {
+            entry.get("name")
+            for entry in config.get("lora", [])
+            if isinstance(entry, dict) and entry.get("name")
+        }
+        entry = _build_custom_lora_entry(rel_path, used_names=used_names)
+        _save_custom_loras([entry])
+        _CC_CONFIG_CACHE.pop(repo_id, None)
+        return web.json_response({"status": "ok", "entry": entry})
+    except FileNotFoundError as exc:
+        return web.json_response({"error": str(exc)}, status=404)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@server.PromptServer.instance.routes.post("/vnccs/control_center/custom_lora/delete")
+async def cc_delete_custom_lora(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    repo_id = (data.get("repo_id") or "").strip()
+    local_path = (data.get("local_path") or "").strip().replace("\\", "/")
+    name = (data.get("name") or "").strip()
+    if not repo_id or " " in repo_id:
+        return web.json_response({"error": "Invalid repo_id"}, status=400)
+    if not local_path and not name:
+        return web.json_response({"error": "Custom LoRA identifier is required"}, status=400)
+
+    try:
+        removed = _remove_custom_lora(local_path=local_path, name=name)
+        if not removed:
+            return web.json_response({"error": "Custom LoRA not found"}, status=404)
+        _CC_CONFIG_CACHE.pop(repo_id, None)
+        return web.json_response({"status": "ok"})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
 
 
 @server.PromptServer.instance.routes.post("/vnccs/control_center/download")

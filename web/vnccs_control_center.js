@@ -440,6 +440,38 @@ function _injectVNCCSControlCenterStyles() {
     flex-direction: column;
     gap: 6px;
 }
+.vnccs-cc-lora-add-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 2px;
+}
+.vnccs-cc-lora-add-btn {
+    width: 100%;
+    min-height: 30px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 143, 163, 0.22);
+    background: rgba(255, 143, 163, 0.08);
+    color: #ff8fa3;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+}
+.vnccs-cc-lora-add-btn:hover {
+    background: rgba(255, 143, 163, 0.14);
+    border-color: rgba(255, 143, 163, 0.36);
+    transform: translateY(-1px);
+}
+.vnccs-cc-lora-add-note {
+    font-size: 8.5px;
+    color: #8d8ca1;
+    line-height: 1.35;
+    padding: 0 2px;
+}
 .vnccs-cc-lora-section-title {
     font-size: 9px;
     font-weight: 700;
@@ -472,6 +504,9 @@ function _injectVNCCSControlCenterStyles() {
     background: linear-gradient(180deg, rgba(255,143,163,0.14) 0%, rgba(10,26,22,0.92) 100%);
     box-shadow: inset 0 0 0 1px rgba(255,143,163,0.14);
     padding-right: 72px;
+}
+.vnccs-cc-lora-card--has-remove {
+    padding-right: 110px;
 }
 .vnccs-cc-lora-card--compact {
     padding: 4px 52px 4px 7px;
@@ -525,6 +560,29 @@ function _injectVNCCSControlCenterStyles() {
     top: 6px;
     right: 8px;
     line-height: 1;
+}
+.vnccs-cc-lora-card--has-remove .vnccs-cc-lora-card-status--corner {
+    right: 42px;
+}
+.vnccs-cc-lora-remove-btn {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    min-width: 26px;
+    height: 20px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 71, 87, 0.24);
+    background: rgba(255, 71, 87, 0.08);
+    color: #ff7a86;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    padding: 0 6px;
+    line-height: 1;
+}
+.vnccs-cc-lora-remove-btn:hover {
+    background: rgba(255, 71, 87, 0.16);
+    border-color: rgba(255, 71, 87, 0.42);
 }
 .vnccs-cc-lora-card-desc {
     font-size: 8.5px;
@@ -1729,6 +1787,21 @@ class VNCCSControlCenterWidget {
                 body.appendChild(empty);
             }
 
+            const addWrap = document.createElement("div");
+            addWrap.className = "vnccs-cc-lora-add-wrap";
+
+            const addBtn = document.createElement("button");
+            addBtn.className = "vnccs-cc-lora-add-btn";
+            addBtn.textContent = "+ Add Custom LoRA";
+            addBtn.onclick = () => this._showCustomLoraDialog();
+
+            const addNote = document.createElement("div");
+            addNote.className = "vnccs-cc-lora-add-note";
+            addNote.textContent = "Select any installed LoRA from ComfyUI's standard loras folder and add it as a persistent card.";
+
+            addWrap.append(addBtn, addNote);
+            body.appendChild(addWrap);
+
             block.appendChild(body);
         }
 
@@ -1751,6 +1824,129 @@ class VNCCSControlCenterWidget {
     _refreshLoraBlock() {
         if (!this.config) return;
         this._replaceBlock("lora", this._buildLoraBlock());
+    }
+
+    async _removeCustomLora(entry) {
+        const repoId = this._getRepoId();
+        if (!repoId) {
+            this.showMessage("Load control center config first.", true);
+            return;
+        }
+
+        this.showConfirm(`Remove custom LoRA \"${entry.name}\" from the list?`, async () => {
+            try {
+                const response = await api.fetchApi("/vnccs/control_center/custom_lora/delete", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        repo_id: repoId,
+                        name: entry.name,
+                        local_path: entry.local_path,
+                    }),
+                });
+                const result = await response.json();
+                if (!response.ok || result.error) throw new Error(result.error || "Failed to remove custom LoRA");
+
+                this.state.loras = (this.state.loras || []).filter(lora => lora.name !== entry.name);
+                this._saveState();
+                delete window.VNCCS_CC_REGISTRY[repoId];
+                await this.fetchConfig(repoId, true);
+                this._refreshLoraBlock();
+            } catch (error) {
+                this.showMessage(String(error?.message || error), true);
+            }
+        });
+    }
+
+    async _showCustomLoraDialog() {
+        const repoId = this._getRepoId();
+        if (!repoId) {
+            this.showMessage("Load control center config first.", true);
+            return;
+        }
+
+        let payload;
+        try {
+            const response = await api.fetchApi(`/vnccs/control_center/lora_files?repo_id=${encodeURIComponent(repoId)}`);
+            payload = await response.json();
+            if (!response.ok || payload.error) throw new Error(payload.error || "Failed to load LoRA list");
+        } catch (error) {
+            this.showMessage(String(error?.message || error), true);
+            return;
+        }
+
+        const items = (payload.items || []).filter(item => !item.already_added);
+        if (!items.length) {
+            this.showMessage("No new LoRA files available in the ComfyUI loras folder.");
+            return;
+        }
+
+        const ov = document.createElement("div");
+        ov.className = "vnccs-cc-settings-overlay";
+
+        const panel = document.createElement("div");
+        panel.className = "vnccs-cc-settings-panel";
+
+        const title = document.createElement("h3");
+        title.className = "vnccs-cc-settings-title";
+        title.textContent = "Add Custom LoRA";
+        panel.appendChild(title);
+
+        const desc = document.createElement("div");
+        desc.className = "vnccs-cc-lora-add-note";
+        desc.textContent = "Choose an installed LoRA file from ComfyUI's standard loras folder. It will be saved into a separate VNCCS JSON file and stay available between sessions.";
+        panel.appendChild(desc);
+
+        const selectWrap = document.createElement("div");
+        selectWrap.className = "vnccs-cc-settings-field";
+        const selectLabel = document.createElement("label");
+        selectLabel.className = "vnccs-cc-settings-label";
+        selectLabel.textContent = "LoRA File";
+        const select = document.createElement("select");
+        select.className = "vnccs-cc-settings-select";
+        items.forEach(item => {
+            const option = document.createElement("option");
+            option.value = item.path;
+            option.textContent = item.path;
+            select.appendChild(option);
+        });
+        selectWrap.append(selectLabel, select);
+        panel.appendChild(selectWrap);
+
+        const btns = document.createElement("div");
+        btns.className = "vnccs-cc-settings-btns";
+        const cancelBtn = this._btn("Cancel", () => ov.remove());
+        const saveBtn = this._btn("Add", async () => {
+            const path = select.value;
+            if (!path) return;
+            saveBtn.disabled = true;
+            saveBtn.textContent = "Adding…";
+            try {
+                const response = await api.fetchApi("/vnccs/control_center/custom_lora", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ repo_id: repoId, path }),
+                });
+                const result = await response.json();
+                if (!response.ok || result.error) throw new Error(result.error || "Failed to add custom LoRA");
+
+                ov.remove();
+                delete window.VNCCS_CC_REGISTRY[repoId];
+                await this.fetchConfig(repoId, true);
+                this._refreshLoraBlock();
+            } catch (error) {
+                saveBtn.disabled = false;
+                saveBtn.textContent = "Add";
+                this.showMessage(String(error?.message || error), true);
+            }
+        });
+        saveBtn.classList.add("vnccs-cc-btn--save");
+        btns.append(cancelBtn, saveBtn);
+        panel.appendChild(btns);
+
+        ov.appendChild(panel);
+        ov.onclick = e => { if (e.target === ov) ov.remove(); };
+        this.container.appendChild(ov);
     }
 
     // Two-column block with a single pre-built row (MODEL slot)
@@ -2154,9 +2350,23 @@ class VNCCSControlCenterWidget {
         card.className = "vnccs-cc-model-card vnccs-cc-lora-card";
         if (active) card.classList.add("vnccs-cc-lora-card--active");
         if (compact) card.classList.add("vnccs-cc-lora-card--compact");
+        if (entry.custom) card.classList.add("vnccs-cc-lora-card--has-remove");
         this._applyProgressLayer(card, loraKey, dls);
         if (status === "installed") {
             card.onclick = () => this._updateLora(entry.name, { auto_apply: !ls.auto_apply }, { commit: true, rerender: "lora" });
+        }
+
+        if (entry.custom) {
+            const removeBtn = document.createElement("button");
+            removeBtn.type = "button";
+            removeBtn.className = "vnccs-cc-lora-remove-btn";
+            removeBtn.textContent = "×";
+            removeBtn.title = "Remove custom LoRA from list";
+            removeBtn.onclick = e => {
+                e.stopPropagation();
+                this._removeCustomLora(entry);
+            };
+            card.appendChild(removeBtn);
         }
 
         const top = document.createElement("div");
