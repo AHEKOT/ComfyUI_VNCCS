@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 pytest.importorskip("torch")
 
-from nodes.character_creator_v2 import CharacterCreatorV2
+from nodes.character_creator_v2 import CharacterCreatorV2, normalize_gen_settings
 
 
 def _base_info(**overrides):
@@ -69,6 +69,10 @@ class TestConstructPrompt:
     def test_positive_includes_eyes(self):
         pos, _ = CharacterCreatorV2.construct_prompt(_base_info(eyes="red"))
         assert "red" in pos
+
+    def test_positive_includes_background_color_background(self):
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(background_color="Green"))
+        assert "Green background" in pos
 
     def test_positive_includes_lora_prompt(self):
         pos, _ = CharacterCreatorV2.construct_prompt(_base_info(lora_prompt="trigger_word"))
@@ -165,3 +169,72 @@ class TestProcessConfigSave:
         assert config["character_info"]["name"] == "TestChar"
         assert config["character_info"]["seed"] == 12345
         assert "costumes" in config
+
+
+class TestGenerationModes:
+    def test_normalize_gen_settings_uses_anima_defaults(self):
+        settings = normalize_gen_settings({"generation_mode": "anima"})
+
+        assert settings["generation_mode"] == "anima"
+        assert settings["steps"] == 30
+        assert settings["cfg"] == 4.0
+        assert settings["sampler"] == "er_sde"
+        assert settings["scheduler"] == "simple"
+
+    def test_process_uses_anima_loader(self, tmp_path, monkeypatch):
+        import utils as U
+        monkeypatch.setattr(U, "base_output_dir", lambda: str(tmp_path))
+
+        from nodes import character_creator_v2 as cc_mod
+        monkeypatch.setattr(cc_mod, "base_output_dir", lambda: str(tmp_path), raising=False)
+
+        import utils
+        monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path))
+
+        class DummyClip:
+            def tokenize(self, text):
+                return text
+
+            def encode_from_tokens(self, tokens, return_pooled=True):
+                return object(), object()
+
+        class DummyModel:
+            load_device = "cpu"
+
+        class DummyVAE:
+            pass
+
+        captured = {}
+
+        def fake_load_generation_assets(gen_settings):
+            captured.update(gen_settings)
+            return ("anima", "diffusion.safetensors", "clip.safetensors", "vae.safetensors"), DummyModel(), DummyClip(), DummyVAE()
+
+        monkeypatch.setattr(cc_mod, "load_generation_assets", fake_load_generation_assets)
+
+        node = CharacterCreatorV2()
+        widget_data = json.dumps({
+            "character": "AnimaChar",
+            "character_info": _base_info(),
+            "gen_settings": {
+                "generation_mode": "anima",
+                "diffusion_model_name": "diffusion.safetensors",
+                "clip_name": "clip.safetensors",
+                "vae_name": "vae.safetensors",
+                "seed": 123,
+            },
+            "preview_valid": True,
+            "preview_source": "gen",
+        })
+
+        with pytest.raises(Exception):
+            node.process(widget_data=widget_data)
+
+        assert captured["generation_mode"] == "anima"
+        assert captured["diffusion_model_name"] == "diffusion.safetensors"
+        assert captured["clip_name"] == "clip.safetensors"
+        assert captured["vae_name"] == "vae.safetensors"
+        assert captured["steps"] == 30
+        assert captured["cfg"] == 4.0
+        assert captured["sampler"] == "er_sde"
+        assert captured["scheduler"] == "simple"

@@ -16,6 +16,7 @@ import numpy as np
 import traceback
 import glob
 import re
+import inspect
 
 from ..utils import (
     load_character_info, ensure_character_structure, EMOTIONS, MAIN_DIRS,
@@ -110,17 +111,298 @@ def get_latest_sheet_crop(character_name):
 
 # --- PREVIEW CACHE ---
 PREVIEW_CACHE = {
-    "ckpt_name": None,
-    "ckpt_obj": None, # (model, clip, vae)
+    "asset_key": None,
+    "asset_obj": None, # (model, clip, vae)
     "loras": {}       # name -> tensor_dict
 }
+
+ILLUSTRIOUS_DEFAULTS = {
+    "generation_mode": "illustrious",
+    "ckpt_name": "",
+    "sampler": "euler",
+    "scheduler": "normal",
+    "steps": 20,
+    "cfg": 8.0,
+}
+
+ANIMA_DEFAULTS = {
+    "generation_mode": "anima",
+    "diffusion_model_name": "",
+    "clip_name": "",
+    "vae_name": "",
+    "sampler": "er_sde",
+    "scheduler": "simple",
+    "steps": 30,
+    "cfg": 4.0,
+}
+
+DEFAULT_PREVIEW_WIDTH = 640
+DEFAULT_PREVIEW_HEIGHT = 1536
+
+
+def safe_filename_list(category):
+    try:
+        return folder_paths.get_filename_list(category)
+    except Exception:
+        return []
+
+
+def normalize_gen_settings(gen_settings):
+    normalized = dict(gen_settings or {})
+    generation_mode = str(normalized.get("generation_mode", "illustrious")).lower()
+    defaults = ANIMA_DEFAULTS if generation_mode == "anima" else ILLUSTRIOUS_DEFAULTS
+    merged = dict(defaults)
+    merged.update(normalized)
+    merged["generation_mode"] = generation_mode
+    return merged
+
+
+def _call_loader_node(class_names, method_names, **kwargs):
+    mappings = getattr(nodes, "NODE_CLASS_MAPPINGS", {}) or {}
+    for class_name in class_names:
+        loader_cls = mappings.get(class_name)
+        if loader_cls is None:
+            continue
+        loader = loader_cls()
+        for method_name in method_names:
+            method = getattr(loader, method_name, None)
+            if method is None:
+                continue
+            signature = inspect.signature(method)
+            accepted_kwargs = {
+                key: value for key, value in kwargs.items()
+                if key in signature.parameters
+            }
+            result = method(**accepted_kwargs)
+            if isinstance(result, tuple):
+                return result[0]
+            return result
+    return None
+
+
+def _call_node_method(class_names, method_names, **kwargs):
+    mappings = getattr(nodes, "NODE_CLASS_MAPPINGS", {}) or {}
+    for class_name in class_names:
+        node_cls = mappings.get(class_name)
+        if node_cls is None:
+            continue
+        node_instance = node_cls()
+        for method_name in method_names:
+            method = getattr(node_instance, method_name, None)
+            if method is None:
+                continue
+            signature = inspect.signature(method)
+            accepted_kwargs = {
+                key: value for key, value in kwargs.items()
+                if key in signature.parameters
+            }
+            return method(**accepted_kwargs)
+    return None
+
+
+def load_anima_assets(gen_settings):
+    diffusion_model_name = gen_settings.get("diffusion_model_name")
+    clip_name = gen_settings.get("clip_name")
+    vae_name = gen_settings.get("vae_name")
+
+    if not diffusion_model_name:
+        raise ValueError("No Diffusion Model selected in Character Creator V2 ANIMA mode")
+    if not clip_name:
+        raise ValueError("No CLIP selected in Character Creator V2 ANIMA mode")
+    if not vae_name:
+        raise ValueError("No VAE selected in Character Creator V2 ANIMA mode")
+
+    model = None
+    if model is None:
+        model = _call_loader_node(
+            ["UNETLoader", "Load Diffusion Model"],
+            ["load_unet", "load_model", "load_diffusion_model"],
+            unet_name=diffusion_model_name,
+            model_name=diffusion_model_name,
+            diffusion_model_name=diffusion_model_name,
+            weight_dtype="default",
+        )
+    if model is None and hasattr(comfy.sd, "load_diffusion_model"):
+        diffusion_model_path = folder_paths.get_full_path("diffusion_models", diffusion_model_name)
+        if diffusion_model_path:
+            model = comfy.sd.load_diffusion_model(diffusion_model_path)
+
+    clip = None
+    if clip is None:
+        clip = _call_loader_node(
+            ["CLIPLoader", "Load CLIP"],
+            ["load_clip", "load_model"],
+            clip_name=clip_name,
+            model_name=clip_name,
+            type="stable_diffusion",
+            device="default",
+        )
+    if clip is None and hasattr(comfy.sd, "load_clip"):
+        clip_path = folder_paths.get_full_path("text_encoders", clip_name)
+        if clip_path:
+            clip = comfy.sd.load_clip(ckpt_paths=[clip_path], embedding_directory=folder_paths.get_folder_paths("embeddings"))
+
+    vae = None
+    if vae is None:
+        vae = _call_loader_node(
+            ["VAELoader", "Load VAE"],
+            ["load_vae", "load_model"],
+            vae_name=vae_name,
+            model_name=vae_name,
+        )
+    if vae is None and hasattr(comfy.sd, "load_vae"):
+        vae_path = folder_paths.get_full_path("vae", vae_name)
+        if vae_path:
+            vae = comfy.sd.load_vae(vae_path)
+
+    if model is None:
+        raise ValueError(f"Failed to load Diffusion Model '{diffusion_model_name}'")
+    if clip is None:
+        raise ValueError(f"Failed to load CLIP '{clip_name}'")
+    if vae is None:
+        raise ValueError(f"Failed to load VAE '{vae_name}'")
+
+    return model, clip, vae
+
+
+def load_generation_assets(gen_settings):
+    generation_mode = str(gen_settings.get("generation_mode", "illustrious")).lower()
+
+    if generation_mode == "anima":
+        asset_key = (
+            generation_mode,
+            gen_settings.get("diffusion_model_name", ""),
+            gen_settings.get("clip_name", ""),
+            gen_settings.get("vae_name", ""),
+        )
+        model, clip, vae = load_anima_assets(gen_settings)
+        return asset_key, model, clip, vae
+
+    ckpt_name = gen_settings.get("ckpt_name")
+    if not ckpt_name:
+        raise ValueError("No Checkpoint selected in Character Creator V2")
+
+    ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
+    if not ckpt_path:
+        raise ValueError(f"Checkpoint path not found for '{ckpt_name}'")
+
+    out = comfy.sd.load_checkpoint_guess_config(
+        ckpt_path,
+        output_vae=True,
+        output_clip=True,
+        embedding_directory=folder_paths.get_folder_paths("embeddings")
+    )
+    model, clip, vae = out[:3]
+
+    if model is None:
+        raise ValueError(f"Failed to load Model from checkpoint '{ckpt_name}'")
+    if clip is None:
+        raise ValueError(f"Failed to load CLIP from checkpoint '{ckpt_name}'")
+    if vae is None:
+        raise ValueError(f"Failed to load VAE from checkpoint '{ckpt_name}'")
+
+    return (generation_mode, ckpt_name), model, clip, vae
+
+
+def get_generation_resolution(gen_settings):
+    return DEFAULT_PREVIEW_WIDTH, DEFAULT_PREVIEW_HEIGHT
+
+
+def create_generation_latent(model, width, height, gen_settings, batch_size=1):
+    if str(gen_settings.get("generation_mode", "illustrious")).lower() == "anima":
+        generated = _call_node_method(
+            ["EmptyLatentImage"],
+            ["generate"],
+            width=width,
+            height=height,
+            batch_size=batch_size,
+        )
+        if isinstance(generated, tuple) and generated:
+            return generated[0]
+        if generated is not None:
+            return generated
+    return {"samples": torch.zeros([batch_size, 4, height // 8, width // 8], device=model.load_device)}
+
+
+def sample_generation_latent(model, positive, negative, latent, seed, steps, cfg, sampler_name, scheduler, gen_settings):
+    if str(gen_settings.get("generation_mode", "illustrious")).lower() == "anima":
+        sampled = _call_node_method(
+            ["KSampler"],
+            ["sample"],
+            model=model,
+            seed=seed,
+            steps=steps,
+            cfg=cfg,
+            sampler_name=sampler_name,
+            scheduler=scheduler,
+            positive=positive,
+            negative=negative,
+            latent_image=latent,
+            latent=latent,
+            denoise=1.0,
+        )
+        if isinstance(sampled, tuple) and sampled:
+            return sampled[0]
+        if sampled is not None:
+            return sampled
+
+    return nodes.common_ksampler(
+        model=model,
+        seed=seed,
+        steps=steps,
+        cfg=cfg,
+        sampler_name=sampler_name,
+        scheduler=scheduler,
+        positive=positive,
+        negative=negative,
+        latent=latent,
+        denoise=1.0,
+    )[0]
+
+
+def encode_generation_prompt(clip, text, gen_settings):
+    if str(gen_settings.get("generation_mode", "illustrious")).lower() == "anima":
+        encoded = _call_node_method(
+            ["CLIPTextEncode"],
+            ["encode"],
+            clip=clip,
+            text=text,
+        )
+        if isinstance(encoded, tuple) and encoded:
+            return encoded[0]
+        if encoded is not None:
+            return encoded
+
+    tokens = clip.tokenize(text)
+    cond, pooled = clip.encode_from_tokens(tokens, return_pooled=True)
+    return [[cond, {"pooled_output": pooled}]]
+
+
+def decode_generation_samples(vae, samples, gen_settings):
+    if str(gen_settings.get("generation_mode", "illustrious")).lower() == "anima":
+        latent_payload = samples if isinstance(samples, dict) else {"samples": samples}
+        decoded = _call_node_method(
+            ["VAEDecode"],
+            ["decode"],
+            samples=latent_payload,
+            vae=vae,
+        )
+        if isinstance(decoded, tuple) and decoded:
+            return decoded[0]
+        if decoded is not None:
+            return decoded
+        return vae.decode(latent_payload["samples"])
+    return vae.decode_tiled(samples, tile_x=512, tile_y=512)
 
 if server:
     @server.PromptServer.instance.routes.get("/vnccs/context_lists")
     async def get_context_lists(request):
         try:
             # Checkpoints
-            checkpoints = folder_paths.get_filename_list("checkpoints")
+            checkpoints = safe_filename_list("checkpoints")
+            diffusion_models = safe_filename_list("diffusion_models")
+            text_encoders = safe_filename_list("text_encoders")
+            vae_models = safe_filename_list("vae")
             
             # Samplers & Schedulers
             samplers = comfy.samplers.KSampler.SAMPLERS
@@ -130,10 +412,13 @@ if server:
             characters = list_characters()
             
             # LoRA List
-            loras = folder_paths.get_filename_list("loras")
+            loras = safe_filename_list("loras")
 
             return web.json_response({
                 "checkpoints": checkpoints,
+                "diffusion_models": diffusion_models,
+                "text_encoders": text_encoders,
+                "vae_models": vae_models,
                 "samplers": samplers,
                 "schedulers": schedulers,
                 "characters": characters,
@@ -196,14 +481,9 @@ if server:
     async def preview_generate(request):
         try:
             data = await request.json()
-            gen_settings = data.get("gen_settings", {})
+            gen_settings = normalize_gen_settings(data.get("gen_settings", {}))
             char_info = data.get("character_info", {})
             character_name = data.get("character", "Unknown")
-
-            # Extract Settings
-            ckpt_name = gen_settings.get("ckpt_name")
-            if not ckpt_name:
-                return web.Response(status=400, text="Checkpoint name required")
 
             # Generate Prompt
             positive_text, negative_text = CharacterCreatorV2.construct_prompt(char_info)
@@ -213,29 +493,37 @@ if server:
             sampler_name = gen_settings.get("sampler", "euler")
             scheduler = gen_settings.get("scheduler", "normal")
             seed = generate_seed(int(gen_settings.get("seed", 0)))
+            generation_mode = gen_settings.get("generation_mode", "illustrious")
 
             # Resolution
-            width = 640
-            height = 1536
+            width, height = get_generation_resolution(gen_settings)
 
             # Load Models (With Cache)
             global PREVIEW_CACHE
             
             with torch.inference_mode():
-                # 1. Checkpoint
-                if PREVIEW_CACHE["ckpt_name"] == ckpt_name and PREVIEW_CACHE["ckpt_obj"]:
-                    print(f"[VNCCS] Preview: Using Cached Checkpoint '{ckpt_name}'")
-                    model, clip, vae = PREVIEW_CACHE["ckpt_obj"]
+                asset_key = None
+                if generation_mode == "anima":
+                    asset_key = (
+                        generation_mode,
+                        gen_settings.get("diffusion_model_name", ""),
+                        gen_settings.get("clip_name", ""),
+                        gen_settings.get("vae_name", ""),
+                    )
                 else:
-                     print(f"[VNCCS] Preview: Loading Checkpoint '{ckpt_name}'")
-                     ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
-                     if not ckpt_path:
-                        return web.Response(status=404, text=f"Checkpoint {ckpt_name} not found")
-                     out = comfy.sd.load_checkpoint_guess_config(ckpt_path, output_vae=True, output_clip=True, embedding_directory=folder_paths.get_folder_paths("embeddings"))
-                     model, clip, vae = out[:3]
-                     # Update Cache
-                     PREVIEW_CACHE["ckpt_name"] = ckpt_name
-                     PREVIEW_CACHE["ckpt_obj"] = (model, clip, vae)
+                    asset_key = (generation_mode, gen_settings.get("ckpt_name", ""))
+
+                if PREVIEW_CACHE["asset_key"] == asset_key and PREVIEW_CACHE["asset_obj"]:
+                    print(f"[VNCCS] Preview: Using Cached Assets {asset_key}")
+                    model, clip, vae = PREVIEW_CACHE["asset_obj"]
+                else:
+                    print(f"[VNCCS] Preview: Loading Assets {asset_key}")
+                    try:
+                        _, model, clip, vae = load_generation_assets(gen_settings)
+                    except ValueError as exc:
+                        return web.Response(status=400, text=str(exc))
+                    PREVIEW_CACHE["asset_key"] = asset_key
+                    PREVIEW_CACHE["asset_obj"] = (model, clip, vae)
 
                 # Clone to avoid tainting cached model with LoRAs
                 model = model.clone()
@@ -257,45 +545,47 @@ if server:
                         return comfy.sd.load_lora_for_models(m, c, lora_dict, l_strength, l_strength)
                     return m, c
 
-                # Apply LoRAs
-                dmd_lora_name = gen_settings.get("dmd_lora_name")
-                dmd_lora_strength = float(gen_settings.get("dmd_lora_strength", 1.0))
-                model, clip = apply_lora_cached(model, clip, dmd_lora_name, dmd_lora_strength)
+                if generation_mode != "anima":
+                    # Apply LoRAs
+                    dmd_lora_name = gen_settings.get("dmd_lora_name")
+                    dmd_lora_strength = float(gen_settings.get("dmd_lora_strength", 1.0))
+                    model, clip = apply_lora_cached(model, clip, dmd_lora_name, dmd_lora_strength)
 
-                age_lora_name = gen_settings.get("age_lora_name")
-                if age_lora_name:
-                    age = int(char_info.get("age", 18))
-                    age_str = age_strength(age)
-                    model, clip = apply_lora_cached(model, clip, age_lora_name, age_str)
+                    age_lora_name = gen_settings.get("age_lora_name")
+                    if age_lora_name:
+                        age = int(char_info.get("age", 18))
+                        age_str = age_strength(age)
+                        model, clip = apply_lora_cached(model, clip, age_lora_name, age_str)
 
-                lora_stack = gen_settings.get("lora_stack", [])
-                for l_item in lora_stack:
-                    model, clip = apply_lora_cached(model, clip, l_item.get("name"), float(l_item.get("strength", 1.0)))
+                    lora_stack = gen_settings.get("lora_stack", [])
+                    for l_item in lora_stack:
+                        model, clip = apply_lora_cached(model, clip, l_item.get("name"), float(l_item.get("strength", 1.0)))
 
                 # 2. Encode Prompts
-                tokens_pos = clip.tokenize(positive_text)
-                cond_pos, pooled_pos = clip.encode_from_tokens(tokens_pos, return_pooled=True)
-                positive_cond = [[cond_pos, {"pooled_output": pooled_pos}]]
-
-                tokens_neg = clip.tokenize(negative_text)
-                cond_neg, pooled_neg = clip.encode_from_tokens(tokens_neg, return_pooled=True)
-                negative_cond = [[cond_neg, {"pooled_output": pooled_neg}]]
+                positive_cond = encode_generation_prompt(clip, positive_text, gen_settings)
+                negative_cond = encode_generation_prompt(clip, negative_text, gen_settings)
 
                 # Patch PromptServer
                 if not hasattr(server.PromptServer.instance, 'last_prompt_id'):
                     server.PromptServer.instance.last_prompt_id = 'preview_gen'
 
                 # 3. Sample
-                latent = torch.zeros([1, 4, height // 8, width // 8], device=model.load_device)
-                samples = nodes.common_ksampler(
-                    model=model, seed=seed, steps=steps, cfg=cfg, 
-                    sampler_name=sampler_name, scheduler=scheduler, 
-                    positive=positive_cond, negative=negative_cond, 
-                    latent={"samples": latent}, denoise=1.0
-                )[0]["samples"]
+                latent = create_generation_latent(model, width, height, gen_settings)
+                sampled = sample_generation_latent(
+                    model=model,
+                    positive=positive_cond,
+                    negative=negative_cond,
+                    latent=latent,
+                    seed=seed,
+                    steps=steps,
+                    cfg=cfg,
+                    sampler_name=sampler_name,
+                    scheduler=scheduler,
+                    gen_settings=gen_settings,
+                )
 
                 # 4. Decode
-                vae_decoded = vae.decode_tiled(samples, tile_x=512, tile_y=512)
+                vae_decoded = decode_generation_samples(vae, sampled, gen_settings)
                 i = 255. * vae_decoded.cpu().numpy()
                 img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8)[0])
 
@@ -364,6 +654,10 @@ class CharacterCreatorV2:
         
         # Age
         positive_prompt = append_age(positive_prompt, age, sex)
+
+        background_color = info.get("background_color", "")
+        if background_color:
+            positive_prompt += f", {background_color} background"
         
         # Physical Attributes
         for attr in ["race", "hair", "eyes", "face", "body", "skin_color", "additional_details"]:
@@ -385,11 +679,11 @@ class CharacterCreatorV2:
     def process(self, widget_data="{}", unique_id=None):
         # Clear Preview Cache to free memory for workflow run
         global PREVIEW_CACHE
-        if PREVIEW_CACHE["ckpt_obj"]:
-             # Explicitly delete references to help GC
-             del PREVIEW_CACHE["ckpt_obj"]
-             PREVIEW_CACHE["ckpt_obj"] = None
-        PREVIEW_CACHE["ckpt_name"] = None
+        if PREVIEW_CACHE["asset_obj"]:
+            # Explicitly delete references to help GC
+            del PREVIEW_CACHE["asset_obj"]
+            PREVIEW_CACHE["asset_obj"] = None
+        PREVIEW_CACHE["asset_key"] = None
         PREVIEW_CACHE["loras"].clear()
 
         try:
@@ -400,7 +694,7 @@ class CharacterCreatorV2:
         # Extract values
         character_name = data.get("character", "Unknown")
         info = data.get("character_info", {})
-        gen_settings = data.get("gen_settings", {})
+        gen_settings = normalize_gen_settings(data.get("gen_settings", {}))
         
         # 1. Generate Prompts
         positive_prompt, negative_prompt = self.construct_prompt(info)
@@ -437,23 +731,7 @@ class CharacterCreatorV2:
 
         # 3. Load Models & Construct Pipe
         # ----------------------------------------------------------------
-        ckpt_name = gen_settings.get("ckpt_name") or data.get("ckpt_name")
-        if not ckpt_name:
-             raise ValueError("No Checkpoint selected in Character Creator V2")
-
-        ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
-        if not ckpt_path:
-            raise ValueError(f"Checkpoint path not found for '{ckpt_name}'")
-
-        out = comfy.sd.load_checkpoint_guess_config(ckpt_path, output_vae=True, output_clip=True, embedding_directory=folder_paths.get_folder_paths("embeddings"))
-        model, clip, vae = out[:3]
-        
-        if model is None:
-             raise ValueError(f"Failed to load Model from checkpoint '{ckpt_name}'")
-        if clip is None:
-             raise ValueError(f"Failed to load CLIP from checkpoint '{ckpt_name}'")
-        if vae is None:
-             raise ValueError(f"Failed to load VAE from checkpoint '{ckpt_name}'")
+        _, model, clip, vae = load_generation_assets(gen_settings)
 
         # Helper to apply LoRA
         def apply_lora_safe(m, c, l_name, l_strength):
@@ -465,30 +743,26 @@ class CharacterCreatorV2:
             return m, c
 
         # Apply DMD2
-        dmd_name = gen_settings.get("dmd_lora_name")
-        dmd_str = float(gen_settings.get("dmd_lora_strength", 1.0))
-        model, clip = apply_lora_safe(model, clip, dmd_name, dmd_str)
+        if gen_settings.get("generation_mode") != "anima":
+            dmd_name = gen_settings.get("dmd_lora_name")
+            dmd_str = float(gen_settings.get("dmd_lora_strength", 1.0))
+            model, clip = apply_lora_safe(model, clip, dmd_name, dmd_str)
 
-        # Apply Age LoRA
-        age_name = gen_settings.get("age_lora_name")
-        if age_name:
-            age = int(info.get("age", 18))
-            age_str = age_strength(age)
-            model, clip = apply_lora_safe(model, clip, age_name, age_str)
+            # Apply Age LoRA
+            age_name = gen_settings.get("age_lora_name")
+            if age_name:
+                age = int(info.get("age", 18))
+                age_str = age_strength(age)
+                model, clip = apply_lora_safe(model, clip, age_name, age_str)
 
-        # Apply Stack
-        stack = gen_settings.get("lora_stack", [])
-        for item in stack:
-            model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
+            # Apply Stack
+            stack = gen_settings.get("lora_stack", [])
+            for item in stack:
+                model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
 
         # Encode Conditioning
-        tokens_pos = clip.tokenize(positive_prompt)
-        cond_pos, pooled_pos = clip.encode_from_tokens(tokens_pos, return_pooled=True)
-        conditioning_pos = [[cond_pos, {"pooled_output": pooled_pos}]]
-
-        tokens_neg = clip.tokenize(negative_prompt)
-        cond_neg, pooled_neg = clip.encode_from_tokens(tokens_neg, return_pooled=True)
-        conditioning_neg = [[cond_neg, {"pooled_output": pooled_neg}]]
+        conditioning_pos = encode_generation_prompt(clip, positive_prompt, gen_settings)
+        conditioning_neg = encode_generation_prompt(clip, negative_prompt, gen_settings)
 
         # Construct Pipe Object
         class PipeContext:
@@ -503,11 +777,11 @@ class CharacterCreatorV2:
             pos=conditioning_pos,
             neg=conditioning_neg,
             seed_int=generate_seed(int(gen_settings.get("seed", 0))),
-            sample_steps=int(gen_settings.get("steps", 20)),
-            cfg=float(gen_settings.get("cfg", 8.0)),
+            sample_steps=int(gen_settings.get("steps", ILLUSTRIOUS_DEFAULTS["steps"])),
+            cfg=float(gen_settings.get("cfg", ILLUSTRIOUS_DEFAULTS["cfg"])),
             denoise=1.0,
-            sampler_name=gen_settings.get("sampler", "euler"),
-            scheduler=gen_settings.get("scheduler", "normal")
+            sampler_name=gen_settings.get("sampler", ILLUSTRIOUS_DEFAULTS["sampler"]),
+            scheduler=gen_settings.get("scheduler", ILLUSTRIOUS_DEFAULTS["scheduler"])
         )
 
         # 4. Generate Image (Smart Cache Logic)
@@ -583,23 +857,24 @@ class CharacterCreatorV2:
         if image is None:
             print(f"[VNCCS] Regenerating Preview...")
             
-            latent = torch.zeros([1, 4, 1536 // 8, 640 // 8], device=model.load_device)
+            width, height = get_generation_resolution(gen_settings)
+            latent = create_generation_latent(model, width, height, gen_settings)
             
             try:
-                samples = nodes.common_ksampler(
-                    model=model, 
+                sampled = sample_generation_latent(
+                    model=model,
                     seed=generate_seed(int(gen_settings.get("seed", 0))),
-                    steps=int(gen_settings.get("steps", 20)), 
-                    cfg=float(gen_settings.get("cfg", 8.0)), 
-                    sampler_name=gen_settings.get("sampler", "euler"), 
-                    scheduler=gen_settings.get("scheduler", "normal"), 
-                    positive=conditioning_pos, 
-                    negative=conditioning_neg, 
-                    latent={"samples": latent}, 
-                    denoise=1.0
-                )[0]["samples"]
+                    steps=int(gen_settings.get("steps", ILLUSTRIOUS_DEFAULTS["steps"])),
+                    cfg=float(gen_settings.get("cfg", ILLUSTRIOUS_DEFAULTS["cfg"])),
+                    sampler_name=gen_settings.get("sampler", ILLUSTRIOUS_DEFAULTS["sampler"]),
+                    scheduler=gen_settings.get("scheduler", ILLUSTRIOUS_DEFAULTS["scheduler"]),
+                    positive=conditioning_pos,
+                    negative=conditioning_neg,
+                    latent=latent,
+                    gen_settings=gen_settings,
+                )
                 
-                image = vae.decode(samples)
+                image = decode_generation_samples(vae, sampled, gen_settings)
                 
                 # Update Cache
                 try:

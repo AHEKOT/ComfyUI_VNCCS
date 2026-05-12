@@ -507,6 +507,46 @@ const STYLE = `
     flex: 1;
     font-size: 10px;
 }
+
+.vnccs-tab-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.vnccs-tab {
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.04);
+    color: var(--text-secondary);
+    border-radius: var(--radius-md);
+    padding: 8px 10px;
+    font-family: var(--font);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all var(--transition);
+}
+
+.vnccs-tab:hover {
+    border-color: var(--border-hover);
+    color: var(--text-primary);
+}
+
+.vnccs-tab.is-active {
+    border-color: var(--accent);
+    color: var(--accent-hover);
+    background: rgba(255,143,163,0.12);
+    box-shadow: 0 0 0 1px rgba(255,143,163,0.14) inset;
+}
+
+.vnccs-subsection {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
 `;
 
 app.registerExtension({
@@ -596,6 +636,17 @@ app.registerExtension({
                     preview_valid: false, // Smart Cache Flag
                     preview_source: "gen", // "gen" or "sheet" - tracks what user sees
                     character: "",
+                    prompt_modes: {
+                        illustrious: {
+                            aesthetics: "masterpiece, best quality",
+                            negative_prompt: "bad quality, worst quality",
+                        },
+                        anima: {
+                            aesthetics: "masterpiece, best quality, score_7, anime",
+                            negative_prompt: "bad quality, worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia",
+                        },
+                    },
+                    prompt_defaults_version: 1,
                     character_info: {
                         sex: "female", age: 18, race: "human", skin_color: "",
                         hair: "", eyes: "", face: "", body: "", additional_details: "",
@@ -604,8 +655,12 @@ app.registerExtension({
                         lora_prompt: "", background_color: "Green"
                     },
                     gen_settings: {
+                        generation_mode: "illustrious",
                         ckpt_name: "", sampler: "euler", scheduler: "normal",
                         steps: 20, cfg: 8.0, seed: generateRandomSeed(), seed_mode: "fixed",
+                        diffusion_model_name: "", clip_name: "", vae_name: "",
+                        anima_defaults_applied: false,
+                        generation_defaults_version: 2,
                         dmd_lora_name: "", dmd_lora_strength: 1.0,
                         age_lora_name: "",
                         lora_stack: [
@@ -619,6 +674,20 @@ app.registerExtension({
                 };
 
                 const debouncedSave = debounce(() => saveState(), 300);
+                const ILLUSTRIOUS_DEFAULTS = { sampler: "euler", scheduler: "normal", steps: 20, cfg: 8.0 };
+                const ANIMA_DEFAULTS = { sampler: "er_sde", scheduler: "simple", steps: 30, cfg: 4.0 };
+                const GENERATION_DEFAULTS_VERSION = 2;
+                const PROMPT_DEFAULTS_VERSION = 1;
+                const MODE_PROMPT_DEFAULTS = {
+                    illustrious: {
+                        aesthetics: "masterpiece, best quality",
+                        negative_prompt: "bad quality, worst quality",
+                    },
+                    anima: {
+                        aesthetics: "masterpiece, best quality, score_7, anime",
+                        negative_prompt: "bad quality, worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia",
+                    },
+                };
 
                 let TAG_DATA = null;
 
@@ -650,6 +719,8 @@ app.registerExtension({
                             const parsed = JSON.parse(w.value);
                             // Merge from Graph Data
                             if (parsed.character) state.character = parsed.character;
+                            if (parsed.prompt_modes) state.prompt_modes = parsed.prompt_modes;
+                            if (parsed.prompt_defaults_version !== undefined) state.prompt_defaults_version = parsed.prompt_defaults_version;
                             if (parsed.character_info) Object.assign(state.character_info, parsed.character_info);
                             if (parsed.gen_settings) {
                                 Object.assign(state.gen_settings, parsed.gen_settings);
@@ -675,6 +746,8 @@ app.registerExtension({
                                 // New structure
                                 Object.assign(state.gen_settings, parsed.gen_settings);
                                 if (parsed.character) state.character = parsed.character;
+                                if (parsed.prompt_modes) state.prompt_modes = parsed.prompt_modes;
+                                if (parsed.prompt_defaults_version !== undefined) state.prompt_defaults_version = parsed.prompt_defaults_version;
                             } else {
                                 // Legacy assumption
                                 Object.assign(state.gen_settings, parsed);
@@ -685,6 +758,126 @@ app.registerExtension({
                             }
                         }
                     } catch (e) { }
+                };
+
+                const syncSliderValue = (ref, value) => {
+                    if (!ref) return;
+                    ref.range.value = value;
+                    ref.num.value = value;
+                };
+
+                const ensureOption = (el, value) => {
+                    if (!el || !value) return;
+                    const exists = Array.from(el.options).some(opt => opt.value === value);
+                    if (!exists) el.add(new Option(value, value));
+                };
+
+                const splitPromptTokens = (value) => (value || "")
+                    .split(",")
+                    .map(token => token.trim())
+                    .filter(Boolean);
+
+                const joinPromptTokens = (tokens) => {
+                    const seen = new Set();
+                    const ordered = [];
+                    tokens.forEach((token) => {
+                        if (!seen.has(token)) {
+                            seen.add(token);
+                            ordered.push(token);
+                        }
+                    });
+                    return ordered.join(", ");
+                };
+
+                const mergePromptDefaultWithCustom = (baseText, defaultText) => {
+                    const baseTokens = splitPromptTokens(baseText);
+                    const defaultTokens = splitPromptTokens(defaultText);
+                    const defaultSet = new Set(defaultTokens);
+                    const extraTokens = baseTokens.filter(token => !defaultSet.has(token));
+                    return joinPromptTokens([...defaultTokens, ...extraTokens]);
+                };
+
+                const applyPromptModeToFields = (mode) => {
+                    const promptState = state.prompt_modes[mode] || MODE_PROMPT_DEFAULTS[mode];
+                    state.character_info.aesthetics = promptState.aesthetics;
+                    state.character_info.negative_prompt = promptState.negative_prompt;
+                    if (els.aesthetics) els.aesthetics.value = promptState.aesthetics;
+                    if (els.negative_prompt) els.negative_prompt.value = promptState.negative_prompt;
+                };
+
+                const saveCurrentPromptModeValues = () => {
+                    const mode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
+                    if (!state.prompt_modes[mode]) state.prompt_modes[mode] = { ...MODE_PROMPT_DEFAULTS[mode] };
+                    state.prompt_modes[mode].aesthetics = state.character_info.aesthetics || "";
+                    state.prompt_modes[mode].negative_prompt = state.character_info.negative_prompt || "";
+                };
+
+                const migratePromptModes = () => {
+                    const currentMode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
+                    const existingModes = state.prompt_modes || {};
+                    const mergedModes = {
+                        illustrious: { ...MODE_PROMPT_DEFAULTS.illustrious, ...(existingModes.illustrious || {}) },
+                        anima: { ...MODE_PROMPT_DEFAULTS.anima, ...(existingModes.anima || {}) },
+                    };
+
+                    if ((state.prompt_defaults_version || 0) < PROMPT_DEFAULTS_VERSION) {
+                        mergedModes.illustrious.aesthetics = state.character_info.aesthetics || mergedModes.illustrious.aesthetics;
+                        mergedModes.illustrious.negative_prompt = state.character_info.negative_prompt || mergedModes.illustrious.negative_prompt;
+                        mergedModes.anima.aesthetics = mergePromptDefaultWithCustom(mergedModes.anima.aesthetics, MODE_PROMPT_DEFAULTS.anima.aesthetics);
+                        mergedModes.anima.negative_prompt = mergePromptDefaultWithCustom(mergedModes.anima.negative_prompt, MODE_PROMPT_DEFAULTS.anima.negative_prompt);
+                    }
+
+                    state.prompt_modes = mergedModes;
+                    state.prompt_defaults_version = PROMPT_DEFAULTS_VERSION;
+                    applyPromptModeToFields(currentMode);
+                };
+
+                const applyGenerationDefaults = (mode, force = false) => {
+                    const defaults = mode === "anima" ? ANIMA_DEFAULTS : ILLUSTRIOUS_DEFAULTS;
+                    const markerKey = mode === "anima" ? "anima_defaults_applied" : "illustrious_defaults_applied";
+                    if (!force && state.gen_settings[markerKey]) return;
+
+                    state.gen_settings.steps = defaults.steps;
+                    state.gen_settings.cfg = defaults.cfg;
+                    state.gen_settings.sampler = defaults.sampler;
+                    state.gen_settings.scheduler = defaults.scheduler;
+                    state.gen_settings[markerKey] = true;
+                    state.gen_settings.generation_defaults_version = GENERATION_DEFAULTS_VERSION;
+
+                    syncSliderValue(els.steps, defaults.steps);
+                    syncSliderValue(els.cfg, defaults.cfg);
+                    ensureOption(els.sampler, defaults.sampler);
+                    ensureOption(els.scheduler, defaults.scheduler);
+                    if (els.sampler) els.sampler.value = defaults.sampler;
+                    if (els.scheduler) els.scheduler.value = defaults.scheduler;
+                };
+
+                const refreshGenerationModeUI = () => {
+                    const mode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
+                    const isAnima = mode === "anima";
+                    if (els.modeTabs) {
+                        Object.entries(els.modeTabs).forEach(([key, btn]) => {
+                            btn.classList.toggle("is-active", key === mode);
+                        });
+                    }
+                    if (els.illustriousModels) els.illustriousModels.style.display = isAnima ? "none" : "flex";
+                    if (els.animaModels) els.animaModels.style.display = isAnima ? "flex" : "none";
+                    if (els.loraSection) els.loraSection.style.display = isAnima ? "none" : "flex";
+                };
+
+                const setGenerationMode = (mode) => {
+                    const nextMode = (mode || "illustrious").toLowerCase();
+                    saveCurrentPromptModeValues();
+                    if (state.gen_settings.generation_mode === nextMode) {
+                        applyPromptModeToFields(nextMode);
+                        refreshGenerationModeUI();
+                        return;
+                    }
+                    state.gen_settings.generation_mode = nextMode;
+                    applyGenerationDefaults(nextMode);
+                    applyPromptModeToFields(nextMode);
+                    refreshGenerationModeUI();
+                    saveState();
                 };
 
                 // 4. UI Builders
@@ -1140,12 +1333,57 @@ app.registerExtension({
                 colRight.className = "vnccs-col";
                 colRight.innerHTML = '<div class="vnccs-section-title">Generation</div>';
 
-                // Checkpoint
+                const tabRow = document.createElement("div");
+                tabRow.className = "vnccs-tab-row";
+                els.modeTabs = {};
+                [
+                    ["illustrious", "Illustrious"],
+                    ["anima", "ANIMA"],
+                ].forEach(([value, label]) => {
+                    const btn = document.createElement("button");
+                    btn.type = "button";
+                    btn.className = "vnccs-tab";
+                    btn.innerText = label;
+                    btn.onclick = () => setGenerationMode(value);
+                    els.modeTabs[value] = btn;
+                    tabRow.appendChild(btn);
+                });
+                colRight.appendChild(tabRow);
+
+                const illustriousModels = document.createElement("div");
+                illustriousModels.className = "vnccs-subsection";
+                els.illustriousModels = illustriousModels;
+
                 const wrapCkpt = document.createElement("div"); wrapCkpt.className = "vnccs-field";
                 wrapCkpt.innerHTML = '<div class="vnccs-label">Checkpoint (SDXL)</div>';
                 const sCkpt = document.createElement("select"); sCkpt.className = "vnccs-select";
                 sCkpt.onchange = (e) => { state.gen_settings.ckpt_name = e.target.value; saveState(); };
-                els.ckptSelect = sCkpt; wrapCkpt.appendChild(sCkpt); colRight.appendChild(wrapCkpt);
+                els.ckptSelect = sCkpt; wrapCkpt.appendChild(sCkpt); illustriousModels.appendChild(wrapCkpt);
+                colRight.appendChild(illustriousModels);
+
+                const animaModels = document.createElement("div");
+                animaModels.className = "vnccs-subsection";
+                els.animaModels = animaModels;
+
+                const createModelField = (label, key) => {
+                    const wrap = document.createElement("div");
+                    wrap.className = "vnccs-field";
+                    wrap.innerHTML = `<div class="vnccs-label">${label}</div>`;
+                    const select = document.createElement("select");
+                    select.className = "vnccs-select";
+                    select.onchange = (e) => {
+                        state.gen_settings[key] = e.target.value;
+                        saveState();
+                    };
+                    wrap.appendChild(select);
+                    els[key] = select;
+                    animaModels.appendChild(wrap);
+                };
+
+                createModelField("Diffusion Model", "diffusion_model_name");
+                createModelField("CLIP", "clip_name");
+                createModelField("VAE", "vae_name");
+                colRight.appendChild(animaModels);
 
                 colRight.appendChild(createField("Sampler", "sampler", "select", [], state.gen_settings));
                 els.sampler = colRight.lastChild.querySelector("select");
@@ -1201,11 +1439,15 @@ app.registerExtension({
                 colRight.appendChild(seedWrap);
 
                 // --- LoRA Section ---
+                const loraSection = document.createElement("div");
+                loraSection.className = "vnccs-subsection";
+                els.loraSection = loraSection;
+
                 const loraHeader = document.createElement("div");
                 loraHeader.className = "vnccs-section-title";
                 loraHeader.style.marginTop = "10px";
                 loraHeader.innerText = "LoRa Stack";
-                colRight.appendChild(loraHeader);
+                loraSection.appendChild(loraHeader);
 
                 // DMD2 LoRA
                 const dmdWrap = document.createElement("div"); dmdWrap.className = "vnccs-lora-item";
@@ -1236,7 +1478,7 @@ app.registerExtension({
 
                 dmdRow.appendChild(dmdSel); dmdRow.appendChild(dmdToggleWrap);
                 dmdWrap.appendChild(dmdRow);
-                colRight.appendChild(dmdWrap);
+                loraSection.appendChild(dmdWrap);
                 els.dmdSlider = dmdStr; // Renamed ref for logic compat, though it's an input now
 
                 // Age LoRA
@@ -1246,7 +1488,7 @@ app.registerExtension({
                 ageSel.onchange = (e) => { state.gen_settings.age_lora_name = e.target.value; saveState(); };
                 els.ageSelect = ageSel;
                 ageWrap.appendChild(ageSel);
-                colRight.appendChild(ageWrap);
+                loraSection.appendChild(ageWrap);
 
                 // Stack (5 Slots)
                 const stackContainer = document.createElement("div");
@@ -1286,7 +1528,8 @@ app.registerExtension({
                     // Ref for population
                     els.loraStackSelects.push({ sel, rng, idx: i });
                 }
-                colRight.appendChild(stackContainer);
+                loraSection.appendChild(stackContainer);
+                colRight.appendChild(loraSection);
 
                 topRow.appendChild(colRight);
                 container.appendChild(topRow);
@@ -1300,7 +1543,16 @@ app.registerExtension({
                     w.innerHTML = `<div class="vnccs-textarea-label">${lbl}</div>`;
                     const t = document.createElement("textarea");
                     t.value = state.character_info[key] || "";
-                    t.oninput = (e) => { state.character_info[key] = e.target.value; debouncedSave(); };
+                    t.oninput = (e) => {
+                        state.character_info[key] = e.target.value;
+                        if (key === "aesthetics" || key === "negative_prompt") {
+                            const mode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
+                            if (!state.prompt_modes[mode]) state.prompt_modes[mode] = { ...MODE_PROMPT_DEFAULTS[mode] };
+                            state.prompt_modes[mode][key] = e.target.value;
+                            state.prompt_defaults_version = PROMPT_DEFAULTS_VERSION;
+                        }
+                        debouncedSave();
+                    };
                     w.appendChild(t);
                     els[key] = t;
                     return w;
@@ -1352,6 +1604,9 @@ app.registerExtension({
                         };
 
                         pop(els.ckptSelect, d.checkpoints);
+                        pop(els.diffusion_model_name, d.diffusion_models);
+                        pop(els.clip_name, d.text_encoders);
+                        pop(els.vae_name, d.vae_models);
                         pop(els.sampler, d.samplers);
                         pop(els.scheduler, d.schedulers);
 
@@ -1369,6 +1624,7 @@ app.registerExtension({
                         const g = state.gen_settings;
 
                         if (g.ckpt_name) {
+                            ensureOption(els.ckptSelect, g.ckpt_name);
                             els.ckptSelect.value = g.ckpt_name;
                         } else if (els.ckptSelect.options.length > 0) {
                             // Default to first option if not set
@@ -1376,6 +1632,24 @@ app.registerExtension({
                             els.ckptSelect.value = g.ckpt_name;
                             saveState(); // Ensure this default is saved immediately
                         }
+                        ["diffusion_model_name", "clip_name", "vae_name"].forEach((key) => {
+                            const ref = els[key];
+                            if (!ref) return;
+                            if (g[key]) {
+                                ensureOption(ref, g[key]);
+                                ref.value = g[key];
+                            } else if (ref.options.length > 0) {
+                                g[key] = ref.options[0].value;
+                                ref.value = g[key];
+                            }
+                        });
+                        g.generation_mode = (g.generation_mode || "illustrious").toLowerCase();
+                        if ((g.generation_defaults_version || 0) < GENERATION_DEFAULTS_VERSION) {
+                            applyGenerationDefaults(g.generation_mode, true);
+                        } else if (g.generation_mode === "anima" && !g.anima_defaults_applied) {
+                            applyGenerationDefaults("anima");
+                        }
+                        migratePromptModes();
                         if (g.sampler) els.sampler.value = g.sampler;
                         if (g.scheduler) els.scheduler.value = g.scheduler;
 
@@ -1409,6 +1683,8 @@ app.registerExtension({
                                 ref.rng.value = item.strength;
                             }
                         });
+
+                        refreshGenerationModeUI();
 
                         if (state.character) {
                             // Ensure it's in the list (handle potential race/latency)
@@ -1453,6 +1729,18 @@ app.registerExtension({
                             // Reset & Assign
                             Object.assign(state.character_info, defaultInfo);
                             Object.assign(state.character_info, i);
+                            state.prompt_modes = {
+                                illustrious: {
+                                    aesthetics: state.character_info.aesthetics || MODE_PROMPT_DEFAULTS.illustrious.aesthetics,
+                                    negative_prompt: state.character_info.negative_prompt || MODE_PROMPT_DEFAULTS.illustrious.negative_prompt,
+                                },
+                                anima: {
+                                    aesthetics: MODE_PROMPT_DEFAULTS.anima.aesthetics,
+                                    negative_prompt: MODE_PROMPT_DEFAULTS.anima.negative_prompt,
+                                },
+                            };
+                            state.prompt_defaults_version = PROMPT_DEFAULTS_VERSION;
+                            applyPromptModeToFields((state.gen_settings.generation_mode || "illustrious").toLowerCase());
                         }
 
                         // Update Fields from current state
@@ -1520,7 +1808,14 @@ app.registerExtension({
                 };
 
                 const doGenerate = async () => {
-                    if (!state.gen_settings.ckpt_name) { alert("Select Checkpoint"); return; }
+                    const mode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
+                    if (mode === "anima") {
+                        if (!state.gen_settings.diffusion_model_name) { alert("Select Diffusion Model"); return; }
+                        if (!state.gen_settings.clip_name) { alert("Select CLIP"); return; }
+                        if (!state.gen_settings.vae_name) { alert("Select VAE"); return; }
+                    } else if (!state.gen_settings.ckpt_name) {
+                        alert("Select Checkpoint"); return;
+                    }
                     if (els.btnGen.disabled) return;
 
                     node._randomizeSeedIfNeeded();
@@ -1539,7 +1834,9 @@ app.registerExtension({
                             gen_settings: { ...state.gen_settings }
                         };
                         // Clean stack in the copy
-                        payload.gen_settings.lora_stack = payload.gen_settings.lora_stack.filter(x => x.name && x.name !== "None");
+                        payload.gen_settings.lora_stack = mode === "anima"
+                            ? []
+                            : payload.gen_settings.lora_stack.filter(x => x.name && x.name !== "None");
 
                         const r = await api.fetchApi("/vnccs/preview_generate", { method: "POST", body: JSON.stringify(payload) });
 
