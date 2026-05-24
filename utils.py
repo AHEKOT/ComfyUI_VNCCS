@@ -444,6 +444,19 @@ def load_character_info(character_name: str) -> Optional[Dict[str, Any]]:
     return char_info
 
 
+def normalize_hair_tags(hair: str) -> str:
+    """Ensure free-form hair input mentions hair."""
+    if not hair:
+        return ""
+
+    normalized = str(hair).strip()
+    if not normalized:
+        return ""
+    if "hair" not in normalized.lower():
+        normalized = f"{normalized} hair"
+    return normalized
+
+
 def build_face_details(char_info: Dict[str, Any]) -> str:
     """Build face_details string from character info."""
     details_parts = []
@@ -460,8 +473,9 @@ def build_face_details(char_info: Dict[str, Any]) -> str:
     if char_info.get("eyes"):
         details_parts.append(f"{char_info['eyes']} eyes")
     
-    if char_info.get("hair"):
-        details_parts.append(f"{char_info['hair']} hair")
+    hair = normalize_hair_tags(char_info.get("hair", ""))
+    if hair:
+        details_parts.append(hair)
     
     if char_info.get("face"):
         details_parts.append(f"{char_info['face']} face")

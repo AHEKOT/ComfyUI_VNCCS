@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { debounce, registerCleanup, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed } from "./vnccs_common.js";
+import { debounce, registerCleanup, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "./vnccs_common.js";
 
 // --- STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -571,6 +571,7 @@ app.registerExtension({
 
                 const node = this;
                 node.setSize([1280, 800]); // Default wide 3-column
+                syncDOMWidgetWidthSoon(node, "ui");
 
                 // 1. Setup CSS
                 const style = document.createElement("style");
@@ -612,10 +613,12 @@ app.registerExtension({
                     // Critical Sync: Ensure widget_data receives latest state
                     const w = node.widgets ? node.widgets.find(w => w.name === "widget_data") : null;
                     if (w) {
+                        saveCurrentGenerationModeValues();
                         w.value = JSON.stringify(state);
                     } else {
                         // Should have been created, but safety net
                         console.warn("[VNCCS] widget_data missing on serialize, creating...");
+                        saveCurrentGenerationModeValues();
                         node.addWidget("text", "widget_data", JSON.stringify(state), (v) => { }, { serialize: true });
                     }
                 };
@@ -649,7 +652,7 @@ app.registerExtension({
                     prompt_defaults_version: 1,
                     character_info: {
                         sex: "female", age: 18, race: "human", skin_color: "",
-                        hair: "", eyes: "", face: "", body: "", additional_details: "",
+                        hair: "black hair, long hair", eyes: "", face: "", body: "", additional_details: "",
                         nsfw: false, aesthetics: "masterpiece, best quality",
                         negative_prompt: "bad quality, worst quality",
                         lora_prompt: "", background_color: "Green"
@@ -659,6 +662,37 @@ app.registerExtension({
                         ckpt_name: "", sampler: "euler", scheduler: "normal",
                         steps: 20, cfg: 8.0, seed: generateRandomSeed(), seed_mode: "fixed",
                         diffusion_model_name: "", clip_name: "", vae_name: "",
+                        mode_settings: {
+                            illustrious: {
+                                ckpt_name: "", sampler: "euler", scheduler: "normal",
+                                steps: 20, cfg: 8.0, seed: generateRandomSeed(), seed_mode: "fixed",
+                                dmd_lora_name: "", dmd_lora_strength: 1.0,
+                                age_lora_name: "",
+                                lora_stack: [
+                                    { name: "", strength: 1.0 },
+                                    { name: "", strength: 1.0 },
+                                    { name: "", strength: 1.0 },
+                                    { name: "", strength: 1.0 },
+                                    { name: "", strength: 1.0 }
+                                ]
+                            },
+                            anima: {
+                                diffusion_model_name: "", clip_name: "qwen_3_06b_base.safetensors", vae_name: "qwen_image_vae.safetensors",
+                                sampler: "er_sde", scheduler: "simple",
+                                steps: 30, cfg: 4.0, seed: generateRandomSeed(), seed_mode: "fixed",
+                                turbo_enabled: false,
+                                dmd_lora_name: "anima\\anima-turbo-lora-v0.1.safetensors",
+                                dmd_lora_strength: 1.0,
+                                turbo_previous_settings: null,
+                                lora_stack: [
+                                    { name: "", strength: 1.0 },
+                                    { name: "", strength: 1.0 },
+                                    { name: "", strength: 1.0 },
+                                    { name: "", strength: 1.0 },
+                                    { name: "", strength: 1.0 }
+                                ]
+                            }
+                        },
                         anima_defaults_applied: false,
                         generation_defaults_version: 2,
                         dmd_lora_name: "", dmd_lora_strength: 1.0,
@@ -674,10 +708,44 @@ app.registerExtension({
                 };
 
                 const debouncedSave = debounce(() => saveState(), 300);
-                const ILLUSTRIOUS_DEFAULTS = { sampler: "euler", scheduler: "normal", steps: 20, cfg: 8.0 };
-                const ANIMA_DEFAULTS = { sampler: "er_sde", scheduler: "simple", steps: 30, cfg: 4.0 };
-                const GENERATION_DEFAULTS_VERSION = 2;
+                const ANIMA_TURBO_LORA_NAME = "anima\\anima-turbo-lora-v0.1.safetensors";
+                const ANIMA_CLIP_NAME = "qwen_3_06b_base.safetensors";
+                const ANIMA_VAE_NAME = "qwen_image_vae.safetensors";
+                const ILLUSTRIOUS_DEFAULTS = {
+                    ckpt_name: "", sampler: "euler", scheduler: "normal",
+                    steps: 20, cfg: 8.0, seed: generateRandomSeed(), seed_mode: "fixed",
+                    dmd_lora_name: "", dmd_lora_strength: 1.0,
+                    age_lora_name: "",
+                    lora_stack: [
+                        { name: "", strength: 1.0 },
+                        { name: "", strength: 1.0 },
+                        { name: "", strength: 1.0 },
+                        { name: "", strength: 1.0 },
+                        { name: "", strength: 1.0 }
+                    ]
+                };
+                const ANIMA_DEFAULTS = {
+                    diffusion_model_name: "", clip_name: ANIMA_CLIP_NAME, vae_name: ANIMA_VAE_NAME,
+                    sampler: "er_sde", scheduler: "simple",
+                    steps: 30, cfg: 4.0, seed: generateRandomSeed(), seed_mode: "fixed",
+                    turbo_enabled: false,
+                    dmd_lora_name: ANIMA_TURBO_LORA_NAME,
+                    dmd_lora_strength: 1.0,
+                    turbo_previous_settings: null,
+                    lora_stack: [
+                        { name: "", strength: 1.0 },
+                        { name: "", strength: 1.0 },
+                        { name: "", strength: 1.0 },
+                        { name: "", strength: 1.0 },
+                        { name: "", strength: 1.0 }
+                    ]
+                };
+                const GENERATION_DEFAULTS_VERSION = 3;
                 const PROMPT_DEFAULTS_VERSION = 1;
+                const MODE_SETTING_KEYS = {
+                    illustrious: ["ckpt_name", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "dmd_lora_name", "dmd_lora_strength", "age_lora_name", "lora_stack"],
+                    anima: ["diffusion_model_name", "clip_name", "vae_name", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "turbo_enabled", "dmd_lora_name", "dmd_lora_strength", "turbo_previous_settings", "lora_stack"],
+                };
                 const MODE_PROMPT_DEFAULTS = {
                     illustrious: {
                         aesthetics: "masterpiece, best quality",
@@ -692,7 +760,126 @@ app.registerExtension({
                 let TAG_DATA = null;
 
                 const els = {};
+                const cloneSettingsValue = (value) => {
+                    if (Array.isArray(value)) return value.map(item => ({ ...item }));
+                    if (value && typeof value === "object") return { ...value };
+                    return value;
+                };
+
+                const getGenerationDefaults = (mode) => ({
+                    ...(mode === "anima" ? ANIMA_DEFAULTS : ILLUSTRIOUS_DEFAULTS),
+                    seed: generateRandomSeed(),
+                });
+
+                const ensureLoraStack = (profile) => {
+                    if (!Array.isArray(profile.lora_stack)) profile.lora_stack = [];
+                    while (profile.lora_stack.length < 5) {
+                        profile.lora_stack.push({ name: "", strength: 1.0 });
+                    }
+                    profile.lora_stack = profile.lora_stack.slice(0, 5).map(item => ({
+                        name: item?.name || "",
+                        strength: item?.strength ?? 1.0,
+                    }));
+                };
+
+                const getModeProfile = (mode) => {
+                    const normalizedMode = (mode || "illustrious").toLowerCase();
+                    if (!state.gen_settings.mode_settings) state.gen_settings.mode_settings = {};
+                    const defaults = getGenerationDefaults(normalizedMode);
+                    const existing = state.gen_settings.mode_settings[normalizedMode] || {};
+                    const profile = { ...defaults, ...existing };
+                    if (normalizedMode === "illustrious" || normalizedMode === "anima") ensureLoraStack(profile);
+                    state.gen_settings.mode_settings[normalizedMode] = profile;
+                    return profile;
+                };
+
+                const saveCurrentGenerationModeValues = (mode = state.gen_settings.generation_mode) => {
+                    const normalizedMode = (mode || "illustrious").toLowerCase();
+                    const profile = getModeProfile(normalizedMode);
+                    (MODE_SETTING_KEYS[normalizedMode] || []).forEach((key) => {
+                        if (state.gen_settings[key] !== undefined) {
+                            profile[key] = cloneSettingsValue(state.gen_settings[key]);
+                        }
+                    });
+                    if (normalizedMode === "illustrious" || normalizedMode === "anima") ensureLoraStack(profile);
+                };
+
+                const applyGenerationProfile = (mode) => {
+                    const normalizedMode = (mode || "illustrious").toLowerCase();
+                    const profile = getModeProfile(normalizedMode);
+                    (MODE_SETTING_KEYS[normalizedMode] || []).forEach((key) => {
+                        state.gen_settings[key] = cloneSettingsValue(profile[key]);
+                    });
+                    if (normalizedMode === "illustrious" || normalizedMode === "anima") ensureLoraStack(state.gen_settings);
+                };
+
+                const syncGenerationControls = () => {
+                    const g = state.gen_settings;
+                    if (els.ckptSelect) {
+                        ensureOption(els.ckptSelect, g.ckpt_name);
+                        els.ckptSelect.value = g.ckpt_name || "";
+                    }
+                    ["diffusion_model_name", "clip_name", "vae_name"].forEach((key) => {
+                        if (!els[key]) return;
+                        ensureOption(els[key], g[key]);
+                        els[key].value = g[key] || "";
+                    });
+                    ensureOption(els.sampler, g.sampler);
+                    ensureOption(els.scheduler, g.scheduler);
+                    if (els.sampler) els.sampler.value = g.sampler || "";
+                    if (els.scheduler) els.scheduler.value = g.scheduler || "";
+                    syncSliderValue(els.steps, g.steps);
+                    syncSliderValue(els.cfg, g.cfg);
+                    if (els.seed) els.seed.value = g.seed ?? "";
+                    if (els.seed_mode) els.seed_mode.value = g.seed_mode || "fixed";
+                    if (els.dmdSelect) {
+                        ensureOption(els.dmdSelect, g.dmd_lora_name);
+                        els.dmdSelect.value = g.dmd_lora_name || "";
+                    }
+                    if (els.dmdSlider) {
+                        const mode = (g.generation_mode || "illustrious").toLowerCase();
+                        els.dmdSlider.checked = mode === "anima"
+                            ? !!g.turbo_enabled
+                            : (g.dmd_lora_strength ?? 1.0) > 0;
+                    }
+                    if (els.ageSelect) els.ageSelect.value = g.age_lora_name || "";
+                    if (els.loraStackSelects) {
+                        ensureLoraStack(g);
+                        els.loraStackSelects.forEach((ref, i) => {
+                            const item = g.lora_stack[i] || { name: "", strength: 1.0 };
+                            ref.sel.value = item.name || "";
+                            ref.rng.value = item.strength ?? 1.0;
+                            ref.sel.closest(".vnccs-lora-item")?.classList.toggle("is-empty", !item.name);
+                        });
+                    }
+                };
+
+                const migrateGenerationModeSettings = () => {
+                    const g = state.gen_settings;
+                    g.generation_mode = (g.generation_mode || "illustrious").toLowerCase();
+                    const currentMode = g.generation_mode;
+                    const existingModes = g.mode_settings || {};
+                    g.mode_settings = {
+                        illustrious: { ...getGenerationDefaults("illustrious"), ...(existingModes.illustrious || {}) },
+                        anima: { ...getGenerationDefaults("anima"), ...(existingModes.anima || {}) },
+                    };
+                    ensureLoraStack(g.mode_settings.illustrious);
+                    ensureLoraStack(g.mode_settings.anima);
+
+                    if ((g.generation_defaults_version || 0) < GENERATION_DEFAULTS_VERSION || !existingModes[currentMode]) {
+                        const target = g.mode_settings[currentMode];
+                        (MODE_SETTING_KEYS[currentMode] || []).forEach((key) => {
+                            if (g[key] !== undefined && g[key] !== "") target[key] = cloneSettingsValue(g[key]);
+                        });
+                        if (currentMode === "illustrious" || currentMode === "anima") ensureLoraStack(target);
+                    }
+
+                    g.generation_defaults_version = GENERATION_DEFAULTS_VERSION;
+                    applyGenerationProfile(currentMode);
+                };
+
                 const saveState = (isValid = false) => {
+                    saveCurrentGenerationModeValues();
                     const persistData = {
                         gen_settings: state.gen_settings,
                         character: state.character
@@ -724,10 +911,7 @@ app.registerExtension({
                             if (parsed.character_info) Object.assign(state.character_info, parsed.character_info);
                             if (parsed.gen_settings) {
                                 Object.assign(state.gen_settings, parsed.gen_settings);
-                                // Ensure stack length just in case
-                                while (state.gen_settings.lora_stack.length < 5) {
-                                    state.gen_settings.lora_stack.push({ name: "", strength: 1.0 });
-                                }
+                                ensureLoraStack(state.gen_settings);
                             }
                             if (parsed.preview_valid !== undefined) state.preview_valid = parsed.preview_valid;
 
@@ -753,9 +937,7 @@ app.registerExtension({
                                 Object.assign(state.gen_settings, parsed);
                             }
 
-                            while (state.gen_settings.lora_stack.length < 5) {
-                                state.gen_settings.lora_stack.push({ name: "", strength: 1.0 });
-                            }
+                            ensureLoraStack(state.gen_settings);
                         }
                     } catch (e) { }
                 };
@@ -833,23 +1015,20 @@ app.registerExtension({
                 };
 
                 const applyGenerationDefaults = (mode, force = false) => {
-                    const defaults = mode === "anima" ? ANIMA_DEFAULTS : ILLUSTRIOUS_DEFAULTS;
+                    const defaults = getGenerationDefaults(mode);
                     const markerKey = mode === "anima" ? "anima_defaults_applied" : "illustrious_defaults_applied";
                     if (!force && state.gen_settings[markerKey]) return;
 
-                    state.gen_settings.steps = defaults.steps;
-                    state.gen_settings.cfg = defaults.cfg;
-                    state.gen_settings.sampler = defaults.sampler;
-                    state.gen_settings.scheduler = defaults.scheduler;
+                    state.gen_settings.mode_settings[mode] = {
+                        ...defaults,
+                        ...(["illustrious", "anima"].includes(mode) ? { lora_stack: cloneSettingsValue(defaults.lora_stack) } : {}),
+                    };
+                    if (mode === state.gen_settings.generation_mode) {
+                        applyGenerationProfile(mode);
+                        syncGenerationControls();
+                    }
                     state.gen_settings[markerKey] = true;
                     state.gen_settings.generation_defaults_version = GENERATION_DEFAULTS_VERSION;
-
-                    syncSliderValue(els.steps, defaults.steps);
-                    syncSliderValue(els.cfg, defaults.cfg);
-                    ensureOption(els.sampler, defaults.sampler);
-                    ensureOption(els.scheduler, defaults.scheduler);
-                    if (els.sampler) els.sampler.value = defaults.sampler;
-                    if (els.scheduler) els.scheduler.value = defaults.scheduler;
                 };
 
                 const refreshGenerationModeUI = () => {
@@ -862,21 +1041,53 @@ app.registerExtension({
                     }
                     if (els.illustriousModels) els.illustriousModels.style.display = isAnima ? "none" : "flex";
                     if (els.animaModels) els.animaModels.style.display = isAnima ? "flex" : "none";
-                    if (els.loraSection) els.loraSection.style.display = isAnima ? "none" : "flex";
+                    if (els.loraSection) els.loraSection.style.display = "flex";
+                    if (els.dmdLabel) els.dmdLabel.innerText = isAnima ? "Turbo LoRA" : "DMD2 LoRA Model";
+                    if (els.loraHeader) els.loraHeader.innerText = isAnima ? "ANIMA LoRA Stack" : "LoRa Stack";
+                    if (els.ageWrap) els.ageWrap.style.display = isAnima ? "none" : "flex";
                 };
 
                 const setGenerationMode = (mode) => {
                     const nextMode = (mode || "illustrious").toLowerCase();
+                    const currentMode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
                     saveCurrentPromptModeValues();
+                    saveCurrentGenerationModeValues(currentMode);
                     if (state.gen_settings.generation_mode === nextMode) {
+                        applyGenerationProfile(nextMode);
                         applyPromptModeToFields(nextMode);
+                        syncGenerationControls();
                         refreshGenerationModeUI();
                         return;
                     }
                     state.gen_settings.generation_mode = nextMode;
-                    applyGenerationDefaults(nextMode);
+                    applyGenerationProfile(nextMode);
                     applyPromptModeToFields(nextMode);
+                    syncGenerationControls();
                     refreshGenerationModeUI();
+                    saveState();
+                };
+
+                const setAnimaTurboMode = (enabled) => {
+                    if ((state.gen_settings.generation_mode || "illustrious").toLowerCase() !== "anima") return;
+                    if (enabled) {
+                        if (!state.gen_settings.turbo_enabled) {
+                            state.gen_settings.turbo_previous_settings = {
+                                steps: state.gen_settings.steps,
+                                cfg: state.gen_settings.cfg,
+                            };
+                        }
+                        state.gen_settings.turbo_enabled = true;
+                        state.gen_settings.dmd_lora_strength = 1.0;
+                        state.gen_settings.steps = 12;
+                        state.gen_settings.cfg = 1.0;
+                    } else {
+                        state.gen_settings.turbo_enabled = false;
+                        const previous = state.gen_settings.turbo_previous_settings || {};
+                        if (previous.steps !== undefined) state.gen_settings.steps = previous.steps;
+                        if (previous.cfg !== undefined) state.gen_settings.cfg = previous.cfg;
+                        state.gen_settings.turbo_previous_settings = null;
+                    }
+                    syncGenerationControls();
                     saveState();
                 };
 
@@ -1447,11 +1658,16 @@ app.registerExtension({
                 loraHeader.className = "vnccs-section-title";
                 loraHeader.style.marginTop = "10px";
                 loraHeader.innerText = "LoRa Stack";
+                els.loraHeader = loraHeader;
                 loraSection.appendChild(loraHeader);
 
                 // DMD2 LoRA
                 const dmdWrap = document.createElement("div"); dmdWrap.className = "vnccs-lora-item";
-                dmdWrap.innerHTML = '<div class="vnccs-label">DMD2 LoRA Model</div>';
+                const dmdLabel = document.createElement("div");
+                dmdLabel.className = "vnccs-label";
+                dmdLabel.innerText = "DMD2 LoRA Model";
+                els.dmdLabel = dmdLabel;
+                dmdWrap.appendChild(dmdLabel);
                 const dmdRow = document.createElement("div"); dmdRow.className = "vnccs-lora-row";
                 const dmdSel = document.createElement("select"); dmdSel.className = "vnccs-select";
                 dmdSel.style.flex = "2";
@@ -1467,8 +1683,13 @@ app.registerExtension({
                 dmdStr.type = "checkbox";
                 dmdStr.checked = (state.gen_settings.dmd_lora_strength || 0) > 0;
                 dmdStr.onchange = (e) => {
-                    state.gen_settings.dmd_lora_strength = e.target.checked ? 1.0 : 0.0;
-                    saveState();
+                    const mode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
+                    if (mode === "anima") {
+                        setAnimaTurboMode(e.target.checked);
+                    } else {
+                        state.gen_settings.dmd_lora_strength = e.target.checked ? 1.0 : 0.0;
+                        saveState();
+                    }
                 };
                 const dmdTrack = document.createElement("div"); dmdTrack.className = "vnccs-toggle-track";
                 const dmdThumb = document.createElement("div"); dmdThumb.className = "vnccs-toggle-thumb";
@@ -1483,6 +1704,7 @@ app.registerExtension({
 
                 // Age LoRA
                 const ageWrap = document.createElement("div"); ageWrap.className = "vnccs-lora-item";
+                els.ageWrap = ageWrap;
                 ageWrap.innerHTML = '<div class="vnccs-label">Age LoRA (Auto Strength)</div>';
                 const ageSel = document.createElement("select"); ageSel.className = "vnccs-select";
                 ageSel.onchange = (e) => { state.gen_settings.age_lora_name = e.target.value; saveState(); };
@@ -1568,6 +1790,7 @@ app.registerExtension({
                     serialize: false,
                     hideOnZoom: false,
                 });
+                syncDOMWidgetWidthSoon(node, "ui");
 
                 // 6. Logic
 
@@ -1620,70 +1843,40 @@ app.registerExtension({
                         if (!d.characters || !d.characters.length) els.charSelect.add(new Option("None", ""));
                         else d.characters.forEach(c => els.charSelect.add(new Option(c, c)));
 
-                        // Restore values or Default
+                        // Restore values or defaults into independent per-mode profiles.
                         const g = state.gen_settings;
+                        migrateGenerationModeSettings();
 
-                        if (g.ckpt_name) {
-                            ensureOption(els.ckptSelect, g.ckpt_name);
-                            els.ckptSelect.value = g.ckpt_name;
-                        } else if (els.ckptSelect.options.length > 0) {
-                            // Default to first option if not set
-                            g.ckpt_name = els.ckptSelect.options[0].value;
-                            els.ckptSelect.value = g.ckpt_name;
-                            saveState(); // Ensure this default is saved immediately
+                        const illustriousProfile = getModeProfile("illustrious");
+                        if (!illustriousProfile.ckpt_name && els.ckptSelect.options.length > 0) {
+                            illustriousProfile.ckpt_name = els.ckptSelect.options[0].value;
                         }
+                        ensureOption(els.ckptSelect, illustriousProfile.ckpt_name);
+
+                        const animaProfile = getModeProfile("anima");
                         ["diffusion_model_name", "clip_name", "vae_name"].forEach((key) => {
                             const ref = els[key];
                             if (!ref) return;
-                            if (g[key]) {
-                                ensureOption(ref, g[key]);
-                                ref.value = g[key];
-                            } else if (ref.options.length > 0) {
-                                g[key] = ref.options[0].value;
-                                ref.value = g[key];
+                            if (key === "clip_name" && !animaProfile[key]) {
+                                animaProfile[key] = ANIMA_CLIP_NAME;
                             }
+                            if (key === "vae_name" && !animaProfile[key]) {
+                                animaProfile[key] = ANIMA_VAE_NAME;
+                            }
+                            if (!animaProfile[key] && ref.options.length > 0) {
+                                animaProfile[key] = ref.options[0].value;
+                            }
+                            ensureOption(ref, animaProfile[key]);
                         });
-                        g.generation_mode = (g.generation_mode || "illustrious").toLowerCase();
-                        if ((g.generation_defaults_version || 0) < GENERATION_DEFAULTS_VERSION) {
-                            applyGenerationDefaults(g.generation_mode, true);
-                        } else if (g.generation_mode === "anima" && !g.anima_defaults_applied) {
-                            applyGenerationDefaults("anima");
-                        }
+                        applyGenerationProfile(g.generation_mode);
                         migratePromptModes();
-                        if (g.sampler) els.sampler.value = g.sampler;
-                        if (g.scheduler) els.scheduler.value = g.scheduler;
-
-                        if (g.steps && els.steps) { els.steps.range.value = g.steps; els.steps.num.value = g.steps; }
-                        if (g.cfg && els.cfg) { els.cfg.range.value = g.cfg; els.cfg.num.value = g.cfg; }
 
                         // Auto-generate seed if still 0 (first use or unset)
                         if ((!g.seed || g.seed === 0) && g.seed_mode !== "randomize") {
                             g.seed = generateRandomSeed();
                         }
-                        if (g.seed !== undefined && els.seed) els.seed.value = g.seed;
-                        if (g.seed_mode && els.seed_mode) els.seed_mode.value = g.seed_mode;
-
-                        // Restore LoRAs
-                        if (g.dmd_lora_name) els.dmdSelect.value = g.dmd_lora_name;
-                        if (g.dmd_lora_strength !== undefined) {
-                            els.dmdSlider.checked = (g.dmd_lora_strength > 0);
-                        } else {
-                            els.dmdSlider.checked = true;
-                        }
-
-                        if (g.age_lora_name) els.ageSelect.value = g.age_lora_name;
-                        // Restore Stack
-                        g.lora_stack.forEach((item, i) => {
-                            if (i < els.loraStackSelects.length) {
-                                const ref = els.loraStackSelects[i];
-                                if (item.name) {
-                                    ref.sel.value = item.name;
-                                    ref.sel.closest(".vnccs-lora-item")?.classList.remove("is-empty");
-                                }
-                                ref.rng.value = item.strength;
-                            }
-                        });
-
+                        saveCurrentGenerationModeValues();
+                        syncGenerationControls();
                         refreshGenerationModeUI();
 
                         if (state.character) {
@@ -1720,7 +1913,7 @@ app.registerExtension({
 
                             const defaultInfo = {
                                 sex: "female", age: 18, race: "human", skin_color: "",
-                                hair: "", eyes: "", face: "", body: "", additional_details: "",
+                                hair: "black hair, long hair", eyes: "", face: "", body: "", additional_details: "",
                                 nsfw: false, aesthetics: "masterpiece, best quality",
                                 negative_prompt: "bad quality, worst quality",
                                 lora_prompt: "", background_color: "Green"
@@ -1819,6 +2012,7 @@ app.registerExtension({
                     if (els.btnGen.disabled) return;
 
                     node._randomizeSeedIfNeeded();
+                    saveCurrentGenerationModeValues();
 
                     // Show loading overlay
                     const loading = createLoadingOverlay(container, "Generating preview");
@@ -1834,9 +2028,7 @@ app.registerExtension({
                             gen_settings: { ...state.gen_settings }
                         };
                         // Clean stack in the copy
-                        payload.gen_settings.lora_stack = mode === "anima"
-                            ? []
-                            : payload.gen_settings.lora_stack.filter(x => x.name && x.name !== "None");
+                        payload.gen_settings.lora_stack = payload.gen_settings.lora_stack.filter(x => x.name && x.name !== "None");
 
                         const r = await api.fetchApi("/vnccs/preview_generate", { method: "POST", body: JSON.stringify(payload) });
 
@@ -1868,6 +2060,8 @@ app.registerExtension({
                 // 7. Graph Restore Hook / Main Entry Point
                 let initialized = false;
                 node.onConfigure = function () {
+                    syncDOMWidgetWidth(node, "ui");
+                    setTimeout(() => syncDOMWidgetWidth(node, "ui"), 100);
                     if (initialized) return;
                     // Prevent double init if called multiple times
                     // But we might need to re-load state if configure happens again? 
@@ -1890,6 +2084,13 @@ app.registerExtension({
                         init();
                     }
                 }, 100);
+            };
+
+            const onResize = nodeType.prototype.onResize;
+            nodeType.prototype.onResize = function (size) {
+                onResize?.apply(this, arguments);
+                syncDOMWidgetWidth(this, "ui");
+                requestAnimationFrame(() => syncDOMWidgetWidth(this, "ui"));
             };
         }
     }

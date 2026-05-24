@@ -10,7 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 pytest.importorskip("torch")
 
-from nodes.character_creator_v2 import CharacterCreatorV2, normalize_gen_settings
+from nodes.character_creator_v2 import CharacterCreatorV2, decode_generation_samples, normalize_gen_settings
+from utils import normalize_hair_tags
 
 
 def _base_info(**overrides):
@@ -19,7 +20,7 @@ def _base_info(**overrides):
         "age": 18,
         "race": "human",
         "skin_color": "fair",
-        "hair": "long black",
+        "hair": "black hair, long hair",
         "eyes": "blue",
         "face": "oval",
         "body": "slim",
@@ -64,7 +65,15 @@ class TestConstructPrompt:
 
     def test_positive_includes_hair(self):
         pos, _ = CharacterCreatorV2.construct_prompt(_base_info(hair="silver short"))
-        assert "silver short" in pos
+        assert "silver short hair" in pos
+
+    def test_hair_without_hair_word_is_normalized(self):
+        assert normalize_hair_tags("black long") == "black long hair"
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(hair="black long"))
+        assert "black long hair" in pos
+
+    def test_hair_word_added_when_no_hair_tag_exists(self):
+        assert normalize_hair_tags("side ponytail") == "side ponytail hair"
 
     def test_positive_includes_eyes(self):
         pos, _ = CharacterCreatorV2.construct_prompt(_base_info(eyes="red"))
@@ -180,6 +189,89 @@ class TestGenerationModes:
         assert settings["cfg"] == 4.0
         assert settings["sampler"] == "er_sde"
         assert settings["scheduler"] == "simple"
+        assert settings["clip_name"] == "qwen_3_06b_base.safetensors"
+        assert settings["vae_name"] == "qwen_image_vae.safetensors"
+        assert settings["clip_type"] == "stable_diffusion"
+        assert settings["dmd_lora_name"] == "anima\\anima-turbo-lora-v0.1.safetensors"
+        assert settings["turbo_enabled"] is False
+
+    def test_normalize_gen_settings_prefers_active_mode_profile(self):
+        settings = normalize_gen_settings({
+            "generation_mode": "illustrious",
+            "ckpt_name": "stale-anima-field",
+            "steps": 30,
+            "cfg": 4.0,
+            "sampler": "er_sde",
+            "scheduler": "simple",
+            "diffusion_model_name": "anima.safetensors",
+            "clip_name": "anima_clip.safetensors",
+            "vae_name": "anima_vae.safetensors",
+            "mode_settings": {
+                "illustrious": {
+                    "ckpt_name": "illustrious.safetensors",
+                    "steps": 20,
+                    "cfg": 8.0,
+                    "sampler": "euler",
+                    "scheduler": "normal",
+                }
+            },
+        })
+
+        assert settings["ckpt_name"] == "illustrious.safetensors"
+        assert settings["steps"] == 20
+        assert settings["cfg"] == 8.0
+        assert settings["sampler"] == "euler"
+        assert settings["scheduler"] == "normal"
+
+    def test_normalize_gen_settings_prefers_anima_mode_profile(self):
+        settings = normalize_gen_settings({
+            "generation_mode": "anima",
+            "steps": 20,
+            "cfg": 8.0,
+            "sampler": "euler",
+            "scheduler": "normal",
+            "mode_settings": {
+                "anima": {
+                    "diffusion_model_name": "anima.safetensors",
+                    "clip_name": "anima_clip.safetensors",
+                    "vae_name": "anima_vae.safetensors",
+                    "steps": 12,
+                    "cfg": 1.0,
+                    "sampler": "er_sde",
+                    "scheduler": "simple",
+                    "turbo_enabled": True,
+                    "dmd_lora_name": "anima\\anima-turbo-lora-v0.1.safetensors",
+                    "lora_stack": [{"name": "extra.safetensors", "strength": 0.5}],
+                }
+            },
+        })
+
+        assert settings["diffusion_model_name"] == "anima.safetensors"
+        assert settings["steps"] == 12
+        assert settings["cfg"] == 1.0
+        assert settings["turbo_enabled"] is True
+        assert settings["lora_stack"] == [{"name": "extra.safetensors", "strength": 0.5}]
+
+    def test_decode_generation_samples_unwraps_common_ksampler_dict(self):
+        class DummyVAE:
+            def __init__(self):
+                self.received = None
+
+            def decode_tiled(self, samples, tile_x, tile_y):
+                self.received = samples
+                return "decoded"
+
+        vae = DummyVAE()
+        latent_samples = object()
+
+        result = decode_generation_samples(
+            vae,
+            {"samples": latent_samples},
+            {"generation_mode": "illustrious"},
+        )
+
+        assert result == "decoded"
+        assert vae.received is latent_samples
 
     def test_process_uses_anima_loader(self, tmp_path, monkeypatch):
         import utils as U

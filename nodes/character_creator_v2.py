@@ -23,7 +23,7 @@ from ..utils import (
     save_config, build_face_details, generate_seed, dedupe_tokens,
     apply_sex, append_age, load_config, age_strength,
     list_characters, character_dir, base_output_dir,
-    sheets_dir, faces_dir
+    sheets_dir, faces_dir, normalize_hair_tags
 )
 
 # --------------------------------------------------------------------
@@ -128,12 +128,17 @@ ILLUSTRIOUS_DEFAULTS = {
 ANIMA_DEFAULTS = {
     "generation_mode": "anima",
     "diffusion_model_name": "",
-    "clip_name": "",
-    "vae_name": "",
+    "clip_name": "qwen_3_06b_base.safetensors",
+    "vae_name": "qwen_image_vae.safetensors",
+    "clip_type": "stable_diffusion",
     "sampler": "er_sde",
     "scheduler": "simple",
     "steps": 30,
     "cfg": 4.0,
+    "turbo_enabled": False,
+    "dmd_lora_name": "anima\\anima-turbo-lora-v0.1.safetensors",
+    "dmd_lora_strength": 1.0,
+    "lora_stack": [],
 }
 
 DEFAULT_PREVIEW_WIDTH = 640
@@ -147,12 +152,26 @@ def safe_filename_list(category):
         return []
 
 
+def get_lora_full_path(lora_name):
+    for candidate in (lora_name, str(lora_name or "").replace("\\", "/"), str(lora_name or "").replace("/", "\\")):
+        if not candidate:
+            continue
+        lora_path = folder_paths.get_full_path("loras", candidate)
+        if lora_path:
+            return lora_path
+    return None
+
+
 def normalize_gen_settings(gen_settings):
     normalized = dict(gen_settings or {})
     generation_mode = str(normalized.get("generation_mode", "illustrious")).lower()
+    mode_settings = normalized.get("mode_settings", {})
+    mode_profile = mode_settings.get(generation_mode, {}) if isinstance(mode_settings, dict) else {}
     defaults = ANIMA_DEFAULTS if generation_mode == "anima" else ILLUSTRIOUS_DEFAULTS
     merged = dict(defaults)
     merged.update(normalized)
+    if isinstance(mode_profile, dict):
+        merged.update(mode_profile)
     merged["generation_mode"] = generation_mode
     return merged
 
@@ -204,6 +223,7 @@ def load_anima_assets(gen_settings):
     diffusion_model_name = gen_settings.get("diffusion_model_name")
     clip_name = gen_settings.get("clip_name")
     vae_name = gen_settings.get("vae_name")
+    clip_type_name = str(gen_settings.get("clip_type", "stable_diffusion") or "stable_diffusion").lower()
 
     if not diffusion_model_name:
         raise ValueError("No Diffusion Model selected in Character Creator V2 ANIMA mode")
@@ -234,13 +254,23 @@ def load_anima_assets(gen_settings):
             ["load_clip", "load_model"],
             clip_name=clip_name,
             model_name=clip_name,
-            type="stable_diffusion",
+            type=clip_type_name,
             device="default",
         )
     if clip is None and hasattr(comfy.sd, "load_clip"):
         clip_path = folder_paths.get_full_path("text_encoders", clip_name)
         if clip_path:
-            clip = comfy.sd.load_clip(ckpt_paths=[clip_path], embedding_directory=folder_paths.get_folder_paths("embeddings"))
+            clip_type = getattr(comfy.sd.CLIPType, clip_type_name.upper(), None)
+            if clip_type is None:
+                raise ValueError(
+                    f"ComfyUI CLIPType.{clip_type_name.upper()} is not available. "
+                    "ANIMA uses the official workflow CLIPLoader type 'stable_diffusion'."
+                )
+            clip = comfy.sd.load_clip(
+                ckpt_paths=[clip_path],
+                embedding_directory=folder_paths.get_folder_paths("embeddings"),
+                clip_type=clip_type,
+            )
 
     vae = None
     if vae is None:
@@ -378,6 +408,25 @@ def encode_generation_prompt(clip, text, gen_settings):
     return [[cond, {"pooled_output": pooled}]]
 
 
+def validate_anima_conditioning(positive, negative, clip_name):
+    def context_width(conditioning):
+        try:
+            if not conditioning:
+                return None
+            return conditioning[0][0].shape[-1]
+        except Exception:
+            return None
+
+    widths = [width for width in (context_width(positive), context_width(negative)) if width is not None]
+    bad_widths = [width for width in widths if width != 1024]
+    if bad_widths:
+        raise ValueError(
+            "ANIMA conditioning has the wrong text-encoder width "
+            f"{bad_widths[0]} instead of 1024. Select the official ANIMA text encoder "
+            f"'qwen_3_06b_base.safetensors' in the CLIP field; current CLIP is '{clip_name}'."
+        )
+
+
 def decode_generation_samples(vae, samples, gen_settings):
     if str(gen_settings.get("generation_mode", "illustrious")).lower() == "anima":
         latent_payload = samples if isinstance(samples, dict) else {"samples": samples}
@@ -392,7 +441,8 @@ def decode_generation_samples(vae, samples, gen_settings):
         if decoded is not None:
             return decoded
         return vae.decode(latent_payload["samples"])
-    return vae.decode_tiled(samples, tile_x=512, tile_y=512)
+    latent_samples = samples.get("samples") if isinstance(samples, dict) else samples
+    return vae.decode_tiled(latent_samples, tile_x=512, tile_y=512)
 
 if server:
     @server.PromptServer.instance.routes.get("/vnccs/context_lists")
@@ -530,23 +580,31 @@ if server:
                 clip = clip.clone()
 
                 # Helper for Cached LoRA
-                def apply_lora_cached(m, c, l_name, l_strength):
+                def apply_lora_cached(m, c, l_name, l_strength, clip_strength=None):
                     if not l_name or l_name == "None": return m, c
                     
                     lora_dict = PREVIEW_CACHE["loras"].get(l_name)
                     if not lora_dict:
-                        l_path = folder_paths.get_full_path("loras", l_name)
+                        l_path = get_lora_full_path(l_name)
                         if l_path:
                             lora_dict = comfy.utils.load_torch_file(l_path, safe_load=True)
                             PREVIEW_CACHE["loras"][l_name] = lora_dict
                             print(f"[VNCCS] Preview: Cached LoRA '{l_name}'")
                     
                     if lora_dict:
-                        return comfy.sd.load_lora_for_models(m, c, lora_dict, l_strength, l_strength)
+                        return comfy.sd.load_lora_for_models(m, c, lora_dict, l_strength, l_strength if clip_strength is None else clip_strength)
                     return m, c
 
-                if generation_mode != "anima":
-                    # Apply LoRAs
+                if generation_mode == "anima":
+                    if gen_settings.get("turbo_enabled"):
+                        dmd_lora_name = gen_settings.get("dmd_lora_name")
+                        dmd_lora_strength = float(gen_settings.get("dmd_lora_strength", 1.0))
+                        model, clip = apply_lora_cached(model, clip, dmd_lora_name, dmd_lora_strength, 0.0)
+
+                    lora_stack = gen_settings.get("lora_stack", [])
+                    for l_item in lora_stack:
+                        model, clip = apply_lora_cached(model, clip, l_item.get("name"), float(l_item.get("strength", 1.0)))
+                else:
                     dmd_lora_name = gen_settings.get("dmd_lora_name")
                     dmd_lora_strength = float(gen_settings.get("dmd_lora_strength", 1.0))
                     model, clip = apply_lora_cached(model, clip, dmd_lora_name, dmd_lora_strength)
@@ -564,6 +622,8 @@ if server:
                 # 2. Encode Prompts
                 positive_cond = encode_generation_prompt(clip, positive_text, gen_settings)
                 negative_cond = encode_generation_prompt(clip, negative_text, gen_settings)
+                if generation_mode == "anima":
+                    validate_anima_conditioning(positive_cond, negative_cond, gen_settings.get("clip_name", ""))
 
                 # Patch PromptServer
                 if not hasattr(server.PromptServer.instance, 'last_prompt_id'):
@@ -662,6 +722,8 @@ class CharacterCreatorV2:
         # Physical Attributes
         for attr in ["race", "hair", "eyes", "face", "body", "skin_color", "additional_details"]:
             val = info.get(attr, "")
+            if attr == "hair":
+                val = normalize_hair_tags(val)
             if val:
                 positive_prompt += f", ({val}:{1.0 if 'skin' in attr else 1.0})"
 
@@ -734,16 +796,25 @@ class CharacterCreatorV2:
         _, model, clip, vae = load_generation_assets(gen_settings)
 
         # Helper to apply LoRA
-        def apply_lora_safe(m, c, l_name, l_strength):
+        def apply_lora_safe(m, c, l_name, l_strength, clip_strength=None):
             if not l_name or l_name == "None": return m, c
-            l_path = folder_paths.get_full_path("loras", l_name)
+            l_path = get_lora_full_path(l_name)
             if l_path:
                 lora = comfy.utils.load_torch_file(l_path, safe_load=True)
-                return comfy.sd.load_lora_for_models(m, c, lora, l_strength, l_strength)
+                return comfy.sd.load_lora_for_models(m, c, lora, l_strength, l_strength if clip_strength is None else clip_strength)
             return m, c
 
         # Apply DMD2
-        if gen_settings.get("generation_mode") != "anima":
+        if gen_settings.get("generation_mode") == "anima":
+            if gen_settings.get("turbo_enabled"):
+                dmd_name = gen_settings.get("dmd_lora_name")
+                dmd_str = float(gen_settings.get("dmd_lora_strength", 1.0))
+                model, clip = apply_lora_safe(model, clip, dmd_name, dmd_str, 0.0)
+
+            stack = gen_settings.get("lora_stack", [])
+            for item in stack:
+                model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
+        else:
             dmd_name = gen_settings.get("dmd_lora_name")
             dmd_str = float(gen_settings.get("dmd_lora_strength", 1.0))
             model, clip = apply_lora_safe(model, clip, dmd_name, dmd_str)
@@ -763,6 +834,8 @@ class CharacterCreatorV2:
         # Encode Conditioning
         conditioning_pos = encode_generation_prompt(clip, positive_prompt, gen_settings)
         conditioning_neg = encode_generation_prompt(clip, negative_prompt, gen_settings)
+        if gen_settings.get("generation_mode") == "anima":
+            validate_anima_conditioning(conditioning_pos, conditioning_neg, gen_settings.get("clip_name", ""))
 
         # Construct Pipe Object
         class PipeContext:
@@ -910,4 +983,3 @@ class CharacterCreatorV2:
             face_details,
             background_color
         )
-

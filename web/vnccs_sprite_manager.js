@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { registerCleanup } from "./vnccs_common.js";
+import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "./vnccs_common.js";
 
 const STYLE = `
 /* VNCCS Sprite Manager Styles */
@@ -458,6 +458,7 @@ app.registerExtension({
 
             const node = this;
             node.setSize([1000, 450]);
+            syncDOMWidgetWidthSoon(node, "sprite_manager_ui");
             const _timeouts = [];
 
             // Hide all widgets except widget_data
@@ -956,9 +957,24 @@ app.registerExtension({
                 serialize: false,
                 hideOnZoom: false
             });
+            syncDOMWidgetWidthSoon(node, "sprite_manager_ui");
 
             // === INITIALIZATION ===
             fetchCharacterList();
+        };
+
+        const onResize = nodeType.prototype.onResize;
+        nodeType.prototype.onResize = function (size) {
+            onResize?.apply(this, arguments);
+            syncDOMWidgetWidth(this, "sprite_manager_ui");
+            requestAnimationFrame(() => syncDOMWidgetWidth(this, "sprite_manager_ui"));
+        };
+
+        const onConfigure = nodeType.prototype.onConfigure;
+        nodeType.prototype.onConfigure = function (info) {
+            onConfigure?.apply(this, arguments);
+            syncDOMWidgetWidth(this, "sprite_manager_ui");
+            setTimeout(() => syncDOMWidgetWidth(this, "sprite_manager_ui"), 100);
         };
     }
 });

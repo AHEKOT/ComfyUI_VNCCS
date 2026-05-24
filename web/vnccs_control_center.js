@@ -1,6 +1,7 @@
 // web/vnccs_control_center.js
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "./vnccs_common.js";
 
 // Global registry cache — prevents API storms when multiple CC nodes exist
 window.VNCCS_CC_REGISTRY = window.VNCCS_CC_REGISTRY || {};
@@ -926,6 +927,7 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             onNodeCreated?.apply(this, arguments);
             this.setSize([INITIAL_NODE_W, INITIAL_NODE_H]);
+            syncDOMWidgetWidthSoon(this, "cc_widget");
             this._cc_widget = new VNCCSControlCenterWidget(this);
             this.setDirtyCanvas(true, true);
         };
@@ -933,7 +935,16 @@ app.registerExtension({
         const onConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function (info) {
             onConfigure?.apply(this, arguments);
+            syncDOMWidgetWidth(this, "cc_widget");
+            setTimeout(() => syncDOMWidgetWidth(this, "cc_widget"), 100);
             this._cc_widget?.restoreState();
+        };
+
+        const onResize = nodeType.prototype.onResize;
+        nodeType.prototype.onResize = function (size) {
+            onResize?.apply(this, arguments);
+            syncDOMWidgetWidth(this, "cc_widget");
+            requestAnimationFrame(() => syncDOMWidgetWidth(this, "cc_widget"));
         };
 
         const onRemoved = nodeType.prototype.onRemoved;
@@ -1330,6 +1341,7 @@ class VNCCSControlCenterWidget {
             getValue: () => "{}", setValue: () => {}, serialize: false,
             hideOnZoom: false,
         });
+        syncDOMWidgetWidthSoon(this.node, "cc_widget");
 
         // Hide node_state widget so it takes no space
         const stateW = this.node.widgets?.find(w => w.name === "node_state");

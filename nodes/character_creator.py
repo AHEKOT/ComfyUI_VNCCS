@@ -3,7 +3,7 @@ import os
 from ..utils import (
     base_output_dir, character_dir, list_characters, generate_seed, age_strength, append_age,
     apply_sex, save_config, ensure_character_structure, build_face_details, 
-    dedupe_tokens, faces_dir, sheets_dir, EMOTIONS, MAIN_DIRS, load_config
+    dedupe_tokens, faces_dir, sheets_dir, EMOTIONS, MAIN_DIRS, load_config, normalize_hair_tags
 )
 
 
@@ -28,7 +28,7 @@ class CharacterCreator:
                 "age": ("INT", {"default": 18, "min": 0, "max": 120}),
                 "race": ("STRING", {"default": "human"}),
                 "eyes": ("STRING", {"default": "blue eyes"}),
-                "hair": ("STRING", {"default": "black long"}),
+                "hair": ("STRING", {"default": "black hair, long hair"}),
                 "face": ("STRING", {"default": "freckles"}),
                 "body": ("STRING", {"default": "medium breasts"}),
                 "skin_color": ("STRING", {"default": "white"}),
@@ -102,8 +102,9 @@ class CharacterCreator:
         
         if race:
             positive_prompt += f", ({race} race:1.0)"
+        hair = normalize_hair_tags(hair)
         if hair:
-            positive_prompt += f", ({hair} hair:1.0)"
+            positive_prompt += f", ({hair}:1.0)"
         if eyes:
             positive_prompt += f", ({eyes} eyes:1.0)"
         if face:

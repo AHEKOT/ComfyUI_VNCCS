@@ -41,6 +41,40 @@ export function syncWidgetData(node, widgetName, data) {
     if (app.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
 }
 
+// ── DOM Widget Width Sync ────────────────────────────────────────────────────
+// ComfyUI/LiteGraph can restore stale DOM widget widths from older layouts.
+// Keep DOM widgets tied to the current node width instead.
+export function syncDOMWidgetWidth(node, widgetName) {
+    const widget = node?.widgets?.find(w => w.name === widgetName);
+    const nodeWidth = Number(node?.size?.[0]);
+
+    if (widget && Number.isFinite(nodeWidth) && nodeWidth > 0) {
+        if (!widget._vnccsWidthBound) {
+            Object.defineProperty(widget, "width", {
+                configurable: true,
+                get() {
+                    const width = Number(this._node?.size?.[0] ?? node?.size?.[0]);
+                    return Number.isFinite(width) && width > 0 ? width : undefined;
+                },
+                set(_value) {
+                    // Ignore stale widths restored by ComfyUI/LiteGraph.
+                }
+            });
+            widget._vnccsWidthBound = true;
+        }
+
+        if (typeof widget.triggerDraw === "function") {
+            widget.triggerDraw();
+        }
+    }
+}
+
+export function syncDOMWidgetWidthSoon(node, widgetName, delay = 100) {
+    syncDOMWidgetWidth(node, widgetName);
+    requestAnimationFrame(() => syncDOMWidgetWidth(node, widgetName));
+    setTimeout(() => syncDOMWidgetWidth(node, widgetName), delay);
+}
+
 // ── CSS Injection (once per class prefix) ─────────────────────────────────────
 const _injectedStyles = new Set();
 

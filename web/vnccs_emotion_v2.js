@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "./vnccs_common.js";
 
 // --- CSS STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -491,6 +492,7 @@ app.registerExtension({
 
                 // Set default size
                 node.setSize([920, 650]);
+                syncDOMWidgetWidthSoon(node, "emotion_ui_v2");
 
                 // Get Widgets
                 const charWidget = node.widgets.find(w => w.name === "character");
@@ -672,6 +674,7 @@ app.registerExtension({
                     getValue() { return undefined; },
                     setValue(v) { }
                 });
+                syncDOMWidgetWidthSoon(node, "emotion_ui_v2");
 
                 // Fix layout after tab switch: ComfyUI detaches/reattaches DOM widgets
                 // without triggering onResize. Use ResizeObserver on the node's canvas
@@ -797,6 +800,8 @@ app.registerExtension({
 
                 // Apply size on explicit resize too
                 node.onResize = function (size) {
+                    syncDOMWidgetWidth(node, "emotion_ui_v2");
+                    requestAnimationFrame(() => syncDOMWidgetWidth(node, "emotion_ui_v2"));
                     applySize();
                 }
 
@@ -1009,6 +1014,13 @@ app.registerExtension({
                         if (originalCb) originalCb(v);
                     };
                 }
+            };
+
+            const onConfigure = nodeType.prototype.onConfigure;
+            nodeType.prototype.onConfigure = function (info) {
+                onConfigure?.apply(this, arguments);
+                syncDOMWidgetWidth(this, "emotion_ui_v2");
+                setTimeout(() => syncDOMWidgetWidth(this, "emotion_ui_v2"), 100);
             };
         }
     }

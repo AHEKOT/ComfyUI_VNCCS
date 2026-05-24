@@ -6,6 +6,7 @@
  */
 
 import { app } from "../../../scripts/app.js";
+import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "../vnccs_common.js";
 
 // Auto-detect extension folder name
 const EXTENSION_FOLDER = (() => {
@@ -70,6 +71,7 @@ app.registerExtension({
                     getValue() { return ""; },
                     setValue(v) { }
                 });
+                syncDOMWidgetWidthSoon(this, "advanced_viewer");
 
                 // Find hidden text widgets
                 let cameraStateWidget = this.widgets.find(w => w.name === "camera_state");
@@ -88,6 +90,7 @@ app.registerExtension({
 
                     currentNodeSize = [nodeWidth, nodeHeight];
                     node.setSize(currentNodeSize);
+                    syncDOMWidgetWidthSoon(node, "advanced_viewer");
                     node.setDirtyCanvas(true, true);
                     app.graph.setDirtyCanvas(true, true);
                 };
@@ -127,6 +130,7 @@ app.registerExtension({
 
                 // Set initial size
                 this.setSize([768, 800]);
+                syncDOMWidgetWidthSoon(this, "advanced_viewer");
 
                 // Handle execution
                 const onExecuted = this.onExecuted;
@@ -162,6 +166,20 @@ app.registerExtension({
                 };
 
                 return r;
+            };
+
+            const onResize = nodeType.prototype.onResize;
+            nodeType.prototype.onResize = function (size) {
+                onResize?.apply(this, arguments);
+                syncDOMWidgetWidth(this, "advanced_viewer");
+                requestAnimationFrame(() => syncDOMWidgetWidth(this, "advanced_viewer"));
+            };
+
+            const onConfigure = nodeType.prototype.onConfigure;
+            nodeType.prototype.onConfigure = function (info) {
+                onConfigure?.apply(this, arguments);
+                syncDOMWidgetWidth(this, "advanced_viewer");
+                setTimeout(() => syncDOMWidgetWidth(this, "advanced_viewer"), 100);
             };
         }
     }

@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { registerCleanup, showModal as showCommonModal, showMessage } from "./vnccs_common.js";
+import { registerCleanup, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "./vnccs_common.js";
 
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -243,6 +243,7 @@ app.registerExtension({
 
                 const node = this;
                 node.setSize([1280, 800]);
+                syncDOMWidgetWidthSoon(node, "clothes_designer_ui");
 
                 // CSS Injections
                 const style = document.createElement("style");
@@ -996,7 +997,22 @@ app.registerExtension({
                     serialize: false,
                     hideOnZoom: false
                 });
+                syncDOMWidgetWidthSoon(node, "clothes_designer_ui");
 
+            };
+
+            const onResize = nodeType.prototype.onResize;
+            nodeType.prototype.onResize = function (size) {
+                onResize?.apply(this, arguments);
+                syncDOMWidgetWidth(this, "clothes_designer_ui");
+                requestAnimationFrame(() => syncDOMWidgetWidth(this, "clothes_designer_ui"));
+            };
+
+            const onConfigure = nodeType.prototype.onConfigure;
+            nodeType.prototype.onConfigure = function (info) {
+                onConfigure?.apply(this, arguments);
+                syncDOMWidgetWidth(this, "clothes_designer_ui");
+                setTimeout(() => syncDOMWidgetWidth(this, "clothes_designer_ui"), 100);
             };
         }
     }

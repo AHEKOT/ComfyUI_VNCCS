@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { showModal as showCommonModal, createLoadingOverlay, injectStyles } from "./vnccs_common.js";
+import { showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "./vnccs_common.js";
 
 // --- STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -414,6 +414,7 @@ app.registerExtension({
 
                 const node = this;
                 node.setSize([900, 700]); // 2-Column fitting
+                syncDOMWidgetWidthSoon(node, "ui");
 
                 // 1. Setup CSS
                 injectStyles(STYLE, "vnccs-character-cloner");
@@ -481,6 +482,8 @@ app.registerExtension({
                 node.onConfigure = function () {
                     if (origConfigure) origConfigure.apply(this, arguments);
                     console.log("[VNCCS] onConfigure triggered.");
+                    syncDOMWidgetWidth(node, "ui");
+                    setTimeout(() => syncDOMWidgetWidth(node, "ui"), 100);
                     loadState();
                 };
 
@@ -1165,6 +1168,7 @@ app.registerExtension({
 
                 // ADD WIDGET
                 node.addDOMWidget("ui", "ui", container, { serialize: false, hideOnZoom: false });
+                syncDOMWidgetWidthSoon(node, "ui");
 
                 // Define Render Thumbs Logic
                 renderThumbs = () => {
@@ -1295,6 +1299,13 @@ app.registerExtension({
                 // Initialize
                 loadState();
                 loadCharList();
+            };
+
+            const onResize = nodeType.prototype.onResize;
+            nodeType.prototype.onResize = function (size) {
+                onResize?.apply(this, arguments);
+                syncDOMWidgetWidth(this, "ui");
+                requestAnimationFrame(() => syncDOMWidgetWidth(this, "ui"));
             };
         }
     }
