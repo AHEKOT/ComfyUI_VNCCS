@@ -62,6 +62,14 @@ def _call_comfy_node(class_name, **kwargs):
     mappings = getattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {}) if comfy_nodes else {}
     cls = mappings.get(class_name)
     if cls is None:
+        local_mappings = {
+            "VNCCS_QWEN_Encoder": VNCCS_QWEN_Encoder,
+            "VNCCSSheetManager": VNCCSSheetManager,
+            "VNCCS_RMBG2": VNCCS_RMBG2,
+            "VNCCSChromaKey": VNCCSChromaKey,
+        }
+        cls = local_mappings.get(class_name)
+    if cls is None:
         raise RuntimeError(f"Required node '{class_name}' is not available")
 
     instance = cls()
@@ -110,6 +118,27 @@ DEFAULT_WIDGET_DATA = {
         "offload_device": "cpu",
         "seed": 42,
         "resolution": 2048,
+        "max_resolution": 3840,
+        "batch_size": 1,
+        "uniform_batch_size": False,
+        "color_correction": "lab",
+        "temporal_overlap": 0,
+        "prepend_frames": 0,
+        "input_noise_scale": 0,
+        "latent_noise_scale": 0,
+        "blocks_to_swap": 0,
+        "swap_io_components": False,
+        "cache_dit": False,
+        "attention_mode": "sdpa",
+        "encode_tiled": True,
+        "encode_tile_size": 1024,
+        "encode_tile_overlap": 128,
+        "decode_tiled": True,
+        "decode_tile_size": 1024,
+        "decode_tile_overlap": 128,
+        "tile_debug": "false",
+        "cache_vae": False,
+        "enable_debug": False,
     },
     "bg_remove": {
         "tolerance": 0.5,
@@ -124,6 +153,8 @@ DEFAULT_WIDGET_DATA = {
 
 
 class VNCCS_CharacterSheetPipeline:
+    OUTPUT_NODE = True
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -154,7 +185,7 @@ class VNCCS_CharacterSheetPipeline:
                 merged[section].update(values)
         return merged
 
-    def _emit(self, unique_id, stage, status, images=None, message=""):
+    def _emit(self, unique_id, stage, status, images=None, message="", current=None, total=None):
         if server is None or not unique_id:
             return
         payload = {
@@ -163,6 +194,10 @@ class VNCCS_CharacterSheetPipeline:
             "status": status,
             "message": message,
         }
+        if current is not None:
+            payload["current"] = int(current)
+        if total is not None:
+            payload["total"] = int(total)
         if images is not None:
             payload["images"] = _tensor_to_png_data_url(images)
         try:
@@ -183,97 +218,125 @@ class VNCCS_CharacterSheetPipeline:
             "scheduler": out[11] or "simple",
         }
 
+    def _list_to_batch(self, values):
+        if torch.is_tensor(values):
+            return values if values.ndim == 4 else values.unsqueeze(0)
+        if isinstance(values, list):
+            tensors = []
+            for value in values:
+                value = self._list_to_batch(value)
+                if value is not None:
+                    tensors.append(value)
+            if tensors:
+                return torch.cat(tensors, dim=0)
+        return values
+
+    def _split_batch(self, images):
+        images = self._list_to_batch(images)
+        if images is None or not torch.is_tensor(images):
+            return []
+        if images.ndim == 3:
+            images = images.unsqueeze(0)
+        return [images[i:i + 1] for i in range(images.shape[0])]
+
+    def _run_list_mapped(self, class_name, list_kwargs, **kwargs):
+        count = max((len(v) for v in list_kwargs.values()), default=0)
+        outputs = None
+        for index in range(count):
+            call_kwargs = dict(kwargs)
+            for key, values in list_kwargs.items():
+                call_kwargs[key] = values[index]
+            result = _call_comfy_node(class_name, **call_kwargs)
+            if outputs is None:
+                outputs = [[] for _ in result]
+            for out_index, value in enumerate(result):
+                outputs[out_index].append(value)
+        return tuple(outputs or [])
+
     def _run_pose_generation(self, poses, character, pipe, prompt, settings):
         pipe_values = self._extract_pipe(pipe)
         pose_parts = VNCCSSheetManager().process_sheet("split", poses, 1024, 3072, False)[0]
         character_rgb = VNCCS_MaskExtractor().fill_alpha_with_color(character)[0]
 
-        encoded_items = []
-        for pose_image in pose_parts:
-            positive, negative, latent = VNCCS_QWEN_Encoder().encode(
-                clip=pipe_values["clip"],
-                vae=pipe_values["vae"],
-                prompt=prompt,
-                image1=pose_image,
-                image2=character_rgb,
-                target_size=int(settings["target_size"]),
-                upscale_method="lanczos",
-                crop_method="disabled",
-                image1_name="image 1",
-                image2_name="image 2",
-                image3_name="image 3",
-                weight1=1,
-                weight2=1,
-                weight3=1,
-                vl_size=384,
-                latent_image_index=1,
-                instruction=(
-                    "Describe the character and their key features (body shape, physical characteristics, clothing, "
-                    "items, accessories). Then explain how the user's text instruction should alter or modify the "
-                    "character. Generate a new image that meets the user's requirements while maintaining consistency "
-                    "with the original character where appropriate."
-                ),
-                qwen_2511=True,
-            )
-            encoded_items.append((positive, negative, latent))
+        positive_list, negative_list, latent_list = self._run_list_mapped(
+            "VNCCS_QWEN_Encoder",
+            {"image1": pose_parts},
+            clip=pipe_values["clip"],
+            vae=pipe_values["vae"],
+            prompt=prompt,
+            image2=character_rgb,
+            target_size=int(settings["target_size"]),
+            upscale_method="lanczos",
+            crop_method="disabled",
+            image1_name="image 1",
+            image2_name="image 2",
+            image3_name="image 3",
+            weight1=1,
+            weight2=1,
+            weight3=1,
+            vl_size=384,
+            latent_image_index=1,
+            instruction=(
+                "Describe the character and their key features (body shape, physical characteristics, clothing, "
+                "items, accessories). Then explain how the user's text instruction should alter or modify the "
+                "character. Generate a new image that meets the user's requirements while maintaining consistency "
+                "with the original character where appropriate."
+            ),
+            qwen_2511=True,
+        )
 
-        sampled_items = []
-        for positive, negative, latent in encoded_items:
-            samples = _call_comfy_node(
-                "KSampler",
-                model=pipe_values["model"],
-                seed=pipe_values["seed"],
-                steps=pipe_values["steps"],
-                cfg=pipe_values["cfg"],
-                sampler_name=pipe_values["sampler"],
-                scheduler=pipe_values["scheduler"],
-                positive=positive,
-                negative=negative,
-                latent_image=latent,
-                denoise=1,
-            )[0]
-            sampled_items.append(samples)
+        sampled_list = self._run_list_mapped(
+            "KSampler",
+            {"positive": positive_list, "negative": negative_list, "latent_image": latent_list},
+            model=pipe_values["model"],
+            seed=pipe_values["seed"],
+            steps=pipe_values["steps"],
+            cfg=pipe_values["cfg"],
+            sampler_name=pipe_values["sampler"],
+            scheduler=pipe_values["scheduler"],
+            denoise=1,
+        )[0]
 
-        decoded_items = []
-        for samples in sampled_items:
-            image = _call_comfy_node(
-                "VAEDecodeTiled",
-                samples=samples,
-                vae=pipe_values["vae"],
-                tile_size=512,
-                overlap=64,
-                temporal_size=64,
-                temporal_overlap=8,
-            )[0]
-            decoded_items.append(image)
+        decoded_list = self._run_list_mapped(
+            "VAEDecodeTiled",
+            {"samples": sampled_list},
+            vae=pipe_values["vae"],
+            tile_size=512,
+            overlap=64,
+            temporal_size=64,
+            temporal_overlap=8,
+        )[0]
 
-        return torch.cat(decoded_items, dim=0)
+        return torch.cat([self._list_to_batch(image) for image in decoded_list], dim=0)
 
-    def _run_upscaler(self, image, background, settings):
+    def _run_upscaler_models(self, settings):
         dit = _call_comfy_node(
             "SeedVR2LoadDiTModel",
             model=settings["model"],
             device=settings["device"],
-            blocks_to_swap=0,
-            swap_io_components=False,
+            blocks_to_swap=int(settings["blocks_to_swap"]),
+            swap_io_components=bool(settings["swap_io_components"]),
             offload_device=settings["offload_device"],
-            cache_model=False,
-            attention_mode="sdpa",
+            cache_model=bool(settings["cache_dit"]),
+            attention_mode=settings["attention_mode"],
         )[0]
         vae = _call_comfy_node(
             "SeedVR2LoadVAEModel",
             model=settings["vae"],
             device=settings["device"],
-            encode_tiled=True,
-            encode_tile_size=1024,
-            encode_tile_overlap=128,
-            decode_tiled=True,
-            decode_tile_size=1024,
-            decode_tile_overlap=128,
-            tile_debug="false",
+            encode_tiled=bool(settings["encode_tiled"]),
+            encode_tile_size=int(settings["encode_tile_size"]),
+            encode_tile_overlap=int(settings["encode_tile_overlap"]),
+            decode_tiled=bool(settings["decode_tiled"]),
+            decode_tile_size=int(settings["decode_tile_size"]),
+            decode_tile_overlap=int(settings["decode_tile_overlap"]),
+            tile_debug=settings["tile_debug"],
             offload_device=settings["offload_device"],
-            cache_model=False,
+            cache_model=bool(settings["cache_vae"]),
         )[0]
+        return dit, vae
+
+    def _run_upscale_one(self, image, dit, vae, background, settings):
         upscaled = _call_comfy_node(
             "SeedVR2VideoUpscaler",
             image=image,
@@ -281,16 +344,16 @@ class VNCCS_CharacterSheetPipeline:
             vae=vae,
             seed=int(settings["seed"]),
             resolution=int(settings["resolution"]),
-            max_resolution=3840,
-            batch_size=1,
-            uniform_batch_size=False,
-            color_correction="lab",
-            temporal_overlap=0,
-            prepend_frames=0,
-            input_noise_scale=0,
-            latent_noise_scale=0,
+            max_resolution=int(settings["max_resolution"]),
+            batch_size=int(settings["batch_size"]),
+            uniform_batch_size=bool(settings["uniform_batch_size"]),
+            color_correction=settings["color_correction"],
+            temporal_overlap=int(settings["temporal_overlap"]),
+            prepend_frames=int(settings["prepend_frames"]),
+            input_noise_scale=float(settings["input_noise_scale"]),
+            latent_noise_scale=float(settings["latent_noise_scale"]),
             offload_device=settings["offload_device"],
-            enable_debug=False,
+            enable_debug=bool(settings["enable_debug"]),
         )[0]
         return VNCCS_RMBG2().process_image(
             upscaled,
@@ -303,6 +366,26 @@ class VNCCS_CharacterSheetPipeline:
             refine_foreground=False,
             background=str(background or "Green"),
         )[0]
+
+    def _run_upscaler(self, image, background, settings, unique_id=None):
+        images = self._split_batch(image)
+        total = len(images)
+        dit, vae = self._run_upscaler_models(settings)
+        results = []
+        for index, item in enumerate(images, start=1):
+            result = self._run_upscale_one(item, dit, vae, background, settings)
+            results.append(self._list_to_batch(result))
+            partial = torch.cat(results, dim=0)
+            self._emit(
+                unique_id,
+                "upscaler",
+                "running" if index < total else "done",
+                partial,
+                f"Upscaled image {index} of {total}",
+                index,
+                total,
+            )
+        return torch.cat(results, dim=0) if results else image
 
     def _run_bg_remove(self, images, settings):
         sheet = VNCCSSheetManager().process_sheet("compose", images, 1024, 6144, False)[0][0]
@@ -368,17 +451,20 @@ class VNCCS_CharacterSheetPipeline:
     def process(self, poses, character, pipe, prompt, background="Green", widget_data="{}", unique_id=None):
         settings = self._settings(widget_data)
         try:
-            self._emit(unique_id, "pose_generation", "running")
+            self._emit(unique_id, "pose_generation", "running", message="Encoding pose list", current=0, total=12)
             pose_images = self._run_pose_generation(poses, character, pipe, prompt, settings["pose_generation"])
-            self._emit(unique_id, "pose_generation", "done", pose_images)
+            pose_total = pose_images.shape[0] if torch.is_tensor(pose_images) and pose_images.ndim == 4 else 0
+            self._emit(unique_id, "pose_generation", "done", pose_images, f"Generated {pose_total} pose images", pose_total, pose_total)
 
-            self._emit(unique_id, "upscaler", "running", pose_images)
-            upscaled = self._run_upscaler(pose_images, background, settings["upscaler"])
-            self._emit(unique_id, "upscaler", "done", upscaled)
+            up_total = pose_total
+            self._emit(unique_id, "upscaler", "running", pose_images, f"Preparing upscaler for {up_total} images", 0, up_total)
+            upscaled = self._run_upscaler(pose_images, background, settings["upscaler"], unique_id=unique_id)
 
-            self._emit(unique_id, "bg_remove", "running", upscaled)
+            bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
+            self._emit(unique_id, "bg_remove", "running", upscaled, f"Composing and removing background for {bg_total} images", 0, bg_total)
             sheet, faces = self._run_bg_remove(upscaled, settings["bg_remove"])
-            self._emit(unique_id, "bg_remove", "done", self._preview_bg_remove(upscaled, settings["bg_remove"]))
+            bg_preview = self._preview_bg_remove(upscaled, settings["bg_remove"])
+            self._emit(unique_id, "bg_remove", "done", bg_preview, f"Background removed from {bg_total} images", bg_total, bg_total)
             return sheet, faces, pose_images, upscaled
         except Exception as exc:
             print("[VNCCS Pipeline] Failed:", exc)

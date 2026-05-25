@@ -13,12 +13,37 @@ const DEFAULT_DATA = {
         offload_device: "cpu",
         seed: 42,
         resolution: 2048,
+        max_resolution: 3840,
+        batch_size: 1,
+        uniform_batch_size: false,
+        color_correction: "lab",
+        temporal_overlap: 0,
+        prepend_frames: 0,
+        input_noise_scale: 0,
+        latent_noise_scale: 0,
+        blocks_to_swap: 0,
+        swap_io_components: false,
+        cache_dit: false,
+        attention_mode: "sdpa",
+        encode_tiled: true,
+        encode_tile_size: 1024,
+        encode_tile_overlap: 128,
+        decode_tiled: true,
+        decode_tile_size: 1024,
+        decode_tile_overlap: 128,
+        tile_debug: "false",
+        cache_vae: false,
+        enable_debug: false,
     },
     bg_remove: {
         tolerance: 0.5,
         despill_strength: 1,
         despill_kernel_size: 3,
         despill_color: "black",
+    },
+    ui: {
+        selected_preview: "pose_generation",
+        user_selected_preview: false,
     },
 };
 
@@ -40,6 +65,7 @@ const CSS = `
     overflow: hidden;
     box-sizing: border-box;
     pointer-events: auto;
+    position: relative;
 }
 .vnccs-pipe-settings {
     border-right: 1px solid rgba(255,143,163,0.16);
@@ -147,6 +173,10 @@ const CSS = `
     border: 1px solid rgba(255,255,255,0.08);
     border-radius: 8px;
     box-sizing: border-box;
+    cursor: zoom-in;
+}
+.vnccs-pipe-img:hover {
+    border-color: rgba(255,143,163,0.45);
 }
 .vnccs-pipe-empty {
     flex: 1;
@@ -191,8 +221,7 @@ const CSS = `
 .vnccs-pipe-stage-status {
     font-size: 10px;
     color: #9898a8;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    line-height: 1.35;
 }
 .vnccs-pipe-tabs {
     display: flex;
@@ -210,6 +239,54 @@ const CSS = `
 .vnccs-pipe-tab.is-selected {
     color: #ffb6c8;
     border-color: rgba(255,143,163,0.45);
+}
+.vnccs-pipe-viewer {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    background: #07070b;
+    display: grid;
+    grid-template-rows: 42px minmax(0, 1fr);
+}
+.vnccs-pipe-viewer-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    background: #101018;
+    border-bottom: 1px solid rgba(255,143,163,0.16);
+}
+.vnccs-pipe-viewer-spacer {
+    flex: 1;
+}
+.vnccs-pipe-viewer-btn {
+    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.055);
+    color: #e8e8f0;
+    border-radius: 7px;
+    font-size: 10px;
+    font-weight: 800;
+    padding: 5px 9px;
+    cursor: pointer;
+}
+.vnccs-pipe-viewer-btn.is-selected {
+    color: #ffb6c8;
+    border-color: rgba(255,143,163,0.48);
+}
+.vnccs-pipe-viewer-canvas {
+    position: relative;
+    overflow: hidden;
+    cursor: grab;
+    min-height: 0;
+}
+.vnccs-pipe-viewer-canvas.is-dragging {
+    cursor: grabbing;
+}
+.vnccs-pipe-viewer-img {
+    position: absolute;
+    transform-origin: 0 0;
+    user-select: none;
+    -webkit-user-drag: none;
 }
 `;
 
@@ -256,10 +333,14 @@ class PipelineWidget {
     constructor(node) {
         this.node = node;
         this.data = readData(node);
-        this.stageState = Object.fromEntries(STAGES.map(([key]) => [key, { status: "waiting", images: null }]));
-        this.selectedPreview = "pose_generation";
+        this.stageState = Object.fromEntries(STAGES.map(([key]) => [key, { status: "waiting", images: null, message: "" }]));
+        this.selectedPreview = this.data.ui?.selected_preview || "pose_generation";
+        this.userSelectedPreview = Boolean(this.data.ui?.user_selected_preview);
+        this.viewer = null;
+        this.nodeDefs = {};
         this.build();
         this.bindEvents();
+        this.loadNodeDefs();
     }
 
     build() {
@@ -312,9 +393,15 @@ class PipelineWidget {
                     status: detail.status || "waiting",
                     images: detail.images || this.stageState[stage]?.images || null,
                     message: detail.message || "",
+                    current: detail.current,
+                    total: detail.total,
                 };
-                if (detail.images) this.selectedPreview = stage;
+                if (detail.images && !this.userSelectedPreview) {
+                    this.selectedPreview = stage;
+                    this.persistUI();
+                }
             }
+            if (this.viewer?.open) this.syncViewerImage();
             this.renderPreview();
             this.renderChain();
         };
@@ -322,9 +409,45 @@ class PipelineWidget {
         registerCleanup(this.node, () => api.removeEventListener("vnccs.pipeline.stage", this.onStage));
     }
 
+    persistUI() {
+        this.data.ui = {
+            ...(this.data.ui || {}),
+            selected_preview: this.selectedPreview,
+            user_selected_preview: this.userSelectedPreview,
+        };
+        writeData(this.node, this.data);
+    }
+
     set(section, key, value) {
         this.data[section][key] = value;
         writeData(this.node, this.data);
+    }
+
+    async loadNodeDefs() {
+        const names = ["SeedVR2LoadDiTModel", "SeedVR2LoadVAEModel", "SeedVR2VideoUpscaler"];
+        for (const name of names) {
+            try {
+                const r = await api.fetchApi(`/object_info/${encodeURIComponent(name)}`);
+                if (r.ok) {
+                    const data = await r.json();
+                    this.nodeDefs[name] = data?.[name];
+                }
+            } catch {
+                // Keep defaults if optional upscaler nodes are unavailable.
+            }
+        }
+        this.renderSettings();
+    }
+
+    getInputSpec(nodeName, inputName) {
+        const input = this.nodeDefs[nodeName]?.input || {};
+        return input.required?.[inputName] || input.optional?.[inputName] || null;
+    }
+
+    getOptions(nodeName, inputName, fallback, currentValue = null) {
+        const spec = this.getInputSpec(nodeName, inputName);
+        const opts = Array.isArray(spec?.[0]) ? spec[0] : fallback;
+        return uniqueOptions([currentValue ?? this.data.upscaler[inputName], ...(opts || fallback || [])]);
     }
 
     field(section, key, label, type = "text", options = null) {
@@ -388,23 +511,33 @@ class PipelineWidget {
             this.field("pose_generation", "target_size", "target size", "select", [1024, 1344, 1536, 2048, 768, 512]),
         ]));
         this.settingsEl.appendChild(this.block("Upscaler", [
-            this.field("upscaler", "model", "model", "select", [
-                ...uniqueOptions([
-                    this.data.upscaler.model,
-                    "seedvr2_ema_3b-Q4_K_M.gguf",
-                    "seedvr2_ema_3b_fp16.safetensors",
-                ]),
-            ]),
-            this.field("upscaler", "vae", "vae", "select", [
-                ...uniqueOptions([
-                    this.data.upscaler.vae,
-                    "ema_vae_fp16.safetensors",
-                ]),
-            ]),
-            this.field("upscaler", "device", "device", "select", ["cuda:0", "cuda:1", "cpu", "mps"]),
-            this.field("upscaler", "offload_device", "offload", "select", ["cpu", "cuda:0", "cuda:1", "mps"]),
+            this.field("upscaler", "model", "dit model", "select", this.getOptions("SeedVR2LoadDiTModel", "model", ["seedvr2_ema_3b-Q4_K_M.gguf", "seedvr2_ema_3b_fp16.safetensors"], this.data.upscaler.model)),
+            this.field("upscaler", "vae", "vae model", "select", this.getOptions("SeedVR2LoadVAEModel", "model", ["ema_vae_fp16.safetensors"], this.data.upscaler.vae)),
+            this.field("upscaler", "device", "device", "select", this.getOptions("SeedVR2LoadDiTModel", "device", ["cuda:0", "cuda:1", "cpu", "mps"])),
+            this.field("upscaler", "offload_device", "offload", "select", this.getOptions("SeedVR2LoadDiTModel", "offload_device", ["cpu", "cuda:0", "cuda:1", "mps"])),
+            this.field("upscaler", "attention_mode", "attention", "select", this.getOptions("SeedVR2LoadDiTModel", "attention_mode", ["sdpa"])),
+            this.field("upscaler", "color_correction", "color", "select", this.getOptions("SeedVR2VideoUpscaler", "color_correction", ["lab", "adain", "wavelet", "none"])),
+            this.field("upscaler", "tile_debug", "tile debug", "select", this.getOptions("SeedVR2LoadVAEModel", "tile_debug", ["false", "true"])),
             this.field("upscaler", "seed", "seed", "number"),
             this.field("upscaler", "resolution", "resolution", "number"),
+            this.field("upscaler", "max_resolution", "max resolution", "number"),
+            this.field("upscaler", "batch_size", "batch size", "number"),
+            this.field("upscaler", "temporal_overlap", "temporal overlap", "number"),
+            this.field("upscaler", "prepend_frames", "prepend frames", "number"),
+            this.field("upscaler", "input_noise_scale", "input noise", "number"),
+            this.field("upscaler", "latent_noise_scale", "latent noise", "number"),
+            this.field("upscaler", "blocks_to_swap", "swap blocks", "number"),
+            this.field("upscaler", "encode_tile_size", "encode tile", "number"),
+            this.field("upscaler", "encode_tile_overlap", "encode overlap", "number"),
+            this.field("upscaler", "decode_tile_size", "decode tile", "number"),
+            this.field("upscaler", "decode_tile_overlap", "decode overlap", "number"),
+            this.field("upscaler", "uniform_batch_size", "uniform batch", "checkbox"),
+            this.field("upscaler", "swap_io_components", "swap io", "checkbox"),
+            this.field("upscaler", "cache_dit", "cache dit", "checkbox"),
+            this.field("upscaler", "cache_vae", "cache vae", "checkbox"),
+            this.field("upscaler", "encode_tiled", "encode tiled", "checkbox"),
+            this.field("upscaler", "decode_tiled", "decode tiled", "checkbox"),
+            this.field("upscaler", "enable_debug", "debug", "checkbox"),
         ]));
         this.settingsEl.appendChild(this.block("BG Remove", [
             this.field("bg_remove", "tolerance", "tolerance", "number"),
@@ -428,6 +561,8 @@ class PipelineWidget {
             tab.textContent = name;
             tab.onclick = () => {
                 this.selectedPreview = key;
+                this.userSelectedPreview = true;
+                this.persistUI();
                 this.renderPreview();
             };
             tabs.appendChild(tab);
@@ -445,13 +580,27 @@ class PipelineWidget {
         }
         const grid = document.createElement("div");
         grid.className = "vnccs-pipe-grid";
-        for (const src of images) {
+        images.forEach((src, index) => {
             const img = document.createElement("img");
             img.className = "vnccs-pipe-img";
             img.src = src;
+            img.onclick = () => this.openViewer(index);
             grid.appendChild(img);
-        }
+        });
         this.previewEl.appendChild(grid);
+    }
+
+    formatStageStatus(key) {
+        const state = this.stageState[key] || {};
+        const status = state.status || "waiting";
+        const count = Number.isFinite(state.current) && Number.isFinite(state.total)
+            ? ` (${state.current}/${state.total})`
+            : (state.images?.length ? ` (${state.images.length})` : "");
+        if (state.message) return `${state.message}${count}`;
+        if (status === "running") return `Running${count}`;
+        if (status === "done") return `Done${count}`;
+        if (status === "error") return "Error";
+        return "Waiting";
     }
 
     renderChain() {
@@ -464,6 +613,8 @@ class PipelineWidget {
             if (status === "done") stage.classList.add("is-done");
             stage.onclick = () => {
                 this.selectedPreview = key;
+                this.userSelectedPreview = true;
+                this.persistUI();
                 this.renderPreview();
             };
             const n = document.createElement("div");
@@ -471,10 +622,173 @@ class PipelineWidget {
             n.textContent = name;
             const s = document.createElement("div");
             s.className = "vnccs-pipe-stage-status";
-            s.textContent = status;
+            s.textContent = this.formatStageStatus(key);
             stage.append(n, s);
             this.chainEl.appendChild(stage);
         }
+    }
+
+    currentImages() {
+        return this.stageState[this.selectedPreview]?.images || [];
+    }
+
+    openViewer(index = 0) {
+        const images = this.currentImages();
+        if (!images.length) return;
+        this.viewer = {
+            open: true,
+            index: Math.max(0, Math.min(index, images.length - 1)),
+            scale: 1,
+            fitScale: 1,
+            x: 0,
+            y: 0,
+            dragging: false,
+        };
+        this.renderViewer();
+    }
+
+    renderViewer() {
+        this.closeViewer();
+        const overlay = document.createElement("div");
+        overlay.className = "vnccs-pipe-viewer";
+        const bar = document.createElement("div");
+        bar.className = "vnccs-pipe-viewer-bar";
+        const back = document.createElement("button");
+        back.className = "vnccs-pipe-viewer-btn";
+        back.textContent = "BACK";
+        back.onclick = () => this.closeViewer(true);
+        bar.appendChild(back);
+        for (const [key, name] of STAGES) {
+            const btn = document.createElement("button");
+            btn.className = "vnccs-pipe-viewer-btn" + (key === this.selectedPreview ? " is-selected" : "");
+            btn.textContent = name;
+            btn.onclick = () => {
+                this.selectedPreview = key;
+                this.userSelectedPreview = true;
+                this.persistUI();
+                this.viewer.index = 0;
+                this.renderViewer();
+                this.renderPreview();
+            };
+            bar.appendChild(btn);
+        }
+        const spacer = document.createElement("div");
+        spacer.className = "vnccs-pipe-viewer-spacer";
+        const zoomOut = document.createElement("button");
+        zoomOut.className = "vnccs-pipe-viewer-btn";
+        zoomOut.textContent = "-";
+        zoomOut.onclick = () => this.zoomViewer(0.8, null, true);
+        const zoomIn = document.createElement("button");
+        zoomIn.className = "vnccs-pipe-viewer-btn";
+        zoomIn.textContent = "+";
+        zoomIn.onclick = () => this.zoomViewer(1.25);
+        bar.append(spacer, zoomOut, zoomIn);
+
+        const canvas = document.createElement("div");
+        canvas.className = "vnccs-pipe-viewer-canvas";
+        const img = document.createElement("img");
+        img.className = "vnccs-pipe-viewer-img";
+        img.src = this.currentImages()[this.viewer.index] || "";
+        canvas.appendChild(img);
+        overlay.append(bar, canvas);
+        this.root.appendChild(overlay);
+        this.viewer.overlay = overlay;
+        this.viewer.canvas = canvas;
+        this.viewer.img = img;
+
+        img.onload = () => this.fitViewer();
+        canvas.onwheel = (event) => {
+            event.preventDefault();
+            const factor = event.deltaY < 0 ? 1.12 : 0.88;
+            this.zoomViewer(factor, event, event.deltaY > 0);
+        };
+        canvas.onpointerdown = (event) => {
+            this.viewer.dragging = true;
+            this.viewer.dragX = event.clientX;
+            this.viewer.dragY = event.clientY;
+            canvas.classList.add("is-dragging");
+            canvas.setPointerCapture(event.pointerId);
+        };
+        canvas.onpointermove = (event) => {
+            if (!this.viewer?.dragging) return;
+            this.viewer.x += event.clientX - this.viewer.dragX;
+            this.viewer.y += event.clientY - this.viewer.dragY;
+            this.viewer.dragX = event.clientX;
+            this.viewer.dragY = event.clientY;
+            this.applyViewerTransform();
+        };
+        canvas.onpointerup = (event) => {
+            if (!this.viewer) return;
+            this.viewer.dragging = false;
+            canvas.classList.remove("is-dragging");
+            canvas.releasePointerCapture(event.pointerId);
+        };
+    }
+
+    closeViewer(clear = false) {
+        this.viewer?.overlay?.remove();
+        if (clear) this.viewer = null;
+    }
+
+    syncViewerImage() {
+        const images = this.currentImages();
+        if (!this.viewer?.img || !images.length) return;
+        this.viewer.index = Math.min(this.viewer.index, images.length - 1);
+        this.viewer.img.src = images[this.viewer.index];
+    }
+
+    fitViewer() {
+        if (!this.viewer?.img || !this.viewer?.canvas) return;
+        const rect = this.viewer.canvas.getBoundingClientRect();
+        const iw = this.viewer.img.naturalWidth || 1;
+        const ih = this.viewer.img.naturalHeight || 1;
+        const fit = Math.min(rect.width / iw, rect.height / ih);
+        this.viewer.fitScale = fit;
+        this.viewer.scale = fit;
+        this.viewer.x = (rect.width - iw * fit) / 2;
+        this.viewer.y = (rect.height - ih * fit) / 2;
+        this.applyViewerTransform();
+    }
+
+    applyViewerTransform() {
+        if (!this.viewer?.img) return;
+        this.viewer.img.style.width = `${this.viewer.img.naturalWidth}px`;
+        this.viewer.img.style.height = `${this.viewer.img.naturalHeight}px`;
+        this.viewer.img.style.transform = `translate(${this.viewer.x}px, ${this.viewer.y}px) scale(${this.viewer.scale})`;
+    }
+
+    zoomViewer(factor, event = null, zoomOutToCenter = false) {
+        if (!this.viewer?.canvas || !this.viewer?.img) return;
+        const rect = this.viewer.canvas.getBoundingClientRect();
+        const oldScale = this.viewer.scale;
+        const minScale = this.viewer.fitScale * 0.25;
+        const maxScale = this.viewer.fitScale * 8;
+        const nextScale = Math.max(minScale, Math.min(maxScale, oldScale * factor));
+        if (nextScale === oldScale) return;
+
+        if (zoomOutToCenter) {
+            const iw = this.viewer.img.naturalWidth || 1;
+            const ih = this.viewer.img.naturalHeight || 1;
+            const centerX = rect.width / 2;
+            const centerY = rect.height / 2;
+            const imageCenterX = this.viewer.x + (iw * oldScale) / 2;
+            const imageCenterY = this.viewer.y + (ih * oldScale) / 2;
+            this.viewer.x += (centerX - imageCenterX) * 0.25;
+            this.viewer.y += (centerY - imageCenterY) * 0.25;
+            const imagePointX = (centerX - this.viewer.x) / oldScale;
+            const imagePointY = (centerY - this.viewer.y) / oldScale;
+            this.viewer.x = centerX - imagePointX * nextScale;
+            this.viewer.y = centerY - imagePointY * nextScale;
+        } else {
+            const anchorX = event ? event.clientX - rect.left : rect.width / 2;
+            const anchorY = event ? event.clientY - rect.top : rect.height / 2;
+            const imagePointX = (anchorX - this.viewer.x) / oldScale;
+            const imagePointY = (anchorY - this.viewer.y) / oldScale;
+            this.viewer.x = anchorX - imagePointX * nextScale;
+            this.viewer.y = anchorY - imagePointY * nextScale;
+        }
+        this.viewer.scale = nextScale;
+        this.applyViewerTransform();
     }
 }
 
@@ -494,7 +808,14 @@ app.registerExtension({
         const onConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function () {
             onConfigure?.apply(this, arguments);
-            this._vnccsPipelineWidget?.renderSettings();
+            if (this._vnccsPipelineWidget) {
+                this._vnccsPipelineWidget.data = readData(this);
+                this._vnccsPipelineWidget.selectedPreview = this._vnccsPipelineWidget.data.ui?.selected_preview || "pose_generation";
+                this._vnccsPipelineWidget.userSelectedPreview = Boolean(this._vnccsPipelineWidget.data.ui?.user_selected_preview);
+                this._vnccsPipelineWidget.renderSettings();
+                this._vnccsPipelineWidget.renderPreview();
+                this._vnccsPipelineWidget.renderChain();
+            }
             syncDOMWidgetWidthSoon(this, "pipeline_ui");
         };
 
