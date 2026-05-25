@@ -184,13 +184,20 @@ const CSS = `
 .vnccs-pipe-img {
     width: 100%;
     height: 100%;
+    display: block;
     min-height: 0;
-    object-fit: contain;
+    appearance: none;
+    padding: 0;
     background: #14141e;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: contain;
     border: 1px solid rgba(255,255,255,0.08);
     border-radius: 8px;
     box-sizing: border-box;
     cursor: zoom-in;
+    opacity: 1;
+    transition: opacity 0.12s ease;
 }
 .vnccs-pipe-img:hover {
     border-color: rgba(255,143,163,0.45);
@@ -301,9 +308,19 @@ const CSS = `
 }
 .vnccs-pipe-viewer-img {
     position: absolute;
+    left: 0;
+    top: 0;
+    display: block;
     transform-origin: 0 0;
     user-select: none;
     -webkit-user-drag: none;
+    opacity: 0;
+    visibility: hidden;
+    transform: translate(-100000px, -100000px) scale(1);
+}
+.vnccs-pipe-viewer-img.is-ready {
+    opacity: 1;
+    visibility: visible;
 }
 `;
 
@@ -746,11 +763,12 @@ class PipelineWidget {
         const grid = document.createElement("div");
         grid.className = "vnccs-pipe-grid";
         images.forEach((src, index) => {
-            const img = document.createElement("img");
-            img.className = "vnccs-pipe-img";
-            img.src = src;
-            img.onclick = () => this.openViewer(index);
-            grid.appendChild(img);
+            const tile = document.createElement("button");
+            tile.type = "button";
+            tile.className = "vnccs-pipe-img";
+            tile.style.backgroundImage = `url("${String(src).replaceAll('"', "%22")}")`;
+            tile.onclick = () => this.openViewer(index);
+            grid.appendChild(tile);
         });
         this.previewEl.appendChild(grid);
     }
@@ -830,10 +848,17 @@ class PipelineWidget {
             btn.className = "vnccs-pipe-viewer-btn" + (key === this.selectedPreview ? " is-selected" : "");
             btn.textContent = name;
             btn.onclick = () => {
+                const viewerState = this.serializableViewerState();
                 this.selectedPreview = key;
                 this.userSelectedPreview = true;
                 this.persistUI();
                 this.viewer.index = this.clampedViewerIndex();
+                this.viewer.restored = {
+                    ...viewerState,
+                    open: true,
+                    stage: key,
+                    index: this.viewer.index,
+                };
                 this.renderViewer();
                 this.renderPreview();
             };
@@ -855,7 +880,6 @@ class PipelineWidget {
         canvas.className = "vnccs-pipe-viewer-canvas";
         const img = document.createElement("img");
         img.className = "vnccs-pipe-viewer-img";
-        img.src = this.currentImages()[this.viewer.index] || "";
         canvas.appendChild(img);
         overlay.append(bar, canvas);
         this.root.appendChild(overlay);
@@ -863,7 +887,10 @@ class PipelineWidget {
         this.viewer.canvas = canvas;
         this.viewer.img = img;
 
-        img.onload = () => this.fitViewer();
+        img.onload = () => requestAnimationFrame(() => this.fitViewer());
+        img.decoding = "async";
+        img.src = this.currentImages()[this.viewer.index] || "";
+        if (img.complete && img.naturalWidth) requestAnimationFrame(() => this.fitViewer());
         canvas.onwheel = (event) => {
             event.preventDefault();
             const factor = event.deltaY < 0 ? 1.12 : 0.88;
@@ -906,6 +933,7 @@ class PipelineWidget {
         const images = this.currentImages();
         if (!this.viewer?.img || !images.length) return;
         this.viewer.index = this.clampedViewerIndex();
+        this.viewer.img.classList.remove("is-ready");
         this.viewer.img.src = images[this.viewer.index];
     }
 
@@ -917,10 +945,10 @@ class PipelineWidget {
 
     fitViewer() {
         if (!this.viewer?.img || !this.viewer?.canvas) return;
-        const rect = this.viewer.canvas.getBoundingClientRect();
+        const rect = this.viewerCanvasRect();
         const iw = this.viewer.img.naturalWidth || 1;
         const ih = this.viewer.img.naturalHeight || 1;
-        const fit = Math.min(rect.width / iw, rect.height / ih);
+        const fit = rect.height / ih;
         this.viewer.fitScale = fit;
         const restored = this.viewer.restored;
         if (restored?.open && Number.isFinite(restored.scaleRatio)) {
@@ -934,11 +962,31 @@ class PipelineWidget {
             this.restoredViewer = null;
         } else {
             this.viewer.scale = fit;
-            this.viewer.x = (rect.width - iw * fit) / 2;
-            this.viewer.y = (rect.height - ih * fit) / 2;
+            this.centerViewerImage(rect, iw, ih, true);
         }
         this.applyViewerTransform();
         this.saveBrowserState();
+    }
+
+    viewerCanvasRect() {
+        const canvas = this.viewer?.canvas;
+        if (!canvas) return { width: 1, height: 1 };
+        const rect = canvas.getBoundingClientRect();
+        return {
+            left: rect.left || 0,
+            top: rect.top || 0,
+            width: canvas.clientWidth || rect.width || 1,
+            height: canvas.clientHeight || rect.height || 1,
+        };
+    }
+
+    centerViewerImage(rect = null, iw = null, ih = null, lockYToTop = false) {
+        if (!this.viewer?.canvas || !this.viewer?.img) return;
+        rect = rect || this.viewerCanvasRect();
+        iw = iw || this.viewer.img.naturalWidth || 1;
+        ih = ih || this.viewer.img.naturalHeight || 1;
+        this.viewer.x = rect.width / 2 - (iw * this.viewer.scale) / 2;
+        this.viewer.y = lockYToTop ? 0 : (rect.height - ih * this.viewer.scale) / 2;
     }
 
     applyViewerTransform() {
@@ -946,11 +994,12 @@ class PipelineWidget {
         this.viewer.img.style.width = `${this.viewer.img.naturalWidth}px`;
         this.viewer.img.style.height = `${this.viewer.img.naturalHeight}px`;
         this.viewer.img.style.transform = `translate(${this.viewer.x}px, ${this.viewer.y}px) scale(${this.viewer.scale})`;
+        this.viewer.img.classList.add("is-ready");
     }
 
     zoomViewer(factor, event = null) {
         if (!this.viewer?.canvas || !this.viewer?.img) return;
-        const rect = this.viewer.canvas.getBoundingClientRect();
+        const rect = this.viewerCanvasRect();
         const oldScale = this.viewer.scale;
         const fitScale = this.viewer.fitScale || 1;
         const minScale = fitScale;
