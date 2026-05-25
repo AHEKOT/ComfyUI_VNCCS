@@ -203,15 +203,18 @@ const CSS = `
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: repeat(6, minmax(70px, 1fr));
-    grid-template-rows: repeat(2, minmax(0, 1fr));
     gap: 8px;
+    align-content: center;
+    justify-content: center;
+    overflow: hidden;
 }
 .vnccs-pipe-img {
     width: 100%;
     height: 100%;
     display: block;
     min-height: 0;
+    justify-self: center;
+    align-self: center;
     appearance: none;
     padding: 0;
     background: #14141e;
@@ -401,6 +404,8 @@ class PipelineWidget {
         this.restoredViewer = null;
         this._saveBrowserStateTimer = null;
         this.nodeDefs = {};
+        this.imageMetrics = new Map();
+        this.previewLayoutFrame = null;
         this.restoreBrowserState();
         this.build();
         this.bindEvents();
@@ -443,6 +448,9 @@ class PipelineWidget {
         this.renderSettings();
         this.renderPreview();
         this.renderChain();
+        this.previewResizeObserver = new ResizeObserver(() => this.renderPreview());
+        this.previewResizeObserver.observe(this.previewEl);
+        registerCleanup(this.node, () => this.previewResizeObserver?.disconnect());
         if (this.restoredViewer?.open && this.currentImages().length) {
             this.openViewer(this.restoredViewer.index || 0, this.restoredViewer);
         }
@@ -862,10 +870,93 @@ class PipelineWidget {
             tile.type = "button";
             tile.className = "vnccs-pipe-img";
             tile.style.backgroundImage = `url("${String(src).replaceAll('"', "%22")}")`;
+            tile.dataset.src = src;
             tile.onclick = () => this.openViewer(index);
             grid.appendChild(tile);
         });
         this.previewEl.appendChild(grid);
+        this.schedulePreviewGridLayout(grid, images);
+    }
+
+    schedulePreviewGridLayout(grid, images) {
+        if (this.previewLayoutFrame) cancelAnimationFrame(this.previewLayoutFrame);
+        this.previewLayoutFrame = requestAnimationFrame(() => {
+            this.previewLayoutFrame = null;
+            this.layoutPreviewGrid(grid, images);
+        });
+        for (const src of images) this.ensureImageMetrics(src, () => this.layoutPreviewGrid(grid, images));
+    }
+
+    ensureImageMetrics(src, onReady) {
+        const existing = this.imageMetrics.get(src);
+        if (existing) {
+            if (existing.loading && onReady) existing.callbacks.push(onReady);
+            else onReady?.();
+            return;
+        }
+        this.imageMetrics.set(src, { width: 1, height: 1, loading: true, callbacks: onReady ? [onReady] : [] });
+        const img = new Image();
+        img.onload = () => {
+            const callbacks = this.imageMetrics.get(src)?.callbacks || [];
+            this.imageMetrics.set(src, {
+                width: img.naturalWidth || 1,
+                height: img.naturalHeight || 1,
+                loading: false,
+            });
+            callbacks.forEach(callback => callback?.());
+        };
+        img.onerror = () => {
+            const callbacks = this.imageMetrics.get(src)?.callbacks || [];
+            this.imageMetrics.set(src, { width: 1, height: 1, loading: false });
+            callbacks.forEach(callback => callback?.());
+        };
+        img.src = src;
+    }
+
+    layoutPreviewGrid(grid, images) {
+        if (!grid?.isConnected || !images?.length) return;
+        const rect = grid.getBoundingClientRect();
+        const gap = 8;
+        const availableW = Math.max(1, grid.clientWidth || rect.width || 1);
+        const availableH = Math.max(1, grid.clientHeight || rect.height || 1);
+        const aspects = images.map(src => {
+            const metrics = this.imageMetrics.get(src);
+            return Math.max(0.05, Math.min(20, (metrics?.width || 1) / (metrics?.height || 1)));
+        });
+
+        let best = null;
+        for (let cols = 1; cols <= images.length; cols++) {
+            const rows = Math.ceil(images.length / cols);
+            const cellW = (availableW - gap * (cols - 1)) / cols;
+            const cellH = (availableH - gap * (rows - 1)) / rows;
+            if (cellW <= 0 || cellH <= 0) continue;
+
+            let minArea = Infinity;
+            let totalArea = 0;
+            for (const aspect of aspects) {
+                const drawW = Math.min(cellW, cellH * aspect);
+                const drawH = drawW / aspect;
+                const area = drawW * drawH;
+                minArea = Math.min(minArea, area);
+                totalArea += area;
+            }
+            const score = minArea * 1000000 + totalArea;
+            if (!best || score > best.score) {
+                best = { cols, rows, cellW, cellH, score };
+            }
+        }
+
+        if (!best) return;
+        grid.style.gridTemplateColumns = `repeat(${best.cols}, ${Math.floor(best.cellW)}px)`;
+        grid.style.gridTemplateRows = `repeat(${best.rows}, ${Math.floor(best.cellH)}px)`;
+
+        [...grid.children].forEach((tile, index) => {
+            const aspect = aspects[index] || 1;
+            const drawW = Math.min(best.cellW, best.cellH * aspect);
+            const drawH = drawW / aspect;
+            tile.style.width = `${Math.max(1, Math.floor(drawW))}px`;
+            tile.style.height = `${Math.max(1, Math.floor(drawH))}px`;
+        });
     }
 
     formatStageStatus(key) {
