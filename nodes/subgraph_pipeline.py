@@ -32,7 +32,6 @@ try:
 except Exception:  # pragma: no cover
     server = None
 
-from .sheet_manager import VNCCSSheetManager
 from .vnccs_pipe import VNCCS_Pipe
 from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder
 from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, VNCCS_RMBG2
@@ -67,7 +66,6 @@ def _call_comfy_node(class_name, **kwargs):
     if cls is None:
         local_mappings = {
             "VNCCS_QWEN_Encoder": VNCCS_QWEN_Encoder,
-            "VNCCSSheetManager": VNCCSSheetManager,
             "VNCCS_RMBG2": VNCCS_RMBG2,
             "VNCCSChromaKey": VNCCSChromaKey,
         }
@@ -114,6 +112,11 @@ def _tensor_to_png_data_url(image, max_items=12):
 
 
 def _character_cache_dir_from_sheets_path(sheets_path, character_name=""):
+    character_root = _character_root_from_sheets_path(sheets_path, character_name)
+    return os.path.join(character_root, "cache", "poses") if character_root else None
+
+
+def _character_root_from_sheets_path(sheets_path, character_name=""):
     if isinstance(sheets_path, list):
         sheets_path = sheets_path[0] if sheets_path else ""
     sheets_path = str(sheets_path or "").strip()
@@ -122,13 +125,13 @@ def _character_cache_dir_from_sheets_path(sheets_path, character_name=""):
         if "Sheets" in parts:
             character_root = os.sep.join(parts[:parts.index("Sheets")])
             if character_root:
-                return os.path.join(character_root, "cache", "poses")
+                return character_root
         if os.path.isdir(sheets_path):
-            return os.path.join(os.path.abspath(sheets_path), "cache", "poses")
+            return os.path.abspath(sheets_path)
 
     character_name = str(character_name or "").strip()
     if character_name and character_name != "Unknown":
-        return os.path.join(character_dir(character_name), "cache", "poses")
+        return character_dir(character_name)
 
     return None
 
@@ -229,6 +232,7 @@ DEFAULT_WIDGET_DATA = {
 
 class VNCCS_CharacterSheetPipeline:
     OUTPUT_NODE = True
+    INPUT_IS_LIST = True
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -256,6 +260,7 @@ class VNCCS_CharacterSheetPipeline:
     DESCRIPTION = "Replacement for VNCCS Pose Generation, Upscaler, and BG Remove subgraphs."
 
     def _settings(self, widget_data):
+        widget_data = self._unwrap_scalar(widget_data)
         data = json.loads(widget_data) if isinstance(widget_data, str) and widget_data.strip() else {}
         merged = json.loads(json.dumps(DEFAULT_WIDGET_DATA))
         for section, values in (data or {}).items():
@@ -264,10 +269,16 @@ class VNCCS_CharacterSheetPipeline:
         return merged
 
     def _widget_data(self, widget_data):
+        widget_data = self._unwrap_scalar(widget_data)
         try:
             return json.loads(widget_data) if isinstance(widget_data, str) and widget_data.strip() else {}
         except Exception:
             return {}
+
+    def _unwrap_scalar(self, value):
+        if isinstance(value, list):
+            return value[0] if value else None
+        return value
 
     def _emit(self, unique_id, stage, status, images=None, message="", current=None, total=None, cache_dir=None):
         if server is None or not unique_id:
@@ -323,6 +334,21 @@ class VNCCS_CharacterSheetPipeline:
             images = images.unsqueeze(0)
         return [images[i:i + 1] for i in range(images.shape[0])]
 
+    def _image_list(self, images):
+        if isinstance(images, tuple):
+            images = images[0]
+        if isinstance(images, list):
+            result = []
+            for image in images:
+                result.extend(self._image_list(image))
+            return result
+        if torch.is_tensor(images):
+            if images.ndim == 3:
+                return [images.unsqueeze(0)]
+            if images.ndim == 4:
+                return [images[i:i + 1] for i in range(images.shape[0])]
+        return []
+
     def _run_list_mapped(self, class_name, list_kwargs, **kwargs):
         count = max((len(v) for v in list_kwargs.values()), default=0)
         outputs = None
@@ -339,7 +365,7 @@ class VNCCS_CharacterSheetPipeline:
 
     def _run_pose_generation(self, poses, character, pipe, prompt, settings):
         pipe_values = self._extract_pipe(pipe)
-        pose_parts = VNCCSSheetManager().process_sheet("split", poses, 1024, 3072, False)[0]
+        pose_parts = self._image_list(poses)
         character_rgb = VNCCS_MaskExtractor().fill_alpha_with_color(character)[0]
 
         positive_list, negative_list, latent_list = self._run_list_mapped(
@@ -506,18 +532,6 @@ class VNCCS_CharacterSheetPipeline:
         return torch.cat(results, dim=0) if results else image
 
     def _run_bg_remove(self, images, settings):
-        sheet = VNCCSSheetManager().process_sheet("compose", images, 1024, 6144, False)[0][0]
-        sheet = VNCCSChromaKey().chroma_key(
-            sheet,
-            float(settings["tolerance"]),
-            float(settings["despill_strength"]),
-            int(settings["despill_kernel_size"]),
-            settings["despill_color"],
-        )[0]
-        faces = self._extract_faces(sheet)
-        return sheet, faces
-
-    def _preview_bg_remove(self, images, settings):
         return VNCCSChromaKey().chroma_key(
             images,
             float(settings["tolerance"]),
@@ -526,52 +540,70 @@ class VNCCS_CharacterSheetPipeline:
             settings["despill_color"],
         )[0]
 
-    def _extract_faces(self, sheet):
-        try:
-            detector = _call_comfy_node("UltralyticsDetectorProvider", model_name="bbox/face_yolov8m.pt")[0]
-            return _call_comfy_node(
-                "VNCCS_BBox_Extractor",
-                image=sheet,
-                bbox_detector=detector,
-                confidence=0.5,
-                crop_size=300,
-                padding=10,
-            )[0]
-        except Exception:
-            return self._fallback_face_grid(sheet)
+    def _tensor_item_to_pil(self, image):
+        array = (image.detach().cpu().clamp(0, 1).numpy() * 255).astype(np.uint8)
+        mode = "RGBA" if array.shape[-1] == 4 else "RGB"
+        return Image.fromarray(array, mode=mode)
 
-    def _fallback_face_grid(self, sheet):
-        img = sheet
-        if img.ndim == 3:
-            img = img.unsqueeze(0)
-        h = img.shape[1]
-        w = img.shape[2]
-        cell_w = max(1, w // 6)
-        cell_h = max(1, h // 2)
-        crops = []
-        for row in range(2):
-            for col in range(6):
-                cell = img[0, row * cell_h:(row + 1) * cell_h, col * cell_w:(col + 1) * cell_w, :]
-                top = int(cell_h * 0.04)
-                bottom = int(cell_h * 0.34)
-                left = int(cell_w * 0.22)
-                right = int(cell_w * 0.78)
-                face = cell[top:bottom, left:right, :]
-                face = torch.nn.functional.interpolate(
-                    face.unsqueeze(0).permute(0, 3, 1, 2),
-                    size=(512, 512),
-                    mode="bilinear",
-                    align_corners=False,
-                ).permute(0, 2, 3, 1)
-                crops.append(face)
-        return torch.cat(crops, dim=0)
+    def _version_dir(self, target_dir):
+        version = 1
+        while True:
+            candidate = os.path.join(target_dir, f"V{version}")
+            if not os.path.exists(candidate):
+                return candidate
+            version += 1
+
+    def _save_final_sprites(self, images, sheets_path, character_name=""):
+        character_root = _character_root_from_sheets_path(sheets_path, character_name)
+        if not character_root:
+            return []
+
+        images = self._list_to_batch(images)
+        if images is None or not torch.is_tensor(images):
+            return []
+        if images.ndim == 3:
+            images = images.unsqueeze(0)
+
+        target_dir = os.path.join(character_root, "Sprites", "Naked")
+        os.makedirs(target_dir, exist_ok=True)
+
+        filenames = [f"sprite_pose_{index:04d}.png" for index in range(1, images.shape[0] + 1)]
+        collisions = [
+            filename for filename in filenames
+            if os.path.exists(os.path.join(target_dir, filename))
+            and os.path.isfile(os.path.join(target_dir, filename))
+        ]
+        if collisions:
+            version_dir = self._version_dir(target_dir)
+            os.makedirs(version_dir, exist_ok=True)
+            image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+            for filename in collisions:
+                src = os.path.join(target_dir, filename)
+                if os.path.splitext(filename)[1].lower() in image_exts:
+                    os.replace(src, os.path.join(version_dir, filename))
+
+        saved = []
+        for index, image in enumerate(images, start=1):
+            filename = f"sprite_pose_{index:04d}.png"
+            path = os.path.join(target_dir, filename)
+            self._tensor_item_to_pil(image).save(path, format="PNG")
+            saved.append(path)
+        return saved
 
     def process(self, poses, character, pipe, prompt, background="Green", widget_data="{}", sheets_path="", unique_id=None):
         settings = self._settings(widget_data)
         widget_payload = self._widget_data(widget_data)
+        character_name = widget_payload.get("character_name", "")
+        character = self._unwrap_scalar(character)
+        pipe = self._unwrap_scalar(pipe)
+        prompt = self._unwrap_scalar(prompt)
+        background = self._unwrap_scalar(background)
+        sheets_path = self._unwrap_scalar(sheets_path)
+        unique_id = self._unwrap_scalar(unique_id)
         cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""))
         try:
-            self._emit(unique_id, "pose_generation", "running", message="Encoding pose list", current=0, total=12, cache_dir=cache_dir)
+            input_total = len(self._image_list(poses))
+            self._emit(unique_id, "pose_generation", "running", message="Encoding pose list", current=0, total=input_total, cache_dir=cache_dir)
             pose_images = self._run_pose_generation(poses, character, pipe, prompt, settings["pose_generation"])
             pose_total = pose_images.shape[0] if torch.is_tensor(pose_images) and pose_images.ndim == 4 else 0
             self._emit(unique_id, "pose_generation", "done", pose_images, f"Generated {pose_total} pose images", pose_total, pose_total, cache_dir=cache_dir)
@@ -581,11 +613,12 @@ class VNCCS_CharacterSheetPipeline:
             upscaled = self._run_upscaler(pose_images, background, settings["upscaler"], unique_id=unique_id, cache_dir=cache_dir)
 
             bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
-            self._emit(unique_id, "bg_remove", "running", upscaled, f"Composing and removing background for {bg_total} images", 0, bg_total, cache_dir=cache_dir)
-            sheet, faces = self._run_bg_remove(upscaled, settings["bg_remove"])
-            bg_preview = self._preview_bg_remove(upscaled, settings["bg_remove"])
-            self._emit(unique_id, "bg_remove", "done", bg_preview, f"Background removed from {bg_total} images", bg_total, bg_total, cache_dir=cache_dir)
-            return sheet, faces, pose_images, upscaled
+            self._emit(unique_id, "bg_remove", "running", upscaled, f"Removing background for {bg_total} images", 0, bg_total, cache_dir=cache_dir)
+            final_images = self._run_bg_remove(upscaled, settings["bg_remove"])
+            saved_paths = self._save_final_sprites(final_images, sheets_path, character_name)
+            saved_suffix = f"; saved {len(saved_paths)} sprites" if saved_paths else ""
+            self._emit(unique_id, "bg_remove", "done", final_images, f"Background removed from {bg_total} images{saved_suffix}", bg_total, bg_total, cache_dir=cache_dir)
+            return final_images, final_images, pose_images, upscaled
         except Exception as exc:
             print("[VNCCS Pipeline] Failed:", exc)
             traceback.print_exc()
