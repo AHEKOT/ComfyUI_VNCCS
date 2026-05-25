@@ -371,6 +371,7 @@ class PipelineWidget {
         this.selectedPreview = this.data.ui?.selected_preview || "pose_generation";
         this.userSelectedPreview = Boolean(this.data.ui?.user_selected_preview);
         this.viewer = null;
+        this.viewerFocus = null;
         this.restoredViewer = null;
         this._saveBrowserStateTimer = null;
         this.nodeDefs = {};
@@ -544,6 +545,13 @@ class PipelineWidget {
             if (saved.viewer.open && STAGES.some(([key]) => key === saved.viewer.stage)) {
                 this.selectedPreview = saved.viewer.stage;
             }
+            if (Number.isFinite(saved.viewer.centerNormX) && Number.isFinite(saved.viewer.centerNormY)) {
+                this.viewerFocus = {
+                    centerNormX: saved.viewer.centerNormX,
+                    centerNormY: saved.viewer.centerNormY,
+                    scaleRatio: Number.isFinite(saved.viewer.scaleRatio) ? saved.viewer.scaleRatio : 1,
+                };
+            }
             this.restoredViewer = saved.viewer;
         }
         if (restoredData) writeData(this.node, this.data);
@@ -611,13 +619,47 @@ class PipelineWidget {
             stage: this.selectedPreview,
             index: this.viewer.index || 0,
         };
-        if (this.viewer.canvas && this.viewer.img && this.viewer.scale && this.viewer.fitScale) {
-            const rect = this.viewer.canvas.getBoundingClientRect();
-            state.scaleRatio = this.viewer.scale / this.viewer.fitScale;
-            state.centerImageX = (rect.width / 2 - this.viewer.x) / this.viewer.scale;
-            state.centerImageY = (rect.height / 2 - this.viewer.y) / this.viewer.scale;
+        const focus = this.currentViewerFocus();
+        if (focus) {
+            state.scaleRatio = focus.scaleRatio;
+            state.centerNormX = focus.centerNormX;
+            state.centerNormY = focus.centerNormY;
         }
         return state;
+    }
+
+    currentViewerFocus() {
+        if (this.viewerFocus) return { ...this.viewerFocus };
+        if (!this.viewer?.canvas || !this.viewer?.img || !this.viewer.scale || !this.viewer.fitScale) return null;
+        const rect = this.viewerCanvasRect();
+        const iw = this.viewer.img.naturalWidth || 1;
+        const ih = this.viewer.img.naturalHeight || 1;
+        const centerImageX = (rect.width / 2 - this.viewer.x) / this.viewer.scale;
+        const centerImageY = (rect.height / 2 - this.viewer.y) / this.viewer.scale;
+        return {
+            scaleRatio: this.viewer.scale / this.viewer.fitScale,
+            centerNormX: centerImageX / iw,
+            centerNormY: centerImageY / ih,
+        };
+    }
+
+    updateViewerFocus() {
+        if (!this.viewer?.canvas || !this.viewer?.img || !this.viewer.scale || !this.viewer.fitScale) return;
+        const rect = this.viewerCanvasRect();
+        const iw = this.viewer.img.naturalWidth || 1;
+        const ih = this.viewer.img.naturalHeight || 1;
+        const centerImageX = (rect.width / 2 - this.viewer.x) / this.viewer.scale;
+        const centerImageY = (rect.height / 2 - this.viewer.y) / this.viewer.scale;
+        const focus = {
+            scaleRatio: this.viewer.scale / this.viewer.fitScale,
+            centerNormX: centerImageX / iw,
+            centerNormY: centerImageY / ih,
+        };
+        this.viewerFocus = {
+            scaleRatio: Math.max(1, Math.min(8, focus.scaleRatio)),
+            centerNormX: Math.max(-2, Math.min(3, focus.centerNormX)),
+            centerNormY: Math.max(-2, Math.min(3, focus.centerNormY)),
+        };
     }
 
     async loadNodeDefs() {
@@ -828,6 +870,15 @@ class PipelineWidget {
             dragging: false,
             restored,
         };
+        if (restored?.open && Number.isFinite(restored.centerNormX) && Number.isFinite(restored.centerNormY)) {
+            this.viewerFocus = {
+                centerNormX: restored.centerNormX,
+                centerNormY: restored.centerNormY,
+                scaleRatio: Number.isFinite(restored.scaleRatio) ? restored.scaleRatio : 1,
+            };
+        } else {
+            this.viewerFocus = null;
+        }
         this.renderViewer();
         this.saveBrowserState();
     }
@@ -848,16 +899,17 @@ class PipelineWidget {
             btn.className = "vnccs-pipe-viewer-btn" + (key === this.selectedPreview ? " is-selected" : "");
             btn.textContent = name;
             btn.onclick = () => {
-                const viewerState = this.serializableViewerState();
+                this.updateViewerFocus();
+                const viewerFocus = this.currentViewerFocus();
                 this.selectedPreview = key;
                 this.userSelectedPreview = true;
                 this.persistUI();
                 this.viewer.index = this.clampedViewerIndex();
                 this.viewer.restored = {
-                    ...viewerState,
                     open: true,
                     stage: key,
                     index: this.viewer.index,
+                    ...(viewerFocus || {}),
                 };
                 this.renderViewer();
                 this.renderPreview();
@@ -886,11 +938,13 @@ class PipelineWidget {
         this.viewer.overlay = overlay;
         this.viewer.canvas = canvas;
         this.viewer.img = img;
+        this.viewer.fitApplied = false;
 
-        img.onload = () => requestAnimationFrame(() => this.fitViewer());
+        const scheduleFit = () => requestAnimationFrame(() => this.fitViewer());
+        img.onload = scheduleFit;
         img.decoding = "async";
         img.src = this.currentImages()[this.viewer.index] || "";
-        if (img.complete && img.naturalWidth) requestAnimationFrame(() => this.fitViewer());
+        if (img.complete && img.naturalWidth) scheduleFit();
         canvas.onwheel = (event) => {
             event.preventDefault();
             const factor = event.deltaY < 0 ? 1.12 : 0.88;
@@ -910,6 +964,7 @@ class PipelineWidget {
             this.viewer.dragX = event.clientX;
             this.viewer.dragY = event.clientY;
             this.applyViewerTransform();
+            this.updateViewerFocus();
             this.scheduleBrowserStateSave();
         };
         canvas.onpointerup = (event) => {
@@ -917,6 +972,7 @@ class PipelineWidget {
             this.viewer.dragging = false;
             canvas.classList.remove("is-dragging");
             canvas.releasePointerCapture(event.pointerId);
+            this.updateViewerFocus();
             this.saveBrowserState();
         };
     }
@@ -945,6 +1001,7 @@ class PipelineWidget {
 
     fitViewer() {
         if (!this.viewer?.img || !this.viewer?.canvas) return;
+        if (this.viewer.fitApplied) return;
         const rect = this.viewerCanvasRect();
         const iw = this.viewer.img.naturalWidth || 1;
         const ih = this.viewer.img.naturalHeight || 1;
@@ -954,16 +1011,25 @@ class PipelineWidget {
         if (restored?.open && Number.isFinite(restored.scaleRatio)) {
             const scaleRatio = Math.max(1, Math.min(8, restored.scaleRatio));
             this.viewer.scale = fit * scaleRatio;
-            const centerImageX = Number.isFinite(restored.centerImageX) ? restored.centerImageX : iw / 2;
-            const centerImageY = Number.isFinite(restored.centerImageY) ? restored.centerImageY : ih / 2;
+            const centerNormX = Number.isFinite(restored.centerNormX)
+                ? restored.centerNormX
+                : (Number.isFinite(restored.centerImageX) ? restored.centerImageX / iw : 0.5);
+            const centerNormY = Number.isFinite(restored.centerNormY)
+                ? restored.centerNormY
+                : (Number.isFinite(restored.centerImageY) ? restored.centerImageY / ih : 0.5);
+            const centerImageX = Math.max(0, Math.min(1, centerNormX)) * iw;
+            const centerImageY = Math.max(0, Math.min(1, centerNormY)) * ih;
             this.viewer.x = rect.width / 2 - centerImageX * this.viewer.scale;
             this.viewer.y = rect.height / 2 - centerImageY * this.viewer.scale;
             this.viewer.restored = null;
             this.restoredViewer = null;
+            this.viewerFocus = { scaleRatio, centerNormX, centerNormY };
         } else {
             this.viewer.scale = fit;
             this.centerViewerImage(rect, iw, ih, true);
+            this.viewerFocus = { scaleRatio: 1, centerNormX: 0.5, centerNormY: 0.5 };
         }
+        this.viewer.fitApplied = true;
         this.applyViewerTransform();
         this.saveBrowserState();
     }
@@ -1033,6 +1099,7 @@ class PipelineWidget {
         this.viewer.y = nextY;
         this.viewer.scale = nextScale;
         this.applyViewerTransform();
+        this.updateViewerFocus();
         this.scheduleBrowserStateSave();
     }
 }
