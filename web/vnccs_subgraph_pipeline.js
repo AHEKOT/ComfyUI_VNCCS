@@ -53,6 +53,23 @@ const STAGES = [
     ["bg_remove", "BG Remove"],
 ];
 
+const WORKFLOW_UPSCALER_DIT_MODELS = [
+    "seedvr2_ema_3b-Q4_K_M.gguf",
+    "seedvr2_ema_3b-Q8_0.gguf",
+    "seedvr2_ema_3b_fp8_e4m3fn.safetensors",
+    "seedvr2_ema_3b_fp16.safetensors",
+    "seedvr2_ema_7b-Q4_K_M.gguf",
+    "seedvr2_ema_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors",
+    "seedvr2_ema_7b_fp16.safetensors",
+    "seedvr2_ema_7b_sharp-Q4_K_M.gguf",
+    "seedvr2_ema_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors",
+    "seedvr2_ema_7b_sharp_fp16.safetensors",
+];
+
+const WORKFLOW_UPSCALER_VAE_MODELS = [
+    "ema_vae_fp16.safetensors",
+];
+
 const CSS = `
 .vnccs-pipe-root {
     width: 100%;
@@ -337,7 +354,10 @@ class PipelineWidget {
         this.selectedPreview = this.data.ui?.selected_preview || "pose_generation";
         this.userSelectedPreview = Boolean(this.data.ui?.user_selected_preview);
         this.viewer = null;
+        this.restoredViewer = null;
+        this._saveBrowserStateTimer = null;
         this.nodeDefs = {};
+        this.restoreBrowserState();
         this.build();
         this.bindEvents();
         this.loadNodeDefs();
@@ -373,9 +393,15 @@ class PipelineWidget {
             dataWidget.computeSize = () => [0, -4];
         }
 
+        this.syncCharacterNameFromCreator();
+        writeData(this.node, this.data);
+
         this.renderSettings();
         this.renderPreview();
         this.renderChain();
+        if (this.restoredViewer?.open && this.currentImages().length) {
+            this.openViewer(this.restoredViewer.index || 0, this.restoredViewer);
+        }
     }
 
     bindEvents() {
@@ -389,9 +415,15 @@ class PipelineWidget {
                     if (this.stageState[key].status === "running") this.stageState[key].status = "error";
                 }
             } else {
+                const status = detail.status || "waiting";
+                if (status === "running") {
+                    this.resetStagesFrom(stage);
+                }
                 this.stageState[stage] = {
-                    status: detail.status || "waiting",
-                    images: detail.images || this.stageState[stage]?.images || null,
+                    status,
+                    images: Object.prototype.hasOwnProperty.call(detail, "images")
+                        ? detail.images
+                        : (status === "running" ? null : this.stageState[stage]?.images || null),
                     message: detail.message || "",
                     current: detail.current,
                     total: detail.total,
@@ -404,23 +436,171 @@ class PipelineWidget {
             if (this.viewer?.open) this.syncViewerImage();
             this.renderPreview();
             this.renderChain();
+            this.saveBrowserState();
         };
         api.addEventListener("vnccs.pipeline.stage", this.onStage);
         registerCleanup(this.node, () => api.removeEventListener("vnccs.pipeline.stage", this.onStage));
     }
 
+    resetStagesFrom(stageKey) {
+        const start = STAGES.findIndex(([key]) => key === stageKey);
+        if (start < 0) return;
+        for (const [key] of STAGES.slice(start)) {
+            this.stageState[key] = {
+                status: "waiting",
+                images: null,
+                message: "",
+                current: undefined,
+                total: undefined,
+            };
+        }
+    }
+
     persistUI() {
+        this.syncCharacterNameFromCreator();
         this.data.ui = {
             ...(this.data.ui || {}),
             selected_preview: this.selectedPreview,
             user_selected_preview: this.userSelectedPreview,
         };
         writeData(this.node, this.data);
+        this.saveBrowserState();
     }
 
     set(section, key, value) {
+        this.syncCharacterNameFromCreator();
         this.data[section][key] = value;
         writeData(this.node, this.data);
+        this.saveBrowserState();
+    }
+
+    syncCharacterNameFromCreator() {
+        const creator = app.graph?._nodes?.find(n => n.type === "CharacterCreatorV2");
+        const widget = creator?.widgets?.find(w => w.name === "widget_data");
+        if (!widget?.value) return;
+        try {
+            const payload = JSON.parse(widget.value);
+            if (payload?.character) this.data.character_name = payload.character;
+        } catch {
+            // Leave the previous value if the creator widget is mid-edit.
+        }
+    }
+
+    storageKey() {
+        return `vnccs:character-sheet-pipeline:${this.node.type || "node"}:${this.node.id}`;
+    }
+
+    restoreBrowserState() {
+        let saved = null;
+        try {
+            saved = JSON.parse(localStorage.getItem(this.storageKey()) || "null");
+        } catch {
+            saved = null;
+        }
+        if (!saved || saved.version !== 1) return;
+
+        let restoredData = false;
+        if (saved.data) {
+            this.data = deepMerge(this.data, saved.data);
+            restoredData = true;
+        }
+        if (STAGES.some(([key]) => key === saved.selectedPreview)) {
+            this.selectedPreview = saved.selectedPreview;
+        }
+        this.userSelectedPreview = Boolean(saved.userSelectedPreview);
+
+        if (saved.stageState && typeof saved.stageState === "object") {
+            for (const [key] of STAGES) {
+                const stage = saved.stageState[key];
+                if (!stage || typeof stage !== "object") continue;
+                this.stageState[key] = {
+                    status: stage.status || "waiting",
+                    images: Array.isArray(stage.images) ? stage.images : null,
+                    message: stage.message || "",
+                    current: stage.current,
+                    total: stage.total,
+                };
+            }
+        }
+
+        if (saved.viewer && typeof saved.viewer === "object") {
+            if (saved.viewer.open && STAGES.some(([key]) => key === saved.viewer.stage)) {
+                this.selectedPreview = saved.viewer.stage;
+            }
+            this.restoredViewer = saved.viewer;
+        }
+        if (restoredData) writeData(this.node, this.data);
+    }
+
+    saveBrowserState(includeImages = true) {
+        this.syncCharacterNameFromCreator();
+        const stageState = {};
+        for (const [key] of STAGES) {
+            const stage = this.stageState[key] || {};
+            stageState[key] = {
+                status: stage.status || "waiting",
+                images: includeImages ? stage.images : null,
+                message: stage.message || "",
+                current: stage.current,
+                total: stage.total,
+            };
+        }
+        const payload = {
+            version: 1,
+            data: this.data,
+            selectedPreview: this.selectedPreview,
+            userSelectedPreview: this.userSelectedPreview,
+            stageState,
+            viewer: this.serializableViewerState(),
+        };
+        try {
+            localStorage.setItem(this.storageKey(), JSON.stringify(payload));
+        } catch {
+            if (!includeImages) return;
+            const compactState = {};
+            for (const [key] of STAGES) {
+                const stage = this.stageState[key] || {};
+                const images = Array.isArray(stage.images)
+                    ? stage.images.filter(src => typeof src === "string" && !src.startsWith("data:"))
+                    : null;
+                compactState[key] = {
+                    status: stage.status || "waiting",
+                    images,
+                    message: stage.message || "",
+                    current: stage.current,
+                    total: stage.total,
+                };
+            }
+            try {
+                localStorage.setItem(this.storageKey(), JSON.stringify({ ...payload, stageState: compactState }));
+            } catch {
+                this.saveBrowserState(false);
+            }
+        }
+    }
+
+    scheduleBrowserStateSave() {
+        if (this._saveBrowserStateTimer) clearTimeout(this._saveBrowserStateTimer);
+        this._saveBrowserStateTimer = setTimeout(() => {
+            this._saveBrowserStateTimer = null;
+            this.saveBrowserState();
+        }, 120);
+    }
+
+    serializableViewerState() {
+        if (!this.viewer?.open) return { open: false };
+        const state = {
+            open: true,
+            stage: this.selectedPreview,
+            index: this.viewer.index || 0,
+        };
+        if (this.viewer.canvas && this.viewer.img && this.viewer.scale && this.viewer.fitScale) {
+            const rect = this.viewer.canvas.getBoundingClientRect();
+            state.scaleRatio = this.viewer.scale / this.viewer.fitScale;
+            state.centerImageX = (rect.width / 2 - this.viewer.x) / this.viewer.scale;
+            state.centerImageY = (rect.height / 2 - this.viewer.y) / this.viewer.scale;
+        }
+        return state;
     }
 
     async loadNodeDefs() {
@@ -448,6 +628,12 @@ class PipelineWidget {
         const spec = this.getInputSpec(nodeName, inputName);
         const opts = Array.isArray(spec?.[0]) ? spec[0] : fallback;
         return uniqueOptions([currentValue ?? this.data.upscaler[inputName], ...(opts || fallback || [])]);
+    }
+
+    getWorkflowModelOptions(nodeName, inputName, workflowOptions, currentValue = null) {
+        const spec = this.getInputSpec(nodeName, inputName);
+        const nodeOptions = Array.isArray(spec?.[0]) ? spec[0] : [];
+        return uniqueOptions([currentValue, ...workflowOptions, ...nodeOptions]);
     }
 
     field(section, key, label, type = "text", options = null) {
@@ -511,33 +697,12 @@ class PipelineWidget {
             this.field("pose_generation", "target_size", "target size", "select", [1024, 1344, 1536, 2048, 768, 512]),
         ]));
         this.settingsEl.appendChild(this.block("Upscaler", [
-            this.field("upscaler", "model", "dit model", "select", this.getOptions("SeedVR2LoadDiTModel", "model", ["seedvr2_ema_3b-Q4_K_M.gguf", "seedvr2_ema_3b_fp16.safetensors"], this.data.upscaler.model)),
-            this.field("upscaler", "vae", "vae model", "select", this.getOptions("SeedVR2LoadVAEModel", "model", ["ema_vae_fp16.safetensors"], this.data.upscaler.vae)),
+            this.field("upscaler", "model", "dit model", "select", this.getWorkflowModelOptions("SeedVR2LoadDiTModel", "model", WORKFLOW_UPSCALER_DIT_MODELS, this.data.upscaler.model)),
+            this.field("upscaler", "vae", "vae model", "select", this.getWorkflowModelOptions("SeedVR2LoadVAEModel", "model", WORKFLOW_UPSCALER_VAE_MODELS, this.data.upscaler.vae)),
             this.field("upscaler", "device", "device", "select", this.getOptions("SeedVR2LoadDiTModel", "device", ["cuda:0", "cuda:1", "cpu", "mps"])),
             this.field("upscaler", "offload_device", "offload", "select", this.getOptions("SeedVR2LoadDiTModel", "offload_device", ["cpu", "cuda:0", "cuda:1", "mps"])),
-            this.field("upscaler", "attention_mode", "attention", "select", this.getOptions("SeedVR2LoadDiTModel", "attention_mode", ["sdpa"])),
-            this.field("upscaler", "color_correction", "color", "select", this.getOptions("SeedVR2VideoUpscaler", "color_correction", ["lab", "adain", "wavelet", "none"])),
-            this.field("upscaler", "tile_debug", "tile debug", "select", this.getOptions("SeedVR2LoadVAEModel", "tile_debug", ["false", "true"])),
             this.field("upscaler", "seed", "seed", "number"),
             this.field("upscaler", "resolution", "resolution", "number"),
-            this.field("upscaler", "max_resolution", "max resolution", "number"),
-            this.field("upscaler", "batch_size", "batch size", "number"),
-            this.field("upscaler", "temporal_overlap", "temporal overlap", "number"),
-            this.field("upscaler", "prepend_frames", "prepend frames", "number"),
-            this.field("upscaler", "input_noise_scale", "input noise", "number"),
-            this.field("upscaler", "latent_noise_scale", "latent noise", "number"),
-            this.field("upscaler", "blocks_to_swap", "swap blocks", "number"),
-            this.field("upscaler", "encode_tile_size", "encode tile", "number"),
-            this.field("upscaler", "encode_tile_overlap", "encode overlap", "number"),
-            this.field("upscaler", "decode_tile_size", "decode tile", "number"),
-            this.field("upscaler", "decode_tile_overlap", "decode overlap", "number"),
-            this.field("upscaler", "uniform_batch_size", "uniform batch", "checkbox"),
-            this.field("upscaler", "swap_io_components", "swap io", "checkbox"),
-            this.field("upscaler", "cache_dit", "cache dit", "checkbox"),
-            this.field("upscaler", "cache_vae", "cache vae", "checkbox"),
-            this.field("upscaler", "encode_tiled", "encode tiled", "checkbox"),
-            this.field("upscaler", "decode_tiled", "decode tiled", "checkbox"),
-            this.field("upscaler", "enable_debug", "debug", "checkbox"),
         ]));
         this.settingsEl.appendChild(this.block("BG Remove", [
             this.field("bg_remove", "tolerance", "tolerance", "number"),
@@ -574,7 +739,7 @@ class PipelineWidget {
         if (!images?.length) {
             const empty = document.createElement("div");
             empty.className = "vnccs-pipe-empty";
-            empty.textContent = "Waiting for pipeline results";
+            empty.textContent = this.formatStageStatus(this.selectedPreview);
             this.previewEl.appendChild(empty);
             return;
         }
@@ -632,7 +797,7 @@ class PipelineWidget {
         return this.stageState[this.selectedPreview]?.images || [];
     }
 
-    openViewer(index = 0) {
+    openViewer(index = 0, restored = null) {
         const images = this.currentImages();
         if (!images.length) return;
         this.viewer = {
@@ -643,8 +808,10 @@ class PipelineWidget {
             x: 0,
             y: 0,
             dragging: false,
+            restored,
         };
         this.renderViewer();
+        this.saveBrowserState();
     }
 
     renderViewer() {
@@ -666,7 +833,7 @@ class PipelineWidget {
                 this.selectedPreview = key;
                 this.userSelectedPreview = true;
                 this.persistUI();
-                this.viewer.index = 0;
+                this.viewer.index = this.clampedViewerIndex();
                 this.renderViewer();
                 this.renderPreview();
             };
@@ -677,7 +844,7 @@ class PipelineWidget {
         const zoomOut = document.createElement("button");
         zoomOut.className = "vnccs-pipe-viewer-btn";
         zoomOut.textContent = "-";
-        zoomOut.onclick = () => this.zoomViewer(0.8, null, true);
+        zoomOut.onclick = () => this.zoomViewer(0.8);
         const zoomIn = document.createElement("button");
         zoomIn.className = "vnccs-pipe-viewer-btn";
         zoomIn.textContent = "+";
@@ -700,7 +867,7 @@ class PipelineWidget {
         canvas.onwheel = (event) => {
             event.preventDefault();
             const factor = event.deltaY < 0 ? 1.12 : 0.88;
-            this.zoomViewer(factor, event, event.deltaY > 0);
+            this.zoomViewer(factor, event);
         };
         canvas.onpointerdown = (event) => {
             this.viewer.dragging = true;
@@ -716,25 +883,36 @@ class PipelineWidget {
             this.viewer.dragX = event.clientX;
             this.viewer.dragY = event.clientY;
             this.applyViewerTransform();
+            this.scheduleBrowserStateSave();
         };
         canvas.onpointerup = (event) => {
             if (!this.viewer) return;
             this.viewer.dragging = false;
             canvas.classList.remove("is-dragging");
             canvas.releasePointerCapture(event.pointerId);
+            this.saveBrowserState();
         };
     }
 
     closeViewer(clear = false) {
         this.viewer?.overlay?.remove();
-        if (clear) this.viewer = null;
+        if (clear) {
+            this.viewer = null;
+            this.saveBrowserState();
+        }
     }
 
     syncViewerImage() {
         const images = this.currentImages();
         if (!this.viewer?.img || !images.length) return;
-        this.viewer.index = Math.min(this.viewer.index, images.length - 1);
+        this.viewer.index = this.clampedViewerIndex();
         this.viewer.img.src = images[this.viewer.index];
+    }
+
+    clampedViewerIndex() {
+        const images = this.currentImages();
+        if (!images.length) return 0;
+        return Math.max(0, Math.min(this.viewer?.index ?? 0, images.length - 1));
     }
 
     fitViewer() {
@@ -744,10 +922,23 @@ class PipelineWidget {
         const ih = this.viewer.img.naturalHeight || 1;
         const fit = Math.min(rect.width / iw, rect.height / ih);
         this.viewer.fitScale = fit;
-        this.viewer.scale = fit;
-        this.viewer.x = (rect.width - iw * fit) / 2;
-        this.viewer.y = (rect.height - ih * fit) / 2;
+        const restored = this.viewer.restored;
+        if (restored?.open && Number.isFinite(restored.scaleRatio)) {
+            const scaleRatio = Math.max(1, Math.min(8, restored.scaleRatio));
+            this.viewer.scale = fit * scaleRatio;
+            const centerImageX = Number.isFinite(restored.centerImageX) ? restored.centerImageX : iw / 2;
+            const centerImageY = Number.isFinite(restored.centerImageY) ? restored.centerImageY : ih / 2;
+            this.viewer.x = rect.width / 2 - centerImageX * this.viewer.scale;
+            this.viewer.y = rect.height / 2 - centerImageY * this.viewer.scale;
+            this.viewer.restored = null;
+            this.restoredViewer = null;
+        } else {
+            this.viewer.scale = fit;
+            this.viewer.x = (rect.width - iw * fit) / 2;
+            this.viewer.y = (rect.height - ih * fit) / 2;
+        }
         this.applyViewerTransform();
+        this.saveBrowserState();
     }
 
     applyViewerTransform() {
@@ -757,38 +948,43 @@ class PipelineWidget {
         this.viewer.img.style.transform = `translate(${this.viewer.x}px, ${this.viewer.y}px) scale(${this.viewer.scale})`;
     }
 
-    zoomViewer(factor, event = null, zoomOutToCenter = false) {
+    zoomViewer(factor, event = null) {
         if (!this.viewer?.canvas || !this.viewer?.img) return;
         const rect = this.viewer.canvas.getBoundingClientRect();
         const oldScale = this.viewer.scale;
-        const minScale = this.viewer.fitScale * 0.25;
+        const fitScale = this.viewer.fitScale || 1;
+        const minScale = fitScale;
         const maxScale = this.viewer.fitScale * 8;
         const nextScale = Math.max(minScale, Math.min(maxScale, oldScale * factor));
         if (nextScale === oldScale) return;
 
-        if (zoomOutToCenter) {
-            const iw = this.viewer.img.naturalWidth || 1;
-            const ih = this.viewer.img.naturalHeight || 1;
-            const centerX = rect.width / 2;
-            const centerY = rect.height / 2;
-            const imageCenterX = this.viewer.x + (iw * oldScale) / 2;
-            const imageCenterY = this.viewer.y + (ih * oldScale) / 2;
-            this.viewer.x += (centerX - imageCenterX) * 0.25;
-            this.viewer.y += (centerY - imageCenterY) * 0.25;
-            const imagePointX = (centerX - this.viewer.x) / oldScale;
-            const imagePointY = (centerY - this.viewer.y) / oldScale;
-            this.viewer.x = centerX - imagePointX * nextScale;
-            this.viewer.y = centerY - imagePointY * nextScale;
-        } else {
-            const anchorX = event ? event.clientX - rect.left : rect.width / 2;
-            const anchorY = event ? event.clientY - rect.top : rect.height / 2;
-            const imagePointX = (anchorX - this.viewer.x) / oldScale;
-            const imagePointY = (anchorY - this.viewer.y) / oldScale;
-            this.viewer.x = anchorX - imagePointX * nextScale;
-            this.viewer.y = anchorY - imagePointY * nextScale;
+        const anchorX = event ? event.clientX - rect.left : rect.width / 2;
+        const anchorY = event ? event.clientY - rect.top : rect.height / 2;
+        const imagePointX = (anchorX - this.viewer.x) / oldScale;
+        const imagePointY = (anchorY - this.viewer.y) / oldScale;
+        let nextX = anchorX - imagePointX * nextScale;
+        let nextY = anchorY - imagePointY * nextScale;
+
+        const iw = this.viewer.img.naturalWidth || 1;
+        const ih = this.viewer.img.naturalHeight || 1;
+        const fitX = (rect.width - iw * fitScale) / 2;
+        const fitY = (rect.height - ih * fitScale) / 2;
+
+        if (nextScale <= fitScale + 0.0001) {
+            nextX = fitX;
+            nextY = fitY;
+        } else if (nextScale < fitScale * 1.6) {
+            const t = 1 - ((nextScale / fitScale) - 1) / 0.6;
+            const ease = Math.max(0, Math.min(1, t * t * (3 - 2 * t)));
+            nextX += (fitX - nextX) * ease * 0.35;
+            nextY += (fitY - nextY) * ease * 0.35;
         }
+
+        this.viewer.x = nextX;
+        this.viewer.y = nextY;
         this.viewer.scale = nextScale;
         this.applyViewerTransform();
+        this.scheduleBrowserStateSave();
     }
 }
 
@@ -810,11 +1006,16 @@ app.registerExtension({
             onConfigure?.apply(this, arguments);
             if (this._vnccsPipelineWidget) {
                 this._vnccsPipelineWidget.data = readData(this);
-                this._vnccsPipelineWidget.selectedPreview = this._vnccsPipelineWidget.data.ui?.selected_preview || "pose_generation";
-                this._vnccsPipelineWidget.userSelectedPreview = Boolean(this._vnccsPipelineWidget.data.ui?.user_selected_preview);
+                this._vnccsPipelineWidget.restoreBrowserState();
                 this._vnccsPipelineWidget.renderSettings();
                 this._vnccsPipelineWidget.renderPreview();
                 this._vnccsPipelineWidget.renderChain();
+                if (this._vnccsPipelineWidget.restoredViewer?.open && this._vnccsPipelineWidget.currentImages().length) {
+                    this._vnccsPipelineWidget.openViewer(
+                        this._vnccsPipelineWidget.restoredViewer.index || 0,
+                        this._vnccsPipelineWidget.restoredViewer,
+                    );
+                }
             }
             syncDOMWidgetWidthSoon(this, "pipeline_ui");
         };

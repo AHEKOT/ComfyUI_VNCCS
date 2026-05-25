@@ -9,7 +9,9 @@ import base64
 import inspect
 import io
 import json
+import os
 import traceback
+from urllib.parse import urlencode
 
 import numpy as np
 import torch
@@ -34,6 +36,7 @@ from .sheet_manager import VNCCSSheetManager
 from .vnccs_pipe import VNCCS_Pipe
 from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder
 from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, VNCCS_RMBG2
+from ..utils import character_dir
 
 
 def _folder_list(kind, fallback):
@@ -110,6 +113,76 @@ def _tensor_to_png_data_url(image, max_items=12):
         return None
 
 
+def _character_cache_dir_from_sheets_path(sheets_path, character_name=""):
+    if isinstance(sheets_path, list):
+        sheets_path = sheets_path[0] if sheets_path else ""
+    sheets_path = str(sheets_path or "").strip()
+    if sheets_path:
+        parts = os.path.abspath(sheets_path).split(os.sep)
+        if "Sheets" in parts:
+            character_root = os.sep.join(parts[:parts.index("Sheets")])
+            if character_root:
+                return os.path.join(character_root, "cache", "poses")
+        if os.path.isdir(sheets_path):
+            return os.path.join(os.path.abspath(sheets_path), "cache", "poses")
+
+    character_name = str(character_name or "").strip()
+    if character_name and character_name != "Unknown":
+        return os.path.join(character_dir(character_name), "cache", "poses")
+
+    return None
+
+
+def _view_url_for_output_path(path):
+    if folder_paths is None:
+        return None
+    try:
+        output_dir = os.path.abspath(folder_paths.get_output_directory())
+        abs_path = os.path.abspath(path)
+        rel = os.path.relpath(abs_path, output_dir)
+        if rel.startswith(".."):
+            return None
+        subfolder = os.path.dirname(rel).replace(os.sep, "/")
+        query = urlencode({
+            "filename": os.path.basename(rel),
+            "subfolder": subfolder,
+            "type": "output",
+            "t": int(os.path.getmtime(abs_path)),
+        })
+        return f"/view?{query}"
+    except Exception:
+        return None
+
+
+def _tensor_to_preview_urls(image, unique_id, stage, cache_dir=None, max_items=12):
+    image = _first_tensor(image)
+    if image is None or not torch.is_tensor(image):
+        return None
+    if not cache_dir or folder_paths is None:
+        return _tensor_to_png_data_url(image, max_items=max_items)
+
+    try:
+        tensor = image.detach().cpu().clamp(0, 1)
+        if tensor.ndim == 3:
+            tensor = tensor.unsqueeze(0)
+
+        out_dir = cache_dir
+        os.makedirs(out_dir, exist_ok=True)
+
+        previews = []
+        for index, item in enumerate(tensor[:max_items], start=1):
+            array = (item.numpy() * 255).astype(np.uint8)
+            mode = "RGBA" if array.shape[-1] == 4 else "RGB"
+            pil = Image.fromarray(array, mode=mode)
+            filename = f"{stage}_{index:02d}.png"
+            path = os.path.join(out_dir, filename)
+            pil.save(path, format="PNG")
+            previews.append(_view_url_for_output_path(path) or path)
+        return previews
+    except Exception:
+        return _tensor_to_png_data_url(image, max_items=max_items)
+
+
 DEFAULT_WIDGET_DATA = {
     "upscaler": {
         "model": "seedvr2_ema_3b-Q4_K_M.gguf",
@@ -166,6 +239,9 @@ class VNCCS_CharacterSheetPipeline:
                 "background": (["Green", "Blue", "White", "Alpha"], {"default": "Green"}),
                 "widget_data": ("STRING", {"default": json.dumps(DEFAULT_WIDGET_DATA), "multiline": True}),
             },
+            "optional": {
+                "sheets_path": ("STRING", {"default": "", "forceInput": True}),
+            },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
             },
@@ -185,7 +261,13 @@ class VNCCS_CharacterSheetPipeline:
                 merged[section].update(values)
         return merged
 
-    def _emit(self, unique_id, stage, status, images=None, message="", current=None, total=None):
+    def _widget_data(self, widget_data):
+        try:
+            return json.loads(widget_data) if isinstance(widget_data, str) and widget_data.strip() else {}
+        except Exception:
+            return {}
+
+    def _emit(self, unique_id, stage, status, images=None, message="", current=None, total=None, cache_dir=None):
         if server is None or not unique_id:
             return
         payload = {
@@ -199,7 +281,7 @@ class VNCCS_CharacterSheetPipeline:
         if total is not None:
             payload["total"] = int(total)
         if images is not None:
-            payload["images"] = _tensor_to_png_data_url(images)
+            payload["images"] = _tensor_to_preview_urls(images, unique_id, stage, cache_dir=cache_dir)
         try:
             server.PromptServer.instance.send_sync("vnccs.pipeline.stage", payload)
         except Exception:
@@ -367,7 +449,7 @@ class VNCCS_CharacterSheetPipeline:
             background=str(background or "Green"),
         )[0]
 
-    def _run_upscaler(self, image, background, settings, unique_id=None):
+    def _run_upscaler(self, image, background, settings, unique_id=None, cache_dir=None):
         images = self._split_batch(image)
         total = len(images)
         dit, vae = self._run_upscaler_models(settings)
@@ -384,6 +466,7 @@ class VNCCS_CharacterSheetPipeline:
                 f"Upscaled image {index} of {total}",
                 index,
                 total,
+                cache_dir=cache_dir,
             )
         return torch.cat(results, dim=0) if results else image
 
@@ -448,23 +531,25 @@ class VNCCS_CharacterSheetPipeline:
                 crops.append(face)
         return torch.cat(crops, dim=0)
 
-    def process(self, poses, character, pipe, prompt, background="Green", widget_data="{}", unique_id=None):
+    def process(self, poses, character, pipe, prompt, background="Green", widget_data="{}", sheets_path="", unique_id=None):
         settings = self._settings(widget_data)
+        widget_payload = self._widget_data(widget_data)
+        cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""))
         try:
-            self._emit(unique_id, "pose_generation", "running", message="Encoding pose list", current=0, total=12)
+            self._emit(unique_id, "pose_generation", "running", message="Encoding pose list", current=0, total=12, cache_dir=cache_dir)
             pose_images = self._run_pose_generation(poses, character, pipe, prompt, settings["pose_generation"])
             pose_total = pose_images.shape[0] if torch.is_tensor(pose_images) and pose_images.ndim == 4 else 0
-            self._emit(unique_id, "pose_generation", "done", pose_images, f"Generated {pose_total} pose images", pose_total, pose_total)
+            self._emit(unique_id, "pose_generation", "done", pose_images, f"Generated {pose_total} pose images", pose_total, pose_total, cache_dir=cache_dir)
 
             up_total = pose_total
-            self._emit(unique_id, "upscaler", "running", pose_images, f"Preparing upscaler for {up_total} images", 0, up_total)
-            upscaled = self._run_upscaler(pose_images, background, settings["upscaler"], unique_id=unique_id)
+            self._emit(unique_id, "upscaler", "running", pose_images, f"Preparing upscaler for {up_total} images", 0, up_total, cache_dir=cache_dir)
+            upscaled = self._run_upscaler(pose_images, background, settings["upscaler"], unique_id=unique_id, cache_dir=cache_dir)
 
             bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
-            self._emit(unique_id, "bg_remove", "running", upscaled, f"Composing and removing background for {bg_total} images", 0, bg_total)
+            self._emit(unique_id, "bg_remove", "running", upscaled, f"Composing and removing background for {bg_total} images", 0, bg_total, cache_dir=cache_dir)
             sheet, faces = self._run_bg_remove(upscaled, settings["bg_remove"])
             bg_preview = self._preview_bg_remove(upscaled, settings["bg_remove"])
-            self._emit(unique_id, "bg_remove", "done", bg_preview, f"Background removed from {bg_total} images", bg_total, bg_total)
+            self._emit(unique_id, "bg_remove", "done", bg_preview, f"Background removed from {bg_total} images", bg_total, bg_total, cache_dir=cache_dir)
             return sheet, faces, pose_images, upscaled
         except Exception as exc:
             print("[VNCCS Pipeline] Failed:", exc)
