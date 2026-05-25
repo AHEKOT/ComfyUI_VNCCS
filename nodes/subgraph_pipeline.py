@@ -185,8 +185,10 @@ def _tensor_to_preview_urls(image, unique_id, stage, cache_dir=None, max_items=1
 
 DEFAULT_WIDGET_DATA = {
     "upscaler": {
+        "mode": "seedvr",
         "model": "seedvr2_ema_3b-Q4_K_M.gguf",
         "vae": "ema_vae_fp16.safetensors",
+        "gan_model": "2x_APISR_RRDB_GAN_generator.pth",
         "device": "cuda:0",
         "offload_device": "cpu",
         "seed": 42,
@@ -418,6 +420,12 @@ class VNCCS_CharacterSheetPipeline:
         )[0]
         return dit, vae
 
+    def _run_gan_upscaler_model(self, settings):
+        return _call_comfy_node(
+            "UpscaleModelLoader",
+            model_name=settings["gan_model"],
+        )[0]
+
     def _run_upscale_one(self, image, dit, vae, background, settings):
         upscaled = _call_comfy_node(
             "SeedVR2VideoUpscaler",
@@ -449,9 +457,36 @@ class VNCCS_CharacterSheetPipeline:
             background=str(background or "Green"),
         )[0]
 
+    def _run_gan_upscale_one(self, image, upscale_model):
+        return _call_comfy_node(
+            "ImageUpscaleWithModel",
+            upscale_model=upscale_model,
+            image=image,
+        )[0]
+
     def _run_upscaler(self, image, background, settings, unique_id=None, cache_dir=None):
         images = self._split_batch(image)
         total = len(images)
+        mode = str(settings.get("mode", "seedvr") or "seedvr").lower()
+        if mode == "gan":
+            model = self._run_gan_upscaler_model(settings)
+            results = []
+            for index, item in enumerate(images, start=1):
+                result = self._run_gan_upscale_one(item, model)
+                results.append(self._list_to_batch(result))
+                partial = torch.cat(results, dim=0)
+                self._emit(
+                    unique_id,
+                    "upscaler",
+                    "running" if index < total else "done",
+                    partial,
+                    f"GAN upscaled image {index} of {total}",
+                    index,
+                    total,
+                    cache_dir=cache_dir,
+                )
+            return torch.cat(results, dim=0) if results else image
+
         dit, vae = self._run_upscaler_models(settings)
         results = []
         for index, item in enumerate(images, start=1):

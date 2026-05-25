@@ -7,8 +7,10 @@ const DEFAULT_DATA = {
         target_size: 1024,
     },
     upscaler: {
+        mode: "seedvr",
         model: "seedvr2_ema_3b-Q4_K_M.gguf",
         vae: "ema_vae_fp16.safetensors",
+        gan_model: "2x_APISR_RRDB_GAN_generator.pth",
         device: "cuda:0",
         offload_device: "cpu",
         seed: 42,
@@ -68,6 +70,10 @@ const WORKFLOW_UPSCALER_DIT_MODELS = [
 
 const WORKFLOW_UPSCALER_VAE_MODELS = [
     "ema_vae_fp16.safetensors",
+];
+
+const WORKFLOW_GAN_UPSCALER_MODELS = [
+    "2x_APISR_RRDB_GAN_generator.pth",
 ];
 
 const CSS = `
@@ -154,6 +160,26 @@ const CSS = `
     gap: 7px;
     color: #cfcfda;
     font-size: 11px;
+}
+.vnccs-pipe-mode-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+}
+.vnccs-pipe-mode-tab {
+    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.045);
+    color: #9898a8;
+    border-radius: 7px;
+    font-size: 10px;
+    font-weight: 800;
+    padding: 6px 8px;
+    cursor: pointer;
+}
+.vnccs-pipe-mode-tab.is-selected {
+    color: #ffb6c8;
+    border-color: rgba(255,143,163,0.48);
+    background: rgba(255,143,163,0.09);
 }
 .vnccs-pipe-preview {
     min-height: 0;
@@ -663,7 +689,7 @@ class PipelineWidget {
     }
 
     async loadNodeDefs() {
-        const names = ["SeedVR2LoadDiTModel", "SeedVR2LoadVAEModel", "SeedVR2VideoUpscaler"];
+        const names = ["SeedVR2LoadDiTModel", "SeedVR2LoadVAEModel", "SeedVR2VideoUpscaler", "UpscaleModelLoader"];
         for (const name of names) {
             try {
                 const r = await api.fetchApi(`/object_info/${encodeURIComponent(name)}`);
@@ -693,6 +719,23 @@ class PipelineWidget {
         const spec = this.getInputSpec(nodeName, inputName);
         const nodeOptions = Array.isArray(spec?.[0]) ? spec[0] : [];
         return uniqueOptions([currentValue, ...workflowOptions, ...nodeOptions]);
+    }
+
+    modeTabs(section, key, options) {
+        const wrap = document.createElement("div");
+        wrap.className = "vnccs-pipe-mode-tabs";
+        for (const [value, label] of options) {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "vnccs-pipe-mode-tab" + (this.data[section][key] === value ? " is-selected" : "");
+            btn.textContent = label;
+            btn.onclick = () => {
+                this.set(section, key, value);
+                this.renderSettings();
+            };
+            wrap.appendChild(btn);
+        }
+        return wrap;
     }
 
     field(section, key, label, type = "text", options = null) {
@@ -755,14 +798,24 @@ class PipelineWidget {
         this.settingsEl.appendChild(this.block("Pose Generation", [
             this.field("pose_generation", "target_size", "target size", "select", [1024, 1344, 1536, 2048, 768, 512]),
         ]));
-        this.settingsEl.appendChild(this.block("Upscaler", [
-            this.field("upscaler", "model", "dit model", "select", this.getWorkflowModelOptions("SeedVR2LoadDiTModel", "model", WORKFLOW_UPSCALER_DIT_MODELS, this.data.upscaler.model)),
-            this.field("upscaler", "vae", "vae model", "select", this.getWorkflowModelOptions("SeedVR2LoadVAEModel", "model", WORKFLOW_UPSCALER_VAE_MODELS, this.data.upscaler.vae)),
-            this.field("upscaler", "device", "device", "select", this.getOptions("SeedVR2LoadDiTModel", "device", ["cuda:0", "cuda:1", "cpu", "mps"])),
-            this.field("upscaler", "offload_device", "offload", "select", this.getOptions("SeedVR2LoadDiTModel", "offload_device", ["cpu", "cuda:0", "cuda:1", "mps"])),
-            this.field("upscaler", "seed", "seed", "number"),
-            this.field("upscaler", "resolution", "resolution", "number"),
-        ]));
+        const upscalerFields = [
+            this.modeTabs("upscaler", "mode", [["seedvr", "SeedVR"], ["gan", "GAN"]]),
+        ];
+        if (this.data.upscaler.mode === "gan") {
+            upscalerFields.push(
+                this.field("upscaler", "gan_model", "model", "select", this.getWorkflowModelOptions("UpscaleModelLoader", "model_name", WORKFLOW_GAN_UPSCALER_MODELS, this.data.upscaler.gan_model)),
+            );
+        } else {
+            upscalerFields.push(
+                this.field("upscaler", "model", "dit model", "select", this.getWorkflowModelOptions("SeedVR2LoadDiTModel", "model", WORKFLOW_UPSCALER_DIT_MODELS, this.data.upscaler.model)),
+                this.field("upscaler", "vae", "vae model", "select", this.getWorkflowModelOptions("SeedVR2LoadVAEModel", "model", WORKFLOW_UPSCALER_VAE_MODELS, this.data.upscaler.vae)),
+                this.field("upscaler", "device", "device", "select", this.getOptions("SeedVR2LoadDiTModel", "device", ["cuda:0", "cuda:1", "cpu", "mps"])),
+                this.field("upscaler", "offload_device", "offload", "select", this.getOptions("SeedVR2LoadDiTModel", "offload_device", ["cpu", "cuda:0", "cuda:1", "mps"])),
+                this.field("upscaler", "seed", "seed", "number"),
+                this.field("upscaler", "resolution", "resolution", "number"),
+            );
+        }
+        this.settingsEl.appendChild(this.block("Upscaler", upscalerFields));
         this.settingsEl.appendChild(this.block("BG Remove", [
             this.field("bg_remove", "tolerance", "tolerance", "number"),
             this.field("bg_remove", "despill_strength", "despill strength", "number"),
