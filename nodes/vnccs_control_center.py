@@ -403,6 +403,14 @@ def _lora_matches_model_kind(lora_entry, model_entry):
     return not lora_kind or not model_kind or lora_kind == model_kind
 
 
+def _filter_entries_by_kind(entries, kind):
+    normalized_kind = _normalize_meta_value(kind)
+    if not normalized_kind:
+        return list(entries or [])
+    matched = [entry for entry in (entries or []) if _entry_kind(entry) == normalized_kind]
+    return matched or list(entries or [])
+
+
 def _load_checkpoint(full_path):
     output = comfy.sd.load_checkpoint_guess_config(
         full_path,
@@ -923,8 +931,11 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None):
         if not dependency_status["ok"]:
             raise RuntimeError(f"[VNCCS Control Center] {dependency_status['message']}")
 
-    all_clip_names = [entry["name"] for entry in config.get("clip", [])]
-    first_vae_name = config["vae"][0]["name"] if config.get("vae") else ""
+    model_kind = _entry_kind(model_entry)
+    compatible_clips = _filter_entries_by_kind(config.get("clip", []), model_kind)
+    compatible_vaes = _filter_entries_by_kind(config.get("vae", []), model_kind)
+    all_clip_names = [entry["name"] for entry in compatible_clips]
+    first_vae_name = compatible_vaes[0]["name"] if compatible_vaes else ""
 
     model, clip, vae = _load_model_block(
         model_entry,

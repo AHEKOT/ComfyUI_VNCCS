@@ -100,6 +100,16 @@
       "version": "1.0",
       "description": "(NVIDIA 5xxx series ONLY) Native NVFP4 UNet — full quality at reduced VRAM.",
       "kind": "QIE2511"
+    },
+    {
+      "name": "Anima Base v1.0",
+      "type": "unet",
+      "kind": "Anima",
+      "hf_repo": "circlestone-labs/Anima",
+      "hf_path": "split_files/diffusion_models/anima-base-v1.0.safetensors",
+      "local_path": "models/diffusion_models/anima-base-v1.0.safetensors",
+      "version": "1.0",
+      "description": "Anima base diffusion model v1.0."
     }
   ],
   "clip": [
@@ -113,6 +123,17 @@
       "description": "Text encoder for Qwen Image Edit 2511.",
       "type": "TextEncoder",
       "kind": "QIE2511"
+    },
+    {
+      "name": "Anima Qwen 3 0.6B Text Encoder",
+      "type": "TextEncoder",
+      "kind": "Anima",
+      "clip_type": "qwen_image",
+      "hf_repo": "circlestone-labs/Anima",
+      "hf_path": "split_files/text_encoders/qwen_3_06b_base.safetensors",
+      "local_path": "models/text_encoders/qwen_3_06b_base.safetensors",
+      "version": "1.0",
+      "description": "Text encoder for Anima v1.0."
     }
   ],
   "vae": [
@@ -125,6 +146,16 @@
       "description": "Official VAE for Qwen Image Edit 2511.",
       "type": "VAE",
       "kind": "QIE2511"
+    },
+    {
+      "name": "Anima VAE",
+      "type": "VAE",
+      "kind": "Anima",
+      "hf_repo": "circlestone-labs/Anima",
+      "hf_path": "split_files/vae/qwen_image_vae.safetensors",
+      "local_path": "models/vae/qwen_image_vae.safetensors",
+      "version": "1.0",
+      "description": "VAE for Anima v1.0."
     }
   ],
   "lora": [

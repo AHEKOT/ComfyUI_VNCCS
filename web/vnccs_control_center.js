@@ -1803,9 +1803,10 @@ class VNCCSControlCenterWidget {
     }
 
     _buildClipVaeBlock() {
+        const selectedKind = this._selectedKind();
         const entries = [
-            ...(this.config.clip || []).map(entry => ({ ...entry, _cat: "clip" })),
-            ...(this.config.vae || []).map(entry => ({ ...entry, _cat: "vae" })),
+            ...(this.config.clip || []).filter(entry => this._sameKind(entry, selectedKind)).map(entry => ({ ...entry, _cat: "clip" })),
+            ...(this.config.vae || []).filter(entry => this._sameKind(entry, selectedKind)).map(entry => ({ ...entry, _cat: "vae" })),
         ];
         const collapsed = this.state.collapsed?.clip_vae ?? false;
         const block = this._blockShell("CLIP + VAE", entries.length, "clip_vae", collapsed);
