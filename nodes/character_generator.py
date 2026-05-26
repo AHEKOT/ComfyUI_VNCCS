@@ -332,7 +332,7 @@ class VNCCS_CharacterGenerator:
         if images is not None:
             payload["images"] = _tensor_to_preview_urls(images, unique_id, stage, cache_dir=cache_dir)
         try:
-            server.PromptServer.instance.send_sync("vnccs.pipeline.stage", payload)
+            server.PromptServer.instance.send_sync("vnccs.character_generator.stage", payload)
         except Exception:
             pass
 
@@ -397,7 +397,7 @@ class VNCCS_CharacterGenerator:
             raise RuntimeError(f"Pose Generation requires LoRA from VNCCS Control Center: {message}")
         strength = float(lora_info.get("strength", 1.0))
         loader_type = getattr(pipe, "loader_type", "standard") or "standard"
-        print(f"[VNCCS Pipeline] Applying pose LoRA before sampler: {lora_info.get('name')} ({lora_info.get('file')}, strength={strength})")
+        print(f"[VNCCS Character Generator] Applying pose LoRA before sampler: {lora_info.get('name')} ({lora_info.get('file')}, strength={strength})")
         if loader_type == "nunchaku":
             return _apply_lora_nunchaku(
                 model,
@@ -415,7 +415,7 @@ class VNCCS_CharacterGenerator:
                 strength_model=strength,
             )[0]
         except Exception as exc:
-            print(f"[VNCCS Pipeline] LoraLoaderModelOnly failed for '{rel_path}', using direct loader: {exc}")
+            print(f"[VNCCS Character Generator] LoraLoaderModelOnly failed for '{rel_path}', using direct loader: {exc}")
         model_lora, _ = _apply_lora_standard(model, clip, lora_info["path"], strength)
         return model_lora
 
@@ -738,7 +738,7 @@ class VNCCS_CharacterGenerator:
             self._emit(unique_id, "bg_remove", "done", final_images, f"Background removed from {bg_total} images{saved_suffix}", bg_total, bg_total, cache_dir=cache_dir)
             return final_images, final_images, pose_images, upscaled
         except Exception as exc:
-            print("[VNCCS Pipeline] Failed:", exc)
+            print("[VNCCS Character Generator] Failed:", exc)
             traceback.print_exc()
             self._emit(unique_id, "error", "error", message=str(exc))
             raise

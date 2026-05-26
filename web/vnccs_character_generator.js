@@ -363,9 +363,9 @@ const CSS = `
 `;
 
 function injectStyles() {
-    if (document.getElementById("vnccs-pipeline-style")) return;
+    if (document.getElementById("vnccs-character-generator-style")) return;
     const style = document.createElement("style");
-    style.id = "vnccs-pipeline-style";
+    style.id = "vnccs-character-generator-style";
     style.textContent = CSS;
     document.head.appendChild(style);
 }
@@ -401,7 +401,7 @@ function uniqueOptions(values) {
     return [...new Set(values.filter(Boolean))];
 }
 
-class PipelineWidget {
+class CharacterGeneratorWidget {
     constructor(node) {
         this.node = node;
         this.data = readData(node);
@@ -439,11 +439,11 @@ class PipelineWidget {
         main.append(this.previewEl, this.chainEl);
         root.append(this.settingsEl, main);
 
-        this.node.addDOMWidget("pipeline_ui", "ui", root, {
+        this.node.addDOMWidget("character_generator_ui", "ui", root, {
             serialize: false,
             hideOnZoom: false,
         });
-        syncDOMWidgetWidthSoon(this.node, "pipeline_ui");
+        syncDOMWidgetWidthSoon(this.node, "character_generator_ui");
 
         const dataWidget = this.node.widgets?.find(w => w.name === "widget_data");
         if (dataWidget) {
@@ -479,6 +479,11 @@ class PipelineWidget {
                 const status = detail.status || "waiting";
                 if (status === "running") {
                     this.resetStagesFrom(stage);
+                    if (stage === "pose_generation") {
+                        this.userSelectedPreview = false;
+                        if (!this.data.ui) this.data.ui = {};
+                        this.data.ui.user_selected_preview = false;
+                    }
                 }
                 this.stageState[stage] = {
                     status,
@@ -489,7 +494,7 @@ class PipelineWidget {
                     current: detail.current,
                     total: detail.total,
                 };
-                if (detail.images && !this.userSelectedPreview) {
+                if (!this.userSelectedPreview && (status === "running" || status === "done" || detail.images)) {
                     this.selectedPreview = stage;
                     this.persistUI();
                 }
@@ -499,8 +504,8 @@ class PipelineWidget {
             this.renderChain();
             this.saveBrowserState();
         };
-        api.addEventListener("vnccs.pipeline.stage", this.onStage);
-        registerCleanup(this.node, () => api.removeEventListener("vnccs.pipeline.stage", this.onStage));
+        api.addEventListener("vnccs.character_generator.stage", this.onStage);
+        registerCleanup(this.node, () => api.removeEventListener("vnccs.character_generator.stage", this.onStage));
     }
 
     resetStagesFrom(stageKey) {
@@ -548,7 +553,7 @@ class PipelineWidget {
     }
 
     storageKey() {
-        return `vnccs:character-sheet-pipeline:${this.node.type || "node"}:${this.node.id}`;
+        return `vnccs:character-generator:${this.node.type || "node"}:${this.node.id}`;
     }
 
     restoreBrowserState() {
@@ -824,7 +829,7 @@ class PipelineWidget {
         this.settingsEl.innerHTML = "";
         const title = document.createElement("div");
         title.className = "vnccs-pipe-title";
-        title.textContent = "VNCCS Pipeline";
+        title.textContent = "VNCCS Character Generator";
         this.settingsEl.appendChild(title);
         this.settingsEl.appendChild(this.block("Pose Generation", [
             this.field("pose_generation", "target_size", "target size", "select", [1024, 1344, 1536, 2048, 768, 512]),
@@ -1033,6 +1038,10 @@ class PipelineWidget {
     openViewer(index = 0, restored = null) {
         const images = this.currentImages();
         if (!images.length) return;
+        if (!restored) {
+            this.userSelectedPreview = true;
+            this.persistUI();
+        }
         this.viewer = {
             open: true,
             index: Math.max(0, Math.min(index, images.length - 1)),
@@ -1305,34 +1314,34 @@ app.registerExtension({
         nodeType.prototype.onNodeCreated = function () {
             onNodeCreated?.apply(this, arguments);
             this.setSize([1180, 760]);
-            this._vnccsPipelineWidget = new PipelineWidget(this);
-            syncDOMWidgetWidthSoon(this, "pipeline_ui");
+            this._vnccsCharacterGeneratorWidget = new CharacterGeneratorWidget(this);
+            syncDOMWidgetWidthSoon(this, "character_generator_ui");
         };
 
         const onConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function () {
             onConfigure?.apply(this, arguments);
-            if (this._vnccsPipelineWidget) {
-                this._vnccsPipelineWidget.data = readData(this);
-                this._vnccsPipelineWidget.restoreBrowserState();
-                this._vnccsPipelineWidget.renderSettings();
-                this._vnccsPipelineWidget.renderPreview();
-                this._vnccsPipelineWidget.renderChain();
-                if (this._vnccsPipelineWidget.restoredViewer?.open && this._vnccsPipelineWidget.currentImages().length) {
-                    this._vnccsPipelineWidget.openViewer(
-                        this._vnccsPipelineWidget.restoredViewer.index || 0,
-                        this._vnccsPipelineWidget.restoredViewer,
+            if (this._vnccsCharacterGeneratorWidget) {
+                this._vnccsCharacterGeneratorWidget.data = readData(this);
+                this._vnccsCharacterGeneratorWidget.restoreBrowserState();
+                this._vnccsCharacterGeneratorWidget.renderSettings();
+                this._vnccsCharacterGeneratorWidget.renderPreview();
+                this._vnccsCharacterGeneratorWidget.renderChain();
+                if (this._vnccsCharacterGeneratorWidget.restoredViewer?.open && this._vnccsCharacterGeneratorWidget.currentImages().length) {
+                    this._vnccsCharacterGeneratorWidget.openViewer(
+                        this._vnccsCharacterGeneratorWidget.restoredViewer.index || 0,
+                        this._vnccsCharacterGeneratorWidget.restoredViewer,
                     );
                 }
             }
-            syncDOMWidgetWidthSoon(this, "pipeline_ui");
+            syncDOMWidgetWidthSoon(this, "character_generator_ui");
         };
 
         const onResize = nodeType.prototype.onResize;
         nodeType.prototype.onResize = function () {
             onResize?.apply(this, arguments);
-            syncDOMWidgetWidth(this, "pipeline_ui");
-            requestAnimationFrame(() => syncDOMWidgetWidth(this, "pipeline_ui"));
+            syncDOMWidgetWidth(this, "character_generator_ui");
+            requestAnimationFrame(() => syncDOMWidgetWidth(this, "character_generator_ui"));
         };
     },
 });
