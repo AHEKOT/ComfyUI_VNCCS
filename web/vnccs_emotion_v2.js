@@ -952,7 +952,7 @@ app.registerExtension({
                     if (!charName || charName === "Character Name") return;
 
                     // Preview (randomize to force reload from disk)
-                    charImg.src = `/vnccs/get_character_sheet_preview?character=${encodeURIComponent(charName)}&t=${Date.now()}`;
+                    charImg.src = `/vnccs/get_character_pose_preview?character=${encodeURIComponent(charName)}&t=${Date.now()}`;
 
                     // Costumes
                     try {

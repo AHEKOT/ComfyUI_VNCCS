@@ -604,7 +604,7 @@ app.registerExtension({
 
                         // Load Preview Image URL Logic
                         const ts = Date.now();
-                        const sheetUrl = `/vnccs/get_character_sheet_preview?character=${encodeURIComponent(name)}&t=${ts}`;
+                        const poseUrl = `/vnccs/get_character_pose_preview?character=${encodeURIComponent(name)}&t=${ts}`;
                         const cacheUrl = `/vnccs/get_cached_preview?character=${encodeURIComponent(name)}&t=${ts}`;
 
                         // Helper to find valid one
@@ -617,7 +617,7 @@ app.registerExtension({
                             });
                         };
 
-                        let finalUrl = await checkImage(sheetUrl);
+                        let finalUrl = await checkImage(poseUrl);
                         if (!finalUrl) finalUrl = await checkImage(cacheUrl);
 
                         state.char_preview_url = finalUrl;

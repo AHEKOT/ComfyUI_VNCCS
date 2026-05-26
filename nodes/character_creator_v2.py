@@ -36,23 +36,28 @@ def tensor2pil(image):
 
 def get_random_pose_preview(character_name):
     """
-    Pick any current pose image from the selected character's Sprites/Naked folder.
+    Pick any current pose image from the selected character's Sprites folder.
     Returns: torch.Tensor (1,H,W,3) or None
     """
     try:
         base_char_path = character_dir(character_name)
-        poses_dir = os.path.join(base_char_path, "Sprites", "Naked")
-        print(f"[VNCCS Debug] Checking Pose Preview Path: {poses_dir}")
+        sprite_roots = [
+            os.path.join(base_char_path, "Sprites", "Naked"),
+            os.path.join(base_char_path, "Sprites", "Original"),
+        ]
+        print(f"[VNCCS Debug] Checking Pose Preview Paths: {sprite_roots}")
 
         image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
         files = []
-        if os.path.isdir(poses_dir):
-            files = [
-                os.path.join(poses_dir, filename)
-                for filename in os.listdir(poses_dir)
-                if os.path.isfile(os.path.join(poses_dir, filename))
-                and os.path.splitext(filename)[1].lower() in image_exts
-            ]
+        for poses_dir in sprite_roots:
+            if not os.path.isdir(poses_dir):
+                continue
+            for root, _dirs, filenames in os.walk(poses_dir):
+                files.extend(
+                    os.path.join(root, filename)
+                    for filename in filenames
+                    if os.path.splitext(filename)[1].lower() in image_exts
+                )
         print(f"[VNCCS Debug] Pose preview files found: {len(files)}")
         if not files:
             return None

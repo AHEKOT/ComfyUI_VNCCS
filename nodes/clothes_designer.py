@@ -20,6 +20,64 @@ from ..utils import (
 )
 from .vnccs_control_center import _apply_lora_standard, _apply_lora_nunchaku
 
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+
+
+def _latest_image_file(files):
+    files = [path for path in files if os.path.isfile(path) and os.path.splitext(path)[1].lower() in IMAGE_EXTS]
+    if not files:
+        return None
+    return max(files, key=lambda path: (os.path.getmtime(path), path))
+
+
+def get_latest_sprite_path(character, costume="Naked"):
+    try:
+        base = os.path.join(character_dir(character), "Sprites", costume)
+        if not os.path.isdir(base):
+            return None
+
+        direct_files = [
+            os.path.join(base, filename)
+            for filename in os.listdir(base)
+            if os.path.isfile(os.path.join(base, filename))
+        ]
+        best = _latest_image_file(direct_files)
+        if best:
+            return best
+
+        nested_files = []
+        for root, _dirs, filenames in os.walk(base):
+            for filename in filenames:
+                nested_files.append(os.path.join(root, filename))
+        return _latest_image_file(nested_files)
+    except Exception:
+        return None
+
+
+def get_latest_sheet_path(character, costume="Naked"):
+    try:
+        path = os.path.join(character_dir(character), "Sheets", costume, "neutral")
+        files = glob.glob(os.path.join(path, "sheet_neutral_*.png"))
+        if not files:
+            return None
+
+        def get_idx(filename):
+            match = re.search(r"(\d+)", os.path.basename(filename))
+            return int(match.group(1)) if match else 0
+
+        files.sort(key=get_idx)
+        return files[-1]
+    except Exception:
+        return None
+
+
+def crop_sheet_preview(sheet_path):
+    img = Image.open(sheet_path)
+    w, h = img.size
+    item_w = w // 6
+    item_h = h // 2
+    return img.crop((5 * item_w, item_h, 6 * item_w, 2 * item_h))
+
 
 class PipeContext:
     def __init__(self, source=None, **updates):
@@ -136,15 +194,17 @@ class ClothesDesigner:
 
     def get_naked_sheet_crop(self, character_name):
         try:
-            base = character_dir(character_name)
-            path = os.path.join(base, "Sheets", "Naked", "neutral")
-            files = glob.glob(os.path.join(path, "sheet_neutral_*.png"))
-            if not files: return None, None
-            def get_idx(f):
-                m = re.search(r'(\d+)', os.path.basename(f))
-                return int(m.group(1)) if m else 0
-            files.sort(key=get_idx)
-            best = files[-1]
+            sprite_path = get_latest_sprite_path(character_name, "Naked") or get_latest_sprite_path(character_name, "Original")
+            if sprite_path:
+                img = Image.open(sprite_path).convert("RGB")
+                image_np = np.array(img).astype(np.float32) / 255.0
+                sprite_tensor = torch.from_numpy(image_np).unsqueeze(0)
+                return sprite_tensor, sprite_tensor
+
+            best = get_latest_sheet_path(character_name, "Naked") or get_latest_sheet_path(character_name, "Original")
+            if not best:
+                return None, None
+
             img = Image.open(best)
             w, h = img.size
             if w > 0 and h > 0:
@@ -209,15 +269,16 @@ class ClothesDesigner:
              input_hash = "INVALID"
 
         # 0. Validation
-        def has_base_sheet(c):
-             p1 = os.path.join(character_dir(c), "Sheets", "Naked", "neutral")
-             p2 = os.path.join(character_dir(c), "Sheets", "Original", "neutral")
-             has_naked = glob.glob(os.path.join(p1, "sheet_neutral_*.png"))
-             has_orig = glob.glob(os.path.join(p2, "sheet_neutral_*.png"))
-             return bool(has_naked or has_orig)
+        def has_base_body(c):
+             return bool(
+                 get_latest_sprite_path(c, "Naked")
+                 or get_latest_sprite_path(c, "Original")
+                 or get_latest_sheet_path(c, "Naked")
+                 or get_latest_sheet_path(c, "Original")
+             )
 
-        if not has_base_sheet(character_name):
-             raise ValueError(f"Character '{character_name}' is incomplete. Missing 'Naked' or 'Original' sheets.")
+        if not has_base_body(character_name):
+             raise ValueError(f"Character '{character_name}' is incomplete. Missing 'Naked' or 'Original' sprites.")
 
         # 1. Prompt
         positive_prompt, negative_prompt = self.construct_prompt(data)
@@ -485,22 +546,12 @@ async def vnccs_get_preview(request):
     character = request.rel_url.query.get("character", "")
     costume = request.rel_url.query.get("costume", "Naked")
     if not character: return web.Response(status=404)
-    
-    def get_latest_sheet_path(char, cost):
-        try:
-             path = os.path.join(character_dir(char), "Sheets", cost, "neutral")
-             files = glob.glob(os.path.join(path, "sheet_neutral_*.png"))
-             if not files: return None
-             def get_idx(f):
-                 m = re.search(r'(\d+)', os.path.basename(f))
-                 return int(m.group(1)) if m else 0
-             files.sort(key=get_idx)
-             return files[-1]
-        except: return None
 
+    naked_sprite = get_latest_sprite_path(character, "Naked")
+    original_sprite = get_latest_sprite_path(character, "Original")
     naked_sheet = get_latest_sheet_path(character, "Naked")
     original_sheet = get_latest_sheet_path(character, "Original")
-    if not naked_sheet and not original_sheet:
+    if not naked_sprite and not original_sprite and not naked_sheet and not original_sheet:
          return web.Response(status=400, text="Character Incomplete.")
 
     force_cache = request.rel_url.query.get("force_cache", "") == "true"
@@ -515,7 +566,11 @@ async def vnccs_get_preview(request):
     if force_cache and os.path.exists(cache_file):
         target_file = cache_file
 
-    # Otherwise, try costume sheet
+    # Otherwise, try costume sprites first.
+    if not target_file:
+         target_file = get_latest_sprite_path(character, costume)
+
+    # Legacy fallback: costume sheet.
     if not target_file:
          target_file = get_latest_sheet_path(character, costume)
     
@@ -523,17 +578,15 @@ async def vnccs_get_preview(request):
     if not target_file:
          if os.path.exists(cache_file): target_file = cache_file
          
-    # Final fallback to base sheets
-    if not target_file: target_file = naked_sheet if naked_sheet else original_sheet
+    # Final fallback to base sprites, then legacy sheets.
+    if not target_file:
+         target_file = naked_sprite or original_sprite or naked_sheet or original_sheet
 
     if target_file and os.path.exists(target_file):
          is_sheet = "Sheets" in target_file or "sheet_neutral" in os.path.basename(target_file)
          if is_sheet:
              try:
-                 img = Image.open(target_file)
-                 w, h = img.size
-                 item_w = w // 6; item_h = h // 2
-                 crop = img.crop((5 * item_w, 1 * item_h, 6 * item_w, 2 * item_h))
+                 crop = crop_sheet_preview(target_file)
                  buffered = io.BytesIO()
                  crop.save(buffered, format="PNG")
                  return web.Response(body=buffered.getvalue(), content_type="image/png")
@@ -543,4 +596,3 @@ async def vnccs_get_preview(request):
              return web.Response(body=f.read(), content_type="image/png")
              
     return web.Response(status=404)
-
