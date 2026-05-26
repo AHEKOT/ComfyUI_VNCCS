@@ -47,6 +47,7 @@ _CC_CONFIG_CACHE = {}
 _DOWNLOAD_STATUS = {}
 _DOWNLOAD_QUEUE = queue.Queue()
 _CUSTOM_LORAS_FILE = "vnccs_custom_loras.json"
+_PACKAGED_CC_REPO_IDS = {"MIUProject/VNCCS_V2"}
 _PIPELINE_LOCAL_LORAS = {"vnccs pose studio qie2511"}
 _FOLDER_MAP = {
     "unet": ["unet", "diffusion_models"],
@@ -288,20 +289,31 @@ def update_installed_version(model_name, version):
         json.dump(data, handle, indent=2)
 
 
+def _get_packaged_cc_path():
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "control_center.json"))
+
+
+def _uses_packaged_cc_config(repo_id):
+    return repo_id in _PACKAGED_CC_REPO_IDS and os.path.exists(_get_packaged_cc_path())
+
+
 def _get_cc_config(repo_id):
     cached = _CC_CONFIG_CACHE.get(repo_id)
     now = time.time()
     if cached and now - cached.get("ts", 0) < 300:
         return _merge_custom_loras(cached["data"])
 
-    user_config = get_vnccs_config()
-    hf_token = user_config.get("hf_token") or os.environ.get("HF_TOKEN")
-    path = hf_hub_download(
-        repo_id=repo_id,
-        filename="control_center.json",
-        local_files_only=False,
-        token=hf_token,
-    )
+    if _uses_packaged_cc_config(repo_id):
+        path = _get_packaged_cc_path()
+    else:
+        user_config = get_vnccs_config()
+        hf_token = user_config.get("hf_token")
+        path = hf_hub_download(
+            repo_id=repo_id,
+            filename="control_center.json",
+            local_files_only=False,
+            token=hf_token,
+        )
     with open(path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
     _CC_CONFIG_CACHE[repo_id] = {"ts": now, "data": data}
@@ -772,7 +784,7 @@ def _download_worker_loop():
                 if filename.startswith(f"{download_repo_id}/"):
                     filename = filename[len(download_repo_id) + 1:]
                 url = hf_hub_url(download_repo_id, filename)
-                hf_token = get_vnccs_config().get("hf_token") or os.environ.get("HF_TOKEN")
+                hf_token = get_vnccs_config().get("hf_token")
                 if hf_token:
                     headers = {"Authorization": f"Bearer {hf_token}"}
 
@@ -1242,6 +1254,7 @@ async def cc_check(request):
 
     return web.json_response({
         "name": config.get("name", ""),
+        "source": "packaged" if _uses_packaged_cc_config(repo_id) else "huggingface",
         "available_types": available_types,
         "models": enrich(config.get("models", []), "models"),
         "clip": enrich(config.get("clip", []), "clip"),

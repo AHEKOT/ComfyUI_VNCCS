@@ -547,6 +547,255 @@ const STYLE = `
     flex-direction: column;
     gap: 8px;
 }
+
+.vnccs-model-card-list {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.vnccs-model-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.vnccs-model-picker-menu {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid rgba(255,143,163,0.18);
+    border-radius: 10px;
+    background: rgba(8,8,12,0.48);
+}
+
+.vnccs-model-picker.is-open .vnccs-model-picker-menu {
+    display: flex;
+}
+
+.vnccs-model-picker-group {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.vnccs-model-picker-group-title {
+    color: var(--accent-hover);
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.vnccs-model-card {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    background: rgba(0,214,143,0.05);
+    border: 1px solid rgba(0,214,143,0.25);
+    border-radius: 10px;
+    padding: 10px 12px 8px;
+    cursor: default;
+    transition: all var(--transition);
+    position: relative;
+    overflow: hidden;
+}
+
+.vnccs-model-card.is-picker-head {
+    min-height: 58px;
+}
+
+.vnccs-model-card.is-installed {
+    cursor: pointer;
+}
+
+.vnccs-model-card.is-installed:hover {
+    border-color: rgba(0,214,143,0.42);
+    background: rgba(0,214,143,0.08);
+}
+
+.vnccs-model-card.is-selected {
+    border-color: var(--accent);
+    background: rgba(255,143,163,0.12);
+    box-shadow: 0 0 0 1px rgba(255,143,163,0.12) inset;
+}
+
+.vnccs-model-card.is-missing {
+    opacity: 0.92;
+}
+
+.vnccs-model-card-top {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+}
+
+.vnccs-model-card-name {
+    flex: 1;
+    min-width: 0;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.25;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vnccs-model-card-status {
+    flex-shrink: 0;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.vnccs-model-card-status.ok { color: var(--success); }
+.vnccs-model-card-status.missing { color: var(--error); }
+.vnccs-model-card-status.progress { color: var(--accent-lavender); }
+
+.vnccs-model-card-desc {
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+.vnccs-model-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.vnccs-model-card-download {
+    width: 100%;
+    padding: 7px 9px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--accent-border);
+    background: rgba(255,143,163,0.08);
+    color: var(--accent-hover);
+    font-family: var(--font);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+}
+
+.vnccs-model-card-download:hover {
+    background: rgba(255,143,163,0.14);
+}
+
+.vnccs-model-card-badge {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: var(--text-muted);
+}
+
+.vnccs-model-card-badge.ok { background: var(--success); }
+.vnccs-model-card-badge.missing { background: var(--error); }
+.vnccs-model-card-badge.progress { background: var(--accent-lavender); }
+
+.vnccs-model-card-toggle {
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.vnccs-generation-fallback {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.vnccs-gen-param-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px 18px;
+    padding-top: 2px;
+}
+
+.vnccs-gen-param-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.vnccs-gen-param-input,
+.vnccs-gen-param-select {
+    width: 100%;
+    height: 48px;
+    box-sizing: border-box;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.045);
+    color: var(--text-primary);
+    font-family: var(--font);
+    font-size: 14px;
+    font-weight: 600;
+    padding: 8px 12px;
+    transition: all var(--transition);
+    color-scheme: dark;
+}
+
+.vnccs-gen-param-select {
+    zoom: 1;
+}
+
+.vnccs-gen-param-input:focus,
+.vnccs-gen-param-select:focus {
+    outline: none;
+    border-color: var(--accent-border);
+    background: rgba(255,143,163,0.045);
+    box-shadow: 0 0 0 3px rgba(255,143,163,0.06);
+}
+
+.vnccs-gen-param-select option {
+    background: #1e1e2e;
+    color: #e8e8f0;
+}
+
+.vnccs-seed-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 52px;
+    gap: 8px;
+    align-items: stretch;
+}
+
+.vnccs-seed-dice-btn {
+    width: 52px;
+    height: 48px;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.045);
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition);
+}
+
+.vnccs-seed-dice-btn:hover {
+    border-color: var(--border-hover);
+    color: var(--text-primary);
+}
+
+.vnccs-seed-dice-btn.is-active {
+    border-color: var(--accent);
+    background: rgba(255,143,163,0.16);
+    color: var(--accent-hover);
+    box-shadow: 0 0 0 1px rgba(255,143,163,0.14) inset;
+}
+
+.vnccs-seed-dice-btn svg {
+    width: 24px;
+    height: 24px;
+    display: block;
+}
 `;
 
 app.registerExtension({
@@ -756,8 +1005,174 @@ app.registerExtension({
                         negative_prompt: "bad quality, worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia",
                     },
                 };
-
+                const CC_REPO_ID = "MIUProject/VNCCS_V2";
+                const CC_CACHE_KEY = `vnccs_cc_cache_${CC_REPO_ID}`;
                 let TAG_DATA = null;
+                let ccConfig = null;
+                let ccDlStatus = {};
+                let ccPollingInterval = null;
+                const modelPickerOpen = {
+                    illustrious: false,
+                    anima: false,
+                };
+                let localAssets = {
+                    checkpoints: [],
+                    diffusion_models: [],
+                    text_encoders: [],
+                    vae_models: [],
+                };
+
+                const ccNormalize = (value) => String(value || "").trim().toLowerCase();
+                const ccKind = (entry) => ccNormalize(entry?.kind ?? entry?.Kind);
+                const ccType = (entry) => ccNormalize(entry?.type ?? entry?.Type);
+                const ccStatusKey = (cat, entry) => `cc_${cat}_${entry?.name || ""}`;
+                const ccResolveStatus = (entry, cat) => {
+                    const transient = new Set(["queued", "downloading", "error", "auth_required"]);
+                    const dls = ccDlStatus[ccStatusKey(cat, entry)] || {};
+                    return transient.has(dls.status) ? dls.status : (entry?.status || "missing");
+                };
+                const ccRelPath = (entry) => {
+                    const localPath = String(entry?.local_path || "").replace(/\\/g, "/");
+                    const parts = localPath.split("/").filter(Boolean);
+                    if (parts.length >= 3 && parts[0] === "models") return parts.slice(2).join("/");
+                    return parts[parts.length - 1] || "";
+                };
+                const ccEntries = (section, kind, predicate = null) => {
+                    const entries = ccConfig?.[section] || [];
+                    return entries.filter(entry => {
+                        const kindOk = !kind || ccKind(entry) === ccNormalize(kind);
+                        return kindOk && (!predicate || predicate(entry));
+                    });
+                };
+                const localAssetRelSet = (items) => new Set((items || []).map(item => String(item || "").replace(/\\/g, "/")));
+                const localAssetHas = (key, rel) => {
+                    const normalized = String(rel || "").replace(/\\/g, "/");
+                    const map = {
+                        ckpt_name: localAssets.checkpoints,
+                        diffusion_model_name: localAssets.diffusion_models,
+                        clip_name: localAssets.text_encoders,
+                        vae_name: localAssets.vae_models,
+                    };
+                    return localAssetRelSet(map[key] || []).has(normalized);
+                };
+                const mergeCcAndLocalEntries = (ccList, localNames, folder, type, kind) => {
+                    const localSet = localAssetRelSet(localNames);
+                    const seen = new Set();
+                    const merged = [];
+
+                    (ccList || []).forEach(entry => {
+                        const rel = ccRelPath(entry);
+                        if (!rel) return;
+                        seen.add(rel);
+                        merged.push({
+                            ...entry,
+                            status: localSet.has(rel) ? "installed" : entry.status,
+                        });
+                    });
+
+                    (localNames || []).forEach(name => {
+                        const rel = String(name || "").replace(/\\/g, "/");
+                        if (!rel || seen.has(rel)) return;
+                        seen.add(rel);
+                        merged.push({
+                            name: rel,
+                            type,
+                            kind,
+                            local_path: `models/${folder}/${rel}`,
+                            status: "installed",
+                            description: "Local ComfyUI model.",
+                            source: "local",
+                        });
+                    });
+
+                    return merged;
+                };
+                const ccFirstEntry = (section, kind, predicate = null) => ccEntries(section, kind, predicate)[0] || null;
+                const ccHasRequiredFamilies = (config) => {
+                    const models = config?.models || [];
+                    const clips = config?.clip || [];
+                    const vaes = config?.vae || [];
+                    const hasAnima = models.some(entry => ccKind(entry) === "anima")
+                        && clips.some(entry => ccKind(entry) === "anima")
+                        && vaes.some(entry => ccKind(entry) === "anima");
+                    const hasIllustrious = models.some(entry => ccKind(entry) === "illustrious" && ccType(entry) === "checkpoint");
+                    return hasAnima && hasIllustrious;
+                };
+                const ccDownloadEntry = async (cat, entry) => {
+                    if (!entry?.name) return;
+                    const key = ccStatusKey(cat, entry);
+                    ccDlStatus[key] = { status: "queued", message: "Queued…" };
+                    renderControlCenterCards();
+                    try {
+                        const response = await api.fetchApi("/vnccs/control_center/download", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ repo_id: CC_REPO_ID, category: cat, name: entry.name }),
+                        });
+                        const payload = await response.json();
+                        if (!response.ok || payload.error) {
+                            ccDlStatus[key] = { status: "error", message: payload.error || "Download failed" };
+                            renderControlCenterCards();
+                            return;
+                        }
+                        startCcPolling();
+                    } catch (error) {
+                        ccDlStatus[key] = { status: "error", message: String(error?.message || error) };
+                        renderControlCenterCards();
+                    }
+                };
+                const fetchCcConfig = async (force = false) => {
+                    if (!force && window.VNCCS_CC_REGISTRY?.[CC_REPO_ID] && ccHasRequiredFamilies(window.VNCCS_CC_REGISTRY[CC_REPO_ID])) {
+                        ccConfig = window.VNCCS_CC_REGISTRY[CC_REPO_ID];
+                        renderControlCenterCards();
+                        return ccConfig;
+                    }
+                    if (!force && ccConfig && ccHasRequiredFamilies(ccConfig)) return ccConfig;
+                    if (!force) {
+                        try {
+                            const cached = localStorage.getItem(CC_CACHE_KEY);
+                            if (cached) {
+                                ccConfig = JSON.parse(cached);
+                                if (ccHasRequiredFamilies(ccConfig)) renderControlCenterCards();
+                                else ccConfig = null;
+                            }
+                        } catch (_) {}
+                    }
+
+                    const url = `/vnccs/control_center/check?repo_id=${encodeURIComponent(CC_REPO_ID)}${force ? "&force_refresh=true" : ""}`;
+                    const response = await api.fetchApi(url);
+                    const payload = await response.json();
+                    if (!response.ok || payload.error) throw new Error(payload.error || "Failed to load Control Center config");
+                    ccConfig = payload;
+                    window.VNCCS_CC_REGISTRY = window.VNCCS_CC_REGISTRY || {};
+                    window.VNCCS_CC_REGISTRY[CC_REPO_ID] = payload;
+                    localStorage.setItem(CC_CACHE_KEY, JSON.stringify(payload));
+                    renderControlCenterCards();
+                    return payload;
+                };
+                const refreshCcDownloadStatus = async () => {
+                    try {
+                        const response = await api.fetchApi("/vnccs/manager/status");
+                        if (!response.ok) return;
+                        ccDlStatus = await response.json();
+                        const active = Object.values(ccDlStatus || {}).some(item => ["queued", "downloading"].includes(item?.status));
+                        if (!active) {
+                            stopCcPolling();
+                            await fetchCcConfig(true);
+                        } else {
+                            renderControlCenterCards();
+                        }
+                    } catch (_) {}
+                };
+                const startCcPolling = () => {
+                    if (ccPollingInterval) return;
+                    ccPollingInterval = setInterval(refreshCcDownloadStatus, 2000);
+                };
+                const stopCcPolling = () => {
+                    if (!ccPollingInterval) return;
+                    clearInterval(ccPollingInterval);
+                    ccPollingInterval = null;
+                };
 
                 const els = {};
                 const cloneSettingsValue = (value) => {
@@ -831,7 +1246,12 @@ app.registerExtension({
                     syncSliderValue(els.steps, g.steps);
                     syncSliderValue(els.cfg, g.cfg);
                     if (els.seed) els.seed.value = g.seed ?? "";
-                    if (els.seed_mode) els.seed_mode.value = g.seed_mode || "fixed";
+                    if (els.seed_mode) {
+                        const randomMode = (g.seed_mode || "fixed") === "randomize";
+                        els.seed_mode.classList.toggle("is-active", randomMode);
+                        els.seed_mode.title = randomMode ? "Random seed" : "Fixed seed";
+                        els.seed_mode.setAttribute("aria-pressed", randomMode ? "true" : "false");
+                    }
                     if (els.dmdSelect) {
                         ensureOption(els.dmdSelect, g.dmd_lora_name);
                         els.dmdSelect.value = g.dmd_lora_name || "";
@@ -852,6 +1272,7 @@ app.registerExtension({
                             ref.sel.closest(".vnccs-lora-item")?.classList.toggle("is-empty", !item.name);
                         });
                     }
+                    renderControlCenterCards();
                 };
 
                 const migrateGenerationModeSettings = () => {
@@ -944,8 +1365,8 @@ app.registerExtension({
 
                 const syncSliderValue = (ref, value) => {
                     if (!ref) return;
-                    ref.range.value = value;
-                    ref.num.value = value;
+                    if (ref.range) ref.range.value = value;
+                    if (ref.num) ref.num.value = value;
                 };
 
                 const ensureOption = (el, value) => {
@@ -1042,9 +1463,11 @@ app.registerExtension({
                     if (els.illustriousModels) els.illustriousModels.style.display = isAnima ? "none" : "flex";
                     if (els.animaModels) els.animaModels.style.display = isAnima ? "flex" : "none";
                     if (els.loraSection) els.loraSection.style.display = "flex";
+                    if (els.dmdWrap) els.dmdWrap.style.display = isAnima ? "none" : "flex";
                     if (els.dmdLabel) els.dmdLabel.innerText = isAnima ? "Turbo LoRA" : "DMD2 LoRA Model";
                     if (els.loraHeader) els.loraHeader.innerText = isAnima ? "ANIMA LoRA Stack" : "LoRa Stack";
                     if (els.ageWrap) els.ageWrap.style.display = isAnima ? "none" : "flex";
+                    if (els.animaLoraCards) els.animaLoraCards.style.display = isAnima && els.animaLoraCards.children.length ? "flex" : "none";
                 };
 
                 const setGenerationMode = (mode) => {
@@ -1213,6 +1636,432 @@ app.registerExtension({
 
                     els[key] = { range, num }; // composite ref
                     return wrap;
+                };
+
+                const createCompactNumberField = (lbl, key, min, max, step, targetObj = state.gen_settings) => {
+                    const wrap = document.createElement("div");
+                    wrap.className = "vnccs-gen-param-field";
+                    wrap.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
+
+                    const input = document.createElement("input");
+                    input.type = "number";
+                    input.className = "vnccs-gen-param-input";
+                    input.min = min;
+                    input.max = max;
+                    input.step = step;
+                    input.value = targetObj[key];
+                    input.onchange = (e) => {
+                        let value = parseFloat(e.target.value);
+                        if (Number.isNaN(value)) value = targetObj[key] ?? min;
+                        if (value < min) value = min;
+                        if (value > max) value = max;
+                        e.target.value = value;
+                        targetObj[key] = value;
+                        saveState();
+                    };
+
+                    wrap.appendChild(input);
+                    els[key] = { num: input };
+                    return wrap;
+                };
+
+                const createCompactSelectField = (lbl, key, targetObj = state.gen_settings) => {
+                    const wrap = document.createElement("div");
+                    wrap.className = "vnccs-gen-param-field";
+                    wrap.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
+
+                    const select = document.createElement("select");
+                    select.className = "vnccs-gen-param-select";
+                    select.onchange = (e) => {
+                        targetObj[key] = e.target.value;
+                        saveState();
+                    };
+
+                    wrap.appendChild(select);
+                    els[key] = select;
+                    return wrap;
+                };
+
+                const makeFallbackSelect = (label, key, targetObj = state.gen_settings) => {
+                    const wrap = document.createElement("div");
+                    wrap.className = "vnccs-field";
+                    wrap.innerHTML = `<div class="vnccs-label">${label}</div>`;
+                    const select = document.createElement("select");
+                    select.className = "vnccs-select";
+                    select.onchange = (e) => {
+                        targetObj[key] = e.target.value;
+                        saveState();
+                    };
+                    wrap.appendChild(select);
+                    els[key] = select;
+                    return wrap;
+                };
+
+                const cardStatusLabel = (status, entry, cat) => {
+                    const dls = ccDlStatus[ccStatusKey(cat, entry)] || {};
+                    if (status === "installed") return "Installed";
+                    if (status === "queued") return "Queued";
+                    if (status === "downloading") return dls.message || "Downloading";
+                    if (status === "auth_required") return "Key Required";
+                    if (status === "error") return "Error";
+                    return "Missing";
+                };
+
+                const buildAssetCard = ({ entry, cat, selectedValue, onSelect, compact = false, toggled = false, onToggle = null, pickerHead = false, onDownload = null }) => {
+                    const status = ccResolveStatus(entry, cat);
+                    const rel = ccRelPath(entry);
+                    const installed = status === "installed";
+                    const selected = selectedValue && rel && selectedValue.replace(/\\/g, "/") === rel;
+                    const progress = ["queued", "downloading"].includes(status);
+
+                    const card = document.createElement("div");
+                    card.className = "vnccs-model-card";
+                    card.classList.toggle("is-picker-head", pickerHead);
+                    card.classList.toggle("is-installed", installed);
+                    card.classList.toggle("is-selected", selected || toggled);
+                    card.classList.toggle("is-missing", !installed);
+                    if (installed || pickerHead) {
+                        card.onclick = () => onSelect?.(rel, entry);
+                    }
+
+                    const top = document.createElement("div");
+                    top.className = "vnccs-model-card-top";
+
+                    const badge = document.createElement("span");
+                    badge.className = "vnccs-model-card-badge " + (installed ? "ok" : progress ? "progress" : "missing");
+                    top.appendChild(badge);
+
+                    const name = document.createElement("div");
+                    name.className = "vnccs-model-card-name";
+                    name.textContent = entry.name || rel || "Unknown";
+                    top.appendChild(name);
+
+                    const statusEl = document.createElement("div");
+                    statusEl.className = "vnccs-model-card-status " + (installed ? "ok" : progress ? "progress" : "missing");
+                    statusEl.textContent = cardStatusLabel(status, entry, cat);
+                    top.appendChild(statusEl);
+
+                    if (onToggle && installed) {
+                        const toggle = document.createElement("label");
+                        toggle.className = "vnccs-toggle vnccs-model-card-toggle";
+                        const input = document.createElement("input");
+                        input.type = "checkbox";
+                        input.checked = !!toggled;
+                        input.onchange = (event) => {
+                            event.stopPropagation();
+                            onToggle(event.target.checked, rel, entry);
+                        };
+                        input.onclick = (event) => event.stopPropagation();
+                        const track = document.createElement("div");
+                        track.className = "vnccs-toggle-track";
+                        const thumb = document.createElement("div");
+                        thumb.className = "vnccs-toggle-thumb";
+                        toggle.append(input, track, thumb);
+                        top.appendChild(toggle);
+                    }
+
+                    card.appendChild(top);
+
+                    if (entry.description && !compact) {
+                        const desc = document.createElement("div");
+                        desc.className = "vnccs-model-card-desc";
+                        desc.textContent = entry.description;
+                        card.appendChild(desc);
+                    }
+
+                    if (!installed) {
+                        const actions = document.createElement("div");
+                        actions.className = "vnccs-model-card-actions";
+                        const btn = document.createElement("button");
+                        btn.type = "button";
+                        btn.className = "vnccs-model-card-download";
+                        btn.textContent = status === "auth_required" ? "Enter Key in Control Center" : "Download";
+                        btn.disabled = progress;
+                        btn.onclick = (event) => {
+                            event.stopPropagation();
+                            if (!progress && status !== "auth_required") (onDownload || ccDownloadEntry)(cat, entry);
+                        };
+                        actions.appendChild(btn);
+                        card.appendChild(actions);
+                    }
+
+                    return card;
+                };
+
+                const selectCcAsset = (key, rel) => {
+                    if (!rel) return;
+                    state.gen_settings[key] = rel;
+                    if (els[key]) {
+                        ensureOption(els[key], rel);
+                        els[key].value = rel;
+                    }
+                    saveState();
+                    renderControlCenterCards();
+                };
+
+                const ensureAnimaDefaultAux = () => {
+                    const clip = ccFirstEntry("clip", "Anima");
+                    const vae = ccFirstEntry("vae", "Anima");
+                    if (clip) state.gen_settings.clip_name = ccRelPath(clip);
+                    else if (!state.gen_settings.clip_name) state.gen_settings.clip_name = ANIMA_CLIP_NAME;
+                    if (vae) state.gen_settings.vae_name = ccRelPath(vae);
+                    else if (!state.gen_settings.vae_name) state.gen_settings.vae_name = ANIMA_VAE_NAME;
+                    if (els.clip_name) {
+                        ensureOption(els.clip_name, state.gen_settings.clip_name);
+                        els.clip_name.value = state.gen_settings.clip_name || "";
+                    }
+                    if (els.vae_name) {
+                        ensureOption(els.vae_name, state.gen_settings.vae_name);
+                        els.vae_name.value = state.gen_settings.vae_name || "";
+                    }
+                };
+
+                const selectAnimaModel = (rel) => {
+                    ensureAnimaDefaultAux();
+                    modelPickerOpen.anima = false;
+                    selectCcAsset("diffusion_model_name", rel);
+                };
+
+                const selectIllustriousModel = (rel) => {
+                    modelPickerOpen.illustrious = false;
+                    selectCcAsset("ckpt_name", rel);
+                };
+
+                const downloadAnimaBundle = async (cat, entry) => {
+                    ensureAnimaDefaultAux();
+                    await ccDownloadEntry(cat, entry);
+                    const clip = ccFirstEntry("clip", "Anima");
+                    const vae = ccFirstEntry("vae", "Anima");
+                    if (clip && ccResolveStatus(clip, "clip") !== "installed") await ccDownloadEntry("clip", clip);
+                    if (vae && ccResolveStatus(vae, "vae") !== "installed") await ccDownloadEntry("vae", vae);
+                };
+
+                const setCcTurboMode = (enabled, rel) => {
+                    if ((state.gen_settings.generation_mode || "illustrious").toLowerCase() === "anima") {
+                        state.gen_settings.dmd_lora_name = rel || state.gen_settings.dmd_lora_name || "";
+                        setAnimaTurboMode(enabled);
+                    } else {
+                        state.gen_settings.dmd_lora_name = enabled ? rel : "";
+                        state.gen_settings.dmd_lora_strength = enabled ? 1.0 : 0.0;
+                        saveState();
+                    }
+                    renderControlCenterCards();
+                };
+
+                const setCcAgeLora = (enabled, rel) => {
+                    state.gen_settings.age_lora_name = enabled ? rel : "";
+                    if (els.ageSelect) {
+                        ensureOption(els.ageSelect, state.gen_settings.age_lora_name);
+                        els.ageSelect.value = state.gen_settings.age_lora_name || "";
+                    }
+                    saveState();
+                    renderControlCenterCards();
+                };
+
+                const renderCardSection = (containerEl, entries, cat, key, emptyText) => {
+                    if (!containerEl) return;
+                    containerEl.innerHTML = "";
+                    if (!entries.length) {
+                        const empty = document.createElement("div");
+                        empty.className = "vnccs-model-card-desc";
+                        empty.textContent = emptyText;
+                        containerEl.appendChild(empty);
+                        return;
+                    }
+                    entries.forEach(entry => {
+                        containerEl.appendChild(buildAssetCard({
+                            entry,
+                            cat,
+                            selectedValue: state.gen_settings[key] || "",
+                            onSelect: rel => selectCcAsset(key, rel),
+                        }));
+                    });
+                };
+
+                const renderModelPicker = ({ containerEl, entries, cat, key, mode, emptyText, onSelect, onDownload = null }) => {
+                    if (!containerEl) return;
+                    containerEl.innerHTML = "";
+                    const picker = document.createElement("div");
+                    picker.className = "vnccs-model-picker";
+                    picker.classList.toggle("is-open", !!modelPickerOpen[mode]);
+                    containerEl.appendChild(picker);
+
+                    if (!entries.length) {
+                        const empty = document.createElement("div");
+                        empty.className = "vnccs-model-card-desc";
+                        empty.textContent = emptyText;
+                        picker.appendChild(empty);
+                        return;
+                    }
+
+                    const current = String(state.gen_settings[key] || "").replace(/\\/g, "/");
+                    const selectedEntry = entries.find(entry => ccRelPath(entry) === current)
+                        || entries[0];
+
+                    picker.appendChild(buildAssetCard({
+                        entry: selectedEntry,
+                        cat,
+                        selectedValue: ccRelPath(selectedEntry),
+                        pickerHead: true,
+                        onSelect: () => {
+                            modelPickerOpen[mode] = !modelPickerOpen[mode];
+                            renderControlCenterCards();
+                        },
+                        onDownload,
+                    }));
+
+                    const menu = document.createElement("div");
+                    menu.className = "vnccs-model-picker-menu";
+                    picker.appendChild(menu);
+
+                    const appendGroup = (title, groupEntries) => {
+                        if (!groupEntries.length) return;
+                        const group = document.createElement("div");
+                        group.className = "vnccs-model-picker-group";
+                        const groupTitle = document.createElement("div");
+                        groupTitle.className = "vnccs-model-picker-group-title";
+                        groupTitle.textContent = title;
+                        group.appendChild(groupTitle);
+                        groupEntries.forEach(entry => {
+                            group.appendChild(buildAssetCard({
+                                entry,
+                                cat,
+                                selectedValue: state.gen_settings[key] || "",
+                                onSelect,
+                                onDownload,
+                            }));
+                        });
+                        menu.appendChild(group);
+                    };
+
+                    appendGroup("VNCCS Models", entries.filter(entry => entry.source !== "local"));
+                    appendGroup("User Models", entries.filter(entry => entry.source === "local"));
+                };
+
+                const renderControlCenterCards = () => {
+                    if (!els.animaModelCards && !els.illustriousModelCards) return;
+                    if (els.animaFallback) {
+                        els.animaFallback.style.display = "none";
+                    }
+                    [els.animaModelCards].forEach(containerEl => {
+                        if (containerEl) containerEl.style.display = "flex";
+                    });
+
+                    const animaModels = mergeCcAndLocalEntries(
+                        ccEntries("models", "Anima", entry => ccType(entry) === "unet"),
+                        localAssets.diffusion_models,
+                        "diffusion_models",
+                        "unet",
+                        "Anima",
+                    );
+                    renderModelPicker({
+                        containerEl: els.animaModelCards,
+                        entries: animaModels,
+                        cat: "models",
+                        key: "diffusion_model_name",
+                        mode: "anima",
+                        emptyText: "No Anima diffusion models found.",
+                        onSelect: rel => selectAnimaModel(rel),
+                        onDownload: downloadAnimaBundle,
+                    });
+
+                    const installedAnimaDefaults = [
+                        ["diffusion_model_name", animaModels, "models"],
+                    ];
+                    installedAnimaDefaults.forEach(([key, entries, cat]) => {
+                        const current = String(state.gen_settings[key] || "").replace(/\\/g, "/");
+                        const firstEntry = entries[0];
+                        if (!current && firstEntry && ccConfig) {
+                            selectAnimaModel(ccRelPath(firstEntry));
+                        }
+                    });
+                    ensureAnimaDefaultAux();
+
+                    if (els.animaLoraCards) {
+                        els.animaLoraCards.innerHTML = "";
+                        const turboEntries = ccEntries("lora", "Anima", entry => ccType(entry) === "turbolora");
+                        const ageEntries = ccEntries("lora", "Anima", entry => ccType(entry) === "ageslider");
+
+                        const addLoraGroup = (title, entries, currentValue, onToggle, forceToggle = false) => {
+                            if (!entries.length) return;
+                            const group = document.createElement("div");
+                            group.className = "vnccs-subsection";
+                            const label = document.createElement("div");
+                            label.className = "vnccs-label";
+                            label.textContent = title;
+                            group.appendChild(label);
+                            entries.forEach(entry => {
+                                const rel = ccRelPath(entry);
+                                const enabled = forceToggle
+                                    ? !!state.gen_settings.turbo_enabled && currentValue.replace(/\\/g, "/") === rel
+                                    : currentValue.replace(/\\/g, "/") === rel;
+                                group.appendChild(buildAssetCard({
+                                    entry,
+                                    cat: "lora",
+                                    selectedValue: currentValue,
+                                    compact: true,
+                                    toggled: enabled,
+                                    onSelect: () => onToggle(!enabled, rel, entry),
+                                    onToggle: checked => onToggle(checked, rel, entry),
+                                }));
+                            });
+                            els.animaLoraCards.appendChild(group);
+                        };
+
+                        addLoraGroup("Turbo LoRA", turboEntries, state.gen_settings.dmd_lora_name || "", setCcTurboMode, true);
+                        addLoraGroup("Age LoRA", ageEntries, state.gen_settings.age_lora_name || "", setCcAgeLora);
+                        els.animaLoraCards.style.display = els.animaLoraCards.children.length ? "flex" : "none";
+                    }
+
+                    const illustriousDefaults = (ccConfig?.models || []).filter(entry => {
+                        const kind = ccKind(entry);
+                        return (kind === "illustrious" || kind === "sdxl") && ccType(entry) === "checkpoint";
+                    });
+                    const illustriousCkpts = mergeCcAndLocalEntries(
+                        illustriousDefaults,
+                        localAssets.checkpoints,
+                        "checkpoints",
+                        "checkpoint",
+                        "Illustrious",
+                    );
+                    if (els.illustriousModelCards) {
+                        els.illustriousModelCards.innerHTML = "";
+                        if (illustriousCkpts.length) {
+                            els.illustriousFallback.style.display = "none";
+                            const firstEntry = illustriousCkpts[0];
+                            if (!state.gen_settings.ckpt_name && firstEntry && ccConfig) {
+                                selectCcAsset("ckpt_name", ccRelPath(firstEntry));
+                            }
+                            renderModelPicker({
+                                containerEl: els.illustriousModelCards,
+                                entries: illustriousCkpts,
+                                cat: "models",
+                                key: "ckpt_name",
+                                mode: "illustrious",
+                                emptyText: "No Illustrious checkpoints found.",
+                                onSelect: rel => selectIllustriousModel(rel),
+                            });
+                            els.illustriousModelCards.style.display = "flex";
+                        } else {
+                            els.illustriousFallback.style.display = "none";
+                            els.illustriousModelCards.style.display = "flex";
+                            const empty = document.createElement("div");
+                            empty.className = "vnccs-model-card-desc";
+                            empty.textContent = "No checkpoints found.";
+                            els.illustriousModelCards.appendChild(empty);
+                        }
+                    }
+                };
+
+                const isSelectedCcAssetInstalled = (section, kind, key, predicate = null) => {
+                    const selected = String(state.gen_settings[key] || "").replace(/\\/g, "/");
+                    if (!selected) return false;
+                    if (!ccConfig) return true;
+                    const entries = ccEntries(section, kind, predicate);
+                    if (!entries.length) return true;
+                    const match = entries.find(entry => ccRelPath(entry) === selected);
+                    if (!match) return localAssetHas(key, selected);
+                    return ccResolveStatus(match, section === "models" ? "models" : section) === "installed";
                 };
 
                 // 5. Build Layout
@@ -1565,86 +2414,92 @@ app.registerExtension({
                 illustriousModels.className = "vnccs-subsection";
                 els.illustriousModels = illustriousModels;
 
-                const wrapCkpt = document.createElement("div"); wrapCkpt.className = "vnccs-field";
-                wrapCkpt.innerHTML = '<div class="vnccs-label">Checkpoint (SDXL)</div>';
-                const sCkpt = document.createElement("select"); sCkpt.className = "vnccs-select";
-                sCkpt.onchange = (e) => { state.gen_settings.ckpt_name = e.target.value; saveState(); };
-                els.ckptSelect = sCkpt; wrapCkpt.appendChild(sCkpt); illustriousModels.appendChild(wrapCkpt);
+                const illustriousCards = document.createElement("div");
+                illustriousCards.className = "vnccs-model-card-list";
+                els.illustriousModelCards = illustriousCards;
+                illustriousModels.appendChild(illustriousCards);
+
+                const illustriousFallback = document.createElement("div");
+                illustriousFallback.className = "vnccs-generation-fallback";
+                illustriousFallback.style.display = "none";
+                els.illustriousFallback = illustriousFallback;
+                const wrapCkpt = makeFallbackSelect("Checkpoint (SDXL)", "ckpt_name");
+                els.ckptSelect = wrapCkpt.querySelector("select");
+                illustriousFallback.appendChild(wrapCkpt);
+                illustriousModels.appendChild(illustriousFallback);
                 colRight.appendChild(illustriousModels);
 
                 const animaModels = document.createElement("div");
                 animaModels.className = "vnccs-subsection";
                 els.animaModels = animaModels;
 
-                const createModelField = (label, key) => {
+                const createAnimaCardField = (label, slotName) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-field";
                     wrap.innerHTML = `<div class="vnccs-label">${label}</div>`;
-                    const select = document.createElement("select");
-                    select.className = "vnccs-select";
-                    select.onchange = (e) => {
-                        state.gen_settings[key] = e.target.value;
-                        saveState();
-                    };
-                    wrap.appendChild(select);
-                    els[key] = select;
+                    const cards = document.createElement("div");
+                    cards.className = "vnccs-model-card-list";
+                    wrap.appendChild(cards);
+                    els[slotName] = cards;
                     animaModels.appendChild(wrap);
                 };
 
-                createModelField("Diffusion Model", "diffusion_model_name");
-                createModelField("CLIP", "clip_name");
-                createModelField("VAE", "vae_name");
+                createAnimaCardField("Diffusion Model", "animaModelCards");
+
+                const hiddenAnimaSelects = document.createElement("div");
+                hiddenAnimaSelects.className = "vnccs-generation-fallback";
+                hiddenAnimaSelects.style.display = "none";
+                els.animaFallback = hiddenAnimaSelects;
+                hiddenAnimaSelects.appendChild(makeFallbackSelect("Diffusion Model", "diffusion_model_name"));
+                hiddenAnimaSelects.appendChild(makeFallbackSelect("CLIP", "clip_name"));
+                hiddenAnimaSelects.appendChild(makeFallbackSelect("VAE", "vae_name"));
+                animaModels.appendChild(hiddenAnimaSelects);
                 colRight.appendChild(animaModels);
 
-                colRight.appendChild(createField("Sampler", "sampler", "select", [], state.gen_settings));
-                els.sampler = colRight.lastChild.querySelector("select");
-
-                colRight.appendChild(createField("Scheduler", "scheduler", "select", [], state.gen_settings));
-                els.scheduler = colRight.lastChild.querySelector("select");
-
-                // Sliders for Steps & CFG
-                colRight.appendChild(createSlider("Steps", "steps", 1, 100, 1));
-                colRight.appendChild(createSlider("CFG", "cfg", 1, 20, 0.1));
+                const genParamGrid = document.createElement("div");
+                genParamGrid.className = "vnccs-gen-param-grid";
+                genParamGrid.appendChild(createCompactNumberField("Steps", "steps", 1, 100, 1));
+                genParamGrid.appendChild(createCompactSelectField("Sampler", "sampler", state.gen_settings));
+                genParamGrid.appendChild(createCompactNumberField("CFG", "cfg", 1, 20, 0.1));
+                genParamGrid.appendChild(createCompactSelectField("Scheduler", "scheduler", state.gen_settings));
+                colRight.appendChild(genParamGrid);
 
                 // SEED Section (Rebalanced)
                 const seedWrap = document.createElement("div"); seedWrap.className = "vnccs-field";
                 seedWrap.innerHTML = '<div class="vnccs-label">Seed</div>';
 
                 const seedRow = document.createElement("div");
-                seedRow.style.display = "flex";
-                seedRow.style.gap = "5px";
-                seedRow.style.width = "100%"; // Ensure fill
+                seedRow.className = "vnccs-seed-row";
 
-                const seedInp = document.createElement("input"); seedInp.className = "vnccs-input";
+                const seedInp = document.createElement("input"); seedInp.className = "vnccs-gen-param-input";
                 seedInp.type = "number"; seedInp.value = state.gen_settings.seed;
-                seedInp.style.flex = "1.5"; // Give seed more space, but not overwhelming
                 seedInp.onchange = (e) => {
                     state.gen_settings.seed = parseInt(e.target.value);
                     saveState();
                 };
                 els.seed = seedInp;
 
-                const seedMode = document.createElement("select"); seedMode.className = "vnccs-select";
-                seedMode.style.flex = "1"; // Less space for mode
-                // Since .vnccs-select has zoom:1.5, we might need to be careful with flex calc?
-                // Actually zoom affects computed width. If we set width 100% in CSS, flex controls container width.
-                // The zoom might make it overflow its flex item container.
-                seedMode.style.width = "100%"; // Inner width
-
-                ["fixed", "randomize"].forEach(x => seedMode.add(new Option(x, x)));
-                seedMode.value = state.gen_settings.seed_mode || "fixed";
-                seedMode.onchange = (e) => {
-                    state.gen_settings.seed_mode = e.target.value;
+                const seedMode = document.createElement("button");
+                seedMode.type = "button";
+                seedMode.className = "vnccs-seed-dice-btn";
+                seedMode.innerHTML = `
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <rect x="4" y="4" width="16" height="16" rx="3.5" stroke="currentColor" stroke-width="2"/>
+                        <circle cx="8.5" cy="8.5" r="1.4" fill="currentColor"/>
+                        <circle cx="15.5" cy="8.5" r="1.4" fill="currentColor"/>
+                        <circle cx="12" cy="12" r="1.4" fill="currentColor"/>
+                        <circle cx="8.5" cy="15.5" r="1.4" fill="currentColor"/>
+                        <circle cx="15.5" cy="15.5" r="1.4" fill="currentColor"/>
+                    </svg>`;
+                seedMode.onclick = () => {
+                    state.gen_settings.seed_mode = (state.gen_settings.seed_mode || "fixed") === "randomize" ? "fixed" : "randomize";
+                    syncGenerationControls();
                     saveState();
                 };
                 els.seed_mode = seedMode;
 
                 seedRow.appendChild(seedInp);
-                // Wrap seedMode in a div to contain the zoom overflow issues comfortably?
-                // Let's just put it directly first. 
-                const smWrap = document.createElement("div"); smWrap.style.flex = "1"; smWrap.style.minWidth = "0";
-                smWrap.appendChild(seedMode);
-                seedRow.appendChild(smWrap);
+                seedRow.appendChild(seedMode);
 
                 seedWrap.appendChild(seedRow);
                 colRight.appendChild(seedWrap);
@@ -1663,6 +2518,7 @@ app.registerExtension({
 
                 // DMD2 LoRA
                 const dmdWrap = document.createElement("div"); dmdWrap.className = "vnccs-lora-item";
+                els.dmdWrap = dmdWrap;
                 const dmdLabel = document.createElement("div");
                 dmdLabel.className = "vnccs-label";
                 dmdLabel.innerText = "DMD2 LoRA Model";
@@ -1701,6 +2557,11 @@ app.registerExtension({
                 dmdWrap.appendChild(dmdRow);
                 loraSection.appendChild(dmdWrap);
                 els.dmdSlider = dmdStr; // Renamed ref for logic compat, though it's an input now
+
+                const animaLoraCards = document.createElement("div");
+                animaLoraCards.className = "vnccs-subsection";
+                els.animaLoraCards = animaLoraCards;
+                loraSection.appendChild(animaLoraCards);
 
                 // Age LoRA
                 const ageWrap = document.createElement("div"); ageWrap.className = "vnccs-lora-item";
@@ -1813,6 +2674,7 @@ app.registerExtension({
                 };
                 api.addEventListener("vnccs.preview.updated", previewUpdateHandler);
                 registerCleanup(node, () => api.removeEventListener("vnccs.preview.updated", previewUpdateHandler));
+                registerCleanup(node, () => stopCcPolling());
 
                 const init = async () => {
                     loadState();
@@ -1832,12 +2694,24 @@ app.registerExtension({
                         pop(els.vae_name, d.vae_models);
                         pop(els.sampler, d.samplers);
                         pop(els.scheduler, d.schedulers);
+                        localAssets = {
+                            checkpoints: d.checkpoints || [],
+                            diffusion_models: d.diffusion_models || [],
+                            text_encoders: d.text_encoders || [],
+                            vae_models: d.vae_models || [],
+                        };
+                        renderControlCenterCards();
 
                         // Populate LoRA selectors
                         const loras = d.loras || [];
                         pop(els.dmdSelect, loras, true);
                         pop(els.ageSelect, loras, true);
                         els.loraStackSelects.forEach(o => pop(o.sel, loras, true));
+
+                        fetchCcConfig(true).catch((error) => {
+                            console.warn("[VNCCS V2] Control Center config unavailable:", error);
+                            renderControlCenterCards();
+                        });
 
                         els.charSelect.innerHTML = "";
                         if (!d.characters || !d.characters.length) els.charSelect.add(new Option("None", ""));
@@ -1863,7 +2737,7 @@ app.registerExtension({
                             if (key === "vae_name" && !animaProfile[key]) {
                                 animaProfile[key] = ANIMA_VAE_NAME;
                             }
-                            if (!animaProfile[key] && ref.options.length > 0) {
+                            if (key !== "diffusion_model_name" && !animaProfile[key] && ref.options.length > 0) {
                                 animaProfile[key] = ref.options[0].value;
                             }
                             ensureOption(ref, animaProfile[key]);
@@ -2006,8 +2880,26 @@ app.registerExtension({
                         if (!state.gen_settings.diffusion_model_name) { alert("Select Diffusion Model"); return; }
                         if (!state.gen_settings.clip_name) { alert("Select CLIP"); return; }
                         if (!state.gen_settings.vae_name) { alert("Select VAE"); return; }
+                        if (!isSelectedCcAssetInstalled("models", "Anima", "diffusion_model_name", entry => ccType(entry) === "unet")) {
+                            alert("Download and select an installed Anima Diffusion Model");
+                            return;
+                        }
+                        if (!isSelectedCcAssetInstalled("clip", "Anima", "clip_name")) {
+                            alert("Download and select an installed Anima CLIP");
+                            return;
+                        }
+                        if (!isSelectedCcAssetInstalled("vae", "Anima", "vae_name")) {
+                            alert("Download and select an installed Anima VAE");
+                            return;
+                        }
                     } else if (!state.gen_settings.ckpt_name) {
                         alert("Select Checkpoint"); return;
+                    } else if (!isSelectedCcAssetInstalled("models", null, "ckpt_name", entry => {
+                        const kind = ccKind(entry);
+                        return (kind === "illustrious" || kind === "sdxl") && ccType(entry) === "checkpoint";
+                    })) {
+                        alert("Download and select an installed Illustrious checkpoint");
+                        return;
                     }
                     if (els.btnGen.disabled) return;
 

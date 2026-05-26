@@ -110,6 +110,36 @@
       "local_path": "models/diffusion_models/anima-base-v1.0.safetensors",
       "version": "1.0",
       "description": "Anima base diffusion model v1.0."
+    },
+    {
+      "name": "ILFlatMix",
+      "type": "checkpoint",
+      "kind": "Illustrious",
+      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_path": "models/checkpoints/Illustrious/ILFlatMix.safetensors",
+      "local_path": "models/checkpoints/Illustrious/ILFlatMix.safetensors",
+      "version": "1.0",
+      "description": "Illustrious checkpoint made for VNCCS. Flat style with good line quality and color consistency."
+    },
+    {
+      "name": "Newgrounds Mix v2.0",
+      "type": "checkpoint",
+      "kind": "Illustrious",
+      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_path": "models/checkpoints/Illustrious/newgroundsMix_v20.safetensors",
+      "local_path": "models/checkpoints/Illustrious/newgroundsMix_v20.safetensors",
+      "version": "1.0",
+      "description": "Newgrounds Mix v2.0 Illustrious checkpoint. Good variety of Niji styles."
+    },
+    {
+      "name": "WAI Illustrious SDXL v1.70",
+      "type": "checkpoint",
+      "kind": "Illustrious",
+      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_path": "models/checkpoints/Illustrious/waiIllustriousSDXL_v170.safetensors",
+      "local_path": "models/checkpoints/Illustrious/waiIllustriousSDXL_v170.safetensors",
+      "version": "1.0",
+      "description": "WAI Illustrious v1.70 checkpoint. Most stable model."
     }
   ],
   "clip": [
@@ -208,6 +238,16 @@
       "description": "4-Step Lightning/Turbo LoRA for SDXL models.",
       "type": "TurboLora",
       "kind": "SDXL"
+    },
+    {
+      "name": "Anima Turbo LoRA",
+      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_path": "models/loras/Anima/anima-turbo-lora-v0.1.safetensors",
+      "local_path": "models/loras/Anima/anima-turbo-lora-v0.1.safetensors",
+      "version": "1.0.0",
+      "description": "12-Step Turbo LoRA for Anima model.",
+      "type": "TurboLora",
+      "kind": "Anima"
     },
     {
       "name": "Mimimeter",
