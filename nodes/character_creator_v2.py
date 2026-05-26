@@ -14,9 +14,8 @@ import io
 import base64
 import numpy as np
 import traceback
-import glob
-import re
 import inspect
+import random
 
 from ..utils import (
     load_character_info, ensure_character_structure, EMOTIONS, MAIN_DIRS,
@@ -35,74 +34,35 @@ def pil2tensor(image):
 def tensor2pil(image):
     return Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
 
-def get_latest_sheet_crop(character_name):
+def get_random_pose_preview(character_name):
     """
-    Attempts to find the latest 'sheet_neutral_*.png' for the character
-    and crop the 12th sprite (Row 1, Col 5), mimicking the frontend preview logic.
+    Pick any current pose image from the selected character's Sprites/Naked folder.
     Returns: torch.Tensor (1,H,W,3) or None
     """
     try:
-        # 1. Find the Sheet
-        # Try Naked/neutral first
         base_char_path = character_dir(character_name)
-        sheet_dir_path = os.path.join(base_char_path, "Sheets", "Naked", "neutral")
-        print(f"[VNCCS Debug] Checking Fallback Path: {sheet_dir_path}")
-        
-        if not os.path.exists(sheet_dir_path):
-                print(f"[VNCCS Debug] Path not found: {sheet_dir_path}")
-                found = False
-                base = os.path.join(base_char_path, "Sheets")
-                if os.path.exists(base):
-                    costumes = sorted(os.listdir(base))
-                    for costume in costumes:
-                        path = os.path.join(base, costume, "neutral")
-                        if os.path.isdir(path):
-                            sheet_dir_path = path
-                            found = True
-                            print(f"[VNCCS Debug] Found alternative sheet path: {path}")
-                            break
-                if not found:
-                    print(f"[VNCCS Debug] No sheet directories found in {base}")
-                    return None
+        poses_dir = os.path.join(base_char_path, "Sprites", "Naked")
+        print(f"[VNCCS Debug] Checking Pose Preview Path: {poses_dir}")
 
-        # 2. Find the best file (highest index)
-        pattern = os.path.join(sheet_dir_path, "sheet_neutral_*.png")
-        files = glob.glob(pattern)
-        print(f"[VNCCS Debug] Files found: {len(files)}")
+        image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+        files = []
+        if os.path.isdir(poses_dir):
+            files = [
+                os.path.join(poses_dir, filename)
+                for filename in os.listdir(poses_dir)
+                if os.path.isfile(os.path.join(poses_dir, filename))
+                and os.path.splitext(filename)[1].lower() in image_exts
+            ]
+        print(f"[VNCCS Debug] Pose preview files found: {len(files)}")
         if not files:
-                return None
-        
-        def get_index(f):
-            m = re.search(r'(\d+)', os.path.basename(f))
-            return int(m.group(1)) if m else 0
-        
-        files.sort(key=get_index)
-        best_file = files[-1]
-        print(f"[VNCCS Debug] Using file: {best_file}")
+            return None
 
-        # 3. Load and Crop
-        img = Image.open(best_file)
-        w, h = img.size
-        
-        # Layout: 2 Rows, 6 Columns
-        # We want Index 11 (The last one) -> Row 1 (2nd row), Col 5 (6th col)
-        
-        item_w = w // 6
-        item_h = h // 2
-        
-        row = 1
-        col = 5
-        
-        left = col * item_w
-        upper = row * item_h
-        right = left + item_w
-        lower = upper + item_h
-        
-        crop = img.crop((left, upper, right, lower))
-        return pil2tensor(crop)
-        
+        selected_file = random.choice(files)
+        print(f"[VNCCS Debug] Using pose preview file: {selected_file}")
+        img = Image.open(selected_file).convert("RGB")
+        return pil2tensor(img)
     except Exception as e:
-        print(f"[VNCCS] Cache Fallback Failed: {e}")
+        print(f"[VNCCS] Pose Preview Fallback Failed: {e}")
         return None
 
 # --------------------------------------------------------------------
@@ -509,6 +469,24 @@ if server:
             print(f"[VNCCS] Error serving cached preview: {e}")
             return web.Response(status=500, text=str(e))
 
+    @server.PromptServer.instance.routes.get("/vnccs/get_character_pose_preview")
+    async def get_character_pose_preview(request):
+        try:
+            character = request.rel_url.query.get("character", "")
+            if not character or ".." in character or "/" in character or "\\" in character:
+                return web.Response(status=400)
+
+            image = get_random_pose_preview(character)
+            if image is None:
+                return web.Response(status=404)
+
+            buffer = io.BytesIO()
+            tensor2pil(image).save(buffer, format="PNG")
+            return web.Response(body=buffer.getvalue(), content_type="image/png")
+        except Exception as e:
+            print(f"[VNCCS] Error serving character pose preview: {e}")
+            return web.Response(status=500, text=str(e))
+
     @server.PromptServer.instance.routes.get("/vnccs/get_tags")
     async def get_tags(request):
         try:
@@ -881,26 +859,26 @@ class CharacterCreatorV2:
         print(f"[VNCCS] Processing - Source: {preview_source}, Valid: {preview_valid}")
 
         # LOGIC:
-        # 1. If source == 'sheet' (User just loaded character), we MUST use the sheet.
+        # 1. If source == 'pose' (User just loaded character), we MUST use a saved pose sprite.
         #    We ignore the existing cache file because it might be stale.
-        #    We overwrite the cache with the sheet crop.
+        #    We overwrite the cache with the selected pose preview.
         # 2. If source == 'gen' (User generated previously), we use the cache.
         
         if preview_valid:
-             if preview_source == "sheet":
-                  print("[VNCCS] Source is Sheet. Force-loading sheet crop.")
-                  image = get_latest_sheet_crop(character_name)
+             if preview_source == "pose":
+                  print("[VNCCS] Source is Pose. Force-loading pose preview.")
+                  image = get_random_pose_preview(character_name)
                   if image is not None:
-                       print("[VNCCS] Sheet loaded successfully. Overwriting Cache.")
+                       print("[VNCCS] Pose preview loaded successfully. Overwriting Cache.")
                        try:
                            c_img = tensor2pil(image)
                            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
                            c_img.save(cache_path)
                        except: pass
                   else:
-                       print("[VNCCS] Sheet load failed. Will try cache/regen.")
+                       print("[VNCCS] Pose preview load failed. Will try cache/regen.")
 
-             # If image not set yet (source=gen OR sheet load failed), try cache
+             # If image not set yet (source=gen OR pose load failed), try cache
              if image is None and os.path.exists(cache_path):
                  print(f"[VNCCS] Smart Cache Hit: Loading existing preview for '{character_name}'")
                  try:
@@ -910,12 +888,12 @@ class CharacterCreatorV2:
                      print(f"[VNCCS] Failed to load cache: {e}. Regenerating.")
 
         if image is None:
-             # Fallback: If cache is missing (even if source=gen), try sheet before regen
+             # Fallback: If cache is missing (even if source=gen), try saved pose before regen
              if preview_valid:
-                 print(f"[VNCCS] Cache Miss. Attempting Sheet Fallback...")
-                 image = get_latest_sheet_crop(character_name)
+                 print(f"[VNCCS] Cache Miss. Attempting Pose Preview Fallback...")
+                 image = get_random_pose_preview(character_name)
                  if image is not None:
-                     print(f"[VNCCS] Sheet Fallback Successful. Updating Cache.")
+                     print(f"[VNCCS] Pose Preview Fallback Successful. Updating Cache.")
                      try:
                         c_img = tensor2pil(image)
                         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
@@ -923,9 +901,9 @@ class CharacterCreatorV2:
                         # Notify Frontend
                         server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": unique_id, "character": character_name})
                      except Exception as e:
-                        print(f"[VNCCS] Failed to save/notify on sheet fallback: {e}")
+                        print(f"[VNCCS] Failed to save/notify on pose preview fallback: {e}")
                  else:
-                     print(f"[VNCCS] Sheet Fallback Failed. Regenerating...")
+                     print(f"[VNCCS] Pose Preview Fallback Failed. Regenerating...")
 
         if image is None:
             print(f"[VNCCS] Regenerating Preview...")

@@ -10,6 +10,7 @@ import inspect
 import io
 import json
 import os
+import shutil
 import traceback
 from urllib.parse import urlencode
 
@@ -184,6 +185,31 @@ def _tensor_to_preview_urls(image, unique_id, stage, cache_dir=None, max_items=1
         return previews
     except Exception:
         return _tensor_to_png_data_url(image, max_items=max_items)
+
+
+def _rotate_preview_cache(cache_dir):
+    if not cache_dir:
+        return
+    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        version_dir = os.path.join(cache_dir, "V1")
+        if os.path.isdir(version_dir):
+            shutil.rmtree(version_dir)
+
+        files = [
+            filename for filename in os.listdir(cache_dir)
+            if os.path.isfile(os.path.join(cache_dir, filename))
+            and os.path.splitext(filename)[1].lower() in image_exts
+        ]
+        if not files:
+            return
+
+        os.makedirs(version_dir, exist_ok=True)
+        for filename in files:
+            os.replace(os.path.join(cache_dir, filename), os.path.join(version_dir, filename))
+    except Exception:
+        pass
 
 
 DEFAULT_WIDGET_DATA = {
@@ -602,6 +628,7 @@ class VNCCS_CharacterSheetPipeline:
         unique_id = self._unwrap_scalar(unique_id)
         cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""))
         try:
+            _rotate_preview_cache(cache_dir)
             input_total = len(self._image_list(poses))
             self._emit(unique_id, "pose_generation", "running", message="Encoding pose list", current=0, total=input_total, cache_dir=cache_dir)
             pose_images = self._run_pose_generation(poses, character, pipe, prompt, settings["pose_generation"])

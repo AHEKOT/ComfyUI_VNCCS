@@ -74,6 +74,7 @@ const WORKFLOW_UPSCALER_VAE_MODELS = [
 
 const WORKFLOW_GAN_UPSCALER_MODELS = [
     "2x_APISR_RRDB_GAN_generator.pth",
+    "4x_APISR_GRL_GAN_generator.pth",
 ];
 
 const CSS = `
@@ -698,6 +699,7 @@ class PipelineWidget {
 
     async loadNodeDefs() {
         const names = ["SeedVR2LoadDiTModel", "SeedVR2LoadVAEModel", "SeedVR2VideoUpscaler", "UpscaleModelLoader"];
+        let allNodeDefs = null;
         for (const name of names) {
             try {
                 const r = await api.fetchApi(`/object_info/${encodeURIComponent(name)}`);
@@ -707,6 +709,19 @@ class PipelineWidget {
                 }
             } catch {
                 // Keep defaults if optional upscaler nodes are unavailable.
+            }
+        }
+        if (names.some(name => !this.nodeDefs[name])) {
+            try {
+                const r = await api.fetchApi("/object_info");
+                if (r.ok) allNodeDefs = await r.json();
+            } catch {
+                allNodeDefs = null;
+            }
+        }
+        for (const name of names) {
+            if (!this.nodeDefs[name] && allNodeDefs?.[name]) {
+                this.nodeDefs[name] = allNodeDefs[name];
             }
         }
         this.renderSettings();

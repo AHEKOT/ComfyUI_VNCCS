@@ -637,7 +637,7 @@ app.registerExtension({
 
                 const state = {
                     preview_valid: false, // Smart Cache Flag
-                    preview_source: "gen", // "gen" or "sheet" - tracks what user sees
+                    preview_source: "gen", // "gen" or "pose" - tracks what user sees
                     character: "",
                     prompt_modes: {
                         illustrious: {
@@ -1964,7 +1964,7 @@ app.registerExtension({
                             const cacheUrl = `/vnccs/get_cached_preview?character=${encodeURIComponent(n)}&t=${Date.now()}`;
 
                             els.previewImg.onerror = () => {
-                                console.warn("[VNCCS] Both sheet and cache preview failed.");
+                                console.warn("[VNCCS] Both pose and cache preview failed.");
                                 els.previewImg.style.display = "none";
                                 els.placeholder.innerText = "No Preview Image";
                                 els.placeholder.style.display = "block";
@@ -1982,18 +1982,18 @@ app.registerExtension({
                             els.previewImg.src = cacheUrl;
                         };
 
-                        // First try Sheet
+                        // First try a random saved pose sprite.
                         els.previewImg.onerror = () => {
-                            console.warn("[VNCCS] Sheet preview load failed. Fallback to cache.");
+                            console.warn("[VNCCS] Pose preview load failed. Fallback to cache.");
                             tryCache();
                         };
                         els.previewImg.onload = () => {
                             state.preview_valid = true;
-                            state.preview_source = "sheet";
+                            state.preview_source = "pose";
                             saveState(true);
                         };
 
-                        els.previewImg.src = `/vnccs/get_character_sheet_preview?character=${encodeURIComponent(n)}&t=${Date.now()}`;
+                        els.previewImg.src = `/vnccs/get_character_pose_preview?character=${encodeURIComponent(n)}&t=${Date.now()}`;
                         els.previewImg.style.display = "block";
                         els.placeholder.style.display = "none";
 
