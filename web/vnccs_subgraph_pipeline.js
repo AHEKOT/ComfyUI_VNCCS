@@ -1124,18 +1124,20 @@ class PipelineWidget {
             this.zoomViewer(factor, event);
         };
         canvas.onpointerdown = (event) => {
+            const point = this.viewerEventPoint(event);
             this.viewer.dragging = true;
-            this.viewer.dragX = event.clientX;
-            this.viewer.dragY = event.clientY;
+            this.viewer.dragX = point.x;
+            this.viewer.dragY = point.y;
             canvas.classList.add("is-dragging");
             canvas.setPointerCapture(event.pointerId);
         };
         canvas.onpointermove = (event) => {
             if (!this.viewer?.dragging) return;
-            this.viewer.x += event.clientX - this.viewer.dragX;
-            this.viewer.y += event.clientY - this.viewer.dragY;
-            this.viewer.dragX = event.clientX;
-            this.viewer.dragY = event.clientY;
+            const point = this.viewerEventPoint(event);
+            this.viewer.x += point.x - this.viewer.dragX;
+            this.viewer.y += point.y - this.viewer.dragY;
+            this.viewer.dragX = point.x;
+            this.viewer.dragY = point.y;
             this.applyViewerTransform();
             this.updateViewerFocus();
             this.scheduleBrowserStateSave();
@@ -1216,6 +1218,19 @@ class PipelineWidget {
             top: rect.top || 0,
             width: canvas.clientWidth || rect.width || 1,
             height: canvas.clientHeight || rect.height || 1,
+            viewportWidth: rect.width || canvas.clientWidth || 1,
+            viewportHeight: rect.height || canvas.clientHeight || 1,
+        };
+    }
+
+    viewerEventPoint(event, rect = null) {
+        rect = rect || this.viewerCanvasRect();
+        if (!event) return { x: rect.width / 2, y: rect.height / 2 };
+        const sx = rect.width / (rect.viewportWidth || rect.width || 1);
+        const sy = rect.height / (rect.viewportHeight || rect.height || 1);
+        return {
+            x: (event.clientX - rect.left) * sx,
+            y: (event.clientY - rect.top) * sy,
         };
     }
 
@@ -1232,7 +1247,10 @@ class PipelineWidget {
         if (!this.viewer?.img) return;
         this.viewer.img.style.width = `${this.viewer.img.naturalWidth}px`;
         this.viewer.img.style.height = `${this.viewer.img.naturalHeight}px`;
-        this.viewer.img.style.transform = `translate(${this.viewer.x}px, ${this.viewer.y}px) scale(${this.viewer.scale})`;
+        // Keep translation in canvas pixels. Using translate() scale() lets the
+        // transform stack affect the translate component in some browser paths,
+        // which breaks zoom-to-cursor especially on square images.
+        this.viewer.img.style.transform = `matrix(${this.viewer.scale}, 0, 0, ${this.viewer.scale}, ${this.viewer.x}, ${this.viewer.y})`;
         this.viewer.img.classList.add("is-ready");
     }
 
@@ -1246,8 +1264,9 @@ class PipelineWidget {
         const nextScale = Math.max(minScale, Math.min(maxScale, oldScale * factor));
         if (nextScale === oldScale) return;
 
-        const anchorX = event ? event.clientX - rect.left : rect.width / 2;
-        const anchorY = event ? event.clientY - rect.top : rect.height / 2;
+        const anchor = this.viewerEventPoint(event, rect);
+        const anchorX = anchor.x;
+        const anchorY = anchor.y;
         const imagePointX = (anchorX - this.viewer.x) / oldScale;
         const imagePointY = (anchorY - this.viewer.y) / oldScale;
         let nextX = anchorX - imagePointX * nextScale;
