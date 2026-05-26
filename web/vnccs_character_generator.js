@@ -71,6 +71,13 @@ const CLONE_STAGES = [
     ["naked_bg_remove", "Naked BG"],
 ];
 
+const CLOTHES_STAGES = [
+    ["source_upscaler", "Source Upscaler"],
+    ["pose_generation", "Pose Generation"],
+    ["upscaler", "Upscaler"],
+    ["bg_remove", "BG Remove"],
+];
+
 const WORKFLOW_UPSCALER_DIT_MODELS = [
     "seedvr2_ema_3b-Q4_K_M.gguf",
     "seedvr2_ema_3b-Q8_0.gguf",
@@ -278,6 +285,9 @@ const CSS = `
 .vnccs-pipe-chain.is-clone {
     grid-template-columns: repeat(4, minmax(0, 1fr));
 }
+.vnccs-pipe-chain.is-clothes {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
 .vnccs-pipe-stage {
     position: relative;
     border: 1px solid rgba(255,255,255,0.08);
@@ -434,11 +444,12 @@ class CharacterGeneratorWidget {
     constructor(node, options = {}) {
         this.node = node;
         this.isClone = Boolean(options.isClone);
+        this.isClothes = Boolean(options.isClothes);
         this.title = options.title || "VNCCS Character Generator";
-        this.stages = this.isClone ? CLONE_STAGES : STAGES;
+        this.stages = this.isClone ? CLONE_STAGES : (this.isClothes ? CLOTHES_STAGES : STAGES);
         this.data = readData(node);
         this.stageState = Object.fromEntries(this.stages.map(([key]) => [key, { status: "waiting", images: null, message: "" }]));
-        const defaultPreview = this.isClone ? "original_pose_generation" : "pose_generation";
+        const defaultPreview = this.isClone ? "original_pose_generation" : (this.isClothes ? "source_upscaler" : "pose_generation");
         this.selectedPreview = this.data.ui?.selected_preview || defaultPreview;
         if (!this.stages.some(([key]) => key === this.selectedPreview)) {
             this.selectedPreview = defaultPreview;
@@ -462,6 +473,7 @@ class CharacterGeneratorWidget {
         const root = document.createElement("div");
         root.className = "vnccs-pipe-root";
         root.classList.toggle("is-clone", this.isClone);
+        root.classList.toggle("is-clothes", this.isClothes);
         this.root = root;
 
         this.settingsEl = document.createElement("div");
@@ -516,7 +528,7 @@ class CharacterGeneratorWidget {
                 const status = detail.status || "waiting";
                 if (status === "running") {
                     this.resetStagesFrom(stage);
-                    if (stage === "pose_generation" || stage === "original_pose_generation") {
+                    if (stage === "pose_generation" || stage === "original_pose_generation" || stage === "source_upscaler") {
                         this.userSelectedPreview = false;
                         if (!this.data.ui) this.data.ui = {};
                         this.data.ui.user_selected_preview = false;
@@ -1052,6 +1064,7 @@ class CharacterGeneratorWidget {
     renderChain() {
         this.chainEl.innerHTML = "";
         this.chainEl.classList.toggle("is-clone", this.isClone);
+        this.chainEl.classList.toggle("is-clothes", this.isClothes);
         for (const [key, name] of this.stages) {
             const stage = document.createElement("div");
             const status = this.stageState[key]?.status || "waiting";
@@ -1366,7 +1379,8 @@ app.registerExtension({
     async beforeRegisterNodeDef(nodeType, nodeData) {
         const isBaseGenerator = nodeData.name === "VNCCS_CharacterGenerator";
         const isCloneGenerator = nodeData.name === "VNCCS_CharacterCloneGenerator";
-        if (!isBaseGenerator && !isCloneGenerator) return;
+        const isClothesGenerator = nodeData.name === "VNCCS_ClothesGenerator";
+        if (!isBaseGenerator && !isCloneGenerator && !isClothesGenerator) return;
 
         const onNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
@@ -1374,7 +1388,10 @@ app.registerExtension({
             this.setSize([1180, 760]);
             this._vnccsCharacterGeneratorWidget = new CharacterGeneratorWidget(this, {
                 isClone: isCloneGenerator,
-                title: isCloneGenerator ? "VNCCS Character Clone Generator" : "VNCCS Character Generator",
+                isClothes: isClothesGenerator,
+                title: isCloneGenerator
+                    ? "VNCCS Character Clone Generator"
+                    : (isClothesGenerator ? "VNCCS Clothes Generator" : "VNCCS Character Generator"),
             });
             syncDOMWidgetWidthSoon(this, "character_generator_ui");
         };
