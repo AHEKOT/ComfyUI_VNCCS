@@ -353,7 +353,7 @@ function _injectVNCCSControlCenterStyles() {
 }
 .vnccs-cc-model-tabs {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(var(--vnccs-model-tab-count, 1), minmax(0, 1fr));
     gap: 6px;
     padding: 6px;
     border-bottom: 1px solid rgba(255,255,255,0.04);
@@ -1016,7 +1016,11 @@ class VNCCSControlCenterWidget {
     }
 
     _getModelTypeTabs() {
-        const preferred = ["gguf", "nunchaku", "unet", "custom"];
+        // TECH DEBT: Nunchaku/NVFP model support remains in the backend and
+        // loader code, but it is intentionally hidden from the Control Center
+        // UI for now. Re-enable by restoring "nunchaku"/"unet" here and in the
+        // visible model filters below when those model families are ready again.
+        const preferred = ["gguf", "custom"];
         const available = new Set(this.config?.available_types ?? []);
         available.add("custom");
         const preferredTabs = preferred.filter(type => available.has(type));
@@ -1049,7 +1053,7 @@ class VNCCSControlCenterWidget {
         if (!nextType || this._getSelectedType() === nextType) return;
         this.state.selected_type = nextType;
 
-        const variants = (this.config?.models || []).filter(m => !m.type || m.type === nextType);
+        const variants = this._visibleModelsByType(nextType);
         if (nextType === "custom") {
             this.state.selected_model = "";
         } else {
@@ -1124,8 +1128,16 @@ class VNCCSControlCenterWidget {
         const selectedType = this._getSelectedType();
         if (selectedType === "custom") return null;
         const selectedModel = this._getSelectedModelName(selectedType);
-        const variants = this.config.models.filter(m => !m.type || m.type === selectedType);
+        const variants = this._visibleModelsByType(selectedType);
         return variants.find(m => m.name === selectedModel) ?? variants[0] ?? null;
+    }
+
+    _visibleModelsByType(type) {
+        // TECH DEBT: Nunchaku and NVFP/UNet entries are still present in
+        // control_center.json for future use, but hidden from the UI for now.
+        if (type === "custom") return [];
+        if (type !== "gguf") return [];
+        return (this.config?.models || []).filter(m => (!m.type || m.type === "gguf"));
     }
 
     _metaKind(entry) {
@@ -1734,7 +1746,7 @@ class VNCCSControlCenterWidget {
         const isCustom = selType === "custom";
 
         // Only variants of the selected type (set in Settings)
-        const variants = isCustom ? [] : (this.config.models || []).filter(m => !m.type || m.type === selType);
+        const variants = isCustom ? [] : this._visibleModelsByType(selType);
 
         // Auto-select first variant of this type if current selection doesn't match
         if (!isCustom) {
@@ -2235,6 +2247,7 @@ class VNCCSControlCenterWidget {
         const tabs = this._getModelTypeTabs();
         const tabsRow = document.createElement("div");
         tabsRow.className = "vnccs-cc-model-tabs";
+        tabsRow.style.setProperty("--vnccs-model-tab-count", String(Math.max(1, tabs.length)));
 
         tabs.forEach(tabType => {
             const button = document.createElement("button");
@@ -2245,7 +2258,7 @@ class VNCCSControlCenterWidget {
 
             const hasVariants = tabType === "custom"
                 ? true
-                : (this.config?.models || []).some(m => !m.type || m.type === tabType);
+                : this._visibleModelsByType(tabType).length > 0;
             if (!hasVariants) button.classList.add("vnccs-cc-model-tab--missing");
 
             button.onclick = () => this._setSelectedType(tabType);
