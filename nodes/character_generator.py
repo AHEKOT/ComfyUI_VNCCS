@@ -674,20 +674,18 @@ class VNCCS_CharacterGenerator:
         target_dir = os.path.join(character_root, "Sprites", "Naked")
         os.makedirs(target_dir, exist_ok=True)
 
-        filenames = [f"sprite_pose_{index:04d}.png" for index in range(1, images.shape[0] + 1)]
-        collisions = [
-            filename for filename in filenames
-            if os.path.exists(os.path.join(target_dir, filename))
-            and os.path.isfile(os.path.join(target_dir, filename))
+        image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+        existing_images = [
+            filename for filename in os.listdir(target_dir)
+            if os.path.isfile(os.path.join(target_dir, filename))
+            and os.path.splitext(filename)[1].lower() in image_exts
         ]
-        if collisions:
+        if existing_images:
             version_dir = self._version_dir(target_dir)
             os.makedirs(version_dir, exist_ok=True)
-            image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-            for filename in collisions:
+            for filename in existing_images:
                 src = os.path.join(target_dir, filename)
-                if os.path.splitext(filename)[1].lower() in image_exts:
-                    os.replace(src, os.path.join(version_dir, filename))
+                os.replace(src, os.path.join(version_dir, filename))
 
         saved = []
         for index, image in enumerate(images, start=1):
