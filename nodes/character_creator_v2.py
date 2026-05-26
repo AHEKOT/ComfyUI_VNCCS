@@ -662,8 +662,8 @@ class CharacterCreatorV2:
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "VNCCS_PIPE", "STRING", "STRING", "STRING", "STRING", "STRING", "*")
-    RETURN_NAMES = ("character", "pipe", "positive_prompt", "negative_prompt", "sheets_path", "faces_path", "face_details", "background")
+    RETURN_TYPES = ("IMAGE", "STRING", "*")
+    RETURN_NAMES = ("character", "sheets_path", "background")
     FUNCTION = "process"
     CATEGORY = "VNCCS"
 
@@ -953,11 +953,6 @@ class CharacterCreatorV2:
 
         return (
             image,
-            pipe,
-            positive_prompt,
-            negative_prompt,
             sheets_path,
-            faces_path,
-            face_details,
             background_color
         )
