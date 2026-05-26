@@ -1278,9 +1278,9 @@ class PipelineWidget {
 }
 
 app.registerExtension({
-    name: "VNCCS.CharacterSheetPipeline",
+    name: "VNCCS.CharacterGenerator",
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData.name !== "VNCCS_CharacterSheetPipeline") return;
+        if (nodeData.name !== "VNCCS_CharacterGenerator") return;
 
         const onNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {

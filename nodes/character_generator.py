@@ -1,4 +1,4 @@
-"""VNCCS Character Sheet Pipeline.
+"""VNCCS Character Generator.
 
 Replacement node for the Step 1 Pose Generation -> Upscaler -> BG Remove
 subgraph chain. It executes the same processing stages internally and exposes a
@@ -264,7 +264,7 @@ DEFAULT_WIDGET_DATA = {
 POSE_GENERATION_LORA_NAME = "VNCCS Pose Studio QIE2511"
 
 
-class VNCCS_CharacterSheetPipeline:
+class VNCCS_CharacterGenerator:
     OUTPUT_NODE = True
     INPUT_IS_LIST = True
 
@@ -745,9 +745,9 @@ class VNCCS_CharacterSheetPipeline:
 
 
 NODE_CLASS_MAPPINGS = {
-    "VNCCS_CharacterSheetPipeline": VNCCS_CharacterSheetPipeline,
+    "VNCCS_CharacterGenerator": VNCCS_CharacterGenerator,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "VNCCS_CharacterSheetPipeline": "VNCCS Character Sheet Pipeline",
+    "VNCCS_CharacterGenerator": "VNCCS Character Generator",
 }

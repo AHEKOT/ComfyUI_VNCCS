@@ -18,7 +18,7 @@ try:
     from .vnccs_utils import NODE_CLASS_MAPPINGS as VNCCS_UTILS_MAPPINGS
     from .vnccs_api import NODE_CLASS_MAPPINGS as VNCCS_API_MAPPINGS
     from .vnccs_control_center import NODE_CLASS_MAPPINGS as VNCCS_CONTROL_CENTER_MAPPINGS
-    from .subgraph_pipeline import NODE_CLASS_MAPPINGS as SUBGRAPH_PIPELINE_MAPPINGS
+    from .character_generator import NODE_CLASS_MAPPINGS as CHARACTER_GENERATOR_MAPPINGS
     from .character_creator_v2 import CharacterCreatorV2
     from .character_cloner import CharacterCloner
     from .clothes_designer import ClothesDesigner
@@ -42,7 +42,7 @@ try:
     from .vnccs_utils import NODE_DISPLAY_NAME_MAPPINGS as VNCCS_UTILS_DISPLAY_MAPPINGS
     from .vnccs_api import NODE_DISPLAY_NAME_MAPPINGS as VNCCS_API_DISPLAY_MAPPINGS
     from .vnccs_control_center import NODE_DISPLAY_NAME_MAPPINGS as VNCCS_CONTROL_CENTER_DISPLAY_MAPPINGS
-    from .subgraph_pipeline import NODE_DISPLAY_NAME_MAPPINGS as SUBGRAPH_PIPELINE_DISPLAY_MAPPINGS
+    from .character_generator import NODE_DISPLAY_NAME_MAPPINGS as CHARACTER_GENERATOR_DISPLAY_MAPPINGS
 
 
     NODE_CLASS_MAPPINGS = {
@@ -62,7 +62,7 @@ try:
         **VNCCS_UTILS_MAPPINGS,
         **VNCCS_API_MAPPINGS,
         **VNCCS_CONTROL_CENTER_MAPPINGS,
-        **SUBGRAPH_PIPELINE_MAPPINGS,
+        **CHARACTER_GENERATOR_MAPPINGS,
 
         "CharacterCreatorV2": CharacterCreatorV2,
         "CharacterCloner": CharacterCloner,
@@ -88,7 +88,7 @@ try:
         **VNCCS_UTILS_DISPLAY_MAPPINGS,
         **VNCCS_API_DISPLAY_MAPPINGS,
         **VNCCS_CONTROL_CENTER_DISPLAY_MAPPINGS,
-        **SUBGRAPH_PIPELINE_DISPLAY_MAPPINGS,
+        **CHARACTER_GENERATOR_DISPLAY_MAPPINGS,
 
         "CharacterCreatorV2": "VNCCS Character Creator V2",
         "CharacterCloner": "VNCCS Character Cloner",
