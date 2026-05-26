@@ -77,6 +77,8 @@ const WORKFLOW_GAN_UPSCALER_MODELS = [
     "4x_APISR_GRL_GAN_generator.pth",
 ];
 
+const POSE_GENERATION_LORA_LABEL = "VNCCS Pose Studio QIE2511";
+
 const CSS = `
 .vnccs-pipe-root {
     width: 100%;
@@ -276,6 +278,12 @@ const CSS = `
     font-size: 10px;
     color: #9898a8;
     line-height: 1.35;
+}
+.vnccs-pipe-stage-lora {
+    font-size: 10px;
+    color: #9898a8;
+    line-height: 1.35;
+    word-break: break-word;
 }
 .vnccs-pipe-tabs {
     display: flex;
@@ -1008,6 +1016,12 @@ class PipelineWidget {
             s.className = "vnccs-pipe-stage-status";
             s.textContent = this.formatStageStatus(key);
             stage.append(n, s);
+            if (key === "pose_generation") {
+                const l = document.createElement("div");
+                l.className = "vnccs-pipe-stage-lora";
+                l.textContent = `LoRA: ${POSE_GENERATION_LORA_LABEL}`;
+                stage.appendChild(l);
+            }
             this.chainEl.appendChild(stage);
         }
     }

@@ -34,6 +34,12 @@ except Exception:  # pragma: no cover
     server = None
 
 from .vnccs_pipe import VNCCS_Pipe
+from .vnccs_control_center import (
+    _apply_lora_nunchaku,
+    _apply_lora_standard,
+    _find_model_on_disk,
+    _rel_within_folder,
+)
 from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder
 from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, VNCCS_RMBG2
 from ..utils import character_dir
@@ -255,6 +261,8 @@ DEFAULT_WIDGET_DATA = {
     },
 }
 
+POSE_GENERATION_LORA_NAME = "VNCCS Pose Studio QIE2511"
+
 
 class VNCCS_CharacterSheetPipeline:
     OUTPUT_NODE = True
@@ -306,7 +314,7 @@ class VNCCS_CharacterSheetPipeline:
             return value[0] if value else None
         return value
 
-    def _emit(self, unique_id, stage, status, images=None, message="", current=None, total=None, cache_dir=None):
+    def _emit(self, unique_id, stage, status, images=None, message="", current=None, total=None, cache_dir=None, lora_info=None):
         if server is None or not unique_id:
             return
         payload = {
@@ -319,6 +327,8 @@ class VNCCS_CharacterSheetPipeline:
             payload["current"] = int(current)
         if total is not None:
             payload["total"] = int(total)
+        if lora_info is not None:
+            payload["lora_info"] = lora_info
         if images is not None:
             payload["images"] = _tensor_to_preview_urls(images, unique_id, stage, cache_dir=cache_dir)
         try:
@@ -338,6 +348,76 @@ class VNCCS_CharacterSheetPipeline:
             "sampler": out[10] or "euler",
             "scheduler": out[11] or "simple",
         }
+
+    def _find_pose_lora(self, pipe):
+        entries = getattr(pipe, "lora_entries", []) or []
+        states = getattr(pipe, "lora_states", []) or []
+        entry = None
+        target = POSE_GENERATION_LORA_NAME.strip().lower()
+        for candidate in entries:
+            candidate_name = str(candidate.get("name", "")).strip().lower()
+            if candidate_name == target or target in candidate_name:
+                entry = candidate
+                break
+
+        if not entry:
+            return {
+                "name": POSE_GENERATION_LORA_NAME,
+                "file": "",
+                "status": "missing",
+                "message": f"{POSE_GENERATION_LORA_NAME}: not found in Control Center",
+            }
+
+        state = next(
+            (
+                item for item in states
+                if str(item.get("name", "")).strip().lower() == target
+                or target in str(item.get("name", "")).strip().lower()
+            ),
+            {},
+        )
+        strength = float(state.get("strength", 1.0) if state else 1.0)
+        full_path, exists = _find_model_on_disk(entry.get("local_path", ""))
+        filename = os.path.basename(full_path or entry.get("local_path", ""))
+        rel_path = _rel_within_folder(entry.get("local_path", ""))
+        return {
+            "name": entry.get("name", POSE_GENERATION_LORA_NAME),
+            "file": filename,
+            "path": full_path,
+            "rel_path": rel_path,
+            "strength": strength,
+            "exists": bool(exists),
+            "status": "ready" if exists else "missing",
+            "message": f"{entry.get('name', POSE_GENERATION_LORA_NAME)}: {filename or 'not found'}",
+        }
+
+    def _apply_pose_lora_to_model(self, model, clip, pipe, lora_info):
+        if not lora_info or not lora_info.get("exists") or not lora_info.get("path"):
+            message = lora_info.get("message") if lora_info else POSE_GENERATION_LORA_NAME
+            raise RuntimeError(f"Pose Generation requires LoRA from VNCCS Control Center: {message}")
+        strength = float(lora_info.get("strength", 1.0))
+        loader_type = getattr(pipe, "loader_type", "standard") or "standard"
+        print(f"[VNCCS Pipeline] Applying pose LoRA before sampler: {lora_info.get('name')} ({lora_info.get('file')}, strength={strength})")
+        if loader_type == "nunchaku":
+            return _apply_lora_nunchaku(
+                model,
+                lora_info["path"],
+                strength,
+                settings=getattr(pipe, "nunchaku_settings", None) or {},
+                model_entry=getattr(pipe, "model_entry", None),
+            )
+        rel_path = lora_info.get("rel_path") or lora_info.get("file")
+        try:
+            return _call_comfy_node(
+                "LoraLoaderModelOnly",
+                model=model,
+                lora_name=rel_path,
+                strength_model=strength,
+            )[0]
+        except Exception as exc:
+            print(f"[VNCCS Pipeline] LoraLoaderModelOnly failed for '{rel_path}', using direct loader: {exc}")
+        model_lora, _ = _apply_lora_standard(model, clip, lora_info["path"], strength)
+        return model_lora
 
     def _list_to_batch(self, values):
         if torch.is_tensor(values):
@@ -389,7 +469,7 @@ class VNCCS_CharacterSheetPipeline:
                 outputs[out_index].append(value)
         return tuple(outputs or [])
 
-    def _run_pose_generation(self, poses, character, pipe, prompt, settings):
+    def _run_pose_generation(self, poses, character, pipe, prompt, settings, lora_info=None):
         pipe_values = self._extract_pipe(pipe)
         pose_parts = self._image_list(poses)
         character_rgb = VNCCS_MaskExtractor().fill_alpha_with_color(character)[0]
@@ -421,10 +501,11 @@ class VNCCS_CharacterSheetPipeline:
             qwen_2511=True,
         )
 
+        sampler_model = self._apply_pose_lora_to_model(pipe_values["model"], pipe_values["clip"], pipe, lora_info)
         sampled_list = self._run_list_mapped(
             "KSampler",
             {"positive": positive_list, "negative": negative_list, "latent_image": latent_list},
-            model=pipe_values["model"],
+            model=sampler_model,
             seed=pipe_values["seed"],
             steps=pipe_values["steps"],
             cfg=pipe_values["cfg"],
@@ -629,11 +710,21 @@ class VNCCS_CharacterSheetPipeline:
         cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""))
         try:
             _rotate_preview_cache(cache_dir)
+            pose_lora_info = self._find_pose_lora(pipe)
             input_total = len(self._image_list(poses))
-            self._emit(unique_id, "pose_generation", "running", message="Encoding pose list", current=0, total=input_total, cache_dir=cache_dir)
-            pose_images = self._run_pose_generation(poses, character, pipe, prompt, settings["pose_generation"])
+            self._emit(
+                unique_id,
+                "pose_generation",
+                "running",
+                message="Encoding pose list",
+                current=0,
+                total=input_total,
+                cache_dir=cache_dir,
+                lora_info=pose_lora_info,
+            )
+            pose_images = self._run_pose_generation(poses, character, pipe, prompt, settings["pose_generation"], lora_info=pose_lora_info)
             pose_total = pose_images.shape[0] if torch.is_tensor(pose_images) and pose_images.ndim == 4 else 0
-            self._emit(unique_id, "pose_generation", "done", pose_images, f"Generated {pose_total} pose images", pose_total, pose_total, cache_dir=cache_dir)
+            self._emit(unique_id, "pose_generation", "done", pose_images, f"Generated {pose_total} pose images", pose_total, pose_total, cache_dir=cache_dir, lora_info=pose_lora_info)
 
             up_total = pose_total
             self._emit(unique_id, "upscaler", "running", pose_images, f"Preparing upscaler for {up_total} images", 0, up_total, cache_dir=cache_dir)

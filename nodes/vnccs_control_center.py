@@ -47,6 +47,7 @@ _CC_CONFIG_CACHE = {}
 _DOWNLOAD_STATUS = {}
 _DOWNLOAD_QUEUE = queue.Queue()
 _CUSTOM_LORAS_FILE = "vnccs_custom_loras.json"
+_PIPELINE_LOCAL_LORAS = {"vnccs pose studio qie2511"}
 _FOLDER_MAP = {
     "unet": ["unet", "diffusion_models"],
     "checkpoints": ["checkpoints"],
@@ -670,6 +671,10 @@ def _apply_loras(model, clip, lora_states, config, model_type, type_settings=Non
         name = entry.get("name", "")
         if not name:
             continue
+        normalized_name = name.strip().lower()
+        if normalized_name in _PIPELINE_LOCAL_LORAS or any(target in normalized_name for target in _PIPELINE_LOCAL_LORAS):
+            print(f"[VNCCS Control Center] Deferring LoRA to downstream pipeline: {name}")
+            continue
         state = state_by_name.get(name, {})
         if not state.get("auto_apply", False):
             continue
@@ -810,6 +815,9 @@ class VNCCSPipeProxy:
         self.nunchaku_kind = None      # "flux" | "qwen-image" | None
         self.nunchaku_settings = None  # dict or None
         self.model_entry = None        # config model entry dict or None
+        self.repo_id = None            # source Control Center repo id
+        self.lora_entries = []         # config lora entries
+        self.lora_states = []          # UI lora state
 
 
 class VNCCS_ControlCenter:
@@ -903,6 +911,9 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None):
     )
 
     pipe = VNCCSPipeProxy(model, clip, vae)
+    pipe.repo_id = repo_id
+    pipe.lora_entries = list(config.get("lora", []) or [])
+    pipe.lora_states = list(loras or [])
 
     if selected_type == "nunchaku":
         pipe.loader_type = "nunchaku"

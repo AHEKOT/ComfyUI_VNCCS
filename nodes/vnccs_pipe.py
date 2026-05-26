@@ -166,6 +166,9 @@ class VNCCS_Pipe:
         self.nunchaku_kind = getattr(pipe, "nunchaku_kind", None)
         self.nunchaku_settings = getattr(pipe, "nunchaku_settings", None)
         self.model_entry = getattr(pipe, "model_entry", None)
+        self.repo_id = getattr(pipe, "repo_id", None)
+        self.lora_entries = getattr(pipe, "lora_entries", [])
+        self.lora_states = getattr(pipe, "lora_states", [])
 
         return (
             self.model,
