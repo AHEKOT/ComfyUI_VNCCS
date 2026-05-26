@@ -1463,11 +1463,12 @@ app.registerExtension({
                     if (els.illustriousModels) els.illustriousModels.style.display = isAnima ? "none" : "flex";
                     if (els.animaModels) els.animaModels.style.display = isAnima ? "flex" : "none";
                     if (els.loraSection) els.loraSection.style.display = "flex";
-                    if (els.dmdWrap) els.dmdWrap.style.display = isAnima ? "none" : "flex";
+                    if (els.dmdWrap) els.dmdWrap.style.display = "none";
                     if (els.dmdLabel) els.dmdLabel.innerText = isAnima ? "Turbo LoRA" : "DMD2 LoRA Model";
                     if (els.loraHeader) els.loraHeader.innerText = isAnima ? "ANIMA LoRA Stack" : "LoRa Stack";
-                    if (els.ageWrap) els.ageWrap.style.display = isAnima ? "none" : "flex";
+                    if (els.ageWrap) els.ageWrap.style.display = "none";
                     if (els.animaLoraCards) els.animaLoraCards.style.display = isAnima && els.animaLoraCards.children.length ? "flex" : "none";
+                    if (els.illustriousLoraCards) els.illustriousLoraCards.style.display = !isAnima && els.illustriousLoraCards.children.length ? "flex" : "none";
                 };
 
                 const setGenerationMode = (mode) => {
@@ -1858,6 +1859,60 @@ app.registerExtension({
                     renderControlCenterCards();
                 };
 
+                const renderModeLoraCards = (containerEl, mode) => {
+                    if (!containerEl) return;
+                    containerEl.innerHTML = "";
+                    const kindOk = (entry) => {
+                        const kind = ccKind(entry);
+                        if (mode === "anima") return kind === "anima";
+                        return kind === "sdxl" || kind === "illustrious";
+                    };
+                    const turboEntries = (ccConfig?.lora || []).filter(entry => kindOk(entry) && ccType(entry) === "turbolora");
+                    const ageEntries = (ccConfig?.lora || []).filter(entry => kindOk(entry) && ccType(entry) === "ageslider");
+
+                    const addGroup = (title, entries, renderer) => {
+                        if (!entries.length) return;
+                        const group = document.createElement("div");
+                        group.className = "vnccs-subsection";
+                        const label = document.createElement("div");
+                        label.className = "vnccs-label";
+                        label.textContent = title;
+                        group.appendChild(label);
+                        entries.forEach(entry => group.appendChild(renderer(entry)));
+                        containerEl.appendChild(group);
+                    };
+
+                    addGroup("Turbo LoRA", turboEntries, entry => {
+                        const rel = ccRelPath(entry);
+                        const enabled = mode === "anima"
+                            ? !!state.gen_settings.turbo_enabled && String(state.gen_settings.dmd_lora_name || "").replace(/\\/g, "/") === rel
+                            : (state.gen_settings.dmd_lora_strength || 0) > 0 && String(state.gen_settings.dmd_lora_name || "").replace(/\\/g, "/") === rel;
+                        return buildAssetCard({
+                            entry,
+                            cat: "lora",
+                            selectedValue: state.gen_settings.dmd_lora_name || "",
+                            compact: true,
+                            toggled: enabled,
+                            onSelect: () => setCcTurboMode(!enabled, rel, entry),
+                            onToggle: checked => setCcTurboMode(checked, rel, entry),
+                        });
+                    });
+
+                    addGroup("Age LoRA", ageEntries, entry => {
+                        const rel = ccRelPath(entry);
+                        return buildAssetCard({
+                            entry,
+                            cat: "lora",
+                            selectedValue: state.gen_settings.age_lora_name || "",
+                            compact: true,
+                            onSelect: () => setCcAgeLora(true, rel, entry),
+                        });
+                    });
+
+                    const isCurrentMode = (state.gen_settings.generation_mode || "illustrious").toLowerCase() === mode;
+                    containerEl.style.display = isCurrentMode && containerEl.children.length ? "flex" : "none";
+                };
+
                 const renderCardSection = (containerEl, entries, cat, key, emptyText) => {
                     if (!containerEl) return;
                     containerEl.innerHTML = "";
@@ -1940,6 +1995,8 @@ app.registerExtension({
 
                 const renderControlCenterCards = () => {
                     if (!els.animaModelCards && !els.illustriousModelCards) return;
+                    const currentMode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
+                    const isAnimaMode = currentMode === "anima";
                     if (els.animaFallback) {
                         els.animaFallback.style.display = "none";
                     }
@@ -1978,39 +2035,20 @@ app.registerExtension({
                     ensureAnimaDefaultAux();
 
                     if (els.animaLoraCards) {
-                        els.animaLoraCards.innerHTML = "";
-                        const turboEntries = ccEntries("lora", "Anima", entry => ccType(entry) === "turbolora");
-                        const ageEntries = ccEntries("lora", "Anima", entry => ccType(entry) === "ageslider");
-
-                        const addLoraGroup = (title, entries, currentValue, onToggle, forceToggle = false) => {
-                            if (!entries.length) return;
-                            const group = document.createElement("div");
-                            group.className = "vnccs-subsection";
-                            const label = document.createElement("div");
-                            label.className = "vnccs-label";
-                            label.textContent = title;
-                            group.appendChild(label);
-                            entries.forEach(entry => {
-                                const rel = ccRelPath(entry);
-                                const enabled = forceToggle
-                                    ? !!state.gen_settings.turbo_enabled && currentValue.replace(/\\/g, "/") === rel
-                                    : currentValue.replace(/\\/g, "/") === rel;
-                                group.appendChild(buildAssetCard({
-                                    entry,
-                                    cat: "lora",
-                                    selectedValue: currentValue,
-                                    compact: true,
-                                    toggled: enabled,
-                                    onSelect: () => onToggle(!enabled, rel, entry),
-                                    onToggle: checked => onToggle(checked, rel, entry),
-                                }));
-                            });
-                            els.animaLoraCards.appendChild(group);
-                        };
-
-                        addLoraGroup("Turbo LoRA", turboEntries, state.gen_settings.dmd_lora_name || "", setCcTurboMode, true);
-                        addLoraGroup("Age LoRA", ageEntries, state.gen_settings.age_lora_name || "", setCcAgeLora);
-                        els.animaLoraCards.style.display = els.animaLoraCards.children.length ? "flex" : "none";
+                        if (!isAnimaMode) {
+                            els.animaLoraCards.innerHTML = "";
+                            els.animaLoraCards.style.display = "none";
+                        } else {
+                            renderModeLoraCards(els.animaLoraCards, "anima");
+                        }
+                    }
+                    if (els.illustriousLoraCards) {
+                        if (isAnimaMode) {
+                            els.illustriousLoraCards.innerHTML = "";
+                            els.illustriousLoraCards.style.display = "none";
+                        } else {
+                            renderModeLoraCards(els.illustriousLoraCards, "illustrious");
+                        }
                     }
 
                     const illustriousDefaults = (ccConfig?.models || []).filter(entry => {
@@ -2433,10 +2471,9 @@ app.registerExtension({
                 animaModels.className = "vnccs-subsection";
                 els.animaModels = animaModels;
 
-                const createAnimaCardField = (label, slotName) => {
+                const createAnimaCardField = (slotName) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-field";
-                    wrap.innerHTML = `<div class="vnccs-label">${label}</div>`;
                     const cards = document.createElement("div");
                     cards.className = "vnccs-model-card-list";
                     wrap.appendChild(cards);
@@ -2444,7 +2481,7 @@ app.registerExtension({
                     animaModels.appendChild(wrap);
                 };
 
-                createAnimaCardField("Diffusion Model", "animaModelCards");
+                createAnimaCardField("animaModelCards");
 
                 const hiddenAnimaSelects = document.createElement("div");
                 hiddenAnimaSelects.className = "vnccs-generation-fallback";
@@ -2560,8 +2597,15 @@ app.registerExtension({
 
                 const animaLoraCards = document.createElement("div");
                 animaLoraCards.className = "vnccs-subsection";
+                animaLoraCards.style.display = "none";
                 els.animaLoraCards = animaLoraCards;
                 loraSection.appendChild(animaLoraCards);
+
+                const illustriousLoraCards = document.createElement("div");
+                illustriousLoraCards.className = "vnccs-subsection";
+                illustriousLoraCards.style.display = "none";
+                els.illustriousLoraCards = illustriousLoraCards;
+                loraSection.appendChild(illustriousLoraCards);
 
                 // Age LoRA
                 const ageWrap = document.createElement("div"); ageWrap.className = "vnccs-lora-item";
