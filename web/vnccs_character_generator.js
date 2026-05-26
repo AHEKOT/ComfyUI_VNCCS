@@ -3,8 +3,14 @@ import { api } from "../../scripts/api.js";
 import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "./vnccs_common.js";
 
 const DEFAULT_DATA = {
+    common: {
+        target_size: 1024,
+    },
     pose_generation: {
         target_size: 1024,
+    },
+    remove_clothes: {
+        prompt: "Dress character: White underwear",
     },
     upscaler: {
         mode: "seedvr",
@@ -55,6 +61,16 @@ const STAGES = [
     ["bg_remove", "BG Remove"],
 ];
 
+const CLONE_STAGES = [
+    ["original_pose_generation", "Original Pose"],
+    ["original_upscaler", "Original Upscaler"],
+    ["original_bg_remove", "Original BG"],
+    ["remove_clothes", "Remove Clothes"],
+    ["naked_pose_generation", "Naked Pose"],
+    ["naked_upscaler", "Naked Upscaler"],
+    ["naked_bg_remove", "Naked BG"],
+];
+
 const WORKFLOW_UPSCALER_DIT_MODELS = [
     "seedvr2_ema_3b-Q4_K_M.gguf",
     "seedvr2_ema_3b-Q8_0.gguf",
@@ -78,6 +94,7 @@ const WORKFLOW_GAN_UPSCALER_MODELS = [
 ];
 
 const POSE_GENERATION_LORA_LABEL = "VNCCS Pose Studio QIE2511";
+const CLOTHES_CORE_LORA_LABEL = "VNCCS Clothes Core";
 
 const CSS = `
 .vnccs-pipe-root {
@@ -104,6 +121,9 @@ const CSS = `
     display: grid;
     grid-template-rows: minmax(0, 1fr) 108px;
     overflow: hidden;
+}
+.vnccs-pipe-root.is-clone .vnccs-pipe-main {
+    grid-template-rows: minmax(0, 1fr) 176px;
 }
 .vnccs-pipe-title {
     font-size: 10px;
@@ -145,7 +165,7 @@ const CSS = `
     font-size: 10px;
     font-weight: 700;
 }
-.vnccs-pipe-input, .vnccs-pipe-select {
+.vnccs-pipe-input, .vnccs-pipe-select, .vnccs-pipe-textarea {
     width: 100%;
     box-sizing: border-box;
     border: 1px solid rgba(255,255,255,0.08);
@@ -156,6 +176,10 @@ const CSS = `
     font-size: 11px;
     padding: 6px 8px;
     color-scheme: dark;
+}
+.vnccs-pipe-textarea {
+    min-height: 72px;
+    resize: vertical;
 }
 .vnccs-pipe-check {
     display: flex;
@@ -251,6 +275,9 @@ const CSS = `
     background: #111119;
     border-top: 1px solid rgba(255,143,163,0.14);
 }
+.vnccs-pipe-chain.is-clone {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
 .vnccs-pipe-stage {
     position: relative;
     border: 1px solid rgba(255,255,255,0.08);
@@ -288,6 +315,8 @@ const CSS = `
 .vnccs-pipe-tabs {
     display: flex;
     gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
 }
 .vnccs-pipe-tab {
     border: 1px solid rgba(255,255,255,0.08);
@@ -402,11 +431,18 @@ function uniqueOptions(values) {
 }
 
 class CharacterGeneratorWidget {
-    constructor(node) {
+    constructor(node, options = {}) {
         this.node = node;
+        this.isClone = Boolean(options.isClone);
+        this.title = options.title || "VNCCS Character Generator";
+        this.stages = this.isClone ? CLONE_STAGES : STAGES;
         this.data = readData(node);
-        this.stageState = Object.fromEntries(STAGES.map(([key]) => [key, { status: "waiting", images: null, message: "" }]));
-        this.selectedPreview = this.data.ui?.selected_preview || "pose_generation";
+        this.stageState = Object.fromEntries(this.stages.map(([key]) => [key, { status: "waiting", images: null, message: "" }]));
+        const defaultPreview = this.isClone ? "original_pose_generation" : "pose_generation";
+        this.selectedPreview = this.data.ui?.selected_preview || defaultPreview;
+        if (!this.stages.some(([key]) => key === this.selectedPreview)) {
+            this.selectedPreview = defaultPreview;
+        }
         this.userSelectedPreview = Boolean(this.data.ui?.user_selected_preview);
         this.viewer = null;
         this.viewerFocus = null;
@@ -425,6 +461,7 @@ class CharacterGeneratorWidget {
         injectStyles();
         const root = document.createElement("div");
         root.className = "vnccs-pipe-root";
+        root.classList.toggle("is-clone", this.isClone);
         this.root = root;
 
         this.settingsEl = document.createElement("div");
@@ -479,7 +516,7 @@ class CharacterGeneratorWidget {
                 const status = detail.status || "waiting";
                 if (status === "running") {
                     this.resetStagesFrom(stage);
-                    if (stage === "pose_generation") {
+                    if (stage === "pose_generation" || stage === "original_pose_generation") {
                         this.userSelectedPreview = false;
                         if (!this.data.ui) this.data.ui = {};
                         this.data.ui.user_selected_preview = false;
@@ -509,9 +546,9 @@ class CharacterGeneratorWidget {
     }
 
     resetStagesFrom(stageKey) {
-        const start = STAGES.findIndex(([key]) => key === stageKey);
+        const start = this.stages.findIndex(([key]) => key === stageKey);
         if (start < 0) return;
-        for (const [key] of STAGES.slice(start)) {
+        for (const [key] of this.stages.slice(start)) {
             this.stageState[key] = {
                 status: "waiting",
                 images: null,
@@ -570,13 +607,13 @@ class CharacterGeneratorWidget {
             this.data = deepMerge(this.data, saved.data);
             restoredData = true;
         }
-        if (STAGES.some(([key]) => key === saved.selectedPreview)) {
+        if (this.stages.some(([key]) => key === saved.selectedPreview)) {
             this.selectedPreview = saved.selectedPreview;
         }
         this.userSelectedPreview = Boolean(saved.userSelectedPreview);
 
         if (saved.stageState && typeof saved.stageState === "object") {
-            for (const [key] of STAGES) {
+            for (const [key] of this.stages) {
                 const stage = saved.stageState[key];
                 if (!stage || typeof stage !== "object") continue;
                 this.stageState[key] = {
@@ -590,7 +627,7 @@ class CharacterGeneratorWidget {
         }
 
         if (saved.viewer && typeof saved.viewer === "object") {
-            if (saved.viewer.open && STAGES.some(([key]) => key === saved.viewer.stage)) {
+            if (saved.viewer.open && this.stages.some(([key]) => key === saved.viewer.stage)) {
                 this.selectedPreview = saved.viewer.stage;
             }
             if (Number.isFinite(saved.viewer.centerNormX) && Number.isFinite(saved.viewer.centerNormY)) {
@@ -608,7 +645,7 @@ class CharacterGeneratorWidget {
     saveBrowserState(includeImages = true) {
         this.syncCharacterNameFromCreator();
         const stageState = {};
-        for (const [key] of STAGES) {
+        for (const [key] of this.stages) {
             const stage = this.stageState[key] || {};
             stageState[key] = {
                 status: stage.status || "waiting",
@@ -631,7 +668,7 @@ class CharacterGeneratorWidget {
         } catch {
             if (!includeImages) return;
             const compactState = {};
-            for (const [key] of STAGES) {
+            for (const [key] of this.stages) {
                 const stage = this.stageState[key] || {};
                 const images = Array.isArray(stage.images)
                     ? stage.images.filter(src => typeof src === "string" && !src.startsWith("data:"))
@@ -798,6 +835,9 @@ class CharacterGeneratorWidget {
             input.onchange = () => this.set(section, key, input.checked);
             wrap.append(input, caption);
             return wrap;
+        } else if (type === "textarea") {
+            input = document.createElement("textarea");
+            input.className = "vnccs-pipe-textarea";
         } else {
             input = document.createElement("input");
             input.className = "vnccs-pipe-input";
@@ -829,11 +869,20 @@ class CharacterGeneratorWidget {
         this.settingsEl.innerHTML = "";
         const title = document.createElement("div");
         title.className = "vnccs-pipe-title";
-        title.textContent = "VNCCS Character Generator";
+        title.textContent = this.title;
         this.settingsEl.appendChild(title);
-        this.settingsEl.appendChild(this.block("Pose Generation", [
-            this.field("pose_generation", "target_size", "target size", "select", [1024, 1344, 1536, 2048, 768, 512]),
-        ]));
+        if (this.isClone) {
+            this.settingsEl.appendChild(this.block("Common", [
+                this.field("common", "target_size", "target size", "select", [1024, 1344, 1536, 2048, 768, 512]),
+            ]));
+            this.settingsEl.appendChild(this.block("Remove Clothes", [
+                this.field("remove_clothes", "prompt", "prompt", "textarea"),
+            ]));
+        } else {
+            this.settingsEl.appendChild(this.block("Pose Generation", [
+                this.field("pose_generation", "target_size", "target size", "select", [1024, 1344, 1536, 2048, 768, 512]),
+            ]));
+        }
         const upscalerFields = [
             this.modeTabs("upscaler", "mode", [["seedvr", "SeedVR"], ["gan", "GAN"]]),
         ];
@@ -865,10 +914,10 @@ class CharacterGeneratorWidget {
         const head = document.createElement("div");
         head.className = "vnccs-pipe-preview-head";
         const label = document.createElement("div");
-        label.textContent = STAGES.find(([key]) => key === this.selectedPreview)?.[1] || "Results";
+        label.textContent = this.stages.find(([key]) => key === this.selectedPreview)?.[1] || "Results";
         const tabs = document.createElement("div");
         tabs.className = "vnccs-pipe-tabs";
-        for (const [key, name] of STAGES) {
+        for (const [key, name] of this.stages) {
             const tab = document.createElement("button");
             tab.className = "vnccs-pipe-tab" + (key === this.selectedPreview ? " is-selected" : "");
             tab.textContent = name;
@@ -1002,7 +1051,8 @@ class CharacterGeneratorWidget {
 
     renderChain() {
         this.chainEl.innerHTML = "";
-        for (const [key, name] of STAGES) {
+        this.chainEl.classList.toggle("is-clone", this.isClone);
+        for (const [key, name] of this.stages) {
             const stage = document.createElement("div");
             const status = this.stageState[key]?.status || "waiting";
             stage.className = "vnccs-pipe-stage";
@@ -1021,10 +1071,16 @@ class CharacterGeneratorWidget {
             s.className = "vnccs-pipe-stage-status";
             s.textContent = this.formatStageStatus(key);
             stage.append(n, s);
-            if (key === "pose_generation") {
+            if (key === "pose_generation" || key === "original_pose_generation" || key === "naked_pose_generation") {
                 const l = document.createElement("div");
                 l.className = "vnccs-pipe-stage-lora";
                 l.textContent = `LoRA: ${POSE_GENERATION_LORA_LABEL}`;
+                stage.appendChild(l);
+            }
+            if (key === "remove_clothes") {
+                const l = document.createElement("div");
+                l.className = "vnccs-pipe-stage-lora";
+                l.textContent = `LoRA: ${CLOTHES_CORE_LORA_LABEL}`;
                 stage.appendChild(l);
             }
             this.chainEl.appendChild(stage);
@@ -1076,7 +1132,7 @@ class CharacterGeneratorWidget {
         back.textContent = "BACK";
         back.onclick = () => this.closeViewer(true);
         bar.appendChild(back);
-        for (const [key, name] of STAGES) {
+        for (const [key, name] of this.stages) {
             const btn = document.createElement("button");
             btn.className = "vnccs-pipe-viewer-btn" + (key === this.selectedPreview ? " is-selected" : "");
             btn.textContent = name;
@@ -1308,13 +1364,18 @@ class CharacterGeneratorWidget {
 app.registerExtension({
     name: "VNCCS.CharacterGenerator",
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData.name !== "VNCCS_CharacterGenerator") return;
+        const isBaseGenerator = nodeData.name === "VNCCS_CharacterGenerator";
+        const isCloneGenerator = nodeData.name === "VNCCS_CharacterCloneGenerator";
+        if (!isBaseGenerator && !isCloneGenerator) return;
 
         const onNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             onNodeCreated?.apply(this, arguments);
             this.setSize([1180, 760]);
-            this._vnccsCharacterGeneratorWidget = new CharacterGeneratorWidget(this);
+            this._vnccsCharacterGeneratorWidget = new CharacterGeneratorWidget(this, {
+                isClone: isCloneGenerator,
+                title: isCloneGenerator ? "VNCCS Character Clone Generator" : "VNCCS Character Generator",
+            });
             syncDOMWidgetWidthSoon(this, "character_generator_ui");
         };
 

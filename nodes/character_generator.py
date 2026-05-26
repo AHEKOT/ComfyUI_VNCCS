@@ -219,6 +219,9 @@ def _rotate_preview_cache(cache_dir):
 
 
 DEFAULT_WIDGET_DATA = {
+    "common": {
+        "target_size": "1024",
+    },
     "upscaler": {
         "mode": "seedvr",
         "model": "seedvr2_ema_3b-Q4_K_M.gguf",
@@ -259,9 +262,13 @@ DEFAULT_WIDGET_DATA = {
     "pose_generation": {
         "target_size": "1024",
     },
+    "remove_clothes": {
+        "prompt": "Dress character: White underwear",
+    },
 }
 
 POSE_GENERATION_LORA_NAME = "VNCCS Pose Studio QIE2511"
+CLOTHES_CORE_LORA_NAME = "VNCCS Clothes Core"
 
 
 class VNCCS_CharacterGenerator:
@@ -349,11 +356,11 @@ class VNCCS_CharacterGenerator:
             "scheduler": out[11] or "simple",
         }
 
-    def _find_pose_lora(self, pipe):
+    def _find_lora(self, pipe, lora_name):
         entries = getattr(pipe, "lora_entries", []) or []
         states = getattr(pipe, "lora_states", []) or []
         entry = None
-        target = POSE_GENERATION_LORA_NAME.strip().lower()
+        target = str(lora_name or "").strip().lower()
         for candidate in entries:
             candidate_name = str(candidate.get("name", "")).strip().lower()
             if candidate_name == target or target in candidate_name:
@@ -362,10 +369,10 @@ class VNCCS_CharacterGenerator:
 
         if not entry:
             return {
-                "name": POSE_GENERATION_LORA_NAME,
+                "name": lora_name,
                 "file": "",
                 "status": "missing",
-                "message": f"{POSE_GENERATION_LORA_NAME}: not found in Control Center",
+                "message": f"{lora_name}: not found in Control Center",
             }
 
         state = next(
@@ -381,23 +388,29 @@ class VNCCS_CharacterGenerator:
         filename = os.path.basename(full_path or entry.get("local_path", ""))
         rel_path = _rel_within_folder(entry.get("local_path", ""))
         return {
-            "name": entry.get("name", POSE_GENERATION_LORA_NAME),
+            "name": entry.get("name", lora_name),
             "file": filename,
             "path": full_path,
             "rel_path": rel_path,
             "strength": strength,
             "exists": bool(exists),
             "status": "ready" if exists else "missing",
-            "message": f"{entry.get('name', POSE_GENERATION_LORA_NAME)}: {filename or 'not found'}",
+            "message": f"{entry.get('name', lora_name)}: {filename or 'not found'}",
         }
 
-    def _apply_pose_lora_to_model(self, model, clip, pipe, lora_info):
+    def _find_pose_lora(self, pipe):
+        return self._find_lora(pipe, POSE_GENERATION_LORA_NAME)
+
+    def _find_clothes_lora(self, pipe):
+        return self._find_lora(pipe, CLOTHES_CORE_LORA_NAME)
+
+    def _apply_lora_to_model(self, model, clip, pipe, lora_info, stage_label):
         if not lora_info or not lora_info.get("exists") or not lora_info.get("path"):
-            message = lora_info.get("message") if lora_info else POSE_GENERATION_LORA_NAME
-            raise RuntimeError(f"Pose Generation requires LoRA from VNCCS Control Center: {message}")
+            message = lora_info.get("message") if lora_info else stage_label
+            raise RuntimeError(f"{stage_label} requires LoRA from VNCCS Control Center: {message}")
         strength = float(lora_info.get("strength", 1.0))
         loader_type = getattr(pipe, "loader_type", "standard") or "standard"
-        print(f"[VNCCS Character Generator] Applying pose LoRA before sampler: {lora_info.get('name')} ({lora_info.get('file')}, strength={strength})")
+        print(f"[VNCCS Character Generator] Applying {stage_label} LoRA before sampler: {lora_info.get('name')} ({lora_info.get('file')}, strength={strength})")
         if loader_type == "nunchaku":
             return _apply_lora_nunchaku(
                 model,
@@ -418,6 +431,9 @@ class VNCCS_CharacterGenerator:
             print(f"[VNCCS Character Generator] LoraLoaderModelOnly failed for '{rel_path}', using direct loader: {exc}")
         model_lora, _ = _apply_lora_standard(model, clip, lora_info["path"], strength)
         return model_lora
+
+    def _apply_pose_lora_to_model(self, model, clip, pipe, lora_info):
+        return self._apply_lora_to_model(model, clip, pipe, lora_info, "Pose Generation")
 
     def _list_to_batch(self, values):
         if torch.is_tensor(values):
@@ -526,6 +542,67 @@ class VNCCS_CharacterGenerator:
 
         return torch.cat([self._list_to_batch(image) for image in decoded_list], dim=0)
 
+    def _run_remove_clothes(self, character, pipe, settings, lora_info=None):
+        pipe_values = self._extract_pipe(pipe)
+        character_rgb = VNCCS_MaskExtractor().fill_alpha_with_color(character)[0]
+
+        positive, negative, latent = _call_comfy_node(
+            "VNCCS_QWEN_Encoder",
+            clip=pipe_values["clip"],
+            vae=pipe_values["vae"],
+            prompt=settings.get("prompt", DEFAULT_WIDGET_DATA["remove_clothes"]["prompt"]),
+            image1=character_rgb,
+            target_size=int(settings.get("target_size") or DEFAULT_WIDGET_DATA["common"]["target_size"]),
+            upscale_method="lanczos",
+            crop_method="disabled",
+            image1_name="image 1",
+            image2_name="image 2",
+            image3_name="image 3",
+            weight1=1,
+            weight2=1,
+            weight3=1,
+            vl_size=384,
+            latent_image_index=1,
+            instruction=(
+                "Describe the character and their key features (body shape, physical characteristics, clothing, "
+                "items, accessories). Then explain how the user's text instruction should alter or modify the "
+                "character. Generate a new image that meets the user's requirements while maintaining consistency "
+                "with the original character where appropriate."
+            ),
+            qwen_2511=True,
+        )
+
+        sampler_model = self._apply_lora_to_model(
+            pipe_values["model"],
+            pipe_values["clip"],
+            pipe,
+            lora_info,
+            "Remove Clothes",
+        )
+        sampled = _call_comfy_node(
+            "KSampler",
+            model=sampler_model,
+            positive=positive,
+            negative=negative,
+            latent_image=latent,
+            seed=pipe_values["seed"],
+            steps=pipe_values["steps"],
+            cfg=pipe_values["cfg"],
+            sampler_name=pipe_values["sampler"],
+            scheduler=pipe_values["scheduler"],
+            denoise=1,
+        )[0]
+
+        return _call_comfy_node(
+            "VAEDecodeTiled",
+            samples=sampled,
+            vae=pipe_values["vae"],
+            tile_size=512,
+            overlap=64,
+            temporal_size=64,
+            temporal_overlap=8,
+        )[0]
+
     def _run_upscaler_models(self, settings):
         dit = _call_comfy_node(
             "SeedVR2LoadDiTModel",
@@ -597,7 +674,7 @@ class VNCCS_CharacterGenerator:
             image=image,
         )[0]
 
-    def _run_upscaler(self, image, background, settings, unique_id=None, cache_dir=None):
+    def _run_upscaler(self, image, background, settings, unique_id=None, cache_dir=None, stage="upscaler"):
         images = self._split_batch(image)
         total = len(images)
         mode = str(settings.get("mode", "seedvr") or "seedvr").lower()
@@ -610,7 +687,7 @@ class VNCCS_CharacterGenerator:
                 partial = torch.cat(results, dim=0)
                 self._emit(
                     unique_id,
-                    "upscaler",
+                    stage,
                     "running" if index < total else "done",
                     partial,
                     f"GAN upscaled image {index} of {total}",
@@ -628,7 +705,7 @@ class VNCCS_CharacterGenerator:
             partial = torch.cat(results, dim=0)
             self._emit(
                 unique_id,
-                "upscaler",
+                stage,
                 "running" if index < total else "done",
                 partial,
                 f"Upscaled image {index} of {total}",
@@ -660,7 +737,7 @@ class VNCCS_CharacterGenerator:
                 return candidate
             version += 1
 
-    def _save_final_sprites(self, images, sheets_path, character_name=""):
+    def _save_final_sprites(self, images, sheets_path, character_name="", sprite_set="Naked"):
         character_root = _character_root_from_sheets_path(sheets_path, character_name)
         if not character_root:
             return []
@@ -671,7 +748,8 @@ class VNCCS_CharacterGenerator:
         if images.ndim == 3:
             images = images.unsqueeze(0)
 
-        target_dir = os.path.join(character_root, "Sprites", "Naked")
+        sprite_set = str(sprite_set or "Naked").strip() or "Naked"
+        target_dir = os.path.join(character_root, "Sprites", sprite_set)
         os.makedirs(target_dir, exist_ok=True)
 
         image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -742,10 +820,173 @@ class VNCCS_CharacterGenerator:
             raise
 
 
+class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
+    OUTPUT_NODE = True
+    INPUT_IS_LIST = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "poses": ("IMAGE",),
+                "character": ("IMAGE",),
+                "pipe": ("VNCCS_PIPE",),
+                "prompt": ("STRING", {"default": "", "multiline": False, "dynamicPrompts": True}),
+                "background": (["Green", "Blue", "White", "Alpha"], {"default": "Green"}),
+                "widget_data": ("STRING", {"default": json.dumps(DEFAULT_WIDGET_DATA), "multiline": True}),
+            },
+            "optional": {
+                "sheets_path": ("STRING", {"default": "", "forceInput": True}),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "IMAGE", "IMAGE", "IMAGE", "IMAGE")
+    RETURN_NAMES = (
+        "original_sprites",
+        "faces",
+        "naked_sprites",
+        "original_pose_generation",
+        "original_upscaled",
+        "remove_clothes",
+        "naked_pose_generation",
+    )
+    FUNCTION = "process"
+    CATEGORY = "VNCCS"
+    DESCRIPTION = "Clone generator that creates original-clothes and cleaned-clothes sprite sets."
+
+    def _clone_settings(self, widget_data):
+        settings = self._settings(widget_data)
+        common_size = settings.get("common", {}).get("target_size") or settings["pose_generation"].get("target_size", "1024")
+        settings["pose_generation"]["target_size"] = common_size
+        settings["remove_clothes"]["target_size"] = common_size
+        return settings
+
+    def _run_sprite_branch(self, poses, character, pipe, prompt, background, settings, unique_id, cache_dir, stage_prefix, pose_lora_info):
+        pose_stage = f"{stage_prefix}_pose_generation"
+        up_stage = f"{stage_prefix}_upscaler"
+        bg_stage = f"{stage_prefix}_bg_remove"
+
+        input_total = len(self._image_list(poses))
+        self._emit(
+            unique_id,
+            pose_stage,
+            "running",
+            message="Encoding pose list",
+            current=0,
+            total=input_total,
+            cache_dir=cache_dir,
+            lora_info=pose_lora_info,
+        )
+        pose_images = self._run_pose_generation(poses, character, pipe, prompt, settings["pose_generation"], lora_info=pose_lora_info)
+        pose_total = pose_images.shape[0] if torch.is_tensor(pose_images) and pose_images.ndim == 4 else 0
+        self._emit(unique_id, pose_stage, "done", pose_images, f"Generated {pose_total} pose images", pose_total, pose_total, cache_dir=cache_dir, lora_info=pose_lora_info)
+
+        self._emit(unique_id, up_stage, "running", pose_images, f"Preparing upscaler for {pose_total} images", 0, pose_total, cache_dir=cache_dir)
+        upscaled = self._run_upscaler(
+            pose_images,
+            background,
+            settings["upscaler"],
+            unique_id=unique_id,
+            cache_dir=cache_dir,
+            stage=up_stage,
+        )
+
+        bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
+        self._emit(unique_id, bg_stage, "running", upscaled, f"Removing background for {bg_total} images", 0, bg_total, cache_dir=cache_dir)
+        final_images = self._run_bg_remove(upscaled, settings["bg_remove"])
+        self._emit(unique_id, bg_stage, "done", final_images, f"Background removed from {bg_total} images", bg_total, bg_total, cache_dir=cache_dir)
+        return final_images, pose_images, upscaled
+
+    def process(self, poses, character, pipe, prompt, background="Green", widget_data="{}", sheets_path="", unique_id=None):
+        settings = self._clone_settings(widget_data)
+        widget_payload = self._widget_data(widget_data)
+        character_name = widget_payload.get("character_name", "")
+        character = self._unwrap_scalar(character)
+        pipe = self._unwrap_scalar(pipe)
+        prompt = self._unwrap_scalar(prompt)
+        background = self._unwrap_scalar(background)
+        sheets_path = self._unwrap_scalar(sheets_path)
+        unique_id = self._unwrap_scalar(unique_id)
+        cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""))
+        try:
+            _rotate_preview_cache(cache_dir)
+            pose_lora_info = self._find_pose_lora(pipe)
+            clothes_lora_info = self._find_clothes_lora(pipe)
+
+            original_final, original_pose, original_upscaled = self._run_sprite_branch(
+                poses,
+                character,
+                pipe,
+                prompt,
+                background,
+                settings,
+                unique_id,
+                cache_dir,
+                "original",
+                pose_lora_info,
+            )
+            original_saved = self._save_final_sprites(original_final, sheets_path, character_name, "Original")
+            if original_saved:
+                self._emit(unique_id, "original_bg_remove", "done", original_final, f"Saved {len(original_saved)} original sprites", cache_dir=cache_dir)
+
+            remove_total = 1
+            self._emit(
+                unique_id,
+                "remove_clothes",
+                "running",
+                character,
+                "Removing clothes from source character",
+                0,
+                remove_total,
+                cache_dir=cache_dir,
+                lora_info=clothes_lora_info,
+            )
+            naked_character = self._run_remove_clothes(character, pipe, settings["remove_clothes"], lora_info=clothes_lora_info)
+            self._emit(
+                unique_id,
+                "remove_clothes",
+                "done",
+                naked_character,
+                "Source character cleaned",
+                remove_total,
+                remove_total,
+                cache_dir=cache_dir,
+                lora_info=clothes_lora_info,
+            )
+
+            naked_final, naked_pose, _naked_upscaled = self._run_sprite_branch(
+                poses,
+                naked_character,
+                pipe,
+                prompt,
+                background,
+                settings,
+                unique_id,
+                cache_dir,
+                "naked",
+                pose_lora_info,
+            )
+            naked_saved = self._save_final_sprites(naked_final, sheets_path, character_name, "Naked")
+            if naked_saved:
+                self._emit(unique_id, "naked_bg_remove", "done", naked_final, f"Saved {len(naked_saved)} naked sprites", cache_dir=cache_dir)
+
+            return original_final, original_final, naked_final, original_pose, original_upscaled, naked_character, naked_pose
+        except Exception as exc:
+            print("[VNCCS Character Clone Generator] Failed:", exc)
+            traceback.print_exc()
+            self._emit(unique_id, "error", "error", message=str(exc))
+            raise
+
+
 NODE_CLASS_MAPPINGS = {
     "VNCCS_CharacterGenerator": VNCCS_CharacterGenerator,
+    "VNCCS_CharacterCloneGenerator": VNCCS_CharacterCloneGenerator,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_CharacterGenerator": "VNCCS Character Generator",
+    "VNCCS_CharacterCloneGenerator": "VNCCS Character Clone Generator",
 }
