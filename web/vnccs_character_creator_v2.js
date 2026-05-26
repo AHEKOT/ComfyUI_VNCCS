@@ -468,6 +468,124 @@ const STYLE = `
     color: var(--accent-hover);
 }
 
+.vnccs-segmented-field {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    padding: 4px;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border);
+    background: rgba(0,0,0,0.18);
+    min-height: 48px;
+    box-sizing: border-box;
+}
+
+.vnccs-segmented-btn {
+    border: 0;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font);
+    font-size: 14px;
+    font-weight: 800;
+    cursor: pointer;
+    transition: all var(--transition);
+}
+
+.vnccs-segmented-btn:hover {
+    color: var(--text-primary);
+    background: rgba(255,255,255,0.045);
+}
+
+.vnccs-segmented-btn.is-active {
+    color: #20141a;
+    background: linear-gradient(180deg, #ff9bad 0%, #ff87a0 100%);
+    box-shadow: 0 10px 22px rgba(255,143,163,0.22);
+}
+
+.vnccs-graphic-toggle {
+    width: 100%;
+    min-height: 48px;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.035);
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 10px 8px 14px;
+    font-family: var(--font);
+    cursor: pointer;
+    transition: all var(--transition);
+}
+
+.vnccs-graphic-toggle:hover {
+    border-color: var(--border-hover);
+    color: var(--text-primary);
+}
+
+.vnccs-graphic-toggle.is-active {
+    border-color: var(--accent);
+    background: rgba(255,143,163,0.14);
+    color: var(--accent-hover);
+    box-shadow: 0 0 0 1px rgba(255,143,163,0.12) inset, 0 12px 24px rgba(255,143,163,0.12);
+}
+
+.vnccs-graphic-toggle-text {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.vnccs-graphic-toggle-icon {
+    width: 20px;
+    height: 20px;
+    border-radius: 7px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: currentColor;
+    background: rgba(255,255,255,0.06);
+}
+
+.vnccs-graphic-toggle-switch {
+    width: 44px;
+    height: 24px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid var(--border);
+    position: relative;
+    flex-shrink: 0;
+    transition: all var(--transition);
+}
+
+.vnccs-graphic-toggle-switch::after {
+    content: "";
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    left: 3px;
+    top: 3px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    transition: all var(--transition);
+}
+
+.vnccs-graphic-toggle.is-active .vnccs-graphic-toggle-switch {
+    border-color: var(--accent);
+    background: rgba(255,143,163,0.28);
+}
+
+.vnccs-graphic-toggle.is-active .vnccs-graphic-toggle-switch::after {
+    transform: translateX(20px);
+    background: var(--accent-hover);
+}
+
 /* Filled input highlight */
 .vnccs-input:not(:placeholder-shown):not([value=""]),
 .vnccs-input.has-value {
@@ -1599,6 +1717,69 @@ app.registerExtension({
                     return wrap;
                 };
 
+                const createSegmentedField = (lbl, key, options, targetObj = state.character_info) => {
+                    const wrap = document.createElement("div");
+                    wrap.className = "vnccs-field";
+                    wrap.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
+                    const segmented = document.createElement("div");
+                    segmented.className = "vnccs-segmented-field";
+                    const buttons = [];
+                    const setValue = (value, persist = false) => {
+                        const normalized = String(value || options[0]?.value || "");
+                        targetObj[key] = normalized;
+                        buttons.forEach(({ btn, value: btnValue }) => {
+                            btn.classList.toggle("is-active", btnValue === normalized);
+                            btn.setAttribute("aria-pressed", btnValue === normalized ? "true" : "false");
+                        });
+                        if (persist) saveState();
+                    };
+                    options.forEach(option => {
+                        const btn = document.createElement("button");
+                        btn.type = "button";
+                        btn.className = "vnccs-segmented-btn";
+                        btn.textContent = option.label;
+                        btn.onclick = () => setValue(option.value, true);
+                        buttons.push({ btn, value: option.value });
+                        segmented.appendChild(btn);
+                    });
+                    wrap.appendChild(segmented);
+                    els[key] = { setValue, value: targetObj[key] || options[0]?.value || "" };
+                    setValue(targetObj[key] || options[0]?.value);
+                    return wrap;
+                };
+
+                const createGraphicToggle = (lbl, key, targetObj = state.character_info) => {
+                    const wrap = document.createElement("div");
+                    wrap.className = "vnccs-field";
+                    const btn = document.createElement("button");
+                    btn.type = "button";
+                    btn.className = "vnccs-graphic-toggle";
+                    btn.innerHTML = `
+                        <span class="vnccs-graphic-toggle-text">
+                            <span class="vnccs-graphic-toggle-icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" width="15" height="15" fill="none">
+                                    <path d="M12 3l7 4v5c0 4.5-2.8 7.4-7 9-4.2-1.6-7-4.5-7-9V7l7-4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                                    <path d="M9 12h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                                </svg>
+                            </span>
+                            ${lbl}
+                        </span>
+                        <span class="vnccs-graphic-toggle-switch" aria-hidden="true"></span>
+                    `;
+                    const setValue = (value, persist = false) => {
+                        const enabled = !!value;
+                        targetObj[key] = enabled;
+                        btn.classList.toggle("is-active", enabled);
+                        btn.setAttribute("aria-pressed", enabled ? "true" : "false");
+                        if (persist) saveState();
+                    };
+                    btn.onclick = () => setValue(!targetObj[key], true);
+                    wrap.appendChild(btn);
+                    els[key] = { type: "graphic-toggle", setValue, get checked() { return !!targetObj[key]; } };
+                    setValue(!!targetObj[key]);
+                    return wrap;
+                };
+
                 const createSlider = (lbl, key, min, max, step, targetObj = state.gen_settings) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-field";
@@ -2412,8 +2593,14 @@ app.registerExtension({
                 colCenter.className = "vnccs-col";
                 colCenter.innerHTML = '<div class="vnccs-section-title">Attributes</div>';
 
-                colCenter.appendChild(createField("Background", "background_color", "select", ["Green", "Blue"]));
-                colCenter.appendChild(createField("Gender", "sex", "select", ["female", "male"]));
+                colCenter.appendChild(createSegmentedField("Background", "background_color", [
+                    { label: "Green", value: "Green" },
+                    { label: "Blue", value: "Blue" },
+                ]));
+                colCenter.appendChild(createSegmentedField("Gender", "sex", [
+                    { label: "Male", value: "male" },
+                    { label: "Female", value: "female" },
+                ]));
                 colCenter.appendChild(createSlider("Age", "age", 1, 100, 1, state.character_info));
                 colCenter.appendChild(createField("Race", "race"));
                 colCenter.appendChild(createField("Skin Color", "skin_color"));
@@ -2422,7 +2609,7 @@ app.registerExtension({
                 colCenter.appendChild(createField("Hair Style", "hair"));
                 colCenter.appendChild(createField("Eye Color", "eyes"));
                 colCenter.appendChild(createField("Details", "additional_details"));
-                colCenter.appendChild(createField("NSFW Mode", "nsfw", "checkbox"));
+                colCenter.appendChild(createGraphicToggle("NSFW Mode", "nsfw"));
 
                 topRow.appendChild(colCenter);
 
@@ -2868,6 +3055,7 @@ app.registerExtension({
                                     els[k].range.value = val;
                                     els[k].num.value = val;
                                 }
+                                else if (els[k].setValue) els[k].setValue(val);
                                 else if (els[k].type === "checkbox") els[k].checked = !!val;
                                 else els[k].value = val;
                             }
