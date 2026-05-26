@@ -1,0 +1,236 @@
+{
+  "name": "VNCCS Core Models",
+  "models": [
+    {
+      "name": "Qwen-Image-Edit-2511-GGUF-Q4",
+      "type": "gguf",
+      "hf_repo": "unsloth/Qwen-Image-Edit-2511-GGUF",
+      "hf_path": "qwen-image-edit-2511-Q4_0.gguf",
+      "local_path": "models/unet/qwen-image-edit-2511-Q4_0.gguf",
+      "version": "1.0",
+      "description": "Quantized Q4 GGUF — lower VRAM, slightly lower quality.",
+      "kind": "QIE2511"
+    },
+    {
+      "name": "Qwen-Image-Edit-2511-GGUF-Q5",
+      "type": "gguf",
+      "hf_repo": "unsloth/Qwen-Image-Edit-2511-GGUF",
+      "hf_path": "qwen-image-edit-2511-Q5_0.gguf",
+      "local_path": "models/unet/qwen-image-edit-2511-Q5_0.gguf",
+      "version": "1.0",
+      "description": "Quantized Q5 GGUF — lower VRAM, slightly lower quality.",
+      "kind": "QIE2511"
+    },
+    {
+      "name": "Qwen-Image-Edit-2511-GGUF-Q8",
+      "type": "gguf",
+      "hf_repo": "unsloth/Qwen-Image-Edit-2511-GGUF",
+      "hf_path": "qwen-image-edit-2511-Q8_0.gguf",
+      "local_path": "models/unet/qwen-image-edit-2511-Q8_0.gguf",
+      "version": "1.0",
+      "description": "Quantized Q8 GGUF — near-lossless, higher VRAM than Q4.",
+      "kind": "QIE2511"
+    },
+    {
+      "name": "Qwen-Image-Edit-2511-nunchaku-balance-fp4",
+      "type": "nunchaku",
+      "hf_repo": "QuantFunc/Nunchaku-Qwen-Image-EDIT-2511",
+      "hf_path": "nunchaku_qwen_image_edit_2511_balance_fp4.safetensors",
+      "local_path": "models/diffusion_models/nunchaku_qwen_image_edit_2511_balance_fp4.safetensors",
+      "version": "1.0",
+      "description": "(NVIDIA 5xxx series ONLY) Nunchaku Balance FP4 — balanced quality/speed.",
+      "kind": "QIE2511"
+    },
+    {
+      "name": "Qwen-Image-Edit-2511-nunchaku-balance-int4",
+      "type": "nunchaku",
+      "hf_repo": "QuantFunc/Nunchaku-Qwen-Image-EDIT-2511",
+      "hf_path": "nunchaku_qwen_image_edit_2511_balance_int4.safetensors",
+      "local_path": "models/diffusion_models/nunchaku_qwen_image_edit_2511_balance_int4.safetensors",
+      "version": "1.0",
+      "description": "(NVIDIA 4xxx and lower) Nunchaku Balance INT4 — balanced quality/speed.",
+      "kind": "QIE2511"
+    },
+    {
+      "name": "Qwen-Image-Edit-2511-nunchaku-best-quality-fp4",
+      "type": "nunchaku",
+      "hf_repo": "QuantFunc/Nunchaku-Qwen-Image-EDIT-2511",
+      "hf_path": "nunchaku_qwen_image_edit_2511_best_quality_fp4.safetensors",
+      "local_path": "models/diffusion_models/nunchaku_qwen_image_edit_2511_best_quality_fp4.safetensors",
+      "version": "1.0",
+      "description": "(NVIDIA 5xxx series ONLY) Nunchaku Best Quality FP4 — highest quality, higher VRAM.",
+      "kind": "QIE2511"
+    },
+    {
+      "name": "Qwen-Image-Edit-2511-nunchaku-best-quality-int4",
+      "type": "nunchaku",
+      "hf_repo": "QuantFunc/Nunchaku-Qwen-Image-EDIT-2511",
+      "hf_path": "nunchaku_qwen_image_edit_2511_best_quality_int4.safetensors",
+      "local_path": "models/diffusion_models/nunchaku_qwen_image_edit_2511_best_quality_int4.safetensors",
+      "version": "1.0",
+      "description": "(NVIDIA 4xxx and lower) Nunchaku Best Quality INT4 — highest quality, higher VRAM.",
+      "kind": "QIE2511"
+    },
+    {
+      "name": "Qwen-Image-Edit-2511-nunchaku-ultimate-speed-fp4",
+      "type": "nunchaku",
+      "hf_repo": "QuantFunc/Nunchaku-Qwen-Image-EDIT-2511",
+      "hf_path": "nunchaku_qwen_image_edit_2511_ultimate_speed_fp4.safetensors",
+      "local_path": "models/diffusion_models/nunchaku_qwen_image_edit_2511_ultimate_speed_fp4.safetensors",
+      "version": "1.0",
+      "description": "(NVIDIA 5xxx series ONLY) Nunchaku Ultimate Speed FP4 — fastest inference, lower VRAM.",
+      "kind": "QIE2511"
+    },
+    {
+      "name": "Qwen-Image-Edit-2511-nunchaku-ultimate-speed-int4",
+      "type": "nunchaku",
+      "hf_repo": "QuantFunc/Nunchaku-Qwen-Image-EDIT-2511",
+      "hf_path": "nunchaku_qwen_image_edit_2511_ultimate_speed_int4.safetensors",
+      "local_path": "models/diffusion_models/nunchaku_qwen_image_edit_2511_ultimate_speed_int4.safetensors",
+      "version": "1.0",
+      "description": "(NVIDIA 4xxx and lower) Nunchaku Ultimate Speed INT4 — fastest inference, lower VRAM.",
+      "kind": "QIE2511"
+    },
+    {
+      "name": "Qwen-Image-Edit-2511-NVFP4",
+      "type": "unet",
+      "hf_repo": "Bedovyy/Qwen-Image-Edit-2511-NVFP4",
+      "hf_path": "qwen_image_edit_2511_nvfp4.safetensors",
+      "local_path": "models/diffusion_models/qwen_image_edit_2511_nvfp4.safetensors",
+      "version": "1.0",
+      "description": "(NVIDIA 5xxx series ONLY) Native NVFP4 UNet — full quality at reduced VRAM.",
+      "kind": "QIE2511"
+    }
+  ],
+  "clip": [
+    {
+      "name": "QIE2511_Text_Encoder",
+      "clip_type": "qwen_image",
+      "hf_repo": "f5aiteam/CLIP",
+      "hf_path": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "local_path": "models/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "version": "1.0",
+      "description": "Text encoder for Qwen Image Edit 2511.",
+      "type": "TextEncoder",
+      "kind": "QIE2511"
+    }
+  ],
+  "vae": [
+    {
+      "name": "QIE2511 VAE",
+      "hf_repo": "Comfy-Org/Qwen-Image_ComfyUI",
+      "hf_path": "split_files/vae/qwen_image_vae.safetensors",
+      "local_path": "models/vae/qwen_image_vae.safetensors",
+      "version": "1.0",
+      "description": "Official VAE for Qwen Image Edit 2511.",
+      "type": "VAE",
+      "kind": "QIE2511"
+    }
+  ],
+  "lora": [
+    {
+      "name": "VNCCS Clothes Core",
+      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.safetensors",
+      "local_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.safetensors",
+      "version": "0.3.0",
+      "description": "Helps maintain clothing consistency.",
+      "type": "Helper",
+      "kind": "QIE2511"
+    },
+    {
+      "name": "VNCCS Emotion Core",
+      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_EmotionCore-RC1.safetensors",
+      "local_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_EmotionCore-RC1.safetensors",
+      "version": "0.1.0",
+      "description": "Core LoRA for generating character emotions.",
+      "type": "Helper",
+      "kind": "QIE2511"
+    },
+    {
+      "name": "VNCCS Pose Studio QIE2511",
+      "hf_repo": "MIUProject/VNCCS_PoseStudio",
+      "hf_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_PoseStudio_ART_V5.9.5.safetensors",
+      "local_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_PoseStudio_ART_V5.9.5.safetensors",
+      "version": "5.9.5",
+      "description": "LoRA for VNCCS Pose Studio node.",
+      "type": "Helper",
+      "kind": "QIE2511"
+    },
+    {
+      "name": "Qwen Image Edit 2511 Lightning",
+      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_path": "models/loras/qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+      "local_path": "models/loras/qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+      "version": "1.0.0",
+      "description": "4-Step Lightning LoRA for Qwen Image Edit.",
+      "type": "TurboLora",
+      "kind": "QIE2511"
+    },
+    {
+      "name": "DMD2 SDXL Lightning",
+      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_path": "models/loras/DMD2/dmd2_sdxl_4step_lora_fp16.safetensors",
+      "local_path": "models/loras/DMD2/dmd2_sdxl_4step_lora_fp16.safetensors",
+      "version": "1.0.0",
+      "description": "4-Step Lightning/Turbo LoRA for SDXL models.",
+      "type": "TurboLora",
+      "kind": "SDXL"
+    },
+    {
+      "name": "Mimimeter",
+      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_path": "models/loras/IL/mimimeter.safetensors",
+      "local_path": "models/loras/IL/mimimeter.safetensors",
+      "version": "1.0.0",
+      "description": "SDXL LoRA for age control.",
+      "type": "AgeSlider",
+      "kind": "SDXL"
+    }
+  ],
+  "controlnet": [
+    {
+      "name": "ControlNet AnyTest",
+      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_path": "models/controlnet/SDXL/AnytestV4.safetensors",
+      "local_path": "models/controlnet/SDXL/AnytestV4.safetensors",
+      "version": "4.0.0",
+      "description": "SDXL ControlNet for high-quality pose guidance.",
+      "type": "ControlNet",
+      "kind": "SDXL"
+    },
+    {
+      "name": "ControlNet OpenPose Illustrious",
+      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_path": "models/controlnet/SDXL/IllustriousXL_openpose.safetensors",
+      "local_path": "models/controlnet/SDXL/IllustriousXL_openpose.safetensors",
+      "version": "1.0.0",
+      "description": "OpenPose ControlNet optimized for illustrious models.",
+      "type": "ControlNet",
+      "kind": "SDXL"
+    }
+  ],
+  "other": [
+    {
+      "name": "2x_APISR_RRDB_GAN",
+      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_path": "models/upscale_models/2x_APISR_RRDB_GAN_generator.pth",
+      "local_path": "models/upscale_models/2x_APISR_RRDB_GAN_generator.pth",
+      "version": "1.0.0",
+      "description": "Anime Production Inspired Real-World Anime Super-Resolution.",
+      "type": "Upscaler",
+      "kind": "UTILITY"
+    },
+    {
+      "name": "4x_APISR_GRL_GAN",
+      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_path": "models/upscale_models/4x_APISR_GRL_GAN_generator.pth",
+      "local_path": "models/upscale_models/4x_APISR_GRL_GAN_generator.pth",
+      "version": "1.0.0",
+      "description": "4x Anime Production Inspired GRL GAN Super-Resolution.",
+      "type": "Upscaler",
+      "kind": "UTILITY"
+    }
+  ]
+}

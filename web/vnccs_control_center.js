@@ -1128,8 +1128,48 @@ class VNCCSControlCenterWidget {
         return variants.find(m => m.name === selectedModel) ?? variants[0] ?? null;
     }
 
+    _metaKind(entry) {
+        return String(entry?.kind ?? entry?.Kind ?? "").trim();
+    }
+
+    _metaType(entry) {
+        return String(entry?.type ?? entry?.Type ?? "").trim();
+    }
+
+    _selectedKind() {
+        return this._metaKind(this._getSelectedModelEntry());
+    }
+
+    _isQwenFamily(entry = this._getSelectedModelEntry()) {
+        const identity = [
+            this._metaKind(entry),
+            entry?.name ?? "",
+            entry?.local_path ?? "",
+        ].join(" ").toLowerCase();
+        return identity.includes("qwen") || identity.includes("qie");
+    }
+
+    _sameKind(entry, kind = this._selectedKind()) {
+        const entryKind = this._metaKind(entry);
+        return !entryKind || !kind || entryKind.toLowerCase() === kind.toLowerCase();
+    }
+
+    _isTurboLora(entry) {
+        return this._metaType(entry).toLowerCase() === "turbolora";
+    }
+
+    _isHelperLora(entry) {
+        return this._metaType(entry).toLowerCase() === "helper";
+    }
+
     _hasEnabledLoras() {
-        return (this.state.loras ?? []).some(l => l?.name && l.auto_apply === true && Math.abs(Number(l.strength ?? 1)) > 1e-6);
+        const selectedKind = this._selectedKind();
+        const entryByName = Object.fromEntries((this.config?.lora ?? []).map(entry => [entry.name, entry]));
+        return (this.state.loras ?? []).some(l => {
+            if (!l?.name || l.auto_apply !== true || Math.abs(Number(l.strength ?? 1)) <= 1e-6) return false;
+            const entry = entryByName[l.name];
+            return entry?.custom || (this._isTurboLora(entry) && this._sameKind(entry, selectedKind));
+        });
     }
 
     _saveState() {
@@ -1141,13 +1181,10 @@ class VNCCSControlCenterWidget {
 
     _dispatchLoraOptions() {
         if (!this.config?.lora) return;
-        const stateByName = Object.fromEntries(
-            (this.state.loras ?? []).map(l => [l.name, l])
-        );
+        const selectedKind = this._selectedKind();
         const options = [];
         for (const entry of this.config.lora) {
-            const st = stateByName[entry.name] ?? {};
-            if (st.auto_apply === true) continue;
+            if (entry.custom || this._isTurboLora(entry) || !this._isHelperLora(entry) || !this._sameKind(entry, selectedKind)) continue;
             const norm = (entry.local_path || "").replace(/\\/g, "/");
             const rel = norm.startsWith("models/loras/") ? norm.slice("models/loras/".length) : norm.split("/").pop();
             options.push(rel);
@@ -1172,7 +1209,8 @@ class VNCCSControlCenterWidget {
             const selectedType = this.state.selected_type;
             this.state.selected_models = selectedType ? { [selectedType]: this.state.selected_model } : {};
         }
-        // Rebuild dynamic output slots from saved state
+        // Control Center now exposes a single pipe output.
+        this.state.output_slot_names = [];
         this._syncOutputSlots();
         this._syncCustomModelInput();
         const repo = this._getRepoId();
@@ -1726,7 +1764,11 @@ class VNCCSControlCenterWidget {
         }
 
         // LORA
+        if (this._isQwenFamily()) {
+            this._renderTurboModelBlock();
+        }
         this._renderLoraBlock();
+        this._renderCustomLoraBlock();
 
         // CONTROLNET / OTHER
         this._renderBlock("CONTROLNET", this.config.controlnet, "controlnet",
@@ -1791,10 +1833,80 @@ class VNCCSControlCenterWidget {
         this.scrollArea.appendChild(this._buildClipVaeBlock());
     }
 
+    _buildTurboModelBlock() {
+        const selectedKind = this._selectedKind();
+        const entries = (this.config.lora || []).filter(entry =>
+            !entry.custom && this._isTurboLora(entry) && this._sameKind(entry, selectedKind)
+        );
+        const collapsed = this.state.collapsed?.turbo_model ?? false;
+        const block = this._blockShell("TURBO MODEL", entries.length, "turbo_model", collapsed);
+
+        if (!collapsed) {
+            const body = document.createElement("div");
+            body.className = "vnccs-cc-lora-sections";
+
+            const grid = document.createElement("div");
+            grid.className = "vnccs-cc-lora-grid vnccs-cc-lora-grid--compact";
+            entries.forEach(entry => {
+                const ls = (this.state.loras ?? []).find(l => l.name === entry.name);
+                grid.appendChild(this._renderLoraCard(entry, {
+                    compact: true,
+                    active: ls?.auto_apply === true,
+                    mode: "turbo",
+                }));
+            });
+
+            if (entries.length) body.appendChild(grid);
+            else {
+                const empty = document.createElement("div");
+                empty.className = "vnccs-cc-block-empty";
+                empty.textContent = "No entries";
+                body.appendChild(empty);
+            }
+            block.appendChild(body);
+        }
+
+        return block;
+    }
+
+    _renderTurboModelBlock() {
+        this.scrollArea.appendChild(this._buildTurboModelBlock());
+    }
+
     _buildLoraBlock() {
-        const entries = this.config.lora || [];
+        const selectedKind = this._selectedKind();
+        const entries = (this.config.lora || []).filter(entry =>
+            !entry.custom && !this._isTurboLora(entry) && this._sameKind(entry, selectedKind)
+        );
         const collapsed = this.state.collapsed?.lora ?? false;
         const block = this._blockShell("LORA", entries.length, "lora", collapsed);
+
+        if (!collapsed) {
+            const body = document.createElement("div");
+            body.className = "vnccs-cc-lora-sections";
+
+            const grid = document.createElement("div");
+            grid.className = "vnccs-cc-lora-grid vnccs-cc-lora-grid--compact";
+            entries.forEach(entry => grid.appendChild(this._renderLoraCard(entry, { compact: true, mode: "pipe" })));
+            if (entries.length) body.appendChild(grid);
+
+            if (!entries.length) {
+                const empty = document.createElement("div");
+                empty.className = "vnccs-cc-block-empty";
+                empty.textContent = "No entries";
+                body.appendChild(empty);
+            }
+
+            block.appendChild(body);
+        }
+
+        return block;
+    }
+
+    _buildCustomLoraBlock() {
+        const entries = (this.config.lora || []).filter(entry => entry.custom);
+        const collapsed = this.state.collapsed?.custom_lora ?? false;
+        const block = this._blockShell("CUSTOM LORAS", entries.length, "custom_lora", collapsed);
 
         if (!collapsed) {
             const body = document.createElement("div");
@@ -1819,7 +1931,7 @@ class VNCCSControlCenterWidget {
 
                 const activeGrid = document.createElement("div");
                 activeGrid.className = "vnccs-cc-lora-grid";
-                activeEntries.forEach(entry => activeGrid.appendChild(this._renderLoraCard(entry, { active: true })));
+                activeEntries.forEach(entry => activeGrid.appendChild(this._renderLoraCard(entry, { active: true, mode: "custom" })));
 
                 activeSection.append(activeTitle, activeGrid);
                 body.appendChild(activeSection);
@@ -1835,17 +1947,10 @@ class VNCCSControlCenterWidget {
 
                 const inactiveGrid = document.createElement("div");
                 inactiveGrid.className = "vnccs-cc-lora-grid vnccs-cc-lora-grid--compact";
-                inactiveEntries.forEach(entry => inactiveGrid.appendChild(this._renderLoraCard(entry, { compact: true })));
+                inactiveEntries.forEach(entry => inactiveGrid.appendChild(this._renderLoraCard(entry, { compact: true, mode: "custom" })));
 
                 inactiveSection.append(inactiveTitle, inactiveGrid);
                 body.appendChild(inactiveSection);
-            }
-
-            if (!entries.length) {
-                const empty = document.createElement("div");
-                empty.className = "vnccs-cc-block-empty";
-                empty.textContent = "No entries";
-                body.appendChild(empty);
             }
 
             const addWrap = document.createElement("div");
@@ -1873,6 +1978,10 @@ class VNCCSControlCenterWidget {
         this.scrollArea.appendChild(this._buildLoraBlock());
     }
 
+    _renderCustomLoraBlock() {
+        this.scrollArea.appendChild(this._buildCustomLoraBlock());
+    }
+
     _replaceBlock(key, nextBlock) {
         const current = this.scrollArea?.querySelector(`.vnccs-cc-block[data-block-key="${key}"]`);
         if (current?.parentNode) {
@@ -1885,6 +1994,12 @@ class VNCCSControlCenterWidget {
     _refreshLoraBlock() {
         if (!this.config) return;
         this._replaceBlock("lora", this._buildLoraBlock());
+        if (this._isQwenFamily()) {
+            this._replaceBlock("turbo_model", this._buildTurboModelBlock());
+        } else {
+            this.scrollArea?.querySelector(`.vnccs-cc-block[data-block-key="turbo_model"]`)?.remove();
+        }
+        this._replaceBlock("custom_lora", this._buildCustomLoraBlock());
     }
 
     async _removeCustomLora(entry) {
@@ -2420,7 +2535,10 @@ class VNCCSControlCenterWidget {
     // ── LORA entry ────────────────────────────────────────────────────────────
 
     _renderLoraCard(entry, options = {}) {
-        const { active = false, compact = false } = options;
+        const { active = false, compact = false, mode = "custom" } = options;
+        const isPipeMode = mode === "pipe";
+        const isTurboMode = mode === "turbo";
+        const isInteractive = mode === "custom" || isTurboMode;
         const ls  = (this.state.loras ?? []).find(l => l.name === entry.name)
             ?? { name: entry.name, auto_apply: false, strength: 1.0 };
         const dls = this.dlStatus[`cc_lora_${entry.name}`] ?? {};
@@ -2429,12 +2547,18 @@ class VNCCSControlCenterWidget {
         const loraKey = `cc_lora_${entry.name}`;
         const card = document.createElement("div");
         card.className = "vnccs-cc-model-card vnccs-cc-lora-card";
-        if (active) card.classList.add("vnccs-cc-lora-card--active");
+        if (active && !isPipeMode) card.classList.add("vnccs-cc-lora-card--active");
         if (compact) card.classList.add("vnccs-cc-lora-card--compact");
         if (entry.custom) card.classList.add("vnccs-cc-lora-card--has-remove");
         this._applyProgressLayer(card, loraKey, dls);
-        if (status === "installed") {
-            card.onclick = () => this._updateLora(entry.name, { auto_apply: !ls.auto_apply }, { commit: true, rerender: "lora" });
+        if (status === "installed" && isInteractive) {
+            card.onclick = () => {
+                if (isTurboMode) {
+                    this._selectTurboLora(entry.name, !ls.auto_apply);
+                } else {
+                    this._updateLora(entry.name, { auto_apply: !ls.auto_apply }, { commit: true, rerender: "lora" });
+                }
+            };
         }
 
         if (entry.custom) {
@@ -2465,8 +2589,9 @@ class VNCCSControlCenterWidget {
         const statusLbl = document.createElement("span");
         statusLbl.className = "vnccs-cc-lora-card-status";
         if (status === "installed") {
-            statusLbl.textContent = ls.auto_apply ? "Active" : "Pipe";
-            statusLbl.classList.add(ls.auto_apply ? "vnccs-cc-lora-card-status--active" : "vnccs-cc-lora-card-status--pipe");
+            const effectiveActive = !isPipeMode && ls.auto_apply === true;
+            statusLbl.textContent = effectiveActive ? "Active" : "Pipe";
+            statusLbl.classList.add(effectiveActive ? "vnccs-cc-lora-card-status--active" : "vnccs-cc-lora-card-status--pipe");
         } else if (status === "downloading" || status === "queued") {
             statusLbl.textContent = status === "queued" ? "⏳ Queued" : (dls.message || "Downloading…");
             statusLbl.classList.add("vnccs-cc-model-card-status--progress");
@@ -2474,8 +2599,8 @@ class VNCCSControlCenterWidget {
             statusLbl.textContent = "↓ Missing";
             statusLbl.classList.add("vnccs-cc-model-card-status--missing");
         }
-        if ((compact && status === "installed" && ls.auto_apply !== true) ||
-            (active && status === "installed" && ls.auto_apply === true)) {
+        if ((compact && status === "installed" && (isPipeMode || ls.auto_apply !== true)) ||
+            (active && status === "installed" && !isPipeMode && ls.auto_apply === true)) {
             statusLbl.classList.add("vnccs-cc-lora-card-status--corner");
             card.appendChild(statusLbl);
         } else {
@@ -2505,7 +2630,7 @@ class VNCCSControlCenterWidget {
             b.style.borderColor = "rgba(255,170,0,0.4)";
             b.addEventListener("click", e => e.stopPropagation());
             footer.appendChild(b);
-        } else if (status === "installed" && active) {
+        } else if (status === "installed" && active && !isPipeMode) {
                 const slider = document.createElement("input");
                 slider.type = "range";
                 slider.min = -2;
@@ -2566,6 +2691,30 @@ class VNCCSControlCenterWidget {
         }
     }
 
+    _selectTurboLora(name, enabled) {
+        const selectedKind = this._selectedKind();
+        const turboNames = new Set((this.config?.lora || [])
+            .filter(entry => !entry.custom && this._isTurboLora(entry) && this._sameKind(entry, selectedKind))
+            .map(entry => entry.name));
+
+        if (!this.state.loras) this.state.loras = [];
+        for (const turboName of turboNames) {
+            const idx = this.state.loras.findIndex(lora => lora.name === turboName);
+            if (idx >= 0) {
+                this.state.loras[idx].auto_apply = turboName === name ? enabled : false;
+            } else {
+                this.state.loras.push({
+                    name: turboName,
+                    auto_apply: turboName === name ? enabled : false,
+                    strength: 1.0,
+                });
+            }
+        }
+        this._saveState();
+        this._refreshLoraBlock();
+        this._scheduleDependencyRefresh(true, 120, false);
+    }
+
     // ── CONTROLNET / OTHER entry ──────────────────────────────────────────────
 
     _renderCnetEntry(cat, entry) {
@@ -2614,9 +2763,7 @@ class VNCCSControlCenterWidget {
     }
 
     // ── Output slot management ────────────────────────────────────────────────
-    // Uses node.addOutput() / node.removeOutput() so slots are truly added/removed.
-    // slot 0 = pipe (always present, defined in Python RETURN_TYPES)
-    // slots 1..N = dynamic paths, managed here
+    // Control Center exposes only slot 0 = pipe.
 
     _assignSlot(name) {
         if (!this.state.output_slot_names) this.state.output_slot_names = [];
@@ -2637,36 +2784,15 @@ class VNCCSControlCenterWidget {
     }
 
     _syncOutputSlots() {
-        const desired = (this.state.output_slot_names ?? []).filter(n => n && n !== "-");
-        // Current dynamic slots (skip slot 0 = pipe which is always present)
-        const dynamicSlots = (this.node.outputs ?? []).slice(1);
-        const currentNames = dynamicSlots.map(o => o.name);
-
-        // Never rebuild if any existing slot has active links — would destroy connections.
-        const hasLinks = dynamicSlots.some(o => o.links?.length > 0);
-        if (hasLinks) return;
-
-        // If slot names already match, nothing to do.
-        if (desired.length === currentNames.length && desired.every((n, i) => n === currentNames[i])) return;
-
-        // Remove all dynamic outputs (keep slot 0 = pipe)
         while ((this.node.outputs?.length ?? 0) > 1) {
             this.node.removeOutput(this.node.outputs.length - 1);
         }
-        // Re-add in order
-        for (const name of desired) {
-            this.node.addOutput(name, "*");
-        }
+        this.state.output_slot_names = [];
         this.node.setDirtyCanvas(true, true);
     }
 
-    // Auto-assign ALL controlnet + other entries as output slots from config
+    // Legacy no-op: older saved nodes may still carry dynamic output state.
     _syncCnetSlots(config) {
-        const allNames = [
-            ...(config.controlnet ?? []).map(e => e.name),
-            ...(config.other ?? []).map(e => e.name),
-        ];
-        this.state.output_slot_names = allNames;
         this._syncOutputSlots();
     }
 

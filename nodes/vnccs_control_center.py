@@ -239,6 +239,8 @@ def _build_custom_lora_entry(rel_path, used_names=None):
     return {
         "name": _build_custom_lora_name(normalized, used_names=used_names),
         "local_path": f"models/loras/{normalized}",
+        "type": "Custom",
+        "kind": "Custom",
         "description": f"Custom LoRA from ComfyUI folder: {normalized}",
         "custom": True,
     }
@@ -379,6 +381,26 @@ def _build_dynamic_paths(config, output_slot_names):
         _, exists = _find_model_on_disk(entry["local_path"])
         paths.append(_rel_within_folder(entry["local_path"]) if exists else "")
     return paths
+
+
+def _normalize_meta_value(value):
+    return str(value or "").strip().lower()
+
+
+def _entry_kind(entry):
+    return _normalize_meta_value((entry or {}).get("kind") or (entry or {}).get("Kind"))
+
+
+def _entry_type(entry):
+    return _normalize_meta_value((entry or {}).get("type") or (entry or {}).get("Type"))
+
+
+def _lora_matches_model_kind(lora_entry, model_entry):
+    if not lora_entry or not model_entry:
+        return True
+    lora_kind = _entry_kind(lora_entry)
+    model_kind = _entry_kind(model_entry)
+    return not lora_kind or not model_kind or lora_kind == model_kind
 
 
 def _load_checkpoint(full_path):
@@ -671,6 +693,15 @@ def _apply_loras(model, clip, lora_states, config, model_type, type_settings=Non
         name = entry.get("name", "")
         if not name:
             continue
+        lora_type = _entry_type(entry)
+        is_custom = bool(entry.get("custom"))
+        is_turbo = lora_type == "turbolora"
+
+        if not is_custom and not is_turbo:
+            continue
+        if not is_custom and not _lora_matches_model_kind(entry, model_entry):
+            continue
+
         normalized_name = name.strip().lower()
         if normalized_name in _PIPELINE_LOCAL_LORAS or any(target in normalized_name for target in _PIPELINE_LOCAL_LORAS):
             print(f"[VNCCS Control Center] Deferring LoRA to downstream pipeline: {name}")
@@ -837,23 +868,14 @@ class VNCCS_ControlCenter:
     def VALIDATE_INPUTS(cls, input_types):
         return True
 
-    RETURN_TYPES = _ByPassTypeTuple(("VNCCS_PIPE", any_type))
-    RETURN_NAMES = _ByPassTypeTuple(("pipe", "path"))
+    RETURN_TYPES = ("VNCCS_PIPE",)
+    RETURN_NAMES = ("pipe",)
     FUNCTION = "execute"
     CATEGORY = "VNCCS/manager"
 
     def execute(self, repo_id, node_state="{}", model=None):
-        config = _get_cc_config(repo_id)
         pipe = _build_control_center_pipe(repo_id, node_state, custom_model=model)
-
-        try:
-            state = json.loads(node_state) if node_state and node_state != "{}" else {}
-        except Exception:
-            state = {}
-
-        output_slot_names = [name for name in state.get("output_slot_names", []) if name and name != "-"]
-        dynamic = _build_dynamic_paths(config, output_slot_names)
-        return (pipe, *dynamic)
+        return (pipe,)
 
 
 def _build_control_center_pipe(repo_id, node_state, custom_model=None):
@@ -874,10 +896,23 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None):
         model_entry = None
     else:
         model_entry = _find_entry(config.get("models", []), selected_model)
-    has_enabled_loras = any(
-        item.get("name") and item.get("auto_apply", False) and abs(float(item.get("strength", 1.0))) > 1e-6
-        for item in loras
-    )
+    lora_entry_by_name = {
+        entry.get("name"): entry
+        for entry in config.get("lora", [])
+        if isinstance(entry, dict) and entry.get("name")
+    }
+    has_enabled_loras = False
+    for item in loras:
+        if not item.get("name") or not item.get("auto_apply", False):
+            continue
+        if abs(float(item.get("strength", 1.0))) <= 1e-6:
+            continue
+        lora_entry = lora_entry_by_name.get(item.get("name"))
+        if not lora_entry:
+            continue
+        if lora_entry.get("custom") or (_entry_type(lora_entry) == "turbolora" and _lora_matches_model_kind(lora_entry, model_entry)):
+            has_enabled_loras = True
+            break
 
     if selected_type == "nunchaku" and model_entry is not None:
         dependency_status = _get_nunchaku_dependency_status(
