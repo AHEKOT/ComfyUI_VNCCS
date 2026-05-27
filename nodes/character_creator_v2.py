@@ -654,15 +654,15 @@ if server:
             data = await request.json()
         except Exception as e:
             return web.Response(status=400, text=f"Invalid JSON: {e}")
-            loop = asyncio.get_event_loop()
-            try:
-                result = await loop.run_in_executor(None, lambda: _preview_generate_sync(data))
-                return web.json_response(result)
-            except ValueError as e:
-                return web.Response(status=400, text=str(e))
-            except Exception as e:
-                traceback.print_exc()
-                return web.Response(status=500, text=str(e))
+        loop = asyncio.get_event_loop()
+        try:
+            result = await loop.run_in_executor(None, lambda: _preview_generate_sync(data))
+            return web.json_response(result)
+        except ValueError as e:
+            return web.Response(status=400, text=str(e))
+        except Exception as e:
+            traceback.print_exc()
+            return web.Response(status=500, text=str(e))
 
 
 class CharacterCreatorV2:
