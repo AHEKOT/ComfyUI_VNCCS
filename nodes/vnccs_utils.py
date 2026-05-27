@@ -15,9 +15,18 @@ from PIL import Image, ImageFilter
 from torchvision import transforms
 import sys
 import importlib.util
-import cv2
 import types
 import torch.nn.functional as F
+
+def _import_cv2():
+    try:
+        import cv2
+        return cv2
+    except ImportError:
+        raise ImportError(
+            "[VNCCS] OpenCV (cv2) is required for this node. "
+            "Install with: pip install opencv-python-headless"
+        )
 
 try:
     import folder_paths
@@ -1149,6 +1158,7 @@ class BEN2Model(BaseModelLoader):
 
 
 def refine_foreground(image_bchw, masks_b1hw):
+    cv2 = _import_cv2()
     b, c, h, w = image_bchw.shape
     if b != masks_b1hw.shape[0]:
         raise ValueError("images and masks must have the same batch size")

@@ -83,7 +83,7 @@ PREVIEW_CACHE = {
     "loras": {}       # name -> tensor_dict
 }
 
-_PREVIEW_LOCK = asyncio.Lock()
+_PREVIEW_LOCK = threading.Lock()
 _NODE_CACHE_LOCK = threading.Lock()
 _NODE_CACHE = {"asset_key": None, "asset_obj": None}
 
@@ -446,29 +446,18 @@ def _preview_generate_sync(data):
         else:
             asset_key = (generation_mode, gen_settings.get("ckpt_name", ""))
 
-        if PREVIEW_CACHE["asset_key"] == asset_key and PREVIEW_CACHE["asset_obj"]:
-            print(f"[VNCCS] Preview: Using Cached Assets {asset_key}")
-            model, clip, vae = PREVIEW_CACHE["asset_obj"]
-        else:
-            print(f"[VNCCS] Preview: Loading Assets {asset_key}")
-            asset_key = (
-            gen_settings.get("generation_mode", ""),
-            gen_settings.get("ckpt_name", ""),
-            gen_settings.get("diffusion_model_name", ""),
-            gen_settings.get("clip_name", ""),
-            gen_settings.get("vae_name", ""),
-        )
-        with _NODE_CACHE_LOCK:
-            if _NODE_CACHE["asset_key"] == asset_key and _NODE_CACHE["asset_obj"] is not None:
-                _, model, clip, vae = _NODE_CACHE["asset_obj"]
-                print(f"[VNCCS CharCreatorV2] Using cached model assets: {asset_key}")
+        with _PREVIEW_LOCK:
+            if PREVIEW_CACHE["asset_key"] == asset_key and PREVIEW_CACHE["asset_obj"]:
+                print(f"[VNCCS] Preview: Using Cached Assets {asset_key}")
+                model, clip, vae = PREVIEW_CACHE["asset_obj"]
             else:
-                _, model, clip, vae = load_generation_assets(gen_settings)
-                _NODE_CACHE["asset_key"] = asset_key
-                _NODE_CACHE["asset_obj"] = (None, model, clip, vae)
-                print(f"[VNCCS CharCreatorV2] Loaded and cached model assets: {asset_key}")
-            PREVIEW_CACHE["asset_key"] = asset_key
-            PREVIEW_CACHE["asset_obj"] = (model, clip, vae)
+                print(f"[VNCCS] Preview: Loading Assets {asset_key}")
+                try:
+                    _, model, clip, vae = load_generation_assets(gen_settings)
+                except ValueError:
+                    raise
+                PREVIEW_CACHE["asset_key"] = asset_key
+                PREVIEW_CACHE["asset_obj"] = (model, clip, vae)
 
         # Clone to avoid tainting cached model with LoRAs
         model = model.clone()
@@ -665,7 +654,6 @@ if server:
             data = await request.json()
         except Exception as e:
             return web.Response(status=400, text=f"Invalid JSON: {e}")
-        async with _PREVIEW_LOCK:
             loop = asyncio.get_event_loop()
             try:
                 result = await loop.run_in_executor(None, lambda: _preview_generate_sync(data))
@@ -749,12 +737,12 @@ class CharacterCreatorV2:
     def process(self, widget_data="{}", unique_id=None):
         # Clear Preview Cache to free memory for workflow run
         global PREVIEW_CACHE
-        if PREVIEW_CACHE["asset_obj"]:
-            # Explicitly delete references to help GC
-            del PREVIEW_CACHE["asset_obj"]
-            PREVIEW_CACHE["asset_obj"] = None
-        PREVIEW_CACHE["asset_key"] = None
-        PREVIEW_CACHE["loras"].clear()
+        with _PREVIEW_LOCK:
+            if PREVIEW_CACHE["asset_obj"]:
+                del PREVIEW_CACHE["asset_obj"]
+                PREVIEW_CACHE["asset_obj"] = None
+            PREVIEW_CACHE["asset_key"] = None
+            PREVIEW_CACHE["loras"].clear()
 
         try:
             data = json.loads(widget_data)
@@ -801,7 +789,22 @@ class CharacterCreatorV2:
 
         # 3. Load Models & Construct Pipe
         # ----------------------------------------------------------------
-        _, model, clip, vae = load_generation_assets(gen_settings)
+        asset_key = (
+            gen_settings.get("generation_mode", ""),
+            gen_settings.get("ckpt_name", ""),
+            gen_settings.get("diffusion_model_name", ""),
+            gen_settings.get("clip_name", ""),
+            gen_settings.get("vae_name", ""),
+        )
+        with _NODE_CACHE_LOCK:
+            if _NODE_CACHE["asset_key"] == asset_key and _NODE_CACHE["asset_obj"] is not None:
+                _, model, clip, vae = _NODE_CACHE["asset_obj"]
+                print(f"[VNCCS CharCreatorV2] Using cached model assets")
+            else:
+                _, model, clip, vae = load_generation_assets(gen_settings)
+                _NODE_CACHE["asset_key"] = asset_key
+                _NODE_CACHE["asset_obj"] = (None, model, clip, vae)
+                print(f"[VNCCS CharCreatorV2] Loaded and cached model assets")
 
         # Helper to apply LoRA
         def apply_lora_safe(m, c, l_name, l_strength, clip_strength=None):
@@ -884,8 +887,7 @@ class CharacterCreatorV2:
                 # widget_data is a string (JSON), but here it seems passed as 'widget_data' argument which might be raw string
                 # logic above parsed it into 'data' dict. use that.
                 preview_source = data.get("preview_source", "gen")
-             except: pass
-        
+             except Exception: pass
         print(f"[VNCCS] Processing - Source: {preview_source}, Valid: {preview_valid}")
 
         # LOGIC:
@@ -904,7 +906,7 @@ class CharacterCreatorV2:
                            c_img = tensor2pil(image)
                            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
                            c_img.save(cache_path)
-                       except: pass
+                       except Exception: pass
                   else:
                        print("[VNCCS] Pose preview load failed. Will try cache/regen.")
 
