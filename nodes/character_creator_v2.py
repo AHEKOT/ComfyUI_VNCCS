@@ -16,6 +16,8 @@ import numpy as np
 import traceback
 import inspect
 import random
+import asyncio
+import threading
 
 from ..utils import (
     load_character_info, ensure_character_structure, EMOTIONS, MAIN_DIRS,
@@ -80,6 +82,10 @@ PREVIEW_CACHE = {
     "asset_obj": None, # (model, clip, vae)
     "loras": {}       # name -> tensor_dict
 }
+
+_PREVIEW_LOCK = asyncio.Lock()
+_NODE_CACHE_LOCK = threading.Lock()
+_NODE_CACHE = {"asset_key": None, "asset_obj": None}
 
 ILLUSTRIOUS_DEFAULTS = {
     "generation_mode": "illustrious",
@@ -409,6 +415,149 @@ def decode_generation_samples(vae, samples, gen_settings):
     latent_samples = samples.get("samples") if isinstance(samples, dict) else samples
     return vae.decode_tiled(latent_samples, tile_x=512, tile_y=512)
 
+def _preview_generate_sync(data):
+    gen_settings = normalize_gen_settings(data.get("gen_settings", {}))
+    char_info = data.get("character_info", {})
+    character_name = data.get("character", "Unknown")
+
+    # Generate Prompt
+    positive_text, negative_text = CharacterCreatorV2.construct_prompt(char_info)
+
+    steps = int(gen_settings.get("steps", 20))
+    cfg = float(gen_settings.get("cfg", 8.0))
+    sampler_name = gen_settings.get("sampler", "euler")
+    scheduler = gen_settings.get("scheduler", "normal")
+    seed = generate_seed(int(gen_settings.get("seed", 0)))
+    generation_mode = gen_settings.get("generation_mode", "illustrious")
+
+    # Resolution
+    width, height = get_generation_resolution(gen_settings)
+
+    global PREVIEW_CACHE
+
+    with torch.inference_mode():
+        if generation_mode == "anima":
+            asset_key = (
+                generation_mode,
+                gen_settings.get("diffusion_model_name", ""),
+                gen_settings.get("clip_name", ""),
+                gen_settings.get("vae_name", ""),
+            )
+        else:
+            asset_key = (generation_mode, gen_settings.get("ckpt_name", ""))
+
+        if PREVIEW_CACHE["asset_key"] == asset_key and PREVIEW_CACHE["asset_obj"]:
+            print(f"[VNCCS] Preview: Using Cached Assets {asset_key}")
+            model, clip, vae = PREVIEW_CACHE["asset_obj"]
+        else:
+            print(f"[VNCCS] Preview: Loading Assets {asset_key}")
+            asset_key = (
+            gen_settings.get("generation_mode", ""),
+            gen_settings.get("ckpt_name", ""),
+            gen_settings.get("diffusion_model_name", ""),
+            gen_settings.get("clip_name", ""),
+            gen_settings.get("vae_name", ""),
+        )
+        with _NODE_CACHE_LOCK:
+            if _NODE_CACHE["asset_key"] == asset_key and _NODE_CACHE["asset_obj"] is not None:
+                _, model, clip, vae = _NODE_CACHE["asset_obj"]
+                print(f"[VNCCS CharCreatorV2] Using cached model assets: {asset_key}")
+            else:
+                _, model, clip, vae = load_generation_assets(gen_settings)
+                _NODE_CACHE["asset_key"] = asset_key
+                _NODE_CACHE["asset_obj"] = (None, model, clip, vae)
+                print(f"[VNCCS CharCreatorV2] Loaded and cached model assets: {asset_key}")
+            PREVIEW_CACHE["asset_key"] = asset_key
+            PREVIEW_CACHE["asset_obj"] = (model, clip, vae)
+
+        # Clone to avoid tainting cached model with LoRAs
+        model = model.clone()
+        clip = clip.clone()
+
+        def apply_lora_cached(m, c, l_name, l_strength, clip_strength=None):
+            if not l_name or l_name == "None": return m, c
+
+            lora_dict = PREVIEW_CACHE["loras"].get(l_name)
+            if not lora_dict:
+                l_path = get_lora_full_path(l_name)
+                if l_path:
+                    lora_dict = comfy.utils.load_torch_file(l_path, safe_load=True)
+                    PREVIEW_CACHE["loras"][l_name] = lora_dict
+                    print(f"[VNCCS] Preview: Cached LoRA '{l_name}'")
+
+            if lora_dict:
+                return comfy.sd.load_lora_for_models(m, c, lora_dict, l_strength, l_strength if clip_strength is None else clip_strength)
+            return m, c
+
+        if generation_mode == "anima":
+            if gen_settings.get("turbo_enabled"):
+                dmd_lora_name = gen_settings.get("dmd_lora_name")
+                dmd_lora_strength = float(gen_settings.get("dmd_lora_strength", 1.0))
+                model, clip = apply_lora_cached(model, clip, dmd_lora_name, dmd_lora_strength, 0.0)
+
+            lora_stack = gen_settings.get("lora_stack", [])
+            for l_item in lora_stack:
+                model, clip = apply_lora_cached(model, clip, l_item.get("name"), float(l_item.get("strength", 1.0)))
+        else:
+            dmd_lora_name = gen_settings.get("dmd_lora_name")
+            dmd_lora_strength = float(gen_settings.get("dmd_lora_strength", 1.0))
+            model, clip = apply_lora_cached(model, clip, dmd_lora_name, dmd_lora_strength)
+
+            age_lora_name = gen_settings.get("age_lora_name")
+            if age_lora_name:
+                age = int(char_info.get("age", 18))
+                age_str = age_strength(age)
+                model, clip = apply_lora_cached(model, clip, age_lora_name, age_str)
+
+            lora_stack = gen_settings.get("lora_stack", [])
+            for l_item in lora_stack:
+                model, clip = apply_lora_cached(model, clip, l_item.get("name"), float(l_item.get("strength", 1.0)))
+
+        # 2. Encode Prompts
+        positive_cond = encode_generation_prompt(clip, positive_text, gen_settings)
+        negative_cond = encode_generation_prompt(clip, negative_text, gen_settings)
+        if generation_mode == "anima":
+            validate_anima_conditioning(positive_cond, negative_cond, gen_settings.get("clip_name", ""))
+
+        # Patch PromptServer
+        if not hasattr(server.PromptServer.instance, 'last_prompt_id'):
+            server.PromptServer.instance.last_prompt_id = 'preview_gen'
+
+        # 3. Sample
+        latent = create_generation_latent(model, width, height, gen_settings)
+        sampled = sample_generation_latent(
+            model=model,
+            positive=positive_cond,
+            negative=negative_cond,
+            latent=latent,
+            seed=seed,
+            steps=steps,
+            cfg=cfg,
+            sampler_name=sampler_name,
+            scheduler=scheduler,
+            gen_settings=gen_settings,
+        )
+
+        # 4. Decode
+        vae_decoded = decode_generation_samples(vae, sampled, gen_settings)
+        i = 255. * vae_decoded.cpu().numpy()
+        img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8)[0])
+
+    # Save Smart Cache
+    try:
+        c_dir = os.path.join(character_dir(character_name), "cache")
+        os.makedirs(c_dir, exist_ok=True)
+        c_path = os.path.join(c_dir, "preview.png")
+        img.save(c_path)
+    except Exception as e:
+        print(f"[VNCCS] Failed to save preview cache: {e}")
+
+    buffered = io.BytesIO()
+    img.save(buffered, format="PNG")
+    img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+    return {"image": img_b64}
+
+
 if server:
     @server.PromptServer.instance.routes.get("/vnccs/context_lists")
     async def get_context_lists(request):
@@ -514,142 +663,18 @@ if server:
     async def preview_generate(request):
         try:
             data = await request.json()
-            gen_settings = normalize_gen_settings(data.get("gen_settings", {}))
-            char_info = data.get("character_info", {})
-            character_name = data.get("character", "Unknown")
-
-            # Generate Prompt
-            positive_text, negative_text = CharacterCreatorV2.construct_prompt(char_info)
-            
-            steps = int(gen_settings.get("steps", 20))
-            cfg = float(gen_settings.get("cfg", 8.0))
-            sampler_name = gen_settings.get("sampler", "euler")
-            scheduler = gen_settings.get("scheduler", "normal")
-            seed = generate_seed(int(gen_settings.get("seed", 0)))
-            generation_mode = gen_settings.get("generation_mode", "illustrious")
-
-            # Resolution
-            width, height = get_generation_resolution(gen_settings)
-
-            # Load Models (With Cache)
-            global PREVIEW_CACHE
-            
-            with torch.inference_mode():
-                asset_key = None
-                if generation_mode == "anima":
-                    asset_key = (
-                        generation_mode,
-                        gen_settings.get("diffusion_model_name", ""),
-                        gen_settings.get("clip_name", ""),
-                        gen_settings.get("vae_name", ""),
-                    )
-                else:
-                    asset_key = (generation_mode, gen_settings.get("ckpt_name", ""))
-
-                if PREVIEW_CACHE["asset_key"] == asset_key and PREVIEW_CACHE["asset_obj"]:
-                    print(f"[VNCCS] Preview: Using Cached Assets {asset_key}")
-                    model, clip, vae = PREVIEW_CACHE["asset_obj"]
-                else:
-                    print(f"[VNCCS] Preview: Loading Assets {asset_key}")
-                    try:
-                        _, model, clip, vae = load_generation_assets(gen_settings)
-                    except ValueError as exc:
-                        return web.Response(status=400, text=str(exc))
-                    PREVIEW_CACHE["asset_key"] = asset_key
-                    PREVIEW_CACHE["asset_obj"] = (model, clip, vae)
-
-                # Clone to avoid tainting cached model with LoRAs
-                model = model.clone()
-                clip = clip.clone()
-
-                # Helper for Cached LoRA
-                def apply_lora_cached(m, c, l_name, l_strength, clip_strength=None):
-                    if not l_name or l_name == "None": return m, c
-                    
-                    lora_dict = PREVIEW_CACHE["loras"].get(l_name)
-                    if not lora_dict:
-                        l_path = get_lora_full_path(l_name)
-                        if l_path:
-                            lora_dict = comfy.utils.load_torch_file(l_path, safe_load=True)
-                            PREVIEW_CACHE["loras"][l_name] = lora_dict
-                            print(f"[VNCCS] Preview: Cached LoRA '{l_name}'")
-                    
-                    if lora_dict:
-                        return comfy.sd.load_lora_for_models(m, c, lora_dict, l_strength, l_strength if clip_strength is None else clip_strength)
-                    return m, c
-
-                if generation_mode == "anima":
-                    if gen_settings.get("turbo_enabled"):
-                        dmd_lora_name = gen_settings.get("dmd_lora_name")
-                        dmd_lora_strength = float(gen_settings.get("dmd_lora_strength", 1.0))
-                        model, clip = apply_lora_cached(model, clip, dmd_lora_name, dmd_lora_strength, 0.0)
-
-                    lora_stack = gen_settings.get("lora_stack", [])
-                    for l_item in lora_stack:
-                        model, clip = apply_lora_cached(model, clip, l_item.get("name"), float(l_item.get("strength", 1.0)))
-                else:
-                    dmd_lora_name = gen_settings.get("dmd_lora_name")
-                    dmd_lora_strength = float(gen_settings.get("dmd_lora_strength", 1.0))
-                    model, clip = apply_lora_cached(model, clip, dmd_lora_name, dmd_lora_strength)
-
-                    age_lora_name = gen_settings.get("age_lora_name")
-                    if age_lora_name:
-                        age = int(char_info.get("age", 18))
-                        age_str = age_strength(age)
-                        model, clip = apply_lora_cached(model, clip, age_lora_name, age_str)
-
-                    lora_stack = gen_settings.get("lora_stack", [])
-                    for l_item in lora_stack:
-                        model, clip = apply_lora_cached(model, clip, l_item.get("name"), float(l_item.get("strength", 1.0)))
-
-                # 2. Encode Prompts
-                positive_cond = encode_generation_prompt(clip, positive_text, gen_settings)
-                negative_cond = encode_generation_prompt(clip, negative_text, gen_settings)
-                if generation_mode == "anima":
-                    validate_anima_conditioning(positive_cond, negative_cond, gen_settings.get("clip_name", ""))
-
-                # Patch PromptServer
-                if not hasattr(server.PromptServer.instance, 'last_prompt_id'):
-                    server.PromptServer.instance.last_prompt_id = 'preview_gen'
-
-                # 3. Sample
-                latent = create_generation_latent(model, width, height, gen_settings)
-                sampled = sample_generation_latent(
-                    model=model,
-                    positive=positive_cond,
-                    negative=negative_cond,
-                    latent=latent,
-                    seed=seed,
-                    steps=steps,
-                    cfg=cfg,
-                    sampler_name=sampler_name,
-                    scheduler=scheduler,
-                    gen_settings=gen_settings,
-                )
-
-                # 4. Decode
-                vae_decoded = decode_generation_samples(vae, sampled, gen_settings)
-                i = 255. * vae_decoded.cpu().numpy()
-                img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8)[0])
-
-            # Save Smart Cache
-            try:
-                c_dir = os.path.join(character_dir(character_name), "cache")
-                os.makedirs(c_dir, exist_ok=True)
-                c_path = os.path.join(c_dir, "preview.png")
-                img.save(c_path)
-            except Exception as e:
-                print(f"[VNCCS] Failed to save preview cache: {e}")
-
-            buffered = io.BytesIO()
-            img.save(buffered, format="PNG")
-            img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
-
-            return web.json_response({"image": img_b64})
-
         except Exception as e:
-            traceback.print_exc()
-            return web.Response(status=500, text=str(e))
+            return web.Response(status=400, text=f"Invalid JSON: {e}")
+        async with _PREVIEW_LOCK:
+            loop = asyncio.get_event_loop()
+            try:
+                result = await loop.run_in_executor(None, lambda: _preview_generate_sync(data))
+                return web.json_response(result)
+            except ValueError as e:
+                return web.Response(status=400, text=str(e))
+            except Exception as e:
+                traceback.print_exc()
+                return web.Response(status=500, text=str(e))
 
 
 class CharacterCreatorV2:
@@ -733,7 +758,7 @@ class CharacterCreatorV2:
 
         try:
             data = json.loads(widget_data)
-        except:
+        except Exception:
             data = {}
 
         # Extract values

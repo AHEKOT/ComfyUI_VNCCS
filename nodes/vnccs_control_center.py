@@ -1152,7 +1152,10 @@ async def cc_nunchaku_fix_status(request):
 
 @server.PromptServer.instance.routes.post("/vnccs/control_center/nunchaku_apply_fix")
 async def cc_nunchaku_apply_fix(request):
-    return web.json_response(_apply_nunchaku_qwen_fix())
+    import asyncio
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _apply_nunchaku_qwen_fix)
+    return web.json_response(result)
 
 
 @server.PromptServer.instance.routes.post("/vnccs/control_center/dependencies")
