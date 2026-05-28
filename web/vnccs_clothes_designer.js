@@ -41,7 +41,7 @@ const STYLE = `
     padding: 12px; gap: 12px; pointer-events: none; zoom: 0.67;
 }
 .vnccs-top-row {
-    display: grid; grid-template-columns: 30% 35% 35%; gap: 12px;
+    display: grid; grid-template-columns: 32% minmax(0, 68%); gap: 12px;
     flex: 1; min-height: 0; width: 100%;
 }
 .vnccs-col {
@@ -141,6 +141,159 @@ const STYLE = `
 
 .vnccs-btn-row { display: flex; gap: 8px; margin-top: auto; flex-shrink: 0; flex-wrap: wrap; }
 .vnccs-row { display: flex; gap: 8px; align-items: center; }
+
+.vnccs-setup-grid {
+    --setup-control-height: 58px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 8px;
+    flex-shrink: 0;
+}
+.vnccs-setup-grid .vnccs-field {
+    margin-bottom: 0;
+    min-width: 0;
+}
+.vnccs-setup-grid .vnccs-label {
+    height: 14px;
+    line-height: 14px;
+}
+.vnccs-segmented-field {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    height: var(--setup-control-height);
+}
+.vnccs-segmented-btn {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: rgba(255,255,255,0.04);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-family: var(--font);
+    font-size: 11px;
+    font-weight: 700;
+    box-sizing: border-box;
+    height: var(--setup-control-height);
+    min-height: var(--setup-control-height);
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition);
+}
+.vnccs-segmented-btn:hover {
+    border-color: var(--border-hover);
+    color: var(--text-primary);
+}
+.vnccs-segmented-btn.is-active {
+    border-color: var(--accent);
+    background: rgba(255,143,163,0.16);
+    color: var(--accent-hover);
+    box-shadow: 0 0 0 1px rgba(255,143,163,0.14) inset;
+}
+.vnccs-seed-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 52px;
+    gap: 8px;
+    align-items: stretch;
+    height: var(--setup-control-height);
+}
+.vnccs-seed-row .vnccs-input {
+    box-sizing: border-box;
+    height: var(--setup-control-height);
+    min-height: var(--setup-control-height);
+    padding-top: 0;
+    padding-bottom: 0;
+}
+.vnccs-seed-dice-btn {
+    width: 52px;
+    min-width: 52px;
+    box-sizing: border-box;
+    height: var(--setup-control-height);
+    min-height: var(--setup-control-height);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: var(--radius-sm);
+    background: rgba(255,255,255,0.045);
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition);
+}
+.vnccs-seed-dice-btn:hover {
+    border-color: var(--border-hover);
+    color: var(--text-primary);
+}
+.vnccs-seed-dice-btn.is-active {
+    border-color: var(--accent);
+    background: rgba(255,143,163,0.16);
+    color: var(--accent-hover);
+    box-shadow: 0 0 0 1px rgba(255,143,163,0.14) inset;
+}
+.vnccs-seed-dice-btn svg {
+    width: 22px;
+    height: 22px;
+    display: block;
+}
+.vnccs-lora-card {
+    height: var(--setup-control-height);
+    min-height: var(--setup-control-height);
+    box-sizing: border-box;
+    border: 1px solid rgba(0,214,143,0.28);
+    border-radius: var(--radius-md);
+    background: rgba(0,214,143,0.05);
+    padding: 9px 10px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 4px;
+}
+.vnccs-lora-card-top {
+    display: grid;
+    grid-template-columns: 9px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 7px;
+}
+.vnccs-lora-card-badge {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--success);
+    box-shadow: 0 0 10px rgba(0,214,143,0.35);
+}
+.vnccs-lora-card-name {
+    min-width: 0;
+    color: var(--text-primary);
+    font-size: 11px;
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.vnccs-lora-card-status {
+    color: var(--success);
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+.vnccs-lora-card-desc {
+    color: var(--text-secondary);
+    font-size: 10px;
+    line-height: 1.25;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.vnccs-lora-card.is-missing {
+    border-color: rgba(255,71,87,0.32);
+    background: rgba(255,71,87,0.05);
+}
+.vnccs-lora-card.is-missing .vnccs-lora-card-badge { background: var(--error); box-shadow: none; }
+.vnccs-lora-card.is-missing .vnccs-lora-card-status { color: var(--error); }
 
 /* Preview */
 .vnccs-preview-container {
@@ -281,7 +434,9 @@ app.registerExtension({
                     gen_settings: {
                         background_color: "Green",
                         seed: 0,
-                        seed_mode: "fixed"
+                        seed_mode: "fixed",
+                        lora_name: "none",
+                        lora_strength: 1.0
                     }
                 };
 
@@ -400,6 +555,48 @@ app.registerExtension({
 
                     if (!repo_id || !node_state) return null;
                     return { repo_id, node_state };
+                };
+
+                const getConnectedControlCenterWidget = () => {
+                    const input = node?.inputs?.find((item) => item.name === "pipe") ?? node?.inputs?.[0];
+                    const linkId = input?.link;
+                    const link = linkId != null ? app.graph?.links?.[linkId] : null;
+                    const originId = link?.origin_id ?? link?.originId;
+                    const upstream = originId != null
+                        ? (app.graph?.getNodeById?.(originId) ?? app.graph?._nodes_by_id?.[originId] ?? null)
+                        : null;
+                    return upstream?._cc_widget || null;
+                };
+
+                const normalizeLoraPath = (entry) => {
+                    const raw = String(entry?.local_path || entry || "").replace(/\\/g, "/");
+                    if (!raw) return "";
+                    return raw.startsWith("models/loras/") ? raw.slice("models/loras/".length) : raw.split("/").pop();
+                };
+
+                const isClothesCoreLora = (value) => {
+                    const normalized = String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+                    return normalized.includes("vnccs") && normalized.includes("clothes") && normalized.includes("core");
+                };
+
+                const setClothesCoreLora = (entryOrPath = null) => {
+                    const ccWidget = getConnectedControlCenterWidget();
+                    let entry = entryOrPath && typeof entryOrPath === "object" ? entryOrPath : null;
+                    let rel = entry ? normalizeLoraPath(entry) : normalizeLoraPath(entryOrPath);
+
+                    if (!entry && ccWidget?.config?.lora) {
+                        entry = ccWidget.config.lora.find(item =>
+                            isClothesCoreLora(item.name) || isClothesCoreLora(item.local_path) || isClothesCoreLora(normalizeLoraPath(item))
+                        ) || null;
+                        rel = normalizeLoraPath(entry);
+                    }
+
+                    if (rel) {
+                        state.gen_settings.lora_name = rel;
+                        state.gen_settings.lora_strength = Number(state.gen_settings.lora_strength ?? 1.0) || 1.0;
+                    }
+                    renderClothesCoreLoraCard(entry || rel || null);
+                    saveState();
                 };
 
                 const normalizeAgeValue = (value) => {
@@ -552,6 +749,138 @@ app.registerExtension({
                     };
                     els[key] = inp;
                     wrap.appendChild(inp);
+                    return wrap;
+                };
+
+                const createSegmentedField = (lbl, key, options, targetObj = state.gen_settings) => {
+                    const wrap = document.createElement("div");
+                    wrap.className = "vnccs-field";
+                    const label = document.createElement("div");
+                    label.className = "vnccs-label";
+                    label.innerText = lbl;
+                    const segmented = document.createElement("div");
+                    segmented.className = "vnccs-segmented-field";
+                    const buttons = [];
+
+                    const setValue = (value, persist = false) => {
+                        const raw = String(value || options[0]?.value || "");
+                        const matched = options.find(option => String(option.value).toLowerCase() === raw.toLowerCase());
+                        const normalized = matched?.value || raw;
+                        targetObj[key] = normalized;
+                        buttons.forEach(({ btn, value: btnValue }) => btn.classList.toggle("is-active", btnValue === normalized));
+                        if (persist) saveState();
+                    };
+
+                    options.forEach(option => {
+                        const btn = document.createElement("button");
+                        btn.type = "button";
+                        btn.className = "vnccs-segmented-btn";
+                        btn.innerText = option.label;
+                        btn.onclick = () => setValue(option.value, true);
+                        buttons.push({ btn, value: option.value });
+                        segmented.appendChild(btn);
+                    });
+
+                    els[key] = { setValue };
+                    wrap.append(label, segmented);
+                    setValue(targetObj[key] || options[0]?.value);
+                    return wrap;
+                };
+
+                const syncGenerationControls = () => {
+                    if (els.seed) els.seed.value = state.gen_settings.seed || 0;
+                    if (els.seed_mode) {
+                        const randomize = (state.gen_settings.seed_mode || "fixed") === "randomize";
+                        els.seed_mode.classList.toggle("is-active", randomize);
+                        els.seed_mode.title = randomize ? "Random seed on queue" : "Fixed seed";
+                    }
+                    els.background_color?.setValue?.(state.gen_settings.background_color || "Green");
+                    renderClothesCoreLoraCard();
+                };
+
+                const renderClothesCoreLoraCard = (entryOrPath = null) => {
+                    const card = els.clothesCoreLoraCard;
+                    if (!card) return;
+                    const rel = normalizeLoraPath(entryOrPath) || state.gen_settings.lora_name || "";
+                    const ccWidget = getConnectedControlCenterWidget();
+                    const entry = entryOrPath && typeof entryOrPath === "object"
+                        ? entryOrPath
+                        : ccWidget?.config?.lora?.find(item => normalizeLoraPath(item) === rel || isClothesCoreLora(item.name) || isClothesCoreLora(item.local_path));
+                    const name = entry?.name || (rel ? rel.split(/[\\/]/).pop().replace(/\.safetensors$/i, "") : "VNCCS Clothes Core");
+                    const hasLora = !!rel && rel !== "none";
+                    card.classList.toggle("is-missing", !hasLora);
+                    card.innerHTML = "";
+                    const top = document.createElement("div");
+                    top.className = "vnccs-lora-card-top";
+                    const badge = document.createElement("span");
+                    badge.className = "vnccs-lora-card-badge";
+                    const nameEl = document.createElement("div");
+                    nameEl.className = "vnccs-lora-card-name";
+                    nameEl.innerText = name;
+                    const status = document.createElement("div");
+                    status.className = "vnccs-lora-card-status";
+                    status.innerText = hasLora ? "Core" : "Missing";
+                    top.append(badge, nameEl, status);
+                    card.appendChild(top);
+                    const desc = document.createElement("div");
+                    desc.className = "vnccs-lora-card-desc";
+                    desc.innerText = hasLora ? rel : "Connect VNCCS Control Center with VNCCS Clothes Core.";
+                    card.appendChild(desc);
+                };
+
+                const createGenerationControls = () => {
+                    const wrap = document.createElement("div");
+                    wrap.className = "vnccs-setup-grid";
+
+                    wrap.appendChild(createSegmentedField("Background", "background_color", [
+                        { label: "Green", value: "Green" },
+                        { label: "Blue", value: "Blue" },
+                    ]));
+
+                    const loraWrap = document.createElement("div");
+                    loraWrap.className = "vnccs-field";
+                    loraWrap.innerHTML = '<div class="vnccs-label">VNCCS Clothes Core</div>';
+                    const loraCard = document.createElement("div");
+                    loraCard.className = "vnccs-lora-card";
+                    els.clothesCoreLoraCard = loraCard;
+                    loraWrap.appendChild(loraCard);
+                    wrap.appendChild(loraWrap);
+
+                    const seedWrap = document.createElement("div");
+                    seedWrap.className = "vnccs-field";
+                    seedWrap.innerHTML = '<div class="vnccs-label">Seed</div>';
+                    const seedRow = document.createElement("div");
+                    seedRow.className = "vnccs-seed-row";
+                    const seedInp = document.createElement("input");
+                    seedInp.className = "vnccs-input";
+                    seedInp.type = "number";
+                    seedInp.value = state.gen_settings.seed || 0;
+                    seedInp.onchange = (e) => {
+                        state.gen_settings.seed = Number(e.target.value) || 0;
+                        saveState();
+                    };
+                    els.seed = seedInp;
+                    const seedMode = document.createElement("button");
+                    seedMode.type = "button";
+                    seedMode.className = "vnccs-seed-dice-btn";
+                    seedMode.innerHTML = `
+                        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                            <rect x="4" y="4" width="16" height="16" rx="3.5" stroke="currentColor" stroke-width="2"/>
+                            <circle cx="8.5" cy="8.5" r="1.4" fill="currentColor"/>
+                            <circle cx="15.5" cy="8.5" r="1.4" fill="currentColor"/>
+                            <circle cx="12" cy="12" r="1.4" fill="currentColor"/>
+                            <circle cx="8.5" cy="15.5" r="1.4" fill="currentColor"/>
+                            <circle cx="15.5" cy="15.5" r="1.4" fill="currentColor"/>
+                        </svg>`;
+                    seedMode.onclick = () => {
+                        state.gen_settings.seed_mode = (state.gen_settings.seed_mode || "fixed") === "randomize" ? "fixed" : "randomize";
+                        syncGenerationControls();
+                        saveState();
+                    };
+                    els.seed_mode = seedMode;
+                    seedRow.append(seedInp, seedMode);
+                    seedWrap.appendChild(seedRow);
+                    wrap.appendChild(seedWrap);
                     return wrap;
                 };
 
@@ -738,6 +1067,7 @@ app.registerExtension({
                     if (!state.character) { showInfo("Error", "Select Character"); return; }
                     if (btnGen.disabled) return;
 
+                    setClothesCoreLora();
                     node._randomizeSeedIfNeeded();
 
                     const controlCenter = getConnectedControlCenterState();
@@ -806,6 +1136,10 @@ app.registerExtension({
                 const colMid = document.createElement("div"); colMid.className = "vnccs-col";
                 colMid.style.paddingTop = "0"; // Reset padding for tabs
 
+                const controlsWrap = createGenerationControls();
+                controlsWrap.style.paddingTop = "16px";
+                colMid.appendChild(controlsWrap);
+
                 // Tab Header
                 const tabBar = document.createElement("div");
                 tabBar.className = "cd-tab-bar";
@@ -840,111 +1174,12 @@ app.registerExtension({
                 colMid.appendChild(contentArea);
                 topRow.appendChild(colMid);
 
-                // --- COL 3: SETTINGS ---
-                const colRight = document.createElement("div"); colRight.className = "vnccs-col";
-                colRight.innerHTML = '<div class="vnccs-section-title">Settings</div>';
-
-                const createSetting = (lbl, key, type = "text", list = []) => {
-                    const w = document.createElement("div"); w.className = "vnccs-field";
-                    w.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
-                    let inp;
-                    if (type === "select") {
-                        inp = document.createElement("select"); inp.className = "vnccs-select";
-                        list.forEach(i => inp.add(new Option(i, i)));
-
-                        // Critical: Sync state with visual default
-                        // If state is empty, use first item in list
-                        let val = state.gen_settings[key] || list[0];
-
-                        // Normalize background_color case to match dropdown options
-                        if (key === "background_color" && typeof val === "string" && val) {
-                            val = val.charAt(0).toUpperCase() + val.slice(1).toLowerCase();
-                            state.gen_settings[key] = val;
-                        }
-
-                        inp.value = val;
-
-                        // Force update state if it was empty/undefined
-                        if (!state.gen_settings[key] && val) {
-                            state.gen_settings[key] = val;
-                        }
-
-                        inp.onchange = (e) => {
-                            state.gen_settings[key] = e.target.value;
-                            saveState();
-                        };
-                    } else if (type === "number") {
-                        inp = document.createElement("input"); inp.className = "vnccs-input"; inp.type = "number";
-                        inp.value = state.gen_settings[key];
-                        inp.onchange = (e) => { state.gen_settings[key] = Number(e.target.value); saveState(); };
-                    }
-                    els[key] = inp;
-                    w.appendChild(inp);
-                    colRight.appendChild(w);
-                };
-
                 // Initial Load
                 (async () => {
                     const r = await api.fetchApi("/vnccs/context_lists");
                     const d = await r.json();
-
-                    colRight.innerHTML = '<div class="vnccs-section-title">Settings</div>';
-
-                    createSetting("Background", "background_color", "select", ["Green", "Blue"]);
-
-                    // --- LoRA Selector ---
-                    const loraWrap = document.createElement("div"); loraWrap.className = "vnccs-field";
-                    loraWrap.innerHTML = '<div class="vnccs-label">LoRA</div>';
-                    const loraSel = document.createElement("select"); loraSel.className = "vnccs-select";
-                    loraSel.add(new Option("none", "none"));
-                    loraSel.value = state.gen_settings.lora_name || "none";
-                    loraSel.onchange = (e) => { state.gen_settings.lora_name = e.target.value; saveState(); };
-                    els.lora_name = loraSel;
-                    loraWrap.appendChild(loraSel);
-                    colRight.appendChild(loraWrap);
-
-                    const loraStrWrap = document.createElement("div"); loraStrWrap.className = "vnccs-field";
-                    loraStrWrap.innerHTML = '<div class="vnccs-label">LoRA Strength</div>';
-                    const loraStrInp = document.createElement("input"); loraStrInp.className = "vnccs-input";
-                    loraStrInp.type = "number"; loraStrInp.min = 0; loraStrInp.max = 2; loraStrInp.step = 0.01;
-                    loraStrInp.value = state.gen_settings.lora_strength ?? 1.0;
-                    loraStrInp.onchange = (e) => { state.gen_settings.lora_strength = Number(e.target.value); saveState(); };
-                    els.lora_strength = loraStrInp;
-                    loraStrWrap.appendChild(loraStrInp);
-                    colRight.appendChild(loraStrWrap);
-
-                    // --- Custom Seed Control ---
-                    const seedWrap = document.createElement("div"); seedWrap.className = "vnccs-field";
-                    seedWrap.innerHTML = '<div class="vnccs-label">Seed</div>';
-
-                    const seedRow = document.createElement("div"); seedRow.className = "vnccs-row";
-                    seedRow.style.display = "flex"; seedRow.style.gap = "5px";
-
-                    const seedInp = document.createElement("input"); seedInp.className = "vnccs-input";
-                    seedInp.type = "number";
-                    seedInp.value = state.gen_settings.seed || 0;
-                    seedInp.style.flex = "2";
-                    seedInp.onchange = (e) => {
-                        state.gen_settings.seed = Number(e.target.value); // Use Number() or parseInt()
-                        saveState();
-                    };
-                    els.seed = seedInp;
-
-                    const seedMode = document.createElement("select"); seedMode.className = "vnccs-select";
-                    seedMode.style.flex = "1.5";
-                    ["fixed", "randomize"].forEach(x => seedMode.add(new Option(x, x)));
-                    seedMode.value = state.gen_settings.seed_mode || "fixed";
-                    seedMode.onchange = (e) => {
-                        state.gen_settings.seed_mode = e.target.value;
-                        saveState();
-                    };
-                    els.seed_mode = seedMode;
-
-                    seedRow.appendChild(seedInp);
-                    seedRow.appendChild(seedMode);
-                    seedWrap.appendChild(seedRow);
-                    colRight.appendChild(seedWrap);
-                    if (state.gen_settings.seed_mode && els.seed_mode) els.seed_mode.value = state.gen_settings.seed_mode;
+                    setClothesCoreLora();
+                    syncGenerationControls();
                     saveState(); // Ensure defaults are persisted immediately
 
                     // Char List
@@ -957,24 +1192,15 @@ app.registerExtension({
                     await loadCostumes();
                     updatePreviewImage();
                 })();
-
-                topRow.appendChild(colRight);
                 container.appendChild(topRow);
 
                 // Sync LoRA options from Control Center
                 const _onLoraOptions = (e) => {
                     const options = e.detail?.options;
-                    if (!Array.isArray(options) || !els.lora_name) return;
-                    const full = ["none", ...options];
-                    const cur = state.gen_settings.lora_name || "none";
-                    els.lora_name.innerHTML = "";
-                    full.forEach(o => {
-                        const label = o === "none" ? "none" : o.split("/").pop().replace(/\.safetensors$/i, "");
-                        els.lora_name.add(new Option(label, o));
-                    });
-                    els.lora_name.value = full.includes(cur) ? cur : "none";
-                    state.gen_settings.lora_name = els.lora_name.value;
-                    saveState();
+                    if (!Array.isArray(options)) return;
+                    const clothesCore = options.find(isClothesCoreLora);
+                    if (clothesCore) setClothesCoreLora(clothesCore);
+                    else renderClothesCoreLoraCard();
                 };
                 window.addEventListener("vnccs-lora-options-updated", _onLoraOptions);
                 registerCleanup(node, () => window.removeEventListener("vnccs-lora-options-updated", _onLoraOptions));
