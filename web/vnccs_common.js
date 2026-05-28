@@ -110,8 +110,30 @@ const COMMON_CSS = `
     cursor: pointer; font-size: 13px; background: #333; color: #e0e0e0;
 }
 .vnccs-common-modal-btn:hover { background: #444; }
-.vnccs-common-modal-btn-primary { background: #3558c7; color: #fff; border-color: #3558c7; }
-.vnccs-common-modal-btn-primary:hover { background: #4268d7; }
+.vnccs-common-modal-btn:focus,
+.vnccs-common-modal-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(255,143,163,0.35);
+}
+.vnccs-common-modal-btn-primary {
+    appearance: none;
+    -webkit-appearance: none;
+    background: linear-gradient(135deg, #ff8fa3 0%, #ffb6c8 100%) !important;
+    background-color: #ff8fa3 !important;
+    background-image: linear-gradient(135deg, #ff8fa3 0%, #ffb6c8 100%) !important;
+    color: #1a1525 !important;
+    border-color: transparent !important;
+    -webkit-tap-highlight-color: rgba(255,143,163,0.22);
+}
+.vnccs-common-modal-btn-primary:hover,
+.vnccs-common-modal-btn-primary:focus,
+.vnccs-common-modal-btn-primary:focus-visible,
+.vnccs-common-modal-btn-primary:active {
+    background: linear-gradient(135deg, #ff8fa3 0%, #ffb6c8 100%) !important;
+    background-color: #ff8fa3 !important;
+    background-image: linear-gradient(135deg, #ff8fa3 0%, #ffb6c8 100%) !important;
+    color: #1a1525 !important;
+}
 .vnccs-common-modal-btn-danger { background: #d32f2f; color: #fff; border-color: #d32f2f; }
 .vnccs-common-modal-btn-danger:hover { background: #e33f3f; }
 

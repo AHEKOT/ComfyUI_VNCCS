@@ -235,9 +235,14 @@ const STYLE = `
     overflow: hidden;
 }
 .vnccs-cloner-btn-primary {
-    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+    appearance: none;
+    -webkit-appearance: none;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    background-color: var(--accent) !important;
+    background-image: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
     color: #1a1525;
     box-shadow: 0 4px 16px rgba(255, 143, 163, 0.25);
+    -webkit-tap-highlight-color: rgba(255,143,163,0.22);
 }
 .vnccs-cloner-btn-primary::after {
     content: '';
@@ -256,6 +261,17 @@ const STYLE = `
 .vnccs-cloner-btn-primary:hover:not(:disabled) {
     transform: translateY(-2px);
     box-shadow: 0 8px 28px rgba(255, 143, 163, 0.4);
+}
+.vnccs-cloner-container button.vnccs-cloner-btn.vnccs-cloner-btn-primary:not(:disabled),
+.vnccs-cloner-container button.vnccs-cloner-btn.vnccs-cloner-btn-primary:not(:disabled):hover,
+.vnccs-cloner-container button.vnccs-cloner-btn.vnccs-cloner-btn-primary:not(:disabled):focus,
+.vnccs-cloner-container button.vnccs-cloner-btn.vnccs-cloner-btn-primary:not(:disabled):focus-visible,
+.vnccs-cloner-container button.vnccs-cloner-btn.vnccs-cloner-btn-primary:not(:disabled):active {
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    background-color: var(--accent) !important;
+    background-image: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    color: #1a1525 !important;
+    outline: none;
 }
 .vnccs-cloner-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 
@@ -279,6 +295,20 @@ const STYLE = `
     cursor: not-allowed;
     box-shadow: none !important;
     transform: none !important;
+}
+.vnccs-cloner-btn:focus,
+.vnccs-cloner-btn:focus-visible,
+.vnccs-cloner-segmented-btn:focus,
+.vnccs-cloner-segmented-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(255,143,163,0.28);
+}
+.vnccs-cloner-btn-primary:focus:not(:disabled),
+.vnccs-cloner-btn-primary:focus-visible:not(:disabled),
+.vnccs-cloner-btn-primary:active:not(:disabled) {
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    color: #1a1525 !important;
+    box-shadow: 0 8px 28px rgba(255, 143, 163, 0.4), 0 0 0 2px rgba(255,143,163,0.28);
 }
 
 .vnccs-cloner-btn-upload {
@@ -729,10 +759,15 @@ const STYLE = `
     border-color: transparent;
 }
 .vnccs-cloner-container .vnccs-common-modal-btn-primary {
-    background: var(--accent);
+    background: var(--accent) !important;
 }
-.vnccs-cloner-container .vnccs-common-modal-btn-primary:hover {
-    background: var(--accent-hover);
+.vnccs-cloner-container .vnccs-common-modal-btn-primary:hover,
+.vnccs-cloner-container .vnccs-common-modal-btn-primary:focus,
+.vnccs-cloner-container .vnccs-common-modal-btn-primary:focus-visible,
+.vnccs-cloner-container .vnccs-common-modal-btn-primary:active {
+    background: var(--accent-hover) !important;
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(255,143,163,0.28);
 }
 .vnccs-cloner-container .vnccs-common-modal-btn-danger {
     background: var(--error);

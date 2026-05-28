@@ -88,6 +88,21 @@ const STYLE = `
 .vnccs-sm-btn-cleanup:hover {
     background: #7352b8;
 }
+.vnccs-sm-btn-cleanup:focus,
+.vnccs-sm-btn-cleanup:focus-visible,
+.vnccs-sm-btn-cleanup:active,
+.vnccs-sm-modal-btn:focus,
+.vnccs-sm-modal-btn:focus-visible,
+.vnccs-sm-modal-btn:active,
+.vnccs-sm-scroll-btn:focus,
+.vnccs-sm-scroll-btn:focus-visible,
+.vnccs-sm-scroll-btn:active,
+.vnccs-sm-btn-create:focus,
+.vnccs-sm-btn-create:focus-visible,
+.vnccs-sm-btn-create:active {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(255,143,163,0.28);
+}
 
 .vnccs-sm-help-icon {
     width: 18px;

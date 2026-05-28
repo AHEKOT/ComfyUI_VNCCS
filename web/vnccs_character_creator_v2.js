@@ -278,9 +278,14 @@ const STYLE = `
     overflow: hidden;
 }
 .vnccs-btn-primary {
-    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+    appearance: none;
+    -webkit-appearance: none;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    background-color: var(--accent) !important;
+    background-image: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
     color: #1a1525;
     box-shadow: 0 4px 16px rgba(255,143,163,0.25);
+    -webkit-tap-highlight-color: rgba(255,143,163,0.22);
 }
 .vnccs-btn-primary::after {
     content: '';
@@ -299,6 +304,17 @@ const STYLE = `
 .vnccs-btn-primary:hover:not(:disabled) {
     transform: translateY(-2px);
     box-shadow: 0 8px 28px rgba(255,143,163,0.4);
+}
+.vnccs-container button.vnccs-btn.vnccs-btn-primary:not(:disabled),
+.vnccs-container button.vnccs-btn.vnccs-btn-primary:not(:disabled):hover,
+.vnccs-container button.vnccs-btn.vnccs-btn-primary:not(:disabled):focus,
+.vnccs-container button.vnccs-btn.vnccs-btn-primary:not(:disabled):focus-visible,
+.vnccs-container button.vnccs-btn.vnccs-btn-primary:not(:disabled):active {
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    background-color: var(--accent) !important;
+    background-image: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    color: #1a1525 !important;
+    outline: none;
 }
 .vnccs-btn-success {
     background: rgba(0,214,143,0.15);
@@ -324,6 +340,22 @@ const STYLE = `
     cursor: not-allowed;
     box-shadow: none !important;
     transform: none !important;
+}
+.vnccs-btn:focus,
+.vnccs-btn:focus-visible,
+.vnccs-segmented-btn:focus,
+.vnccs-segmented-btn:focus-visible,
+.vnccs-seed-dice-btn:focus,
+.vnccs-seed-dice-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(255,143,163,0.28);
+}
+.vnccs-btn-primary:focus:not(:disabled),
+.vnccs-btn-primary:focus-visible:not(:disabled),
+.vnccs-btn-primary:active:not(:disabled) {
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    color: #1a1525 !important;
+    box-shadow: 0 8px 28px rgba(255,143,163,0.4), 0 0 0 2px rgba(255,143,163,0.28);
 }
 
 /* Bottom textareas */

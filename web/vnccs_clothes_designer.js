@@ -111,8 +111,13 @@ const STYLE = `
     position: relative; overflow: hidden;
 }
 .vnccs-btn-primary {
-    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+    appearance: none;
+    -webkit-appearance: none;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    background-color: var(--accent) !important;
+    background-image: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
     color: #1a1525; box-shadow: 0 4px 16px rgba(255,143,163,0.25);
+    -webkit-tap-highlight-color: rgba(255,143,163,0.22);
 }
 .vnccs-btn-primary::after {
     content: ''; position: absolute; inset: 0;
@@ -126,6 +131,17 @@ const STYLE = `
     100% { transform: translateX(120%) skewX(-15deg); opacity: 0; }
 }
 .vnccs-btn-primary:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 28px rgba(255,143,163,0.4); }
+.vnccs-container button.vnccs-btn.vnccs-btn-primary:not(:disabled),
+.vnccs-container button.vnccs-btn.vnccs-btn-primary:not(:disabled):hover,
+.vnccs-container button.vnccs-btn.vnccs-btn-primary:not(:disabled):focus,
+.vnccs-container button.vnccs-btn.vnccs-btn-primary:not(:disabled):focus-visible,
+.vnccs-container button.vnccs-btn.vnccs-btn-primary:not(:disabled):active {
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    background-color: var(--accent) !important;
+    background-image: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    color: #1a1525 !important;
+    outline: none;
+}
 .vnccs-btn-success {
     background: rgba(0,214,143,0.15); color: var(--success); border: 1px solid rgba(0,214,143,0.3);
 }
@@ -137,6 +153,22 @@ const STYLE = `
 .vnccs-btn:disabled {
     background: rgba(255,255,255,0.04) !important; color: var(--text-muted) !important;
     cursor: not-allowed; box-shadow: none !important; transform: none !important;
+}
+.vnccs-btn:focus,
+.vnccs-btn:focus-visible,
+.vnccs-segmented-btn:focus,
+.vnccs-segmented-btn:focus-visible,
+.vnccs-seed-dice-btn:focus,
+.vnccs-seed-dice-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(255,143,163,0.28);
+}
+.vnccs-btn-primary:focus:not(:disabled),
+.vnccs-btn-primary:focus-visible:not(:disabled),
+.vnccs-btn-primary:active:not(:disabled) {
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    color: #1a1525 !important;
+    box-shadow: 0 8px 28px rgba(255,143,163,0.4), 0 0 0 2px rgba(255,143,163,0.28);
 }
 
 .vnccs-btn-row { display: flex; gap: 8px; margin-top: auto; flex-shrink: 0; flex-wrap: wrap; }
@@ -329,6 +361,94 @@ const STYLE = `
 .cd-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 .cd-tab:hover:not(.active) { color: var(--text-secondary); }
 
+.cd-wizard-btn {
+    width: 100%;
+    margin-bottom: 10px;
+    flex: 0 0 auto;
+}
+.vnccs-container .vnccs-common-modal {
+    width: min(520px, calc(100% - 48px));
+    max-width: min(520px, calc(100% - 48px));
+    box-sizing: border-box;
+    background: rgba(26,26,38,0.96);
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-family: var(--font);
+    overflow: hidden;
+}
+.vnccs-container .vnccs-common-modal-title {
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-hover);
+    font-family: var(--font);
+}
+.vnccs-container .vnccs-common-modal-btn {
+    border: 1px solid var(--border-hover);
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font-family: var(--font);
+    font-weight: 700;
+}
+.vnccs-container .vnccs-common-modal-btn:focus,
+.vnccs-container .vnccs-common-modal-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(255,143,163,0.28);
+}
+.vnccs-container .vnccs-common-modal-btn-primary {
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    color: #1a1525 !important;
+    border-color: transparent !important;
+}
+.vnccs-container .vnccs-common-modal-btn-primary:hover,
+.vnccs-container .vnccs-common-modal-btn-primary:focus,
+.vnccs-container .vnccs-common-modal-btn-primary:focus-visible,
+.vnccs-container .vnccs-common-modal-btn-primary:active {
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    color: #1a1525 !important;
+}
+.cd-wizard-modal {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+.cd-wizard-modal-text {
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+.cd-wizard-modal textarea {
+    width: 100%;
+    min-height: 110px;
+    box-sizing: border-box;
+}
+.cd-download-status {
+    color: var(--text-primary);
+    font-size: 13px;
+}
+.cd-download-track {
+    height: 12px;
+    background: rgba(255,255,255,0.12);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.cd-download-bar {
+    height: 100%;
+    width: 0%;
+    background: var(--success);
+    transition: width 0.25s ease;
+}
+.cd-download-pct {
+    color: var(--text-secondary);
+    text-align: right;
+    font-size: 12px;
+}
+
 /* Clone upload area */
 .cd-upload-area {
     border: 1px dashed rgba(255,143,163,0.3);
@@ -513,6 +633,157 @@ app.registerExtension({
                         d.style.padding = "10px 0";
                         return d;
                     }, [{ text: "OK", class: "vnccs-btn-primary" }]);
+                };
+
+                const startWizardDownloadPolling = () => {
+                    const { overlay, modal } = showModal("Downloading Model...", () => {
+                        const d = document.createElement("div");
+                        d.className = "cd-wizard-modal";
+                        d.innerHTML = `
+                            <div class="cd-download-status" id="cd-dl-status">Starting...</div>
+                            <div class="cd-download-track">
+                                <div class="cd-download-bar" id="cd-dl-bar"></div>
+                            </div>
+                            <div class="cd-download-pct" id="cd-dl-pct">0%</div>
+                        `;
+                        return d;
+                    }, []);
+
+                    const statusEl = modal.querySelector("#cd-dl-status");
+                    const barEl = modal.querySelector("#cd-dl-bar");
+                    const pctEl = modal.querySelector("#cd-dl-pct");
+                    const interval = setInterval(async () => {
+                        try {
+                            const r = await api.fetchApi("/vnccs/cloner_download_status");
+                            if (!r.ok) return;
+                            const d = await r.json();
+                            const progress = Math.max(0, Math.min(100, Number(d.progress) || 0));
+                            statusEl.innerText = d.current_file ? `Downloading ${d.current_file}...` : "Downloading...";
+                            barEl.style.width = `${progress}%`;
+                            pctEl.innerText = `${progress}%`;
+
+                            if (d.status === "completed") {
+                                clearInterval(interval);
+                                statusEl.innerText = "Download Complete!";
+                                barEl.style.width = "100%";
+                                pctEl.innerText = "100%";
+                                setTimeout(() => overlay.remove(), 900);
+                            } else if (d.status === "error") {
+                                clearInterval(interval);
+                                statusEl.innerText = `Download Error: ${d.error || "Unknown error"}`;
+                                statusEl.style.color = "var(--error)";
+                            }
+                        } catch (e) {
+                            clearInterval(interval);
+                            statusEl.innerText = `Download Status Error: ${e}`;
+                            statusEl.style.color = "var(--error)";
+                        }
+                    }, 800);
+                };
+
+                const showWizardModelError = (err) => {
+                    if (err?.error === "DEPENDENCY_MISSING") {
+                        showModal("Dependency Missing", () => {
+                            const d = document.createElement("div");
+                            d.className = "cd-wizard-modal-text";
+                            d.innerText = `${err.message}\n\nInstall a compatible llama-cpp-python build manually.`;
+                            return d;
+                        }, [{ text: "OK", class: "vnccs-btn-danger" }]);
+                        return;
+                    }
+
+                    if (["MODEL_MISSING", "MODEL_INVALID", "MMPROJ_MISSING", "MMPROJ_INVALID"].includes(err?.error)) {
+                        showModal("Model Missing", () => {
+                            const d = document.createElement("div");
+                            d.className = "cd-wizard-modal-text";
+                            d.innerText = `${err.message || "Required Qwen model is missing."}\n\nDownload the Qwen model files now?`;
+                            return d;
+                        }, [
+                            { text: "Cancel" },
+                            {
+                                text: "DOWNLOAD & INSTALL",
+                                class: "vnccs-btn-primary",
+                                action: async () => {
+                                    try {
+                                        const dl = await api.fetchApi("/vnccs/cloner_download_model", { method: "POST" });
+                                        if (dl.ok || dl.status === 409) {
+                                            startWizardDownloadPolling();
+                                            return false;
+                                        }
+                                        showInfo("Error", await dl.text());
+                                    } catch (e) {
+                                        showInfo("Error", `Download trigger failed: ${e}`);
+                                    }
+                                    return true;
+                                }
+                            }
+                        ]);
+                        return;
+                    }
+
+                    showInfo("Clothes Wizard Error", err?.message || err?.raw || "Failed to generate clothes description.");
+                };
+
+                const openClothesWizard = () => {
+                    let input;
+                    showModal("Clothes Wizzard", () => {
+                        const wrap = document.createElement("div");
+                        wrap.className = "cd-wizard-modal";
+                        const text = document.createElement("div");
+                        text.className = "cd-wizard-modal-text";
+                        text.innerText = "Describe the outfit in a broad way. The model will expand it into detailed clothing parts.";
+                        input = document.createElement("textarea");
+                        input.className = "vnccs-textarea";
+                        input.placeholder = "e.g. Santa Claus costume";
+                        wrap.append(text, input);
+                        setTimeout(() => input.focus(), 50);
+                        return wrap;
+                    }, [
+                        { text: "Cancel" },
+                        {
+                            text: "FILL FIELDS",
+                            class: "vnccs-btn-primary",
+                            action: async (_overlay, btn) => {
+                                const description = input.value.trim();
+                                if (!description) {
+                                    input.focus();
+                                    return true;
+                                }
+                                btn.disabled = true;
+                                btn.innerText = "THINKING...";
+                                try {
+                                    const r = await api.fetchApi("/vnccs/clothes_wizard", {
+                                        method: "POST",
+                                        headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({ description })
+                                    });
+                                    if (!r.ok) {
+                                        let err = null;
+                                        try { err = await r.json(); } catch (e) { err = { message: await r.text() }; }
+                                        showWizardModelError(err);
+                                        return false;
+                                    }
+                                    const data = await r.json();
+                                    ["top", "bottom", "shoes", "head", "face"].forEach((key) => {
+                                        state.costume_info[key] = data[key] || "";
+                                        if (els[key]) {
+                                            els[key].value = state.costume_info[key];
+                                            if (els[key].autoResize) els[key].autoResize();
+                                        }
+                                    });
+                                    saveState();
+                                    await saveCostumeToBackend();
+                                    return false;
+                                } catch (e) {
+                                    showInfo("Clothes Wizard Error", e.toString());
+                                    return true;
+                                } finally {
+                                    btn.disabled = false;
+                                    btn.innerText = "FILL FIELDS";
+                                }
+                            }
+                        }
+                    ]);
                 };
 
                 const getConnectedControlCenterState = () => {
@@ -887,6 +1158,12 @@ app.registerExtension({
                 // Helper to render Attributes Panel (Original Tab)
                 const renderAttributes = (container) => {
                     container.innerHTML = '';
+                    const wizardBtn = document.createElement("button");
+                    wizardBtn.type = "button";
+                    wizardBtn.className = "vnccs-btn vnccs-btn-primary cd-wizard-btn";
+                    wizardBtn.innerText = "CLOTHES WIZZARD";
+                    wizardBtn.onclick = openClothesWizard;
+                    container.appendChild(wizardBtn);
                     container.appendChild(createField("top", "e.g. White t-shirt"));
                     container.appendChild(createField("bottom", "e.g. Blue jeans"));
                     container.appendChild(createField("shoes", "e.g. Sneakers"));

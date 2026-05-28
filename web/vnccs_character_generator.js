@@ -377,6 +377,15 @@ const CSS = `
     padding: 5px 9px;
     cursor: pointer;
 }
+.vnccs-pipe-viewer-btn:focus,
+.vnccs-pipe-viewer-btn:focus-visible,
+.vnccs-pipe-viewer-btn:active {
+    outline: none;
+    background: rgba(255,143,163,0.12);
+    border-color: rgba(255,143,163,0.45);
+    color: #ffb6c8;
+    box-shadow: 0 0 0 2px rgba(255,143,163,0.22);
+}
 .vnccs-pipe-viewer-btn.is-selected {
     color: #ffb6c8;
     border-color: rgba(255,143,163,0.48);

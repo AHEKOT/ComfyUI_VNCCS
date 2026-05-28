@@ -16,7 +16,7 @@ import re
 from ..utils import (
     character_dir, save_costume_info,
     load_costume_info, list_costumes, ensure_costume_structure,
-    sheets_dir, faces_dir, load_character_info
+    sheets_dir, load_character_info
 )
 from .vnccs_control_center import _apply_lora_standard, _apply_lora_nunchaku
 
@@ -79,6 +79,79 @@ def crop_sheet_preview(sheet_path):
     return img.crop((5 * item_w, item_h, 6 * item_w, 2 * item_h))
 
 
+def _validate_clothes_wizard_gguf(path, file_label="File"):
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"{file_label} was not written: {path}")
+
+    size = os.path.getsize(path)
+    if size < 1024 * 1024:
+        raise ValueError(f"{file_label} is too small to be a valid GGUF file ({size} bytes)")
+
+    with open(path, "rb") as file:
+        magic = file.read(4)
+    if magic != b"GGUF":
+        raise ValueError(f"{file_label} is not a valid GGUF file (magic={magic!r})")
+
+
+def _find_clothes_wizard_model():
+    base_path = folder_paths.models_dir
+    possible_names = [
+        "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+        "Qwen2-VL-7B-Instruct-Q4_K_M.gguf",
+        "qwen2-vl-7b-instruct-q4_k_m.gguf",
+    ]
+    search_dirs = [os.path.join(base_path, "LLM"), os.path.join(base_path, "llm"), base_path]
+
+    for directory in search_dirs:
+        if not os.path.isdir(directory):
+            continue
+        for name in possible_names:
+            path = os.path.join(directory, name)
+            if os.path.exists(path):
+                return path
+    return None
+
+
+def _parse_clothes_wizard_json(content):
+    data = None
+    try:
+        import json_repair
+        data = json_repair.loads(content)
+    except Exception:
+        data = None
+
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        data = data[0]
+
+    if not isinstance(data, dict):
+        try:
+            json_str = content.strip()
+            if "```json" in json_str:
+                json_str = json_str.split("```json", 1)[1].split("```", 1)[0]
+            elif "```" in json_str:
+                json_str = json_str.split("```", 1)[1].split("```", 1)[0]
+            else:
+                match = re.search(r"\{.*\}", json_str, re.DOTALL)
+                if match:
+                    json_str = match.group(0)
+            data = json.loads(json_str.strip())
+        except Exception:
+            data = None
+
+    if not isinstance(data, dict):
+        return None
+
+    result = {}
+    for key in ["top", "bottom", "shoes", "head", "face"]:
+        value = data.get(key, "")
+        if isinstance(value, list):
+            value = ", ".join(str(item).strip() for item in value if str(item).strip())
+        elif not isinstance(value, str):
+            value = str(value) if value is not None else ""
+        result[key] = value.strip()
+    return result
+
+
 class PipeContext:
     def __init__(self, source=None, **updates):
         s = source
@@ -118,8 +191,8 @@ class ClothesDesigner:
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "IMAGE", "VNCCS_PIPE", "STRING", "STRING", "*")
-    RETURN_NAMES = ("character", "sheet", "pipe", "sheets_path", "faces_path", "background")
+    RETURN_TYPES = ("IMAGE", "STRING", "*")
+    RETURN_NAMES = ("character", "sheets_path", "background")
     FUNCTION = "process"
     CATEGORY = "VNCCS"
 
@@ -285,7 +358,6 @@ class ClothesDesigner:
         
         # 2. Paths
         sheet_path = sheets_dir(character_name, costume_name, "neutral") 
-        face_path = faces_dir(character_name, costume_name, "neutral")
 
         # 3. VNCCS Qwen Encoder using model objects from the incoming pipe
         from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder, node_helpers
@@ -502,7 +574,7 @@ class ClothesDesigner:
              traceback.print_exc()
 
         bg_color = gen_settings.get("background_color", "Green")
-        return (image, full_naked_sheet, out_pipe, sheet_path, face_path, bg_color)
+        return (image, sheet_path, bg_color)
 
 # --- API ---
 
@@ -540,6 +612,113 @@ async def vnccs_save_costume(request):
         return web.json_response({"status": "ok"})
     except Exception as e:
         return web.Response(status=500, text=str(e))
+
+@server.PromptServer.instance.routes.post("/vnccs/clothes_wizard")
+async def vnccs_clothes_wizard(request):
+    try:
+        try:
+            import llama_cpp
+        except Exception as e:
+            return web.json_response({
+                "error": "DEPENDENCY_MISSING",
+                "message": f"llama-cpp-python is required for Clothes Wizard: {e}",
+                "model_name": "llama-cpp-python",
+            }, status=500)
+
+        post = await request.json()
+        user_description = str(post.get("description", "")).strip()
+        if not user_description:
+            return web.Response(status=400, text="No clothes description provided")
+
+        model_path = _find_clothes_wizard_model()
+        if not model_path:
+            return web.json_response({
+                "error": "MODEL_MISSING",
+                "message": "No Qwen GGUF model found.",
+                "model_name": "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+            }, status=404)
+
+        try:
+            _validate_clothes_wizard_gguf(model_path, os.path.basename(model_path))
+        except Exception as e:
+            return web.json_response({
+                "error": "MODEL_INVALID",
+                "message": f"Qwen GGUF model file is invalid or incomplete: {e}",
+                "model_name": os.path.basename(model_path),
+            }, status=422)
+
+        system_prompt = (
+            "You are a professional anime/game character costume designer. "
+            "Convert broad outfit ideas into concrete, visual clothing prompts. "
+            "Output valid JSON only."
+        )
+        user_prompt = f"""
+Expand this abstract clothing idea into detailed outfit parts:
+{user_description}
+
+Return a raw JSON object with exactly these string keys:
+- top
+- bottom
+- shoes
+- head
+- face (ONLY wearable face items/accessories)
+
+Rules:
+- Each value must be a detailed visual description suitable for image generation.
+- Do not repeat the same abstract phrase from the user.
+- Describe materials, colors, shape, trims, accessories, fit, and distinctive details.
+- If a category is not needed, use an empty string.
+- Keep descriptions clothing-focused.
+- The "face" field is NOT for facial expression, makeup, blush, eyeshadow, lipstick, skin, cheeks, or facial features.
+- Use "face" only for wearable/accessory items placed on the face, such as glasses, sunglasses, goggles, mask, veil, eyepatch, respirator, scarf over mouth, piercings, stickers, or temporary tattoos.
+- If there is no wearable face item, set "face" to an empty string.
+- Do not describe the body, pose, background, camera, quality tags, nudity, sex acts, facial expression, makeup, blush, eyeshadow, lipstick, skin, or cheeks.
+
+Example for "Santa Claus costume":
+{{
+  "top": "red velvet Santa coat with thick white fur trim on cuffs, hem and front opening, black leather belt with square gold buckle, long sleeves, festive winter fabric texture",
+  "bottom": "matching red velvet trousers with white fur cuffs, fitted but comfortable costume pants",
+  "shoes": "black polished leather boots with rounded toes and folded cuffs",
+  "head": "red Santa hat with white fur brim and white pom-pom, slightly tilted",
+  "face": ""
+}}
+"""
+
+        print(f"[ClothesDesigner] Clothes Wizard loading model: {model_path}")
+        llm = llama_cpp.Llama(
+            model_path=model_path,
+            n_ctx=4096,
+            n_gpu_layers=-1,
+            verbose=False,
+        )
+
+        response = llm.create_chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=900,
+            temperature=0.35,
+        )
+
+        content = response["choices"][0]["message"]["content"]
+        print(f"[ClothesDesigner] Clothes Wizard raw output: {content}")
+        parsed = _parse_clothes_wizard_json(content or "")
+        if parsed is None:
+            return web.json_response({
+                "error": "PARSE_ERROR",
+                "message": "Failed to parse Clothes Wizard JSON output.",
+                "raw": content or "",
+            }, status=500)
+
+        return web.json_response(parsed)
+    except Exception as e:
+        traceback.print_exc()
+        return web.json_response({
+            "error": "INFERENCE_ERROR",
+            "message": f"Engine Error: {e}",
+            "model_name": "Qwen2VL (Check Console)",
+        }, status=500)
 
 @server.PromptServer.instance.routes.get("/vnccs/get_preview")
 async def vnccs_get_preview(request):

@@ -289,7 +289,11 @@ const STYLE = `
     justify-content: center;
 }
 .ems-btn {
-    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+    appearance: none;
+    -webkit-appearance: none;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    background-color: var(--accent) !important;
+    background-image: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
     color: #1a1525;
     border: none;
     border-radius: var(--radius-md);
@@ -304,6 +308,7 @@ const STYLE = `
     overflow: hidden;
     transition: all var(--transition);
     text-transform: uppercase;
+    -webkit-tap-highlight-color: rgba(255,143,163,0.22);
 }
 .ems-btn::after {
     content: '';
@@ -322,6 +327,14 @@ const STYLE = `
 .ems-btn:hover:not(:disabled) {
     transform: translateY(-2px);
     box-shadow: 0 8px 30px rgba(255, 143, 163, 0.45);
+}
+.ems-btn:focus:not(:disabled),
+.ems-btn:focus-visible:not(:disabled),
+.ems-btn:active:not(:disabled) {
+    outline: none;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    color: #1a1525 !important;
+    box-shadow: 0 8px 30px rgba(255, 143, 163, 0.45), 0 0 0 2px rgba(255,143,163,0.28);
 }
 .ems-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 .ems-btn.cancel {
@@ -439,6 +452,12 @@ const STYLE = `
     border: none;
     transition: all var(--transition);
 }
+.ems-modal-btn:focus,
+.ems-modal-btn:focus-visible,
+.ems-modal-btn:active {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(255,143,163,0.28);
+}
 .ems-modal-btn--cancel {
     background: rgba(255, 255, 255, 0.06);
     color: var(--text-secondary);
@@ -449,13 +468,25 @@ const STYLE = `
     color: var(--text-primary);
 }
 .ems-modal-btn--confirm {
-    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+    appearance: none;
+    -webkit-appearance: none;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    background-color: var(--accent) !important;
+    background-image: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
     color: #1a1525;
     box-shadow: 0 4px 16px rgba(255, 143, 163, 0.25);
+    -webkit-tap-highlight-color: rgba(255,143,163,0.22);
 }
 .ems-modal-btn--confirm:hover {
     transform: translateY(-1px);
     box-shadow: 0 6px 20px rgba(255, 143, 163, 0.4);
+}
+.ems-modal-btn--confirm:focus,
+.ems-modal-btn--confirm:focus-visible,
+.ems-modal-btn--confirm:active {
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    color: #1a1525 !important;
+    box-shadow: 0 6px 20px rgba(255, 143, 163, 0.4), 0 0 0 2px rgba(255,143,163,0.28);
 }
 `;
 

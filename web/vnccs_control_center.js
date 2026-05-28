@@ -83,6 +83,15 @@ function _injectVNCCSControlCenterStyles() {
     border-color: rgba(255,143,163,0.3);
     color: #ff8fa3;
 }
+.vnccs-cc-btn:focus,
+.vnccs-cc-btn:focus-visible,
+.vnccs-cc-btn:active {
+    outline: none;
+    background: rgba(255,143,163,0.1);
+    border-color: rgba(255,143,163,0.38);
+    color: #ff8fa3;
+    box-shadow: 0 0 0 2px rgba(255,143,163,0.22);
+}
 .vnccs-cc-btn--active {
     color: #00d68f;
     border-color: rgba(0,214,143,0.35);
@@ -112,6 +121,14 @@ function _injectVNCCSControlCenterStyles() {
 .vnccs-cc-btn--download-all:hover {
     transform: translateY(-1px);
     box-shadow: 0 4px 16px rgba(255,143,163,0.4);
+}
+.vnccs-cc-btn--download-all:focus,
+.vnccs-cc-btn--download-all:focus-visible,
+.vnccs-cc-btn--download-all:active {
+    outline: none;
+    background: linear-gradient(135deg, #ff8fa3 0%, #ffb6c8 100%) !important;
+    color: #1a1525 !important;
+    box-shadow: 0 4px 16px rgba(255,143,163,0.4), 0 0 0 2px rgba(255,143,163,0.22);
 }
 .vnccs-cc-btn--save {
     background: rgba(0,214,143,0.1);
