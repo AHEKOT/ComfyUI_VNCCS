@@ -203,6 +203,7 @@ export function showModal(container, title, contentFunc, buttons) {
 
     const row = document.createElement("div");
     row.className = "vnccs-common-modal-btn-row";
+    const buttonEls = [];
     buttons.forEach(b => {
         const btn = document.createElement("button");
         let cls = "vnccs-common-modal-btn";
@@ -219,11 +220,38 @@ export function showModal(container, title, contentFunc, buttons) {
             }
         };
         row.appendChild(btn);
+        buttonEls.push({ button: btn, config: b });
     });
     m.appendChild(row);
 
+    m.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            overlay.remove();
+            return;
+        }
+        if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+        const target = event.target;
+        if (target?.tagName === "BUTTON") return;
+        const confirm = buttonEls.find(item => item.config.class === "primary" || item.config.class?.includes("primary"))
+            || buttonEls[buttonEls.length - 1];
+        if (!confirm?.button) return;
+        event.preventDefault();
+        event.stopPropagation();
+        confirm.button.click();
+    }, true);
+
     overlay.appendChild(m);
     container.appendChild(overlay);
+    requestAnimationFrame(() => {
+        const field = m.querySelector("input:not([type='hidden']):not([disabled]), textarea:not([disabled]), select:not([disabled])");
+        if (!field) return;
+        field.focus({ preventScroll: true });
+        if (typeof field.select === "function" && (field.tagName === "INPUT" || field.tagName === "TEXTAREA")) {
+            field.select();
+        }
+    });
     return { overlay, modal: m, content };
 }
 

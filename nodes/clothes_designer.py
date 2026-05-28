@@ -481,7 +481,7 @@ class ClothesDesigner:
         pos_cond, neg_cond, empty_latent = encoder.encode(
             clip=clip, prompt=positive_prompt, vae=vae,
             image1=ref_image, image2=None, image3=clone_image_tensor,
-            target_size=1024,
+            target_size=1536,
             crop_method="disabled",
             vl_size=384,
             qwen_2511=True
