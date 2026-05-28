@@ -672,6 +672,171 @@ const STYLE = `
     60% { content: '..'; }
     80%, 100% { content: '...'; }
 }
+
+/* ── Modal Overrides ── */
+.vnccs-cloner-container .vnccs-common-modal-overlay {
+    background: rgba(5, 5, 9, 0.86);
+    backdrop-filter: blur(8px);
+}
+.vnccs-cloner-container .vnccs-common-modal {
+    width: 390px;
+    max-width: calc(100% - 48px);
+    padding: 18px;
+    gap: 14px;
+    background:
+        linear-gradient(180deg, rgba(255, 143, 163, 0.055), rgba(255, 143, 163, 0.015)),
+        var(--bg-secondary);
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-md);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55), 0 0 26px rgba(255, 143, 163, 0.1);
+    color: var(--text-primary);
+    font-family: var(--font);
+    font-size: 13px;
+}
+.vnccs-cloner-container .vnccs-common-modal-title {
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--accent-border);
+    color: var(--accent-hover);
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+.vnccs-cloner-container .vnccs-common-modal-btn-row {
+    gap: 8px;
+}
+.vnccs-cloner-container .vnccs-common-modal-btn-row:empty {
+    display: none;
+}
+.vnccs-cloner-container .vnccs-common-modal-btn {
+    border: 1px solid var(--border-hover);
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font-family: var(--font);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 8px 14px;
+}
+.vnccs-cloner-container .vnccs-common-modal-btn:hover {
+    background: var(--bg-hover);
+}
+.vnccs-cloner-container .vnccs-common-modal-btn-primary,
+.vnccs-cloner-container .vnccs-common-modal-btn-danger {
+    color: #0a0a0f;
+    border-color: transparent;
+}
+.vnccs-cloner-container .vnccs-common-modal-btn-primary {
+    background: var(--accent);
+}
+.vnccs-cloner-container .vnccs-common-modal-btn-primary:hover {
+    background: var(--accent-hover);
+}
+.vnccs-cloner-container .vnccs-common-modal-btn-danger {
+    background: var(--error);
+    color: #fff;
+}
+.vnccs-cloner-container .vnccs-cloner-download-modal {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+}
+.vnccs-cloner-container .vnccs-cloner-download-status {
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.35;
+}
+.vnccs-cloner-container .vnccs-cloner-download-track {
+    width: 100%;
+    height: 10px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+}
+.vnccs-cloner-container .vnccs-cloner-download-bar {
+    width: 0%;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+    box-shadow: 0 0 18px var(--accent-glow);
+    transition: width 0.35s ease;
+}
+.vnccs-cloner-container .vnccs-cloner-download-pct {
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 700;
+    text-align: right;
+}
+.vnccs-cloner-container .vnccs-cloner-download-status.is-error {
+    color: var(--error);
+}
+
+/* ── Tag Constructor ── */
+.vnccs-cloner-tag-btn {
+    width: 20px;
+    height: 20px;
+    margin-left: auto;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--accent-border);
+    border-radius: 6px;
+    background: rgba(255, 143, 163, 0.1);
+    color: var(--accent);
+    cursor: pointer;
+    font-size: 12px;
+    transition: all var(--transition);
+}
+.vnccs-cloner-tag-btn:hover {
+    background: rgba(255, 143, 163, 0.2);
+    box-shadow: 0 0 8px var(--accent-glow);
+}
+.vnccs-cloner-tag-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    max-height: 300px;
+    overflow-y: auto;
+    padding: 8px;
+    background: rgba(10, 10, 15, 0.6);
+    border-radius: var(--radius-sm);
+}
+.vnccs-cloner-tag-chip {
+    padding: 4px 10px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 11px;
+    user-select: none;
+    transition: all var(--transition);
+}
+.vnccs-cloner-tag-chip:hover {
+    background: rgba(255, 143, 163, 0.1);
+    border-color: var(--accent-border);
+    color: var(--accent-hover);
+}
+.vnccs-cloner-tag-chip.selected {
+    background: rgba(255, 143, 163, 0.18);
+    border-color: var(--accent);
+    color: var(--accent-hover);
+}
+.vnccs-cloner-tag-category {
+    width: 100%;
+    margin-top: 6px;
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
 `;
 
 app.registerExtension({
@@ -724,6 +889,7 @@ app.registerExtension({
                     }
                 };
                 node._vnccsGetClonerState = () => state;
+                let TAG_DATA = null;
 
                 const els = {};
                 const saveState = () => {
@@ -935,8 +1101,20 @@ app.registerExtension({
                     }
 
                     const header = document.createElement("div");
-                    header.style.display = "flex"; header.style.justifyContent = "space-between";
+                    header.style.display = "flex";
+                    header.style.alignItems = "center";
+                    header.style.justifyContent = "space-between";
                     header.innerHTML = `<div class="vnccs-cloner-label">${lbl}</div>`;
+
+                    const tagSupported = ["hair", "eyes", "race", "body", "face", "additional_details"].includes(key);
+                    if (tagSupported && type === "text") {
+                        const btn = document.createElement("div");
+                        btn.className = "vnccs-cloner-tag-btn";
+                        btn.innerHTML = "✎";
+                        btn.title = "Open Tag Constructor";
+                        btn.onclick = () => openTagConstructor(key, inp, targetObj);
+                        header.appendChild(btn);
+                    }
                     wrap.appendChild(header);
 
                     let inp;
@@ -1117,6 +1295,110 @@ app.registerExtension({
                         class: b.class?.includes("danger") ? "danger" : b.class?.includes("primary") ? "primary" : undefined
                     }));
                     return showCommonModal(container, title, contentFunc, mappedButtons);
+                };
+
+                const openTagConstructor = async (fieldKey, inputEl, targetObj = state.character_info) => {
+                    if (!TAG_DATA) {
+                        try {
+                            const r = await api.fetchApi("/vnccs/get_tags");
+                            if (r.ok) TAG_DATA = await r.json();
+                            else throw new Error("Failed to load tags");
+                        } catch (e) {
+                            showModal("Error", () => {
+                                const d = document.createElement("div");
+                                d.innerText = "Error loading tag database: " + e;
+                                return d;
+                            }, [{ text: "Close" }]);
+                            return;
+                        }
+                    }
+
+                    const map = {
+                        hair: ["hair_color", "hairstyles"],
+                        eyes: ["eyes"],
+                        face: ["eyes"],
+                        race: ["races"],
+                        body: ["breast_size"],
+                        additional_details: ["details"],
+                    };
+                    const categories = map[fieldKey] || [];
+                    if (!categories.length) return;
+
+                    const allTags = [];
+                    categories.forEach(cat => {
+                        const data = TAG_DATA?.tags?.[cat];
+                        if (cat === "eyes") {
+                            if (fieldKey === "eyes") {
+                                if (TAG_DATA.tags.eyes.colors) allTags.push({ header: "Eye Colors", items: TAG_DATA.tags.eyes.colors });
+                                if (TAG_DATA.tags.eyes.features) allTags.push({ header: "Eye Features", items: TAG_DATA.tags.eyes.features });
+                            } else if (fieldKey === "face" && TAG_DATA.tags.eyes.face_characteristics) {
+                                allTags.push({ header: "Face Characteristics", items: TAG_DATA.tags.eyes.face_characteristics });
+                            }
+                        } else if (data) {
+                            allTags.push({ header: cat.replace("_", " ").toUpperCase(), items: data });
+                        }
+                    });
+
+                    if (!allTags.length) {
+                        showModal("No Tags", () => {
+                            const d = document.createElement("div");
+                            d.innerText = "No tags found for this category.";
+                            return d;
+                        }, [{ text: "Close" }]);
+                        return;
+                    }
+
+                    const currentVals = String(inputEl.value || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+                    const selected = new Set(currentVals);
+
+                    showModal(`Tag Constructor: ${fieldKey}`, (modal) => {
+                        const tagGrid = document.createElement("div");
+                        tagGrid.className = "vnccs-cloner-tag-grid";
+                        modal.style.width = "500px";
+
+                        allTags.forEach(group => {
+                            if (group.header) {
+                                const header = document.createElement("div");
+                                header.className = "vnccs-cloner-tag-category";
+                                header.innerText = group.header;
+                                tagGrid.appendChild(header);
+                            }
+
+                            group.items.forEach(item => {
+                                const tag = item.tag;
+                                const useTag = tag.replace(/_/g, " ");
+                                const chip = document.createElement("div");
+                                chip.className = "vnccs-cloner-tag-chip";
+                                chip.innerText = item.label || tag;
+                                if (selected.has(useTag)) chip.classList.add("selected");
+                                chip.onclick = () => {
+                                    if (selected.has(useTag)) {
+                                        selected.delete(useTag);
+                                        chip.classList.remove("selected");
+                                    } else {
+                                        selected.add(useTag);
+                                        chip.classList.add("selected");
+                                    }
+                                };
+                                tagGrid.appendChild(chip);
+                            });
+                        });
+
+                        return tagGrid;
+                    }, [
+                        { text: "Cancel" },
+                        {
+                            text: "APPLY",
+                            class: "vnccs-btn-primary",
+                            action: () => {
+                                const final = Array.from(selected).join(", ");
+                                inputEl.value = final;
+                                targetObj[fieldKey] = final;
+                                saveState();
+                                return false;
+                            }
+                        }
+                    ]);
                 };
 
                 const loadChar = async (name, skipInfoLoad = false) => {
@@ -1576,13 +1858,13 @@ app.registerExtension({
                 const startProgressPolling = () => {
                     const { overlay, modal } = showModal("Downloading Model...", (m) => {
                         const d = document.createElement("div");
-                        d.style.width = "100%";
+                        d.className = "vnccs-cloner-download-modal";
                         d.innerHTML = `
-                             <div style="margin-bottom:5px; font-size:12px;" id="vnccs-dl-status">Starting...</div>
-                             <div style="width:100%; height:20px; background:#444; border-radius:4px; overflow:hidden;">
-                                <div id="vnccs-dl-bar" style="width:0%; height:100%; background:#2e7d32; transition: width 0.5s;"></div>
+                             <div class="vnccs-cloner-download-status" id="vnccs-dl-status">Starting...</div>
+                             <div class="vnccs-cloner-download-track">
+                                <div class="vnccs-cloner-download-bar" id="vnccs-dl-bar"></div>
                              </div>
-                             <div style="text-align:right; font-size:11px; color:#aaa; margin-top:5px;" id="vnccs-dl-pct">0%</div>
+                             <div class="vnccs-cloner-download-pct" id="vnccs-dl-pct">0%</div>
                         `;
                         return d;
                     }, []); // No buttons, auto-close
@@ -1606,7 +1888,7 @@ app.registerExtension({
                                 } else if (d.status === "error") {
                                     clearInterval(interval);
                                     statusEl.innerText = "Error: " + d.error;
-                                    statusEl.style.color = "red";
+                                    statusEl.classList.add("is-error");
                                 } else {
                                     statusEl.innerText = `Downloading ${d.current_file}...`;
                                     barEl.style.width = d.progress + "%";

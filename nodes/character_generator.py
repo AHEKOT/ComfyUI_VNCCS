@@ -118,9 +118,19 @@ def _tensor_to_png_data_url(image, max_items=12):
         return None
 
 
-def _character_cache_dir_from_sheets_path(sheets_path, character_name=""):
+def _safe_cache_part(value, fallback="node"):
+    value = str(value or "").strip() or fallback
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in value)
+    return safe or fallback
+
+
+def _character_cache_dir_from_sheets_path(sheets_path, character_name="", unique_id=None):
     character_root = _character_root_from_sheets_path(sheets_path, character_name)
-    return os.path.join(character_root, "cache", "poses") if character_root else None
+    if not character_root:
+        return None
+    if unique_id:
+        return os.path.join(character_root, "cache", "poses", _safe_cache_part(unique_id))
+    return os.path.join(character_root, "cache", "poses", "shared")
 
 
 def _character_root_from_sheets_path(sheets_path, character_name=""):
@@ -838,7 +848,7 @@ class VNCCS_CharacterGenerator:
         background = self._unwrap_scalar(background)
         sheets_path = self._unwrap_scalar(sheets_path)
         unique_id = self._unwrap_scalar(unique_id)
-        cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""))
+        cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""), unique_id)
         try:
             _rotate_preview_cache(cache_dir)
             pose_lora_info = self._find_pose_lora(pipe)
@@ -970,7 +980,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
         background = self._unwrap_scalar(background)
         sheets_path = self._unwrap_scalar(sheets_path)
         unique_id = self._unwrap_scalar(unique_id)
-        cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""))
+        cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""), unique_id)
         try:
             _rotate_preview_cache(cache_dir)
             pose_lora_info = self._find_pose_lora(pipe)
@@ -1101,7 +1111,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
             sheets_path,
             widget_payload.get("costume") or widget_payload.get("costume_name") or "Naked",
         )
-        cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""))
+        cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""), unique_id)
         try:
             _rotate_preview_cache(cache_dir)
             pose_lora_info = self._find_pose_lora(pipe)
