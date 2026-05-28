@@ -195,8 +195,22 @@ DOWNLOAD_STATUS = {
     "error": ""
 }
 
-def download_file(url, dest_path, file_label="File"):
+def validate_gguf_file(path, file_label="File"):
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"{file_label} was not written: {path}")
+
+    size = os.path.getsize(path)
+    if size < 1024 * 1024:
+        raise ValueError(f"{file_label} is too small to be a valid GGUF file ({size} bytes)")
+
+    with open(path, "rb") as file:
+        magic = file.read(4)
+    if magic != b"GGUF":
+        raise ValueError(f"{file_label} is not a valid GGUF file (magic={magic!r})")
+
+def download_file(url, dest_path, file_label="File", mark_completed=True):
     global DOWNLOAD_STATUS
+    tmp_path = dest_path + ".part"
     try:
         DOWNLOAD_STATUS["status"] = "downloading"
         DOWNLOAD_STATUS["current_file"] = file_label
@@ -206,24 +220,42 @@ def download_file(url, dest_path, file_label="File"):
         # Ensure dir exists
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         
-        response = requests.get(url, stream=True)
+        response = requests.get(url, stream=True, timeout=(30, 60))
+        response.raise_for_status()
         total_size = int(response.headers.get('content-length', 0))
         DOWNLOAD_STATUS["total_size"] = total_size
         DOWNLOAD_STATUS["downloaded_size"] = 0
         
         block_size = 1024 * 1024 # 1MB
-        with open(dest_path, 'wb') as file:
+        with open(tmp_path, 'wb') as file:
             for data in response.iter_content(block_size):
+                if not data:
+                    continue
                 file.write(data)
                 DOWNLOAD_STATUS["downloaded_size"] += len(data)
                 if total_size > 0:
                     DOWNLOAD_STATUS["progress"] = int((DOWNLOAD_STATUS["downloaded_size"] / total_size) * 100)
+
+        if total_size > 0 and DOWNLOAD_STATUS["downloaded_size"] != total_size:
+            raise ValueError(
+                f"Incomplete download for {file_label}: "
+                f"{DOWNLOAD_STATUS['downloaded_size']} of {total_size} bytes"
+            )
+
+        validate_gguf_file(tmp_path, file_label)
+        os.replace(tmp_path, dest_path)
                     
-        DOWNLOAD_STATUS["status"] = "completed"
         DOWNLOAD_STATUS["progress"] = 100
+        if mark_completed:
+            DOWNLOAD_STATUS["status"] = "completed"
         print(f"[{file_label}] Download completed: {dest_path}")
         
     except Exception as e:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
         DOWNLOAD_STATUS["status"] = "error"
         DOWNLOAD_STATUS["error"] = str(e)
         print(f"[{file_label}] Download error: {e}")
@@ -240,28 +272,28 @@ if server:
              return web.Response(status=409, text="Download already in progress")
         
         # User requested Revert to Qwen2-VL (We use Qwen2.5-VL as the best "Qwen2" variant available GGUF)
-        # Using bartowski's build which is reliable for comfy/llama-cpp
+        # Use unsloth's maintained GGUF repository.
         
         base_path = folder_paths.models_dir
         llm_dir = os.path.join(base_path, "LLM")
         
         # Target: Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf
-        # Repo: bartowski/Qwen2.5-VL-7B-Instruct-GGUF
+        # Repo: unsloth/Qwen2.5-VL-7B-Instruct-GGUF
         
-        url_model = "https://huggingface.co/bartowski/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
+        url_model = "https://huggingface.co/unsloth/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
         dest_model = os.path.join(llm_dir, "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf")
         
         # Target: mmproj
-        url_proj = "https://huggingface.co/bartowski/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf"
-        dest_proj = os.path.join(llm_dir, "mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf")
+        url_proj = "https://huggingface.co/unsloth/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/mmproj-F16.gguf"
+        dest_proj = os.path.join(llm_dir, "mmproj-F16.gguf")
 
         def run_sequences():
             # 1. Download Model
-            download_file(url_model, dest_model, "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf")
+            download_file(url_model, dest_model, "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf", mark_completed=False)
             
             # 2. Download Vision Projector
-            if DOWNLOAD_STATUS["status"] == "completed":
-                download_file(url_proj, dest_proj, "mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf")
+            if DOWNLOAD_STATUS["status"] == "downloading":
+                download_file(url_proj, dest_proj, "mmproj-F16.gguf")
 
         t = threading.Thread(target=run_sequences)
         t.start()
@@ -375,12 +407,24 @@ if server:
                      "model_name": "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
                  }, status=404)
 
+            try:
+                validate_gguf_file(model_path, os.path.basename(model_path))
+            except Exception as e:
+                return web.json_response({
+                    "error": "MODEL_INVALID",
+                    "message": f"QwenVL model file is invalid or incomplete: {e}",
+                    "model_name": os.path.basename(model_path)
+                }, status=422)
+
             # 3. Locate MMProj (Vision Adapter)
             mmproj_path = None
             if model_path:
                 model_dir = os.path.dirname(model_path)
                 # Check for 2.5/2 specific projectors
                 cands = [
+                    "mmproj-F16.gguf",
+                    "mmproj-BF16.gguf",
+                    "mmproj-F32.gguf",
                     "mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf",
                     "mmproj-Qwen2-VL-7B-Instruct-f16.gguf"
                 ]
@@ -393,9 +437,25 @@ if server:
                 if not mmproj_path:
                     # Flexible Search
                     for f in os.listdir(model_dir):
-                        if "mmproj" in f and f.endswith(".gguf") and "Qwen" in f:
+                        if "mmproj" in f.lower() and f.endswith(".gguf"):
                             mmproj_path = os.path.join(model_dir, f)
                             break
+
+            if not mmproj_path:
+                return web.json_response({
+                    "error": "MMPROJ_MISSING",
+                    "message": "No QwenVL vision projector (mmproj) GGUF found.",
+                    "model_name": "mmproj-F16.gguf"
+                }, status=404)
+
+            try:
+                validate_gguf_file(mmproj_path, os.path.basename(mmproj_path))
+            except Exception as e:
+                return web.json_response({
+                    "error": "MMPROJ_INVALID",
+                    "message": f"QwenVL vision projector file is invalid or incomplete: {e}",
+                    "model_name": os.path.basename(mmproj_path)
+                }, status=422)
             
             # 4. Inference
             system_prompt = "You are a character description assistant. Analyze the image and extract the character's physical attributes into a JSON format."

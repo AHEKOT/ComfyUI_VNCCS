@@ -1460,7 +1460,7 @@ app.registerExtension({
                             let err = null;
                             try { err = await r.json(); } catch (e) { }
 
-                            if (err && (err.error === "MODEL_MISSING" || err.error === "MMPROJ_MISSING" || err.error === "DEPENDENCY_MISSING")) {
+                            if (err && (err.error === "MODEL_MISSING" || err.error === "MODEL_INVALID" || err.error === "MMPROJ_MISSING" || err.error === "MMPROJ_INVALID" || err.error === "DEPENDENCY_MISSING")) {
 
                                 // CASE A: Dependency Error (llama-cpp-python)
                                 if (err.error === "DEPENDENCY_MISSING") {
@@ -1485,11 +1485,18 @@ app.registerExtension({
                                 // CASE B: Regular Missing Model Files
                                 showModal("Model Missing", (m) => {
                                     const d = document.createElement("div");
-                                    const missingMsg = err.error === "MMPROJ_MISSING" ? "The Vision Projector (mmproj) is missing." : `Required Model: ${err.model_name || 'QwenVL'}`;
+                                    const isInvalid = err.error === "MODEL_INVALID" || err.error === "MMPROJ_INVALID";
+                                    const missingMsg = err.error === "MMPROJ_MISSING"
+                                        ? "The Vision Projector (mmproj) is missing."
+                                        : err.error === "MMPROJ_INVALID"
+                                            ? "The Vision Projector (mmproj) is invalid or incomplete."
+                                            : err.error === "MODEL_INVALID"
+                                                ? `Model file is invalid or incomplete: ${err.model_name || 'QwenVL'}`
+                                                : `Required Model: ${err.model_name || 'QwenVL'}`;
                                     d.innerHTML = `
                                         <div style="font-size:13px; margin-bottom:10px;">
                                             <b>${missingMsg}</b><br/><br/>
-                                            This component is required for character analysis. Would you like to download it now?<br/>
+                                            ${isInvalid ? "The existing file will be replaced." : "This component is required for character analysis."} Would you like to download it now?<br/>
                                             <span style="color:#aaa; font-size:11px;">Verification & Download will start automatically.</span>
                                         </div>
                                     `;
