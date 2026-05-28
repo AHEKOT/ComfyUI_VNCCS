@@ -152,6 +152,11 @@ def _parse_clothes_wizard_json(content):
     return result
 
 
+def _is_clothes_core_lora_name(value):
+    normalized = re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+    return "vnccs" in normalized and "clothes" in normalized and "core" in normalized
+
+
 class PipeContext:
     def __init__(self, source=None, **updates):
         s = source
@@ -494,8 +499,12 @@ class ClothesDesigner:
         # Apply LoRA temporarily for generation only — output pipe keeps the original model
         lora_name = gen_settings.get("lora_name", "none") or "none"
         lora_strength = float(gen_settings.get("lora_strength", 1.0) or 1.0)
+        lora_strength = max(0.0, min(1.0, lora_strength))
         gen_model = model
         gen_clip = clip
+        if lora_name != "none" and not _is_clothes_core_lora_name(lora_name):
+            print(f"[ClothesDesigner] Ignoring non-Clothes-Core LoRA from widget state: {lora_name}")
+            lora_name = "none"
         if lora_name != "none":
             full_path = folder_paths.get_full_path("loras", lora_name)
             if full_path and os.path.exists(full_path):

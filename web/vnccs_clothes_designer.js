@@ -854,6 +854,10 @@ app.registerExtension({
                     const ccWidget = getConnectedControlCenterWidget();
                     let entry = entryOrPath && typeof entryOrPath === "object" ? entryOrPath : null;
                     let rel = entry ? normalizeLoraPath(entry) : normalizeLoraPath(entryOrPath);
+                    if (rel && !isClothesCoreLora(rel) && !isClothesCoreLora(entry?.name)) {
+                        entry = null;
+                        rel = "";
+                    }
 
                     if (!entry && ccWidget?.config?.lora) {
                         entry = ccWidget.config.lora.find(item =>
@@ -864,7 +868,10 @@ app.registerExtension({
 
                     if (rel) {
                         state.gen_settings.lora_name = rel;
-                        state.gen_settings.lora_strength = Number(state.gen_settings.lora_strength ?? 1.0) || 1.0;
+                        const strength = Number(state.gen_settings.lora_strength ?? 1.0) || 1.0;
+                        state.gen_settings.lora_strength = Math.max(0, Math.min(1, strength));
+                    } else if (!isClothesCoreLora(state.gen_settings.lora_name)) {
+                        state.gen_settings.lora_name = "none";
                     }
                     renderClothesCoreLoraCard(entry || rel || null);
                     saveState();
