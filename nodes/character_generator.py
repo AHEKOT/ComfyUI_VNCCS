@@ -1276,6 +1276,23 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             parts[-1] = "face_" + basename[len("sprite_"):]
         return os.sep.join(parts)
 
+    def _rotate_existing_images(self, directory):
+        directory = str(directory or "").strip()
+        if not directory or not os.path.isdir(directory):
+            return
+        image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+        existing_images = [
+            filename for filename in os.listdir(directory)
+            if os.path.isfile(os.path.join(directory, filename))
+            and os.path.splitext(filename)[1].lower() in image_exts
+        ]
+        if not existing_images:
+            return
+        version_dir = self._version_dir(directory)
+        os.makedirs(version_dir, exist_ok=True)
+        for filename in existing_images:
+            os.replace(os.path.join(directory, filename), os.path.join(version_dir, filename))
+
     def _emotion_pairs(self, widget_payload, emotions, total):
         pairs = widget_payload.get("emotion_pairs")
         if isinstance(pairs, list) and pairs:
@@ -1429,6 +1446,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
 
         results = []
         faces = []
+        rotated_face_dirs = set()
         try:
             for group_index, group in enumerate(groups):
                 stage_key, stage_label = stage_labels[group_index]
@@ -1462,6 +1480,11 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                         self._save_rgba_image(result, mask, sprite_paths[index], local_index)
                         face_prefix = self._face_prefix_from_sprite_prefix(sprite_paths[index])
                         if face_prefix:
+                            face_dir = os.path.dirname(face_prefix)
+                            face_dir_key = os.path.normcase(os.path.abspath(face_dir))
+                            if face_dir_key not in rotated_face_dirs:
+                                self._rotate_existing_images(face_dir)
+                                rotated_face_dirs.add(face_dir_key)
                             self._save_rgba_image(face_crop, None, face_prefix, local_index)
                     partial = torch.cat(group_results, dim=0)
                     self._emit(
