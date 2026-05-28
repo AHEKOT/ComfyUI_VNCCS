@@ -946,6 +946,78 @@ const STYLE = `
     height: 24px;
     display: block;
 }
+
+.vnccs-character-wizard-btn {
+    width: 100%;
+    min-height: 40px;
+    margin-bottom: 8px;
+    flex: 0 0 auto;
+}
+
+.vnccs-container .vnccs-common-modal {
+    width: min(520px, calc(100% - 48px));
+    max-width: min(520px, calc(100% - 48px));
+    box-sizing: border-box;
+    background: rgba(26,26,38,0.96);
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-family: var(--font);
+    overflow: hidden;
+}
+.vnccs-container .vnccs-common-modal-title {
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-hover);
+    font-family: var(--font);
+}
+.vnccs-container .vnccs-common-modal-btn {
+    border: 1px solid var(--border-hover);
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font-family: var(--font);
+    font-weight: 700;
+}
+.vnccs-container .vnccs-common-modal-btn:focus,
+.vnccs-container .vnccs-common-modal-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(255,143,163,0.28);
+}
+.vnccs-container .vnccs-common-modal-btn-primary {
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    color: #1a1525 !important;
+    border-color: transparent !important;
+}
+.vnccs-container .vnccs-common-modal-btn-primary:hover,
+.vnccs-container .vnccs-common-modal-btn-primary:focus,
+.vnccs-container .vnccs-common-modal-btn-primary:focus-visible,
+.vnccs-container .vnccs-common-modal-btn-primary:active {
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
+    color: #1a1525 !important;
+}
+.vnccs-character-wizard-modal {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+.vnccs-character-wizard-modal-text {
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+.vnccs-character-wizard-modal textarea {
+    width: 100%;
+    min-height: 110px;
+    box-sizing: border-box;
+    resize: vertical;
+}
 `;
 
 app.registerExtension({
@@ -2392,6 +2464,96 @@ app.registerExtension({
                     return showCommonModal(container, title, contentFunc, mappedButtons);
                 };
 
+                const applyCharacterWizardData = (data) => {
+                    const textKeys = ["race", "skin_color", "body", "face", "hair", "eyes", "additional_details"];
+                    if (data.sex) {
+                        const sex = String(data.sex).toLowerCase().startsWith("m") ? "male" : "female";
+                        state.character_info.sex = sex;
+                        els.sex?.setValue?.(sex);
+                    }
+                    if (data.age !== undefined) {
+                        const age = Math.max(1, Math.min(100, parseInt(data.age, 10) || 18));
+                        state.character_info.age = age;
+                        if (els.age?.range && els.age?.num) {
+                            els.age.range.value = age;
+                            els.age.num.value = age;
+                        }
+                    }
+                    textKeys.forEach((key) => {
+                        const value = data[key] || "";
+                        state.character_info[key] = value;
+                        if (els[key]) els[key].value = value;
+                    });
+                    state.preview_valid = false;
+                    saveState(false);
+                };
+
+                const showCharacterWizardError = (err) => {
+                    showModal("Character Wizzard Error", () => {
+                        const d = document.createElement("div");
+                        d.className = "vnccs-character-wizard-modal";
+                        const text = document.createElement("div");
+                        text.className = "vnccs-character-wizard-modal-text";
+                        text.innerText = err?.message || err?.raw || "Failed to generate character description.";
+                        d.appendChild(text);
+                        return d;
+                    }, [{ text: "OK", class: "vnccs-btn-primary" }]);
+                };
+
+                const openCharacterWizard = () => {
+                    let input;
+                    showModal("Character Wizzard", () => {
+                        const wrap = document.createElement("div");
+                        wrap.className = "vnccs-character-wizard-modal";
+                        const text = document.createElement("div");
+                        text.className = "vnccs-character-wizard-modal-text";
+                        text.innerText = "Describe the character in a broad way. The model will expand it into the creator fields and prefer tags from the tag constructor.";
+                        input = document.createElement("textarea");
+                        input.className = "vnccs-textarea";
+                        input.placeholder = "e.g. adult demon girl with long white hair, red eyes, elegant sharp face";
+                        wrap.append(text, input);
+                        setTimeout(() => input.focus(), 50);
+                        return wrap;
+                    }, [
+                        { text: "Cancel" },
+                        {
+                            text: "FILL FIELDS",
+                            class: "vnccs-btn-primary",
+                            action: async (_overlay, btn) => {
+                                const description = input.value.trim();
+                                if (!description) {
+                                    input.focus();
+                                    return true;
+                                }
+                                btn.disabled = true;
+                                btn.innerText = "THINKING...";
+                                try {
+                                    const r = await api.fetchApi("/vnccs/character_wizard", {
+                                        method: "POST",
+                                        headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({ description })
+                                    });
+                                    if (!r.ok) {
+                                        let err = null;
+                                        try { err = await r.json(); } catch (e) { err = { message: await r.text() }; }
+                                        showCharacterWizardError(err);
+                                        return false;
+                                    }
+                                    const data = await r.json();
+                                    applyCharacterWizardData(data);
+                                    return false;
+                                } catch (e) {
+                                    showCharacterWizardError({ message: e.toString() });
+                                    return true;
+                                } finally {
+                                    btn.disabled = false;
+                                    btn.innerText = "FILL FIELDS";
+                                }
+                            }
+                        }
+                    ]);
+                };
+
                 const doCreate = () => {
                     let inpRef;
                     const { content } = showModal("New Character", () => {
@@ -2624,6 +2786,13 @@ app.registerExtension({
                 const colCenter = document.createElement("div");
                 colCenter.className = "vnccs-col";
                 colCenter.innerHTML = '<div class="vnccs-section-title">Attributes</div>';
+
+                const characterWizardBtn = document.createElement("button");
+                characterWizardBtn.type = "button";
+                characterWizardBtn.className = "vnccs-btn vnccs-btn-primary vnccs-character-wizard-btn";
+                characterWizardBtn.innerText = "CHARACTER WIZZARD";
+                characterWizardBtn.onclick = openCharacterWizard;
+                colCenter.appendChild(characterWizardBtn);
 
                 colCenter.appendChild(createSegmentedField("Background", "background_color", [
                     { label: "Green", value: "Green" },

@@ -1195,9 +1195,12 @@ class VNCCSControlCenterWidget {
         const selectedKind = this._selectedKind();
         const entryByName = Object.fromEntries((this.config?.lora ?? []).map(entry => [entry.name, entry]));
         return (this.state.loras ?? []).some(l => {
-            if (!l?.name || l.auto_apply !== true || Math.abs(Number(l.strength ?? 1)) <= 1e-6) return false;
+            if (!l?.name || l.auto_apply !== true) return false;
             const entry = entryByName[l.name];
-            return entry?.custom || (this._isTurboLora(entry) && this._sameKind(entry, selectedKind));
+            if (!entry) return false;
+            if (this._isTurboLora(entry)) return this._sameKind(entry, selectedKind);
+            if (Math.abs(Number(l.strength ?? 1)) <= 1e-6) return false;
+            return entry.custom;
         });
     }
 
@@ -2661,7 +2664,7 @@ class VNCCSControlCenterWidget {
             b.style.borderColor = "rgba(255,170,0,0.4)";
             b.addEventListener("click", e => e.stopPropagation());
             footer.appendChild(b);
-        } else if (status === "installed" && active && !isPipeMode) {
+        } else if (status === "installed" && active && !isPipeMode && !isTurboMode) {
                 const slider = document.createElement("input");
                 slider.type = "range";
                 slider.min = -2;
@@ -2733,6 +2736,7 @@ class VNCCSControlCenterWidget {
             const idx = this.state.loras.findIndex(lora => lora.name === turboName);
             if (idx >= 0) {
                 this.state.loras[idx].auto_apply = turboName === name ? enabled : false;
+                this.state.loras[idx].strength = 1.0;
             } else {
                 this.state.loras.push({
                     name: turboName,

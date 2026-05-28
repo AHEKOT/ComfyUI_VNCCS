@@ -729,7 +729,7 @@ def _apply_loras(model, clip, lora_states, config, model_type, type_settings=Non
         state = state_by_name.get(name, {})
         if not state.get("auto_apply", False):
             continue
-        strength = float(state.get("strength", 1.0))
+        strength = 1.0 if is_turbo else float(state.get("strength", 1.0))
         if abs(strength) < 1e-6:
             continue
 
@@ -925,12 +925,13 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None):
     for item in loras:
         if not item.get("name") or not item.get("auto_apply", False):
             continue
-        if abs(float(item.get("strength", 1.0))) <= 1e-6:
-            continue
         lora_entry = lora_entry_by_name.get(item.get("name"))
         if not lora_entry:
             continue
-        if lora_entry.get("custom") or (_entry_type(lora_entry) == "turbolora" and _lora_matches_model_kind(lora_entry, model_entry)):
+        is_turbo = _entry_type(lora_entry) == "turbolora"
+        if not is_turbo and abs(float(item.get("strength", 1.0))) <= 1e-6:
+            continue
+        if lora_entry.get("custom") or (is_turbo and _lora_matches_model_kind(lora_entry, model_entry)):
             has_enabled_loras = True
             break
 

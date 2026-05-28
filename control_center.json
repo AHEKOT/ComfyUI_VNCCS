@@ -244,7 +244,7 @@
       "hf_repo": "MIUProject/VNCCS_V2",
       "hf_path": "models/loras/Anima/anima-turbo-lora-v0.1.safetensors",
       "local_path": "models/loras/Anima/anima-turbo-lora-v0.1.safetensors",
-      "version": "1.0.0",
+      "version": "0.2.0",
       "description": "12-Step Turbo LoRA for Anima model.",
       "type": "TurboLora",
       "kind": "Anima"
@@ -260,39 +260,7 @@
       "kind": "SDXL"
     }
   ],
-  "controlnet": [
-    {
-      "name": "ControlNet AnyTest",
-      "hf_repo": "MIUProject/VNCCS_V2",
-      "hf_path": "models/controlnet/SDXL/AnytestV4.safetensors",
-      "local_path": "models/controlnet/SDXL/AnytestV4.safetensors",
-      "version": "4.0.0",
-      "description": "SDXL ControlNet for high-quality pose guidance.",
-      "type": "ControlNet",
-      "kind": "SDXL"
-    },
-    {
-      "name": "ControlNet OpenPose Illustrious",
-      "hf_repo": "MIUProject/VNCCS_V2",
-      "hf_path": "models/controlnet/SDXL/IllustriousXL_openpose.safetensors",
-      "local_path": "models/controlnet/SDXL/IllustriousXL_openpose.safetensors",
-      "version": "1.0.0",
-      "description": "OpenPose ControlNet optimized for illustrious models.",
-      "type": "ControlNet",
-      "kind": "SDXL"
-    }
-  ],
   "other": [
-    {
-      "name": "2x_APISR_RRDB_GAN",
-      "hf_repo": "MIUProject/VNCCS_V2",
-      "hf_path": "models/upscale_models/2x_APISR_RRDB_GAN_generator.pth",
-      "local_path": "models/upscale_models/2x_APISR_RRDB_GAN_generator.pth",
-      "version": "1.0.0",
-      "description": "Anime Production Inspired Real-World Anime Super-Resolution.",
-      "type": "Upscaler",
-      "kind": "UTILITY"
-    },
     {
       "name": "4x_APISR_GRL_GAN",
       "hf_repo": "MIUProject/VNCCS_V2",

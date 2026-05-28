@@ -16,6 +16,7 @@ import numpy as np
 import traceback
 import inspect
 import random
+import re
 
 from ..utils import (
     load_character_info, ensure_character_structure, EMOTIONS, MAIN_DIRS,
@@ -131,6 +132,110 @@ def get_lora_full_path(lora_name):
         if lora_path:
             return lora_path
     return None
+
+
+def _validate_character_wizard_gguf(path, file_label="File"):
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"{file_label} was not written: {path}")
+
+    size = os.path.getsize(path)
+    if size < 1024 * 1024:
+        raise ValueError(f"{file_label} is too small to be a valid GGUF file ({size} bytes)")
+
+    with open(path, "rb") as file:
+        magic = file.read(4)
+    if magic != b"GGUF":
+        raise ValueError(f"{file_label} is not a valid GGUF file (magic={magic!r})")
+
+
+def _find_character_wizard_model():
+    base_path = folder_paths.models_dir
+    possible_names = [
+        "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+        "Qwen2-VL-7B-Instruct-Q4_K_M.gguf",
+        "qwen2-vl-7b-instruct-q4_k_m.gguf",
+    ]
+    search_dirs = [os.path.join(base_path, "LLM"), os.path.join(base_path, "llm"), base_path]
+
+    for directory in search_dirs:
+        if not os.path.isdir(directory):
+            continue
+        for name in possible_names:
+            path = os.path.join(directory, name)
+            if os.path.exists(path):
+                return path
+    return None
+
+
+def _extract_character_tag_options(tags_data):
+    tags = tags_data.get("tags", {}) if isinstance(tags_data, dict) else {}
+
+    def collect(value):
+        items = []
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict) and item.get("tag"):
+                    items.append(str(item["tag"]))
+        elif isinstance(value, dict):
+            for sub_value in value.values():
+                items.extend(collect(sub_value))
+        return items
+
+    return {
+        "race": collect(tags.get("races", [])),
+        "hair": collect(tags.get("hair_color", [])) + collect(tags.get("hairstyles", [])),
+        "eyes": collect(tags.get("eyes", {})),
+        "body": collect(tags.get("breast_size", [])),
+        "additional_details": collect(tags.get("details", [])),
+    }
+
+
+def _parse_character_wizard_json(content):
+    data = None
+    try:
+        import json_repair
+        data = json_repair.loads(content)
+    except Exception:
+        data = None
+
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        data = data[0]
+
+    if not isinstance(data, dict):
+        try:
+            json_str = content.strip()
+            if "```json" in json_str:
+                json_str = json_str.split("```json", 1)[1].split("```", 1)[0]
+            elif "```" in json_str:
+                json_str = json_str.split("```", 1)[1].split("```", 1)[0]
+            else:
+                match = re.search(r"\{.*\}", json_str, re.DOTALL)
+                if match:
+                    json_str = match.group(0)
+            data = json.loads(json_str.strip())
+        except Exception:
+            data = None
+
+    if not isinstance(data, dict):
+        return None
+
+    result = {}
+    for key in ["race", "skin_color", "hair", "eyes", "face", "body", "additional_details"]:
+        value = data.get(key, "")
+        if isinstance(value, list):
+            value = ", ".join(str(item).strip() for item in value if str(item).strip())
+        elif not isinstance(value, str):
+            value = str(value) if value is not None else ""
+        result[key] = value.strip()
+
+    sex = str(data.get("sex", "female")).strip().lower()
+    result["sex"] = "male" if sex.startswith("m") else "female"
+    try:
+        age = int(float(data.get("age", 18)))
+    except Exception:
+        age = 18
+    result["age"] = max(1, min(100, age))
+    return result
 
 
 def normalize_gen_settings(gen_settings):
@@ -515,6 +620,131 @@ if server:
             return web.json_response(data)
         except Exception as e:
             return web.Response(status=500, text=str(e))
+
+    @server.PromptServer.instance.routes.post("/vnccs/character_wizard")
+    async def vnccs_character_wizard(request):
+        try:
+            try:
+                import llama_cpp
+            except Exception as e:
+                return web.json_response({
+                    "error": "DEPENDENCY_MISSING",
+                    "message": f"llama-cpp-python is required for Character Wizard: {e}",
+                    "model_name": "llama-cpp-python",
+                }, status=500)
+
+            post = await request.json()
+            user_description = str(post.get("description", "")).strip()
+            if not user_description:
+                return web.Response(status=400, text="No character description provided")
+
+            model_path = _find_character_wizard_model()
+            if not model_path:
+                return web.json_response({
+                    "error": "MODEL_MISSING",
+                    "message": "No Qwen GGUF model found.",
+                    "model_name": "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+                }, status=404)
+
+            try:
+                _validate_character_wizard_gguf(model_path, os.path.basename(model_path))
+            except Exception as e:
+                return web.json_response({
+                    "error": "MODEL_INVALID",
+                    "message": f"Qwen GGUF model file is invalid or incomplete: {e}",
+                    "model_name": os.path.basename(model_path),
+                }, status=422)
+
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            root_dir = os.path.dirname(current_dir)
+            tags_path = os.path.join(root_dir, "character_template", "character_tags.json")
+            tags_data = {}
+            if os.path.exists(tags_path):
+                with open(tags_path, "r", encoding="utf-8") as f:
+                    tags_data = json.load(f)
+            tag_options = _extract_character_tag_options(tags_data)
+
+            system_prompt = (
+                "You are a professional anime/game character designer. "
+                "Convert broad character ideas into concise structured character fields. "
+                "Output valid JSON only."
+            )
+            user_prompt = f"""
+Create a character from this abstract idea:
+{user_description}
+
+Prefer these exact existing tags when they fit. Only invent a different tag or phrase if no listed tag matches the character:
+{json.dumps(tag_options, ensure_ascii=False)}
+
+Return a raw JSON object with exactly these keys:
+- sex: "male" or "female"
+- age: integer from 1 to 100
+- race
+- skin_color
+- body
+- face
+- hair
+- eyes
+- additional_details
+
+Rules:
+- Use comma-separated prompt fragments for text fields.
+- For race, hair, eyes, body and additional_details, prefer exact tags from the provided tag list.
+- Do not describe clothing or outfit items.
+- Do not add background, camera, pose, quality tags, style tags, nsfw, nudity, sex acts, or negative prompts.
+- Keep fields practical for the existing character form.
+- If a field is not needed, use an empty string.
+- Set sex and age explicitly based on the user's description. If unspecified, infer a reasonable adult character.
+
+Example:
+{{
+  "sex": "female",
+  "age": 24,
+  "race": "demon_girl, demon_horns",
+  "skin_color": "pale skin",
+  "body": "medium_breasts, slim waist",
+  "face": "mole_under_eye, sharp features",
+  "hair": "white_hair, long_hair, blunt_bangs",
+  "eyes": "red_eyes, glowing",
+  "additional_details": "tattoo, black_nails"
+}}
+"""
+
+            print(f"[CharacterCreatorV2] Character Wizard loading model: {model_path}")
+            llm = llama_cpp.Llama(
+                model_path=model_path,
+                n_ctx=6144,
+                n_gpu_layers=-1,
+                verbose=False,
+            )
+
+            response = llm.create_chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=900,
+                temperature=0.3,
+            )
+
+            content = response["choices"][0]["message"]["content"]
+            print(f"[CharacterCreatorV2] Character Wizard raw output: {content}")
+            parsed = _parse_character_wizard_json(content or "")
+            if parsed is None:
+                return web.json_response({
+                    "error": "PARSE_ERROR",
+                    "message": "Failed to parse Character Wizard JSON output.",
+                    "raw": content or "",
+                }, status=500)
+
+            return web.json_response(parsed)
+        except Exception as e:
+            traceback.print_exc()
+            return web.json_response({
+                "error": "INFERENCE_ERROR",
+                "message": f"Engine Error: {e}",
+                "model_name": "Qwen2VL (Check Console)",
+            }, status=500)
 
     @server.PromptServer.instance.routes.post("/vnccs/preview_generate")
     async def preview_generate(request):
