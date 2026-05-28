@@ -155,10 +155,15 @@ def load_costume_sprite_images(character, costume):
     paths = []
     if os.path.isdir(root):
         neutral_paths = []
+        seen_neutral_roots = set()
         for neutral_name in ("Neutral", "neutral"):
             neutral_root = os.path.join(root, neutral_name)
             if not os.path.isdir(neutral_root):
                 continue
+            neutral_key = os.path.normcase(os.path.abspath(neutral_root))
+            if neutral_key in seen_neutral_roots:
+                continue
+            seen_neutral_roots.add(neutral_key)
             for walk_root, _dirs, filenames in os.walk(neutral_root):
                 neutral_paths.extend(
                     os.path.join(walk_root, name)
@@ -170,7 +175,14 @@ def load_costume_sprite_images(character, costume):
             for name in os.listdir(root)
             if os.path.isfile(os.path.join(root, name)) and os.path.splitext(name)[1].lower() in IMAGE_EXTS
         ]
-        paths = sorted(neutral_paths or direct)
+        seen_paths = set()
+        paths = []
+        for path in sorted(neutral_paths or direct):
+            path_key = os.path.normcase(os.path.abspath(path))
+            if path_key in seen_paths:
+                continue
+            seen_paths.add(path_key)
+            paths.append(path)
 
     loaded = []
     for path in paths:
@@ -348,7 +360,7 @@ class EmotionGeneratorV2:
             "required": {
                 "generation_model": (["Illustrious", "Anima"], {"default": "Anima"}),
                 "generation_settings": ("STRING", {"default": json.dumps(default_generation_settings()), "multiline": False}),
-                "prompt_style": (["SDXL Style", "QWEN Style"], {"default": "SDXL Style"}),
+                "prompt_style": (["SDXL Style", "Anima"], {"default": "Anima"}),
                 "character": (characters, {"default": characters[0] if characters else "Character Name"}),
                 # JSON lists passed as strings from frontend
                 "costumes_data": ("STRING", {"default": "[]", "multiline": False}),
@@ -362,7 +374,7 @@ class EmotionGeneratorV2:
     FUNCTION = "generate_emotions_v2"
     CATEGORY = "VNCCS"
 
-    def generate_emotions_v2(self, generation_model="Anima", generation_settings="{}", prompt_style="QWEN Style", character="Character Name", costumes_data="[]", emotions_data="[]"):
+    def generate_emotions_v2(self, generation_model="Anima", generation_settings="{}", prompt_style="Anima", character="Character Name", costumes_data="[]", emotions_data="[]"):
         pipe, pipe_seed = build_emotion_pipe(generation_model, generation_settings)
         
         try:
@@ -456,9 +468,10 @@ class EmotionGeneratorV2:
 
                 face_details = build_face_details(info)
                 
-                if prompt_style == "QWEN Style":
-                    # Format: SDXL Styled tags: ***description***. Emotion description: ***natural_prompt***. ***face_details***
-                    emotion_text = f"Change emotion: {emotion_key}. \r\n SDXL Styled emotion tags: {emotion_description}. \r\n Emotion description: {natural_prompt} \r\n Character face details: {face_details}"
+                if prompt_style in ("Anima", "QWEN Style"):
+                    if face_details:
+                        positive_prompt += f", Character face details: {face_details}"
+                    emotion_text = natural_prompt.strip() or f"The character expresses {emotion_key.replace('-', ' ')}."
                 else:
                     # SDXL Style (Original logic)
                     emotion_text = f"({emotion_key}, {emotion_description}), {face_details}"

@@ -462,7 +462,7 @@ const STYLE = `
 
 /* ── Generation Panel ── */
 .ems-generation-section {
-    flex: 0 0 360px;
+    flex: 0 0 460px;
     gap: 10px;
     overflow-y: auto;
     scrollbar-width: thin;
@@ -528,6 +528,51 @@ const STYLE = `
     box-sizing: border-box;
     overflow: hidden;
 }
+.ems-model-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.ems-model-card-list {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+.ems-model-picker-menu {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid rgba(255,143,163,0.18);
+    border-radius: 10px;
+    background: rgba(8,8,12,0.48);
+}
+.ems-model-picker.is-open .ems-model-picker-menu {
+    display: flex;
+}
+.ems-model-picker-group {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+.ems-model-picker-group-title {
+    color: var(--accent-hover);
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+.ems-model-card.is-installed {
+    cursor: pointer;
+}
+.ems-model-card.is-selected {
+    border-color: var(--accent);
+    background: rgba(255, 143, 163, 0.12);
+    box-shadow: 0 0 0 1px rgba(255,143,163,0.12) inset;
+}
+.ems-model-card.is-missing {
+    opacity: 0.92;
+}
 .ems-model-card-top {
     display: flex;
     align-items: center;
@@ -572,6 +617,28 @@ const STYLE = `
     text-transform: uppercase;
     letter-spacing: 0.08em;
     flex-shrink: 0;
+}
+.ems-model-status.ok { color: var(--success); }
+.ems-model-status.missing { color: var(--error); }
+.ems-model-status.progress { color: var(--accent-lavender); }
+.ems-model-dot.missing { background: var(--error); }
+.ems-model-dot.progress { background: var(--accent-lavender); }
+.ems-model-card-download {
+    width: 100%;
+    padding: 7px 9px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--accent-border);
+    background: rgba(255,143,163,0.08);
+    color: var(--accent-hover);
+    font-family: var(--font);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+}
+.ems-model-card-download:hover {
+    background: rgba(255,143,163,0.14);
 }
 .ems-toggle {
     position: relative;
@@ -680,6 +747,16 @@ const STYLE = `
     background: rgba(255, 143, 163, 0.12);
     box-sizing: border-box;
     cursor: pointer;
+}
+.ems-lora-card .ems-lora-name {
+    flex: 1;
+}
+.ems-lora-card .ems-model-status {
+    margin-left: auto;
+}
+.ems-lora-card .ems-model-card-download {
+    width: auto;
+    flex-shrink: 0;
 }
 .ems-lora-card.is-selected {
     border-color: var(--accent);
@@ -928,7 +1005,82 @@ app.registerExtension({
                     searchTerm: "",
                     gen: parseGenerationSettings()
                 };
+                let receivedSerializedConfig = false;
                 let characterFetchToken = 0;
+                const CC_REPO_ID = "MIUProject/VNCCS_V2";
+                const CC_CACHE_KEY = `vnccs_cc_cache_${CC_REPO_ID}`;
+                let ccConfig = null;
+                let ccDlStatus = {};
+                let ccPollingInterval = null;
+                let localAssets = {
+                    checkpoints: [],
+                    diffusion_models: [],
+                    text_encoders: [],
+                    vae_models: [],
+                    loras: [],
+                };
+                const modelPickerOpen = { illustrious: false, anima: false };
+
+                const ccNormalize = (value) => String(value || "").trim().toLowerCase();
+                const ccKind = (entry) => ccNormalize(entry?.kind ?? entry?.Kind);
+                const ccType = (entry) => ccNormalize(entry?.type ?? entry?.Type);
+                const ccStatusKey = (cat, entry) => `cc_${cat}_${entry?.name || ""}`;
+                const ccRelPath = (entry) => {
+                    const localPath = String(entry?.local_path || "").replace(/\\/g, "/");
+                    const parts = localPath.split("/").filter(Boolean);
+                    if (parts.length >= 3 && parts[0] === "models") return parts.slice(2).join("/");
+                    return parts[parts.length - 1] || "";
+                };
+                const ccEntries = (section, kind, predicate = null) => {
+                    const entries = ccConfig?.[section] || [];
+                    return entries.filter(entry => {
+                        const kindOk = !kind || ccKind(entry) === ccNormalize(kind);
+                        return kindOk && (!predicate || predicate(entry));
+                    });
+                };
+                const localAssetRelSet = (items) => new Set((items || []).map(item => String(item || "").replace(/\\/g, "/")));
+                const mergeCcAndLocalEntries = (ccList, localNames, folder, type, kind) => {
+                    const localSet = localAssetRelSet(localNames);
+                    const seen = new Set();
+                    const merged = [];
+                    (ccList || []).forEach(entry => {
+                        const rel = ccRelPath(entry);
+                        if (!rel) return;
+                        seen.add(rel);
+                        merged.push({ ...entry, status: localSet.has(rel) ? "installed" : entry.status });
+                    });
+                    (localNames || []).forEach(name => {
+                        const rel = String(name || "").replace(/\\/g, "/");
+                        if (!rel || seen.has(rel)) return;
+                        seen.add(rel);
+                        merged.push({
+                            name: rel,
+                            type,
+                            kind,
+                            local_path: `models/${folder}/${rel}`,
+                            status: "installed",
+                            description: "Local ComfyUI model.",
+                            source: "local",
+                        });
+                    });
+                    return merged;
+                };
+                const ccResolveStatus = (entry, cat) => {
+                    const transient = new Set(["queued", "downloading", "error", "auth_required"]);
+                    const dls = ccDlStatus[ccStatusKey(cat, entry)] || {};
+                    return transient.has(dls.status) ? dls.status : (entry?.status || "missing");
+                };
+                const ccFirstEntry = (section, kind, predicate = null) => ccEntries(section, kind, predicate)[0] || null;
+                const ccHasRequiredFamilies = (config) => {
+                    const models = config?.models || [];
+                    const clips = config?.clip || [];
+                    const vaes = config?.vae || [];
+                    const hasAnima = models.some(entry => ccKind(entry) === "anima")
+                        && clips.some(entry => ccKind(entry) === "anima")
+                        && vaes.some(entry => ccKind(entry) === "anima");
+                    const hasIllustrious = models.some(entry => ccKind(entry) === "illustrious" && ccType(entry) === "checkpoint");
+                    return hasAnima && hasIllustrious;
+                };
 
                 function markNodeDirty() {
                     node.setDirtyCanvas?.(true, true);
@@ -979,7 +1131,7 @@ app.registerExtension({
                     saveGenerationSettings();
                 }
 
-                function setAnimaTurboMode(enabled) {
+                function setAnimaTurboMode(enabled, loraName = ANIMA_TURBO_LORA_NAME) {
                     if ((state.gen.generation_mode || "anima").toLowerCase() !== "anima") return;
                     if (enabled) {
                         if (!state.gen.turbo_enabled) {
@@ -989,7 +1141,7 @@ app.registerExtension({
                             };
                         }
                         state.gen.turbo_enabled = true;
-                        state.gen.dmd_lora_name = ANIMA_TURBO_LORA_NAME;
+                        state.gen.dmd_lora_name = loraName || ANIMA_TURBO_LORA_NAME;
                         state.gen.dmd_lora_strength = 1.0;
                         state.gen.steps = 12;
                         state.gen.cfg = 1.0;
@@ -1003,6 +1155,211 @@ app.registerExtension({
                     syncGenerationControls();
                     saveGenerationSettings();
                 }
+
+                const cardStatusLabel = (status, entry, cat) => {
+                    const dls = ccDlStatus[ccStatusKey(cat, entry)] || {};
+                    if (status === "installed") return "Installed";
+                    if (status === "queued") return "Queued";
+                    if (status === "downloading") return dls.message || "Downloading";
+                    if (status === "auth_required") return "Key Required";
+                    if (status === "error") return "Error";
+                    return "Missing";
+                };
+
+                const ccDownloadEntry = async (cat, entry) => {
+                    if (!entry?.name) return;
+                    const key = ccStatusKey(cat, entry);
+                    ccDlStatus[key] = { status: "queued", message: "Queued..." };
+                    renderControlCenterCards();
+                    try {
+                        const response = await api.fetchApi("/vnccs/control_center/download", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ repo_id: CC_REPO_ID, category: cat, name: entry.name }),
+                        });
+                        const payload = await response.json();
+                        if (!response.ok || payload.error) {
+                            ccDlStatus[key] = { status: "error", message: payload.error || "Download failed" };
+                            renderControlCenterCards();
+                            return;
+                        }
+                        startCcPolling();
+                    } catch (error) {
+                        ccDlStatus[key] = { status: "error", message: String(error?.message || error) };
+                        renderControlCenterCards();
+                    }
+                };
+
+                const fetchCcConfig = async (force = false) => {
+                    if (!force && window.VNCCS_CC_REGISTRY?.[CC_REPO_ID] && ccHasRequiredFamilies(window.VNCCS_CC_REGISTRY[CC_REPO_ID])) {
+                        ccConfig = window.VNCCS_CC_REGISTRY[CC_REPO_ID];
+                        renderControlCenterCards();
+                        return ccConfig;
+                    }
+                    if (!force && ccConfig && ccHasRequiredFamilies(ccConfig)) return ccConfig;
+                    if (!force) {
+                        try {
+                            const cached = localStorage.getItem(CC_CACHE_KEY);
+                            if (cached) {
+                                ccConfig = JSON.parse(cached);
+                                if (ccHasRequiredFamilies(ccConfig)) renderControlCenterCards();
+                                else ccConfig = null;
+                            }
+                        } catch (_) {}
+                    }
+
+                    const url = `/vnccs/control_center/check?repo_id=${encodeURIComponent(CC_REPO_ID)}${force ? "&force_refresh=true" : ""}`;
+                    const response = await api.fetchApi(url);
+                    const payload = await response.json();
+                    if (!response.ok || payload.error) throw new Error(payload.error || "Failed to load Control Center config");
+                    ccConfig = payload;
+                    window.VNCCS_CC_REGISTRY = window.VNCCS_CC_REGISTRY || {};
+                    window.VNCCS_CC_REGISTRY[CC_REPO_ID] = payload;
+                    localStorage.setItem(CC_CACHE_KEY, JSON.stringify(payload));
+                    renderControlCenterCards();
+                    return payload;
+                };
+
+                const refreshCcDownloadStatus = async () => {
+                    try {
+                        const response = await api.fetchApi("/vnccs/manager/status");
+                        if (!response.ok) return;
+                        ccDlStatus = await response.json();
+                        const active = Object.values(ccDlStatus || {}).some(item => ["queued", "downloading"].includes(item?.status));
+                        if (!active) {
+                            stopCcPolling();
+                            await fetchCcConfig(true);
+                        } else {
+                            renderControlCenterCards();
+                        }
+                    } catch (_) {}
+                };
+                const startCcPolling = () => {
+                    if (ccPollingInterval) return;
+                    ccPollingInterval = setInterval(refreshCcDownloadStatus, 2000);
+                };
+                const stopCcPolling = () => {
+                    if (!ccPollingInterval) return;
+                    clearInterval(ccPollingInterval);
+                    ccPollingInterval = null;
+                };
+
+                const ensureAnimaDefaultAux = () => {
+                    const clip = ccFirstEntry("clip", "Anima");
+                    const vae = ccFirstEntry("vae", "Anima");
+                    if (clip) state.gen.clip_name = ccRelPath(clip);
+                    else if (!state.gen.clip_name) state.gen.clip_name = ANIMA_CLIP_NAME;
+                    if (vae) state.gen.vae_name = ccRelPath(vae);
+                    else if (!state.gen.vae_name) state.gen.vae_name = ANIMA_VAE_NAME;
+                };
+
+                const selectCcAsset = (key, rel) => {
+                    if (!rel) return;
+                    state.gen[key] = rel;
+                    saveGenerationSettings();
+                    renderControlCenterCards();
+                };
+
+                const selectAnimaModel = (rel) => {
+                    ensureAnimaDefaultAux();
+                    modelPickerOpen.anima = false;
+                    selectCcAsset("diffusion_model_name", rel);
+                };
+
+                const selectIllustriousModel = (rel) => {
+                    modelPickerOpen.illustrious = false;
+                    selectCcAsset("ckpt_name", rel);
+                };
+
+                const downloadAnimaBundle = async (cat, entry) => {
+                    ensureAnimaDefaultAux();
+                    await ccDownloadEntry(cat, entry);
+                    const clip = ccFirstEntry("clip", "Anima");
+                    const vae = ccFirstEntry("vae", "Anima");
+                    if (clip && ccResolveStatus(clip, "clip") !== "installed") await ccDownloadEntry("clip", clip);
+                    if (vae && ccResolveStatus(vae, "vae") !== "installed") await ccDownloadEntry("vae", vae);
+                };
+
+                const setCcTurboMode = (enabled, rel) => {
+                    if ((state.gen.generation_mode || "anima").toLowerCase() === "anima") {
+                        state.gen.dmd_lora_name = rel || state.gen.dmd_lora_name || "";
+                        setAnimaTurboMode(enabled, rel || state.gen.dmd_lora_name || ANIMA_TURBO_LORA_NAME);
+                    } else {
+                        state.gen.dmd_lora_name = enabled ? rel : "";
+                        state.gen.dmd_lora_strength = enabled ? 1.0 : 0.0;
+                        saveGenerationSettings();
+                    }
+                    renderControlCenterCards();
+                };
+
+                const buildAssetCard = ({ entry, cat, selectedValue, onSelect, compact = false, toggled = false, onToggle = null, pickerHead = false, onDownload = null }) => {
+                    const status = ccResolveStatus(entry, cat);
+                    const rel = ccRelPath(entry);
+                    const installed = status === "installed";
+                    const selected = selectedValue && rel && String(selectedValue).replace(/\\/g, "/") === rel;
+                    const progress = ["queued", "downloading"].includes(status);
+
+                    const card = document.createElement("div");
+                    card.className = "ems-model-card";
+                    card.classList.toggle("is-installed", installed);
+                    card.classList.toggle("is-selected", selected || toggled);
+                    card.classList.toggle("is-missing", !installed);
+                    if (installed || pickerHead) card.onclick = () => onSelect?.(rel, entry);
+
+                    const top = document.createElement("div");
+                    top.className = "ems-model-card-top";
+                    const badge = document.createElement("span");
+                    badge.className = "ems-model-dot " + (installed ? "ok" : progress ? "progress" : "missing");
+                    top.appendChild(badge);
+                    const name = document.createElement("div");
+                    name.className = "ems-model-title";
+                    name.textContent = entry.name || rel || "Unknown";
+                    top.appendChild(name);
+                    const statusEl = document.createElement("div");
+                    statusEl.className = "ems-model-status " + (installed ? "ok" : progress ? "progress" : "missing");
+                    statusEl.textContent = cardStatusLabel(status, entry, cat);
+                    top.appendChild(statusEl);
+
+                    if (onToggle && installed) {
+                        const toggle = document.createElement("label");
+                        toggle.className = "ems-toggle";
+                        const input = document.createElement("input");
+                        input.type = "checkbox";
+                        input.checked = !!toggled;
+                        input.onchange = (event) => {
+                            event.stopPropagation();
+                            onToggle(event.target.checked, rel, entry);
+                        };
+                        input.onclick = (event) => event.stopPropagation();
+                        const track = document.createElement("span");
+                        track.className = "ems-toggle-track";
+                        const thumb = document.createElement("span");
+                        thumb.className = "ems-toggle-thumb";
+                        toggle.append(input, track, thumb);
+                        top.appendChild(toggle);
+                    }
+
+                    card.appendChild(top);
+                    if (entry.description && !compact) {
+                        const desc = document.createElement("div");
+                        desc.className = "ems-model-desc";
+                        desc.textContent = entry.description;
+                        card.appendChild(desc);
+                    }
+                    if (!installed) {
+                        const btn = document.createElement("button");
+                        btn.type = "button";
+                        btn.className = "ems-model-card-download";
+                        btn.textContent = status === "auth_required" ? "Enter Key in Control Center" : "Download";
+                        btn.disabled = progress;
+                        btn.onclick = (event) => {
+                            event.stopPropagation();
+                            if (!progress && status !== "auth_required") (onDownload || ccDownloadEntry)(cat, entry);
+                        };
+                        card.appendChild(btn);
+                    }
+                    return card;
+                };
 
                 function createField(label, input) {
                     const wrap = document.createElement("label");
@@ -1041,6 +1398,205 @@ app.registerExtension({
 
                 const generationEls = {};
 
+                const renderModelPicker = ({ containerEl, entries, cat, key, mode, emptyText, onSelect, onDownload = null }) => {
+                    if (!containerEl) return;
+                    containerEl.innerHTML = "";
+                    const picker = document.createElement("div");
+                    picker.className = "ems-model-picker";
+                    picker.classList.toggle("is-open", !!modelPickerOpen[mode]);
+                    containerEl.appendChild(picker);
+
+                    if (!entries.length) {
+                        const empty = document.createElement("div");
+                        empty.className = "ems-model-desc";
+                        empty.textContent = emptyText;
+                        picker.appendChild(empty);
+                        return;
+                    }
+
+                    const current = String(state.gen[key] || "").replace(/\\/g, "/");
+                    const selectedEntry = entries.find(entry => ccRelPath(entry) === current) || entries[0];
+                    picker.appendChild(buildAssetCard({
+                        entry: selectedEntry,
+                        cat,
+                        selectedValue: ccRelPath(selectedEntry),
+                        pickerHead: true,
+                        onSelect: () => {
+                            modelPickerOpen[mode] = !modelPickerOpen[mode];
+                            renderControlCenterCards();
+                        },
+                        onDownload,
+                    }));
+
+                    const menu = document.createElement("div");
+                    menu.className = "ems-model-picker-menu";
+                    picker.appendChild(menu);
+
+                    const appendGroup = (title, groupEntries) => {
+                        if (!groupEntries.length) return;
+                        const group = document.createElement("div");
+                        group.className = "ems-model-picker-group";
+                        const groupTitle = document.createElement("div");
+                        groupTitle.className = "ems-model-picker-group-title";
+                        groupTitle.textContent = title;
+                        group.appendChild(groupTitle);
+                        groupEntries.forEach(entry => {
+                            group.appendChild(buildAssetCard({
+                                entry,
+                                cat,
+                                selectedValue: state.gen[key] || "",
+                                onSelect,
+                                onDownload,
+                            }));
+                        });
+                        menu.appendChild(group);
+                    };
+
+                    appendGroup("VNCCS Models", entries.filter(entry => entry.source !== "local"));
+                    appendGroup("User Models", entries.filter(entry => entry.source === "local"));
+                };
+
+                const renderModeLoraCards = (containerEl, mode) => {
+                    if (!containerEl) return;
+                    containerEl.innerHTML = "";
+                    const kindOk = (entry) => {
+                        const kind = ccKind(entry);
+                        if (mode === "anima") return kind === "anima";
+                        return kind === "sdxl" || kind === "illustrious";
+                    };
+                    const turboEntries = (ccConfig?.lora || []).filter(entry => kindOk(entry) && ccType(entry) === "turbolora");
+                    if (!turboEntries.length) {
+                        const fallback = {
+                            name: "Anima Turbo LoRA",
+                            type: "turbolora",
+                            kind: "Anima",
+                            local_path: `models/loras/${ANIMA_TURBO_LORA_NAME}`,
+                            status: (localAssets.loras || []).map(x => String(x).replace(/\\/g, "/")).includes(ANIMA_TURBO_LORA_NAME.replace(/\\/g, "/")) ? "installed" : "missing",
+                            description: "Anima turbo LoRA.",
+                        };
+                        turboEntries.push(fallback);
+                    }
+
+                    const label = document.createElement("div");
+                    label.className = "ems-label";
+                    label.textContent = "Turbo LoRA";
+                    containerEl.appendChild(label);
+                    turboEntries.forEach(entry => {
+                        const rel = ccRelPath(entry);
+                        const status = ccResolveStatus(entry, "lora");
+                        const installed = status === "installed";
+                        const progress = ["queued", "downloading"].includes(status);
+                        const enabled = mode === "anima"
+                            ? !!state.gen.turbo_enabled && String(state.gen.dmd_lora_name || "").replace(/\\/g, "/") === rel
+                            : (state.gen.dmd_lora_strength || 0) > 0 && String(state.gen.dmd_lora_name || "").replace(/\\/g, "/") === rel;
+                        const card = document.createElement("div");
+                        card.className = "ems-lora-card" + (enabled ? " is-selected" : "");
+                        if (installed) {
+                            card.onclick = () => setCcTurboMode(!enabled, rel);
+                        }
+
+                        const name = document.createElement("div");
+                        name.className = "ems-lora-name";
+                        const dot = document.createElement("span");
+                        dot.className = "ems-model-dot " + (installed ? "ok" : progress ? "progress" : "missing");
+                        name.appendChild(dot);
+                        name.appendChild(document.createTextNode(entry.name || rel || "Turbo LoRA"));
+
+                        const statusEl = document.createElement("div");
+                        statusEl.className = "ems-model-status " + (installed ? "ok" : progress ? "progress" : "missing");
+                        statusEl.textContent = cardStatusLabel(status, entry, "lora");
+
+                        card.appendChild(name);
+                        card.appendChild(statusEl);
+
+                        if (installed) {
+                            const toggle = document.createElement("label");
+                            toggle.className = "ems-toggle";
+                            toggle.onclick = (event) => event.stopPropagation();
+                            const input = document.createElement("input");
+                            input.type = "checkbox";
+                            input.checked = enabled;
+                            input.onchange = (event) => {
+                                event.stopPropagation();
+                                setCcTurboMode(event.target.checked, rel);
+                            };
+                            const track = document.createElement("span");
+                            track.className = "ems-toggle-track";
+                            const thumb = document.createElement("span");
+                            thumb.className = "ems-toggle-thumb";
+                            toggle.append(input, track, thumb);
+                            card.appendChild(toggle);
+                        } else {
+                            const btn = document.createElement("button");
+                            btn.type = "button";
+                            btn.className = "ems-model-card-download";
+                            btn.textContent = status === "auth_required" ? "Enter Key" : "Download";
+                            btn.disabled = progress;
+                            btn.onclick = (event) => {
+                                event.stopPropagation();
+                                if (!progress && status !== "auth_required") ccDownloadEntry("lora", entry);
+                            };
+                            card.appendChild(btn);
+                        }
+
+                        containerEl.appendChild(card);
+                    });
+                };
+
+                const renderControlCenterCards = () => {
+                    if (!generationEls.animaModelCards || !generationEls.illustriousModelCards) return;
+                    const currentMode = (state.gen.generation_mode || "anima").toLowerCase();
+                    const isAnimaMode = currentMode === "anima";
+
+                    const animaModels = mergeCcAndLocalEntries(
+                        ccEntries("models", "Anima", entry => ccType(entry) === "unet"),
+                        localAssets.diffusion_models,
+                        "diffusion_models",
+                        "unet",
+                        "Anima",
+                    );
+                    renderModelPicker({
+                        containerEl: generationEls.animaModelCards,
+                        entries: animaModels,
+                        cat: "models",
+                        key: "diffusion_model_name",
+                        mode: "anima",
+                        emptyText: "No Anima diffusion models found.",
+                        onSelect: rel => selectAnimaModel(rel),
+                        onDownload: downloadAnimaBundle,
+                    });
+                    const currentAnima = String(state.gen.diffusion_model_name || "").replace(/\\/g, "/");
+                    if (!currentAnima && animaModels[0]) selectAnimaModel(ccRelPath(animaModels[0]));
+                    ensureAnimaDefaultAux();
+
+                    const illustriousDefaults = (ccConfig?.models || []).filter(entry => {
+                        const kind = ccKind(entry);
+                        return (kind === "illustrious" || kind === "sdxl") && ccType(entry) === "checkpoint";
+                    });
+                    const illustriousCkpts = mergeCcAndLocalEntries(
+                        illustriousDefaults,
+                        localAssets.checkpoints,
+                        "checkpoints",
+                        "checkpoint",
+                        "Illustrious",
+                    );
+                    renderModelPicker({
+                        containerEl: generationEls.illustriousModelCards,
+                        entries: illustriousCkpts,
+                        cat: "models",
+                        key: "ckpt_name",
+                        mode: "illustrious",
+                        emptyText: "No Illustrious checkpoints found.",
+                        onSelect: rel => selectIllustriousModel(rel),
+                    });
+                    const currentIllustrious = String(state.gen.ckpt_name || "").replace(/\\/g, "/");
+                    if (!currentIllustrious && illustriousCkpts[0]) selectCcAsset("ckpt_name", ccRelPath(illustriousCkpts[0]));
+
+                    generationEls.animaModelCards.style.display = isAnimaMode ? "flex" : "none";
+                    generationEls.illustriousModelCards.style.display = isAnimaMode ? "none" : "flex";
+                    if (generationEls.animaLoraCards) renderModeLoraCards(generationEls.animaLoraCards, currentMode);
+                };
+
                 function populateSelect(select, values, includeNone = false) {
                     const current = select.value;
                     select.innerHTML = "";
@@ -1067,6 +1623,13 @@ app.registerExtension({
                         const response = await api.fetchApi("/vnccs/context_lists");
                         if (!response.ok) return;
                         const data = await response.json();
+                        localAssets = {
+                            checkpoints: data.checkpoints || [],
+                            diffusion_models: data.diffusion_models || [],
+                            text_encoders: data.text_encoders || [],
+                            vae_models: data.vae_models || [],
+                            loras: data.loras || [],
+                        };
                         populateSelect(generationEls.sampler, data.samplers || ["euler", "er_sde"]);
                         populateSelect(generationEls.scheduler, data.schedulers || ["normal", "simple"]);
                         (generationEls.loraSelects || []).forEach(select => populateSelect(select, data.loras || [], true));
@@ -1081,6 +1644,12 @@ app.registerExtension({
                         }
                         syncGenerationControls();
                         saveGenerationSettings();
+                        try {
+                            await fetchCcConfig(false);
+                        } catch (error) {
+                            console.warn("[VNCCS Emotion Studio] Failed to load Control Center config", error);
+                            renderControlCenterCards();
+                        }
                     } catch (e) {
                         console.warn("[VNCCS Emotion Studio] Failed to load generation asset lists", e);
                     }
@@ -1090,10 +1659,8 @@ app.registerExtension({
                     const mode = (state.gen.generation_mode || "anima").toLowerCase();
                     generationEls.tabIllustrious?.classList.toggle("active", mode === "illustrious");
                     generationEls.tabAnima?.classList.toggle("active", mode === "anima");
-                    if (generationEls.modelTitle) generationEls.modelTitle.lastChild.textContent = mode === "anima" ? "Anima Base v1.0" : "Illustrious";
-                    if (generationEls.modelDesc) generationEls.modelDesc.innerText = mode === "anima"
-                        ? `${state.gen.diffusion_model_name || "Select ANIMA diffusion model"} · ${state.gen.clip_name || ANIMA_CLIP_NAME}`
-                        : `${state.gen.ckpt_name || "Select Illustrious checkpoint"}`;
+                    if (generationEls.animaModelCards) generationEls.animaModelCards.style.display = mode === "anima" ? "flex" : "none";
+                    if (generationEls.illustriousModelCards) generationEls.illustriousModelCards.style.display = mode === "anima" ? "none" : "flex";
                     if (generationEls.steps) generationEls.steps.value = state.gen.steps ?? "";
                     if (generationEls.cfg) generationEls.cfg.value = state.gen.cfg ?? "";
                     if (generationEls.sampler) generationEls.sampler.value = state.gen.sampler || "euler";
@@ -1101,8 +1668,6 @@ app.registerExtension({
                     if (generationEls.seed) generationEls.seed.value = state.gen.seed ?? 0;
                     if (generationEls.seedMode) generationEls.seedMode.classList.toggle("active", (state.gen.seed_mode || "fixed") === "randomize");
                     if (generationEls.loraSection) generationEls.loraSection.style.display = mode === "anima" ? "flex" : "none";
-                    if (generationEls.turboToggle) generationEls.turboToggle.checked = !!state.gen.turbo_enabled;
-                    if (generationEls.turboCard) generationEls.turboCard.classList.toggle("is-selected", !!state.gen.turbo_enabled);
                     if (generationEls.loraRows) {
                         generationEls.loraRows.forEach((row, index) => {
                             const item = (state.gen.lora_stack || [])[index] || { name: "", strength: 1.0 };
@@ -1255,28 +1820,15 @@ app.registerExtension({
                 tabRow.appendChild(tabAnima);
                 generationSection.appendChild(tabRow);
 
-                const modelCard = document.createElement("div");
-                modelCard.className = "ems-model-card";
-                const modelTop = document.createElement("div");
-                modelTop.className = "ems-model-card-top";
-                const modelTitle = document.createElement("div");
-                modelTitle.className = "ems-model-title";
-                const modelDot = document.createElement("span");
-                modelDot.className = "ems-model-dot";
-                modelTitle.appendChild(modelDot);
-                modelTitle.appendChild(document.createTextNode("Anima Base v1.0"));
-                const modelStatus = document.createElement("div");
-                modelStatus.className = "ems-model-status";
-                modelStatus.innerText = "Selected";
-                modelTop.appendChild(modelTitle);
-                modelTop.appendChild(modelStatus);
-                const modelDesc = document.createElement("div");
-                modelDesc.className = "ems-model-desc";
-                modelCard.appendChild(modelTop);
-                modelCard.appendChild(modelDesc);
-                generationEls.modelTitle = modelTitle;
-                generationEls.modelDesc = modelDesc;
-                generationSection.appendChild(modelCard);
+                const illustriousModelCards = document.createElement("div");
+                illustriousModelCards.className = "ems-model-card-list";
+                generationEls.illustriousModelCards = illustriousModelCards;
+                generationSection.appendChild(illustriousModelCards);
+
+                const animaModelCards = document.createElement("div");
+                animaModelCards.className = "ems-model-card-list";
+                generationEls.animaModelCards = animaModelCards;
+                generationSection.appendChild(animaModelCards);
 
                 const genGrid = document.createElement("div");
                 genGrid.className = "ems-generation-grid";
@@ -1327,28 +1879,10 @@ app.registerExtension({
                 loraHeader.className = "ems-costumes-header";
                 loraHeader.innerText = "Anima LoRA Stack";
                 loraSection.appendChild(loraHeader);
-                const turboCard = document.createElement("label");
-                turboCard.className = "ems-lora-card";
-                turboCard.innerHTML = `<span class="ems-lora-name"><span class="ems-model-dot"></span>Anima Turbo LoRA</span><span class="ems-model-status">Installed</span>`;
-                const turboToggle = document.createElement("input");
-                turboToggle.type = "checkbox";
-                turboToggle.onchange = (event) => {
-                    event.stopPropagation();
-                    setAnimaTurboMode(event.target.checked);
-                };
-                turboToggle.onclick = (event) => event.stopPropagation();
-                const turboSwitch = document.createElement("span");
-                turboSwitch.className = "ems-toggle";
-                const turboTrack = document.createElement("span");
-                turboTrack.className = "ems-toggle-track";
-                const turboThumb = document.createElement("span");
-                turboThumb.className = "ems-toggle-thumb";
-                turboSwitch.appendChild(turboToggle);
-                turboSwitch.appendChild(turboTrack);
-                turboSwitch.appendChild(turboThumb);
-                turboCard.appendChild(turboSwitch);
-                turboCard.onclick = () => setAnimaTurboMode(!state.gen.turbo_enabled);
-                loraSection.appendChild(turboCard);
+                const animaLoraCards = document.createElement("div");
+                animaLoraCards.className = "ems-lora-stack";
+                generationEls.animaLoraCards = animaLoraCards;
+                loraSection.appendChild(animaLoraCards);
                 for (let i = 0; i < 5; i++) {
                     const row = document.createElement("div");
                     row.className = "ems-lora-row";
@@ -1375,14 +1909,11 @@ app.registerExtension({
                     loraSection.appendChild(row);
                 }
                 generationEls.loraSection = loraSection;
-                generationEls.turboToggle = turboToggle;
-                generationEls.turboCard = turboCard;
                 generationSection.appendChild(loraSection);
 
                 rightCol.appendChild(selectionCol);
                 rightCol.appendChild(generationSection);
                 syncGenerationControls();
-                saveGenerationSettings();
                 loadGenerationAssets();
                 container.appendChild(rightCol);
 
@@ -1412,6 +1943,7 @@ app.registerExtension({
 
                 // Add Prompt Style Select (Top)
                 const styleWidget = node.widgets.find(w => w.name === "prompt_style");
+                const normalizePromptStyle = (value) => value === "QWEN Style" ? "Anima" : value;
 
                 const styleContainer = document.createElement("div");
                 styleContainer.className = "ems-section";
@@ -1422,16 +1954,23 @@ app.registerExtension({
                 styleSelect.className = "em-select";
 
                 if (styleWidget && styleWidget.options.values) {
+                    const seenStyles = new Set();
                     styleWidget.options.values.forEach(v => {
+                        const normalized = normalizePromptStyle(v);
+                        if (seenStyles.has(normalized)) return;
+                        seenStyles.add(normalized);
                         const opt = document.createElement("option");
-                        opt.value = v;
-                        opt.innerText = v;
-                        if (v === styleWidget.value) opt.selected = true;
+                        opt.value = normalized;
+                        opt.innerText = normalized;
+                        if (normalized === normalizePromptStyle(styleWidget.value)) opt.selected = true;
                         styleSelect.appendChild(opt);
                     });
+                    if (styleWidget.value !== normalizePromptStyle(styleWidget.value)) {
+                        commitWidget(styleWidget, normalizePromptStyle(styleWidget.value), false);
+                    }
                     // Sync
                     styleSelect.onchange = () => {
-                        commitWidget(styleWidget, styleSelect.value);
+                        commitWidget(styleWidget, normalizePromptStyle(styleSelect.value));
                     };
                     styleWidget.hidden = true;
                 }
@@ -1562,7 +2101,15 @@ app.registerExtension({
 
                     // 2. Style
                     if (styleWidget && styleWidget.value) {
-                        styleSelect.value = styleWidget.value;
+                        const normalizedStyle = normalizePromptStyle(styleWidget.value);
+                        if (![...styleSelect.options].some(opt => opt.value === normalizedStyle)) {
+                            const opt = document.createElement("option");
+                            opt.value = normalizedStyle;
+                            opt.innerText = normalizedStyle;
+                            styleSelect.appendChild(opt);
+                        }
+                        styleSelect.value = normalizedStyle;
+                        if (styleWidget.value !== normalizedStyle) commitWidget(styleWidget, normalizedStyle, false);
                     }
                     if (modelWidget && modelWidget.value) {
                         state.gen.generation_mode = String(modelWidget.value).toLowerCase();
@@ -1590,6 +2137,30 @@ app.registerExtension({
                         } catch (e) { }
                     }
                 }
+
+                node._vnccsEmotionRestoreFromWidgets = () => {
+                    restoreStateFromWidgets();
+                    renderEmotions();
+                    renderCostumes();
+                    updateButtonState();
+                };
+                node._vnccsEmotionApplySerializedInfo = (info) => {
+                    const values = Array.isArray(info?.widgets_values) ? info.widgets_values : null;
+                    if (!values) return;
+                    receivedSerializedConfig = true;
+                    const widgetOrder = [
+                        ["generation_model", modelWidget],
+                        ["generation_settings", generationSettingsWidget],
+                        ["prompt_style", styleWidget],
+                        ["character", charWidget],
+                        ["costumes_data", costumesDataWidget],
+                        ["emotions_data", emotionsDataWidget],
+                    ];
+                    widgetOrder.forEach(([_, widget], index) => {
+                        if (widget && values[index] !== undefined) widget.value = values[index];
+                    });
+                };
+                node._vnccsEmotionPersistAllState = persistAllState;
 
                 // Apply size on explicit resize too
                 node.onResize = function (size) {
@@ -1807,7 +2378,7 @@ app.registerExtension({
                         renderEmotions();
 
                         // NOW restore selection state (after list loaded)
-                        restoreStateFromWidgets();
+                        if (!receivedSerializedConfig) restoreStateFromWidgets();
                         // Re-render to show restored selections
                         renderEmotions();
                         renderCostumes();
@@ -1816,7 +2387,9 @@ app.registerExtension({
                 });
 
                 if (state.character) {
-                    fetchCharacterData(state.character);
+                    setTimeout(() => {
+                        if (!receivedSerializedConfig) fetchCharacterData(state.character);
+                    }, 50);
                 }
 
                 // Hook callback
@@ -1831,14 +2404,17 @@ app.registerExtension({
                 }
 
                 setTimeout(() => {
-                    restoreStateFromWidgets();
-                    persistAllState();
-                }, 0);
+                    if (!receivedSerializedConfig) restoreStateFromWidgets();
+                }, 50);
             };
 
             const onConfigure = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function (info) {
                 onConfigure?.apply(this, arguments);
+                setTimeout(() => {
+                    this._vnccsEmotionApplySerializedInfo?.(info);
+                    this._vnccsEmotionRestoreFromWidgets?.();
+                }, 0);
                 syncDOMWidgetWidth(this, "emotion_ui_v2");
                 setTimeout(() => syncDOMWidgetWidth(this, "emotion_ui_v2"), 100);
             };

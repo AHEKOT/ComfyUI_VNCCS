@@ -11,6 +11,9 @@ const DEFAULT_DATA = {
     pose_generation: {
         target_size: 1024,
     },
+    emotion_generation: {
+        face_denoise: 0.55,
+    },
     remove_clothes: {
         prompt: "Dress character: White underwear",
     },
@@ -195,6 +198,78 @@ const CSS = `
     font-size: 11px;
     padding: 6px 8px;
     color-scheme: dark;
+}
+.vnccs-pipe-slider-field {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 7px;
+}
+.vnccs-pipe-slider-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.vnccs-pipe-slider-value {
+    color: #e8e8f0;
+    font-size: 11px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+}
+.vnccs-pipe-slider {
+    width: 100%;
+    height: 18px;
+    margin: 0;
+    appearance: none;
+    background: transparent;
+    cursor: pointer;
+}
+.vnccs-pipe-slider::-webkit-slider-runnable-track {
+    height: 8px;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: linear-gradient(90deg, var(--zone-color) 0 var(--fill), rgba(255,255,255,0.08) var(--fill) 100%);
+}
+.vnccs-pipe-slider::-webkit-slider-thumb {
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    margin-top: -6px;
+    border-radius: 50%;
+    border: 2px solid #f6f0f4;
+    background: var(--zone-color);
+    box-shadow: 0 0 14px var(--zone-glow);
+}
+.vnccs-pipe-slider::-moz-range-track {
+    height: 8px;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.08);
+}
+.vnccs-pipe-slider::-moz-range-progress {
+    height: 8px;
+    border-radius: 999px;
+    background: var(--zone-color);
+}
+.vnccs-pipe-slider::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid #f6f0f4;
+    background: var(--zone-color);
+    box-shadow: 0 0 14px var(--zone-glow);
+}
+.vnccs-pipe-slider-status {
+    border: 1px solid var(--zone-border);
+    border-radius: 7px;
+    background: var(--zone-bg);
+    color: var(--zone-color);
+    padding: 6px 8px;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    text-align: center;
 }
 .vnccs-pipe-textarea {
     min-height: 72px;
@@ -655,6 +730,7 @@ class CharacterGeneratorWidget {
 
     set(section, key, value) {
         this.syncCharacterSourceData();
+        if (!this.data[section] || typeof this.data[section] !== "object") this.data[section] = {};
         this.data[section][key] = value;
         writeData(this.node, this.data);
         this.saveBrowserState();
@@ -1063,6 +1139,60 @@ class CharacterGeneratorWidget {
         return block;
     }
 
+    faceDenoiseSlider() {
+        const value = Math.max(0, Math.min(1, Number(this.data.emotion_generation?.face_denoise ?? 0.55)));
+        const denoiseZone = (next) => next < 0.5
+            ? { status: "weak", color: "#64a8ff", border: "rgba(100,168,255,0.5)", bg: "rgba(100,168,255,0.1)", glow: "rgba(100,168,255,0.3)" }
+            : (next <= 0.65
+                ? { status: "optimal", color: "#00d68f", border: "rgba(0,214,143,0.5)", bg: "rgba(0,214,143,0.1)", glow: "rgba(0,214,143,0.28)" }
+                : { status: "excessive", color: "#ff5f78", border: "rgba(255,95,120,0.58)", bg: "rgba(255,95,120,0.12)", glow: "rgba(255,95,120,0.32)" });
+
+        const wrap = document.createElement("label");
+        wrap.className = "vnccs-pipe-slider-field";
+
+        const head = document.createElement("div");
+        head.className = "vnccs-pipe-slider-head";
+        const caption = document.createElement("div");
+        caption.className = "vnccs-pipe-label";
+        caption.textContent = "face detailer denoise";
+        const valueEl = document.createElement("div");
+        valueEl.className = "vnccs-pipe-slider-value";
+        valueEl.textContent = value.toFixed(2);
+        head.append(caption, valueEl);
+
+        const slider = document.createElement("input");
+        slider.className = "vnccs-pipe-slider";
+        slider.type = "range";
+        slider.min = "0";
+        slider.max = "1";
+        slider.step = "0.01";
+        slider.value = String(value);
+
+        const status = document.createElement("div");
+        status.className = "vnccs-pipe-slider-status";
+        const paint = (nextValue) => {
+            const next = Math.max(0, Math.min(1, Number(nextValue)));
+            const nextZone = denoiseZone(next);
+            slider.style.setProperty("--fill", `${next * 100}%`);
+            slider.style.setProperty("--zone-color", nextZone.color);
+            slider.style.setProperty("--zone-glow", nextZone.glow);
+            status.style.setProperty("--zone-color", nextZone.color);
+            status.style.setProperty("--zone-border", nextZone.border);
+            status.style.setProperty("--zone-bg", nextZone.bg);
+            valueEl.textContent = next.toFixed(2);
+            status.textContent = nextZone.status;
+        };
+        paint(value);
+        slider.oninput = () => {
+            const next = Math.max(0, Math.min(1, Number(slider.value)));
+            paint(next);
+            this.set("emotion_generation", "face_denoise", next);
+        };
+
+        wrap.append(head, slider, status);
+        return wrap;
+    }
+
     renderSettings() {
         this.syncCharacterSourceData();
         this.syncStagesFromData();
@@ -1084,6 +1214,9 @@ class CharacterGeneratorWidget {
                     <div class="vnccs-pipe-empty" style="min-height:auto;padding:8px;">${count} costume / emotion pair(s)</div>
                 </div>`;
             this.settingsEl.appendChild(info);
+            this.settingsEl.appendChild(this.block("Face Detailer", [
+                this.faceDenoiseSlider(),
+            ]));
             return;
         }
         if (this.isClone) {

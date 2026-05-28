@@ -283,6 +283,9 @@ DEFAULT_WIDGET_DATA = {
     "pose_generation": {
         "target_size": "1024",
     },
+    "emotion_generation": {
+        "face_denoise": 0.55,
+    },
     "remove_clothes": {
         "prompt": "Dress character: White underwear",
     },
@@ -1223,6 +1226,23 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             print(f"[VNCCS Emotions Generator] Failed to load source mask '{path}': {exc}")
             return None
 
+    def _load_source_sprite_from_path(self, path):
+        path = str(path or "").strip()
+        if not path or not os.path.exists(path):
+            return None, None
+        try:
+            img = Image.open(path)
+            img = ImageOps.exif_transpose(img)
+            has_alpha = img.mode == "RGBA" or img.mode == "LA" or (img.mode == "P" and "transparency" in img.info)
+            img = img.convert("RGBA")
+            arr = np.array(img).astype(np.float32) / 255.0
+            image = torch.from_numpy(arr[..., :3]).unsqueeze(0)
+            mask = torch.from_numpy(1.0 - arr[..., 3]).unsqueeze(0) if has_alpha else None
+            return image, mask
+        except Exception as exc:
+            print(f"[VNCCS Emotions Generator] Failed to load source sprite '{path}': {exc}")
+            return None, None
+
     def _parse_emotion_data(self, emotion_data):
         items = []
         for raw in self._as_list(emotion_data):
@@ -1303,66 +1323,101 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         Image.fromarray(np.dstack([rgb_arr[..., :3], alpha]), mode="RGBA").save(path, format="PNG")
         return path
 
-    def _run_emotion_generation_one(self, image, mask, pipe, emotion_prompt, positive_prompt, negative_prompt, seed):
+    def _run_emotion_generation_one(self, image, mask, pipe, emotion_prompt, positive_prompt, negative_prompt, seed, face_denoise=0.55):
         pipe_values = self._extract_pipe(pipe)
-        full_prompt = "\n".join(part for part in [str(positive_prompt or ""), str(emotion_prompt or "")] if part.strip())
-        positive, negative, latent = _call_comfy_node(
-            "VNCCS_QWEN_Encoder",
+
+        positive = _call_comfy_node(
+            "CLIPTextEncode",
+            clip=pipe_values["clip"],
+            text=str(positive_prompt or ""),
+        )[0]
+        negative = _call_comfy_node(
+            "CLIPTextEncode",
+            clip=pipe_values["clip"],
+            text=str(negative_prompt or ""),
+        )[0]
+
+        bbox_detector = _call_comfy_node(
+            "UltralyticsDetectorProvider",
+            model_name="bbox/face_yolov8m.pt",
+        )[0]
+        sam_model = _call_comfy_node(
+            "SAMLoader",
+            model_name="sam_vit_b_01ec64.pth",
+            device_mode="AUTO",
+        )[0]
+        segm_detector = _call_comfy_node(
+            "UltralyticsDetectorProvider",
+            model_name="bbox/face_yolov8m.pt",
+        )[1]
+
+        detailed = _call_comfy_node(
+            "FaceDetailer",
+            image=image,
+            model=pipe_values["model"],
             clip=pipe_values["clip"],
             vae=pipe_values["vae"],
-            prompt=full_prompt,
-            image1=image,
-            target_size=1024,
-            upscale_method="lanczos",
-            crop_method="disabled",
-            image1_name="image",
-            weight1=1,
-            vl_size=384,
-            latent_image_index=1,
-            instruction=(
-                "Edit only the character face/expression according to the requested emotion. "
-                "Keep identity, hair, outfit, body, pose, image framing, and background consistent."
-            ),
-            qwen_2511=True,
-        )
-        if negative_prompt:
-            # Keep workflow compatibility: the encoder supplies the Qwen negative
-            # branch, while the text negative remains part of the stage metadata.
-            pass
-
-        sampled = _call_comfy_node(
-            "KSampler",
-            model=pipe_values["model"],
             positive=positive,
             negative=negative,
-            latent_image=latent,
+            bbox_detector=bbox_detector,
+            sam_model_opt=sam_model,
+            segm_detector_opt=segm_detector,
+            guide_size=1536,
+            guide_size_for=True,
+            max_size=1536,
             seed=int(seed or pipe_values["seed"]),
             steps=pipe_values["steps"],
             cfg=pipe_values["cfg"],
             sampler_name=pipe_values["sampler"],
             scheduler=pipe_values["scheduler"],
-            denoise=1,
-        )[0]
-        decoded = _call_comfy_node(
-            "VAEDecodeTiled",
-            samples=sampled,
-            vae=pipe_values["vae"],
-            tile_size=512,
-            overlap=64,
-            temporal_size=64,
-            temporal_overlap=8,
-        )[0]
-        return self._list_to_batch(decoded)
+            denoise=float(face_denoise),
+            feather=50,
+            noise_mask=True,
+            force_inpaint=True,
+            bbox_threshold=0.1,
+            bbox_dilation=10,
+            bbox_crop_factor=1.7,
+            sam_detection_hint="center-1",
+            sam_dilation=25,
+            sam_threshold=0.93,
+            sam_bbox_expansion=0,
+            sam_mask_hint_threshold=0.7,
+            sam_mask_hint_use_negative="False",
+            drop_size=10,
+            wildcard=str(emotion_prompt or ""),
+            cycle=1,
+            inpaint_model=False,
+            noise_mask_feather=20,
+            tiled_encode=True,
+            tiled_decode=True,
+        )
+        full_image = self._list_to_batch(detailed[0])
+        face_crop = self._list_to_batch(detailed[1]) if len(detailed) > 1 and detailed[1] is not None else full_image
+        return full_image, face_crop
 
     def process(self, images, pipe, emotion_data, widget_data="{}", unique_id=None):
         widget_payload = self._widget_data(widget_data)
+        emotion_settings = widget_payload.get("emotion_generation", {}) if isinstance(widget_payload, dict) else {}
+        try:
+            face_denoise = float(emotion_settings.get("face_denoise", DEFAULT_WIDGET_DATA["emotion_generation"]["face_denoise"]))
+        except Exception:
+            face_denoise = DEFAULT_WIDGET_DATA["emotion_generation"]["face_denoise"]
+        face_denoise = max(0.0, min(1.0, face_denoise))
         pipe = self._unwrap_scalar(pipe)
         unique_id = self._unwrap_scalar(unique_id)
         image_items = self._image_list(images)
         data_items = self._parse_emotion_data(emotion_data)
+        source_items = []
+        for index, meta in enumerate(data_items):
+            source_image, source_mask = self._load_source_sprite_from_path(meta.get("source_path") if isinstance(meta, dict) else "")
+            if source_image is None:
+                source_image = image_items[index] if index < len(image_items) else None
+                source_mask = None
+            if source_image is not None:
+                source_items.append((source_image, source_mask))
         emotion_items = [str(item.get("emotion_prompt", "")) for item in data_items]
         sprite_paths = [str(item.get("sprite_output_path", "")) for item in data_items]
-        total = min(len(image_items), len(data_items))
+        total = min(len(source_items), len(data_items))
         groups = []
         for index in range(total):
             key = sprite_paths[index] if index < len(sprite_paths) and sprite_paths[index] else emotion_items[index]
@@ -1377,19 +1432,18 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         try:
             for group_index, group in enumerate(groups):
                 stage_key, stage_label = stage_labels[group_index]
-                group_source = torch.cat([image_items[i] for i in group["indices"]], dim=0)
+                group_source = torch.cat([source_items[i][0] for i in group["indices"]], dim=0)
                 self._emit(unique_id, stage_key, "running", group_source, f"Generating {stage_label}", 0, len(group["indices"]), cache_dir=cache_dir)
                 group_results = []
                 for local_index, index in enumerate(group["indices"], start=1):
-                    image = image_items[index]
+                    image, mask = source_items[index]
                     meta = data_items[index] if index < len(data_items) else {}
-                    mask = self._mask_from_source_path(meta.get("source_path"))
                     if mask is not None and (mask.shape[-2] != image.shape[1] or mask.shape[-1] != image.shape[2]):
                         mask_img = Image.fromarray((mask[0].detach().cpu().numpy() * 255).astype(np.uint8))
                         mask_img = mask_img.resize((image.shape[2], image.shape[1]), Image.Resampling.LANCZOS)
                         mask = torch.from_numpy(np.array(mask_img).astype(np.float32) / 255.0).unsqueeze(0)
                     seed = int(meta.get("seed", 0) or 0)
-                    result = self._run_emotion_generation_one(
+                    result, face_crop = self._run_emotion_generation_one(
                         image,
                         mask,
                         pipe,
@@ -1397,15 +1451,18 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                         meta.get("positive_prompt", ""),
                         meta.get("negative_prompt", ""),
                         seed + index,
+                        face_denoise,
                     )
                     results.append(result)
+                    # FaceDetailer crops are intentionally variable-size. Save them
+                    # as files, but keep the IMAGE output batch shape-stable.
                     faces.append(result)
                     group_results.append(result)
                     if index < len(sprite_paths):
                         self._save_rgba_image(result, mask, sprite_paths[index], local_index)
                         face_prefix = self._face_prefix_from_sprite_prefix(sprite_paths[index])
                         if face_prefix:
-                            self._save_rgba_image(result, mask, face_prefix, local_index)
+                            self._save_rgba_image(face_crop, None, face_prefix, local_index)
                     partial = torch.cat(group_results, dim=0)
                     self._emit(
                         unique_id,
