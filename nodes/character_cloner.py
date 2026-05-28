@@ -16,10 +16,9 @@ from PIL import Image, ImageOps
 import numpy as np
 import traceback
 
-from .character_creator_v2 import CharacterCreatorV2
 from ..utils import (
-    load_character_info, save_config, build_face_details, 
-    character_dir, sheets_dir, faces_dir, MAIN_DIRS, EMOTIONS
+    load_character_info, save_config,
+    character_dir, sheets_dir, MAIN_DIRS, EMOTIONS
 )
 
 # VNCCS Installer (REMOVED: User requested Qwen2)
@@ -39,8 +38,8 @@ class CharacterCloner:
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING", "STRING", "STRING", "STRING", "STRING", "*")
-    RETURN_NAMES = ("character", "positive_prompt", "negative_prompt", "sheets_path", "faces_path", "face_details", "background")
+    RETURN_TYPES = ("IMAGE", "STRING", "*")
+    RETURN_NAMES = ("character", "sheets_path", "background")
     FUNCTION = "process"
     CATEGORY = "VNCCS"
 
@@ -55,9 +54,6 @@ class CharacterCloner:
         info = data.get("character_info", {})
         source_images = data.get("source_images", []) # List of filenames in input dir
 
-        # 2. Construct Prompts (Reuse V2 logic)
-        positive_prompt, negative_prompt = CharacterCreatorV2.construct_prompt(info)
-        
         # 4. Process Images
         # Load all source images, make a grid
         images_tensors = []
@@ -156,8 +152,6 @@ class CharacterCloner:
         # 5. Paths
         character_path = character_dir(character_name)
         sheets_path = sheets_dir(character_name)
-        faces_path = faces_dir(character_name)
-        face_details = build_face_details(info)
 
         # 6. Save Config (if character name is valid)
         if character_name and character_name != "Unknown":
@@ -176,7 +170,7 @@ class CharacterCloner:
         # Get background color
         background_color = info.get("background_color", "Green")
 
-        return (final_image, positive_prompt, negative_prompt, sheets_path, faces_path, face_details, background_color)
+        return (final_image, sheets_path, background_color)
 
 
 # --------------------------------------------------------------------------------
