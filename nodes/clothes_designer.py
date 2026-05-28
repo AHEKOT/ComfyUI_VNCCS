@@ -36,6 +36,16 @@ def get_latest_sprite_path(character, costume="Naked"):
         if not os.path.isdir(base):
             return None
 
+        neutral_dir = os.path.join(base, "Neutral")
+        if os.path.isdir(neutral_dir):
+            neutral_files = []
+            for root, _dirs, filenames in os.walk(neutral_dir):
+                for filename in filenames:
+                    neutral_files.append(os.path.join(root, filename))
+            best = _latest_image_file(neutral_files)
+            if best:
+                return best
+
         direct_files = [
             os.path.join(base, filename)
             for filename in os.listdir(base)

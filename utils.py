@@ -582,14 +582,33 @@ def load_character_sheet(character: str, costume: str = "Naked", emotion: str = 
             candidates.sort(key=lambda x: x[0])
             _, best_name = candidates[-1]
             best_path = os.path.join(sheet_dir, best_name)
-        elif costume == "Naked":
+        if not best_path:
             image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
             for candidate_costume in costume_candidates:
                 sprite_root = os.path.join(character_dir(character), "Sprites", candidate_costume)
                 if not os.path.isdir(sprite_root):
                     continue
+                neutral_files = []
+                for neutral_name in ("Neutral", "neutral"):
+                    neutral_root = os.path.join(sprite_root, neutral_name)
+                    if not os.path.isdir(neutral_root):
+                        continue
+                    for root, _dirs, filenames in os.walk(neutral_root):
+                        neutral_files.extend(
+                            os.path.join(root, filename)
+                            for filename in filenames
+                            if os.path.splitext(filename)[1].lower() in image_exts
+                        )
+                if neutral_files:
+                    best_path = max(neutral_files, key=lambda path: (os.path.getmtime(path), path))
+                    print(f"[VNCCS Utils] Using neutral sprite fallback for sheet load: {best_path}")
+                    break
+
                 sprite_files = []
                 for root, _dirs, filenames in os.walk(sprite_root):
+                    parts = set(os.path.normpath(root).split(os.sep))
+                    if "Neutral" in parts or "neutral" in parts:
+                        continue
                     sprite_files.extend(
                         os.path.join(root, filename)
                         for filename in filenames
@@ -677,6 +696,16 @@ def list_costumes(character_name: str) -> List[str]:
         try:
             for item in os.listdir(sheets_dir_path):
                 item_path = os.path.join(sheets_dir_path, item)
+                if os.path.isdir(item_path) and item not in costumes:
+                    costumes.append(item)
+        except OSError:
+            pass
+
+    sprites_dir_path = os.path.join(char_dir, "Sprites")
+    if os.path.exists(sprites_dir_path):
+        try:
+            for item in os.listdir(sprites_dir_path):
+                item_path = os.path.join(sprites_dir_path, item)
                 if os.path.isdir(item_path) and item not in costumes:
                     costumes.append(item)
         except OSError:

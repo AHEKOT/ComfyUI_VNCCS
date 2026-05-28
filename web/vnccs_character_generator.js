@@ -4,6 +4,7 @@ import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "./v
 
 const DEFAULT_DATA = {
     nsfw_enabled: true,
+    emotion_pairs: [],
     common: {
         target_size: 1024,
     },
@@ -83,6 +84,10 @@ const CLOTHES_STAGES = [
     ["pose_generation", "Pose Generation"],
     ["upscaler", "Upscaler"],
     ["bg_remove", "BG Remove"],
+];
+
+const DEFAULT_EMOTION_STAGES = [
+    ["emotion_0001", "Emotion"],
 ];
 
 const WORKFLOW_UPSCALER_DIT_MODELS = [
@@ -474,6 +479,7 @@ class CharacterGeneratorWidget {
         this.node = node;
         this.isClone = Boolean(options.isClone);
         this.isClothes = Boolean(options.isClothes);
+        this.isEmotions = Boolean(options.isEmotions);
         this.title = options.title || "VNCCS Character Generator";
         this.data = readData(node);
         this.syncCharacterSourceData();
@@ -659,6 +665,7 @@ class CharacterGeneratorWidget {
     }
 
     syncCharacterSourceData() {
+        if (this.isEmotions) return this.syncEmotionStudioSourceData();
         const matchesType = (node, type, displayName = "") => {
             const title = typeof node?.getTitle === "function" ? node.getTitle() : node?.title;
             return node?.type === type || node?.comfyClass === type || node?.constructor?.type === type || title === displayName;
@@ -690,17 +697,57 @@ class CharacterGeneratorWidget {
         return changed;
     }
 
+    syncEmotionStudioSourceData() {
+        const matchesType = (node, type, displayName = "") => {
+            const title = typeof node?.getTitle === "function" ? node.getTitle() : node?.title;
+            return node?.type === type || node?.comfyClass === type || node?.constructor?.type === type || title === displayName;
+        };
+        const source = app.graph?._nodes?.find(n => matchesType(n, "EmotionGeneratorV2", "VNCCS Emotion Studio"));
+        if (!source) return false;
+        const character = source.widgets?.find(w => w.name === "character")?.value || "";
+        const costumesRaw = source.widgets?.find(w => w.name === "costumes_data")?.value || "[]";
+        const emotionsRaw = source.widgets?.find(w => w.name === "emotions_data")?.value || "[]";
+        let costumes = [];
+        let emotions = [];
+        try { costumes = JSON.parse(costumesRaw); } catch { costumes = []; }
+        try { emotions = JSON.parse(emotionsRaw); } catch { emotions = []; }
+        const pairs = [];
+        for (const costume of costumes || []) {
+            for (const emotion of emotions || []) {
+                pairs.push({ costume, emotion });
+            }
+        }
+        let changed = false;
+        const signature = JSON.stringify(pairs);
+        if (this.data.character_name !== character) {
+            this.data.character_name = character;
+            changed = true;
+        }
+        if (JSON.stringify(this.data.emotion_pairs || []) !== signature) {
+            this.data.emotion_pairs = pairs;
+            changed = true;
+        }
+        return changed;
+    }
+
     isCloneNsfwEnabled() {
         return !this.isClone || this.data.nsfw_enabled !== false;
     }
 
     currentStages() {
         if (this.isClone) return this.isCloneNsfwEnabled() ? CLONE_STAGES : CLONE_SFW_STAGES;
+        if (this.isEmotions) {
+            const pairs = Array.isArray(this.data.emotion_pairs) ? this.data.emotion_pairs : [];
+            return pairs.length
+                ? pairs.map((pair, index) => [`emotion_${String(index + 1).padStart(4, "0")}`, `${pair.costume || "Costume"} / ${pair.emotion || "Emotion"}`])
+                : DEFAULT_EMOTION_STAGES;
+        }
         return this.isClothes ? CLOTHES_STAGES : STAGES;
     }
 
     defaultPreviewStage() {
         if (this.isClone) return "original_pose_generation";
+        if (this.isEmotions) return this.currentStages()[0]?.[0] || "emotion_0001";
         return this.isClothes ? "source_upscaler" : "pose_generation";
     }
 
@@ -732,9 +779,11 @@ class CharacterGeneratorWidget {
         this.root?.classList.toggle("is-clone", cloneNsfw);
         this.root?.classList.toggle("is-clone-sfw", this.isClone && !cloneNsfw);
         this.root?.classList.toggle("is-clothes", this.isClothes);
+        this.root?.classList.toggle("is-emotions", this.isEmotions);
         this.chainEl?.classList.toggle("is-clone", cloneNsfw);
         this.chainEl?.classList.toggle("is-clone-sfw", this.isClone && !cloneNsfw);
         this.chainEl?.classList.toggle("is-clothes", this.isClothes);
+        this.chainEl?.classList.toggle("is-emotions", this.isEmotions);
     }
 
     storageKey() {
@@ -1022,6 +1071,21 @@ class CharacterGeneratorWidget {
         title.className = "vnccs-pipe-title";
         title.textContent = this.title;
         this.settingsEl.appendChild(title);
+        if (this.isEmotions) {
+            const count = Array.isArray(this.data.emotion_pairs) ? this.data.emotion_pairs.length : 0;
+            const info = document.createElement("div");
+            info.className = "vnccs-pipe-block";
+            info.innerHTML = `
+                <div class="vnccs-pipe-block-h">Emotion Generation</div>
+                <div class="vnccs-pipe-block-b">
+                    <div class="vnccs-pipe-label">character</div>
+                    <div class="vnccs-pipe-empty" style="min-height:auto;padding:8px;">${this.data.character_name || "Select in Emotion Studio"}</div>
+                    <div class="vnccs-pipe-label">steps</div>
+                    <div class="vnccs-pipe-empty" style="min-height:auto;padding:8px;">${count} costume / emotion pair(s)</div>
+                </div>`;
+            this.settingsEl.appendChild(info);
+            return;
+        }
         if (this.isClone) {
             this.settingsEl.appendChild(this.block("Common", [
                 this.field("common", "target_size", "target size", "select", [1024, 1344, 1536, 2048, 768, 512]),
@@ -1534,7 +1598,8 @@ app.registerExtension({
         const isBaseGenerator = nodeData.name === "VNCCS_CharacterGenerator";
         const isCloneGenerator = nodeData.name === "VNCCS_CharacterCloneGenerator";
         const isClothesGenerator = nodeData.name === "VNCCS_ClothesGenerator";
-        if (!isBaseGenerator && !isCloneGenerator && !isClothesGenerator) return;
+        const isEmotionsGenerator = nodeData.name === "VNCCS_EmotionsGenerator";
+        if (!isBaseGenerator && !isCloneGenerator && !isClothesGenerator && !isEmotionsGenerator) return;
 
         const onNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
@@ -1543,9 +1608,10 @@ app.registerExtension({
             this._vnccsCharacterGeneratorWidget = new CharacterGeneratorWidget(this, {
                 isClone: isCloneGenerator,
                 isClothes: isClothesGenerator,
+                isEmotions: isEmotionsGenerator,
                 title: isCloneGenerator
                     ? "VNCCS Character Clone Generator"
-                    : (isClothesGenerator ? "VNCCS Clothes Generator" : "VNCCS Character Generator"),
+                    : (isClothesGenerator ? "VNCCS Clothes Generator" : (isEmotionsGenerator ? "VNCCS Emotions Generator" : "VNCCS Character Generator")),
             });
             syncDOMWidgetWidthSoon(this, "character_generator_ui");
         };

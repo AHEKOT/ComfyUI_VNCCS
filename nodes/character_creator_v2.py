@@ -42,6 +42,8 @@ def get_random_pose_preview(character_name):
     try:
         base_char_path = character_dir(character_name)
         sprite_roots = [
+            os.path.join(base_char_path, "Sprites", "Naked", "Neutral"),
+            os.path.join(base_char_path, "Sprites", "Original", "Neutral"),
             os.path.join(base_char_path, "Sprites", "Naked"),
             os.path.join(base_char_path, "Sprites", "Original"),
         ]

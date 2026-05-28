@@ -16,7 +16,7 @@ from urllib.parse import urlencode
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageOps
 
 try:
     import folder_paths
@@ -814,7 +814,7 @@ class VNCCS_CharacterGenerator:
             images = images.unsqueeze(0)
 
         sprite_set = str(sprite_set or "Naked").strip() or "Naked"
-        target_dir = os.path.join(character_root, "Sprites", sprite_set)
+        target_dir = os.path.join(character_root, "Sprites", sprite_set, "Neutral")
         os.makedirs(target_dir, exist_ok=True)
 
         image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -1175,14 +1175,269 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
             raise
 
 
+class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
+    OUTPUT_NODE = True
+    INPUT_IS_LIST = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "pipe": ("VNCCS_PIPE",),
+                "emotion_data": ("STRING", {"default": "", "forceInput": True}),
+                "widget_data": ("STRING", {"default": json.dumps(DEFAULT_WIDGET_DATA), "multiline": True}),
+            },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "IMAGE")
+    RETURN_NAMES = ("sprites", "faces")
+    FUNCTION = "process"
+    CATEGORY = "VNCCS"
+    DESCRIPTION = "Emotion sprite generator that replaces the Step 3 emotion workflow."
+
+    def _as_list(self, value):
+        if isinstance(value, tuple):
+            value = value[0]
+        if isinstance(value, list):
+            return value
+        return [value]
+
+    def _mask_from_source_path(self, path):
+        path = str(path or "").strip()
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            img = Image.open(path)
+            img = ImageOps.exif_transpose(img)
+            has_alpha = img.mode == "RGBA" or img.mode == "LA" or (img.mode == "P" and "transparency" in img.info)
+            if not has_alpha:
+                return None
+            alpha = img.convert("RGBA").getchannel("A")
+            arr = np.array(alpha).astype(np.float32) / 255.0
+            return torch.from_numpy(1.0 - arr).unsqueeze(0)
+        except Exception as exc:
+            print(f"[VNCCS Emotions Generator] Failed to load source mask '{path}': {exc}")
+            return None
+
+    def _parse_emotion_data(self, emotion_data):
+        items = []
+        for raw in self._as_list(emotion_data):
+            if isinstance(raw, dict):
+                items.append(raw)
+                continue
+            text = str(raw or "").strip()
+            if not text:
+                items.append({})
+                continue
+            try:
+                parsed = json.loads(text)
+                items.append(parsed if isinstance(parsed, dict) else {"emotion_prompt": text})
+            except Exception:
+                items.append({"emotion_prompt": text})
+        return items
+
+    def _face_prefix_from_sprite_prefix(self, sprite_prefix):
+        prefix = str(sprite_prefix or "").strip()
+        if not prefix:
+            return ""
+        normalized = prefix.replace("\\", os.sep).replace("/", os.sep)
+        parts = normalized.split(os.sep)
+        try:
+            idx = parts.index("Sprites")
+            parts[idx] = "Faces"
+        except ValueError:
+            return ""
+        basename = parts[-1]
+        if basename.startswith("sprite_"):
+            parts[-1] = "face_" + basename[len("sprite_"):]
+        return os.sep.join(parts)
+
+    def _emotion_pairs(self, widget_payload, emotions, total):
+        pairs = widget_payload.get("emotion_pairs")
+        if isinstance(pairs, list) and pairs:
+            labels = []
+            for index, pair in enumerate(pairs[:total], start=1):
+                if isinstance(pair, dict):
+                    costume = pair.get("costume") or "Costume"
+                    emotion = pair.get("emotion") or f"Emotion {index}"
+                    labels.append((f"emotion_{index:04d}", f"{costume} / {emotion}"))
+            if labels:
+                while len(labels) < total:
+                    index = len(labels) + 1
+                    labels.append((f"emotion_{index:04d}", f"Emotion {index}"))
+                return labels
+        labels = []
+        for index, prompt in enumerate(emotions[:total], start=1):
+            label = str(prompt or "").splitlines()[0].replace("Change emotion:", "").strip() or f"Emotion {index}"
+            labels.append((f"emotion_{index:04d}", label[:64]))
+        return labels
+
+    def _save_rgba_image(self, image, mask, prefix, index):
+        prefix = str(prefix or "").strip()
+        if not prefix:
+            return ""
+        directory = os.path.dirname(prefix)
+        os.makedirs(directory, exist_ok=True)
+        filename = f"{os.path.basename(prefix)}{index:04d}.png"
+        path = os.path.join(directory, filename)
+
+        rgb = image.detach().cpu().clamp(0, 1)
+        if rgb.ndim == 4:
+            rgb = rgb[0]
+        rgb_arr = (rgb.numpy() * 255).astype(np.uint8)
+
+        if mask is None:
+            alpha = np.full(rgb_arr.shape[:2], 255, dtype=np.uint8)
+        else:
+            m = mask.detach().cpu().clamp(0, 1)
+            if m.ndim == 3:
+                m = m[0]
+            alpha = ((1.0 - m.numpy()) * 255).astype(np.uint8)
+            if alpha.shape != rgb_arr.shape[:2]:
+                alpha = np.array(Image.fromarray(alpha).resize((rgb_arr.shape[1], rgb_arr.shape[0]), Image.Resampling.LANCZOS))
+
+        Image.fromarray(np.dstack([rgb_arr[..., :3], alpha]), mode="RGBA").save(path, format="PNG")
+        return path
+
+    def _run_emotion_generation_one(self, image, mask, pipe, emotion_prompt, positive_prompt, negative_prompt, seed):
+        pipe_values = self._extract_pipe(pipe)
+        full_prompt = "\n".join(part for part in [str(positive_prompt or ""), str(emotion_prompt or "")] if part.strip())
+        positive, negative, latent = _call_comfy_node(
+            "VNCCS_QWEN_Encoder",
+            clip=pipe_values["clip"],
+            vae=pipe_values["vae"],
+            prompt=full_prompt,
+            image1=image,
+            target_size=1024,
+            upscale_method="lanczos",
+            crop_method="disabled",
+            image1_name="image",
+            weight1=1,
+            vl_size=384,
+            latent_image_index=1,
+            instruction=(
+                "Edit only the character face/expression according to the requested emotion. "
+                "Keep identity, hair, outfit, body, pose, image framing, and background consistent."
+            ),
+            qwen_2511=True,
+        )
+        if negative_prompt:
+            # Keep workflow compatibility: the encoder supplies the Qwen negative
+            # branch, while the text negative remains part of the stage metadata.
+            pass
+
+        sampled = _call_comfy_node(
+            "KSampler",
+            model=pipe_values["model"],
+            positive=positive,
+            negative=negative,
+            latent_image=latent,
+            seed=int(seed or pipe_values["seed"]),
+            steps=pipe_values["steps"],
+            cfg=pipe_values["cfg"],
+            sampler_name=pipe_values["sampler"],
+            scheduler=pipe_values["scheduler"],
+            denoise=1,
+        )[0]
+        decoded = _call_comfy_node(
+            "VAEDecodeTiled",
+            samples=sampled,
+            vae=pipe_values["vae"],
+            tile_size=512,
+            overlap=64,
+            temporal_size=64,
+            temporal_overlap=8,
+        )[0]
+        return self._list_to_batch(decoded)
+
+    def process(self, images, pipe, emotion_data, widget_data="{}", unique_id=None):
+        widget_payload = self._widget_data(widget_data)
+        pipe = self._unwrap_scalar(pipe)
+        unique_id = self._unwrap_scalar(unique_id)
+        image_items = self._image_list(images)
+        data_items = self._parse_emotion_data(emotion_data)
+        emotion_items = [str(item.get("emotion_prompt", "")) for item in data_items]
+        sprite_paths = [str(item.get("sprite_output_path", "")) for item in data_items]
+        total = min(len(image_items), len(data_items))
+        groups = []
+        for index in range(total):
+            key = sprite_paths[index] if index < len(sprite_paths) and sprite_paths[index] else emotion_items[index]
+            if not groups or groups[-1]["key"] != key:
+                groups.append({"key": key, "indices": []})
+            groups[-1]["indices"].append(index)
+        stage_labels = self._emotion_pairs(widget_payload, emotion_items, len(groups))
+        cache_dir = None
+
+        results = []
+        faces = []
+        try:
+            for group_index, group in enumerate(groups):
+                stage_key, stage_label = stage_labels[group_index]
+                group_source = torch.cat([image_items[i] for i in group["indices"]], dim=0)
+                self._emit(unique_id, stage_key, "running", group_source, f"Generating {stage_label}", 0, len(group["indices"]), cache_dir=cache_dir)
+                group_results = []
+                for local_index, index in enumerate(group["indices"], start=1):
+                    image = image_items[index]
+                    meta = data_items[index] if index < len(data_items) else {}
+                    mask = self._mask_from_source_path(meta.get("source_path"))
+                    if mask is not None and (mask.shape[-2] != image.shape[1] or mask.shape[-1] != image.shape[2]):
+                        mask_img = Image.fromarray((mask[0].detach().cpu().numpy() * 255).astype(np.uint8))
+                        mask_img = mask_img.resize((image.shape[2], image.shape[1]), Image.Resampling.LANCZOS)
+                        mask = torch.from_numpy(np.array(mask_img).astype(np.float32) / 255.0).unsqueeze(0)
+                    seed = int(meta.get("seed", 0) or 0)
+                    result = self._run_emotion_generation_one(
+                        image,
+                        mask,
+                        pipe,
+                        meta.get("emotion_prompt", emotion_items[index]),
+                        meta.get("positive_prompt", ""),
+                        meta.get("negative_prompt", ""),
+                        seed + index,
+                    )
+                    results.append(result)
+                    faces.append(result)
+                    group_results.append(result)
+                    if index < len(sprite_paths):
+                        self._save_rgba_image(result, mask, sprite_paths[index], local_index)
+                        face_prefix = self._face_prefix_from_sprite_prefix(sprite_paths[index])
+                        if face_prefix:
+                            self._save_rgba_image(result, mask, face_prefix, local_index)
+                    partial = torch.cat(group_results, dim=0)
+                    self._emit(
+                        unique_id,
+                        stage_key,
+                        "running" if local_index < len(group["indices"]) else "done",
+                        partial,
+                        f"Done {stage_label}",
+                        local_index,
+                        len(group["indices"]),
+                        cache_dir=cache_dir,
+                    )
+
+            if not results:
+                raise RuntimeError("No emotion images to generate. Select at least one costume and one emotion.")
+            return torch.cat(results, dim=0), torch.cat(faces, dim=0)
+        except Exception as exc:
+            print("[VNCCS Emotions Generator] Failed:", exc)
+            traceback.print_exc()
+            self._emit(unique_id, "error", "error", message=str(exc))
+            raise
+
+
 NODE_CLASS_MAPPINGS = {
     "VNCCS_CharacterGenerator": VNCCS_CharacterGenerator,
     "VNCCS_CharacterCloneGenerator": VNCCS_CharacterCloneGenerator,
     "VNCCS_ClothesGenerator": VNCCS_ClothesGenerator,
+    "VNCCS_EmotionsGenerator": VNCCS_EmotionsGenerator,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_CharacterGenerator": "VNCCS Character Generator",
     "VNCCS_CharacterCloneGenerator": "VNCCS Character Clone Generator",
     "VNCCS_ClothesGenerator": "VNCCS Clothes Generator",
+    "VNCCS_EmotionsGenerator": "VNCCS Emotions Generator",
 }

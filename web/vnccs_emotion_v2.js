@@ -67,9 +67,17 @@ const STYLE = `
 .ems-right-col {
     flex: 3;
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     gap: 10px;
     min-width: 300px;
+    overflow: hidden;
+}
+.ems-selection-col {
+    flex: 1 1 auto;
+    min-width: 420px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
     overflow: hidden;
 }
 
@@ -452,6 +460,251 @@ const STYLE = `
     box-shadow: 0 0 0 2px rgba(255, 143, 163, 0.08);
 }
 
+/* ── Generation Panel ── */
+.ems-generation-section {
+    flex: 0 0 360px;
+    gap: 10px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--accent-border) transparent;
+}
+.ems-generation-section::-webkit-scrollbar { width: 4px; }
+.ems-generation-section::-webkit-scrollbar-thumb { background: var(--accent-border); border-radius: 2px; }
+.ems-generation-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+.ems-tab-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+.ems-tab,
+.ems-seed-dice {
+    appearance: none;
+    -webkit-appearance: none;
+    border: 1px solid var(--border-hover);
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-secondary);
+    border-radius: var(--radius-md);
+    font-family: var(--font);
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    transition: all var(--transition);
+}
+.ems-tab {
+    min-height: 34px;
+    font-size: 11px;
+}
+.ems-tab:hover,
+.ems-tab:focus,
+.ems-tab:focus-visible,
+.ems-tab:active {
+    outline: none;
+    color: var(--text-primary);
+    border-color: var(--accent-border);
+    background: rgba(255, 143, 163, 0.12) !important;
+}
+.ems-tab.active {
+    color: var(--accent-hover);
+    border-color: var(--accent);
+    background: rgba(255, 143, 163, 0.2) !important;
+    box-shadow: inset 0 0 0 1px rgba(255, 143, 163, 0.1), 0 0 18px rgba(255, 143, 163, 0.12);
+}
+.ems-model-card {
+    min-height: 58px;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: 5px;
+    padding: 10px 12px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--accent-border);
+    background: rgba(255, 143, 163, 0.12);
+    box-sizing: border-box;
+    overflow: hidden;
+}
+.ems-model-card-top {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+}
+.ems-model-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ems-model-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--success);
+    box-shadow: 0 0 10px rgba(0, 214, 143, 0.38);
+    flex-shrink: 0;
+}
+.ems-model-desc {
+    margin-top: 4px;
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ems-model-status {
+    color: var(--success);
+    font-size: 10px;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    flex-shrink: 0;
+}
+.ems-toggle {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    flex-shrink: 0;
+}
+.ems-toggle input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+    position: absolute;
+}
+.ems-toggle-track {
+    position: absolute;
+    inset: 0;
+    border-radius: 10px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid var(--border);
+    transition: all var(--transition);
+}
+.ems-toggle-thumb {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    transition: all var(--transition);
+}
+.ems-toggle input:checked ~ .ems-toggle-track {
+    background: rgba(255,143,163,0.2);
+    border-color: var(--accent);
+    box-shadow: 0 0 8px var(--accent-glow);
+}
+.ems-toggle input:checked ~ .ems-toggle-thumb {
+    transform: translateX(16px);
+    background: var(--accent);
+}
+.ems-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+.ems-label {
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.ems-input {
+    width: 100%;
+    min-height: 40px;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-primary);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: var(--radius-sm);
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 700;
+    box-sizing: border-box;
+}
+.ems-input:focus {
+    outline: none;
+    border-color: var(--accent-border);
+    box-shadow: 0 0 0 2px rgba(255, 143, 163, 0.08);
+}
+.ems-seed-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px;
+    gap: 8px;
+}
+.ems-seed-dice {
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+}
+.ems-seed-dice svg {
+    width: 20px;
+    height: 20px;
+}
+.ems-seed-dice.active {
+    color: var(--accent-hover);
+    border-color: var(--accent);
+    background: rgba(255, 143, 163, 0.2) !important;
+}
+.ems-lora-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.ems-lora-card {
+    min-height: 42px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--accent-border);
+    background: rgba(255, 143, 163, 0.12);
+    box-sizing: border-box;
+    cursor: pointer;
+}
+.ems-lora-card.is-selected {
+    border-color: var(--accent);
+    background: rgba(255, 143, 163, 0.12);
+    box-shadow: 0 0 0 1px rgba(255,143,163,0.12) inset;
+}
+.ems-lora-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 800;
+}
+.ems-lora-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 90px;
+    gap: 8px;
+    padding: 8px;
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
 /* ── Confirm Modal ── */
 .ems-modal-backdrop {
     position: absolute;
@@ -587,12 +840,83 @@ app.registerExtension({
 
                 // Get Widgets
                 const charWidget = node.widgets.find(w => w.name === "character");
+                const modelWidget = node.widgets.find(w => w.name === "generation_model");
+                const generationSettingsWidget = node.widgets.find(w => w.name === "generation_settings");
                 const costumesDataWidget = node.widgets.find(w => w.name === "costumes_data");
                 const emotionsDataWidget = node.widgets.find(w => w.name === "emotions_data");
 
                 // Hide data widgets
                 if (costumesDataWidget) costumesDataWidget.hidden = true;
                 if (emotionsDataWidget) emotionsDataWidget.hidden = true;
+                if (modelWidget) modelWidget.hidden = true;
+                if (generationSettingsWidget) generationSettingsWidget.hidden = true;
+
+                const generateRandomSeed = () => Math.floor(Math.random() * 9007199254740991);
+                const ANIMA_TURBO_LORA_NAME = "anima\\anima-turbo-lora-v0.1.safetensors";
+                const ANIMA_CLIP_NAME = "qwen_3_06b_base.safetensors";
+                const ANIMA_VAE_NAME = "qwen_image_vae.safetensors";
+                const GENERATION_DEFAULTS = {
+                    generation_mode: "anima",
+                    ckpt_name: "",
+                    diffusion_model_name: "",
+                    clip_name: ANIMA_CLIP_NAME,
+                    vae_name: ANIMA_VAE_NAME,
+                    clip_type: "stable_diffusion",
+                    sampler: "er_sde",
+                    scheduler: "simple",
+                    steps: 30,
+                    cfg: 4.0,
+                    seed: generateRandomSeed(),
+                    seed_mode: "fixed",
+                    turbo_enabled: false,
+                    turbo_previous_settings: null,
+                    dmd_lora_name: ANIMA_TURBO_LORA_NAME,
+                    dmd_lora_strength: 1.0,
+                    lora_stack: [
+                        { name: "", strength: 1.0 },
+                        { name: "", strength: 1.0 },
+                        { name: "", strength: 1.0 },
+                        { name: "", strength: 1.0 },
+                        { name: "", strength: 1.0 }
+                    ],
+                    mode_settings: {
+                        illustrious: {
+                            ckpt_name: "", sampler: "euler", scheduler: "normal",
+                            steps: 20, cfg: 8.0, seed: generateRandomSeed(), seed_mode: "fixed",
+                            dmd_lora_name: "", dmd_lora_strength: 1.0,
+                            lora_stack: [
+                                { name: "", strength: 1.0 },
+                                { name: "", strength: 1.0 },
+                                { name: "", strength: 1.0 },
+                                { name: "", strength: 1.0 },
+                                { name: "", strength: 1.0 }
+                            ]
+                        },
+                        anima: {
+                            diffusion_model_name: "", clip_name: ANIMA_CLIP_NAME, vae_name: ANIMA_VAE_NAME,
+                            clip_type: "stable_diffusion", sampler: "er_sde", scheduler: "simple",
+                            steps: 30, cfg: 4.0, seed: generateRandomSeed(), seed_mode: "fixed",
+                            turbo_enabled: false, turbo_previous_settings: null,
+                            dmd_lora_name: ANIMA_TURBO_LORA_NAME, dmd_lora_strength: 1.0,
+                            lora_stack: [
+                                { name: "", strength: 1.0 },
+                                { name: "", strength: 1.0 },
+                                { name: "", strength: 1.0 },
+                                { name: "", strength: 1.0 },
+                                { name: "", strength: 1.0 }
+                            ]
+                        }
+                    }
+                };
+
+                function parseGenerationSettings() {
+                    try {
+                        const parsed = generationSettingsWidget?.value ? JSON.parse(generationSettingsWidget.value) : {};
+                        return { ...GENERATION_DEFAULTS, ...parsed };
+                    } catch (e) {
+                        return { ...GENERATION_DEFAULTS };
+                    }
+                }
 
                 // State
                 let state = {
@@ -601,8 +925,199 @@ app.registerExtension({
                     selectedCostumes: new Set(),
                     emotions: [],
                     selectedEmotions: new Set(),
-                    searchTerm: ""
+                    searchTerm: "",
+                    gen: parseGenerationSettings()
                 };
+                let characterFetchToken = 0;
+
+                function markNodeDirty() {
+                    node.setDirtyCanvas?.(true, true);
+                    app.graph?.setDirtyCanvas?.(true, true);
+                }
+
+                function commitWidget(widget, value, callCallback = true) {
+                    if (!widget) return;
+                    widget.value = value;
+                    if (callCallback) widget.callback?.(value);
+                    markNodeDirty();
+                }
+
+                function persistAllState() {
+                    commitWidget(charWidget, state.character, false);
+                    if (styleWidget) commitWidget(styleWidget, styleSelect.value, false);
+                    if (costumesDataWidget) commitWidget(costumesDataWidget, JSON.stringify(Array.from(state.selectedCostumes)), false);
+                    if (emotionsDataWidget) commitWidget(emotionsDataWidget, JSON.stringify(Array.from(state.selectedEmotions)), false);
+                    saveGenerationSettings(false);
+                }
+
+                function saveGenerationSettings() {
+                    const callCallback = arguments.length > 0 ? arguments[0] : true;
+                    const mode = (state.gen.generation_mode || "anima").toLowerCase();
+                    state.gen.mode_settings = state.gen.mode_settings || {};
+                    state.gen.mode_settings[mode] = { ...state.gen };
+                    delete state.gen.mode_settings[mode].mode_settings;
+
+                    commitWidget(generationSettingsWidget, JSON.stringify(state.gen), callCallback);
+                    commitWidget(modelWidget, mode === "anima" ? "Anima" : "Illustrious", callCallback);
+                }
+
+                function setGenerationMode(mode) {
+                    mode = mode === "illustrious" ? "illustrious" : "anima";
+                    const current = (state.gen.generation_mode || "anima").toLowerCase();
+                    state.gen.mode_settings = state.gen.mode_settings || {};
+                    state.gen.mode_settings[current] = { ...state.gen };
+                    delete state.gen.mode_settings[current].mode_settings;
+
+                    const profile = state.gen.mode_settings[mode] || GENERATION_DEFAULTS.mode_settings[mode] || {};
+                    state.gen = { ...GENERATION_DEFAULTS, ...profile, mode_settings: state.gen.mode_settings, generation_mode: mode };
+                    syncGenerationControls();
+                    saveGenerationSettings();
+                }
+
+                function updateGenerationValue(key, value) {
+                    state.gen[key] = value;
+                    saveGenerationSettings();
+                }
+
+                function setAnimaTurboMode(enabled) {
+                    if ((state.gen.generation_mode || "anima").toLowerCase() !== "anima") return;
+                    if (enabled) {
+                        if (!state.gen.turbo_enabled) {
+                            state.gen.turbo_previous_settings = {
+                                steps: state.gen.steps,
+                                cfg: state.gen.cfg,
+                            };
+                        }
+                        state.gen.turbo_enabled = true;
+                        state.gen.dmd_lora_name = ANIMA_TURBO_LORA_NAME;
+                        state.gen.dmd_lora_strength = 1.0;
+                        state.gen.steps = 12;
+                        state.gen.cfg = 1.0;
+                    } else {
+                        state.gen.turbo_enabled = false;
+                        const previous = state.gen.turbo_previous_settings || {};
+                        if (previous.steps !== undefined) state.gen.steps = previous.steps;
+                        if (previous.cfg !== undefined) state.gen.cfg = previous.cfg;
+                        state.gen.turbo_previous_settings = null;
+                    }
+                    syncGenerationControls();
+                    saveGenerationSettings();
+                }
+
+                function createField(label, input) {
+                    const wrap = document.createElement("label");
+                    wrap.className = "ems-field";
+                    const title = document.createElement("div");
+                    title.className = "ems-label";
+                    title.innerText = label;
+                    wrap.appendChild(title);
+                    wrap.appendChild(input);
+                    return wrap;
+                }
+
+                function createNumberInput(key, min, max, step) {
+                    const input = document.createElement("input");
+                    input.className = "ems-input";
+                    input.type = "number";
+                    input.min = min;
+                    input.max = max;
+                    input.step = step;
+                    input.onchange = () => updateGenerationValue(key, step < 1 ? parseFloat(input.value) : parseInt(input.value));
+                    return input;
+                }
+
+                function createSelectInput(key, values) {
+                    const select = document.createElement("select");
+                    select.className = "ems-input";
+                    values.forEach(value => {
+                        const opt = document.createElement("option");
+                        opt.value = value;
+                        opt.innerText = value;
+                        select.appendChild(opt);
+                    });
+                    select.onchange = () => updateGenerationValue(key, select.value);
+                    return select;
+                }
+
+                const generationEls = {};
+
+                function populateSelect(select, values, includeNone = false) {
+                    const current = select.value;
+                    select.innerHTML = "";
+                    if (includeNone) {
+                        const opt = document.createElement("option");
+                        opt.value = "";
+                        opt.innerText = "None";
+                        select.appendChild(opt);
+                    }
+                    (values || []).forEach(value => {
+                        if (value === "") return;
+                        const opt = document.createElement("option");
+                        opt.value = value;
+                        opt.innerText = value;
+                        select.appendChild(opt);
+                    });
+                    if ([...select.options].some(opt => opt.value === current)) {
+                        select.value = current;
+                    }
+                }
+
+                async function loadGenerationAssets() {
+                    try {
+                        const response = await api.fetchApi("/vnccs/context_lists");
+                        if (!response.ok) return;
+                        const data = await response.json();
+                        populateSelect(generationEls.sampler, data.samplers || ["euler", "er_sde"]);
+                        populateSelect(generationEls.scheduler, data.schedulers || ["normal", "simple"]);
+                        (generationEls.loraSelects || []).forEach(select => populateSelect(select, data.loras || [], true));
+
+                        if (!state.gen.ckpt_name && data.checkpoints?.length) state.gen.ckpt_name = data.checkpoints[0];
+                        if (!state.gen.diffusion_model_name && data.diffusion_models?.length) state.gen.diffusion_model_name = data.diffusion_models[0];
+                        if (!state.gen.clip_name) {
+                            state.gen.clip_name = (data.text_encoders || []).includes(ANIMA_CLIP_NAME) ? ANIMA_CLIP_NAME : (data.text_encoders?.[0] || ANIMA_CLIP_NAME);
+                        }
+                        if (!state.gen.vae_name) {
+                            state.gen.vae_name = (data.vae_models || []).includes(ANIMA_VAE_NAME) ? ANIMA_VAE_NAME : (data.vae_models?.[0] || ANIMA_VAE_NAME);
+                        }
+                        syncGenerationControls();
+                        saveGenerationSettings();
+                    } catch (e) {
+                        console.warn("[VNCCS Emotion Studio] Failed to load generation asset lists", e);
+                    }
+                }
+
+                function syncGenerationControls() {
+                    const mode = (state.gen.generation_mode || "anima").toLowerCase();
+                    generationEls.tabIllustrious?.classList.toggle("active", mode === "illustrious");
+                    generationEls.tabAnima?.classList.toggle("active", mode === "anima");
+                    if (generationEls.modelTitle) generationEls.modelTitle.lastChild.textContent = mode === "anima" ? "Anima Base v1.0" : "Illustrious";
+                    if (generationEls.modelDesc) generationEls.modelDesc.innerText = mode === "anima"
+                        ? `${state.gen.diffusion_model_name || "Select ANIMA diffusion model"} · ${state.gen.clip_name || ANIMA_CLIP_NAME}`
+                        : `${state.gen.ckpt_name || "Select Illustrious checkpoint"}`;
+                    if (generationEls.steps) generationEls.steps.value = state.gen.steps ?? "";
+                    if (generationEls.cfg) generationEls.cfg.value = state.gen.cfg ?? "";
+                    if (generationEls.sampler) generationEls.sampler.value = state.gen.sampler || "euler";
+                    if (generationEls.scheduler) generationEls.scheduler.value = state.gen.scheduler || "normal";
+                    if (generationEls.seed) generationEls.seed.value = state.gen.seed ?? 0;
+                    if (generationEls.seedMode) generationEls.seedMode.classList.toggle("active", (state.gen.seed_mode || "fixed") === "randomize");
+                    if (generationEls.loraSection) generationEls.loraSection.style.display = mode === "anima" ? "flex" : "none";
+                    if (generationEls.turboToggle) generationEls.turboToggle.checked = !!state.gen.turbo_enabled;
+                    if (generationEls.turboCard) generationEls.turboCard.classList.toggle("is-selected", !!state.gen.turbo_enabled);
+                    if (generationEls.loraRows) {
+                        generationEls.loraRows.forEach((row, index) => {
+                            const item = (state.gen.lora_stack || [])[index] || { name: "", strength: 1.0 };
+                            const name = item.name || "";
+                            if (row.name && ![...row.name.options].some(opt => opt.value === name)) {
+                                const opt = document.createElement("option");
+                                opt.value = name;
+                                opt.innerText = name || "None";
+                                row.name.appendChild(opt);
+                            }
+                            if (row.name) row.name.value = name || "";
+                            if (row.strength) row.strength.value = item.strength ?? 1;
+                        });
+                    }
+                }
 
                 // Create UI Container
                 const container = document.createElement("div");
@@ -654,6 +1169,9 @@ app.registerExtension({
                 const rightCol = document.createElement("div");
                 rightCol.className = "ems-right-col";
 
+                const selectionCol = document.createElement("div");
+                selectionCol.className = "ems-selection-col";
+
                 // Costumes
                 const costumesSection = document.createElement("div");
                 costumesSection.className = "ems-section";
@@ -667,7 +1185,7 @@ app.registerExtension({
                 costumesList.className = "ems-costumes-list";
                 costumesSection.appendChild(costumesList);
 
-                rightCol.appendChild(costumesSection);
+                selectionCol.appendChild(costumesSection);
 
                 // Emotions
                 const emotionsSection = document.createElement("div");
@@ -709,7 +1227,163 @@ app.registerExtension({
                 footer.appendChild(btnAll);
                 emotionsSection.appendChild(footer);
 
-                rightCol.appendChild(emotionsSection);
+                selectionCol.appendChild(emotionsSection);
+
+                const generationSection = document.createElement("div");
+                generationSection.className = "ems-section ems-generation-section";
+
+                const generationHeader = document.createElement("div");
+                generationHeader.className = "ems-costumes-header";
+                generationHeader.innerText = "Generation";
+                generationSection.appendChild(generationHeader);
+
+                const tabRow = document.createElement("div");
+                tabRow.className = "ems-tab-row";
+                const tabIllustrious = document.createElement("button");
+                tabIllustrious.type = "button";
+                tabIllustrious.className = "ems-tab";
+                tabIllustrious.innerText = "Illustrious";
+                tabIllustrious.onclick = () => setGenerationMode("illustrious");
+                const tabAnima = document.createElement("button");
+                tabAnima.type = "button";
+                tabAnima.className = "ems-tab";
+                tabAnima.innerText = "Anima";
+                tabAnima.onclick = () => setGenerationMode("anima");
+                generationEls.tabIllustrious = tabIllustrious;
+                generationEls.tabAnima = tabAnima;
+                tabRow.appendChild(tabIllustrious);
+                tabRow.appendChild(tabAnima);
+                generationSection.appendChild(tabRow);
+
+                const modelCard = document.createElement("div");
+                modelCard.className = "ems-model-card";
+                const modelTop = document.createElement("div");
+                modelTop.className = "ems-model-card-top";
+                const modelTitle = document.createElement("div");
+                modelTitle.className = "ems-model-title";
+                const modelDot = document.createElement("span");
+                modelDot.className = "ems-model-dot";
+                modelTitle.appendChild(modelDot);
+                modelTitle.appendChild(document.createTextNode("Anima Base v1.0"));
+                const modelStatus = document.createElement("div");
+                modelStatus.className = "ems-model-status";
+                modelStatus.innerText = "Selected";
+                modelTop.appendChild(modelTitle);
+                modelTop.appendChild(modelStatus);
+                const modelDesc = document.createElement("div");
+                modelDesc.className = "ems-model-desc";
+                modelCard.appendChild(modelTop);
+                modelCard.appendChild(modelDesc);
+                generationEls.modelTitle = modelTitle;
+                generationEls.modelDesc = modelDesc;
+                generationSection.appendChild(modelCard);
+
+                const genGrid = document.createElement("div");
+                genGrid.className = "ems-generation-grid";
+                generationEls.steps = createNumberInput("steps", 1, 100, 1);
+                generationEls.sampler = createSelectInput("sampler", ["euler", "er_sde", "dpmpp_2m", "dpmpp_sde", "dpmpp_3m_sde"]);
+                generationEls.cfg = createNumberInput("cfg", 0, 20, 0.1);
+                generationEls.scheduler = createSelectInput("scheduler", ["normal", "simple", "karras", "exponential", "sgm_uniform"]);
+                genGrid.appendChild(createField("Steps", generationEls.steps));
+                genGrid.appendChild(createField("Sampler", generationEls.sampler));
+                genGrid.appendChild(createField("CFG", generationEls.cfg));
+                genGrid.appendChild(createField("Scheduler", generationEls.scheduler));
+                generationSection.appendChild(genGrid);
+
+                const seedInput = document.createElement("input");
+                seedInput.className = "ems-input";
+                seedInput.type = "number";
+                seedInput.onchange = () => updateGenerationValue("seed", parseInt(seedInput.value || "0"));
+                const seedDice = document.createElement("button");
+                seedDice.type = "button";
+                seedDice.className = "ems-seed-dice";
+                seedDice.innerHTML = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <rect x="4" y="4" width="16" height="16" rx="3.5" stroke="currentColor" stroke-width="2"/>
+                    <circle cx="8.5" cy="8.5" r="1.4" fill="currentColor"/>
+                    <circle cx="15.5" cy="8.5" r="1.4" fill="currentColor"/>
+                    <circle cx="12" cy="12" r="1.4" fill="currentColor"/>
+                    <circle cx="8.5" cy="15.5" r="1.4" fill="currentColor"/>
+                    <circle cx="15.5" cy="15.5" r="1.4" fill="currentColor"/>
+                </svg>`;
+                seedDice.onclick = () => {
+                    state.gen.seed_mode = (state.gen.seed_mode || "fixed") === "randomize" ? "fixed" : "randomize";
+                    if (state.gen.seed_mode === "randomize") state.gen.seed = generateRandomSeed();
+                    syncGenerationControls();
+                    saveGenerationSettings();
+                };
+                const seedRow = document.createElement("div");
+                seedRow.className = "ems-seed-row";
+                seedRow.appendChild(seedInput);
+                seedRow.appendChild(seedDice);
+                generationEls.seed = seedInput;
+                generationEls.seedMode = seedDice;
+                generationSection.appendChild(createField("Seed", seedRow));
+
+                const loraSection = document.createElement("div");
+                loraSection.className = "ems-lora-stack";
+                generationEls.loraSelects = [];
+                generationEls.loraRows = [];
+                const loraHeader = document.createElement("div");
+                loraHeader.className = "ems-costumes-header";
+                loraHeader.innerText = "Anima LoRA Stack";
+                loraSection.appendChild(loraHeader);
+                const turboCard = document.createElement("label");
+                turboCard.className = "ems-lora-card";
+                turboCard.innerHTML = `<span class="ems-lora-name"><span class="ems-model-dot"></span>Anima Turbo LoRA</span><span class="ems-model-status">Installed</span>`;
+                const turboToggle = document.createElement("input");
+                turboToggle.type = "checkbox";
+                turboToggle.onchange = (event) => {
+                    event.stopPropagation();
+                    setAnimaTurboMode(event.target.checked);
+                };
+                turboToggle.onclick = (event) => event.stopPropagation();
+                const turboSwitch = document.createElement("span");
+                turboSwitch.className = "ems-toggle";
+                const turboTrack = document.createElement("span");
+                turboTrack.className = "ems-toggle-track";
+                const turboThumb = document.createElement("span");
+                turboThumb.className = "ems-toggle-thumb";
+                turboSwitch.appendChild(turboToggle);
+                turboSwitch.appendChild(turboTrack);
+                turboSwitch.appendChild(turboThumb);
+                turboCard.appendChild(turboSwitch);
+                turboCard.onclick = () => setAnimaTurboMode(!state.gen.turbo_enabled);
+                loraSection.appendChild(turboCard);
+                for (let i = 0; i < 5; i++) {
+                    const row = document.createElement("div");
+                    row.className = "ems-lora-row";
+                    const name = createSelectInput(`lora_${i}`, ["", "None"]);
+                    const strength = createNumberInput(`lora_strength_${i}`, 0, 2, 0.05);
+                    name.onchange = () => {
+                        state.gen.lora_stack = state.gen.lora_stack || [];
+                        state.gen.lora_stack[i] = state.gen.lora_stack[i] || { name: "", strength: 1.0 };
+                        state.gen.lora_stack[i].name = name.value === "None" ? "" : name.value;
+                        saveGenerationSettings();
+                    };
+                    strength.onchange = () => {
+                        state.gen.lora_stack = state.gen.lora_stack || [];
+                        state.gen.lora_stack[i] = state.gen.lora_stack[i] || { name: "", strength: 1.0 };
+                        state.gen.lora_stack[i].strength = parseFloat(strength.value || "1");
+                        saveGenerationSettings();
+                    };
+                    name.value = "None";
+                    strength.value = "1";
+                    generationEls.loraSelects.push(name);
+                    generationEls.loraRows.push({ name, strength });
+                    row.appendChild(name);
+                    row.appendChild(strength);
+                    loraSection.appendChild(row);
+                }
+                generationEls.loraSection = loraSection;
+                generationEls.turboToggle = turboToggle;
+                generationEls.turboCard = turboCard;
+                generationSection.appendChild(loraSection);
+
+                rightCol.appendChild(selectionCol);
+                rightCol.appendChild(generationSection);
+                syncGenerationControls();
+                saveGenerationSettings();
+                loadGenerationAssets();
                 container.appendChild(rightCol);
 
                 // Custom Select in Header
@@ -729,10 +1403,9 @@ app.registerExtension({
                         });
                     }
                     charSelect.onchange = () => {
-                        charWidget.value = charSelect.value;
                         state.character = charSelect.value;
+                        commitWidget(charWidget, charSelect.value, false);
                         fetchCharacterData(charSelect.value);
-                        if (charWidget.callback) charWidget.callback(charSelect.value);
                     };
                     charWidget.hidden = true;
                 }
@@ -758,8 +1431,7 @@ app.registerExtension({
                     });
                     // Sync
                     styleSelect.onchange = () => {
-                        styleWidget.value = styleSelect.value;
-                        if (styleWidget.callback) styleWidget.callback(styleSelect.value);
+                        commitWidget(styleWidget, styleSelect.value);
                     };
                     styleWidget.hidden = true;
                 }
@@ -771,12 +1443,18 @@ app.registerExtension({
 
 
                 const widget = node.addDOMWidget("emotion_ui_v2", "ui", container, {
-                    serialize: true,
+                    serialize: false,
                     hideOnZoom: false,
                     getValue() { return undefined; },
                     setValue(v) { }
                 });
                 syncDOMWidgetWidthSoon(node, "emotion_ui_v2");
+
+                const origSerialize = node.onSerialize;
+                node.onSerialize = function(info) {
+                    persistAllState();
+                    return origSerialize?.apply(this, arguments);
+                };
 
                 // Fix layout after tab switch: ComfyUI detaches/reattaches DOM widgets
                 // without triggering onResize. Use ResizeObserver on the node's canvas
@@ -872,6 +1550,12 @@ app.registerExtension({
                     // 1. Character
                     if (charWidget && charWidget.value) {
                         state.character = charWidget.value;
+                        if (![...charSelect.options].some(opt => opt.value === charWidget.value)) {
+                            const opt = document.createElement("option");
+                            opt.value = charWidget.value;
+                            opt.innerText = charWidget.value;
+                            charSelect.appendChild(opt);
+                        }
                         charSelect.value = charWidget.value;
                         fetchCharacterData(state.character);
                     }
@@ -880,6 +1564,13 @@ app.registerExtension({
                     if (styleWidget && styleWidget.value) {
                         styleSelect.value = styleWidget.value;
                     }
+                    if (modelWidget && modelWidget.value) {
+                        state.gen.generation_mode = String(modelWidget.value).toLowerCase();
+                    }
+                    if (generationSettingsWidget && generationSettingsWidget.value) {
+                        state.gen = parseGenerationSettings();
+                    }
+                    syncGenerationControls();
 
                     // 3. Costumes & Emotions (from hidden text strings)
                     if (costumesDataWidget && costumesDataWidget.value) {
@@ -969,12 +1660,12 @@ app.registerExtension({
                 // Functions
                 function updateCostumesData() {
                     const list = Array.from(state.selectedCostumes);
-                    if (costumesDataWidget) costumesDataWidget.value = JSON.stringify(list);
+                    commitWidget(costumesDataWidget, JSON.stringify(list));
                 }
 
                 function updateEmotionsData() {
                     const list = Array.from(state.selectedEmotions);
-                    if (emotionsDataWidget) emotionsDataWidget.value = JSON.stringify(list);
+                    commitWidget(emotionsDataWidget, JSON.stringify(list));
                     updateButtonState();
                 }
 
@@ -1072,6 +1763,7 @@ app.registerExtension({
 
                 async function fetchCharacterData(charName) {
                     if (!charName || charName === "Character Name") return;
+                    const token = ++characterFetchToken;
 
                     // Preview (randomize to force reload from disk)
                     charImg.src = `/vnccs/get_character_pose_preview?character=${encodeURIComponent(charName)}&t=${Date.now()}`;
@@ -1080,6 +1772,7 @@ app.registerExtension({
                     try {
                         const res = await fetch(`/vnccs/get_character_costumes?character=${encodeURIComponent(charName)}`);
                         const validCostumes = await res.json();
+                        if (token !== characterFetchToken || charName !== state.character) return;
                         state.costumes = validCostumes || [];
 
                         // FIX: Only reset to "all" if no saved selection exists
@@ -1136,6 +1829,11 @@ app.registerExtension({
                         if (originalCb) originalCb(v);
                     };
                 }
+
+                setTimeout(() => {
+                    restoreStateFromWidgets();
+                    persistAllState();
+                }, 0);
             };
 
             const onConfigure = nodeType.prototype.onConfigure;
