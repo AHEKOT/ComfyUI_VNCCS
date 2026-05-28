@@ -215,6 +215,56 @@ const STYLE = `
 }
 
 /* ── Emotions Grid ── */
+.ems-selected-emotions-wrap {
+    flex: 0 0 auto;
+    background: rgba(8, 6, 14, 0.5);
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-md);
+    padding: 8px;
+    margin-bottom: 8px;
+}
+.ems-selected-emotions-header {
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin: 0 0 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.ems-selected-emotions-header::before {
+    content: '';
+    width: 3px;
+    height: 10px;
+    background: linear-gradient(180deg, var(--accent), var(--accent-lavender));
+    border-radius: 2px;
+    box-shadow: 0 0 6px var(--accent-glow);
+    flex-shrink: 0;
+}
+.ems-selected-emotions-list {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 8px;
+    align-content: start;
+    align-items: start;
+    max-height: 178px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--accent-border) transparent;
+}
+.ems-selected-emotions-list::-webkit-scrollbar { width: 4px; }
+.ems-selected-emotions-list::-webkit-scrollbar-thumb { background: var(--accent-border); border-radius: 2px; }
+.ems-selected-emotions-empty {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 600;
+    padding: 10px;
+    text-align: center;
+    border: 1px dashed var(--border-hover);
+    border-radius: var(--radius-sm);
+}
 .ems-emotions-container {
     flex: 1;
     background: rgba(8, 6, 14, 0.5);
@@ -225,6 +275,8 @@ const STYLE = `
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: 8px;
+    align-content: start;
+    align-items: start;
     min-height: 200px;
     scrollbar-width: thin;
     scrollbar-color: var(--accent-border) transparent;
@@ -236,6 +288,7 @@ const STYLE = `
     display: flex;
     flex-direction: column;
     align-items: center;
+    align-self: start;
     cursor: pointer;
     transition: all 0.15s ease;
     width: 100%;
@@ -280,6 +333,13 @@ const STYLE = `
     word-break: break-word;
     width: 100%;
     line-height: 1.2;
+}
+.ems-emotion-item.compact {
+    padding: 4px;
+}
+.ems-emotion-item.compact .ems-emotion-label {
+    font-size: 12px;
+    margin-top: 3px;
 }
 
 /* ── Footer / Button ── */
@@ -614,6 +674,17 @@ app.registerExtension({
                 emotionsSection.className = "ems-section";
                 emotionsSection.style.flex = "1";
 
+                const selectedEmotionsWrap = document.createElement("div");
+                selectedEmotionsWrap.className = "ems-selected-emotions-wrap";
+                const selectedEmotionsHeader = document.createElement("div");
+                selectedEmotionsHeader.className = "ems-selected-emotions-header";
+                selectedEmotionsHeader.innerText = "Selected emotions";
+                const selectedEmotionsList = document.createElement("div");
+                selectedEmotionsList.className = "ems-selected-emotions-list";
+                selectedEmotionsWrap.appendChild(selectedEmotionsHeader);
+                selectedEmotionsWrap.appendChild(selectedEmotionsList);
+                emotionsSection.appendChild(selectedEmotionsWrap);
+
                 const emotionsGrid = document.createElement("div");
                 emotionsGrid.className = "ems-emotions-container";
                 emotionsSection.appendChild(emotionsGrid);
@@ -907,6 +978,37 @@ app.registerExtension({
                     updateButtonState();
                 }
 
+                function createEmotionCard(e, compact = false) {
+                    const div = document.createElement("div");
+                    const selected = state.selectedEmotions.has(e.safe_name);
+                    div.className = "ems-emotion-item" + (selected ? " selected" : "") + (compact ? " compact" : "");
+                    div.title = e.description || "";
+
+                    const img = document.createElement("img");
+                    img.className = "ems-emotion-img";
+                    img.src = `/vnccs/get_emotion_image?name=${encodeURIComponent(e.safe_name)}`;
+                    img.onerror = () => { img.style.display = 'none'; };
+
+                    const lbl = document.createElement("div");
+                    lbl.className = "ems-emotion-label";
+                    lbl.innerText = e.safe_name;
+
+                    div.appendChild(img);
+                    div.appendChild(lbl);
+
+                    div.onclick = () => {
+                        if (state.selectedEmotions.has(e.safe_name)) {
+                            state.selectedEmotions.delete(e.safe_name);
+                        } else {
+                            state.selectedEmotions.add(e.safe_name);
+                        }
+                        renderEmotions();
+                        updateEmotionsData();
+                    };
+
+                    return div;
+                }
+
                 function renderCostumes() {
                     costumesList.innerHTML = "";
                     state.costumes.forEach(c => {
@@ -944,37 +1046,26 @@ app.registerExtension({
                 }
 
                 function renderEmotions() {
+                    selectedEmotionsList.innerHTML = "";
+                    const selectedNames = Array.from(state.selectedEmotions);
+                    selectedEmotionsHeader.innerText = `Selected emotions (${selectedNames.length})`;
+                    if (selectedNames.length === 0) {
+                        const empty = document.createElement("div");
+                        empty.className = "ems-selected-emotions-empty";
+                        empty.innerText = "No emotions selected";
+                        selectedEmotionsList.appendChild(empty);
+                    } else {
+                        const byName = new Map(state.emotions.map(e => [e.safe_name, e]));
+                        selectedNames.forEach(name => {
+                            const emotion = byName.get(name) || { safe_name: name, description: "" };
+                            selectedEmotionsList.appendChild(createEmotionCard(emotion, true));
+                        });
+                    }
+
                     emotionsGrid.innerHTML = "";
                     const filtered = getFilteredEmotions();
                     filtered.forEach(e => {
-                        const div = document.createElement("div");
-                        const selected = state.selectedEmotions.has(e.safe_name);
-                        div.className = "ems-emotion-item" + (selected ? " selected" : "");
-                        div.title = e.description || "";
-
-                        const img = document.createElement("img");
-                        img.className = "ems-emotion-img";
-                        img.src = `/vnccs/get_emotion_image?name=${encodeURIComponent(e.safe_name)}`;
-                        img.onerror = () => { img.style.display = 'none'; };
-
-                        const lbl = document.createElement("div");
-                        lbl.className = "ems-emotion-label";
-                        lbl.innerText = e.safe_name;
-
-                        div.appendChild(img);
-                        div.appendChild(lbl);
-
-                        div.onclick = () => {
-                            if (state.selectedEmotions.has(e.safe_name)) {
-                                state.selectedEmotions.delete(e.safe_name);
-                            } else {
-                                state.selectedEmotions.add(e.safe_name);
-                            }
-                            renderEmotions();
-                            updateEmotionsData();
-                        };
-
-                        emotionsGrid.appendChild(div);
+                        emotionsGrid.appendChild(createEmotionCard(e));
                     });
                     updateButtonState();
                 }
