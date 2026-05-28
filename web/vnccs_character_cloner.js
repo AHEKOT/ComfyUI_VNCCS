@@ -723,10 +723,20 @@ app.registerExtension({
                         lora_prompt: "", background_color: "Green"
                     }
                 };
+                node._vnccsGetClonerState = () => state;
 
                 const els = {};
                 const saveState = () => {
                     if (dataWidget) dataWidget.value = JSON.stringify(state);
+                    node._vnccsGetClonerState = () => state;
+                    app.graph?.setDirtyCanvas(true, true);
+                    window.dispatchEvent(new CustomEvent("vnccs-character-cloner-updated", {
+                        detail: {
+                            node_id: node.id,
+                            character: state.character,
+                            nsfw: !!state.character_info?.nsfw
+                        }
+                    }));
                 };
                 const normalizeAgeValue = (value) => {
                     const parsed = parseFloat(value);
@@ -853,7 +863,19 @@ app.registerExtension({
                         try {
                             console.log("[VNCCS] Loading State from widget_data:", dataWidget.value);
                             const parsed = JSON.parse(dataWidget.value);
-                            Object.assign(state, parsed);
+                            if (Object.prototype.hasOwnProperty.call(parsed, "character")) {
+                                state.character = parsed.character || "";
+                            }
+                            if (Array.isArray(parsed.source_images)) {
+                                state.source_images = parsed.source_images;
+                            }
+                            if (Object.prototype.hasOwnProperty.call(parsed, "selected_idx")) {
+                                state.selected_idx = parsed.selected_idx;
+                            }
+                            if (parsed.character_info && typeof parsed.character_info === "object") {
+                                Object.assign(state.character_info, parsed.character_info);
+                            }
+                            node._vnccsGetClonerState = () => state;
                             // Update UI
                             updateUIFromState();
                             console.log("[VNCCS] State loaded successfully.");

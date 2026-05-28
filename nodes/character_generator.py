@@ -959,6 +959,11 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
         settings = self._clone_settings(widget_data)
         widget_payload = self._widget_data(widget_data)
         character_name = widget_payload.get("character_name", "")
+        nsfw_value = widget_payload.get("nsfw_enabled", True)
+        if isinstance(nsfw_value, str):
+            nsfw_enabled = nsfw_value.strip().lower() in ("true", "1", "yes", "on")
+        else:
+            nsfw_enabled = bool(nsfw_value)
         character = self._unwrap_scalar(character)
         pipe = self._unwrap_scalar(pipe)
         prompt = self._unwrap_scalar(prompt)
@@ -969,7 +974,6 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
         try:
             _rotate_preview_cache(cache_dir)
             pose_lora_info = self._find_pose_lora(pipe)
-            clothes_lora_info = self._find_clothes_lora(pipe)
 
             original_final, original_pose, original_upscaled = self._run_sprite_branch(
                 poses,
@@ -987,6 +991,10 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
             if original_saved:
                 self._emit(unique_id, "original_bg_remove", "done", original_final, f"Saved {len(original_saved)} original sprites", cache_dir=cache_dir)
 
+            if not nsfw_enabled:
+                return original_final, original_final, original_final, original_pose, original_upscaled, character, original_pose
+
+            clothes_lora_info = self._find_clothes_lora(pipe)
             remove_total = 1
             self._emit(
                 unique_id,

@@ -52,12 +52,16 @@ def get_random_pose_preview(character_name):
         for poses_dir in sprite_roots:
             if not os.path.isdir(poses_dir):
                 continue
+            root_files = []
             for root, _dirs, filenames in os.walk(poses_dir):
-                files.extend(
+                root_files.extend(
                     os.path.join(root, filename)
                     for filename in filenames
                     if os.path.splitext(filename)[1].lower() in image_exts
                 )
+            if root_files:
+                files = root_files
+                break
         print(f"[VNCCS Debug] Pose preview files found: {len(files)}")
         if not files:
             return None

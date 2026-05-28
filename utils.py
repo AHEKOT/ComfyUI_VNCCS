@@ -552,31 +552,67 @@ def load_character_sheet(character: str, costume: str = "Naked", emotion: str = 
         return None
     
     try:
-        sheet_dir = os.path.join(character_dir(character), "Sheets", costume, emotion)
-        
-        if not os.path.isdir(sheet_dir):
-            print(f"[VNCCS Utils] Directory not found: {sheet_dir}")
-            return None
-        
+        costume_candidates = [costume]
+        if costume == "Naked":
+            costume_candidates.append("Original")
+
+        sheet_dir = None
         candidates = []
         pattern = f"sheet_{emotion}_*(\\d+)_*\\.png"
-        
-        for fname in os.listdir(sheet_dir):
-            m = re.match(pattern, fname)
-            if m:
-                idx = int(m.group(1))
-                candidates.append((idx, fname))
-        
-        if not candidates:
-            print(f"[VNCCS Utils] Files sheet_{emotion}_*number.png not found in {sheet_dir}")
+
+        for candidate_costume in costume_candidates:
+            candidate_dir = os.path.join(character_dir(character), "Sheets", candidate_costume, emotion)
+            if not os.path.isdir(candidate_dir):
+                continue
+
+            candidate_files = []
+            for fname in os.listdir(candidate_dir):
+                m = re.match(pattern, fname)
+                if m:
+                    idx = int(m.group(1))
+                    candidate_files.append((idx, fname))
+
+            if candidate_files:
+                sheet_dir = candidate_dir
+                candidates = candidate_files
+                break
+
+        best_path = None
+        if sheet_dir and candidates:
+            candidates.sort(key=lambda x: x[0])
+            _, best_name = candidates[-1]
+            best_path = os.path.join(sheet_dir, best_name)
+        elif costume == "Naked":
+            image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+            for candidate_costume in costume_candidates:
+                sprite_root = os.path.join(character_dir(character), "Sprites", candidate_costume)
+                if not os.path.isdir(sprite_root):
+                    continue
+                sprite_files = []
+                for root, _dirs, filenames in os.walk(sprite_root):
+                    sprite_files.extend(
+                        os.path.join(root, filename)
+                        for filename in filenames
+                        if os.path.splitext(filename)[1].lower() in image_exts
+                    )
+                if sprite_files:
+                    best_path = max(sprite_files, key=lambda path: (os.path.getmtime(path), path))
+                    print(f"[VNCCS Utils] Using sprite fallback for sheet load: {best_path}")
+                    break
+
+        if not best_path:
+            checked = [
+                os.path.join(character_dir(character), "Sheets", candidate_costume, emotion)
+                for candidate_costume in costume_candidates
+            ] + [
+                os.path.join(character_dir(character), "Sprites", candidate_costume)
+                for candidate_costume in costume_candidates
+            ]
+            print(f"[VNCCS Utils] No sheet/sprite fallback found for {character}/{costume}/{emotion}: {checked}")
             if with_mask:
                 return None, None
             else:
                 return None
-        
-        candidates.sort(key=lambda x: x[0])
-        _, best_name = candidates[-1]
-        best_path = os.path.join(sheet_dir, best_name)
         
         img_pil = Image.open(best_path)
         img_pil = ImageOps.exif_transpose(img_pil)

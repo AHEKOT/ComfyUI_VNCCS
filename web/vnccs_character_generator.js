@@ -3,6 +3,7 @@ import { api } from "../../scripts/api.js";
 import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "./vnccs_common.js";
 
 const DEFAULT_DATA = {
+    nsfw_enabled: true,
     common: {
         target_size: 1024,
     },
@@ -69,6 +70,12 @@ const CLONE_STAGES = [
     ["naked_pose_generation", "Naked Pose"],
     ["naked_upscaler", "Naked Upscaler"],
     ["naked_bg_remove", "Naked BG"],
+];
+
+const CLONE_SFW_STAGES = [
+    ["original_pose_generation", "Original Pose"],
+    ["original_upscaler", "Original Upscaler"],
+    ["original_bg_remove", "Original BG"],
 ];
 
 const CLOTHES_STAGES = [
@@ -414,6 +421,8 @@ function deepMerge(base, patch) {
     for (const [section, values] of Object.entries(patch || {})) {
         if (values && typeof values === "object" && !Array.isArray(values)) {
             out[section] = { ...(out[section] || {}), ...values };
+        } else {
+            out[section] = values;
         }
     }
     return out;
@@ -440,16 +449,28 @@ function uniqueOptions(values) {
     return [...new Set(values.filter(Boolean))];
 }
 
+function booleanValue(value, fallback = false) {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "number") return value !== 0;
+    if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (["true", "1", "yes", "on"].includes(normalized)) return true;
+        if (["false", "0", "no", "off"].includes(normalized)) return false;
+    }
+    return fallback;
+}
+
 class CharacterGeneratorWidget {
     constructor(node, options = {}) {
         this.node = node;
         this.isClone = Boolean(options.isClone);
         this.isClothes = Boolean(options.isClothes);
         this.title = options.title || "VNCCS Character Generator";
-        this.stages = this.isClone ? CLONE_STAGES : (this.isClothes ? CLOTHES_STAGES : STAGES);
         this.data = readData(node);
+        this.syncCharacterSourceData();
+        this.stages = this.currentStages();
         this.stageState = Object.fromEntries(this.stages.map(([key]) => [key, { status: "waiting", images: null, message: "" }]));
-        const defaultPreview = this.isClone ? "original_pose_generation" : (this.isClothes ? "source_upscaler" : "pose_generation");
+        const defaultPreview = this.defaultPreviewStage();
         this.selectedPreview = this.data.ui?.selected_preview || defaultPreview;
         if (!this.stages.some(([key]) => key === this.selectedPreview)) {
             this.selectedPreview = defaultPreview;
@@ -472,9 +493,8 @@ class CharacterGeneratorWidget {
         injectStyles();
         const root = document.createElement("div");
         root.className = "vnccs-pipe-root";
-        root.classList.toggle("is-clone", this.isClone);
-        root.classList.toggle("is-clothes", this.isClothes);
         this.root = root;
+        this.updateModeClasses();
 
         this.settingsEl = document.createElement("div");
         this.settingsEl.className = "vnccs-pipe-settings";
@@ -500,8 +520,15 @@ class CharacterGeneratorWidget {
             dataWidget.computeSize = () => [0, -4];
         }
 
-        this.syncCharacterNameFromCreator();
+        this.syncCharacterSourceData();
+        this.syncStagesFromData();
         writeData(this.node, this.data);
+        this.node._vnccsCharacterGeneratorSyncBeforeQueue = () => {
+            this.syncCharacterSourceData();
+            this.syncStagesFromData();
+            writeData(this.node, this.data);
+        };
+        registerCleanup(this.node, () => delete this.node._vnccsCharacterGeneratorSyncBeforeQueue);
 
         this.renderSettings();
         this.renderPreview();
@@ -509,6 +536,19 @@ class CharacterGeneratorWidget {
         this.previewResizeObserver = new ResizeObserver(() => this.renderPreview());
         this.previewResizeObserver.observe(this.previewEl);
         registerCleanup(this.node, () => this.previewResizeObserver?.disconnect());
+        if (this.isClone) {
+            this.sourceSyncTimer = setInterval(() => {
+                const previous = this.data.nsfw_enabled;
+                const changed = this.syncCharacterSourceData();
+                if (!changed && previous === this.data.nsfw_enabled) return;
+                this.syncStagesFromData();
+                writeData(this.node, this.data);
+                this.renderSettings();
+                this.renderPreview();
+                this.renderChain();
+            }, 500);
+            registerCleanup(this.node, () => clearInterval(this.sourceSyncTimer));
+        }
         if (this.restoredViewer?.open && this.currentImages().length) {
             this.openViewer(this.restoredViewer.index || 0, this.restoredViewer);
         }
@@ -555,6 +595,21 @@ class CharacterGeneratorWidget {
         };
         api.addEventListener("vnccs.character_generator.stage", this.onStage);
         registerCleanup(this.node, () => api.removeEventListener("vnccs.character_generator.stage", this.onStage));
+
+        if (this.isClone) {
+            this.onClonerUpdated = () => {
+                const previous = this.data.nsfw_enabled;
+                const changed = this.syncCharacterSourceData();
+                if (!changed && previous === this.data.nsfw_enabled) return;
+                this.syncStagesFromData();
+                writeData(this.node, this.data);
+                this.renderSettings();
+                this.renderPreview();
+                this.renderChain();
+            };
+            window.addEventListener("vnccs-character-cloner-updated", this.onClonerUpdated);
+            registerCleanup(this.node, () => window.removeEventListener("vnccs-character-cloner-updated", this.onClonerUpdated));
+        }
     }
 
     resetStagesFrom(stageKey) {
@@ -572,7 +627,8 @@ class CharacterGeneratorWidget {
     }
 
     persistUI() {
-        this.syncCharacterNameFromCreator();
+        this.syncCharacterSourceData();
+        this.syncStagesFromData();
         this.data.ui = {
             ...(this.data.ui || {}),
             selected_preview: this.selectedPreview,
@@ -583,22 +639,93 @@ class CharacterGeneratorWidget {
     }
 
     set(section, key, value) {
-        this.syncCharacterNameFromCreator();
+        this.syncCharacterSourceData();
         this.data[section][key] = value;
         writeData(this.node, this.data);
         this.saveBrowserState();
     }
 
     syncCharacterNameFromCreator() {
-        const creator = app.graph?._nodes?.find(n => n.type === "CharacterCreatorV2");
-        const widget = creator?.widgets?.find(w => w.name === "widget_data");
-        if (!widget?.value) return;
+        return this.syncCharacterSourceData();
+    }
+
+    syncCharacterSourceData() {
+        const matchesType = (node, type, displayName = "") => {
+            const title = typeof node?.getTitle === "function" ? node.getTitle() : node?.title;
+            return node?.type === type || node?.comfyClass === type || node?.constructor?.type === type || title === displayName;
+        };
+        const sourceType = this.isClone ? "CharacterCloner" : "CharacterCreatorV2";
+        const displayName = this.isClone ? "VNCCS Character Cloner" : "VNCCS Character Creator V2";
+        let source = app.graph?._nodes?.find(n => matchesType(n, sourceType, displayName));
+        if (!source && this.isClone) source = app.graph?._nodes?.find(n => matchesType(n, "CharacterCreatorV2", "VNCCS Character Creator V2"));
+        const widget = source?.widgets?.find(w => w.name === "widget_data");
+        const liveState = this.isClone ? source?._vnccsGetClonerState?.() : null;
+        if (!widget?.value && !liveState) return;
+        let changed = false;
         try {
-            const payload = JSON.parse(widget.value);
-            if (payload?.character) this.data.character_name = payload.character;
+            const payload = liveState || JSON.parse(widget.value);
+            if (payload?.character && this.data.character_name !== payload.character) {
+                this.data.character_name = payload.character;
+                changed = true;
+            }
+            if (this.isClone && payload?.character_info && Object.prototype.hasOwnProperty.call(payload.character_info, "nsfw")) {
+                const nextNsfw = booleanValue(payload.character_info.nsfw, false);
+                if (this.data.nsfw_enabled !== nextNsfw) {
+                    this.data.nsfw_enabled = nextNsfw;
+                    changed = true;
+                }
+            }
         } catch {
-            // Leave the previous value if the creator widget is mid-edit.
+            // Leave the previous value if the source widget is mid-edit.
         }
+        return changed;
+    }
+
+    isCloneNsfwEnabled() {
+        return !this.isClone || this.data.nsfw_enabled !== false;
+    }
+
+    currentStages() {
+        if (this.isClone) return this.isCloneNsfwEnabled() ? CLONE_STAGES : CLONE_SFW_STAGES;
+        return this.isClothes ? CLOTHES_STAGES : STAGES;
+    }
+
+    defaultPreviewStage() {
+        if (this.isClone) return "original_pose_generation";
+        return this.isClothes ? "source_upscaler" : "pose_generation";
+    }
+
+    syncStagesFromData() {
+        const nextStages = this.currentStages();
+        const nextKeys = new Set(nextStages.map(([key]) => key));
+        this.stages = nextStages;
+        if (!this.stageState) this.stageState = {};
+        for (const [key] of nextStages) {
+            if (!this.stageState[key]) {
+                this.stageState[key] = { status: "waiting", images: null, message: "" };
+            }
+        }
+        if (!nextKeys.has(this.selectedPreview)) {
+            this.selectedPreview = this.defaultPreviewStage();
+            this.userSelectedPreview = false;
+            this.data.ui = {
+                ...(this.data.ui || {}),
+                selected_preview: this.selectedPreview,
+                user_selected_preview: false,
+            };
+            this.closeViewer(true);
+        }
+        this.updateModeClasses();
+    }
+
+    updateModeClasses() {
+        const cloneNsfw = this.isClone && this.isCloneNsfwEnabled();
+        this.root?.classList.toggle("is-clone", cloneNsfw);
+        this.root?.classList.toggle("is-clone-sfw", this.isClone && !cloneNsfw);
+        this.root?.classList.toggle("is-clothes", this.isClothes);
+        this.chainEl?.classList.toggle("is-clone", cloneNsfw);
+        this.chainEl?.classList.toggle("is-clone-sfw", this.isClone && !cloneNsfw);
+        this.chainEl?.classList.toggle("is-clothes", this.isClothes);
     }
 
     storageKey() {
@@ -655,7 +782,8 @@ class CharacterGeneratorWidget {
     }
 
     saveBrowserState(includeImages = true) {
-        this.syncCharacterNameFromCreator();
+        this.syncCharacterSourceData();
+        this.syncStagesFromData();
         const stageState = {};
         for (const [key] of this.stages) {
             const stage = this.stageState[key] || {};
@@ -878,6 +1006,8 @@ class CharacterGeneratorWidget {
     }
 
     renderSettings() {
+        this.syncCharacterSourceData();
+        this.syncStagesFromData();
         this.settingsEl.innerHTML = "";
         const title = document.createElement("div");
         title.className = "vnccs-pipe-title";
@@ -887,9 +1017,11 @@ class CharacterGeneratorWidget {
             this.settingsEl.appendChild(this.block("Common", [
                 this.field("common", "target_size", "target size", "select", [1024, 1344, 1536, 2048, 768, 512]),
             ]));
-            this.settingsEl.appendChild(this.block("Remove Clothes", [
-                this.field("remove_clothes", "prompt", "prompt", "textarea"),
-            ]));
+            if (this.isCloneNsfwEnabled()) {
+                this.settingsEl.appendChild(this.block("Remove Clothes", [
+                    this.field("remove_clothes", "prompt", "prompt", "textarea"),
+                ]));
+            }
         } else {
             this.settingsEl.appendChild(this.block("Pose Generation", [
                 this.field("pose_generation", "target_size", "target size", "select", [1024, 1344, 1536, 2048, 768, 512]),
@@ -922,6 +1054,7 @@ class CharacterGeneratorWidget {
     }
 
     renderPreview() {
+        this.syncStagesFromData();
         this.previewEl.innerHTML = "";
         const head = document.createElement("div");
         head.className = "vnccs-pipe-preview-head";
@@ -1062,9 +1195,9 @@ class CharacterGeneratorWidget {
     }
 
     renderChain() {
+        this.syncStagesFromData();
         this.chainEl.innerHTML = "";
-        this.chainEl.classList.toggle("is-clone", this.isClone);
-        this.chainEl.classList.toggle("is-clothes", this.isClothes);
+        this.updateModeClasses();
         for (const [key, name] of this.stages) {
             const stage = document.createElement("div");
             const status = this.stageState[key]?.status || "waiting";
@@ -1376,6 +1509,18 @@ class CharacterGeneratorWidget {
 
 app.registerExtension({
     name: "VNCCS.CharacterGenerator",
+    async setup() {
+        if (app._vnccsCharacterGeneratorQueueHooked) return;
+        app._vnccsCharacterGeneratorQueueHooked = true;
+        const originalQueuePrompt = app.queuePrompt?.bind(app);
+        if (!originalQueuePrompt) return;
+        app.queuePrompt = async function (...args) {
+            for (const node of app.graph?._nodes || []) {
+                node._vnccsCharacterGeneratorSyncBeforeQueue?.();
+            }
+            return originalQueuePrompt(...args);
+        };
+    },
     async beforeRegisterNodeDef(nodeType, nodeData) {
         const isBaseGenerator = nodeData.name === "VNCCS_CharacterGenerator";
         const isCloneGenerator = nodeData.name === "VNCCS_CharacterCloneGenerator";
@@ -1401,7 +1546,11 @@ app.registerExtension({
             onConfigure?.apply(this, arguments);
             if (this._vnccsCharacterGeneratorWidget) {
                 this._vnccsCharacterGeneratorWidget.data = readData(this);
+                this._vnccsCharacterGeneratorWidget.syncCharacterSourceData();
+                this._vnccsCharacterGeneratorWidget.syncStagesFromData();
                 this._vnccsCharacterGeneratorWidget.restoreBrowserState();
+                this._vnccsCharacterGeneratorWidget.syncCharacterSourceData();
+                this._vnccsCharacterGeneratorWidget.syncStagesFromData();
                 this._vnccsCharacterGeneratorWidget.renderSettings();
                 this._vnccsCharacterGeneratorWidget.renderPreview();
                 this._vnccsCharacterGeneratorWidget.renderChain();

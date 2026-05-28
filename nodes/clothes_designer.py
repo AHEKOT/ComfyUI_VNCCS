@@ -570,6 +570,10 @@ async def vnccs_get_preview(request):
     if not target_file:
          target_file = get_latest_sprite_path(character, costume)
 
+    # For the base character preview, Original is the direct SFW fallback for Naked.
+    if not target_file and costume == "Naked":
+         target_file = original_sprite
+
     # Legacy fallback: costume sheet.
     if not target_file:
          target_file = get_latest_sheet_path(character, costume)

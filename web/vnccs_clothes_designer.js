@@ -716,7 +716,7 @@ app.registerExtension({
                 btnDelCostume.innerText = "DELETE";
                 btnDelCostume.style.fontSize = "10px";
                 btnDelCostume.onclick = () => {
-                    if (state.costume === "Naked") { showInfo("Warning", "Cannot delete Naked costume."); return; }
+                    if (state.costume === "Naked" || state.costume === "Original") { showInfo("Warning", "Cannot delete base sprite set."); return; }
                     showModal("Delete", () => {
                         const d = document.createElement("div");
                         d.innerText = "Delete " + state.costume + "?";
@@ -986,8 +986,8 @@ app.registerExtension({
                     const r = await api.fetchApi(`/vnccs/list_costumes?character=${encodeURIComponent(c)}`);
                     let list = await r.json();
 
-                    // Filter 'Naked' from display list
-                    const displayList = list.filter(i => i !== "Naked");
+                    // Filter base sprite sets from display list.
+                    const displayList = list.filter(i => i !== "Naked" && i !== "Original");
 
                     els.costSel.innerHTML = "";
                     displayList.forEach(i => els.costSel.add(new Option(i, i)));
