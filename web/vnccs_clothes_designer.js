@@ -274,6 +274,10 @@ app.registerExtension({
                     costume_info: {
                         top: "", bottom: "", head: "", shoes: "", face: ""
                     },
+                    character_info: {
+                        sex: "female",
+                        age: 18
+                    },
                     gen_settings: {
                         background_color: "Green",
                         seed: 0,
@@ -299,6 +303,7 @@ app.registerExtension({
                     ...saved,
                     activeTab: saved.activeTab || "generate", // Ensure valid tab
                     costume_info: { ...defaultState.costume_info, ...(saved.costume_info || {}) },
+                    character_info: { ...defaultState.character_info, ...(saved.character_info || {}) },
                     gen_settings: { ...defaultState.gen_settings, ...(saved.gen_settings || {}) }
                 };
 
@@ -395,6 +400,124 @@ app.registerExtension({
 
                     if (!repo_id || !node_state) return null;
                     return { repo_id, node_state };
+                };
+
+                const normalizeAgeValue = (value) => {
+                    const parsed = parseFloat(value);
+                    if (!Number.isFinite(parsed)) return 18;
+                    return Math.max(1, Math.min(100, parsed));
+                };
+                const parsePoseStudioValues = () => {
+                    const info = state.character_info || {};
+                    const age = Number(info.age);
+                    const sex = String(info.sex || info.gender || "").toLowerCase();
+                    const gender = sex === "male" ? 1.0 : (sex === "female" ? 0.0 : NaN);
+                    return {
+                        age: Number.isFinite(age) ? age : NaN,
+                        gender,
+                        signature: `${Number.isFinite(age) ? Math.round(age) : "?"}|${Number.isFinite(gender) ? gender : "?"}`
+                    };
+                };
+                let poseStudioSyncRetryCount = 0;
+                const patchPoseStudioSync = () => {
+                    const sync = window.__vnccsPoseStudioCharacterCreatorSync;
+                    if (!sync || sync._vnccsClothesDesignerPatched) return !!sync;
+                    const originalFindSourceNode = sync.findSourceNode?.bind(sync);
+                    const originalRegisterStudio = sync.registerStudio?.bind(sync);
+
+                    sync.findClothesDesignerSourceNode = () => {
+                        const nodes = app.graph?._nodes || [];
+                        return nodes.find(n => n?.type === "ClothesDesigner") || null;
+                    };
+                    sync.findSourceNode = function () {
+                        return originalFindSourceNode?.() || this.findClothesDesignerSourceNode?.() || null;
+                    };
+                    sync.applyClothesDesignerSource = function (sourceNode, options = {}) {
+                        const values = sourceNode?._vnccsGetPoseStudioValues?.();
+                        if (!values) return false;
+                        if (!options.initial && !options.force) {
+                            const previous = this.sourceSignatures?.get(sourceNode);
+                            if (previous === values.signature) return false;
+                        }
+                        this.sourceSignatures?.set(sourceNode, values.signature);
+                        let applied = false;
+                        for (const studio of this.studios || []) {
+                            applied = this.applyToStudio?.(studio, values, options) || applied;
+                        }
+                        return applied;
+                    };
+                    sync.hookClothesDesignerNode = function (sourceNode) {
+                        if (!sourceNode || sourceNode.type !== "ClothesDesigner") return;
+                        const sourceWidget = sourceNode.widgets?.find(w => w.name === "widget_data");
+                        let didHook = false;
+                        if (sourceWidget && !sourceWidget._vnccsPoseStudioClothesDesignerValueHooked) {
+                            let currentValue = sourceWidget.value;
+                            Object.defineProperty(sourceWidget, "value", {
+                                configurable: true,
+                                get() {
+                                    return currentValue;
+                                },
+                                set: (value) => {
+                                    currentValue = value;
+                                    queueMicrotask(() => this.applyClothesDesignerSource(sourceNode));
+                                }
+                            });
+                            sourceWidget._vnccsPoseStudioClothesDesignerValueHooked = true;
+                            didHook = true;
+                        }
+                        if (didHook) this.applyClothesDesignerSource(sourceNode, { initial: true });
+                    };
+                    sync.registerStudio = function (studio) {
+                        originalRegisterStudio?.(studio);
+                        const designer = this.findClothesDesignerSourceNode?.();
+                        if (designer) this.applyClothesDesignerSource(designer, { force: true });
+                    };
+                    sync._vnccsClothesDesignerPatched = true;
+                    return true;
+                };
+                const applyPoseStudioValues = (options = {}) => {
+                    node._vnccsGetPoseStudioValues = parsePoseStudioValues;
+                    if (patchPoseStudioSync()) {
+                        poseStudioSyncRetryCount = 0;
+                        const sync = window.__vnccsPoseStudioCharacterCreatorSync;
+                        const values = parsePoseStudioValues();
+                        sync?.hookClothesDesignerNode?.(node);
+                        sync?.sourceSignatures?.set(node, values.signature);
+                        for (const studio of sync?.studios || []) {
+                            const applied = studio.applyExternalCharacterCreatorValues?.(values, options);
+                            if (!applied && Number.isFinite(values.age)) {
+                                const age = Math.max(1, Math.min(90, Math.round(values.age)));
+                                if (studio.meshParams?.age !== age && studio.meshParams) {
+                                    studio.meshParams.age = age;
+                                }
+                                studio._suppressNextAgeFitSync = false;
+                                studio.onMeshParamsChanged?.("age");
+                            }
+                            if (!applied && Number.isFinite(values.gender) && studio.meshParams?.gender !== values.gender) {
+                                studio.setManagerGender?.(values.gender);
+                            }
+                        }
+                    } else if (poseStudioSyncRetryCount < 40) {
+                        poseStudioSyncRetryCount += 1;
+                        setTimeout(() => applyPoseStudioValues(options), 250);
+                    }
+                };
+                const loadCharacterInfo = async () => {
+                    if (!state.character) return;
+                    try {
+                        const r = await api.fetchApi(`/vnccs/character_info?character=${encodeURIComponent(state.character)}`);
+                        const info = await r.json();
+                        state.character_info = {
+                            ...state.character_info,
+                            ...info,
+                            age: normalizeAgeValue(info.age ?? state.character_info.age),
+                            sex: String(info.sex || info.gender || state.character_info.sex || "female").toLowerCase()
+                        };
+                        saveState();
+                        applyPoseStudioValues({ force: true });
+                    } catch (e) {
+                        console.warn("[VNCCS] ClothesDesigner: Failed to load character info", e);
+                    }
                 };
 
                 // UI Builders
@@ -532,6 +655,7 @@ app.registerExtension({
                 const charSel = document.createElement("select"); charSel.className = "vnccs-select";
                 charSel.onchange = async (e) => {
                     state.character = e.target.value;
+                    await loadCharacterInfo();
                     await loadCostumes();
                     updatePreviewImage();
                     saveState();
@@ -829,6 +953,7 @@ app.registerExtension({
                     if (state.character) els.charSelect.value = state.character;
                     else if (d.characters.length) { state.character = d.characters[0]; els.charSelect.value = state.character; }
 
+                    await loadCharacterInfo();
                     await loadCostumes();
                     updatePreviewImage();
                 })();
@@ -955,6 +1080,7 @@ app.registerExtension({
                                                     console.log("Found valid character:", candidate);
                                                     state.character = candidate;
                                                     els.charSelect.value = candidate;
+                                                    await loadCharacterInfo();
                                                     saveState();
                                                     await loadCostumes();
                                                     updatePreviewImage();
