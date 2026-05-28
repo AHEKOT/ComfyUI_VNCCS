@@ -50,17 +50,16 @@ const STYLE = `
     overflow: hidden;
     box-sizing: border-box;
     padding: 12px;
-    gap: 10px;
+    gap: 12px;
+    pointer-events: none;
     zoom: 0.67;
-    background-image: radial-gradient(ellipse at 20% 0%, rgba(255, 143, 163, 0.04) 0%, transparent 60%),
-                      radial-gradient(ellipse at 80% 100%, rgba(184, 169, 232, 0.03) 0%, transparent 60%);
 }
 
 /* ── Rows ── */
 .vnccs-cloner-top-row {
     display: grid;
     grid-template-columns: 40% 60%;
-    gap: 10px;
+    gap: 12px;
     flex: 1;
     min-height: 0;
     width: 100%;
@@ -69,7 +68,7 @@ const STYLE = `
 .vnccs-cloner-bottom-row {
     display: grid;
     grid-template-columns: 40% 60%;
-    gap: 10px;
+    gap: 12px;
     height: 80px;
     min-height: 80px;
     width: 100%;
@@ -84,12 +83,13 @@ const STYLE = `
     border: 1px solid var(--accent-border);
     border-radius: var(--radius-lg);
     padding: 14px 16px;
-    gap: 8px;
+    gap: 10px;
     overflow-y: auto;
     height: 100%;
     box-sizing: border-box;
     position: relative;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+    pointer-events: auto;
 }
 .vnccs-cloner-col::before {
     content: '';
@@ -112,9 +112,9 @@ const STYLE = `
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    margin-bottom: 2px;
+    gap: 8px;
+    margin-bottom: 6px;
+    pointer-events: auto;
 }
 .vnccs-cloner-section-title::before {
     content: '';
@@ -130,8 +130,8 @@ const STYLE = `
 .vnccs-cloner-field {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    margin-bottom: 3px;
+    gap: 5px;
+    margin-bottom: 6px;
     flex-shrink: 0;
 }
 .vnccs-cloner-label {
@@ -139,13 +139,13 @@ const STYLE = `
     font-size: 10px;
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.06em;
 }
 
 /* ── Inputs ── */
 .vnccs-cloner-input, .vnccs-cloner-textarea {
     background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--border);
     color: var(--text-primary);
     border-radius: var(--radius-md);
     padding: 8px 12px;
@@ -157,7 +157,7 @@ const STYLE = `
 }
 .vnccs-cloner-select {
     background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--border);
     color: var(--text-primary);
     border-radius: var(--radius-md);
     padding: 8px 12px;
@@ -165,49 +165,85 @@ const STYLE = `
     font-size: 12px;
     width: 100%;
     box-sizing: border-box;
+    zoom: 1.5;
     transition: all var(--transition);
+    color-scheme: dark;
+}
+.vnccs-cloner-select option {
+    background: #1e1e2e;
+    color: #e8e8f0;
 }
 .vnccs-cloner-input:focus, .vnccs-cloner-select:focus, .vnccs-cloner-textarea:focus {
     outline: none;
     border-color: var(--accent-border);
-    background: rgba(255, 143, 163, 0.03);
-    box-shadow: 0 0 0 3px rgba(255, 143, 163, 0.05);
+    background: rgba(255, 143, 163, 0.04);
+    box-shadow: 0 0 0 3px rgba(255, 143, 163, 0.06);
+}
+
+/* ── Slider ── */
+.vnccs-cloner-slider-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 6px 10px;
+}
+.vnccs-cloner-slider {
+    flex: 1;
+    accent-color: var(--accent);
+    cursor: pointer;
+    height: 3px;
+}
+.vnccs-cloner-slider-val {
+    width: 42px;
+    text-align: right;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    background: transparent;
+    border: none;
+}
+.vnccs-cloner-slider-val:focus {
+    outline: none;
+    border-bottom: 1px solid var(--accent-border);
 }
 
 /* ── Buttons ── */
 .vnccs-cloner-btn-row {
     display: flex;
-    gap: 6px;
+    gap: 8px;
     margin-top: auto;
     flex-shrink: 0;
 }
 .vnccs-cloner-btn {
     flex: 1;
-    padding: 8px 12px;
+    padding: 10px;
     border: none;
     border-radius: var(--radius-md);
     cursor: pointer;
     font-family: var(--font);
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.8px;
-    font-size: 10px;
+    letter-spacing: 0.06em;
+    font-size: 11px;
     color: white;
     text-align: center;
     transition: all var(--transition);
+    position: relative;
+    overflow: hidden;
 }
 .vnccs-cloner-btn-primary {
     background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
     color: #1a1525;
-    box-shadow: 0 4px 20px rgba(255, 143, 163, 0.25);
-    position: relative;
-    overflow: hidden;
+    box-shadow: 0 4px 16px rgba(255, 143, 163, 0.25);
 }
 .vnccs-cloner-btn-primary::after {
     content: '';
     position: absolute;
     inset: 0;
-    background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.22) 45%, rgba(255,255,255,0.32) 50%, rgba(255,255,255,0.22) 55%, transparent 100%);
+    background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.2) 50%, transparent 100%);
     transform: translateX(-120%) skewX(-15deg);
     animation: clonerBtnShimmer 3.5s ease-in-out infinite;
     pointer-events: none;
@@ -219,7 +255,7 @@ const STYLE = `
 }
 .vnccs-cloner-btn-primary:hover:not(:disabled) {
     transform: translateY(-2px);
-    box-shadow: 0 8px 30px rgba(255, 143, 163, 0.45), 0 0 0 1px var(--accent-glow);
+    box-shadow: 0 8px 28px rgba(255, 143, 163, 0.4);
 }
 .vnccs-cloner-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 
@@ -228,14 +264,22 @@ const STYLE = `
     border: 1px solid rgba(0, 214, 143, 0.3);
     color: var(--success);
 }
-.vnccs-cloner-btn-success:hover { background: rgba(0, 214, 143, 0.25); border-color: var(--success); }
+.vnccs-cloner-btn-success:hover:not(:disabled) { background: rgba(0, 214, 143, 0.25); transform: translateY(-1px); }
 
 .vnccs-cloner-btn-danger {
     background: rgba(255, 71, 87, 0.15);
     border: 1px solid rgba(255, 71, 87, 0.3);
     color: var(--error);
 }
-.vnccs-cloner-btn-danger:hover { background: rgba(255, 71, 87, 0.25); border-color: var(--error); }
+.vnccs-cloner-btn-danger:hover:not(:disabled) { background: rgba(255, 71, 87, 0.25); transform: translateY(-1px); }
+
+.vnccs-cloner-btn-disabled, .vnccs-cloner-btn:disabled {
+    background: rgba(255,255,255,0.04) !important;
+    color: var(--text-muted) !important;
+    cursor: not-allowed;
+    box-shadow: none !important;
+    transform: none !important;
+}
 
 .vnccs-cloner-btn-upload {
     background: rgba(255, 143, 163, 0.08);
@@ -262,6 +306,20 @@ const STYLE = `
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
+    min-height: 66px;
+    flex-shrink: 0;
+}
+.vnccs-cloner-thumb-wrap {
+    position: relative;
+    display: inline-block;
+    margin: 2px;
+    border: 2px solid transparent;
+    border-radius: var(--radius-sm);
+    transition: all var(--transition);
+}
+.vnccs-cloner-thumb-wrap.is-selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 10px rgba(255, 143, 163, 0.3);
 }
 .vnccs-cloner-thumb {
     width: 60px;
@@ -279,6 +337,27 @@ const STYLE = `
     box-shadow: 0 0 12px var(--accent-glow);
 }
 @keyframes clonerPulse { from { opacity: 0.6; } to { opacity: 1; } }
+.vnccs-cloner-thumb-remove {
+    position: absolute;
+    top: -1px;
+    right: -1px;
+    min-width: 20px;
+    height: 20px;
+    border-radius: 0 var(--radius-sm) 0 var(--radius-sm);
+    background: rgba(10, 10, 15, 0.82);
+    border: 1px solid rgba(255, 71, 87, 0.28);
+    color: var(--error);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 18px;
+    text-align: center;
+    font-weight: 700;
+    transition: all var(--transition);
+}
+.vnccs-cloner-thumb-remove:hover {
+    background: rgba(255, 71, 87, 0.2);
+    border-color: var(--error);
+}
 
 /* ── Toggle Switch ── */
 .vnccs-cloner-toggle-wrap {
@@ -332,7 +411,135 @@ const STYLE = `
     box-shadow: 0 0 6px var(--accent-glow);
 }
 
+/* ── Creator V2 Controls ── */
+.vnccs-cloner-segmented-field {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    padding: 4px;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.18);
+    min-height: 48px;
+    box-sizing: border-box;
+}
+.vnccs-cloner-segmented-btn {
+    border: 0;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font);
+    font-size: 14px;
+    font-weight: 800;
+    cursor: pointer;
+    transition: all var(--transition);
+}
+.vnccs-cloner-segmented-btn:hover {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.045);
+}
+.vnccs-cloner-segmented-btn.is-active {
+    color: #20141a;
+    background: linear-gradient(180deg, #ff9bad 0%, #ff87a0 100%);
+    box-shadow: 0 10px 22px rgba(255, 143, 163, 0.22);
+}
+.vnccs-cloner-graphic-toggle {
+    width: 100%;
+    min-height: 48px;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.035);
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 10px 8px 14px;
+    font-family: var(--font);
+    cursor: pointer;
+    transition: all var(--transition);
+}
+.vnccs-cloner-graphic-toggle:hover {
+    border-color: var(--border-hover);
+    color: var(--text-primary);
+}
+.vnccs-cloner-graphic-toggle.is-active {
+    border-color: var(--accent);
+    background: rgba(255, 143, 163, 0.14);
+    color: var(--accent-hover);
+    box-shadow: 0 0 0 1px rgba(255, 143, 163, 0.12) inset, 0 12px 24px rgba(255, 143, 163, 0.12);
+}
+.vnccs-cloner-graphic-toggle-text {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+.vnccs-cloner-graphic-toggle-icon {
+    width: 20px;
+    height: 20px;
+    border-radius: 7px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: currentColor;
+    background: rgba(255, 255, 255, 0.06);
+}
+.vnccs-cloner-graphic-toggle-switch {
+    width: 44px;
+    height: 24px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--border);
+    position: relative;
+    flex-shrink: 0;
+    transition: all var(--transition);
+}
+.vnccs-cloner-graphic-toggle-switch::after {
+    content: "";
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    left: 3px;
+    top: 3px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    transition: all var(--transition);
+}
+.vnccs-cloner-graphic-toggle.is-active .vnccs-cloner-graphic-toggle-switch {
+    border-color: var(--accent);
+    background: rgba(255, 143, 163, 0.28);
+}
+.vnccs-cloner-graphic-toggle.is-active .vnccs-cloner-graphic-toggle-switch::after {
+    transform: translateX(20px);
+    background: var(--accent-hover);
+}
+
 /* ── Preview Container ── */
+.vnccs-cloner-preview-container {
+    flex: 1;
+    background: radial-gradient(circle, rgba(255, 143, 163, 0.04) 1px, transparent 1px), rgba(10, 10, 15, 0.7);
+    background-size: 20px 20px, 100% 100%;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    position: relative;
+    min-height: 0;
+}
+.vnccs-cloner-preview-img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: none;
+    animation: clonerFadein 0.4s ease;
+}
+@keyframes clonerFadein { from { opacity: 0; } to { opacity: 1; } }
 .vnccs-cloner-preview-placeholder {
     display: flex;
     flex-direction: column;
@@ -348,6 +555,69 @@ const STYLE = `
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 1px;
+}
+.vnccs-cloner-upload-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    z-index: 10;
+    transition: opacity var(--transition), background var(--transition);
+}
+.vnccs-cloner-upload-overlay:hover {
+    background: rgba(10, 10, 15, 0.28);
+}
+
+/* ── Bottom textareas ── */
+.vnccs-cloner-textarea-wrapper {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    background: rgba(20, 16, 30, 0.88);
+    padding: 8px 10px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--accent-border);
+    position: relative;
+    pointer-events: auto;
+}
+.vnccs-cloner-textarea-wrapper::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 15%; right: 15%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 143, 163, 0.4), transparent);
+}
+.vnccs-cloner-textarea-wrapper textarea {
+    flex: 1;
+    resize: none;
+    border: none;
+    background: transparent;
+    padding: 4px;
+    color: var(--text-primary);
+    font-family: var(--font);
+    font-size: 11px;
+}
+.vnccs-cloner-textarea-wrapper textarea:focus { outline: none; }
+.vnccs-cloner-textarea-label {
+    font-size: 9px;
+    color: var(--accent);
+    text-transform: uppercase;
+    font-weight: 700;
+    letter-spacing: 1px;
+    padding: 0 2px 4px;
+}
+
+.vnccs-cloner-field,
+.vnccs-cloner-btn-row > *,
+.vnccs-cloner-preview-container,
+.vnccs-cloner-input,
+.vnccs-cloner-select,
+.vnccs-cloner-textarea,
+.vnccs-cloner-img-list {
+    pointer-events: auto;
 }
 
 /* ── Loading Overlay ── */
@@ -413,7 +683,7 @@ app.registerExtension({
                 if (onNodeCreated) onNodeCreated.apply(this, arguments);
 
                 const node = this;
-                node.setSize([900, 700]); // 2-Column fitting
+                node.setSize([1100, 760]); // Wider Sakura-style layout, matching Creator V2 density
                 syncDOMWidgetWidthSoon(node, "ui");
 
                 // 1. Setup CSS
@@ -457,6 +727,125 @@ app.registerExtension({
                 const els = {};
                 const saveState = () => {
                     if (dataWidget) dataWidget.value = JSON.stringify(state);
+                };
+                const normalizeAgeValue = (value) => {
+                    const parsed = parseFloat(value);
+                    if (!Number.isFinite(parsed)) return 18;
+                    return Math.max(1, Math.min(100, parsed));
+                };
+                const parsePoseStudioValues = () => {
+                    const info = state.character_info || {};
+                    const age = Number(info.age);
+                    const sex = String(info.sex || info.gender || "").toLowerCase();
+                    const gender = sex === "male" ? 1.0 : (sex === "female" ? 0.0 : NaN);
+                    return {
+                        age: Number.isFinite(age) ? age : NaN,
+                        gender,
+                        signature: `${Number.isFinite(age) ? Math.round(age) : "?"}|${Number.isFinite(gender) ? gender : "?"}`
+                    };
+                };
+                let poseStudioSyncRetryCount = 0;
+                const patchPoseStudioSync = () => {
+                    const sync = window.__vnccsPoseStudioCharacterCreatorSync;
+                    if (!sync || sync._vnccsClonerPatched) return !!sync;
+                    const originalFindSourceNode = sync.findSourceNode?.bind(sync);
+                    const originalRegisterStudio = sync.registerStudio?.bind(sync);
+
+                    sync.findClonerSourceNode = () => {
+                        const nodes = app.graph?._nodes || [];
+                        return nodes.find(n => n?.type === "CharacterCloner") || null;
+                    };
+                    sync.findSourceNode = function () {
+                        return originalFindSourceNode?.() || this.findClonerSourceNode?.() || null;
+                    };
+                    sync.applyClonerSource = function (sourceNode, options = {}) {
+                        const values = sourceNode?._vnccsGetPoseStudioValues?.();
+                        if (!values) return false;
+                        if (!options.initial && !options.force) {
+                            const previous = this.sourceSignatures?.get(sourceNode);
+                            if (previous === values.signature) return false;
+                        }
+                        this.sourceSignatures?.set(sourceNode, values.signature);
+                        let applied = false;
+                        for (const studio of this.studios || []) {
+                            applied = this.applyToStudio?.(studio, values, options) || applied;
+                        }
+                        return applied;
+                    };
+                    sync.hookClonerNode = function (sourceNode) {
+                        if (!sourceNode || sourceNode.type !== "CharacterCloner") return;
+                        const sourceWidget = sourceNode.widgets?.find(w => w.name === "widget_data");
+                        let didHook = false;
+                        if (sourceWidget && !sourceWidget._vnccsPoseStudioClonerValueHooked) {
+                            let currentValue = sourceWidget.value;
+                            Object.defineProperty(sourceWidget, "value", {
+                                configurable: true,
+                                get() {
+                                    return currentValue;
+                                },
+                                set: (value) => {
+                                    currentValue = value;
+                                    queueMicrotask(() => this.applyClonerSource(sourceNode));
+                                }
+                            });
+                            sourceWidget._vnccsPoseStudioClonerValueHooked = true;
+                            didHook = true;
+                        }
+                        if (didHook) this.applyClonerSource(sourceNode, { initial: true });
+                    };
+                    sync.registerStudio = function (studio) {
+                        originalRegisterStudio?.(studio);
+                        const cloner = this.findClonerSourceNode?.();
+                        if (cloner) this.applyClonerSource(cloner, { initial: true });
+                    };
+                    sync._vnccsClonerPatched = true;
+                    return true;
+                };
+                const syncPoseStudioAge = (ageValue = state.character_info.age, options = {}) => {
+                    state.character_info.age = normalizeAgeValue(ageValue);
+                    node._vnccsGetPoseStudioValues = parsePoseStudioValues;
+                    if (patchPoseStudioSync()) {
+                        poseStudioSyncRetryCount = 0;
+                        const sync = window.__vnccsPoseStudioCharacterCreatorSync;
+                        const values = parsePoseStudioValues();
+                        sync?.hookClonerNode?.(node);
+                        sync?.sourceSignatures?.set(node, values.signature);
+                        for (const studio of sync?.studios || []) {
+                            const applied = studio.applyExternalCharacterCreatorValues?.(values, options);
+                            if (!applied && Number.isFinite(values.age)) {
+                                const age = Math.max(1, Math.min(90, Math.round(values.age)));
+                                if (studio.meshParams?.age !== age && studio.meshParams) {
+                                    studio.meshParams.age = age;
+                                }
+                                studio._suppressNextAgeFitSync = false;
+                                studio.onMeshParamsChanged?.("age");
+                            }
+                        }
+                    } else if (poseStudioSyncRetryCount < 40) {
+                        poseStudioSyncRetryCount += 1;
+                        setTimeout(syncPoseStudioAge, 250);
+                    }
+                };
+                const syncPoseStudioGender = (sexValue = state.character_info.sex) => {
+                    const sex = String(sexValue || "").toLowerCase();
+                    if (sex === "male" || sex === "female") state.character_info.sex = sex;
+                    node._vnccsGetPoseStudioValues = parsePoseStudioValues;
+
+                    if (patchPoseStudioSync()) {
+                        const sync = window.__vnccsPoseStudioCharacterCreatorSync;
+                        const values = parsePoseStudioValues();
+                        sync?.hookClonerNode?.(node);
+                        sync?.sourceSignatures?.set(node, values.signature);
+                        for (const studio of sync?.studios || []) {
+                            const applied = studio.applyExternalCharacterCreatorValues?.(values, { force: true });
+                            if (!applied && Number.isFinite(values.gender) && studio.meshParams?.gender !== values.gender) {
+                                studio.setManagerGender?.(values.gender);
+                            }
+                        }
+                    } else if (poseStudioSyncRetryCount < 40) {
+                        poseStudioSyncRetryCount += 1;
+                        setTimeout(() => syncPoseStudioGender(state.character_info.sex), 250);
+                    }
                 };
 
                 const loadState = () => {
@@ -549,6 +938,128 @@ app.registerExtension({
                     return wrap;
                 };
 
+                const createSegmentedField = (lbl, key, options, targetObj = state.character_info) => {
+                    const wrap = document.createElement("div");
+                    wrap.className = "vnccs-cloner-field";
+                    wrap.innerHTML = `<div class="vnccs-cloner-label">${lbl}</div>`;
+
+                    const segmented = document.createElement("div");
+                    segmented.className = "vnccs-cloner-segmented-field";
+                    const buttons = [];
+
+                    const setValue = (value, persist = false) => {
+                        const normalized = String(value || options[0]?.value || "");
+                        targetObj[key] = normalized;
+                        buttons.forEach(({ btn, value: btnValue }) => {
+                            btn.classList.toggle("is-active", btnValue === normalized);
+                            btn.setAttribute("aria-pressed", btnValue === normalized ? "true" : "false");
+                        });
+                        if (persist) {
+                            saveState();
+                            if (key === "sex" || key === "gender") syncPoseStudioGender(normalized);
+                        }
+                    };
+
+                    options.forEach(option => {
+                        const btn = document.createElement("button");
+                        btn.type = "button";
+                        btn.className = "vnccs-cloner-segmented-btn";
+                        btn.textContent = option.label;
+                        btn.onclick = () => setValue(option.value, true);
+                        buttons.push({ btn, value: option.value });
+                        segmented.appendChild(btn);
+                    });
+
+                    wrap.appendChild(segmented);
+                    els[key] = { setValue, value: targetObj[key] || options[0]?.value || "" };
+                    setValue(targetObj[key] || options[0]?.value);
+                    return wrap;
+                };
+
+                const createGraphicToggle = (lbl, key, targetObj = state.character_info) => {
+                    const wrap = document.createElement("div");
+                    wrap.className = "vnccs-cloner-field";
+
+                    const btn = document.createElement("button");
+                    btn.type = "button";
+                    btn.className = "vnccs-cloner-graphic-toggle";
+                    btn.innerHTML = `
+                        <span class="vnccs-cloner-graphic-toggle-text">
+                            <span class="vnccs-cloner-graphic-toggle-icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" width="15" height="15" fill="none">
+                                    <path d="M12 3l7 4v5c0 4.5-2.8 7.4-7 9-4.2-1.6-7-4.5-7-9V7l7-4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                                    <path d="M9 12h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                                </svg>
+                            </span>
+                            ${lbl}
+                        </span>
+                        <span class="vnccs-cloner-graphic-toggle-switch" aria-hidden="true"></span>
+                    `;
+
+                    const setValue = (value, persist = false) => {
+                        const enabled = !!value;
+                        targetObj[key] = enabled;
+                        btn.classList.toggle("is-active", enabled);
+                        btn.setAttribute("aria-pressed", enabled ? "true" : "false");
+                        if (persist) saveState();
+                    };
+
+                    btn.onclick = () => setValue(!targetObj[key], true);
+                    wrap.appendChild(btn);
+                    els[key] = { type: "graphic-toggle", setValue, get checked() { return !!targetObj[key]; } };
+                    setValue(!!targetObj[key]);
+                    return wrap;
+                };
+
+                const createSlider = (lbl, key, min, max, step, targetObj = state.character_info) => {
+                    const wrap = document.createElement("div");
+                    wrap.className = "vnccs-cloner-field";
+                    wrap.innerHTML = `<div class="vnccs-cloner-label">${lbl}</div>`;
+
+                    const container = document.createElement("div");
+                    container.className = "vnccs-cloner-slider-container";
+
+                    const range = document.createElement("input");
+                    range.type = "range";
+                    range.className = "vnccs-cloner-slider";
+                    range.min = min;
+                    range.max = max;
+                    range.step = step;
+                    range.value = targetObj[key];
+
+                    const num = document.createElement("input");
+                    num.type = "number";
+                    num.className = "vnccs-cloner-slider-val";
+                    num.min = min;
+                    num.max = max;
+                    num.step = step;
+                    num.value = targetObj[key];
+
+                    range.oninput = (e) => {
+                        num.value = e.target.value;
+                        targetObj[key] = parseFloat(e.target.value);
+                        saveState();
+                        if (key === "age") syncPoseStudioAge(targetObj[key]);
+                    };
+                    num.onchange = (e) => {
+                        let v = parseFloat(e.target.value);
+                        if (Number.isNaN(v)) v = min;
+                        if (v < min) v = min;
+                        if (v > max) v = max;
+                        num.value = v;
+                        range.value = v;
+                        targetObj[key] = v;
+                        saveState();
+                        if (key === "age") syncPoseStudioAge(v);
+                    };
+
+                    container.appendChild(range);
+                    container.appendChild(num);
+                    wrap.appendChild(container);
+                    els[key] = { range, num };
+                    return wrap;
+                };
+
                 // Define renderThumbs placeholder (populated later)
                 let renderThumbs = () => { };
 
@@ -562,12 +1073,18 @@ app.registerExtension({
                                 val = val.charAt(0).toUpperCase() + val.slice(1).toLowerCase();
                                 state.character_info[k] = val;
                             }
-                            if (els[k].type === "checkbox") els[k].checked = val;
+                            if (els[k].setValue) els[k].setValue(val);
+                            else if (els[k].range && els[k].num) {
+                                els[k].range.value = val;
+                                els[k].num.value = val;
+                            }
+                            else if (els[k].type === "checkbox") els[k].checked = val;
                             else els[k].value = val;
                         }
                     }
                     // Images
                     if (renderThumbs) renderThumbs();
+                    syncPoseStudioAge();
                 };
 
                 // --- Helpers (Hoisted) ---
@@ -787,25 +1304,10 @@ app.registerExtension({
                 // Container for the Large Preview
                 const previewContainer = document.createElement("div");
                 previewContainer.className = "vnccs-cloner-preview-container";
-                previewContainer.style.flex = "1";
-                previewContainer.style.position = "relative";
-                previewContainer.style.border = "1px solid rgba(255, 143, 163, 0.15)";
-                previewContainer.style.borderRadius = "12px";
-                previewContainer.style.background = "radial-gradient(circle, rgba(255, 143, 163, 0.04) 1px, transparent 1px), rgba(15, 12, 22, 0.6)";
-                previewContainer.style.backgroundSize = "20px 20px, 100% 100%";
-                previewContainer.style.display = "flex";
-                previewContainer.style.flexDirection = "column";
-                previewContainer.style.alignItems = "center";
-                previewContainer.style.justifyContent = "center";
-                previewContainer.style.overflow = "hidden";
-                previewContainer.style.minHeight = "300px";
 
                 // The Large Image Element
                 const previewImg = document.createElement("img");
-                previewImg.style.maxWidth = "100%";
-                previewImg.style.maxHeight = "100%";
-                previewImg.style.objectFit = "contain";
-                previewImg.style.display = "none";
+                previewImg.className = "vnccs-cloner-preview-img";
                 previewContainer.appendChild(previewImg);
 
                 // Placeholder (shown when no image)
@@ -829,20 +1331,12 @@ app.registerExtension({
 
                 const uploadOverlay = document.createElement("div");
                 uploadOverlay.className = "vnccs-cloner-upload-overlay";
-                uploadOverlay.style.position = "absolute";
-                uploadOverlay.style.inset = "0";
-                uploadOverlay.style.display = "flex";
-                uploadOverlay.style.alignItems = "center";
-                uploadOverlay.style.justifyContent = "center";
-                uploadOverlay.style.cursor = "pointer";
-                uploadOverlay.style.zIndex = "10";
 
                 // If image exists, make overlay transparent or subtle?
                 // Let's replicate the Button look but centered
                 const uploadBtn = document.createElement("button");
                 uploadBtn.className = "vnccs-cloner-btn vnccs-cloner-btn-upload";
                 uploadBtn.innerText = "+ UPLOAD IMAGES";
-                uploadBtn.style.padding = "10px 20px";
                 uploadOverlay.appendChild(uploadBtn);
 
                 const fileInput = document.createElement("input");
@@ -910,7 +1404,6 @@ app.registerExtension({
 
                 const autoGenBtn = document.createElement("button");
                 autoGenBtn.className = "vnccs-cloner-btn vnccs-cloner-btn-primary";
-                autoGenBtn.style.padding = "10px 12px";
                 autoGenBtn.style.fontSize = "12px";
                 autoGenBtn.style.flex = "0 0 auto"; // Prevent stretching
                 autoGenBtn.innerText = "Analyze Captions (Qwen2-VL-7B)";
@@ -1112,9 +1605,15 @@ app.registerExtension({
                 // Other fields
                 // colAttr.appendChild(createField("Name", "character", "text", [], state)); // REMOVE THIS
 
-                colAttr.appendChild(createField("Background", "background_color", "select", ["Green", "Blue"]));
-                colAttr.appendChild(createField("Sex", "sex", "select", ["female", "male"]));
-                colAttr.appendChild(createField("Age", "age", "number"));
+                colAttr.appendChild(createSegmentedField("Background", "background_color", [
+                    { label: "Green", value: "Green" },
+                    { label: "Blue", value: "Blue" },
+                ]));
+                colAttr.appendChild(createSegmentedField("Gender", "sex", [
+                    { label: "Male", value: "male" },
+                    { label: "Female", value: "female" },
+                ]));
+                colAttr.appendChild(createSlider("Age", "age", 1, 100, 1, state.character_info));
                 colAttr.appendChild(createField("Race", "race", "text"));
                 colAttr.appendChild(createField("Skin Color", "skin_color", "text"));
                 colAttr.appendChild(createField("Hair", "hair", "text"));
@@ -1123,7 +1622,7 @@ app.registerExtension({
                 colAttr.appendChild(createField("Body", "body", "text"));
                 colAttr.appendChild(createField("Details", "additional_details", "text"));
                 colAttr.appendChild(createField("Aesthetics", "aesthetics", "text"));
-                colAttr.appendChild(createField("NSFW", "nsfw", "checkbox"));
+                colAttr.appendChild(createGraphicToggle("NSFW Mode", "nsfw"));
 
                 // Assemble Top Row
                 topRow.appendChild(colSrc);
@@ -1138,12 +1637,10 @@ app.registerExtension({
                 // Standard textareas
                 const createTA = (lbl, key) => {
                     const w = document.createElement("div");
-                    w.className = "vnccs-cloner-col";
-                    w.innerHTML = `<div class="vnccs-cloner-label">${lbl}</div>`;
+                    w.className = "vnccs-cloner-textarea-wrapper";
+                    w.innerHTML = `<div class="vnccs-cloner-textarea-label">${lbl}</div>`;
                     const t = document.createElement("textarea");
                     t.className = "vnccs-cloner-textarea";
-                    t.style.flex = "1";
-                    t.style.resize = "none";
                     // We don't bind this to state input, but output?
                     // Actually, output prompts are generated from attributes. 
                     // Users might want to ADD to it. 
@@ -1228,14 +1725,9 @@ app.registerExtension({
                         if (!name) return;
 
                         const wrap = document.createElement("div");
-                        wrap.style.position = "relative";
-                        wrap.style.display = "inline-block";
-                        wrap.style.margin = "2px";
-                        wrap.style.border = "2px solid transparent";
-                        wrap.style.borderRadius = "8px";
+                        wrap.className = "vnccs-cloner-thumb-wrap";
                         if (idx === state.selected_idx) {
-                            wrap.style.borderColor = "#ff8fa3";
-                            wrap.style.boxShadow = "0 0 10px rgba(255, 143, 163, 0.3)";
+                            wrap.classList.add("is-selected");
                         }
 
                         const img = document.createElement("img");
@@ -1245,10 +1737,6 @@ app.registerExtension({
                         if (sub) params.append("subfolder", sub);
                         img.src = api.apiURL("/view?" + params.toString());
                         img.className = "vnccs-cloner-thumb";
-                        img.style.width = "60px"; // Ensure styling
-                        img.style.height = "60px";
-                        img.style.objectFit = "cover";
-                        img.style.cursor = "pointer";
 
                         img.onclick = () => {
                             state.selected_idx = idx;
@@ -1259,15 +1747,7 @@ app.registerExtension({
                         // Delete X
                         const delBtn = document.createElement("div");
                         delBtn.innerText = "×";
-                        delBtn.style.position = "absolute";
-                        delBtn.style.top = "0";
-                        delBtn.style.right = "0";
-                        delBtn.style.background = "rgba(0,0,0,0.7)";
-                        delBtn.style.color = "white";
-                        delBtn.style.cursor = "pointer";
-                        delBtn.style.padding = "0 5px";
-                        delBtn.style.fontSize = "14px";
-                        delBtn.style.borderRadius = "0 0 0 4px";
+                        delBtn.className = "vnccs-cloner-thumb-remove";
                         delBtn.onclick = (e) => {
                             e.stopPropagation();
                             showModal("Remove Image", () => {
