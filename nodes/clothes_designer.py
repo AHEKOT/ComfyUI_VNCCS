@@ -430,7 +430,8 @@ class ClothesDesigner:
                     if qwen_2511:
                         method = "index_timestep_zero"
                         conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents_method": method})
-                except Exception: pass
+                except Exception as exc:
+                    print(f"[ClothesDesigner] Failed to apply Qwen reference latent conditioning metadata: {exc}")
                 
                 conditioning_full_ref = conditioning
                 if len(ref_latents) > 0:
@@ -804,7 +805,8 @@ async def vnccs_get_preview(request):
                  buffered = io.BytesIO()
                  crop.save(buffered, format="PNG")
                  return web.Response(body=buffered.getvalue(), content_type="image/png")
-             except: pass
+             except Exception as exc:
+                 print(f"[ClothesDesigner] Failed to crop sheet preview '{target_file}', serving original file: {exc}")
          
          with open(target_file, "rb") as f:
              return web.Response(body=f.read(), content_type="image/png")

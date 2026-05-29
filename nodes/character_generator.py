@@ -326,8 +326,8 @@ def _rotate_preview_cache(cache_dir):
         os.makedirs(version_dir, exist_ok=True)
         for filename in files:
             os.replace(os.path.join(cache_dir, filename), os.path.join(version_dir, filename))
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[VNCCS Character Generator] Failed to rotate cache directory '{cache_dir}': {exc}")
 
 
 def _cache_tensor_path(cache_dir, key):
@@ -591,8 +591,8 @@ class VNCCS_CharacterGenerator:
             payload["images"] = _tensor_to_preview_urls(images, unique_id, stage, cache_dir=cache_dir)
         try:
             server.PromptServer.instance.send_sync("vnccs.character_generator.stage", payload)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[VNCCS Character Generator] Failed to send stage event '{stage}' for '{unique_id}': {exc}")
 
     def _regenerate_from(self, widget_payload):
         stage = (widget_payload or {}).get("regenerate_from")

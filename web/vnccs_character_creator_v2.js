@@ -1329,7 +1329,7 @@ app.registerExtension({
                     try {
                         const response = await api.fetchApi("/vnccs/control_center/download", {
                             method: "POST",
-                            headers: { "Content-Type": "application/json" },
+                            headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
                             body: JSON.stringify({ repo_id: CC_REPO_ID, category: cat, name: entry.name }),
                         });
                         const payload = await response.json();
@@ -2594,13 +2594,26 @@ app.registerExtension({
 
                     showModal("Delete Character", () => {
                         const div = document.createElement("div");
-                        div.innerHTML = `
-                                <div style="font-size:14px; text-align:center;">
-                                    Are you sure you want to <b>PERMANENTLY DELETE</b><br/>
-                                    <span style="color:#fff; font-weight:bold;">'${charName}'</span>?<br/><br/>
-                                    <span style="font-size:12px; color:#aaa;">This action cannot be undone.</span>
-                                </div>
-                            `;
+                        div.style.fontSize = "14px";
+                        div.style.textAlign = "center";
+                        div.append("Are you sure you want to ");
+                        const strong = document.createElement("b");
+                        strong.textContent = "PERMANENTLY DELETE";
+                        div.appendChild(strong);
+                        div.appendChild(document.createElement("br"));
+                        const nameEl = document.createElement("span");
+                        nameEl.style.color = "#fff";
+                        nameEl.style.fontWeight = "bold";
+                        nameEl.textContent = `'${charName}'`;
+                        div.appendChild(nameEl);
+                        div.append("?");
+                        div.appendChild(document.createElement("br"));
+                        div.appendChild(document.createElement("br"));
+                        const warning = document.createElement("span");
+                        warning.style.fontSize = "12px";
+                        warning.style.color = "#aaa";
+                        warning.textContent = "This action cannot be undone.";
+                        div.appendChild(warning);
                         return div;
                     }, [
                         { text: "Cancel" },
@@ -2613,7 +2626,7 @@ app.registerExtension({
                                     btn.disabled = true;
                                     const r = await api.fetchApi("/vnccs/delete", {
                                         method: "POST",
-                                        headers: { "Content-Type": "application/json" },
+                                        headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
                                         body: JSON.stringify({ name: charName }),
                                     });
                                     if (r.ok) {

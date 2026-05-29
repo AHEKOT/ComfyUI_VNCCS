@@ -1272,11 +1272,12 @@ class CharacterCreatorV2:
         # Determine source
         preview_source = "gen"
         if widget_data:
-             try:
+             if isinstance(data, dict):
                 # widget_data is a string (JSON), but here it seems passed as 'widget_data' argument which might be raw string
                 # logic above parsed it into 'data' dict. use that.
                 preview_source = data.get("preview_source", "gen")
-             except: pass
+             else:
+                print(f"[VNCCS] Preview source ignored because widget data is not a dict: {type(data).__name__}")
         
         print(f"[VNCCS] Processing - Source: {preview_source}, Valid: {preview_valid}")
 
@@ -1296,7 +1297,8 @@ class CharacterCreatorV2:
                            c_img = tensor2pil(image)
                            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
                            c_img.save(cache_path)
-                       except: pass
+                       except Exception as exc:
+                           print(f"[VNCCS] Failed to save pose preview cache '{cache_path}': {exc}")
                   else:
                        print("[VNCCS] Pose preview load failed. Will try cache/regen.")
 

@@ -1174,7 +1174,7 @@ app.registerExtension({
                     try {
                         const response = await api.fetchApi("/vnccs/control_center/download", {
                             method: "POST",
-                            headers: { "Content-Type": "application/json" },
+                            headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
                             body: JSON.stringify({ repo_id: CC_REPO_ID, category: cat, name: entry.name }),
                         });
                         const payload = await response.json();

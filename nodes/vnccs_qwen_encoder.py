@@ -234,9 +234,9 @@ class VNCCS_QWEN_Encoder:
                 # prefer explicit method name; handle possible ux/uso variants
                 method = "index_timestep_zero"
                 conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents_method": method})
-        except Exception:
+        except Exception as exc:
             # best-effort: if node_helpers not available or fails, continue with unmodified conditioning
-            pass
+            print(f"[VNCCS Qwen Encoder] Failed to apply reference latent conditioning metadata: {exc}")
         
         conditioning_full_ref = conditioning
         if len(ref_latents) > 0:

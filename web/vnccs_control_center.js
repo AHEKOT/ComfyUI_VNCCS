@@ -3016,7 +3016,7 @@ class VNCCSControlCenterWidget {
             if (hf || cv) {
                 await api.fetchApi("/vnccs/manager/save_token", {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
                     body: JSON.stringify(Object.fromEntries(
                         [hf && ["hf_token", hf], cv && ["civitai_token", cv]].filter(Boolean)
                     )),
@@ -3048,7 +3048,7 @@ class VNCCSControlCenterWidget {
         try {
             const r = await api.fetchApi("/vnccs/control_center/download", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
                 body: JSON.stringify({ repo_id: repoId, category: cat, name: entry.name }),
             });
             const d = await r.json();
@@ -3235,7 +3235,7 @@ class VNCCSControlCenterWidget {
             try {
                 const r = await api.fetchApi("/vnccs/manager/save_token", {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
                     body: JSON.stringify(payload),
                 });
                 if (r.ok) {

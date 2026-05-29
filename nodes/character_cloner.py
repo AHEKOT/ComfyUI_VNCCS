@@ -266,8 +266,8 @@ def download_file(url, dest_path, file_label="File", mark_completed=True):
         try:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
-        except Exception:
-            pass
+        except Exception as cleanup_exc:
+            print(f"[{file_label}] Failed to remove partial download '{tmp_path}': {cleanup_exc}")
         DOWNLOAD_STATUS["status"] = "error"
         DOWNLOAD_STATUS["error"] = str(e)
         print(f"[{file_label}] Download error: {e}")
@@ -506,8 +506,8 @@ if server:
                     if "Qwen" in model_path:
                         HandlerCls = Qwen2VLChatHandler
                         print("[VNCCS] Using Qwen2VLChatHandler")
-                except ImportError:
-                    pass
+                except ImportError as e:
+                    print(f"[VNCCS] Qwen2VLChatHandler unavailable, trying Llava fallback: {e}")
 
                 # Fallback to Llava1.5
                 if not HandlerCls:

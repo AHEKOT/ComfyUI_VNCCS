@@ -13,6 +13,7 @@ instead of relying on fragile numeric node IDs.
 import base64
 import io
 import json
+import re
 from typing import Any, Tuple
 
 import torch
@@ -73,18 +74,12 @@ class VNCCS_Variable:
         value = value.strip()
 
         # Try integer cast
-        try:
-            # Check if it looks like an integer (no decimal point)
-            if "." not in value and "e" not in value.lower():
-                return (int(value),)
-        except (ValueError, TypeError):
-            pass
+        if re.fullmatch(r"[+-]?\d+", value):
+            return (int(value),)
 
         # Try float cast
-        try:
+        if re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", value):
             return (float(value),)
-        except (ValueError, TypeError):
-            pass
 
         # Return as string
         return (value,)

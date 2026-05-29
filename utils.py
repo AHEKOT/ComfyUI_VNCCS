@@ -4,6 +4,7 @@ import os
 import json
 import random
 import re
+from urllib.parse import urlparse
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -12,7 +13,9 @@ if TYPE_CHECKING:
 
 EMOTIONS = ["neutral"]
 MAIN_DIRS = ["Sprites", "Faces", "Sheets"]
-SAFE_NAME_RE = re.compile(r"^[^/\\:\0]{1,120}$")
+SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,120}$")
+PRIVILEGED_REQUEST_HEADER = "X-VNCCS-CSRF"
+PRIVILEGED_REQUEST_VALUE = "1"
 AGE_CONTROL_POINTS = [
     (0, -5.0),
     (3, -4.0),
@@ -53,7 +56,7 @@ def ensure_safe_name(value: str, field: str = "name") -> str:
     if value in {".", ".."} or ".." in value:
         raise ValueError(f"{field} contains invalid path traversal")
     if not SAFE_NAME_RE.match(value):
-        raise ValueError(f"{field} contains invalid characters")
+        raise ValueError(f"{field} may only contain letters, numbers, spaces, underscores and hyphens")
     return value
 
 
@@ -83,6 +86,33 @@ def safe_relative_path(value: str, field: str = "path") -> str:
     return "/".join(parts)
 
 
+def validate_privileged_request(request) -> None:
+    """Validate state-changing VNCCS API calls from the same ComfyUI origin."""
+    host = (request.headers.get("Host") or "").lower()
+    same_origin = False
+    for header_name in ("Origin", "Referer"):
+        raw = request.headers.get(header_name)
+        if not raw:
+            continue
+        parsed = urlparse(raw)
+        if parsed.netloc and host and parsed.netloc.lower() == host:
+            same_origin = True
+        elif parsed.netloc and host:
+            raise ValueError("cross-origin privileged request rejected")
+
+    sec_fetch_site = (request.headers.get("Sec-Fetch-Site") or "").lower()
+    if sec_fetch_site == "cross-site":
+        raise ValueError("cross-site privileged request rejected")
+
+    if request.headers.get(PRIVILEGED_REQUEST_HEADER) == PRIVILEGED_REQUEST_VALUE:
+        return
+
+    if same_origin and sec_fetch_site in {"", "same-origin", "same-site", "none"}:
+        return
+
+    raise ValueError(f"missing {PRIVILEGED_REQUEST_HEADER} header")
+
+
 def get_legacy_output_dir() -> str:
     """Get legacy output directory path for migration."""
     try:
@@ -95,6 +125,19 @@ def get_legacy_output_dir() -> str:
 
 import shutil
 import traceback
+
+def _migration_archive_path(path: str) -> str:
+    """Return a unique archive path for a migrated legacy directory."""
+    base = f"{path}_migrated_safe_to_delete"
+    if not os.path.exists(base):
+        return base
+    index = 2
+    while True:
+        candidate = f"{base}_{index}"
+        if not os.path.exists(candidate):
+            return candidate
+        index += 1
+
 
 def migrate_legacy_data() -> dict:
     """Check for legacy data and migrate to new location.
@@ -137,8 +180,8 @@ def migrate_legacy_data() -> dict:
                  print(f"[VNCCS Migration] Failed to create new dir: {e}")
                  return {"migrated": False, "count": 0, "message": f"Failed to create new dir: {e}"}
         
-        moved_count = 0
-        moved_names = []
+        migrated_count = 0
+        migrated_names = []
         errors = []
         
         for char_name in chars_to_move:
@@ -146,52 +189,51 @@ def migrate_legacy_data() -> dict:
             dst = os.path.join(new_dir, char_name)
 
             if os.path.exists(dst):
-                # Destination exists — remove src only if dst has actual content (config file)
+                # Destination exists: keep legacy data intact and archive old_dir after success.
                 dst_config = os.path.join(dst, f"{char_name}_config.json")
                 if os.path.exists(dst_config):
-                    print(f"[VNCCS Migration] {char_name}: already in new location, removing legacy copy")
-                    try:
-                        shutil.rmtree(src)
-                        moved_count += 1
-                        moved_names.append(char_name)
-                    except Exception as e:
-                        errors.append(f"Failed to remove legacy {char_name}: {e}")
+                    print(f"[VNCCS Migration] {char_name}: already in new location, keeping legacy copy for archive")
+                    migrated_count += 1
+                    migrated_names.append(char_name)
                 else:
-                    # dst exists but is empty/broken — overwrite with src
-                    print(f"[VNCCS Migration] {char_name}: dst exists but incomplete, replacing")
+                    # dst exists but is empty/broken: replace dst with a copy, then archive old_dir.
+                    print(f"[VNCCS Migration] {char_name}: dst exists but incomplete, replacing from legacy copy")
                     try:
                         shutil.rmtree(dst)
-                        shutil.move(src, dst)
-                        moved_count += 1
-                        moved_names.append(char_name)
+                        shutil.copytree(src, dst)
+                        migrated_count += 1
+                        migrated_names.append(char_name)
                     except Exception as e:
                         errors.append(f"Failed to replace {char_name}: {e}")
                 continue
 
             try:
-                print(f"[VNCCS Migration] Moving {src} -> {dst}")
-                shutil.move(src, dst)
-                moved_count += 1
-                moved_names.append(char_name)
+                print(f"[VNCCS Migration] Copying {src} -> {dst}")
+                shutil.copytree(src, dst)
+                migrated_count += 1
+                migrated_names.append(char_name)
             except Exception as e:
-                msg = f"Failed to move {char_name}: {str(e)}"
+                msg = f"Failed to copy {char_name}: {str(e)}"
+                print(f"[VNCCS Migration] {msg}")
+                errors.append(msg)
+
+        archive_path = ""
+        if migrated_count > 0 and not errors:
+            try:
+                archive_path = _migration_archive_path(old_dir)
+                print(f"[VNCCS Migration] Archiving legacy dir: {old_dir} -> {archive_path}")
+                os.rename(old_dir, archive_path)
+            except Exception as e:
+                msg = f"Failed to archive legacy dir: {e}"
                 print(f"[VNCCS Migration] {msg}")
                 errors.append(msg)
                 
-        # If old dir is empty now, try to remove it
-        if not os.listdir(old_dir):
-            try:
-                print("[VNCCS Migration] Removing empty legacy dir.")
-                os.rmdir(old_dir)
-            except Exception as e:
-                print(f"[VNCCS Migration] Failed to remove empty legacy dir: {e}")
-                pass
-                
         return {
-            "migrated": moved_count > 0,
-            "count": moved_count,
-            "details": moved_names,
+            "migrated": migrated_count > 0 and not errors,
+            "count": migrated_count,
+            "details": migrated_names,
             "errors": errors,
+            "archive_path": archive_path,
             "all_characters": list_characters()
         }
     except Exception as e:
@@ -277,7 +319,8 @@ def list_characters() -> List[str]:
     base_path = base_output_dir()
     try:
         chars = sorted([d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))])
-    except Exception:
+    except Exception as exc:
+        print(f"[VNCCS] list_characters: failed to list new character path '{base_path}': {exc}")
         chars = []
     if not chars:
         try:
@@ -286,8 +329,8 @@ def list_characters() -> List[str]:
             if legacy_chars:
                 print(f"[VNCCS] list_characters: new path empty, falling back to legacy. Run migration to fix.")
             chars = legacy_chars
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[VNCCS] list_characters: failed to list legacy character path: {exc}")
     return chars
 
 
@@ -739,8 +782,8 @@ def list_costumes(character_name: str) -> List[str]:
                 item_path = os.path.join(sheets_dir_path, item)
                 if os.path.isdir(item_path) and item not in costumes:
                     costumes.append(item)
-        except OSError:
-            pass
+        except OSError as exc:
+            print(f"[VNCCS Utils] Failed to scan Sheets costumes for '{character_name}': {exc}")
 
     sprites_dir_path = os.path.join(char_dir, "Sprites")
     if os.path.exists(sprites_dir_path):
@@ -749,8 +792,8 @@ def list_costumes(character_name: str) -> List[str]:
                 item_path = os.path.join(sprites_dir_path, item)
                 if os.path.isdir(item_path) and item not in costumes:
                     costumes.append(item)
-        except OSError:
-            pass
+        except OSError as exc:
+            print(f"[VNCCS Utils] Failed to scan Sprites costumes for '{character_name}': {exc}")
     
     return costumes
 

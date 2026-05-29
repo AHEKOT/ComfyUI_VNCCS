@@ -1551,7 +1551,11 @@ app.registerExtension({
                     if (!charName || charName === "None") return;
                     showModal("Delete Character", () => {
                         const d = document.createElement("div");
-                        d.innerHTML = `Are you sure you want to delete <b>${charName}</b>?`;
+                        d.append("Are you sure you want to delete ");
+                        const nameEl = document.createElement("b");
+                        nameEl.textContent = charName;
+                        d.appendChild(nameEl);
+                        d.append("?");
                         return d;
                     }, [
                         { text: "Cancel" },
@@ -1561,7 +1565,7 @@ app.registerExtension({
                                 try {
                                     const r = await api.fetchApi("/vnccs/delete", {
                                         method: "POST",
-                                        headers: { "Content-Type": "application/json" },
+                                        headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
                                         body: JSON.stringify({ name: charName }),
                                     });
                                     if (r.ok) {

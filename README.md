@@ -162,6 +162,8 @@ Third generation pass using the stabilized character sheet.
 - **RMBG Resolution** - it's very important for great sprites. 1408 - maximum resolution for 8GB VRAM cards! But you can set 1536 if you have better videocard than me.
 But if you have troubles - you can lower it to 1024 and edit small mistakes manualy.
 Better resolution - better mask!
+
+Security note: RMBG/BEN helper models are downloaded from pinned HuggingFace commit revisions. VNCCS disables `trust_remote_code` fallback for these loaders; BiRefNet architecture code is executed only from the pinned RMBG-2.0 files downloaded into the local RMBG cache.
 ---
 #### **Upscaler**
 Improves character sheet quality by adding details.
@@ -261,4 +263,3 @@ Future plans:
 - automatic translation of the game on RenPy into other languages.
 - automatic voice generation for the game on RenPy
 ---
-

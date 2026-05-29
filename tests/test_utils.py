@@ -5,6 +5,7 @@ import os
 import sys
 import importlib
 import types
+import tomllib
 
 import pytest
 
@@ -12,6 +13,30 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import utils as U
+
+
+def _normalize_requirement_name(value):
+    name = str(value).split("[", 1)[0]
+    for marker in ["==", ">=", "<=", "~=", "!=", ">", "<"]:
+        name = name.split(marker, 1)[0]
+    return name.strip().lower().replace("_", "-")
+
+
+def test_pyproject_dependencies_cover_requirements():
+    root = os.path.dirname(os.path.dirname(__file__))
+    with open(os.path.join(root, "pyproject.toml"), "rb") as handle:
+        pyproject = tomllib.load(handle)
+    pyproject_deps = {
+        _normalize_requirement_name(dep)
+        for dep in pyproject["project"]["dependencies"]
+    }
+    with open(os.path.join(root, "requirements.txt"), "r", encoding="utf-8") as handle:
+        requirement_deps = {
+            _normalize_requirement_name(line.strip())
+            for line in handle
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+    assert requirement_deps <= pyproject_deps
 
 
 # ── generate_seed ─────────────────────────────────────────────────────────────
@@ -268,10 +293,14 @@ class TestPathHelpers:
         path = U.character_dir("Alice")
         assert path.endswith("Alice")
 
-    @pytest.mark.parametrize("bad", ["..", "../Alice", "Alice/../../Bob", "Alice\\Bob", "Alice:Bob"])
+    @pytest.mark.parametrize("bad", ["..", "../Alice", "Alice/../../Bob", "Alice\\Bob", "Alice:Bob", "Alice.2", "<img src=x onerror=alert(1)>", "Alice\" onclick=\"x"])
     def test_character_dir_rejects_unsafe_names(self, bad):
         with pytest.raises(ValueError):
             U.character_dir(bad)
+
+    @pytest.mark.parametrize("good", ["Alice", "Alice 2", "Alice_2", "Alice-2"])
+    def test_character_dir_allows_safe_display_names(self, good):
+        assert os.path.basename(U.character_dir(good)) == good
 
     def test_safe_join_under_rejects_escape(self, tmp_path):
         with pytest.raises(ValueError):
@@ -294,6 +323,8 @@ class TestPathHelpers:
             safe_mod = importlib.import_module("_vnccs.nodes._safe_utils")
             with pytest.raises(ValueError):
                 safe_mod.ensure_safe_name("../bad", "character")
+            with pytest.raises(ValueError):
+                safe_mod.ensure_safe_name("<script>", "character")
             assert safe_mod.safe_relative_path("A\\B") == "A/B"
         finally:
             sys.modules.pop("_vnccs.nodes._safe_utils", None)
@@ -303,6 +334,46 @@ class TestPathHelpers:
     def test_config_path_filename(self):
         path = U.config_path("Alice")
         assert os.path.basename(path) == "Alice_config.json"
+
+    def test_privileged_request_requires_header(self):
+        request = types.SimpleNamespace(headers={"Host": "127.0.0.1:8188"})
+        with pytest.raises(ValueError):
+            U.validate_privileged_request(request)
+
+    def test_privileged_request_accepts_same_origin(self):
+        request = types.SimpleNamespace(headers={
+            "Host": "127.0.0.1:8188",
+            "Origin": "http://127.0.0.1:8188",
+            "X-VNCCS-CSRF": "1",
+        })
+        U.validate_privileged_request(request)
+
+    def test_privileged_request_accepts_same_origin_without_header(self):
+        request = types.SimpleNamespace(headers={
+            "Host": "192.168.1.240:8188",
+            "Origin": "http://192.168.1.240:8188",
+            "Sec-Fetch-Site": "same-origin",
+        })
+        U.validate_privileged_request(request)
+
+    def test_privileged_request_rejects_cross_origin(self):
+        request = types.SimpleNamespace(headers={
+            "Host": "127.0.0.1:8188",
+            "Origin": "http://evil.test",
+            "X-VNCCS-CSRF": "1",
+        })
+        with pytest.raises(ValueError):
+            U.validate_privileged_request(request)
+
+    def test_privileged_request_rejects_cross_site_even_with_header(self):
+        request = types.SimpleNamespace(headers={
+            "Host": "127.0.0.1:8188",
+            "Origin": "http://127.0.0.1:8188",
+            "Sec-Fetch-Site": "cross-site",
+            "X-VNCCS-CSRF": "1",
+        })
+        with pytest.raises(ValueError):
+            U.validate_privileged_request(request)
 
     def test_sheets_dir_structure(self):
         path = U.sheets_dir("Alice")
@@ -467,6 +538,10 @@ class TestMigrateLegacyData:
         assert result["migrated"] is True
         assert "Alice" in result["details"]
         assert os.path.isdir(str(new_dir / "Alice"))
+        archive = tmp_path / "old_migrated_safe_to_delete"
+        assert result["archive_path"] == str(archive)
+        assert not old_dir.exists()
+        assert (archive / "Alice" / "Alice_config.json").exists()
 
     def test_skips_when_valid_dst_exists(self, tmp_path, monkeypatch):
         old_dir = tmp_path / "old"
@@ -487,8 +562,10 @@ class TestMigrateLegacyData:
         monkeypatch.setattr(U, "base_output_dir", lambda: str(new_dir))
         monkeypatch.setattr(U, "get_legacy_output_dir", lambda: str(old_dir))
         result = U.migrate_legacy_data()
-        # legacy src should be removed, dst preserved
-        assert not src.exists()
+        archive = tmp_path / "old_migrated_safe_to_delete"
+        assert result["migrated"] is True
+        assert not old_dir.exists()
+        assert (archive / "Alice" / "Alice_config.json").exists()
         assert (dst / "Alice_config.json").exists()
 
     def test_replaces_broken_dst(self, tmp_path, monkeypatch):
@@ -510,6 +587,25 @@ class TestMigrateLegacyData:
         result = U.migrate_legacy_data()
         assert result["migrated"] is True
         assert (new_dir / "Alice" / "Alice_config.json").exists()
+        assert (tmp_path / "old_migrated_safe_to_delete" / "Alice" / "Alice_config.json").exists()
+
+    def test_uses_unique_archive_name(self, tmp_path, monkeypatch):
+        old_dir = tmp_path / "old"
+        new_dir = tmp_path / "new"
+        existing_archive = tmp_path / "old_migrated_safe_to_delete"
+        old_dir.mkdir()
+        existing_archive.mkdir()
+        char = old_dir / "Alice"
+        char.mkdir()
+        (char / "Alice_config.json").write_text(json.dumps({"character_info": {}}))
+
+        monkeypatch.setattr(U, "base_output_dir", lambda: str(new_dir))
+        monkeypatch.setattr(U, "get_legacy_output_dir", lambda: str(old_dir))
+        result = U.migrate_legacy_data()
+        archive = tmp_path / "old_migrated_safe_to_delete_2"
+        assert result["migrated"] is True
+        assert result["archive_path"] == str(archive)
+        assert (archive / "Alice" / "Alice_config.json").exists()
 
     def test_empty_legacy_dir(self, tmp_path, monkeypatch):
         old_dir = tmp_path / "old"

@@ -21,6 +21,11 @@ import numpy as np
 import traceback
 import struct
 
+try:
+    from ..utils import validate_privileged_request
+except Exception:
+    from utils import validate_privileged_request
+
 
 class AnyType(str):
     def __ne__(self, other):
@@ -501,15 +506,15 @@ def _find_model_on_disk(local_path):
                 found = folder_paths.get_full_path(key, search)
                 if found and os.path.exists(found):
                     return found, True
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"[VNCCS Control Center] folder_paths.get_full_path failed for {key}/{search}: {exc}")
             try:
                 for folder in folder_paths.get_folder_paths(key) or []:
                     candidate = os.path.join(folder, search)
                     if os.path.exists(candidate):
                         return candidate, True
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"[VNCCS Control Center] folder_paths.get_folder_paths failed for {key}: {exc}")
 
     try:
         fallback = _resolve_model_download_path(local_path)
@@ -993,8 +998,8 @@ def _download_worker_loop():
             if temp_path and os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
-                except Exception:
-                    pass
+                except Exception as cleanup_exc:
+                    print(f"[VNCCS Control Center] Failed to remove temp download '{temp_path}': {cleanup_exc}")
             is_auth_error = False
             if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
                 is_auth_error = exc.response.status_code == 401
@@ -1390,6 +1395,11 @@ async def cc_delete_custom_lora(request):
 @server.PromptServer.instance.routes.post("/vnccs/control_center/download")
 async def cc_download(request):
     try:
+        validate_privileged_request(request)
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=403)
+
+    try:
         data = await request.json()
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
@@ -1436,6 +1446,11 @@ async def get_download_status(request):
 
 @server.PromptServer.instance.routes.post("/vnccs/manager/save_token")
 async def save_api_token(request):
+    try:
+        validate_privileged_request(request)
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=403)
+
     try:
         data = await request.json()
     except Exception:

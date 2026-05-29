@@ -10,7 +10,7 @@ import re
 try:
     from ..utils import ensure_safe_name, safe_join_under, safe_relative_path
 except Exception:
-    _SAFE_NAME_RE = re.compile(r"^[^/\\:\0]{1,120}$")
+    _SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,120}$")
 
     def ensure_safe_name(value, field="name"):
         if value is None:
@@ -21,7 +21,7 @@ except Exception:
         if value in {".", ".."} or ".." in value:
             raise ValueError(f"{field} contains invalid path traversal")
         if not _SAFE_NAME_RE.match(value):
-            raise ValueError(f"{field} contains invalid characters")
+            raise ValueError(f"{field} may only contain letters, numbers, spaces, underscores and hyphens")
         return value
 
     def safe_join_under(base, *parts):

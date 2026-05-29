@@ -75,6 +75,12 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
     @PromptServer.instance.routes.post("/vnccs/delete")
     async def vnccs_delete_character(request):
         try:
+            from .utils import validate_privileged_request
+            validate_privileged_request(request)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=403)
+
+        try:
             data = await request.json()
         except Exception:
             data = {}

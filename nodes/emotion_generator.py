@@ -11,9 +11,6 @@ from ..utils import (
 
 
 class EmotionGenerator:
-    def __init__(self):
-        pass
-
     @classmethod
     def INPUT_TYPES(cls):
         characters = list_characters()

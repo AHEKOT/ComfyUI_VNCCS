@@ -30,7 +30,6 @@ class _CompatReturnTypes(tuple):
 try:
     import folder_paths
     from huggingface_hub import hf_hub_download
-    from transformers import AutoModelForImageSegmentation
 except ImportError:
     folder_paths = None
 
@@ -338,10 +337,15 @@ class VNCCS_MaskExtractor:
 
 
 # --- RMBG Model Loaders ---
+# Security model: bundled RMBG/BEN architecture files are downloaded from fixed
+# HuggingFace commit revisions below. BiRefNet still requires executing its
+# architecture Python file, but VNCCS no longer falls back to trust_remote_code
+# or arbitrary local HuggingFace directories.
 AVAILABLE_MODELS = {
     "RMBG-2.0": {
         "type": "rmbg",
         "repo_id": "1038lab/RMBG-2.0",
+        "revision": "1cd4787601caeb4c8e826dba7ea8e2163b5208df",
         "files": {
             "config.json": "config.json",
             "model.safetensors": "model.safetensors",
@@ -353,6 +357,7 @@ AVAILABLE_MODELS = {
     "INSPYRENET": {
         "type": "inspyrenet",
         "repo_id": "1038lab/inspyrenet",
+        "revision": "0f5946638dcbc7dbc1e56306b823959958ac0ae0",
         "files": {
             "inspyrenet.safetensors": "inspyrenet.safetensors"
         },
@@ -361,6 +366,7 @@ AVAILABLE_MODELS = {
     "BEN": {
         "type": "ben",
         "repo_id": "1038lab/BEN",
+        "revision": "12124b2fa3f6a519e7b8771a81fa9f5cb5ed5078",
         "files": {
             "model.py": "model.py",
             "BEN_Base.pth": "BEN_Base.pth"
@@ -370,6 +376,7 @@ AVAILABLE_MODELS = {
     "BEN2": {
         "type": "ben2",
         "repo_id": "1038lab/BEN2",
+        "revision": "7e1bfdf0b53c9d93d82ed2bccf240ba33b3aed38",
         "files": {
             "BEN2_Base.pth": "BEN2_Base.pth",
             "BEN2.py": "BEN2.py"
@@ -410,6 +417,8 @@ class BaseModelLoader:
     def download_model(self, model_name):
         model_info = AVAILABLE_MODELS[model_name]
         cache_dir = self.get_cache_dir(model_name)
+        env_key = "VNCCS_" + "".join(ch if ch.isalnum() else "_" for ch in model_name.upper()) + "_REVISION"
+        revision = os.environ.get(env_key) or model_info.get("revision")
         
         try:
             os.makedirs(cache_dir, exist_ok=True)
@@ -420,6 +429,7 @@ class BaseModelLoader:
                 hf_hub_download(
                     repo_id=model_info["repo_id"],
                     filename=filename,
+                    revision=revision,
                     local_dir=cache_dir
                 )
                     
@@ -508,16 +518,10 @@ class RMBGModel(BaseModelLoader):
                         raise RuntimeError("Could not find suitable model class")
 
                 except Exception as modern_e:
-                    print(f"[RMBG INFO] Using standard transformers loading (fallback mode)...")
-                    try:
-                        self.model = AutoModelForImageSegmentation.from_pretrained(
-                            cache_dir,
-                            trust_remote_code=True,
-                            local_files_only=True,
-                            low_cpu_mem_usage=False  # prevent meta-device init that breaks .item() calls
-                        )
-                    except Exception as standard_e:
-                        handle_model_error(f"Failed to load model. Modern error: {str(modern_e)}. Standard error: {str(standard_e)}")
+                    handle_model_error(
+                        "Failed to load pinned RMBG architecture without remote-code fallback. "
+                        f"Clear the RMBG cache and download the pinned files again. Details: {modern_e}"
+                    )
 
             except Exception as e:
                 handle_model_error(f"Error loading model: {str(e)}")
@@ -601,15 +605,11 @@ class CustomBiRefNetModel(RMBGModel):
                 raise RuntimeError(f"Custom model file {model_name} not found")
 
             if os.path.isdir(model_path):
-                try:
-                    from transformers import AutoModelForImageSegmentation
-                    self.model = AutoModelForImageSegmentation.from_pretrained(
-                        model_path,
-                        trust_remote_code=True,
-                        local_files_only=True
-                    )
-                except Exception as e:
-                    handle_model_error(f"Failed to load local HuggingFace BiRefNet directory: {e}")
+                handle_model_error(
+                    "Loading local HuggingFace BiRefNet directories is disabled because it requires "
+                    "trust_remote_code. Use a safetensors/pth BiRefNet weights file with the pinned "
+                    "RMBG-2.0 architecture instead."
+                )
             else:
                 arch_cache_dir = self.get_cache_dir("RMBG-2.0")
                 cache_status, _ = self.check_model_cache("RMBG-2.0")
