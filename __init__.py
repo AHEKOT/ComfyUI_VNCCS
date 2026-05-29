@@ -3,19 +3,6 @@
 import os, json, inspect
 import traceback
 
-def _vnccs_auto_migrate():
-    """Silently migrate legacy VN_CharacterCreatorSuit → VNCCS/Characters on startup."""
-    try:
-        from .utils import migrate_legacy_data
-        result = migrate_legacy_data()
-        if result.get("migrated"):
-            names = ", ".join(result.get("details", []))
-            print(f"[VNCCS] Auto-migrated {result['count']} character(s) to VNCCS/Characters: {names}")
-        elif result.get("error"):
-            print(f"[VNCCS] Migration error: {result['error']}")
-    except Exception as e:
-        print(f"[VNCCS] Migration skipped: {e}")
-
 print("[VNCCS] Automatic legacy migration is disabled. Use the VNCCS Migration Assistent node to migrate legacy sheets.")
 
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
@@ -60,17 +47,12 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
 
     @PromptServer.instance.routes.post("/vnccs/migrate")
     async def vnccs_migrate(request):
-        """Trigger migration of legacy data to new folder structure."""
-        try:
-            from .utils import migrate_legacy_data
-            result = migrate_legacy_data()
-            return web.json_response(result)
-        except Exception as e:
-            traceback.print_exc()
-            return web.json_response({
-                "migrated": False,
-                "error": str(e),
-            }, status=500)
+        """Legacy endpoint disabled; use the widget-based Migration Assistent."""
+        return web.json_response({
+            "migrated": False,
+            "disabled": True,
+            "message": "Automatic migration is disabled. Use the VNCCS Migration Assistent node.",
+        }, status=410)
 
     @PromptServer.instance.routes.post("/vnccs/delete")
     async def vnccs_delete_character(request):
