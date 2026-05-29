@@ -1003,6 +1003,12 @@ class CharacterCreatorV2:
         character_name = data.get("character", "Unknown")
         info = data.get("character_info", {})
         gen_settings = normalize_gen_settings(data.get("gen_settings", {}))
+        info_owner = str(info.get("name", "") or "").strip()
+        if info_owner and info_owner != str(character_name):
+            raise ValueError(
+                f"Refusing to save character_info for '{info_owner}' into '{character_name}'. "
+                "Reload the character in Character Creator V2 and try again."
+            )
         
         # 1. Generate Prompts
         positive_prompt, negative_prompt = self.construct_prompt(info)

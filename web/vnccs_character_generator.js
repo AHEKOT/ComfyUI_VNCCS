@@ -328,6 +328,7 @@ const CSS = `
     overflow: hidden;
 }
 .vnccs-pipe-img {
+    position: relative;
     width: 100%;
     height: 100%;
     display: block;
@@ -350,6 +351,29 @@ const CSS = `
 .vnccs-pipe-img:hover {
     border-color: rgba(255,143,163,0.45);
 }
+.vnccs-pipe-img-regen {
+    position: absolute;
+    right: 7px;
+    bottom: 7px;
+    border: 1px solid rgba(255,143,163,0.48);
+    background: rgba(14,14,22,0.78);
+    color: #ffb6c8;
+    border-radius: 7px;
+    font-size: 10px;
+    font-weight: 900;
+    padding: 5px 7px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.vnccs-pipe-img:hover .vnccs-pipe-img-regen,
+.vnccs-pipe-img:focus-within .vnccs-pipe-img-regen {
+    opacity: 1;
+}
+.vnccs-pipe-img-regen:hover {
+    border-color: rgba(255,143,163,0.82);
+    background: rgba(255,143,163,0.16);
+}
 .vnccs-pipe-empty {
     flex: 1;
     min-height: 0;
@@ -358,6 +382,60 @@ const CSS = `
     justify-content: center;
     color: #5e5e70;
     font-size: 12px;
+}
+.vnccs-pipe-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 18px;
+    background: rgba(4,4,8,0.62);
+    backdrop-filter: blur(3px);
+}
+.vnccs-pipe-modal {
+    width: min(440px, 100%);
+    border: 1px solid rgba(255,143,163,0.42);
+    border-radius: 8px;
+    background: rgba(24,24,34,0.98);
+    box-shadow: 0 18px 48px rgba(0,0,0,0.45);
+    overflow: hidden;
+}
+.vnccs-pipe-modal-title {
+    padding: 14px 16px;
+    background: #1b1b29;
+    color: #ffb6c8;
+    font-size: 13px;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+.vnccs-pipe-modal-body {
+    padding: 16px;
+    color: #d8d8e4;
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+}
+.vnccs-pipe-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding: 0 16px 16px;
+}
+.vnccs-pipe-modal-btn {
+    border: 1px solid rgba(255,143,163,0.5);
+    border-radius: 7px;
+    background: rgba(255,143,163,0.14);
+    color: #ffd1dc;
+    padding: 7px 14px;
+    font-size: 11px;
+    font-weight: 900;
+    cursor: pointer;
+}
+.vnccs-pipe-modal-btn:hover {
+    border-color: rgba(255,143,163,0.82);
+    background: rgba(255,143,163,0.2);
 }
 .vnccs-pipe-chain {
     display: grid;
@@ -779,15 +857,17 @@ class CharacterGeneratorWidget {
         }
     }
 
-    startRegenerate(stageKey) {
+    startRegenerate(stageKey, imageIndex = null) {
         const startIndex = this.stages.findIndex(([key]) => key === stageKey);
         const targetStages = this.stages.slice(Math.max(0, startIndex)).map(([key]) => key);
         this.regenerateState = {
             from: stageKey,
+            imageIndex,
             activeStage: stageKey,
             targetStages,
             startedAt: Date.now(),
             elapsed: 0,
+            sawStageEvent: false,
         };
         clearInterval(this.regenerateTimer);
         this.regenerateTimer = setInterval(() => {
@@ -808,6 +888,7 @@ class CharacterGeneratorWidget {
 
     updateRegenerateProgress(stage, status) {
         if (!this.regenerateState) return;
+        this.regenerateState.sawStageEvent = true;
         if (this.regenerateState.targetStages.includes(stage) && status === "running") {
             this.regenerateState.activeStage = stage;
         }
@@ -837,18 +918,98 @@ class CharacterGeneratorWidget {
         this.saveBrowserState();
     }
 
-    async regenerateFrom(stageKey) {
+    snapshotStageState() {
+        return {
+            stageState: Object.fromEntries(
+                Object.entries(this.stageState || {}).map(([key, value]) => [key, { ...(value || {}) }])
+            ),
+            selectedPreview: this.selectedPreview,
+            userSelectedPreview: this.userSelectedPreview,
+            ui: { ...(this.data.ui || {}) },
+        };
+    }
+
+    restoreStageSnapshot(snapshot) {
+        if (!snapshot) return;
+        this.stageState = Object.fromEntries(
+            Object.entries(snapshot.stageState || {}).map(([key, value]) => [key, { ...(value || {}) }])
+        );
+        this.selectedPreview = snapshot.selectedPreview;
+        this.userSelectedPreview = snapshot.userSelectedPreview;
+        this.data.ui = { ...(snapshot.ui || {}) };
+        writeData(this.node, this.data);
+        this.renderPreview();
+        this.renderChain();
+        this.saveBrowserState();
+    }
+
+    showModal(title, message) {
+        this.closeModal();
+        const backdrop = document.createElement("div");
+        backdrop.className = "vnccs-pipe-modal-backdrop";
+        const modal = document.createElement("div");
+        modal.className = "vnccs-pipe-modal";
+        const heading = document.createElement("div");
+        heading.className = "vnccs-pipe-modal-title";
+        heading.textContent = title || "Message";
+        const body = document.createElement("div");
+        body.className = "vnccs-pipe-modal-body";
+        body.textContent = message || "";
+        const actions = document.createElement("div");
+        actions.className = "vnccs-pipe-modal-actions";
+        const ok = document.createElement("button");
+        ok.type = "button";
+        ok.className = "vnccs-pipe-modal-btn";
+        ok.textContent = "OK";
+        ok.onclick = () => this.closeModal();
+        actions.appendChild(ok);
+        modal.append(heading, body, actions);
+        backdrop.appendChild(modal);
+        backdrop.onclick = (event) => {
+            if (event.target === backdrop) this.closeModal();
+        };
+        this.root.appendChild(backdrop);
+        this.modalEl = backdrop;
+        ok.focus();
+    }
+
+    closeModal() {
+        this.modalEl?.remove();
+        this.modalEl = null;
+    }
+
+    async responseErrorMessage(response) {
+        const fallback = `Regenerate failed (${response.status})`;
+        try {
+            const text = await response.text();
+            if (!text) return fallback;
+            try {
+                const parsed = JSON.parse(text);
+                return parsed?.error || parsed?.message || text;
+            } catch {
+                return text;
+            }
+        } catch {
+            return fallback;
+        }
+    }
+
+    async regenerateFrom(stageKey, imageIndex = null) {
         if (!this.stages.some(([key]) => key === stageKey)) return;
         this.syncCharacterSourceData();
         this.syncStagesFromData();
+        const beforeRegenerate = this.snapshotStageState();
         this.data.regenerate_from = stageKey;
+        if (imageIndex !== null && imageIndex !== undefined) {
+            this.data.regenerate_index = imageIndex;
+        }
         this.selectedPreview = stageKey;
         this.userSelectedPreview = false;
         if (!this.data.ui) this.data.ui = {};
         this.data.ui.selected_preview = stageKey;
         this.data.ui.user_selected_preview = false;
         this.resetStagesFrom(stageKey);
-        this.startRegenerate(stageKey);
+        this.startRegenerate(stageKey, imageIndex);
         writeData(this.node, this.data);
         this.renderPreview();
         this.renderChain();
@@ -859,20 +1020,23 @@ class CharacterGeneratorWidget {
                     unique_id: String(this.node.id ?? ""),
                     generator_type: this.node.type || this.node.comfyClass || "",
                     stage: stageKey,
+                    image_index: imageIndex,
                     widget_data: this.data,
                 }),
             });
             if (!response.ok) {
-                const text = await response.text();
-                throw new Error(text || `Regenerate failed (${response.status})`);
+                throw new Error(await this.responseErrorMessage(response));
             }
             this.finishRegenerate();
         } catch (error) {
+            const hadStageEvent = Boolean(this.regenerateState?.sawStageEvent);
             this.finishRegenerate();
+            if (!hadStageEvent) this.restoreStageSnapshot(beforeRegenerate);
             throw error;
         } finally {
             if (this.data.regenerate_from === stageKey) {
                 delete this.data.regenerate_from;
+                delete this.data.regenerate_index;
                 writeData(this.node, this.data);
             }
         }
@@ -1426,8 +1590,9 @@ class CharacterGeneratorWidget {
             const spinner = document.createElement("span");
             spinner.className = "vnccs-pipe-regen-spinner";
             const activeName = this.stages.find(([key]) => key === this.regenerateState.activeStage)?.[1] || "Stage";
+            const itemText = Number.isInteger(this.regenerateState.imageIndex) ? ` #${this.regenerateState.imageIndex + 1}` : "";
             const text = document.createElement("span");
-            text.textContent = `Regenerating ${activeName} · ${this.formatElapsed(this.regenerateState.elapsed)}`;
+            text.textContent = `Regenerating ${activeName}${itemText} · ${this.formatElapsed(this.regenerateState.elapsed)}`;
             regen.append(spinner, text);
             head.append(label, regen);
         } else {
@@ -1445,13 +1610,37 @@ class CharacterGeneratorWidget {
         }
         const grid = document.createElement("div");
         grid.className = "vnccs-pipe-grid";
+        const selectedState = this.stageState[this.selectedPreview] || {};
+        const canRegenerateImages = selectedState.status === "done" && !this.regenerateState;
         images.forEach((src, index) => {
-            const tile = document.createElement("button");
-            tile.type = "button";
+            const tile = document.createElement("div");
+            tile.tabIndex = 0;
+            tile.role = "button";
             tile.className = "vnccs-pipe-img";
             tile.style.backgroundImage = `url("${String(src).replaceAll('"', "%22")}")`;
             tile.dataset.src = src;
             tile.onclick = () => this.openViewer(index);
+            tile.onkeydown = (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    this.openViewer(index);
+                }
+            };
+            if (canRegenerateImages) {
+                const regen = document.createElement("button");
+                regen.type = "button";
+                regen.className = "vnccs-pipe-img-regen";
+                regen.textContent = "Regenerate";
+                regen.onclick = (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    this.regenerateFrom(this.selectedPreview, index).catch((error) => {
+                        console.error("[VNCCS Character Generator] Image regenerate failed:", error);
+                        this.showModal("Regenerate Failed", error?.message || "Regenerate failed");
+                    });
+                };
+                tile.appendChild(regen);
+            }
             grid.appendChild(tile);
         });
         this.previewEl.appendChild(grid);
@@ -1635,7 +1824,7 @@ class CharacterGeneratorWidget {
                     event.stopPropagation();
                     this.regenerateFrom(key).catch((error) => {
                         console.error("[VNCCS Character Generator] Regenerate failed:", error);
-                        alert(error?.message || "Regenerate failed");
+                        this.showModal("Regenerate Failed", error?.message || "Regenerate failed");
                     });
                 };
                 actions.appendChild(regen);

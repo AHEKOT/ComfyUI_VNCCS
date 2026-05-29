@@ -1243,6 +1243,7 @@ app.registerExtension({
                     text_encoders: [],
                     vae_models: [],
                 };
+                let restoredWidgetInfoCharacter = null;
 
                 const ccNormalize = (value) => String(value || "").trim().toLowerCase();
                 const ccKind = (entry) => ccNormalize(entry?.kind ?? entry?.Kind);
@@ -1523,6 +1524,7 @@ app.registerExtension({
 
                 const saveState = (isValid = false) => {
                     saveCurrentGenerationModeValues();
+                    state.character_info.name = state.character || state.character_info.name || "";
                     const persistData = {
                         gen_settings: state.gen_settings,
                         character: state.character
@@ -1551,7 +1553,16 @@ app.registerExtension({
                             if (parsed.character) state.character = parsed.character;
                             if (parsed.prompt_modes) state.prompt_modes = parsed.prompt_modes;
                             if (parsed.prompt_defaults_version !== undefined) state.prompt_defaults_version = parsed.prompt_defaults_version;
-                            if (parsed.character_info) Object.assign(state.character_info, parsed.character_info);
+                            if (parsed.character_info) {
+                                const infoName = String(parsed.character_info.name || "").trim();
+                                const parsedCharacter = String(parsed.character || state.character || "").trim();
+                                if (infoName && infoName === parsedCharacter) {
+                                    Object.assign(state.character_info, parsed.character_info);
+                                    restoredWidgetInfoCharacter = parsedCharacter;
+                                } else {
+                                    console.warn("[VNCCS V2] Ignoring unverified widget character_info:", infoName || "(missing name)", "current:", parsedCharacter);
+                                }
+                            }
                             if (parsed.gen_settings) {
                                 Object.assign(state.gen_settings, parsed.gen_settings);
                                 ensureLoraStack(state.gen_settings);
@@ -2432,6 +2443,7 @@ app.registerExtension({
                 const charSel = document.createElement("select"); charSel.className = "vnccs-select";
                 charSel.onchange = async (e) => {
                     state.character = e.target.value;
+                    restoredWidgetInfoCharacter = null;
                     await loadChar(state.character);
                     saveState(true);
                 };
@@ -3198,9 +3210,9 @@ app.registerExtension({
                             els.charSelect.value = state.character;
                         }
 
-                        // If we have valid widget_data for this character, skip loading info from backend
-                        // to preserve user's unsaved edits from previous session
-                        const hasWidgetData = state.character_info && state.character_info.hair !== undefined;
+                        // Only skip disk load when widget_data explicitly belongs to this character.
+                        // Default state also has hair/eyes fields, so field presence is not proof of valid restored data.
+                        const hasWidgetData = restoredWidgetInfoCharacter && restoredWidgetInfoCharacter === state.character;
                         if (state.character) await loadChar(state.character, hasWidgetData);
 
                         // Sync widget state. Preview validity is set by image onload handler, not preemptively.

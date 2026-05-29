@@ -516,6 +516,36 @@ class VNCCS_CharacterGenerator:
         stage = (widget_payload or {}).get("regenerate_from")
         return str(stage or "").strip()
 
+    def _regenerate_index(self, widget_payload):
+        if not isinstance(widget_payload, dict) or "regenerate_index" not in widget_payload:
+            return None
+        try:
+            value = int(widget_payload.get("regenerate_index"))
+            return value if value >= 0 else None
+        except Exception:
+            return None
+
+    def _slice_batch_item(self, values, index):
+        if index is None:
+            return values
+        batch = self._list_to_batch(values)
+        if torch.is_tensor(batch) and batch.ndim == 4 and index < batch.shape[0]:
+            return batch[index:index + 1]
+        return values
+
+    def _replace_batch_item(self, cached, index, item):
+        item = self._list_to_batch(item)
+        if index is None or cached is None or item is None:
+            return item
+        cached = self._list_to_batch(cached)
+        if not torch.is_tensor(cached) or not torch.is_tensor(item) or cached.ndim != 4 or item.ndim != 4:
+            return item
+        if index < 0 or index >= cached.shape[0] or item.shape[0] < 1 or cached.shape[1:] != item.shape[1:]:
+            return item
+        updated = cached.detach().clone()
+        updated[index:index + 1] = item[:1].to(updated.device, dtype=updated.dtype)
+        return updated
+
     def _stage_index(self, order, stage):
         try:
             return list(order).index(stage)
@@ -1039,7 +1069,7 @@ class VNCCS_CharacterGenerator:
                 return candidate
             version += 1
 
-    def _save_final_sprites(self, images, sheets_path, character_name="", sprite_set="Naked"):
+    def _save_final_sprites(self, images, sheets_path, character_name="", sprite_set="Naked", version_existing=True):
         character_root = _character_root_from_sheets_path(sheets_path, character_name)
         if not character_root:
             return []
@@ -1060,7 +1090,7 @@ class VNCCS_CharacterGenerator:
             if os.path.isfile(os.path.join(target_dir, filename))
             and os.path.splitext(filename)[1].lower() in image_exts
         ]
-        if existing_images:
+        if version_existing and existing_images:
             version_dir = self._version_dir(target_dir)
             os.makedirs(version_dir, exist_ok=True)
             for filename in existing_images:
@@ -1079,6 +1109,7 @@ class VNCCS_CharacterGenerator:
         settings = self._settings(widget_data)
         widget_payload = self._widget_data(widget_data)
         regenerate_from = self._regenerate_from(widget_payload)
+        regenerate_index = self._regenerate_index(widget_payload)
         character_name = widget_payload.get("character_name", "")
         character = self._unwrap_scalar(character)
         pipe = self._unwrap_scalar(pipe)
@@ -1115,6 +1146,7 @@ class VNCCS_CharacterGenerator:
             else:
                 pose_images = None
             if pose_images is None:
+                pose_input = self._slice_batch_item(poses, regenerate_index) if regenerate_index is not None else poses
                 self._emit(
                     unique_id,
                     "pose_generation",
@@ -1126,7 +1158,7 @@ class VNCCS_CharacterGenerator:
                     lora_info=pose_lora_info,
                 )
                 pose_images = self._run_pose_generation(
-                    poses,
+                    pose_input,
                     character,
                     pipe,
                     prompt,
@@ -1134,6 +1166,8 @@ class VNCCS_CharacterGenerator:
                     lora_info=pose_lora_info,
                     background=background,
                 )
+                if regenerate_index is not None:
+                    pose_images = self._replace_batch_item(_load_cached_tensor(cache_dir, "pose_generation"), regenerate_index, pose_images)
                 self._save_stage(cache_dir, "pose_generation", pose_images)
             pose_total = pose_images.shape[0] if torch.is_tensor(pose_images) and pose_images.ndim == 4 else 0
             self._emit(unique_id, "pose_generation", "done", pose_images, f"Generated {pose_total} pose images", pose_total, pose_total, cache_dir=cache_dir, lora_info=pose_lora_info)
@@ -1144,9 +1178,10 @@ class VNCCS_CharacterGenerator:
             else:
                 upscaled = None
             if upscaled is None:
-                self._emit(unique_id, "upscaler", "running", pose_images, f"Preparing upscaler for {up_total} images", 0, up_total, cache_dir=cache_dir)
+                upscaler_input = self._slice_batch_item(pose_images, regenerate_index) if regenerate_index is not None else pose_images
+                self._emit(unique_id, "upscaler", "running", upscaler_input, f"Preparing upscaler for {1 if regenerate_index is not None else up_total} images", 0, 1 if regenerate_index is not None else up_total, cache_dir=cache_dir)
                 upscaled = self._run_upscaler(
-                    pose_images,
+                    upscaler_input,
                     background,
                     settings["upscaler"],
                     self._extract_pipe(pipe)["seed"],
@@ -1154,13 +1189,19 @@ class VNCCS_CharacterGenerator:
                     cache_dir=cache_dir,
                     use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", True),
                 )
+                if regenerate_index is not None:
+                    upscaled = self._replace_batch_item(_load_cached_tensor(cache_dir, "upscaler"), regenerate_index, upscaled)
                 self._save_stage(cache_dir, "upscaler", upscaled)
 
             bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
-            self._emit(unique_id, "bg_remove", "running", upscaled, f"Removing background for {bg_total} images", 0, bg_total, cache_dir=cache_dir)
-            final_images = self._run_bg_remove(upscaled, settings["bg_remove"], background=background)
+            bg_input = self._slice_batch_item(upscaled, regenerate_index) if regenerate_index is not None else upscaled
+            bg_run_total = 1 if regenerate_index is not None else bg_total
+            self._emit(unique_id, "bg_remove", "running", bg_input, f"Removing background for {bg_run_total} images", 0, bg_run_total, cache_dir=cache_dir)
+            final_images = self._run_bg_remove(bg_input, settings["bg_remove"], background=background)
+            if regenerate_index is not None:
+                final_images = self._replace_batch_item(_load_cached_tensor(cache_dir, "bg_remove"), regenerate_index, final_images)
             self._save_stage(cache_dir, "bg_remove", final_images)
-            saved_paths = self._save_final_sprites(final_images, sheets_path, character_name)
+            saved_paths = self._save_final_sprites(final_images, sheets_path, character_name, version_existing=not regenerate_from)
             saved_suffix = f"; saved {len(saved_paths)} sprites" if saved_paths else ""
             self._emit(unique_id, "bg_remove", "done", final_images, f"Background removed from {bg_total} images{saved_suffix}", bg_total, bg_total, cache_dir=cache_dir)
             return final_images, final_images, pose_images, upscaled
@@ -1215,7 +1256,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
         settings["remove_clothes"]["target_size"] = common_size
         return settings
 
-    def _run_sprite_branch(self, poses, character, pipe, prompt, background, settings, unique_id, cache_dir, stage_prefix, pose_lora_info, regenerate_from=""):
+    def _run_sprite_branch(self, poses, character, pipe, prompt, background, settings, unique_id, cache_dir, stage_prefix, pose_lora_info, regenerate_from="", regenerate_index=None):
         pose_stage = f"{stage_prefix}_pose_generation"
         up_stage = f"{stage_prefix}_upscaler"
         bg_stage = f"{stage_prefix}_bg_remove"
@@ -1235,6 +1276,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
         else:
             pose_images = None
         if pose_images is None:
+            pose_input = self._slice_batch_item(poses, regenerate_index) if regenerate_index is not None else poses
             self._emit(
                 unique_id,
                 pose_stage,
@@ -1246,7 +1288,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 lora_info=pose_lora_info,
             )
             pose_images = self._run_pose_generation(
-                poses,
+                pose_input,
                 character,
                 pipe,
                 prompt,
@@ -1254,6 +1296,8 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 lora_info=pose_lora_info,
                 background=background,
             )
+            if regenerate_index is not None:
+                pose_images = self._replace_batch_item(_load_cached_tensor(cache_dir, pose_stage), regenerate_index, pose_images)
             self._save_stage(cache_dir, pose_stage, pose_images)
         pose_total = pose_images.shape[0] if torch.is_tensor(pose_images) and pose_images.ndim == 4 else 0
         self._emit(unique_id, pose_stage, "done", pose_images, f"Generated {pose_total} pose images", pose_total, pose_total, cache_dir=cache_dir, lora_info=pose_lora_info)
@@ -1263,9 +1307,11 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
         else:
             upscaled = None
         if upscaled is None:
-            self._emit(unique_id, up_stage, "running", pose_images, f"Preparing upscaler for {pose_total} images", 0, pose_total, cache_dir=cache_dir)
+            upscaler_input = self._slice_batch_item(pose_images, regenerate_index) if regenerate_index is not None else pose_images
+            up_total = 1 if regenerate_index is not None else pose_total
+            self._emit(unique_id, up_stage, "running", upscaler_input, f"Preparing upscaler for {up_total} images", 0, up_total, cache_dir=cache_dir)
             upscaled = self._run_upscaler(
-                pose_images,
+                upscaler_input,
                 background,
                 settings["upscaler"],
                 self._extract_pipe(pipe)["seed"],
@@ -1274,6 +1320,8 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 stage=up_stage,
                 use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", True),
             )
+            if regenerate_index is not None:
+                upscaled = self._replace_batch_item(_load_cached_tensor(cache_dir, up_stage), regenerate_index, upscaled)
             self._save_stage(cache_dir, up_stage, upscaled)
 
         bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
@@ -1282,8 +1330,12 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
         else:
             final_images = None
         if final_images is None:
-            self._emit(unique_id, bg_stage, "running", upscaled, f"Removing background for {bg_total} images", 0, bg_total, cache_dir=cache_dir)
-            final_images = self._run_bg_remove(upscaled, settings["bg_remove"], background=background)
+            bg_input = self._slice_batch_item(upscaled, regenerate_index) if regenerate_index is not None else upscaled
+            bg_run_total = 1 if regenerate_index is not None else bg_total
+            self._emit(unique_id, bg_stage, "running", bg_input, f"Removing background for {bg_run_total} images", 0, bg_run_total, cache_dir=cache_dir)
+            final_images = self._run_bg_remove(bg_input, settings["bg_remove"], background=background)
+            if regenerate_index is not None:
+                final_images = self._replace_batch_item(_load_cached_tensor(cache_dir, bg_stage), regenerate_index, final_images)
             self._save_stage(cache_dir, bg_stage, final_images)
             self._emit(unique_id, bg_stage, "done", final_images, f"Background removed from {bg_total} images", bg_total, bg_total, cache_dir=cache_dir)
         return final_images, pose_images, upscaled
@@ -1292,6 +1344,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
         settings = self._clone_settings(widget_data)
         widget_payload = self._widget_data(widget_data)
         regenerate_from = self._regenerate_from(widget_payload)
+        regenerate_index = self._regenerate_index(widget_payload)
         character_name = widget_payload.get("character_name", "")
         nsfw_value = widget_payload.get("nsfw_enabled", True)
         if isinstance(nsfw_value, str):
@@ -1339,8 +1392,9 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 "original",
                 pose_lora_info,
                 regenerate_from=regenerate_from,
+                regenerate_index=regenerate_index,
             )
-            original_saved = self._save_final_sprites(original_final, sheets_path, character_name, "Original")
+            original_saved = self._save_final_sprites(original_final, sheets_path, character_name, "Original", version_existing=not regenerate_from)
             if original_saved:
                 self._emit(unique_id, "original_bg_remove", "done", original_final, f"Saved {len(original_saved)} original sprites", cache_dir=cache_dir)
 
@@ -1400,8 +1454,9 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 "naked",
                 pose_lora_info,
                 regenerate_from=regenerate_from,
+                regenerate_index=regenerate_index,
             )
-            naked_saved = self._save_final_sprites(naked_final, sheets_path, character_name, "Naked")
+            naked_saved = self._save_final_sprites(naked_final, sheets_path, character_name, "Naked", version_existing=not regenerate_from)
             if naked_saved:
                 self._emit(unique_id, "naked_bg_remove", "done", naked_final, f"Saved {len(naked_saved)} naked sprites", cache_dir=cache_dir)
 
@@ -1470,6 +1525,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
         settings = self._settings(widget_data)
         widget_payload = self._widget_data(widget_data)
         regenerate_from = self._regenerate_from(widget_payload)
+        regenerate_index = self._regenerate_index(widget_payload)
         character_name = widget_payload.get("character_name", "")
         character = self._unwrap_scalar(character)
         pipe = self._unwrap_scalar(pipe)
@@ -1537,6 +1593,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
             else:
                 pose_images = None
             if pose_images is None:
+                pose_input = self._slice_batch_item(poses, regenerate_index) if regenerate_index is not None else poses
                 self._emit(
                     unique_id,
                     "pose_generation",
@@ -1548,7 +1605,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                     lora_info=pose_lora_info,
                 )
                 pose_images = self._run_clothes_pose_generation(
-                    poses,
+                    pose_input,
                     source_upscaled,
                     pipe,
                     prompt,
@@ -1557,6 +1614,8 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                     lora_info=pose_lora_info,
                     use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", True),
                 )
+                if regenerate_index is not None:
+                    pose_images = self._replace_batch_item(_load_cached_tensor(cache_dir, "pose_generation"), regenerate_index, pose_images)
                 self._save_stage(cache_dir, "pose_generation", pose_images)
             pose_total = pose_images.shape[0] if torch.is_tensor(pose_images) and pose_images.ndim == 4 else 0
             self._emit(unique_id, "pose_generation", "done", pose_images, f"Generated {pose_total} clothed pose images", pose_total, pose_total, cache_dir=cache_dir, lora_info=pose_lora_info)
@@ -1566,9 +1625,11 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
             else:
                 upscaled = None
             if upscaled is None:
-                self._emit(unique_id, "upscaler", "running", pose_images, f"Preparing upscaler for {pose_total} images", 0, pose_total, cache_dir=cache_dir)
+                upscaler_input = self._slice_batch_item(pose_images, regenerate_index) if regenerate_index is not None else pose_images
+                up_total = 1 if regenerate_index is not None else pose_total
+                self._emit(unique_id, "upscaler", "running", upscaler_input, f"Preparing upscaler for {up_total} images", 0, up_total, cache_dir=cache_dir)
                 upscaled = self._run_upscaler(
-                    pose_images,
+                    upscaler_input,
                     background,
                     settings["upscaler"],
                     self._extract_pipe(pipe)["seed"],
@@ -1576,13 +1637,19 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                     cache_dir=cache_dir,
                     use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", True),
                 )
+                if regenerate_index is not None:
+                    upscaled = self._replace_batch_item(_load_cached_tensor(cache_dir, "upscaler"), regenerate_index, upscaled)
                 self._save_stage(cache_dir, "upscaler", upscaled)
 
             bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
-            self._emit(unique_id, "bg_remove", "running", upscaled, f"Removing background for {bg_total} images", 0, bg_total, cache_dir=cache_dir)
-            final_images = self._run_bg_remove(upscaled, settings["bg_remove"], background=background)
+            bg_input = self._slice_batch_item(upscaled, regenerate_index) if regenerate_index is not None else upscaled
+            bg_run_total = 1 if regenerate_index is not None else bg_total
+            self._emit(unique_id, "bg_remove", "running", bg_input, f"Removing background for {bg_run_total} images", 0, bg_run_total, cache_dir=cache_dir)
+            final_images = self._run_bg_remove(bg_input, settings["bg_remove"], background=background)
+            if regenerate_index is not None:
+                final_images = self._replace_batch_item(_load_cached_tensor(cache_dir, "bg_remove"), regenerate_index, final_images)
             self._save_stage(cache_dir, "bg_remove", final_images)
-            saved_paths = self._save_final_sprites(final_images, sheets_path, character_name, costume_name)
+            saved_paths = self._save_final_sprites(final_images, sheets_path, character_name, costume_name, version_existing=not regenerate_from)
             saved_suffix = f"; saved {len(saved_paths)} sprites to {costume_name}" if saved_paths else ""
             self._emit(unique_id, "bg_remove", "done", final_images, f"Background removed from {bg_total} images{saved_suffix}", bg_total, bg_total, cache_dir=cache_dir)
             return final_images, final_images, source_upscaled, pose_images, upscaled
@@ -1830,6 +1897,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
     def process(self, images, pipe, emotion_data, widget_data="{}", unique_id=None):
         widget_payload = self._widget_data(widget_data)
         regenerate_from = self._regenerate_from(widget_payload)
+        regenerate_index = self._regenerate_index(widget_payload)
         emotion_settings = widget_payload.get("emotion_generation", {}) if isinstance(widget_payload, dict) else {}
         try:
             face_denoise = float(emotion_settings.get("face_denoise", DEFAULT_WIDGET_DATA["emotion_generation"]["face_denoise"]))
@@ -1888,9 +1956,13 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                         continue
 
                 group_source = torch.cat([source_items[i][0] for i in group["indices"]], dim=0)
-                self._emit(unique_id, stage_key, "running", group_source, f"Generating {stage_label}", 0, len(group["indices"]), cache_dir=cache_dir)
+                run_indices = group["indices"]
+                if regenerate_index is not None and regenerate_index < len(group["indices"]):
+                    run_indices = [group["indices"][regenerate_index]]
+                    group_source = source_items[run_indices[0]][0]
+                self._emit(unique_id, stage_key, "running", group_source, f"Generating {stage_label}", 0, len(run_indices), cache_dir=cache_dir)
                 group_results = []
-                for local_index, index in enumerate(group["indices"], start=1):
+                for local_index, index in enumerate(run_indices, start=1):
                     image, mask = source_items[index]
                     meta = data_items[index] if index < len(data_items) else {}
                     if mask is not None and (mask.shape[-2] != image.shape[1] or mask.shape[-1] != image.shape[2]):
@@ -1913,29 +1985,36 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                     # as files, but keep the IMAGE output batch shape-stable.
                     faces.append(result)
                     group_results.append(result)
+                    save_index = (regenerate_index + 1) if regenerate_index is not None else local_index
                     if index < len(sprite_paths):
-                        self._save_rgba_image(result, mask, sprite_paths[index], local_index)
+                        self._save_rgba_image(result, mask, sprite_paths[index], save_index)
                         face_prefix = self._face_prefix_from_sprite_prefix(sprite_paths[index])
                         if face_prefix:
                             face_dir = os.path.dirname(face_prefix)
                             face_dir_key = os.path.normcase(os.path.abspath(face_dir))
-                            if face_dir_key not in rotated_face_dirs:
+                            if not regenerate_from and face_dir_key not in rotated_face_dirs:
                                 self._rotate_existing_images(face_dir)
                                 rotated_face_dirs.add(face_dir_key)
-                            self._save_rgba_image(face_crop, None, face_prefix, local_index)
+                            self._save_rgba_image(face_crop, None, face_prefix, save_index)
                     partial = torch.cat(group_results, dim=0)
                     self._emit(
                         unique_id,
                         stage_key,
-                        "running" if local_index < len(group["indices"]) else "done",
+                        "running" if local_index < len(run_indices) else "done",
                         partial,
                         f"Done {stage_label}",
                         local_index,
-                        len(group["indices"]),
+                        len(run_indices),
                         cache_dir=cache_dir,
                     )
                 if group_results:
-                    self._save_stage(cache_dir, stage_key, torch.cat(group_results, dim=0))
+                    merged = torch.cat(group_results, dim=0)
+                    if regenerate_index is not None:
+                        merged = self._replace_batch_item(_load_cached_tensor(cache_dir, stage_key), regenerate_index, merged)
+                    self._save_stage(cache_dir, stage_key, merged)
+                    if regenerate_index is not None:
+                        done_total = merged.shape[0] if torch.is_tensor(merged) and merged.ndim == 4 else len(run_indices)
+                        self._emit(unique_id, stage_key, "done", merged, f"Done {stage_label}", done_total, done_total, cache_dir=cache_dir)
 
             if not results:
                 raise RuntimeError("No emotion images to generate. Select at least one costume and one emotion.")
@@ -1960,7 +2039,7 @@ if server is not None:
             ctx = _LIVE_GENERATOR_CONTEXTS.get(unique_id)
             if not ctx or ctx.get("pipe") is None:
                 return web.json_response({
-                    "error": "Generator cache is not ready. Run this generator once normally before using Regenerate.",
+                    "error": "Regenerate needs the live generator context from the last normal run. Run this generator once normally after server restart/reload, then Regenerate will work from the cached stages.",
                 }, status=409)
 
             cache_dir = ctx.get("cache_dir")
@@ -1972,6 +2051,8 @@ if server is not None:
 
             widget_payload = data.get("widget_data") if isinstance(data.get("widget_data"), dict) else {}
             widget_payload["regenerate_from"] = stage
+            if "image_index" in data:
+                widget_payload["regenerate_index"] = data.get("image_index")
             widget_data = json.dumps(widget_payload, ensure_ascii=False)
             generator_type = ctx.get("generator_type") or data.get("generator_type")
             pipe = ctx["pipe"]
