@@ -1543,6 +1543,34 @@ app.registerExtension({
                     els.previewImg.onload = null;
                     els.previewImg.onerror = null;
                 };
+
+                const applyStoredPrefs = (characterOnly = false) => {
+                    try {
+                        const s = localStorage.getItem("VNCCS_V2_Settings");
+                        if (!s) return false;
+                        const parsed = JSON.parse(s);
+                        let changedCharacter = false;
+                        if (parsed.character && parsed.character !== state.character) {
+                            state.character = parsed.character;
+                            restoredWidgetInfoCharacter = null;
+                            changedCharacter = true;
+                        }
+                        if (!characterOnly) {
+                            if (parsed.gen_settings) {
+                                Object.assign(state.gen_settings, parsed.gen_settings);
+                                if (parsed.prompt_modes) state.prompt_modes = parsed.prompt_modes;
+                                if (parsed.prompt_defaults_version !== undefined) state.prompt_defaults_version = parsed.prompt_defaults_version;
+                            } else {
+                                Object.assign(state.gen_settings, parsed);
+                            }
+                            ensureLoraStack(state.gen_settings);
+                        }
+                        return changedCharacter;
+                    } catch (e) {
+                        return false;
+                    }
+                };
+
                 const loadState = () => {
                     // 1. Try Widget Data (Graph Persistence)
                     const w = node.widgets.find(x => x.name === "widget_data");
@@ -1569,31 +1597,14 @@ app.registerExtension({
                             }
                             if (parsed.preview_valid !== undefined) state.preview_valid = parsed.preview_valid;
 
-                            console.log("[VNCCS V2] Loaded state from graph widget. Character:", state.character);
-                            return; // Found graph data, stop here (don't overwrite with global storage defaults)
+                            const overridden = applyStoredPrefs(true);
+                            console.log("[VNCCS V2] Loaded state from graph widget. Character:", state.character, overridden ? "(last active override)" : "");
+                            return;
                         } catch (e) { console.error("Error loading widget data", e); }
                     }
 
                     // 2. Fallback to LocalStorage (Global Preferences for new nodes)
-                    try {
-                        const s = localStorage.getItem("VNCCS_V2_Settings");
-                        if (s) {
-                            const parsed = JSON.parse(s);
-                            // Check if new structure (has 'gen_settings' key) or legacy (flat gen_settings)
-                            if (parsed.gen_settings) {
-                                // New structure
-                                Object.assign(state.gen_settings, parsed.gen_settings);
-                                if (parsed.character) state.character = parsed.character;
-                                if (parsed.prompt_modes) state.prompt_modes = parsed.prompt_modes;
-                                if (parsed.prompt_defaults_version !== undefined) state.prompt_defaults_version = parsed.prompt_defaults_version;
-                            } else {
-                                // Legacy assumption
-                                Object.assign(state.gen_settings, parsed);
-                            }
-
-                            ensureLoraStack(state.gen_settings);
-                        }
-                    } catch (e) { }
+                    applyStoredPrefs(false);
                 };
 
                 const syncSliderValue = (ref, value) => {

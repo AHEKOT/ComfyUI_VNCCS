@@ -1523,10 +1523,6 @@ class CharacterGeneratorWidget {
             this.settingsEl.appendChild(this.block("Face Detailer", [
                 this.faceDenoiseSlider(),
             ]));
-            this.settingsEl.appendChild(this.block("BG Remove", [
-                this.field("bg_remove", "use_internal_rmbg", "use internal RMBG", "checkbox"),
-                this.field("bg_remove", "preset", "chroma preset", "select", ["light", "balanced", "strong", "aggressive"]),
-            ]));
             return;
         }
         if (this.isClone) {
