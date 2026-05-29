@@ -10,6 +10,14 @@ from typing import Tuple
 
 # No heavy imports required; keep these nodes minimal and dependency-free.
 
+
+class _CompatReturnTypes(tuple):
+    def __getitem__(self, index):
+        if isinstance(index, int) and index >= len(self):
+            index = len(self) - 1
+        return super().__getitem__(index)
+
+
 class VNCCS_Integer:
     @classmethod
     def INPUT_TYPES(cls):
@@ -60,7 +68,7 @@ class VNCCS_String:
             }
         }
 
-    RETURN_TYPES = ("STRING",)
+    RETURN_TYPES = _CompatReturnTypes(("STRING",))
     RETURN_NAMES = ("value",)
     CATEGORY = "VNCCS"
     FUNCTION = "pass_through"
@@ -160,4 +168,3 @@ NODE_CATEGORY_MAPPINGS = {
     "VNCCS_MultilineText": "VNCCS",
     "VNCCS_PromptConcat": "VNCCS",
 }
-

@@ -7,6 +7,7 @@ import threading
 import time
 import urllib.parse
 import inspect
+import ipaddress
 
 import folder_paths
 import comfy.sd
@@ -65,6 +66,8 @@ _FOLDER_MAP = {
 }
 _MODEL_FILE_EXTENSIONS = {".safetensors", ".gguf", ".ckpt", ".pt", ".pth", ".bin"}
 _MIN_MODEL_FILE_SIZE = 1024
+_DEFAULT_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024 * 1024
+_DOWNLOAD_TIMEOUT = (10, 60)
 
 def _get_node_class_mappings():
     import nodes as comfy_nodes
@@ -137,7 +140,35 @@ def _validate_https_url(url):
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme.lower() != "https" or not parsed.netloc:
         raise ValueError("Download URL must be an absolute HTTPS URL")
+    host = parsed.hostname or ""
+    try:
+        ip = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        ip = None
+    if ip and (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved):
+        raise ValueError("Download URL host must not be a private or local address")
     return url
+
+
+def _max_download_bytes():
+    raw = os.environ.get("VNCCS_MAX_MODEL_DOWNLOAD_BYTES", "")
+    try:
+        value = int(raw)
+        return value if value > 0 else _DEFAULT_MAX_DOWNLOAD_BYTES
+    except Exception:
+        return _DEFAULT_MAX_DOWNLOAD_BYTES
+
+
+def _validate_download_response(response, expected_name="model"):
+    _validate_https_url(getattr(response, "url", ""))
+    total_size = int(response.headers.get("content-length", 0) or 0)
+    max_bytes = _max_download_bytes()
+    if total_size > max_bytes:
+        raise ValueError(
+            f"{expected_name} is too large to download safely "
+            f"({total_size / (1024 * 1024 * 1024):.1f} GB, limit {max_bytes / (1024 * 1024 * 1024):.1f} GB)"
+        )
+    return total_size, max_bytes
 
 
 def _validate_model_filename(path):
@@ -913,10 +944,11 @@ def _download_worker_loop():
                     headers = {"Authorization": f"Bearer {hf_token}"}
 
             _validate_https_url(url)
-            response = requests.get(url, headers=headers, stream=True, allow_redirects=True)
+            response = requests.get(url, headers=headers, stream=True, allow_redirects=True, timeout=_DOWNLOAD_TIMEOUT)
             response.raise_for_status()
 
-            total_size = int(response.headers.get("content-length", 0))
+            expected_name = os.path.basename(target_model.get("local_path", "") or target_model.get("hf_path", "") or "model")
+            total_size, max_bytes = _validate_download_response(response, expected_name)
             downloaded = 0
             temp_dir = os.path.join(folder_paths.base_path, "temp")
             os.makedirs(temp_dir, exist_ok=True)
@@ -929,6 +961,8 @@ def _download_worker_loop():
                         continue
                     handle.write(chunk)
                     downloaded += len(chunk)
+                    if downloaded > max_bytes:
+                        raise ValueError(f"{expected_name} exceeded max download size")
                     mb_done = downloaded / (1024 * 1024)
                     if total_size > 0:
                         mb_total = total_size / (1024 * 1024)
@@ -1128,153 +1162,6 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None):
         pipe.scheduler = model_params["scheduler"]
 
     return pipe
-
-
-def _get_nunchaku_path():
-    """Find ComfyUI-nunchaku installation in ComfyUI's custom_nodes directory."""
-    comfyui_root = os.path.dirname(os.path.abspath(folder_paths.__file__))
-    custom_nodes = os.path.join(comfyui_root, "custom_nodes")
-    for name in ["ComfyUI-nunchaku", "comfyui-nunchaku", "ComfyUI_nunchaku"]:
-        path = os.path.join(custom_nodes, name)
-        if os.path.isdir(path):
-            return path
-    return None
-
-
-def _fetch_pr790_diff():
-    """Download PR #790 diff. Returns diff text or None on failure."""
-    diff_url = "https://github.com/nunchaku-ai/ComfyUI-nunchaku/pull/790.diff"
-    print(f"[VNCCS Qwen Fix] Downloading diff from {diff_url}")
-    resp = requests.get(diff_url, timeout=30, allow_redirects=True)
-    resp.raise_for_status()
-    print(f"[VNCCS Qwen Fix] Diff downloaded ({len(resp.text)} chars)")
-    return resp.text
-
-
-def _filter_diff_py_only(diff_text):
-    """Keep only hunks for .py files — strips test_data/, config files, etc."""
-    out = []
-    include = False
-    for line in diff_text.splitlines(keepends=True):
-        if line.startswith("diff --git "):
-            include = line.endswith(".py\n") or line.endswith(".py")
-        if include:
-            out.append(line)
-    return "".join(out)
-
-
-def _parse_added_lines_by_file(diff_text):
-    """Return {rel_path: [added_line, ...]} for .py files only."""
-    result = {}
-    current_file = None
-    for line in diff_text.splitlines():
-        if line.startswith("diff --git "):
-            parts = line.split(" b/")
-            if len(parts) >= 2:
-                rel = parts[-1].strip()
-                current_file = rel if rel.endswith(".py") else None
-                if current_file:
-                    result.setdefault(current_file, [])
-        elif current_file and line.startswith("+") and not line.startswith("+++"):
-            result[current_file].append(line[1:])  # strip leading '+'
-    return result
-
-
-def _check_nunchaku_qwen_fix():
-    """Check if PR #790 is applied by looking for its added lines in actual files."""
-    print("[VNCCS Qwen Fix] Checking fix status...")
-    nunchaku_path = _get_nunchaku_path()
-    if not nunchaku_path:
-        print("[VNCCS Qwen Fix] ComfyUI-nunchaku not found in custom_nodes")
-        return {"installed": False, "nunchaku_missing": True}
-    print(f"[VNCCS Qwen Fix] nunchaku path: {nunchaku_path}")
-    try:
-        diff_text = _fetch_pr790_diff()
-        added_by_file = _parse_added_lines_by_file(diff_text)
-        if not added_by_file:
-            print("[VNCCS Qwen Fix] No Python additions found in diff — assuming fix not needed")
-            return {"installed": True, "nunchaku_missing": False}
-
-        for rel_path, added_lines in added_by_file.items():
-            # Only check lines that are distinctive (non-trivial content)
-            distinctive = [l for l in added_lines if len(l.strip()) > 15]
-            if not distinctive:
-                continue
-            full_path = os.path.join(nunchaku_path, rel_path)
-            if not os.path.exists(full_path):
-                print(f"[VNCCS Qwen Fix] File not found: {full_path}")
-                return {"installed": False, "nunchaku_missing": False}
-            try:
-                content = open(full_path, encoding="utf-8").read()
-            except Exception as e:
-                print(f"[VNCCS Qwen Fix] Could not read {full_path}: {e}")
-                return {"installed": False, "nunchaku_missing": False}
-            found = sum(1 for l in distinctive if l.rstrip() in content)
-            threshold = max(1, int(len(distinctive) * 0.7))
-            installed = found >= threshold
-            print(f"[VNCCS Qwen Fix] {rel_path}: {found}/{len(distinctive)} distinctive lines found "
-                  f"(threshold {threshold}) → {'installed' if installed else 'NOT installed'}")
-            if not installed:
-                return {"installed": False, "nunchaku_missing": False}
-
-        return {"installed": True, "nunchaku_missing": False}
-    except Exception as e:
-        print(f"[VNCCS Qwen Fix] Check failed: {e}")
-        return {"installed": False, "nunchaku_missing": False}
-
-
-def _apply_nunchaku_qwen_fix():
-    """Fetch PR #790 diff and apply only .py changes via git apply."""
-    import tempfile, subprocess
-    print("[VNCCS Qwen Fix] Starting fix application...")
-    nunchaku_path = _get_nunchaku_path()
-    if not nunchaku_path:
-        print("[VNCCS Qwen Fix] ERROR: ComfyUI-nunchaku not found in custom_nodes")
-        return {"ok": False, "message": "ComfyUI-nunchaku not found in custom_nodes"}
-    print(f"[VNCCS Qwen Fix] nunchaku path: {nunchaku_path}")
-    try:
-        diff_text = _fetch_pr790_diff()
-        filtered = _filter_diff_py_only(diff_text)
-        if not filtered.strip():
-            return {"ok": False, "message": "No Python-file hunks found in PR diff"}
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".diff", delete=False, encoding="utf-8") as f:
-            f.write(filtered)
-            tmp_path = f.name
-        print(f"[VNCCS Qwen Fix] Saved filtered diff to temp file: {tmp_path}")
-        try:
-            # First attempt: strict apply with whitespace tolerance
-            print(f"[VNCCS Qwen Fix] Attempt 1: git apply --whitespace=fix")
-            result = subprocess.run(
-                ["git", "apply", "--whitespace=fix", tmp_path],
-                cwd=nunchaku_path, capture_output=True, text=True
-            )
-            if result.returncode != 0:
-                # Second attempt: 3-way merge — tolerates context mismatches (different nunchaku version)
-                print(f"[VNCCS Qwen Fix] Attempt 1 failed, trying 3-way merge: git apply --3way --ignore-space-change")
-                result = subprocess.run(
-                    ["git", "apply", "--3way", "--ignore-space-change", "--whitespace=fix", tmp_path],
-                    cwd=nunchaku_path, capture_output=True, text=True
-                )
-        finally:
-            os.unlink(tmp_path)
-            print("[VNCCS Qwen Fix] Temp file removed")
-        print(f"[VNCCS Qwen Fix] git apply exit code: {result.returncode}")
-        if result.stdout:
-            print(f"[VNCCS Qwen Fix] git stdout: {result.stdout}")
-        if result.stderr:
-            print(f"[VNCCS Qwen Fix] git stderr: {result.stderr}")
-        if result.returncode != 0:
-            msg = result.stderr or result.stdout or "patch does not apply"
-            if "does not apply" in msg or "patch failed" in msg:
-                msg = (f"Patch failed — your nunchaku version differs from the one this fix targets. "
-                       f"Detail: {msg.strip()}")
-            return {"ok": False, "message": msg}
-        print("[VNCCS Qwen Fix] Fix applied successfully")
-        return {"ok": True}
-    except Exception as e:
-        print(f"[VNCCS Qwen Fix] Exception: {e}")
-        return {"ok": False, "message": str(e)}
 
 
 @server.PromptServer.instance.routes.get("/vnccs/control_center/nunchaku_fix_status")

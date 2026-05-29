@@ -24,11 +24,28 @@ def fetch_sampler_scheduler_lists() -> Tuple[List[str], List[str]]:
 SAMPLER_ENUM, SCHEDULER_ENUM = fetch_sampler_scheduler_lists()
 
 
+class FlexibleEnumOutput(str):
+    """Output type compatible with ComfyUI enum-list inputs.
+
+    ComfyUI validates links by comparing output_type != input_type. KSampler
+    sampler/scheduler inputs are declared as lists of allowed strings, so a
+    plain "STRING" output is rejected. A str subclass with permissive __ne__
+    keeps the output serializable while allowing links to dynamic enum inputs.
+    """
+
+    def __ne__(self, other):
+        return False
+
+
+SAMPLER_OUTPUT_TYPE = FlexibleEnumOutput("SAMPLER_NAME")
+SCHEDULER_OUTPUT_TYPE = FlexibleEnumOutput("SCHEDULER_NAME")
+
+
 class VNCCSSamplerSchedulerPicker:
     """Expose ComfyUI sampler and scheduler lists as selectable outputs."""
 
     CATEGORY = "VNCCS"
-    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_TYPES = (SAMPLER_OUTPUT_TYPE, SCHEDULER_OUTPUT_TYPE)
     RETURN_NAMES = ("sampler_name", "scheduler")
     FUNCTION = "pick"
 

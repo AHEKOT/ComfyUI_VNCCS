@@ -2611,7 +2611,11 @@ app.registerExtension({
                                 try {
                                     btn.innerText = "DELETING...";
                                     btn.disabled = true;
-                                    const r = await api.fetchApi(`/vnccs/delete?name=${encodeURIComponent(charName)}`);
+                                    const r = await api.fetchApi("/vnccs/delete", {
+                                        method: "POST",
+                                        headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({ name: charName }),
+                                    });
                                     if (r.ok) {
                                         const opts = Array.from(els.charSelect.options);
                                         const idx = opts.findIndex(o => o.value === charName);

@@ -17,10 +17,15 @@ from nodes.vnccs_utils import (
     VNCCS_ColorFix,
     VNCCS_Resize,
     VNCCS_MaskExtractor,
+    VNCCS_RMBG2,
 )
 
 
 # ── tensor2pil ────────────────────────────────────────────────────────────────
+
+def test_rmbg2_return_type_tolerates_legacy_high_slot_validation():
+    assert VNCCS_RMBG2.RETURN_TYPES[5] == "IMAGE"
+
 
 class TestTensor2Pil:
     def test_returns_pil_image(self):

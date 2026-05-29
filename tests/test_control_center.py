@@ -15,6 +15,7 @@ from nodes.vnccs_control_center import (
     _find_model_on_disk,
     _resolve_model_download_path,
     _validate_downloaded_model_file,
+    _validate_download_response,
     _validate_https_url,
     _filter_entries_by_kind,
     _build_dynamic_paths,
@@ -126,6 +127,20 @@ class TestDownloadSafety:
     def test_https_url_required(self):
         with pytest.raises(ValueError):
             _validate_https_url("http://example.com/model.safetensors")
+
+    def test_https_url_rejects_private_ip_literal(self):
+        with pytest.raises(ValueError):
+            _validate_https_url("https://127.0.0.1/model.safetensors")
+
+    def test_download_response_rejects_oversized_content_length(self, monkeypatch):
+        class Response:
+            url = "https://example.com/model.safetensors"
+            headers = {"content-length": str(11)}
+
+        monkeypatch.setenv("VNCCS_MAX_MODEL_DOWNLOAD_BYTES", "10")
+
+        with pytest.raises(ValueError):
+            _validate_download_response(Response(), "model.safetensors")
 
     def test_resolve_model_download_path_rejects_absolute(self):
         with pytest.raises(ValueError):

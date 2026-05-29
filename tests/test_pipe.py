@@ -217,9 +217,12 @@ class TestProcessPipeLoaderContext:
 
 class TestProcessPipeReturnShape:
     def test_declares_sampler_outputs_as_strings(self):
-        assert VNCCS_Pipe.RETURN_TYPES[10] == "STRING"
-        assert VNCCS_Pipe.RETURN_TYPES[11] == "STRING"
-        assert VNCCSSamplerSchedulerPicker.RETURN_TYPES == ("STRING", "STRING")
+        assert isinstance(VNCCS_Pipe.RETURN_TYPES[10], str)
+        assert isinstance(VNCCS_Pipe.RETURN_TYPES[11], str)
+        assert (VNCCS_Pipe.RETURN_TYPES[10] != ["euler"]) is False
+        assert (VNCCS_Pipe.RETURN_TYPES[11] != ["normal"]) is False
+        assert (VNCCSSamplerSchedulerPicker.RETURN_TYPES[0] != ["euler"]) is False
+        assert (VNCCSSamplerSchedulerPicker.RETURN_TYPES[1] != ["normal"]) is False
 
     def test_accepts_legacy_non_pipe_input_without_inheriting(self):
         node = VNCCS_Pipe()

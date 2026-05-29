@@ -19,6 +19,14 @@ import cv2
 import types
 import torch.nn.functional as F
 
+
+class _CompatReturnTypes(tuple):
+    def __getitem__(self, index):
+        if isinstance(index, int) and index >= len(self):
+            index = len(self) - 1
+        return super().__getitem__(index)
+
+
 try:
     import folder_paths
     from huggingface_hub import hf_hub_download
@@ -947,7 +955,7 @@ class VNCCS_RMBG2:
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE")
+    RETURN_TYPES = _CompatReturnTypes(("IMAGE", "MASK", "IMAGE"))
     RETURN_NAMES = ("IMAGE", "MASK", "MASK_IMAGE")
     FUNCTION = "process_image"
     CATEGORY = "VNCCS"

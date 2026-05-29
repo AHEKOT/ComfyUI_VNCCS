@@ -12,7 +12,7 @@
 
         console.log(TAG, "Checking for legacy data migration...");
         try {
-            const r = await fetch("/vnccs/migrate", { method: "GET" });
+            const r = await fetch("/vnccs/migrate", { method: "POST" });
             if (!r.ok) {
                 console.warn(TAG, "Migration endpoint failed", r.status);
                 return;

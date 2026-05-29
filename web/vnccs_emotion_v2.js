@@ -2011,7 +2011,7 @@ app.registerExtension({
                     if (origDraw) origDraw.apply(this, arguments);
                 };
 
-                function showAlert(html) {
+                function showModalText(title, message, onConfirm = null) {
                     const backdrop = document.createElement("div");
                     backdrop.className = "ems-modal-backdrop";
 
@@ -2020,15 +2020,31 @@ app.registerExtension({
 
                     const text = document.createElement("div");
                     text.className = "ems-modal-text";
-                    text.innerHTML = html;
+                    const titleEl = document.createElement("strong");
+                    titleEl.textContent = String(title ?? "");
+                    const messageEl = document.createElement("div");
+                    messageEl.textContent = String(message ?? "");
+                    messageEl.style.whiteSpace = "pre-wrap";
+                    text.append(titleEl, document.createElement("br"), messageEl);
 
                     const actions = document.createElement("div");
                     actions.className = "ems-modal-actions";
 
+                    if (onConfirm) {
+                        const btnCancel = document.createElement("button");
+                        btnCancel.className = "ems-modal-btn ems-modal-btn--cancel";
+                        btnCancel.innerText = "Cancel";
+                        btnCancel.onclick = () => backdrop.remove();
+                        actions.appendChild(btnCancel);
+                    }
+
                     const btnOk = document.createElement("button");
                     btnOk.className = "ems-modal-btn ems-modal-btn--confirm";
-                    btnOk.innerText = "OK";
-                    btnOk.onclick = () => backdrop.remove();
+                    btnOk.innerText = onConfirm ? "Proceed" : "OK";
+                    btnOk.onclick = () => {
+                        backdrop.remove();
+                        onConfirm?.();
+                    };
 
                     actions.appendChild(btnOk);
                     modal.appendChild(text);
@@ -2040,51 +2056,21 @@ app.registerExtension({
 
                 node._validateBeforeQueue = function() {
                     if (state.selectedCostumes.size === 0 && state.selectedEmotions.size === 0) {
-                        showAlert(`<strong>Nothing selected</strong><br>Please select at least one costume and one emotion before running.`);
+                        showModalText("Nothing selected", "Please select at least one costume and one emotion before running.");
                         return false;
                     }
                     if (state.selectedCostumes.size === 0) {
-                        showAlert(`<strong>No costumes selected</strong><br>Please enable at least one costume.`);
+                        showModalText("No costumes selected", "Please enable at least one costume.");
                         return false;
                     }
                     if (state.selectedEmotions.size === 0) {
-                        showAlert(`<strong>No emotions selected</strong><br>Please select at least one emotion.`);
+                        showModalText("No emotions selected", "Please select at least one emotion.");
                         return false;
                     }
                     return true;
                 };
 
-                function showConfirm(html, onConfirm) {
-                    const backdrop = document.createElement("div");
-                    backdrop.className = "ems-modal-backdrop";
-
-                    const modal = document.createElement("div");
-                    modal.className = "ems-modal";
-
-                    const text = document.createElement("div");
-                    text.className = "ems-modal-text";
-                    text.innerHTML = html;
-
-                    const actions = document.createElement("div");
-                    actions.className = "ems-modal-actions";
-
-                    const btnCancel = document.createElement("button");
-                    btnCancel.className = "ems-modal-btn ems-modal-btn--cancel";
-                    btnCancel.innerText = "Cancel";
-                    btnCancel.onclick = () => backdrop.remove();
-
-                    const btnOk = document.createElement("button");
-                    btnOk.className = "ems-modal-btn ems-modal-btn--confirm";
-                    btnOk.innerText = "Proceed";
-                    btnOk.onclick = () => { backdrop.remove(); onConfirm(); };
-
-                    actions.appendChild(btnCancel);
-                    actions.appendChild(btnOk);
-                    modal.appendChild(text);
-                    modal.appendChild(actions);
-                    backdrop.appendChild(modal);
-                    container.appendChild(backdrop);
-                }
+                const showConfirm = (title, message, onConfirm) => showModalText(title, message, onConfirm);
 
                 function restoreStateFromWidgets() {
                     // 1. Character
@@ -2220,8 +2206,7 @@ app.registerExtension({
                         const numCostumes = state.selectedCostumes.size;
                         const total = numEmotions * numCostumes;
 
-                        const html = `Select <strong>${numEmotions}</strong> visible emotion(s) for <strong>${numCostumes}</strong> costume(s)?<br>Total: <strong>${total}</strong> images.`;
-                        showConfirm(html, () => {
+                        showConfirm("Select visible emotions", `Emotions: ${numEmotions}\nCostumes: ${numCostumes}\nTotal: ${total} images.`, () => {
                             filtered.forEach(e => state.selectedEmotions.add(e.safe_name));
                             renderEmotions();
                             updateEmotionsData();

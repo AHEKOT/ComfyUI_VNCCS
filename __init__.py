@@ -47,7 +47,7 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             return web.json_response({"error": str(e)}, status=400)
 
         if not os.path.exists(cfg_path):
-            return web.json_response({"error": "not found", "path": cfg_path}, status=404)
+            return web.json_response({"error": "not found"}, status=404)
 
         try:
             with open(cfg_path, 'r', encoding='utf-8') as f:
@@ -58,7 +58,7 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
 
 
 
-    @PromptServer.instance.routes.get("/vnccs/migrate")
+    @PromptServer.instance.routes.post("/vnccs/migrate")
     async def vnccs_migrate(request):
         """Trigger migration of legacy data to new folder structure."""
         try:
@@ -66,15 +66,19 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             result = migrate_legacy_data()
             return web.json_response(result)
         except Exception as e:
+            traceback.print_exc()
             return web.json_response({
                 "migrated": False,
                 "error": str(e),
-                "trace": traceback.format_exc()
             }, status=500)
 
-    @PromptServer.instance.routes.get("/vnccs/delete")
+    @PromptServer.instance.routes.post("/vnccs/delete")
     async def vnccs_delete_character(request):
-        name = request.rel_url.query.get("name", "").strip()
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        name = str(data.get("name") or request.rel_url.query.get("name", "")).strip()
         if not name:
             return web.json_response({"error": "name required"}, status=400)
         
@@ -93,10 +97,10 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             return web.json_response({"ok": True, "name": name, "deleted": True})
             
         except Exception as e:
+            traceback.print_exc()
             return web.json_response({
                 "error": "delete failed",
                 "detail": str(e),
-                "trace": traceback.format_exc()
             }, status=500)
 
     @PromptServer.instance.routes.get("/vnccs/create")
@@ -146,7 +150,6 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
                     "ok": True,
                     "name": name,
                     "existing": True,
-                    "config_path": config_path,
                     "data": existing_data,
                 })
             # Backward compatibility: drop force_new if method doesn't accept it
@@ -156,25 +159,22 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
                     defaults.pop('force_new')
             except Exception:
                 defaults.pop('force_new', None)
-            positive_prompt, seed, negative_prompt, age_lora_strength, sheets_path, faces_path, face_details = cc.create_character(**defaults)
+            positive_prompt, seed, negative_prompt, age_lora_strength, _sheets_path, _faces_path, face_details = cc.create_character(**defaults)
             return web.json_response({
                 "ok": True,
                 "name": name,
                 "seed": seed,
-                "sheets_path": sheets_path,
-                "faces_path": faces_path,
                 "positive_prompt": positive_prompt,
                 "negative_prompt": negative_prompt,
                 "age_lora_strength": age_lora_strength,
                 "face_details": face_details,
-                "config_path": os.path.join(base_char_dir, f"{name}_config.json"),
             })
         except Exception as e:
+            traceback.print_exc()
             return web.json_response({
                 "error": "create failed",
                 "detail": str(e),
                 "type": type(e).__name__,
-                "trace": traceback.format_exc(),
             }, status=500)
 
     @PromptServer.instance.routes.get("/vnccs/create_costume")

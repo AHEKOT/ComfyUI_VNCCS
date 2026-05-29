@@ -1559,7 +1559,11 @@ app.registerExtension({
                             text: "DELETE", class: "vnccs-btn-danger",
                             action: async (ol, btn) => {
                                 try {
-                                    const r = await api.fetchApi(`/vnccs/delete?name=${encodeURIComponent(charName)}`);
+                                    const r = await api.fetchApi("/vnccs/delete", {
+                                        method: "POST",
+                                        headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({ name: charName }),
+                                    });
                                     if (r.ok) {
                                         const idx = Array.from(els.charSelect.options).findIndex(o => o.value === charName);
                                         if (idx > -1) els.charSelect.remove(idx);

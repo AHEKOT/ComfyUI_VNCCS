@@ -732,7 +732,7 @@ if server:
             
         except Exception as e:
             traceback.print_exc() # Print to console
-            return web.Response(status=500, text=f"{str(e)}\n\n{traceback.format_exc()}")
+            return web.Response(status=500, text="Failed to load character info")
 
     @server.PromptServer.instance.routes.get("/vnccs/get_cached_preview")
     async def get_cached_preview(request):

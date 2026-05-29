@@ -46,6 +46,9 @@ class TestVNCCSFloat:
 
 
 class TestVNCCSString:
+    def test_return_type_tolerates_legacy_high_slot_validation(self):
+        assert VNCCS_String.RETURN_TYPES[3] == "STRING"
+
     def test_returns_string(self):
         assert VNCCS_String().pass_through("hello") == ("hello",)
 

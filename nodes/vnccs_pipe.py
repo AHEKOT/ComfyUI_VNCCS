@@ -19,6 +19,8 @@ from .sampler_scheduler_picker import (
     fetch_sampler_scheduler_lists,
     DEFAULT_SAMPLERS,
     DEFAULT_SCHEDULERS,
+    SAMPLER_OUTPUT_TYPE,
+    SCHEDULER_OUTPUT_TYPE,
 )
 from .vnccs_control_center import (
     _apply_lora_standard,
@@ -34,10 +36,9 @@ PIPE_INHERIT = "(← pipe)"
 
 class VNCCS_Pipe:
     CATEGORY = "VNCCS"
-    # NOTE: Outputs must declare type names, not enumeration lists.
-    # Using the enumeration lists directly caused UI duplication (width/height twice)
-    # because ComfyUI iterated over list elements as separate types. We return STRING
-    # while still constraining the input via enumerations so connections remain valid.
+    # NOTE: KSampler-like inputs declare sampler/scheduler as enum lists. Plain
+    # STRING outputs fail validation, while list outputs can be mis-indexed by
+    # older workflows. Flexible str output types compare compatible with both.
     RETURN_TYPES = (
         "MODEL", "CLIP", "VAE", "CONDITIONING", "CONDITIONING",
         "INT",
@@ -45,8 +46,8 @@ class VNCCS_Pipe:
         "FLOAT",
         "FLOAT",
         "VNCCS_PIPE",
-        "STRING",
-        "STRING",
+        SAMPLER_OUTPUT_TYPE,
+        SCHEDULER_OUTPUT_TYPE,
     )
     RETURN_NAMES = (
         "model", "clip", "vae", "pos", "neg",

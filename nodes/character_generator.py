@@ -45,7 +45,7 @@ from .vnccs_control_center import (
 )
 from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder
 from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, VNCCS_RMBG2
-from ..utils import character_dir
+from ..utils import base_output_dir, character_dir, ensure_safe_name
 
 
 _LIVE_GENERATOR_CONTEXTS = {}
@@ -138,6 +138,25 @@ def _safe_cache_part(value, fallback="node"):
     return safe or fallback
 
 
+def _is_under(base, path):
+    try:
+        base_abs = os.path.abspath(base)
+        path_abs = os.path.abspath(path)
+        return os.path.commonpath([base_abs, path_abs]) == base_abs
+    except Exception:
+        return False
+
+
+def _safe_character_root(character_name=""):
+    character_name = str(character_name or "").strip()
+    if not character_name or character_name == "Unknown":
+        return None
+    try:
+        return character_dir(character_name)
+    except Exception:
+        return None
+
+
 def _character_cache_dir_from_sheets_path(sheets_path, character_name="", unique_id=None):
     character_root = _character_root_from_sheets_path(sheets_path, character_name)
     if not character_root:
@@ -148,23 +167,79 @@ def _character_cache_dir_from_sheets_path(sheets_path, character_name="", unique
 
 
 def _character_root_from_sheets_path(sheets_path, character_name=""):
+    fallback_root = _safe_character_root(character_name)
     if isinstance(sheets_path, list):
         sheets_path = sheets_path[0] if sheets_path else ""
     sheets_path = str(sheets_path or "").strip()
     if sheets_path:
-        parts = os.path.abspath(sheets_path).split(os.sep)
-        if "Sheets" in parts:
-            character_root = os.sep.join(parts[:parts.index("Sheets")])
-            if character_root:
-                return character_root
-        if os.path.isdir(sheets_path):
-            return os.path.abspath(sheets_path)
+        abs_sheets_path = os.path.abspath(sheets_path)
+        output_root = base_output_dir()
+        if _is_under(output_root, abs_sheets_path):
+            parts = abs_sheets_path.split(os.sep)
+            if "Sheets" in parts:
+                character_root = os.sep.join(parts[:parts.index("Sheets")])
+                if character_root and _is_under(output_root, character_root):
+                    return character_root
+            if os.path.isdir(abs_sheets_path):
+                return abs_sheets_path
+        elif fallback_root:
+            return fallback_root
 
-    character_name = str(character_name or "").strip()
-    if character_name and character_name != "Unknown":
-        return character_dir(character_name)
+    return fallback_root
 
-    return None
+
+def _safe_cache_dir(cache_dir):
+    if not cache_dir:
+        return ""
+    cache_abs = os.path.abspath(str(cache_dir))
+    if not _is_under(base_output_dir(), cache_abs):
+        return ""
+    if "cache" not in cache_abs.split(os.sep):
+        return ""
+    return cache_abs
+
+
+def _safe_existing_character_image_path(path, character_name=""):
+    path = str(path or "").strip()
+    if not path:
+        return ""
+    root = _safe_character_root(character_name)
+    if not root:
+        return ""
+    abs_path = os.path.abspath(path)
+    if not _is_under(root, abs_path) or not os.path.exists(abs_path):
+        return ""
+    if os.path.splitext(abs_path)[1].lower() not in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
+        return ""
+    return abs_path
+
+
+def _safe_emotion_output_prefix(prefix, character_name="", root_name="Sprites"):
+    prefix = str(prefix or "").strip()
+    if not prefix:
+        return ""
+    root = _safe_character_root(character_name)
+    if not root:
+        return ""
+    output_root = os.path.join(root, root_name)
+    abs_prefix = os.path.abspath(prefix)
+    if not _is_under(output_root, abs_prefix):
+        return ""
+    return abs_prefix
+
+
+def _safe_sprite_set(value, fallback="Naked"):
+    try:
+        return ensure_safe_name(str(value or fallback).strip() or fallback, "sprite_set")
+    except Exception:
+        return fallback
+
+
+def _safe_torch_load_tensor(path):
+    try:
+        return torch.load(path, map_location="cpu", weights_only=True)
+    except TypeError:
+        return torch.load(path, map_location="cpu")
 
 
 def _costume_name_from_sheets_path(sheets_path, fallback="Naked"):
@@ -174,8 +249,8 @@ def _costume_name_from_sheets_path(sheets_path, fallback="Naked"):
     if "Sheets" in parts:
         index = parts.index("Sheets")
         if len(parts) > index + 1 and parts[index + 1]:
-            return parts[index + 1]
-    return str(fallback or "Naked").strip() or "Naked"
+            return _safe_sprite_set(parts[index + 1], fallback)
+    return _safe_sprite_set(fallback, "Naked")
 
 
 def _view_url_for_output_path(path):
@@ -203,6 +278,7 @@ def _tensor_to_preview_urls(image, unique_id, stage, cache_dir=None, max_items=1
     image = _first_tensor(image)
     if image is None or not torch.is_tensor(image):
         return None
+    cache_dir = _safe_cache_dir(cache_dir)
     if not cache_dir or folder_paths is None:
         return _tensor_to_png_data_url(image, max_items=max_items)
 
@@ -229,6 +305,7 @@ def _tensor_to_preview_urls(image, unique_id, stage, cache_dir=None, max_items=1
 
 
 def _rotate_preview_cache(cache_dir):
+    cache_dir = _safe_cache_dir(cache_dir)
     if not cache_dir:
         return
     image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -254,6 +331,7 @@ def _rotate_preview_cache(cache_dir):
 
 
 def _cache_tensor_path(cache_dir, key):
+    cache_dir = _safe_cache_dir(cache_dir)
     if not cache_dir:
         return ""
     safe_key = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(key))
@@ -276,13 +354,15 @@ def _load_cached_tensor(cache_dir, key):
     if not path or not os.path.exists(path):
         return None
     try:
-        return torch.load(path, map_location="cpu")
+        value = _safe_torch_load_tensor(path)
+        return value if torch.is_tensor(value) else None
     except Exception as exc:
         print(f"[VNCCS Character Generator] Failed to load cached tensor '{key}': {exc}")
         return None
 
 
 def _save_run_inputs(cache_dir, **items):
+    cache_dir = _safe_cache_dir(cache_dir)
     if not cache_dir:
         return
     try:
@@ -302,6 +382,7 @@ def _save_run_inputs(cache_dir, **items):
 
 
 def _load_run_inputs(cache_dir):
+    cache_dir = _safe_cache_dir(cache_dir)
     if not cache_dir:
         return {}
     path = os.path.join(cache_dir, "_stage_cache", "inputs.json")
@@ -1130,7 +1211,7 @@ class VNCCS_CharacterGenerator:
         if images.ndim == 3:
             images = images.unsqueeze(0)
 
-        sprite_set = str(sprite_set or "Naked").strip() or "Naked"
+        sprite_set = _safe_sprite_set(sprite_set, "Naked")
         target_dir = os.path.join(character_root, "Sprites", sprite_set, "Neutral")
         os.makedirs(target_dir, exist_ok=True)
 
@@ -1741,8 +1822,8 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             return value
         return [value]
 
-    def _mask_from_source_path(self, path):
-        path = str(path or "").strip()
+    def _mask_from_source_path(self, path, character_name=""):
+        path = _safe_existing_character_image_path(path, character_name)
         if not path or not os.path.exists(path):
             return None
         try:
@@ -1758,8 +1839,8 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             print(f"[VNCCS Emotions Generator] Failed to load source mask '{path}': {exc}")
             return None
 
-    def _load_source_sprite_from_path(self, path):
-        path = str(path or "").strip()
+    def _load_source_sprite_from_path(self, path, character_name=""):
+        path = _safe_existing_character_image_path(path, character_name)
         if not path or not os.path.exists(path):
             return None, None
         try:
@@ -1876,8 +1957,8 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             labels.append((f"emotion_{index:04d}", label[:64]))
         return labels
 
-    def _save_rgba_image(self, image, mask, prefix, index):
-        prefix = str(prefix or "").strip()
+    def _save_rgba_image(self, image, mask, prefix, index, character_name="", root_name="Sprites"):
+        prefix = _safe_emotion_output_prefix(prefix, character_name, root_name=root_name)
         if not prefix:
             return ""
         directory = os.path.dirname(prefix)
@@ -1997,7 +2078,10 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         data_items = self._parse_emotion_data(emotion_data)
         source_items = []
         for index, meta in enumerate(data_items):
-            source_image, source_mask = self._load_source_sprite_from_path(meta.get("source_path") if isinstance(meta, dict) else "")
+            source_image, source_mask = self._load_source_sprite_from_path(
+                meta.get("source_path") if isinstance(meta, dict) else "",
+                widget_payload.get("character_name", ""),
+            )
             if source_image is None:
                 source_image = image_items[index] if index < len(image_items) else None
                 source_mask = None
@@ -2068,15 +2152,33 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                     group_results.append(result)
                     save_index = (regenerate_index + 1) if regenerate_index is not None else local_index
                     if index < len(sprite_paths):
-                        self._save_rgba_image(result, mask, sprite_paths[index], save_index)
+                        self._save_rgba_image(
+                            result,
+                            mask,
+                            sprite_paths[index],
+                            save_index,
+                            widget_payload.get("character_name", ""),
+                        )
                         face_prefix = self._face_prefix_from_sprite_prefix(sprite_paths[index])
+                        face_prefix = _safe_emotion_output_prefix(
+                            face_prefix,
+                            widget_payload.get("character_name", ""),
+                            root_name="Faces",
+                        )
                         if face_prefix:
                             face_dir = os.path.dirname(face_prefix)
                             face_dir_key = os.path.normcase(os.path.abspath(face_dir))
                             if not regenerate_from and face_dir_key not in rotated_face_dirs:
                                 self._rotate_existing_images(face_dir)
                                 rotated_face_dirs.add(face_dir_key)
-                            self._save_rgba_image(face_crop, None, face_prefix, save_index)
+                            self._save_rgba_image(
+                                face_crop,
+                                None,
+                                face_prefix,
+                                save_index,
+                                widget_payload.get("character_name", ""),
+                                root_name="Faces",
+                            )
                     partial = torch.cat(group_results, dim=0)
                     self._emit(
                         unique_id,

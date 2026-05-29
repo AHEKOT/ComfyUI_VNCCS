@@ -3136,7 +3136,10 @@ class VNCCSControlCenterWidget {
             border-radius: 10px; padding: 16px; max-width: 280px; width:100%;
             text-align:center; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
         `;
-        box.innerHTML = `<div style="color:#e8e8f0;font-size:12px;margin-bottom:14px;line-height:1.5;font-family:'Sora',sans-serif;">${text}</div>`;
+        const message = document.createElement("div");
+        message.style.cssText = "color:#e8e8f0;font-size:12px;margin-bottom:14px;line-height:1.5;font-family:'Sora',sans-serif;white-space:pre-wrap;";
+        message.textContent = String(text ?? "");
+        box.appendChild(message);
         const btn = document.createElement("button");
         btn.textContent = "OK";
         btn.className = "vnccs-cc-btn";
@@ -3161,7 +3164,10 @@ class VNCCSControlCenterWidget {
             border-radius: 10px; padding: 16px; max-width: 280px; width:100%;
             text-align:center; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
         `;
-        box.innerHTML = `<div style="color:#e8e8f0;font-size:12px;margin-bottom:14px;line-height:1.5;font-family:'Sora',sans-serif;">${text}</div>`;
+        const message = document.createElement("div");
+        message.style.cssText = "color:#e8e8f0;font-size:12px;margin-bottom:14px;line-height:1.5;font-family:'Sora',sans-serif;white-space:pre-wrap;";
+        message.textContent = String(text ?? "");
+        box.appendChild(message);
         const row = document.createElement("div");
         row.style.cssText = "display:flex;gap:8px;justify-content:center;";
         const cancelBtn = document.createElement("button");
