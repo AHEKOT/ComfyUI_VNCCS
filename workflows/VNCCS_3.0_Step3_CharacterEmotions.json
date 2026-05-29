@@ -1,0 +1,163 @@
+{
+  "id": "cb50a96d-5d45-45f0-b60e-379bdac161f0",
+  "revision": 0,
+  "last_node_id": 405,
+  "last_link_id": 1040,
+  "nodes": [
+    {
+      "id": 404,
+      "type": "EmotionGeneratorV2",
+      "pos": [
+        940,
+        -600
+      ],
+      "size": [
+        1890,
+        1240
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "images",
+          "shape": 6,
+          "type": "IMAGE",
+          "links": [
+            1038
+          ]
+        },
+        {
+          "name": "pipe",
+          "type": "VNCCS_PIPE",
+          "links": [
+            1039
+          ]
+        },
+        {
+          "name": "emotion_data",
+          "shape": 6,
+          "type": "STRING",
+          "links": [
+            1040
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs",
+        "ver": "3.0.0",
+        "Node name for S&R": "EmotionGeneratorV2"
+      },
+      "widgets_values": [
+        "Anima",
+        "{\"generation_mode\":\"anima\",\"ckpt_name\":\"Illustrious\\\\ILFlatMix.safetensors\",\"diffusion_model_name\":\"anima-base-v1.0.safetensors\",\"clip_name\":\"qwen_3_06b_base.safetensors\",\"vae_name\":\"qwen_image_vae.safetensors\",\"clip_type\":\"stable_diffusion\",\"sampler\":\"er_sde\",\"scheduler\":\"simple\",\"steps\":12,\"cfg\":1,\"seed\":0,\"seed_mode\":\"fixed\",\"turbo_enabled\":true,\"turbo_previous_settings\":{\"steps\":30,\"cfg\":4},\"dmd_lora_name\":\"Anima/anima-turbo-lora-v0.1.safetensors\",\"dmd_lora_strength\":1,\"lora_stack\":[],\"mode_settings\":{\"illustrious\":{\"generation_mode\":\"illustrious\",\"ckpt_name\":\"Illustrious/ILFlatMix.safetensors\",\"diffusion_model_name\":\"anima-base-v1.0.safetensors\",\"clip_name\":\"qwen_3_06b_base.safetensors\",\"vae_name\":\"qwen_image_vae.safetensors\",\"clip_type\":\"stable_diffusion\",\"sampler\":\"euler\",\"scheduler\":\"normal\",\"steps\":20,\"cfg\":8,\"seed\":4991411730496312,\"seed_mode\":\"fixed\",\"turbo_enabled\":false,\"turbo_previous_settings\":null,\"dmd_lora_name\":\"anima\\\\anima-turbo-lora-v0.1.safetensors\",\"dmd_lora_strength\":1,\"lora_stack\":[{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1}]},\"anima\":{\"generation_mode\":\"anima\",\"ckpt_name\":\"Illustrious\\\\ILFlatMix.safetensors\",\"diffusion_model_name\":\"anima-base-v1.0.safetensors\",\"clip_name\":\"qwen_3_06b_base.safetensors\",\"vae_name\":\"qwen_image_vae.safetensors\",\"clip_type\":\"stable_diffusion\",\"sampler\":\"er_sde\",\"scheduler\":\"simple\",\"steps\":12,\"cfg\":1,\"seed\":0,\"seed_mode\":\"fixed\",\"turbo_enabled\":true,\"turbo_previous_settings\":{\"steps\":30,\"cfg\":4},\"dmd_lora_name\":\"Anima/anima-turbo-lora-v0.1.safetensors\",\"dmd_lora_strength\":1,\"lora_stack\":[]}}}",
+        "Anima",
+        "FullTest1",
+        "[\"Naked\"]",
+        "[\"explosive-fury\"]",
+        ""
+      ]
+    },
+    {
+      "id": 405,
+      "type": "VNCCS_EmotionsGenerator",
+      "pos": [
+        2860,
+        -600
+      ],
+      "size": [
+        1630,
+        1240
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 1038
+        },
+        {
+          "name": "pipe",
+          "type": "VNCCS_PIPE",
+          "link": 1039
+        },
+        {
+          "name": "emotion_data",
+          "type": "STRING",
+          "link": 1040
+        }
+      ],
+      "outputs": [
+        {
+          "name": "sprites",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "faces",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs",
+        "ver": "3.0.0",
+        "Node name for S&R": "VNCCS_EmotionsGenerator"
+      },
+      "widgets_values": [
+        "{\"nsfw_enabled\":true,\"emotion_pairs\":[{\"costume\":\"CostumeTest2\",\"emotion\":\"explosive-fury\"}],\"common\":{\"target_size\":\"1024\"},\"pose_generation\":{\"target_size\":\"1024\"},\"emotion_generation\":{\"face_denoise\":0.55},\"remove_clothes\":{\"prompt\":\"Dress character: White underwear\"},\"upscaler\":{\"mode\":\"seedvr\",\"model\":\"seedvr2_ema_3b-Q4_K_M.gguf\",\"vae\":\"ema_vae_fp16.safetensors\",\"gan_model\":\"2x_APISR_RRDB_GAN_generator.pth\",\"device\":\"cuda:0\",\"offload_device\":\"cpu\",\"seed\":42,\"resolution\":2048,\"max_resolution\":3840,\"batch_size\":1,\"uniform_batch_size\":false,\"color_correction\":\"lab\",\"temporal_overlap\":0,\"prepend_frames\":0,\"input_noise_scale\":0,\"latent_noise_scale\":0,\"blocks_to_swap\":0,\"swap_io_components\":false,\"cache_dit\":false,\"attention_mode\":\"sdpa\",\"encode_tiled\":true,\"encode_tile_size\":1024,\"encode_tile_overlap\":128,\"decode_tiled\":true,\"decode_tile_size\":1024,\"decode_tile_overlap\":128,\"tile_debug\":\"false\",\"cache_vae\":false,\"enable_debug\":false},\"bg_remove\":{\"use_internal_rmbg\":true,\"preset\":\"strong\",\"tolerance\":0.5,\"despill_strength\":1,\"despill_kernel_size\":3,\"despill_color\":\"black\"},\"ui\":{\"selected_preview\":\"emotion_0001\",\"user_selected_preview\":true},\"character_name\":\"FullTest1\"}",
+        ""
+      ]
+    }
+  ],
+  "links": [
+    [
+      1038,
+      404,
+      0,
+      405,
+      0,
+      "IMAGE"
+    ],
+    [
+      1039,
+      404,
+      1,
+      405,
+      1,
+      "VNCCS_PIPE"
+    ],
+    [
+      1040,
+      404,
+      2,
+      405,
+      2,
+      "STRING"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "workflowRendererVersion": "LG",
+    "groupNodes": {},
+    "ue_links": [],
+    "links_added_by_ue": [],
+    "ds": {
+      "scale": 0.9229599817706526,
+      "offset": [
+        -259.7445288998662,
+        733.5830263400993
+      ]
+    },
+    "frontendVersion": "1.43.18",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4
+}

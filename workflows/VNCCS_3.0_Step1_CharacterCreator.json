@@ -1,0 +1,539 @@
+{
+  "id": "0d2d813a-a31b-424d-8087-63d2fc50b776",
+  "revision": 0,
+  "last_node_id": 811,
+  "last_link_id": 2302,
+  "nodes": [
+    {
+      "id": 690,
+      "type": "MarkdownNote",
+      "pos": [
+        -3090,
+        3110
+      ],
+      "size": [
+        480,
+        100
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Click **Download ALL** to download all models right in your comfyUI models directory. No need to restart, all loras would work right after downloading."
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 693,
+      "type": "MarkdownNote",
+      "pos": [
+        -1780,
+        3100
+      ],
+      "size": [
+        230,
+        90
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Set your LoRA's right here!"
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 692,
+      "type": "MarkdownNote",
+      "pos": [
+        -1040,
+        3110
+      ],
+      "size": [
+        330,
+        100
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Set your custom poses.\nYou can share them in VNCCS Discord channel: https://discord.com/invite/9Dacp4wvQw"
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 685,
+      "type": "MarkdownNote",
+      "pos": [
+        -3580,
+        790
+      ],
+      "size": [
+        340,
+        110
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Denoise - strengh of UpScale inpaint (more value - more changes)\n\nRe select bbox model if you use linux "
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 686,
+      "type": "MarkdownNote",
+      "pos": [
+        -3580,
+        990
+      ],
+      "size": [
+        340,
+        90
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Resolution of generation (more is better but longer to gennerate)"
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 687,
+      "type": "MarkdownNote",
+      "pos": [
+        -3590,
+        1140
+      ],
+      "size": [
+        340,
+        110
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Model (Better model - more vram needed)\n\nResolution of Upscaled image (more is better but more VRAM used)\n"
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 688,
+      "type": "MarkdownNote",
+      "pos": [
+        -3600,
+        1330
+      ],
+      "size": [
+        340,
+        240
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Tolerance: strength of removing main background color. (more tolerance - less bg leftovers but higher chance that some parts of image can be damaged.\n\nDespill - outline around the character.\n\nStrength - use 1\n\nKernel size - stroke thickness in pixels\n\nColor - black (only stable option right now)"
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 689,
+      "type": "MarkdownNote",
+      "pos": [
+        -3470,
+        2580
+      ],
+      "size": [
+        260,
+        120
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Create new character, then click \"generate preview\" to see how it would look BEFORE running workflow."
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 691,
+      "type": "MarkdownNote",
+      "pos": [
+        -3490,
+        2280
+      ],
+      "size": [
+        330,
+        90
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Don't forget to select your QWEN models here."
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 703,
+      "type": "VNCCS_PoseStudio",
+      "pos": [
+        -1480,
+        2070
+      ],
+      "size": [
+        1210,
+        940
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pose_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "shape": 6,
+          "type": "IMAGE",
+          "links": [
+            2282
+          ]
+        },
+        {
+          "name": "lighting_prompt",
+          "shape": 6,
+          "type": "STRING",
+          "links": [
+            2286
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VNCCS_PoseStudio",
+        "cnr_id": "vnccs-utils",
+        "ver": "94b34c4888fc24c526d43cec21b04c0253fbe599"
+      },
+      "widgets_values": [
+        "{\"mesh\":{\"age\":18,\"gender\":0,\"weight\":0.66,\"muscle\":0.5,\"height\":0.85,\"breast_size\":0.5,\"firmness\":0.5,\"penis_len\":0.5,\"penis_circ\":0.5,\"penis_test\":0.5,\"head_size\":1.2,\"arm_size\":1,\"hand_size\":1,\"foot_size\":1,\"upper_arm_l_length\":0.5,\"upper_arm_r_length\":0.5,\"forearm_l_length\":0.5,\"forearm_r_length\":0.5,\"thigh_l_length\":0.5,\"thigh_r_length\":0.5,\"shin_l_length\":0.5,\"shin_r_length\":0.5,\"spine_length\":0.5},\"export\":{\"view_width\":640,\"view_height\":1536,\"cam_zoom\":1.4015289977173266,\"cam_offset_x\":0,\"cam_offset_y\":0,\"cam_yaw_deg\":0,\"cam_pitch_deg\":0,\"output_mode\":\"LIST\",\"grid_columns\":6,\"bg_color\":[255,255,255],\"debugMode\":false,\"debugPortraitMode\":false,\"debugKeepLighting\":false,\"debugShowSAMHelper\":false,\"debugShowSAMMeshOverlay\":false,\"samApplyCamera\":false,\"keepOriginalLighting\":true,\"user_prompt\":\"\",\"prompt_template\":\"Draw character from image2\\n<lighting>\\n<user_prompt>\",\"skin_type\":\"naked\",\"interface_mode\":\"manager\",\"hand_controls_v2\":true},\"poses\":[{\"bones\":{\"spine_01\":[0,26.55333486985228,0],\"thigh_l\":[0,13.781017330061818,0],\"thigh_r\":[0,21.165944605204928,0],\"calf_l\":[9.209829008784881,2.483239514130135,0],\"calf_r\":[16.374549113066216,0,0],\"foot_l\":[-1.8510753945358354,0,0],\"foot_r\":[7.078812943901658,0,0],\"neck_01\":[0,84.497197764368,0],\"upperarm_l\":[0,0,-40.88187918026828],\"upperarm_r\":[0,0,35.84875239730214],\"lowerarm_l\":[0,15.202544000744366,-7.202913499819425],\"lowerarm_r\":[-8.869182715086607,-31.296167610307158,-16.720110324767695]},\"modelRotation\":[0,-180,0],\"camera\":{\"posX\":0,\"posY\":-1.2786405086517307,\"posZ\":46.003026843070984,\"targetX\":0,\"targetY\":-1.2786405086517334,\"targetZ\":1.0030268430709839},\"cameraParams\":{\"offset_x\":0,\"offset_y\":0,\"yaw_deg\":0,\"pitch_deg\":0,\"zoom\":1.4114915171446323}},{\"bones\":{\"thigh_l\":[-0.6974462347530567,-12.30856173896081,-3.5018418908842435],\"thigh_r\":[-0.715842926159536,12.161913252277198,3.6393640057664856],\"upperarm_l\":[0,0,-34.75124302360503],\"upperarm_r\":[-8.150307570536985,13.287747326304968,24.069759181883537],\"lowerarm_l\":[69.85897829410857,-22.256980369740376,49.060592700496464],\"lowerarm_r\":[52.10214823012909,21.7842333329848,3.4506169885181976]},\"modelRotation\":[0,0,0],\"camera\":{\"posX\":0,\"posY\":-2.1081106662750217,\"posZ\":45.854359805583954,\"targetX\":0,\"targetY\":-2.1081106662750244,\"targetZ\":0.8543598055839539},\"cameraParams\":{\"offset_x\":0,\"offset_y\":0,\"yaw_deg\":0,\"pitch_deg\":0,\"zoom\":1.395309558462582},\"prompt\":\"\"},{\"bones\":{\"pelvis\":[0,10.110933393455731,-0.2207803020154991],\"spine_01\":[2.491610850650969e-17,-4.234779869291079,4.282287163705052],\"spine_02\":[0,0,-1.1763354438608666],\"thigh_l\":[2.2430417142313157,-10.283436789707777,-2.9877672112575437],\"thigh_r\":[-10.01983526991116,22.363931783693946,6.515252973342224],\"calf_l\":[-0.08862247812947169,-1.2967987535676413,0.06158913907726767],\"calf_r\":[16.464457573971295,8.112795278494014,-1.3518921003653164],\"foot_r\":[3.6524683853298185,0,0],\"upperarm_l\":[3.8975833843688443,1.4097197721007302,-10.732562984683664],\"upperarm_r\":[0,0,24.885015116908985],\"lowerarm_l\":[-10.622464356435056,-62.43009468391985,-1.3200626809207079],\"lowerarm_r\":[-27.76977357861185,37.97991323515391,62.921261393270754],\"hand_l\":[-33.412301061076384,-6.808425470223517,-68.07567299467341],\"hand_r\":[17.448955597846897,35.673933888999535,-30.91028591447108],\"index_01_l\":[91.54524647199699,-34.135324744856334,4.609666312901881],\"index_01_r\":[69.56888405095191,-5.98393745707872,25.735044174531474],\"index_02_r\":[-154.3883660577718,56.357436723709434,-161.24298769819632],\"middle_01_l\":[76.6911395652618,-31.44980870820755,-22.686705040841932],\"middle_01_r\":[23.000255982721256,21.533983278184042,43.01842183214661],\"middle_02_r\":[112.36495666479763,76.12337719744679,17.555054278158025],\"pinky_01_l\":[64.91765314395124,-22.98416465120273,-35.453422388627004],\"pinky_01_r\":[21.13049206667989,7.816861360850142,36.538398955356016],\"pinky_02_r\":[43.3671432756753,46.009121923721466,52.90243579525958],\"ring_01_l\":[68.8962389834204,-26.661673508158245,-37.35349540289883],\"ring_01_r\":[22.79769965447993,17.852061042741045,39.95458358326116],\"ring_02_r\":[41.841116778160746,58.19380889443149,87.16452953852324],\"ring_03_l\":[-4.293482612433274,1.8223896815266891,-0.4446905311583272],\"thumb_01_l\":[13.356828887129275,0,0],\"thumb_01_r\":[0.07289562666147967,-12.607758273329022,4.0628072610443535],\"thumb_03_r\":[10.693451878451008,-11.338887820694003,11.549441457433394]},\"modelRotation\":[0,0,0],\"camera\":{\"posX\":0,\"posY\":-1.6551275253295872,\"posZ\":45.92282718420029,\"targetX\":0,\"targetY\":-1.6551275253295898,\"targetZ\":0.922827184200287},\"cameraParams\":{\"offset_x\":0,\"offset_y\":0,\"yaw_deg\":0,\"pitch_deg\":0,\"zoom\":1.3906553745294454},\"prompt\":\"\"},{\"bones\":{\"spine_02\":[0,4.188251097968473,0],\"thigh_l\":[0,21.355818371572642,0],\"thigh_r\":[-10.322614390143704,45.642306400172274,7.419706614087481],\"calf_l\":[8.07706313048648,-16.85508449500181,-6.317376263079092],\"calf_r\":[24.512488918469124,0,0],\"upperarm_l\":[-69.70910579246868,-3.944363288070932,-36.362307373182986],\"upperarm_r\":[2.0265746926060073,-3.072499452456658,38.03825226791122],\"lowerarm_l\":[108.15404461596475,72.90686408913548,-156.66169328587222],\"lowerarm_r\":[-36.97081497138816,57.752437594470784,26.607804888524218],\"hand_r\":[0.5527391014815194,40.12689132296604,75.56532092810228],\"index_02_l\":[7.214792560115509,-17.853192621810138,-16.74909737546868],\"middle_02_l\":[2.2030515058398783,-14.98999633858666,-17.96154337796881],\"pinky_01_l\":[0.7667018623336774,-9.67545004718822,-15.509218612653742],\"ring_01_l\":[-1.0129206060340694,-10.629898295555009,-15.6709678956121]},\"modelRotation\":[0,0,0],\"camera\":{\"posX\":0,\"posY\":-1.2972691059112522,\"posZ\":46.025016725063324,\"targetX\":0,\"targetY\":-1.2972691059112549,\"targetZ\":1.0250167250633238},\"cameraParams\":{\"offset_x\":0,\"offset_y\":0,\"yaw_deg\":0,\"pitch_deg\":0,\"zoom\":1.4015289977173266},\"prompt\":\"\"}],\"lights\":[{\"type\":\"ambient\",\"color\":\"#000000\",\"intensity\":0.5},{\"type\":\"directional\",\"color\":\"#ffffff\",\"intensity\":1,\"x\":-92.90202545475795,\"y\":0,\"z\":26.714380225787586}],\"activeTab\":3,\"capture_id\":\"vnccs_capture_703\",\"lighting_prompts\":[\"Draw character from image2\",\"Draw character from image2\",\"Draw character from image2\",\"Draw character from image2\"],\"background_url\":null}",
+        ""
+      ],
+      "color": "#222",
+      "bgcolor": "#000"
+    },
+    {
+      "id": 767,
+      "type": "VNCCS_ControlCenter",
+      "pos": [
+        -3100,
+        2070
+      ],
+      "size": [
+        560,
+        940
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "pipe",
+          "type": "VNCCS_PIPE",
+          "links": [
+            2284
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs-utils",
+        "ver": "488460aecb7306d2ef6ef3891be68a58d3cccb8d",
+        "Node name for S&R": "VNCCS_ControlCenter"
+      },
+      "widgets_values": [
+        "MIUProject/VNCCS_V2",
+        "{\"output_slot_names\":[],\"selected_model\":\"Qwen-Image-Edit-2511-GGUF-Q5\",\"selected_type\":\"gguf\",\"model_params\":{\"steps\":4,\"cfg\":1,\"scheduler\":\"simple\"},\"type_settings\":{\"unet\":{\"weight_dtype\":\"default\"},\"gguf\":{\"dequant_dtype\":\"default\"},\"nunchaku\":{\"cpu_offload\":\"enable\",\"num_blocks_on_gpu\":1,\"use_pin_memory\":\"disable\"}},\"loras\":[{\"name\":\"VNCCS Clothes Core\",\"enabled\":false,\"strength\":-2,\"auto_apply\":false},{\"name\":\"VNCCS Emotion Core\",\"enabled\":false,\"strength\":-2,\"auto_apply\":false},{\"name\":\"VNCCS Transfer Clothes\",\"enabled\":false,\"strength\":-2,\"auto_apply\":false},{\"name\":\"DMD2 SDXL Lightning\",\"enabled\":false,\"strength\":-2,\"auto_apply\":false},{\"name\":\"Mimimeter\",\"enabled\":false,\"strength\":-2,\"auto_apply\":false},{\"name\":\"Qwen Image Edit 2511 Lightning\",\"enabled\":true,\"strength\":1,\"auto_apply\":true},{\"name\":\"VNCCS Pose Studio ART\",\"enabled\":true,\"strength\":1,\"auto_apply\":true},{\"name\":\"VNCCS Pose Studio QIE2511\",\"auto_apply\":false,\"strength\":1}],\"selected_models\":{\"nunchaku\":\"Qwen-Image-Edit-2511-nunchaku-best-quality-fp4\",\"unet\":\"Qwen-Image-Edit-2511-NVFP4\",\"gguf\":\"Qwen-Image-Edit-2511-GGUF-Q5\"},\"collapsed\":{\"controlnet\":true}}",
+        "{}"
+      ],
+      "color": "#222",
+      "bgcolor": "#000"
+    },
+    {
+      "id": 798,
+      "type": "VNCCS_CharacterGenerator",
+      "pos": [
+        -3120,
+        980
+      ],
+      "size": [
+        2860,
+        1000
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "poses",
+          "type": "IMAGE",
+          "link": 2282
+        },
+        {
+          "name": "character",
+          "type": "IMAGE",
+          "link": 2283
+        },
+        {
+          "name": "pipe",
+          "type": "VNCCS_PIPE",
+          "link": 2284
+        },
+        {
+          "name": "sheets_path",
+          "shape": 7,
+          "type": "STRING",
+          "link": 2285
+        },
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "prompt"
+          },
+          "link": 2286
+        },
+        {
+          "name": "background",
+          "type": "COMBO",
+          "widget": {
+            "name": "background"
+          },
+          "link": 2287
+        }
+      ],
+      "outputs": [
+        {
+          "name": "sheet",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "faces",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "pose_generation",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "upscaled",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs",
+        "ver": "3.0.0",
+        "Node name for S&R": "VNCCS_CharacterGenerator"
+      },
+      "widgets_values": [
+        "",
+        "Green",
+        "{\"nsfw_enabled\":true,\"emotion_pairs\":[],\"common\":{\"target_size\":1024},\"pose_generation\":{\"target_size\":\"1024\"},\"emotion_generation\":{\"face_denoise\":0.55},\"remove_clothes\":{\"prompt\":\"Dress character: White underwear\"},\"upscaler\":{\"mode\":\"seedvr\",\"model\":\"seedvr2_ema_3b-Q4_K_M.gguf\",\"vae\":\"ema_vae_fp16.safetensors\",\"gan_model\":\"4x_APISR_GRL_GAN_generator.pth\",\"device\":\"cuda:0\",\"offload_device\":\"cpu\",\"seed\":42,\"resolution\":2048,\"max_resolution\":3840,\"batch_size\":1,\"uniform_batch_size\":false,\"color_correction\":\"lab\",\"temporal_overlap\":0,\"prepend_frames\":0,\"input_noise_scale\":0,\"latent_noise_scale\":0,\"blocks_to_swap\":0,\"swap_io_components\":false,\"cache_dit\":false,\"attention_mode\":\"sdpa\",\"encode_tiled\":true,\"encode_tile_size\":1024,\"encode_tile_overlap\":128,\"decode_tiled\":true,\"decode_tile_size\":1024,\"decode_tile_overlap\":128,\"tile_debug\":\"false\",\"cache_vae\":false,\"enable_debug\":false},\"bg_remove\":{\"use_internal_rmbg\":false,\"preset\":\"strong\",\"tolerance\":0.5,\"despill_strength\":1,\"despill_kernel_size\":3,\"despill_color\":\"black\"},\"ui\":{\"selected_preview\":\"bg_remove\",\"user_selected_preview\":false},\"character_name\":\"FullTest3\"}",
+        ""
+      ]
+    },
+    {
+      "id": 797,
+      "type": "CharacterCreatorV2",
+      "pos": [
+        -2530,
+        2070
+      ],
+      "size": [
+        1020,
+        940
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "character",
+          "type": "IMAGE",
+          "links": [
+            2283
+          ]
+        },
+        {
+          "name": "sheets_path",
+          "type": "STRING",
+          "links": [
+            2285
+          ]
+        },
+        {
+          "name": "background",
+          "type": "*",
+          "links": [
+            2287
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs",
+        "ver": "3.0.0",
+        "Node name for S&R": "CharacterCreatorV2"
+      },
+      "widgets_values": [
+        "{\"preview_valid\":true,\"preview_source\":\"pose\",\"character\":\"Alina_test\",\"prompt_modes\":{\"illustrious\":{\"aesthetics\":\"masterpiece\",\"negative_prompt\":\"bad quality,worst quality,worst detail,sketch,censor, missing arm, missing leg, distorted body\"},\"anima\":{\"aesthetics\":\"masterpiece, best quality, score_7, anime\",\"negative_prompt\":\"bad quality, worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia\"}},\"prompt_defaults_version\":1,\"character_info\":{\"sex\":\"female\",\"age\":18,\"race\":\"human\",\"skin_color\":\"\",\"hair\":\"two-tone hair, dyed hair, red hair, white hair, very long hair, braid\",\"eyes\":\"pink eyes\",\"face\":\"dot nose, mole under eye\",\"body\":\"small breasts\",\"additional_details\":\"\",\"nsfw\":true,\"aesthetics\":\"masterpiece, best quality, score_7, anime\",\"negative_prompt\":\"bad quality, worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia\",\"lora_prompt\":\"\",\"background_color\":\"Blue\",\"name\":\"Alina_test\",\"seed\":3644386310840},\"gen_settings\":{\"generation_mode\":\"anima\",\"ckpt_name\":\"Illustrious\\\\ILFlatMix.safetensors\",\"sampler\":\"er_sde\",\"scheduler\":\"simple\",\"steps\":12,\"cfg\":1,\"seed\":8990876333716,\"seed_mode\":\"fixed\",\"diffusion_model_name\":\"anima-base-v1.0.safetensors\",\"clip_name\":\"qwen_3_06b_base.safetensors\",\"vae_name\":\"qwen_image_vae.safetensors\",\"mode_settings\":{\"illustrious\":{\"ckpt_name\":\"Illustrious\\\\ILFlatMix.safetensors\",\"sampler\":\"euler\",\"scheduler\":\"normal\",\"steps\":20,\"cfg\":8,\"seed\":3644386310840,\"seed_mode\":\"fixed\",\"dmd_lora_name\":\"\",\"dmd_lora_strength\":0,\"age_lora_name\":\"\",\"lora_stack\":[{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1}]},\"anima\":{\"diffusion_model_name\":\"anima-base-v1.0.safetensors\",\"clip_name\":\"qwen_3_06b_base.safetensors\",\"vae_name\":\"qwen_image_vae.safetensors\",\"sampler\":\"er_sde\",\"scheduler\":\"simple\",\"steps\":12,\"cfg\":1,\"seed\":8990876333716,\"seed_mode\":\"fixed\",\"turbo_enabled\":true,\"dmd_lora_name\":\"Anima/anima-turbo-lora-v0.1.safetensors\",\"dmd_lora_strength\":1,\"turbo_previous_settings\":{\"steps\":30,\"cfg\":4},\"lora_stack\":[{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1}]}},\"anima_defaults_applied\":false,\"generation_defaults_version\":3,\"dmd_lora_name\":\"Anima/anima-turbo-lora-v0.1.safetensors\",\"dmd_lora_strength\":1,\"age_lora_name\":\"\",\"lora_stack\":[{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1}],\"turbo_enabled\":true,\"turbo_previous_settings\":{\"steps\":30,\"cfg\":4}}}",
+        ""
+      ],
+      "color": "#222",
+      "bgcolor": "#000"
+    }
+  ],
+  "links": [
+    [
+      2282,
+      703,
+      0,
+      798,
+      0,
+      "IMAGE"
+    ],
+    [
+      2283,
+      797,
+      0,
+      798,
+      1,
+      "IMAGE"
+    ],
+    [
+      2284,
+      767,
+      0,
+      798,
+      2,
+      "VNCCS_PIPE"
+    ],
+    [
+      2285,
+      797,
+      1,
+      798,
+      3,
+      "STRING"
+    ],
+    [
+      2286,
+      703,
+      1,
+      798,
+      4,
+      "STRING"
+    ],
+    [
+      2287,
+      797,
+      2,
+      798,
+      5,
+      "COMBO"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 3,
+      "title": "Caracter Creator v2",
+      "bounding": [
+        -3120,
+        1990,
+        1620,
+        1040
+      ],
+      "color": "#8AA",
+      "flags": {}
+    },
+    {
+      "id": 5,
+      "title": "Poser",
+      "bounding": [
+        -1490,
+        1990,
+        1230,
+        1040
+      ],
+      "color": "#8A8",
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "frontendVersion": "1.43.18",
+    "workflowRendererVersion": "LG",
+    "groupNodes": {},
+    "ue_links": [],
+    "links_added_by_ue": [],
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true,
+    "ds": {
+      "scale": 0.7400249944258174,
+      "offset": [
+        4177.7691689981475,
+        -1523.5024944554957
+      ]
+    }
+  },
+  "version": 0.4
+}

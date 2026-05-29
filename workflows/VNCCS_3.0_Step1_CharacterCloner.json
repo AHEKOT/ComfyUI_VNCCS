@@ -1,0 +1,377 @@
+{
+  "id": "7f0c038c-132e-44e9-a164-232c4ac0717d",
+  "revision": 0,
+  "last_node_id": 776,
+  "last_link_id": 2222,
+  "nodes": [
+    {
+      "id": 730,
+      "type": "MarkdownNote",
+      "pos": [
+        -2380,
+        2870
+      ],
+      "size": [
+        340,
+        100
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Model (Better model - more vram needed)\n\nResolution of Upscaled image (more - more VRAM used)\n\nColor of background (change to blue if you have green elements on character. Do NOT use Alpha)"
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 731,
+      "type": "MarkdownNote",
+      "pos": [
+        -2380,
+        3250
+      ],
+      "size": [
+        340,
+        150
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Tolerance: strength of removing main background color. (more tolerance - less bg leftovers but higher chance that some parts of image can be damaged.\n\nDespill - outline around the character.\n\nStrength - use 1\n\nKernel size - stroke thickness in pixels\n\nColor - black or try to match character colors "
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 771,
+      "type": "VNCCS_ControlCenter",
+      "pos": [
+        -1970,
+        3540
+      ],
+      "size": [
+        660,
+        950
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "pipe",
+          "type": "VNCCS_PIPE",
+          "links": [
+            2219
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs-utils",
+        "ver": "488460aecb7306d2ef6ef3891be68a58d3cccb8d",
+        "Node name for S&R": "VNCCS_ControlCenter"
+      },
+      "widgets_values": [
+        "MIUProject/VNCCS_V2",
+        "{\"output_slot_names\":[],\"selected_model\":\"Qwen-Image-Edit-2511-GGUF-Q5\",\"selected_type\":\"gguf\",\"model_params\":{\"steps\":4,\"cfg\":1},\"type_settings\":{\"unet\":{\"weight_dtype\":\"default\"},\"gguf\":{\"dequant_dtype\":\"default\"},\"nunchaku\":{\"cpu_offload\":\"enable\",\"num_blocks_on_gpu\":1,\"use_pin_memory\":\"disable\"}},\"loras\":[{\"name\":\"VNCCS Clothes Core\",\"enabled\":true,\"strength\":1,\"auto_apply\":true},{\"name\":\"VNCCS Emotion Core\",\"enabled\":false,\"strength\":-2,\"auto_apply\":false},{\"name\":\"VNCCS Transfer Clothes\",\"enabled\":false,\"strength\":-2,\"auto_apply\":false},{\"name\":\"DMD2 SDXL Lightning\",\"enabled\":false,\"strength\":-2,\"auto_apply\":false},{\"name\":\"Mimimeter\",\"enabled\":false,\"strength\":-2,\"auto_apply\":false},{\"name\":\"Qwen Image Edit 2511 Lightning\",\"enabled\":true,\"strength\":1,\"auto_apply\":true},{\"name\":\"VNCCS Pose Studio ART\",\"enabled\":true,\"strength\":1,\"auto_apply\":true}],\"selected_models\":{\"nunchaku\":\"Qwen-Image-Edit-2511-nunchaku-best-quality-fp4\",\"gguf\":\"Qwen-Image-Edit-2511-GGUF-Q5\"}}",
+        "{}"
+      ],
+      "color": "#222",
+      "bgcolor": "#000"
+    },
+    {
+      "id": 761,
+      "type": "VNCCS_PoseStudio",
+      "pos": [
+        -570,
+        3540
+      ],
+      "size": [
+        1210,
+        950
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pose_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "shape": 6,
+          "type": "IMAGE",
+          "links": [
+            2217
+          ]
+        },
+        {
+          "name": "lighting_prompt",
+          "shape": 6,
+          "type": "STRING",
+          "links": [
+            2221
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VNCCS_PoseStudio",
+        "cnr_id": "vnccs-utils",
+        "ver": "94b34c4888fc24c526d43cec21b04c0253fbe599"
+      },
+      "widgets_values": [
+        "{\"mesh\":{\"age\":18,\"gender\":0,\"weight\":0.5,\"muscle\":0.5,\"height\":0.85,\"breast_size\":0.5,\"firmness\":0.5,\"penis_len\":0.5,\"penis_circ\":0.5,\"penis_test\":0.5,\"head_size\":1.2,\"arm_size\":1,\"hand_size\":1,\"foot_size\":1,\"upper_arm_l_length\":0.5,\"upper_arm_r_length\":0.5,\"forearm_l_length\":0.5,\"forearm_r_length\":0.5,\"thigh_l_length\":0.5,\"thigh_r_length\":0.5,\"shin_l_length\":0.5,\"shin_r_length\":0.5,\"spine_length\":0.5},\"export\":{\"view_width\":512,\"view_height\":1536,\"cam_zoom\":1.4037136853448784,\"cam_offset_x\":0,\"cam_offset_y\":0,\"cam_yaw_deg\":0,\"cam_pitch_deg\":0,\"output_mode\":\"LIST\",\"grid_columns\":6,\"bg_color\":[255,255,255],\"debugMode\":false,\"debugPortraitMode\":false,\"debugKeepLighting\":false,\"debugShowSAMHelper\":false,\"debugShowSAMMeshOverlay\":false,\"samApplyCamera\":false,\"keepOriginalLighting\":true,\"user_prompt\":\"\",\"prompt_template\":\"Draw character from image2\\n<lighting>\\n<user_prompt>\",\"skin_type\":\"naked\",\"interface_mode\":\"manager\",\"hand_controls_v2\":true},\"poses\":[{\"bones\":{\"upperarm_l\":[-15.568344605649198,-11.711149072545972,-29.634652529445873],\"upperarm_r\":[-14.541198050948958,11.70891417503222,27.429347243427447],\"lowerarm_l\":[43.102677770848075,23.42990343377688,-14.908354357035186],\"lowerarm_r\":[42.56314265663045,-23.02404941139726,15.72476535036888]},\"modelRotation\":[0,180,0],\"camera\":{\"posX\":0,\"posY\":-4.292256437242028,\"posZ\":45.525910049676895,\"targetX\":0,\"targetY\":-4.292256437242031,\"targetZ\":0.5259100496768951},\"cameraParams\":{\"offset_x\":0,\"offset_y\":0,\"yaw_deg\":0,\"pitch_deg\":0,\"zoom\":1.4486059033957994},\"prompt\":\"\"},{\"bones\":{\"upperarm_l\":[-13.138970679395637,-11.223684543353773,-27.37111531765394],\"upperarm_r\":[-13.852091294004408,10.919694699009082,28.477497348069388],\"lowerarm_l\":[42.100727788716675,24.305064342481547,-16.75698752798383],\"lowerarm_r\":[42.262696656137855,-23.63876722125962,16.58351167073075]},\"modelRotation\":[0,0,0],\"camera\":{\"posX\":0,\"posY\":-4.29225643724203,\"posZ\":20.50700005052415,\"targetX\":0,\"targetY\":-4.292256437242031,\"targetZ\":0.5259100496768951},\"cameraParams\":{\"offset_x\":0,\"offset_y\":0,\"yaw_deg\":0,\"pitch_deg\":0,\"zoom\":1.39830976488275},\"prompt\":\"\"},{\"bones\":{\"upperarm_l\":[-4.0823049705307515,-6.747374711795902,-22.356233974927726],\"upperarm_r\":[-2.829621147678359,5.4206327287654315,19.332246716614247],\"lowerarm_l\":[44.224552644064914,26.486451641945397,-17.034851571390124],\"lowerarm_r\":[43.95569427343764,-26.640497519619235,16.336177930449747]},\"modelRotation\":[0,90,0],\"camera\":{\"posX\":0,\"posY\":-3.282856404781339,\"posZ\":45.725060135126114,\"targetX\":0,\"targetY\":-3.2828564047813416,\"targetZ\":0.7250601351261139},\"cameraParams\":{\"offset_x\":0,\"offset_y\":0,\"yaw_deg\":0,\"pitch_deg\":0,\"zoom\":1.4037136853448784},\"prompt\":\"\"}],\"lights\":[{\"type\":\"ambient\",\"color\":\"#000000\",\"intensity\":0.5},{\"type\":\"directional\",\"color\":\"#ffffff\",\"intensity\":1,\"x\":-92.90202545475795,\"y\":0,\"z\":26.714380225787586}],\"activeTab\":2,\"capture_id\":\"vnccs_capture_761\",\"lighting_prompts\":[\"Draw character from image2\",\"Draw character from image2\",\"Draw character from image2\"],\"background_url\":null}",
+        ""
+      ]
+    },
+    {
+      "id": 776,
+      "type": "VNCCS_CharacterCloneGenerator",
+      "pos": [
+        -1990,
+        2290
+      ],
+      "size": [
+        2660,
+        1160
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "poses",
+          "type": "IMAGE",
+          "link": 2217
+        },
+        {
+          "name": "character",
+          "type": "IMAGE",
+          "link": 2218
+        },
+        {
+          "name": "pipe",
+          "type": "VNCCS_PIPE",
+          "link": 2219
+        },
+        {
+          "name": "sheets_path",
+          "shape": 7,
+          "type": "STRING",
+          "link": 2220
+        },
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "prompt"
+          },
+          "link": 2221
+        },
+        {
+          "name": "background",
+          "type": "COMBO",
+          "widget": {
+            "name": "background"
+          },
+          "link": 2222
+        }
+      ],
+      "outputs": [
+        {
+          "name": "original_sprites",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "faces",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "naked_sprites",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "original_pose_generation",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "original_upscaled",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "remove_clothes",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "naked_pose_generation",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs",
+        "ver": "3.0.0",
+        "Node name for S&R": "VNCCS_CharacterCloneGenerator"
+      },
+      "widgets_values": [
+        "",
+        "Green",
+        "{\"nsfw_enabled\":false,\"emotion_pairs\":[],\"common\":{\"target_size\":\"1024\"},\"pose_generation\":{\"target_size\":\"1024\"},\"emotion_generation\":{\"face_denoise\":0.55},\"remove_clothes\":{\"prompt\":\"Dress character: White underwear\"},\"upscaler\":{\"mode\":\"seedvr\",\"model\":\"seedvr2_ema_3b-Q4_K_M.gguf\",\"vae\":\"ema_vae_fp16.safetensors\",\"gan_model\":\"2x_APISR_RRDB_GAN_generator.pth\",\"device\":\"cuda:0\",\"offload_device\":\"cpu\",\"seed\":42,\"resolution\":2048,\"max_resolution\":3840,\"batch_size\":1,\"uniform_batch_size\":false,\"color_correction\":\"lab\",\"temporal_overlap\":0,\"prepend_frames\":0,\"input_noise_scale\":0,\"latent_noise_scale\":0,\"blocks_to_swap\":0,\"swap_io_components\":false,\"cache_dit\":false,\"attention_mode\":\"sdpa\",\"encode_tiled\":true,\"encode_tile_size\":1024,\"encode_tile_overlap\":128,\"decode_tiled\":true,\"decode_tile_size\":1024,\"decode_tile_overlap\":128,\"tile_debug\":\"false\",\"cache_vae\":false,\"enable_debug\":false},\"bg_remove\":{\"use_internal_rmbg\":false,\"preset\":\"strong\",\"tolerance\":0.2,\"softness\":0.16,\"despill_strength\":0.5,\"edge_width\":3,\"matte_cleanup\":0.2,\"foreground_recover\":0.35,\"edge_decontaminate\":0.7,\"edge_choke\":0.2,\"matte_method\":\"guided_edge\",\"screen_mode\":\"auto\",\"output_mode\":\"straight_rgba\"},\"ui\":{\"selected_preview\":\"original_bg_remove\",\"user_selected_preview\":true},\"character_name\":\"Th3Random007\"}",
+        ""
+      ]
+    },
+    {
+      "id": 774,
+      "type": "CharacterCloner",
+      "pos": [
+        -1280,
+        3540
+      ],
+      "size": [
+        690,
+        950
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "character",
+          "type": "IMAGE",
+          "links": [
+            2218
+          ]
+        },
+        {
+          "name": "sheets_path",
+          "type": "STRING",
+          "links": [
+            2220
+          ]
+        },
+        {
+          "name": "background",
+          "type": "*",
+          "links": [
+            2222
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs",
+        "ver": "3.0.0",
+        "Node name for S&R": "CharacterCloner"
+      },
+      "widgets_values": [
+        "{\"character\":\"Th3Random007\",\"source_images\":[],\"character_info\":{\"sex\":\"female\",\"age\":18,\"race\":\"human\",\"skin_color\":\"\",\"hair\":\"black hair, long hair\",\"eyes\":\"purple eyes, round\",\"face\":\"blush\",\"body\":\"slim\",\"additional_details\":\"wearing poncho, leaf skirt, boots, standing\",\"nsfw\":false,\"aesthetics\":\"anime style\",\"negative_prompt\":\"bad quality,worst quality,worst detail,sketch,censor, missing arm, missing leg, distorted body\",\"lora_prompt\":\"\",\"background_color\":\"Blue\",\"name\":\"Th3Random007\",\"seed\":0},\"selected_idx\":0,\"char_preview_url\":\"/vnccs/get_character_pose_preview?character=Th3Random007&t=1780041777962\"}",
+        ""
+      ]
+    }
+  ],
+  "links": [
+    [
+      2217,
+      761,
+      0,
+      776,
+      0,
+      "IMAGE"
+    ],
+    [
+      2218,
+      774,
+      0,
+      776,
+      1,
+      "IMAGE"
+    ],
+    [
+      2219,
+      771,
+      0,
+      776,
+      2,
+      "VNCCS_PIPE"
+    ],
+    [
+      2220,
+      774,
+      1,
+      776,
+      3,
+      "STRING"
+    ],
+    [
+      2221,
+      761,
+      1,
+      776,
+      4,
+      "STRING"
+    ],
+    [
+      2222,
+      774,
+      2,
+      776,
+      5,
+      "COMBO"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 8,
+      "title": "Character Creator",
+      "bounding": [
+        -1990,
+        3460,
+        2650,
+        1060
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    }
+  ],
+  "config": {
+    "links_ontop": false
+  },
+  "extra": {
+    "frontendVersion": "1.43.18",
+    "workflowRendererVersion": "LG",
+    "groupNodes": {},
+    "ue_links": [],
+    "links_added_by_ue": [],
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true,
+    "ds": {
+      "scale": 0.5980547085201868,
+      "offset": [
+        3480.8254350047737,
+        -2327.3871863466184
+      ]
+    }
+  },
+  "version": 0.4
+}
