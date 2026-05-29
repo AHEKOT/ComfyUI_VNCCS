@@ -388,8 +388,42 @@ const CSS = `
     border-color: rgba(255,143,163,0.85);
     box-shadow: 0 0 0 1px rgba(255,143,163,0.24) inset, 0 0 18px rgba(255,143,163,0.16);
 }
+.vnccs-pipe-stage.is-regenerating {
+    border-color: rgba(255,191,116,0.72);
+    box-shadow: 0 0 0 1px rgba(255,191,116,0.18) inset, 0 0 18px rgba(255,191,116,0.12);
+}
 .vnccs-pipe-stage.is-done {
     border-color: rgba(0,214,143,0.45);
+}
+.vnccs-pipe-stage-progress {
+    height: 4px;
+    overflow: hidden;
+    border-radius: 99px;
+    background: rgba(255,255,255,0.08);
+}
+.vnccs-pipe-stage-progress-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: inherit;
+    background: #ffc074;
+    transition: width 0.45s ease;
+}
+.vnccs-pipe-regen-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: #ffc074;
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+.vnccs-pipe-regen-spinner {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,192,116,0.25);
+    border-top-color: #ffc074;
+    animation: vnccs-pipe-spin 0.75s linear infinite;
 }
 .vnccs-pipe-stage-name {
     font-size: 12px;
@@ -406,6 +440,32 @@ const CSS = `
     color: #9898a8;
     line-height: 1.35;
     word-break: break-word;
+}
+.vnccs-pipe-stage-actions {
+    margin-top: auto;
+    display: flex;
+    justify-content: flex-end;
+}
+.vnccs-pipe-regen {
+    border: 1px solid rgba(255,143,163,0.36);
+    background: rgba(255,143,163,0.08);
+    color: #ffb6c8;
+    border-radius: 7px;
+    font-size: 10px;
+    font-weight: 800;
+    padding: 4px 7px;
+    cursor: pointer;
+}
+.vnccs-pipe-regen:hover {
+    border-color: rgba(255,143,163,0.72);
+    background: rgba(255,143,163,0.14);
+}
+.vnccs-pipe-regen:disabled {
+    cursor: wait;
+    opacity: 0.45;
+}
+@keyframes vnccs-pipe-spin {
+    to { transform: rotate(360deg); }
 }
 .vnccs-pipe-tabs {
     display: flex;
@@ -571,6 +631,8 @@ class CharacterGeneratorWidget {
         this.nodeDefs = {};
         this.imageMetrics = new Map();
         this.previewLayoutFrame = null;
+        this.regenerateState = null;
+        this.regenerateTimer = null;
         this.restoreBrowserState();
         this.build();
         this.bindEvents();
@@ -624,6 +686,7 @@ class CharacterGeneratorWidget {
         this.previewResizeObserver = new ResizeObserver(() => this.renderPreview());
         this.previewResizeObserver.observe(this.previewEl);
         registerCleanup(this.node, () => this.previewResizeObserver?.disconnect());
+        registerCleanup(this.node, () => clearInterval(this.regenerateTimer));
         if (this.isClone) {
             this.sourceSyncTimer = setInterval(() => {
                 const previous = this.data.nsfw_enabled;
@@ -652,6 +715,7 @@ class CharacterGeneratorWidget {
                 for (const key of Object.keys(this.stageState)) {
                     if (this.stageState[key].status === "running") this.stageState[key].status = "error";
                 }
+                this.finishRegenerate();
             } else {
                 const status = detail.status || "waiting";
                 if (status === "running") {
@@ -675,6 +739,7 @@ class CharacterGeneratorWidget {
                     this.selectedPreview = stage;
                     this.persistUI();
                 }
+                this.updateRegenerateProgress(stage, status);
             }
             if (this.viewer?.open) this.syncViewerImage();
             this.renderPreview();
@@ -714,6 +779,44 @@ class CharacterGeneratorWidget {
         }
     }
 
+    startRegenerate(stageKey) {
+        const startIndex = this.stages.findIndex(([key]) => key === stageKey);
+        const targetStages = this.stages.slice(Math.max(0, startIndex)).map(([key]) => key);
+        this.regenerateState = {
+            from: stageKey,
+            activeStage: stageKey,
+            targetStages,
+            startedAt: Date.now(),
+            elapsed: 0,
+        };
+        clearInterval(this.regenerateTimer);
+        this.regenerateTimer = setInterval(() => {
+            if (!this.regenerateState) return;
+            this.regenerateState.elapsed = Math.floor((Date.now() - this.regenerateState.startedAt) / 1000);
+            this.renderPreview();
+            this.renderChain();
+        }, 500);
+    }
+
+    finishRegenerate() {
+        clearInterval(this.regenerateTimer);
+        this.regenerateTimer = null;
+        this.regenerateState = null;
+        this.renderPreview();
+        this.renderChain();
+    }
+
+    updateRegenerateProgress(stage, status) {
+        if (!this.regenerateState) return;
+        if (this.regenerateState.targetStages.includes(stage) && status === "running") {
+            this.regenerateState.activeStage = stage;
+        }
+        const lastStage = this.regenerateState.targetStages[this.regenerateState.targetStages.length - 1];
+        if (stage === lastStage && status === "done") {
+            this.finishRegenerate();
+        }
+    }
+
     persistUI() {
         this.syncCharacterSourceData();
         this.syncStagesFromData();
@@ -732,6 +835,47 @@ class CharacterGeneratorWidget {
         this.data[section][key] = value;
         writeData(this.node, this.data);
         this.saveBrowserState();
+    }
+
+    async regenerateFrom(stageKey) {
+        if (!this.stages.some(([key]) => key === stageKey)) return;
+        this.syncCharacterSourceData();
+        this.syncStagesFromData();
+        this.data.regenerate_from = stageKey;
+        this.selectedPreview = stageKey;
+        this.userSelectedPreview = false;
+        if (!this.data.ui) this.data.ui = {};
+        this.data.ui.selected_preview = stageKey;
+        this.data.ui.user_selected_preview = false;
+        this.resetStagesFrom(stageKey);
+        this.startRegenerate(stageKey);
+        writeData(this.node, this.data);
+        this.renderPreview();
+        this.renderChain();
+        try {
+            const response = await api.fetchApi("/vnccs/character_generator/regenerate", {
+                method: "POST",
+                body: JSON.stringify({
+                    unique_id: String(this.node.id ?? ""),
+                    generator_type: this.node.type || this.node.comfyClass || "",
+                    stage: stageKey,
+                    widget_data: this.data,
+                }),
+            });
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(text || `Regenerate failed (${response.status})`);
+            }
+            this.finishRegenerate();
+        } catch (error) {
+            this.finishRegenerate();
+            throw error;
+        } finally {
+            if (this.data.regenerate_from === stageKey) {
+                delete this.data.regenerate_from;
+                writeData(this.node, this.data);
+            }
+        }
     }
 
     syncCharacterNameFromCreator() {
@@ -1276,7 +1420,19 @@ class CharacterGeneratorWidget {
             };
             tabs.appendChild(tab);
         }
-        head.append(label, tabs);
+        if (this.regenerateState) {
+            const regen = document.createElement("div");
+            regen.className = "vnccs-pipe-regen-status";
+            const spinner = document.createElement("span");
+            spinner.className = "vnccs-pipe-regen-spinner";
+            const activeName = this.stages.find(([key]) => key === this.regenerateState.activeStage)?.[1] || "Stage";
+            const text = document.createElement("span");
+            text.textContent = `Regenerating ${activeName} · ${this.formatElapsed(this.regenerateState.elapsed)}`;
+            regen.append(spinner, text);
+            head.append(label, regen);
+        } else {
+            head.append(label, tabs);
+        }
         this.previewEl.appendChild(head);
 
         const images = this.stageState[this.selectedPreview]?.images;
@@ -1389,11 +1545,30 @@ class CharacterGeneratorWidget {
         const count = Number.isFinite(state.current) && Number.isFinite(state.total)
             ? ` (${state.current}/${state.total})`
             : (state.images?.length ? ` (${state.images.length})` : "");
+        if (this.regenerateState?.activeStage === key && status === "waiting") {
+            return `Starting regenerate · ${this.formatElapsed(this.regenerateState.elapsed)}`;
+        }
+        if (this.regenerateState?.targetStages?.includes(key) && status === "waiting") {
+            return "Queued for regenerate";
+        }
         if (state.message) return `${state.message}${count}`;
         if (status === "running") return `Running${count}`;
         if (status === "done") return `Done${count}`;
         if (status === "error") return "Error";
         return "Waiting";
+    }
+
+    formatElapsed(seconds = 0) {
+        const value = Math.max(0, Number(seconds) || 0);
+        const minutes = Math.floor(value / 60);
+        const secs = value % 60;
+        return minutes ? `${minutes}:${String(secs).padStart(2, "0")}` : `${secs}s`;
+    }
+
+    estimateRegenerateProgress() {
+        if (!this.regenerateState) return 0;
+        const elapsed = Math.max(0, this.regenerateState.elapsed || 0);
+        return Math.min(92, 8 + elapsed * 3);
     }
 
     renderChain() {
@@ -1403,8 +1578,10 @@ class CharacterGeneratorWidget {
         for (const [key, name] of this.stages) {
             const stage = document.createElement("div");
             const status = this.stageState[key]?.status || "waiting";
+            const isRegeneratingStage = this.regenerateState?.targetStages?.includes(key);
             stage.className = "vnccs-pipe-stage";
             if (status === "running") stage.classList.add("is-active");
+            if (isRegeneratingStage) stage.classList.add("is-regenerating");
             if (status === "done") stage.classList.add("is-done");
             stage.onclick = () => {
                 this.selectedPreview = key;
@@ -1419,6 +1596,22 @@ class CharacterGeneratorWidget {
             s.className = "vnccs-pipe-stage-status";
             s.textContent = this.formatStageStatus(key);
             stage.append(n, s);
+            if (status === "running" || this.regenerateState?.activeStage === key) {
+                const progress = document.createElement("div");
+                progress.className = "vnccs-pipe-stage-progress";
+                const fill = document.createElement("div");
+                fill.className = "vnccs-pipe-stage-progress-fill";
+                const state = this.stageState[key] || {};
+                const current = Number(state.current);
+                const total = Number(state.total);
+                if (Number.isFinite(current) && Number.isFinite(total) && total > 0) {
+                    fill.style.width = `${Math.max(4, Math.min(100, (current / total) * 100))}%`;
+                } else {
+                    fill.style.width = `${this.estimateRegenerateProgress()}%`;
+                }
+                progress.appendChild(fill);
+                stage.appendChild(progress);
+            }
             if (key === "pose_generation" || key === "original_pose_generation" || key === "naked_pose_generation") {
                 const l = document.createElement("div");
                 l.className = "vnccs-pipe-stage-lora";
@@ -1430,6 +1623,23 @@ class CharacterGeneratorWidget {
                 l.className = "vnccs-pipe-stage-lora";
                 l.textContent = `LoRA: ${CLOTHES_CORE_LORA_LABEL}`;
                 stage.appendChild(l);
+            }
+            if (status === "done" && !this.regenerateState) {
+                const actions = document.createElement("div");
+                actions.className = "vnccs-pipe-stage-actions";
+                const regen = document.createElement("button");
+                regen.type = "button";
+                regen.className = "vnccs-pipe-regen";
+                regen.textContent = "Regenerate";
+                regen.onclick = (event) => {
+                    event.stopPropagation();
+                    this.regenerateFrom(key).catch((error) => {
+                        console.error("[VNCCS Character Generator] Regenerate failed:", error);
+                        alert(error?.message || "Regenerate failed");
+                    });
+                };
+                actions.appendChild(regen);
+                stage.appendChild(actions);
             }
             this.chainEl.appendChild(stage);
         }

@@ -12,10 +12,12 @@ import json
 import os
 import shutil
 import traceback
+import time
 from urllib.parse import urlencode
 
 import numpy as np
 import torch
+from aiohttp import web
 from PIL import Image, ImageOps
 
 try:
@@ -43,6 +45,9 @@ from .vnccs_control_center import (
 from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder
 from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, VNCCS_RMBG2
 from ..utils import character_dir
+
+
+_LIVE_GENERATOR_CONTEXTS = {}
 
 
 def _folder_list(kind, fallback):
@@ -247,6 +252,89 @@ def _rotate_preview_cache(cache_dir):
         pass
 
 
+def _cache_tensor_path(cache_dir, key):
+    if not cache_dir:
+        return ""
+    safe_key = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(key))
+    return os.path.join(cache_dir, "_stage_cache", f"{safe_key}.pt")
+
+
+def _save_cached_tensor(cache_dir, key, tensor):
+    if not cache_dir or tensor is None or not torch.is_tensor(tensor):
+        return
+    try:
+        path = _cache_tensor_path(cache_dir, key)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save(tensor.detach().cpu(), path)
+    except Exception as exc:
+        print(f"[VNCCS Character Generator] Failed to cache tensor '{key}': {exc}")
+
+
+def _load_cached_tensor(cache_dir, key):
+    path = _cache_tensor_path(cache_dir, key)
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        return torch.load(path, map_location="cpu")
+    except Exception as exc:
+        print(f"[VNCCS Character Generator] Failed to load cached tensor '{key}': {exc}")
+        return None
+
+
+def _save_run_inputs(cache_dir, **items):
+    if not cache_dir:
+        return
+    try:
+        base = os.path.join(cache_dir, "_stage_cache")
+        os.makedirs(base, exist_ok=True)
+        meta = {"created_at": time.time(), "items": {}}
+        for key, value in items.items():
+            if torch.is_tensor(value):
+                _save_cached_tensor(cache_dir, f"input_{key}", value)
+                meta["items"][key] = {"type": "tensor", "shape": list(value.shape)}
+            else:
+                meta["items"][key] = {"type": "json", "value": value}
+        with open(os.path.join(base, "inputs.json"), "w", encoding="utf-8") as handle:
+            json.dump(meta, handle, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        print(f"[VNCCS Character Generator] Failed to cache run inputs: {exc}")
+
+
+def _load_run_inputs(cache_dir):
+    if not cache_dir:
+        return {}
+    path = os.path.join(cache_dir, "_stage_cache", "inputs.json")
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            meta = json.load(handle)
+        result = {}
+        for key, item in (meta.get("items") or {}).items():
+            if item.get("type") == "tensor":
+                value = _load_cached_tensor(cache_dir, f"input_{key}")
+                if value is not None:
+                    result[key] = value
+            elif item.get("type") == "json":
+                result[key] = item.get("value")
+        return result
+    except Exception as exc:
+        print(f"[VNCCS Character Generator] Failed to load cached run inputs: {exc}")
+        return {}
+
+
+def _remember_generator_context(unique_id, generator_type, cache_dir, pipe):
+    key = str(unique_id or "").strip()
+    if not key or pipe is None:
+        return
+    _LIVE_GENERATOR_CONTEXTS[key] = {
+        "generator_type": generator_type,
+        "cache_dir": cache_dir,
+        "pipe": pipe,
+        "updated_at": time.time(),
+    }
+
+
 DEFAULT_WIDGET_DATA = {
     "common": {
         "target_size": "1024",
@@ -423,6 +511,31 @@ class VNCCS_CharacterGenerator:
             server.PromptServer.instance.send_sync("vnccs.character_generator.stage", payload)
         except Exception:
             pass
+
+    def _regenerate_from(self, widget_payload):
+        stage = (widget_payload or {}).get("regenerate_from")
+        return str(stage or "").strip()
+
+    def _stage_index(self, order, stage):
+        try:
+            return list(order).index(stage)
+        except ValueError:
+            return -1
+
+    def _should_regenerate_stage(self, order, regenerate_from, stage):
+        start = self._stage_index(order, regenerate_from)
+        current = self._stage_index(order, stage)
+        return start < 0 or current >= start
+
+    def _load_cached_stage(self, cache_dir, stage, unique_id=None, message="Loaded cached stage"):
+        cached = _load_cached_tensor(cache_dir, stage)
+        if cached is not None:
+            total = cached.shape[0] if torch.is_tensor(cached) and cached.ndim == 4 else 0
+            self._emit(unique_id, stage, "done", cached, message, total, total, cache_dir=cache_dir)
+        return cached
+
+    def _save_stage(self, cache_dir, stage, images):
+        _save_cached_tensor(cache_dir, stage, self._list_to_batch(images))
 
     def _extract_pipe(self, pipe):
         out = VNCCS_Pipe().process_pipe(pipe=pipe)
@@ -965,6 +1078,7 @@ class VNCCS_CharacterGenerator:
     def process(self, poses, character, pipe, prompt, background="Green", widget_data="{}", sheets_path="", unique_id=None):
         settings = self._settings(widget_data)
         widget_payload = self._widget_data(widget_data)
+        regenerate_from = self._regenerate_from(widget_payload)
         character_name = widget_payload.get("character_name", "")
         character = self._unwrap_scalar(character)
         pipe = self._unwrap_scalar(pipe)
@@ -974,46 +1088,78 @@ class VNCCS_CharacterGenerator:
         unique_id = self._unwrap_scalar(unique_id)
         cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""), unique_id)
         try:
-            _rotate_preview_cache(cache_dir)
+            _remember_generator_context(unique_id, "VNCCS_CharacterGenerator", cache_dir, pipe)
+            if regenerate_from:
+                cached_inputs = _load_run_inputs(cache_dir)
+                poses = cached_inputs.get("poses", poses)
+                character = cached_inputs.get("character", character)
+                prompt = cached_inputs.get("prompt", prompt)
+                background = cached_inputs.get("background", background)
+                sheets_path = cached_inputs.get("sheets_path", sheets_path)
+            if not regenerate_from:
+                _rotate_preview_cache(cache_dir)
+            _save_run_inputs(
+                cache_dir,
+                poses=self._list_to_batch(poses),
+                character=self._list_to_batch(character),
+                prompt=str(prompt or ""),
+                background=str(background or ""),
+                sheets_path=str(sheets_path or ""),
+                widget_payload=widget_payload,
+            )
             pose_lora_info = self._find_pose_lora(pipe)
             input_total = len(self._image_list(poses))
-            self._emit(
-                unique_id,
-                "pose_generation",
-                "running",
-                message="Encoding pose list",
-                current=0,
-                total=input_total,
-                cache_dir=cache_dir,
-                lora_info=pose_lora_info,
-            )
-            pose_images = self._run_pose_generation(
-                poses,
-                character,
-                pipe,
-                prompt,
-                settings["pose_generation"],
-                lora_info=pose_lora_info,
-                background=background,
-            )
+            order = ("pose_generation", "upscaler", "bg_remove")
+            if not self._should_regenerate_stage(order, regenerate_from, "pose_generation"):
+                pose_images = self._load_cached_stage(cache_dir, "pose_generation", unique_id, "Using cached pose generation")
+            else:
+                pose_images = None
+            if pose_images is None:
+                self._emit(
+                    unique_id,
+                    "pose_generation",
+                    "running",
+                    message="Encoding pose list",
+                    current=0,
+                    total=input_total,
+                    cache_dir=cache_dir,
+                    lora_info=pose_lora_info,
+                )
+                pose_images = self._run_pose_generation(
+                    poses,
+                    character,
+                    pipe,
+                    prompt,
+                    settings["pose_generation"],
+                    lora_info=pose_lora_info,
+                    background=background,
+                )
+                self._save_stage(cache_dir, "pose_generation", pose_images)
             pose_total = pose_images.shape[0] if torch.is_tensor(pose_images) and pose_images.ndim == 4 else 0
             self._emit(unique_id, "pose_generation", "done", pose_images, f"Generated {pose_total} pose images", pose_total, pose_total, cache_dir=cache_dir, lora_info=pose_lora_info)
 
             up_total = pose_total
-            self._emit(unique_id, "upscaler", "running", pose_images, f"Preparing upscaler for {up_total} images", 0, up_total, cache_dir=cache_dir)
-            upscaled = self._run_upscaler(
-                pose_images,
-                background,
-                settings["upscaler"],
-                self._extract_pipe(pipe)["seed"],
-                unique_id=unique_id,
-                cache_dir=cache_dir,
-                use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", True),
-            )
+            if not self._should_regenerate_stage(order, regenerate_from, "upscaler"):
+                upscaled = self._load_cached_stage(cache_dir, "upscaler", unique_id, "Using cached upscaler")
+            else:
+                upscaled = None
+            if upscaled is None:
+                self._emit(unique_id, "upscaler", "running", pose_images, f"Preparing upscaler for {up_total} images", 0, up_total, cache_dir=cache_dir)
+                upscaled = self._run_upscaler(
+                    pose_images,
+                    background,
+                    settings["upscaler"],
+                    self._extract_pipe(pipe)["seed"],
+                    unique_id=unique_id,
+                    cache_dir=cache_dir,
+                    use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", True),
+                )
+                self._save_stage(cache_dir, "upscaler", upscaled)
 
             bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
             self._emit(unique_id, "bg_remove", "running", upscaled, f"Removing background for {bg_total} images", 0, bg_total, cache_dir=cache_dir)
             final_images = self._run_bg_remove(upscaled, settings["bg_remove"], background=background)
+            self._save_stage(cache_dir, "bg_remove", final_images)
             saved_paths = self._save_final_sprites(final_images, sheets_path, character_name)
             saved_suffix = f"; saved {len(saved_paths)} sprites" if saved_paths else ""
             self._emit(unique_id, "bg_remove", "done", final_images, f"Background removed from {bg_total} images{saved_suffix}", bg_total, bg_total, cache_dir=cache_dir)
@@ -1069,55 +1215,83 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
         settings["remove_clothes"]["target_size"] = common_size
         return settings
 
-    def _run_sprite_branch(self, poses, character, pipe, prompt, background, settings, unique_id, cache_dir, stage_prefix, pose_lora_info):
+    def _run_sprite_branch(self, poses, character, pipe, prompt, background, settings, unique_id, cache_dir, stage_prefix, pose_lora_info, regenerate_from=""):
         pose_stage = f"{stage_prefix}_pose_generation"
         up_stage = f"{stage_prefix}_upscaler"
         bg_stage = f"{stage_prefix}_bg_remove"
+        order = (
+            "original_pose_generation",
+            "original_upscaler",
+            "original_bg_remove",
+            "remove_clothes",
+            "naked_pose_generation",
+            "naked_upscaler",
+            "naked_bg_remove",
+        )
 
         input_total = len(self._image_list(poses))
-        self._emit(
-            unique_id,
-            pose_stage,
-            "running",
-            message="Encoding pose list",
-            current=0,
-            total=input_total,
-            cache_dir=cache_dir,
-            lora_info=pose_lora_info,
-        )
-        pose_images = self._run_pose_generation(
-            poses,
-            character,
-            pipe,
-            prompt,
-            settings["pose_generation"],
-            lora_info=pose_lora_info,
-            background=background,
-        )
+        if not self._should_regenerate_stage(order, regenerate_from, pose_stage):
+            pose_images = self._load_cached_stage(cache_dir, pose_stage, unique_id, f"Using cached {pose_stage}")
+        else:
+            pose_images = None
+        if pose_images is None:
+            self._emit(
+                unique_id,
+                pose_stage,
+                "running",
+                message="Encoding pose list",
+                current=0,
+                total=input_total,
+                cache_dir=cache_dir,
+                lora_info=pose_lora_info,
+            )
+            pose_images = self._run_pose_generation(
+                poses,
+                character,
+                pipe,
+                prompt,
+                settings["pose_generation"],
+                lora_info=pose_lora_info,
+                background=background,
+            )
+            self._save_stage(cache_dir, pose_stage, pose_images)
         pose_total = pose_images.shape[0] if torch.is_tensor(pose_images) and pose_images.ndim == 4 else 0
         self._emit(unique_id, pose_stage, "done", pose_images, f"Generated {pose_total} pose images", pose_total, pose_total, cache_dir=cache_dir, lora_info=pose_lora_info)
 
-        self._emit(unique_id, up_stage, "running", pose_images, f"Preparing upscaler for {pose_total} images", 0, pose_total, cache_dir=cache_dir)
-        upscaled = self._run_upscaler(
-            pose_images,
-            background,
-            settings["upscaler"],
-            self._extract_pipe(pipe)["seed"],
-            unique_id=unique_id,
-            cache_dir=cache_dir,
-            stage=up_stage,
-            use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", True),
-        )
+        if not self._should_regenerate_stage(order, regenerate_from, up_stage):
+            upscaled = self._load_cached_stage(cache_dir, up_stage, unique_id, f"Using cached {up_stage}")
+        else:
+            upscaled = None
+        if upscaled is None:
+            self._emit(unique_id, up_stage, "running", pose_images, f"Preparing upscaler for {pose_total} images", 0, pose_total, cache_dir=cache_dir)
+            upscaled = self._run_upscaler(
+                pose_images,
+                background,
+                settings["upscaler"],
+                self._extract_pipe(pipe)["seed"],
+                unique_id=unique_id,
+                cache_dir=cache_dir,
+                stage=up_stage,
+                use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", True),
+            )
+            self._save_stage(cache_dir, up_stage, upscaled)
 
         bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
-        self._emit(unique_id, bg_stage, "running", upscaled, f"Removing background for {bg_total} images", 0, bg_total, cache_dir=cache_dir)
-        final_images = self._run_bg_remove(upscaled, settings["bg_remove"], background=background)
-        self._emit(unique_id, bg_stage, "done", final_images, f"Background removed from {bg_total} images", bg_total, bg_total, cache_dir=cache_dir)
+        if not self._should_regenerate_stage(order, regenerate_from, bg_stage):
+            final_images = self._load_cached_stage(cache_dir, bg_stage, unique_id, f"Using cached {bg_stage}")
+        else:
+            final_images = None
+        if final_images is None:
+            self._emit(unique_id, bg_stage, "running", upscaled, f"Removing background for {bg_total} images", 0, bg_total, cache_dir=cache_dir)
+            final_images = self._run_bg_remove(upscaled, settings["bg_remove"], background=background)
+            self._save_stage(cache_dir, bg_stage, final_images)
+            self._emit(unique_id, bg_stage, "done", final_images, f"Background removed from {bg_total} images", bg_total, bg_total, cache_dir=cache_dir)
         return final_images, pose_images, upscaled
 
     def process(self, poses, character, pipe, prompt, background="Green", widget_data="{}", sheets_path="", unique_id=None):
         settings = self._clone_settings(widget_data)
         widget_payload = self._widget_data(widget_data)
+        regenerate_from = self._regenerate_from(widget_payload)
         character_name = widget_payload.get("character_name", "")
         nsfw_value = widget_payload.get("nsfw_enabled", True)
         if isinstance(nsfw_value, str):
@@ -1132,7 +1306,25 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
         unique_id = self._unwrap_scalar(unique_id)
         cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""), unique_id)
         try:
-            _rotate_preview_cache(cache_dir)
+            _remember_generator_context(unique_id, "VNCCS_CharacterCloneGenerator", cache_dir, pipe)
+            if regenerate_from:
+                cached_inputs = _load_run_inputs(cache_dir)
+                poses = cached_inputs.get("poses", poses)
+                character = cached_inputs.get("character", character)
+                prompt = cached_inputs.get("prompt", prompt)
+                background = cached_inputs.get("background", background)
+                sheets_path = cached_inputs.get("sheets_path", sheets_path)
+            if not regenerate_from:
+                _rotate_preview_cache(cache_dir)
+            _save_run_inputs(
+                cache_dir,
+                poses=self._list_to_batch(poses),
+                character=self._list_to_batch(character),
+                prompt=str(prompt or ""),
+                background=str(background or ""),
+                sheets_path=str(sheets_path or ""),
+                widget_payload=widget_payload,
+            )
             pose_lora_info = self._find_pose_lora(pipe)
 
             original_final, original_pose, original_upscaled = self._run_sprite_branch(
@@ -1146,6 +1338,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 cache_dir,
                 "original",
                 pose_lora_info,
+                regenerate_from=regenerate_from,
             )
             original_saved = self._save_final_sprites(original_final, sheets_path, character_name, "Original")
             if original_saved:
@@ -1156,29 +1349,44 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
 
             clothes_lora_info = self._find_clothes_lora(pipe)
             remove_total = 1
-            self._emit(
-                unique_id,
+            order = (
+                "original_pose_generation",
+                "original_upscaler",
+                "original_bg_remove",
                 "remove_clothes",
-                "running",
-                character,
-                "Removing clothes from source character",
-                0,
-                remove_total,
-                cache_dir=cache_dir,
-                lora_info=clothes_lora_info,
+                "naked_pose_generation",
+                "naked_upscaler",
+                "naked_bg_remove",
             )
-            naked_character = self._run_remove_clothes(character, pipe, settings["remove_clothes"], lora_info=clothes_lora_info)
-            self._emit(
-                unique_id,
-                "remove_clothes",
-                "done",
-                naked_character,
-                "Source character cleaned",
-                remove_total,
-                remove_total,
-                cache_dir=cache_dir,
-                lora_info=clothes_lora_info,
-            )
+            if not self._should_regenerate_stage(order, regenerate_from, "remove_clothes"):
+                naked_character = self._load_cached_stage(cache_dir, "remove_clothes", unique_id, "Using cached cleaned source character")
+            else:
+                naked_character = None
+            if naked_character is None:
+                self._emit(
+                    unique_id,
+                    "remove_clothes",
+                    "running",
+                    character,
+                    "Removing clothes from source character",
+                    0,
+                    remove_total,
+                    cache_dir=cache_dir,
+                    lora_info=clothes_lora_info,
+                )
+                naked_character = self._run_remove_clothes(character, pipe, settings["remove_clothes"], lora_info=clothes_lora_info)
+                self._save_stage(cache_dir, "remove_clothes", naked_character)
+                self._emit(
+                    unique_id,
+                    "remove_clothes",
+                    "done",
+                    naked_character,
+                    "Source character cleaned",
+                    remove_total,
+                    remove_total,
+                    cache_dir=cache_dir,
+                    lora_info=clothes_lora_info,
+                )
 
             naked_final, naked_pose, _naked_upscaled = self._run_sprite_branch(
                 poses,
@@ -1191,6 +1399,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 cache_dir,
                 "naked",
                 pose_lora_info,
+                regenerate_from=regenerate_from,
             )
             naked_saved = self._save_final_sprites(naked_final, sheets_path, character_name, "Naked")
             if naked_saved:
@@ -1260,6 +1469,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
     def process(self, poses, character, pipe, prompt, background="Green", widget_data="{}", sheets_path="", unique_id=None):
         settings = self._settings(widget_data)
         widget_payload = self._widget_data(widget_data)
+        regenerate_from = self._regenerate_from(widget_payload)
         character_name = widget_payload.get("character_name", "")
         character = self._unwrap_scalar(character)
         pipe = self._unwrap_scalar(pipe)
@@ -1273,67 +1483,105 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
         )
         cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""), unique_id)
         try:
-            _rotate_preview_cache(cache_dir)
+            _remember_generator_context(unique_id, "VNCCS_ClothesGenerator", cache_dir, pipe)
+            if regenerate_from:
+                cached_inputs = _load_run_inputs(cache_dir)
+                poses = cached_inputs.get("poses", poses)
+                character = cached_inputs.get("character", character)
+                prompt = cached_inputs.get("prompt", prompt)
+                background = cached_inputs.get("background", background)
+                sheets_path = cached_inputs.get("sheets_path", sheets_path)
+            if not regenerate_from:
+                _rotate_preview_cache(cache_dir)
+            _save_run_inputs(
+                cache_dir,
+                poses=self._list_to_batch(poses),
+                character=self._list_to_batch(character),
+                prompt=str(prompt or ""),
+                background=str(background or ""),
+                sheets_path=str(sheets_path or ""),
+                widget_payload=widget_payload,
+            )
             pose_lora_info = self._find_pose_lora(pipe)
+            order = ("source_upscaler", "pose_generation", "upscaler", "bg_remove")
 
             source_total = len(self._image_list(character)) or 1
-            self._emit(
-                unique_id,
-                "source_upscaler",
-                "running",
-                character,
-                f"Preparing source upscaler for {source_total} image",
-                0,
-                source_total,
-                cache_dir=cache_dir,
-            )
-            source_upscaled = self._run_source_upscaler(
-                character,
-                settings["upscaler"],
-                self._extract_pipe(pipe)["seed"],
-                unique_id=unique_id,
-                cache_dir=cache_dir,
-                stage="source_upscaler",
-            )
+            if not self._should_regenerate_stage(order, regenerate_from, "source_upscaler"):
+                source_upscaled = self._load_cached_stage(cache_dir, "source_upscaler", unique_id, "Using cached source upscaler")
+            else:
+                source_upscaled = None
+            if source_upscaled is None:
+                self._emit(
+                    unique_id,
+                    "source_upscaler",
+                    "running",
+                    character,
+                    f"Preparing source upscaler for {source_total} image",
+                    0,
+                    source_total,
+                    cache_dir=cache_dir,
+                )
+                source_upscaled = self._run_source_upscaler(
+                    character,
+                    settings["upscaler"],
+                    self._extract_pipe(pipe)["seed"],
+                    unique_id=unique_id,
+                    cache_dir=cache_dir,
+                    stage="source_upscaler",
+                )
+                self._save_stage(cache_dir, "source_upscaler", source_upscaled)
 
             input_total = len(self._image_list(poses))
-            self._emit(
-                unique_id,
-                "pose_generation",
-                "running",
-                message="Encoding pose list",
-                current=0,
-                total=input_total,
-                cache_dir=cache_dir,
-                lora_info=pose_lora_info,
-            )
-            pose_images = self._run_clothes_pose_generation(
-                poses,
-                source_upscaled,
-                pipe,
-                prompt,
-                background,
-                settings["pose_generation"],
-                lora_info=pose_lora_info,
-                use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", True),
-            )
+            if not self._should_regenerate_stage(order, regenerate_from, "pose_generation"):
+                pose_images = self._load_cached_stage(cache_dir, "pose_generation", unique_id, "Using cached pose generation")
+            else:
+                pose_images = None
+            if pose_images is None:
+                self._emit(
+                    unique_id,
+                    "pose_generation",
+                    "running",
+                    message="Encoding pose list",
+                    current=0,
+                    total=input_total,
+                    cache_dir=cache_dir,
+                    lora_info=pose_lora_info,
+                )
+                pose_images = self._run_clothes_pose_generation(
+                    poses,
+                    source_upscaled,
+                    pipe,
+                    prompt,
+                    background,
+                    settings["pose_generation"],
+                    lora_info=pose_lora_info,
+                    use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", True),
+                )
+                self._save_stage(cache_dir, "pose_generation", pose_images)
             pose_total = pose_images.shape[0] if torch.is_tensor(pose_images) and pose_images.ndim == 4 else 0
             self._emit(unique_id, "pose_generation", "done", pose_images, f"Generated {pose_total} clothed pose images", pose_total, pose_total, cache_dir=cache_dir, lora_info=pose_lora_info)
 
-            self._emit(unique_id, "upscaler", "running", pose_images, f"Preparing upscaler for {pose_total} images", 0, pose_total, cache_dir=cache_dir)
-            upscaled = self._run_upscaler(
-                pose_images,
-                background,
-                settings["upscaler"],
-                self._extract_pipe(pipe)["seed"],
-                unique_id=unique_id,
-                cache_dir=cache_dir,
-                use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", True),
-            )
+            if not self._should_regenerate_stage(order, regenerate_from, "upscaler"):
+                upscaled = self._load_cached_stage(cache_dir, "upscaler", unique_id, "Using cached upscaler")
+            else:
+                upscaled = None
+            if upscaled is None:
+                self._emit(unique_id, "upscaler", "running", pose_images, f"Preparing upscaler for {pose_total} images", 0, pose_total, cache_dir=cache_dir)
+                upscaled = self._run_upscaler(
+                    pose_images,
+                    background,
+                    settings["upscaler"],
+                    self._extract_pipe(pipe)["seed"],
+                    unique_id=unique_id,
+                    cache_dir=cache_dir,
+                    use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", True),
+                )
+                self._save_stage(cache_dir, "upscaler", upscaled)
 
             bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
             self._emit(unique_id, "bg_remove", "running", upscaled, f"Removing background for {bg_total} images", 0, bg_total, cache_dir=cache_dir)
             final_images = self._run_bg_remove(upscaled, settings["bg_remove"], background=background)
+            self._save_stage(cache_dir, "bg_remove", final_images)
             saved_paths = self._save_final_sprites(final_images, sheets_path, character_name, costume_name)
             saved_suffix = f"; saved {len(saved_paths)} sprites to {costume_name}" if saved_paths else ""
             self._emit(unique_id, "bg_remove", "done", final_images, f"Background removed from {bg_total} images{saved_suffix}", bg_total, bg_total, cache_dir=cache_dir)
@@ -1581,6 +1829,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
 
     def process(self, images, pipe, emotion_data, widget_data="{}", unique_id=None):
         widget_payload = self._widget_data(widget_data)
+        regenerate_from = self._regenerate_from(widget_payload)
         emotion_settings = widget_payload.get("emotion_generation", {}) if isinstance(widget_payload, dict) else {}
         try:
             face_denoise = float(emotion_settings.get("face_denoise", DEFAULT_WIDGET_DATA["emotion_generation"]["face_denoise"]))
@@ -1589,6 +1838,12 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         face_denoise = max(0.0, min(1.0, face_denoise))
         pipe = self._unwrap_scalar(pipe)
         unique_id = self._unwrap_scalar(unique_id)
+        cache_dir = _character_cache_dir_from_sheets_path("", widget_payload.get("character_name", ""), unique_id)
+        _remember_generator_context(unique_id, "VNCCS_EmotionsGenerator", cache_dir, pipe)
+        if regenerate_from:
+            cached_inputs = _load_run_inputs(cache_dir)
+            images = cached_inputs.get("images", images)
+            emotion_data = cached_inputs.get("emotion_data", emotion_data)
         image_items = self._image_list(images)
         data_items = self._parse_emotion_data(emotion_data)
         source_items = []
@@ -1609,7 +1864,15 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 groups.append({"key": key, "indices": []})
             groups[-1]["indices"].append(index)
         stage_labels = self._emotion_pairs(widget_payload, emotion_items, len(groups))
-        cache_dir = None
+        order = [key for key, _label in stage_labels]
+        if not regenerate_from:
+            _rotate_preview_cache(cache_dir)
+        _save_run_inputs(
+            cache_dir,
+            images=self._list_to_batch(images),
+            emotion_data=data_items,
+            widget_payload=widget_payload,
+        )
 
         results = []
         faces = []
@@ -1617,6 +1880,13 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         try:
             for group_index, group in enumerate(groups):
                 stage_key, stage_label = stage_labels[group_index]
+                if not self._should_regenerate_stage(order, regenerate_from, stage_key):
+                    cached = self._load_cached_stage(cache_dir, stage_key, unique_id, f"Using cached {stage_label}")
+                    if cached is not None:
+                        results.append(cached)
+                        faces.append(cached)
+                        continue
+
                 group_source = torch.cat([source_items[i][0] for i in group["indices"]], dim=0)
                 self._emit(unique_id, stage_key, "running", group_source, f"Generating {stage_label}", 0, len(group["indices"]), cache_dir=cache_dir)
                 group_results = []
@@ -1664,6 +1934,8 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                         len(group["indices"]),
                         cache_dir=cache_dir,
                     )
+                if group_results:
+                    self._save_stage(cache_dir, stage_key, torch.cat(group_results, dim=0))
 
             if not results:
                 raise RuntimeError("No emotion images to generate. Select at least one costume and one emotion.")
@@ -1673,6 +1945,70 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             traceback.print_exc()
             self._emit(unique_id, "error", "error", message=str(exc))
             raise
+
+
+if server is not None:
+    @server.PromptServer.instance.routes.post("/vnccs/character_generator/regenerate")
+    async def vnccs_character_generator_regenerate(request):
+        try:
+            data = await request.json()
+            unique_id = str(data.get("unique_id") or "").strip()
+            stage = str(data.get("stage") or "").strip()
+            if not unique_id or not stage:
+                return web.json_response({"error": "Missing unique_id or stage"}, status=400)
+
+            ctx = _LIVE_GENERATOR_CONTEXTS.get(unique_id)
+            if not ctx or ctx.get("pipe") is None:
+                return web.json_response({
+                    "error": "Generator cache is not ready. Run this generator once normally before using Regenerate.",
+                }, status=409)
+
+            cache_dir = ctx.get("cache_dir")
+            cached_inputs = _load_run_inputs(cache_dir)
+            if not cached_inputs:
+                return web.json_response({
+                    "error": "Stage input cache is empty. Run this generator once normally before using Regenerate.",
+                }, status=409)
+
+            widget_payload = data.get("widget_data") if isinstance(data.get("widget_data"), dict) else {}
+            widget_payload["regenerate_from"] = stage
+            widget_data = json.dumps(widget_payload, ensure_ascii=False)
+            generator_type = ctx.get("generator_type") or data.get("generator_type")
+            pipe = ctx["pipe"]
+
+            generator_cls = {
+                "VNCCS_CharacterGenerator": VNCCS_CharacterGenerator,
+                "VNCCS_CharacterCloneGenerator": VNCCS_CharacterCloneGenerator,
+                "VNCCS_ClothesGenerator": VNCCS_ClothesGenerator,
+                "VNCCS_EmotionsGenerator": VNCCS_EmotionsGenerator,
+            }.get(generator_type)
+            if generator_cls is None:
+                return web.json_response({"error": f"Unsupported generator type: {generator_type}"}, status=400)
+
+            with torch.inference_mode():
+                if generator_type == "VNCCS_EmotionsGenerator":
+                    generator_cls().process(
+                        cached_inputs.get("images"),
+                        pipe,
+                        cached_inputs.get("emotion_data", []),
+                        widget_data=widget_data,
+                        unique_id=unique_id,
+                    )
+                else:
+                    generator_cls().process(
+                        cached_inputs.get("poses"),
+                        cached_inputs.get("character"),
+                        pipe,
+                        cached_inputs.get("prompt", ""),
+                        background=cached_inputs.get("background", "Green"),
+                        widget_data=widget_data,
+                        sheets_path=cached_inputs.get("sheets_path", ""),
+                        unique_id=unique_id,
+                    )
+            return web.json_response({"ok": True})
+        except Exception as exc:
+            traceback.print_exc()
+            return web.json_response({"error": str(exc)}, status=500)
 
 
 NODE_CLASS_MAPPINGS = {
