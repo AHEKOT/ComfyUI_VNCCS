@@ -8,6 +8,10 @@ Contains utility image processing nodes for future extraction to separate reposi
 """
 
 import os
+import json
+import random
+import base64
+import io
 import torch
 import numpy as np
 from typing import Tuple
@@ -33,8 +37,33 @@ try:
 except ImportError:
     folder_paths = None
 
-# Device selection used by RMBG models
-device = "cuda" if torch.cuda.is_available() else "cpu"
+# Device selection used by RMBG/BiRefNet models
+def _select_torch_device():
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        return "xpu"
+    return "cpu"
+
+
+device = _select_torch_device()
+OUTFITS_JSON_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "character_template",
+    "outfits.json",
+)
+QWEN_VL_MODEL_NAMES = [
+    "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+    "Qwen2-VL-7B-Instruct-Q4_K_M.gguf",
+    "qwen2-vl-7b-instruct-q4_k_m.gguf",
+]
+QWEN_VL_MMPROJ_NAMES = [
+    "mmproj-F16.gguf",
+    "mmproj-BF16.gguf",
+    "mmproj-F32.gguf",
+    "mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf",
+    "mmproj-Qwen2-VL-7B-Instruct-f16.gguf",
+]
 
 # Ensure RMBG model folder paths are registered
 if folder_paths:
@@ -53,6 +82,283 @@ def pil2tensor(image):
 def handle_model_error(message):
     print(f"[RMBG ERROR] {message}")
     raise RuntimeError(message)
+
+
+def _validate_gguf_file(path, file_label="File"):
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"{file_label} was not written: {path}")
+
+    size = os.path.getsize(path)
+    if size < 1024 * 1024:
+        raise ValueError(f"{file_label} is too small to be a valid GGUF file ({size} bytes)")
+
+    with open(path, "rb") as file:
+        magic = file.read(4)
+    if magic != b"GGUF":
+        raise ValueError(f"{file_label} is not a valid GGUF file (magic={magic!r})")
+
+
+def _llm_search_dirs():
+    if not folder_paths or not hasattr(folder_paths, "models_dir"):
+        return []
+    base_path = folder_paths.models_dir
+    return [os.path.join(base_path, "LLM"), os.path.join(base_path, "llm"), base_path]
+
+
+def _find_qwen_vl_model():
+    for directory in _llm_search_dirs():
+        if not os.path.isdir(directory):
+            continue
+        for name in QWEN_VL_MODEL_NAMES:
+            path = os.path.join(directory, name)
+            if os.path.exists(path):
+                return path
+    return None
+
+
+def _find_qwen_vl_mmproj(model_path):
+    if not model_path:
+        return None
+
+    model_dir = os.path.dirname(model_path)
+    for name in QWEN_VL_MMPROJ_NAMES:
+        path = os.path.join(model_dir, name)
+        if os.path.exists(path):
+            return path
+
+    try:
+        for filename in os.listdir(model_dir):
+            if "mmproj" in filename.lower() and filename.lower().endswith(".gguf"):
+                return os.path.join(model_dir, filename)
+    except OSError:
+        return None
+    return None
+
+
+def _get_qwen_vl_chat_handler(llama_cpp):
+    chat_format = getattr(llama_cpp, "llama_chat_format", None)
+    if chat_format is None:
+        try:
+            import llama_cpp.llama_chat_format as chat_format
+        except Exception:
+            chat_format = None
+
+    if chat_format is not None:
+        for name in ("Qwen25VLChatHandler", "Qwen2VLChatHandler"):
+            handler = getattr(chat_format, name, None)
+            if handler is not None:
+                return handler
+        for name in dir(chat_format):
+            if "Qwen" in name and "VL" in name and "Handler" in name:
+                return getattr(chat_format, name)
+        handler = getattr(chat_format, "Llava15ChatHandler", None)
+        if handler is not None:
+            return handler
+
+    raise RuntimeError("No QwenVL/Llava chat handler found in llama-cpp-python.")
+
+
+def _tensor_to_vl_data_uri(image, max_size=768):
+    if isinstance(image, list):
+        image = image[0]
+    if len(image.shape) == 4:
+        image = image[0]
+
+    pil_image = tensor2pil(_ensure_float01(image)).convert("RGB")
+    width, height = pil_image.size
+    if max(width, height) > max_size:
+        scale = max_size / float(max(width, height))
+        new_size = (max(1, int(width * scale)), max(1, int(height * scale)))
+        pil_image = pil_image.resize(new_size, Image.Resampling.LANCZOS)
+
+    buffer = io.BytesIO()
+    pil_image.save(buffer, format="JPEG", quality=85)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+def _normalize_clothing_tags(clothing_tags):
+    if isinstance(clothing_tags, list):
+        clothing_tags = clothing_tags[0]
+    return str(clothing_tags or "").strip().strip(",").strip()
+
+
+def _build_vl_analyzer_prompt(clothing_tags):
+    tags = _normalize_clothing_tags(clothing_tags)
+    tags_text = tags if tags else "(no clothing tags provided)"
+    return f"""
+Analyze the clothes worn by the character in the image.
+
+Clothing tags that must be used as mandatory hints:
+{tags_text}
+
+Rules:
+- Output plain natural language only.
+- Describe only clothing and wearable accessories.
+- Use the image as visual evidence, but you must account for the provided clothing tags when describing the outfit.
+- If a tag is not clearly visible but is plausible, include it in natural wording.
+- Do not output raw comma-separated tags.
+- Do not mention pose, body shape, face, hair, background, camera, image quality, nudity, or sex acts.
+- Do not use elegant, poetic, luxury, fashion-magazine, or marketing phrases.
+- Keep it practical and direct, 1 to 3 short sentences.
+- If color or material is unclear, use simple cautious wording.
+""".strip()
+
+
+class VNCCS_ClothesTemplates:
+    """Return a random clothes tag template from character_template/outfits.json."""
+
+    ALL_AESTHETICS = "ВСЕ"
+    OUTFITS_PATH = OUTFITS_JSON_PATH
+
+    @classmethod
+    def _load_outfits(cls) -> list[dict]:
+        try:
+            with open(cls.OUTFITS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"VNCCS Clothes Templates: outfits.json not found: {cls.OUTFITS_PATH}") from exc
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"VNCCS Clothes Templates: invalid outfits.json: {exc}") from exc
+
+        if not isinstance(data, list):
+            raise RuntimeError("VNCCS Clothes Templates: outfits.json must contain a list of outfit records.")
+        return [entry for entry in data if isinstance(entry, dict) and str(entry.get("content", "")).strip()]
+
+    @classmethod
+    def _aesthetic_choices(cls) -> list[str]:
+        try:
+            outfits = cls._load_outfits()
+            aesthetics = sorted({str(entry.get("aesthetic", "")).strip() for entry in outfits if entry.get("aesthetic")})
+        except RuntimeError:
+            aesthetics = []
+        return [cls.ALL_AESTHETICS] + aesthetics
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "aesthetic": (cls._aesthetic_choices(), {"default": cls.ALL_AESTHETICS}),
+                "is_explicit": ("BOOLEAN", {"default": True}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("content",)
+    CATEGORY = "VNCCS"
+    FUNCTION = "random_template"
+
+    @classmethod
+    def IS_CHANGED(cls, aesthetic, is_explicit):
+        return random.random()
+
+    def random_template(self, aesthetic=ALL_AESTHETICS, is_explicit=True):
+        if isinstance(aesthetic, list):
+            aesthetic = aesthetic[0]
+        if isinstance(is_explicit, list):
+            is_explicit = is_explicit[0]
+
+        aesthetic = str(aesthetic)
+        want_explicit = bool(is_explicit)
+        outfits = self._load_outfits()
+
+        matches = [
+            entry for entry in outfits
+            if (aesthetic in (self.ALL_AESTHETICS, "ALL") or str(entry.get("aesthetic", "")) == aesthetic)
+            and bool(entry.get("is_explicit", False)) == want_explicit
+        ]
+
+        if not matches:
+            explicit_label = "true" if want_explicit else "false"
+            raise RuntimeError(
+                f"VNCCS Clothes Templates: no outfits found for aesthetic='{aesthetic}', is_explicit={explicit_label}."
+            )
+
+        content = str(random.choice(matches).get("content", "")).strip().strip(",").strip()
+        return (content,)
+
+
+class VNCCS_VLAnalyzer:
+    """Analyze character clothing from an image using the same Qwen VL GGUF stack as the wizards."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "clothing_tags": ("STRING", {"default": "", "multiline": True}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("description",)
+    CATEGORY = "VNCCS"
+    FUNCTION = "analyze_clothes"
+
+    def analyze_clothes(self, image, clothing_tags=""):
+        try:
+            import llama_cpp
+            import llama_cpp.llama_chat_format
+        except Exception as exc:
+            raise RuntimeError(f"llama-cpp-python is required for VNCCS VL analyzer: {exc}") from exc
+
+        model_path = _find_qwen_vl_model()
+        if not model_path:
+            raise RuntimeError("VNCCS VL analyzer: no QwenVL GGUF model found.")
+
+        try:
+            _validate_gguf_file(model_path, os.path.basename(model_path))
+        except Exception as exc:
+            raise RuntimeError(f"VNCCS VL analyzer: QwenVL model file is invalid or incomplete: {exc}") from exc
+
+        mmproj_path = _find_qwen_vl_mmproj(model_path)
+        if not mmproj_path:
+            raise RuntimeError("VNCCS VL analyzer: no QwenVL vision projector (mmproj) GGUF found.")
+
+        try:
+            _validate_gguf_file(mmproj_path, os.path.basename(mmproj_path))
+        except Exception as exc:
+            raise RuntimeError(f"VNCCS VL analyzer: QwenVL vision projector file is invalid or incomplete: {exc}") from exc
+
+        prompt = _build_vl_analyzer_prompt(clothing_tags)
+        image_uri = _tensor_to_vl_data_uri(image)
+        HandlerCls = _get_qwen_vl_chat_handler(llama_cpp)
+
+        print(f"[VNCCS VL Analyzer] Loading model: {model_path}")
+        print(f"[VNCCS VL Analyzer] Loading mmproj: {mmproj_path}")
+        chat_handler = HandlerCls(clip_model_path=mmproj_path, verbose=False)
+        llm = llama_cpp.Llama(
+            model_path=model_path,
+            chat_handler=chat_handler,
+            n_ctx=4096,
+            n_gpu_layers=-1,
+            verbose=False,
+        )
+
+        system_prompt = (
+            "You are a practical anime/game character clothing analyst. "
+            "Describe visible clothes in simple natural language. "
+            "Follow the user's clothing tag hints."
+        )
+        response = llm.create_chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_uri}},
+                ]},
+            ],
+            max_tokens=350,
+            temperature=0.2,
+        )
+
+        content = response["choices"][0]["message"]["content"]
+        description = str(content or "").strip()
+        if not description:
+            raise RuntimeError("VNCCS VL analyzer: empty response from QwenVL.")
+
+        print(f"[VNCCS VL Analyzer] Output: {description}")
+        return (description,)
 
 
 def _ensure_float01(tensor: torch.Tensor) -> torch.Tensor:
@@ -447,6 +753,8 @@ class BaseModelLoader:
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            if hasattr(torch, "xpu") and torch.xpu.is_available():
+                torch.xpu.empty_cache()
         self.model = None
         self.current_model_version = None
 
@@ -1508,6 +1816,8 @@ class VNCCSChromaKey:
 
 # --- Node Registration ---
 NODE_CLASS_MAPPINGS = {
+    "VNCCS_ClothesTemplates": VNCCS_ClothesTemplates,
+    "VNCCS_VLAnalyzer": VNCCS_VLAnalyzer,
     "VNCCSChromaKey": VNCCSChromaKey,
     "VNCCS_ColorFix": VNCCS_ColorFix,
     "VNCCS_Resize": VNCCS_Resize,
@@ -1516,6 +1826,8 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "VNCCS_ClothesTemplates": "VNCCS Clothes Templates",
+    "VNCCS_VLAnalyzer": "VNCCS VL analyzer",
     "VNCCSChromaKey": "VNCCS Chroma Key",
     "VNCCS_ColorFix": "VNCCS Color Fix",
     "VNCCS_Resize": "VNCCS Resize",
@@ -1524,6 +1836,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 }
 
 NODE_CATEGORY_MAPPINGS = {
+    "VNCCS_ClothesTemplates": "VNCCS",
+    "VNCCS_VLAnalyzer": "VNCCS",
     "VNCCSChromaKey": "VNCCS",
     "VNCCS_ColorFix": "VNCCS",
     "VNCCS_Resize": "VNCCS",

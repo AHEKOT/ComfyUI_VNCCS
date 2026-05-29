@@ -14,10 +14,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from nodes.vnccs_utils import (
     tensor2pil, pil2tensor, _ensure_float01,
     VNCCS_QuadSplitter as _QS,  # also tested in sheet_manager; skip here
+    VNCCS_ClothesTemplates,
+    VNCCS_VLAnalyzer,
+    _build_vl_analyzer_prompt,
     VNCCS_ColorFix,
     VNCCS_Resize,
     VNCCS_MaskExtractor,
     VNCCS_RMBG2,
+    NODE_CLASS_MAPPINGS,
+    NODE_DISPLAY_NAME_MAPPINGS,
 )
 
 
@@ -25,6 +30,53 @@ from nodes.vnccs_utils import (
 
 def test_rmbg2_return_type_tolerates_legacy_high_slot_validation():
     assert VNCCS_RMBG2.RETURN_TYPES[5] == "IMAGE"
+
+
+class TestClothesTemplates:
+    def test_registered_with_display_name(self):
+        assert NODE_CLASS_MAPPINGS["VNCCS_ClothesTemplates"] is VNCCS_ClothesTemplates
+        assert NODE_DISPLAY_NAME_MAPPINGS["VNCCS_ClothesTemplates"] == "VNCCS Clothes Templates"
+
+    def test_aesthetic_choices_include_all_and_json_values(self):
+        choices = VNCCS_ClothesTemplates.INPUT_TYPES()["required"]["aesthetic"][0]
+        assert choices[0] == "ВСЕ"
+        assert "Techwear" in choices
+
+    def test_random_template_filters_by_aesthetic_and_explicit(self, monkeypatch):
+        sample = [
+            {"aesthetic": "Techwear", "content": "techwear, jacket", "is_explicit": True},
+            {"aesthetic": "Casual", "content": "hoodie, jeans", "is_explicit": False},
+        ]
+        monkeypatch.setattr(VNCCS_ClothesTemplates, "_load_outfits", classmethod(lambda cls: sample))
+
+        result, = VNCCS_ClothesTemplates().random_template("Casual", False)
+
+        assert result == "hoodie, jeans"
+
+    def test_random_template_errors_when_no_match(self, monkeypatch):
+        sample = [{"aesthetic": "Techwear", "content": "techwear, jacket", "is_explicit": True}]
+        monkeypatch.setattr(VNCCS_ClothesTemplates, "_load_outfits", classmethod(lambda cls: sample))
+
+        with pytest.raises(RuntimeError, match="no outfits found"):
+            VNCCS_ClothesTemplates().random_template("Techwear", False)
+
+
+class TestVLAnalyzer:
+    def test_registered_with_display_name(self):
+        assert NODE_CLASS_MAPPINGS["VNCCS_VLAnalyzer"] is VNCCS_VLAnalyzer
+        assert NODE_DISPLAY_NAME_MAPPINGS["VNCCS_VLAnalyzer"] == "VNCCS VL analyzer"
+
+    def test_input_contract(self):
+        required = VNCCS_VLAnalyzer.INPUT_TYPES()["required"]
+        assert set(required.keys()) == {"image", "clothing_tags"}
+        assert VNCCS_VLAnalyzer.RETURN_TYPES == ("STRING",)
+        assert VNCCS_VLAnalyzer.RETURN_NAMES == ("description",)
+
+    def test_prompt_uses_clothing_tags_as_mandatory_hints(self):
+        prompt = _build_vl_analyzer_prompt("techwear, black_jacket, thighhighs")
+        assert "Clothing tags that must be used as mandatory hints" in prompt
+        assert "techwear, black_jacket, thighhighs" in prompt
+        assert "Do not output raw comma-separated tags" in prompt
 
 
 class TestTensor2Pil:
