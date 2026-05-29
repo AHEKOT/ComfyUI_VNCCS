@@ -13,6 +13,10 @@ from nodes.vnccs_control_center import (
     _find_entry,
     _rel_within_folder,
     _find_model_on_disk,
+    _resolve_model_download_path,
+    _validate_downloaded_model_file,
+    _validate_https_url,
+    _filter_entries_by_kind,
     _build_dynamic_paths,
     _build_custom_lora_name,
     _merge_custom_loras,
@@ -116,6 +120,64 @@ class TestFindModelOnDisk:
 
         path, exists = _find_model_on_disk("models/checkpoints/ghost.safetensors")
         assert exists is False
+
+
+class TestDownloadSafety:
+    def test_https_url_required(self):
+        with pytest.raises(ValueError):
+            _validate_https_url("http://example.com/model.safetensors")
+
+    def test_resolve_model_download_path_rejects_absolute(self):
+        with pytest.raises(ValueError):
+            _resolve_model_download_path("/tmp/model.safetensors")
+
+    def test_resolve_model_download_path_rejects_traversal(self):
+        with pytest.raises(ValueError):
+            _resolve_model_download_path("models/checkpoints/../evil.safetensors")
+
+    def test_resolve_model_download_path_rejects_non_model_extension(self):
+        with pytest.raises(ValueError):
+            _resolve_model_download_path("models/checkpoints/readme.txt")
+
+    def test_resolve_model_download_path_accepts_models_relative_path(self, tmp_path, monkeypatch):
+        import folder_paths as fp
+        monkeypatch.setattr(fp, "models_dir", str(tmp_path), raising=False)
+        path = _resolve_model_download_path("models/checkpoints/model.safetensors")
+        assert path == os.path.join(str(tmp_path), "checkpoints", "model.safetensors")
+
+    def test_validate_downloaded_model_rejects_html(self, tmp_path):
+        f = tmp_path / "fake.safetensors"
+        f.write_bytes(b"<html>" + b"x" * 2048)
+        with pytest.raises(ValueError):
+            _validate_downloaded_model_file(str(f), "fake.safetensors")
+
+    def test_validate_downloaded_model_accepts_gguf_magic(self, tmp_path):
+        f = tmp_path / "model.gguf"
+        f.write_bytes(b"GGUF" + b"\0" * 2048)
+        assert _validate_downloaded_model_file(str(f), "model.gguf") is True
+
+
+class TestKindFiltering:
+    def test_filters_exact_kind_match(self):
+        entries = [
+            {"name": "QIE", "kind": "QIE2511"},
+            {"name": "Anima", "kind": "Anima"},
+        ]
+        assert _filter_entries_by_kind(entries, "QIE2511") == [entries[0]]
+
+    def test_uses_generic_entries_when_no_exact_match(self):
+        entries = [
+            {"name": "Generic"},
+            {"name": "Anima", "kind": "Anima"},
+        ]
+        assert _filter_entries_by_kind(entries, "QIE2511") == [entries[0]]
+
+    def test_rejects_mismatched_kinded_entries(self):
+        entries = [
+            {"name": "Anima", "kind": "Anima"},
+        ]
+        with pytest.raises(RuntimeError):
+            _filter_entries_by_kind(entries, "QIE2511")
 
 
 # ── _build_dynamic_paths ──────────────────────────────────────────────────────
@@ -251,29 +313,42 @@ class TestControlCenterCustomModel:
         custom_model = object()
         custom_clip = object()
         custom_vae = object()
+        context_model = {"name": "Qwen GGUF", "type": "gguf", "kind": "QIE2511"}
 
         monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
-            "models": [],
-            "clip": [{"name": "clip_a"}],
-            "vae": [{"name": "vae_a"}],
+            "models": [context_model],
+            "clip": [{"name": "clip_a", "kind": "QIE2511"}],
+            "vae": [{"name": "vae_a", "kind": "QIE2511"}],
             "lora": [],
         })
 
         def fake_load_model_block(model_entry, selected_type, type_settings, config, selected_clips, selected_vae, custom_model=None):
             assert selected_type == "custom"
-            assert model_entry is None
+            assert model_entry == context_model
             assert custom_model is not None
+            assert selected_clips == ["clip_a"]
+            assert selected_vae == "vae_a"
             return custom_model, custom_clip, custom_vae
 
         monkeypatch.setattr("nodes.vnccs_control_center._load_model_block", fake_load_model_block)
+        captured = {}
+        def fake_apply_loras(model, clip, lora_states, config, model_type, **kwargs):
+            captured["model_entry"] = kwargs.get("model_entry")
+            return model, clip
         monkeypatch.setattr(
             "nodes.vnccs_control_center._apply_loras",
-            lambda model, clip, lora_states, config, model_type, **kwargs: (model, clip),
+            fake_apply_loras,
         )
 
         pipe = _build_control_center_pipe(
             "demo/repo",
-            {"selected_type": "custom", "loras": [], "type_settings": {}, "model_params": {}},
+            {
+                "selected_type": "custom",
+                "selected_models": {"gguf": "Qwen GGUF"},
+                "loras": [],
+                "type_settings": {},
+                "model_params": {},
+            },
             custom_model=custom_model,
         )
 
@@ -283,5 +358,5 @@ class TestControlCenterCustomModel:
         assert pipe.loader_type == "standard"
         assert pipe.nunchaku_kind is None
         assert pipe.nunchaku_settings is None
-        assert pipe.model_entry is None
-
+        assert pipe.model_entry == context_model
+        assert captured["model_entry"] == context_model

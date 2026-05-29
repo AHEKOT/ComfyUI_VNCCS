@@ -39,8 +39,12 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         if not name:
             return web.json_response({"error": "name required"}, status=400)
 
-        from .utils import base_output_dir
-        cfg_path = os.path.join(base_output_dir(), name, f"{name}_config.json")
+        try:
+            from .utils import config_path, ensure_safe_name
+            name = ensure_safe_name(name, "character")
+            cfg_path = config_path(name)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
 
         if not os.path.exists(cfg_path):
             return web.json_response({"error": "not found", "path": cfg_path}, status=404)
@@ -75,11 +79,11 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             return web.json_response({"error": "name required"}, status=400)
         
         try:
-            from .utils import character_dir, base_output_dir
+            from .utils import character_dir, safe_join_under, base_output_dir, ensure_safe_name
             import shutil
-            import time
-            
+            name = ensure_safe_name(name, "character")
             char_path = character_dir(name)
+            safe_join_under(base_output_dir(), os.path.relpath(char_path, base_output_dir()))
             if not os.path.exists(char_path):
                 return web.json_response({"error": f"Character '{name}' not found"}, status=404)
                 
@@ -100,9 +104,11 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         name = request.rel_url.query.get("name", "").strip()
         if not name:
             return web.json_response({"error": "name required"}, status=400)
-        forbidden = set('/\\:')
-        if any(c in forbidden for c in name):
-            return web.json_response({"error": "invalid characters"}, status=400)
+        try:
+            from .utils import ensure_safe_name
+            name = ensure_safe_name(name, "character")
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
         defaults = dict(
             existing_character=name,
             background_color="green",
@@ -124,11 +130,11 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         )
         try:
             from .nodes.character_creator import CharacterCreator
-            from .utils import base_output_dir
+            from .utils import base_output_dir, safe_join_under
             cc = CharacterCreator()
             base_path = base_output_dir()
             os.makedirs(base_path, exist_ok=True)
-            base_char_dir = os.path.join(base_path, name)
+            base_char_dir = safe_join_under(base_path, name)
             config_path = os.path.join(base_char_dir, f"{name}_config.json")
             if os.path.exists(config_path):
                 try:
@@ -177,9 +183,12 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         costume_name = request.rel_url.query.get("costume", "").strip()
         if not character_name or not costume_name:
             return web.json_response({"error": "character and costume required"}, status=400)
-        forbidden = set('/\\:')
-        if any(c in forbidden for c in character_name) or any(c in forbidden for c in costume_name):
-            return web.json_response({"error": "invalid characters"}, status=400)
+        try:
+            from .utils import ensure_safe_name
+            character_name = ensure_safe_name(character_name, "character")
+            costume_name = ensure_safe_name(costume_name, "costume")
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
         try:
             from .utils import load_config, save_config, ensure_costume_structure
             config = load_config(character_name)
@@ -217,7 +226,7 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         file_path = os.path.join(models_dir, filename)
         
         # Security check - ensure file is within models directory
-        if not os.path.abspath(file_path).startswith(os.path.abspath(models_dir)):
+        if os.path.commonpath([os.path.abspath(models_dir), os.path.abspath(file_path)]) != os.path.abspath(models_dir):
             return web.Response(text="Invalid path", status=400)
         
         if not os.path.exists(file_path):
@@ -271,7 +280,7 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             file_path = os.path.join(presets_dir, filename)
             
             # Security check
-            if not os.path.abspath(file_path).startswith(os.path.abspath(presets_dir)):
+            if os.path.commonpath([os.path.abspath(presets_dir), os.path.abspath(file_path)]) != os.path.abspath(presets_dir):
                 return web.Response(text="Invalid path", status=400)
             
             if not os.path.exists(file_path):

@@ -18,6 +18,7 @@ from ..utils import (
     load_costume_info, list_costumes, ensure_costume_structure,
     sheets_dir, load_character_info
 )
+from ._safe_utils import ensure_safe_name, safe_join_under, safe_relative_path
 from .vnccs_control_center import _apply_lora_standard, _apply_lora_nunchaku
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -460,11 +461,12 @@ class ClothesDesigner:
                  c_sub = c_info.get("subfolder", "")
                  c_type = c_info.get("type", "input")
                  
-                 # Standard ComfyUI Image Load logic
-                 if c_sub: 
-                     image_path = os.path.join(folder_paths.get_input_directory(), c_sub, c_name)
-                 else: 
-                     image_path = folder_paths.get_annotated_filepath(c_name)
+                 base_dir = folder_paths.get_input_directory()
+                 image_parts = []
+                 if c_sub:
+                     image_parts.append(safe_relative_path(c_sub, "subfolder"))
+                 image_parts.append(safe_relative_path(c_name, "image_name"))
+                 image_path = safe_join_under(base_dir, *image_parts)
                  
                  i = Image.open(image_path)
                  
@@ -602,6 +604,7 @@ async def vnccs_list_costumes(request):
     character = request.rel_url.query.get("character", "")
     if not character: return web.json_response([])
     try:
+        character = ensure_safe_name(character, "character")
         data = list_costumes(character)
         return web.json_response(data)
     except Exception as e:
@@ -613,6 +616,8 @@ async def vnccs_get_costume(request):
     costume = request.rel_url.query.get("costume", "")
     if not character or not costume: return web.json_response({})
     try:
+        character = ensure_safe_name(character, "character")
+        costume = ensure_safe_name(costume, "costume")
         data = load_costume_info(character, costume)
         return web.json_response(data)
     except Exception as e:
@@ -626,6 +631,8 @@ async def vnccs_save_costume(request):
         costume = data.get("costume")
         info = data.get("info", {})
         if not character or not costume: return web.Response(status=400)
+        character = ensure_safe_name(character, "character")
+        costume = ensure_safe_name(costume, "costume")
         ensure_costume_structure(character, costume)
         save_costume_info(character, costume, info)
         return web.json_response({"status": "ok"})
@@ -744,6 +751,11 @@ async def vnccs_get_preview(request):
     character = request.rel_url.query.get("character", "")
     costume = request.rel_url.query.get("costume", "Naked")
     if not character: return web.Response(status=404)
+    try:
+        character = ensure_safe_name(character, "character")
+        costume = ensure_safe_name(costume, "costume")
+    except ValueError as e:
+        return web.Response(status=400, text=str(e))
 
     naked_sprite = get_latest_sprite_path(character, "Naked")
     original_sprite = get_latest_sprite_path(character, "Original")

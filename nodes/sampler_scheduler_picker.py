@@ -28,7 +28,7 @@ class VNCCSSamplerSchedulerPicker:
     """Expose ComfyUI sampler and scheduler lists as selectable outputs."""
 
     CATEGORY = "VNCCS"
-    RETURN_TYPES = (SAMPLER_ENUM, SCHEDULER_ENUM)
+    RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("sampler_name", "scheduler")
     FUNCTION = "pick"
 

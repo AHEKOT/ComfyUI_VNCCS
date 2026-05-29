@@ -11,6 +11,7 @@ from ..utils import (
     base_output_dir, character_dir, list_characters,
     load_character_info, load_character_sheet, list_costumes
 )
+from ._safe_utils import ensure_safe_name, safe_join_under, safe_relative_path
 
 # --- ComfyUI Server Imports ---
 try:
@@ -448,6 +449,7 @@ if server:
             return web.json_response({"error": "No character specified"}, status=400)
 
         try:
+            character = ensure_safe_name(character, "character")
             char_path = character_dir(character)
             empty_folders = []
 
@@ -477,7 +479,6 @@ if server:
                             rel_path = os.path.join(main_dir, costume, emotion)
                             empty_folders.append({
                                 "path": rel_path,
-                                "full_path": emotion_path,
                                 "type": "emotion",
                                 "reason": "No images in folder"
                             })
@@ -514,27 +515,53 @@ if server:
         try:
             data = await request.json()
             folders_to_delete = data.get("folders", [])
+            character = data.get("character", "")
             
             deleted = []
             errors = []
+            base_root = base_output_dir()
+            char_root = None
+            if character:
+                try:
+                    char_root = character_dir(ensure_safe_name(character, "character"))
+                except ValueError as e:
+                    return web.json_response({"error": str(e)}, status=400)
             
             for folder_path in folders_to_delete:
                 try:
-                    if os.path.exists(folder_path) and os.path.isdir(folder_path):
+                    raw_path = str(folder_path or "")
+                    if not raw_path:
+                        continue
+
+                    if os.path.isabs(raw_path):
+                        resolved_path = os.path.abspath(raw_path)
+                        if os.path.commonpath([os.path.abspath(base_root), resolved_path]) != os.path.abspath(base_root):
+                            errors.append(f"Folder outside VNCCS output: {raw_path}")
+                            continue
+                    else:
+                        rel_path = safe_relative_path(raw_path, "folder")
+                        root = char_root or base_root
+                        resolved_path = safe_join_under(root, rel_path)
+
+                    if os.path.exists(resolved_path) and os.path.isdir(resolved_path):
                         # Safety check: only delete if empty or contains only empty subdirs
-                        files = [f for f in os.listdir(folder_path) 
-                                if os.path.isfile(os.path.join(folder_path, f))]
+                        files = [f for f in os.listdir(resolved_path) 
+                                if os.path.isfile(os.path.join(resolved_path, f))]
                         if len(files) == 0:
                             import shutil
-                            shutil.rmtree(folder_path)
-                            deleted.append(folder_path)
+                            shutil.rmtree(resolved_path)
+                            deleted.append(os.path.relpath(resolved_path, base_root))
                             
                             # Try to remove parent if it's now empty
-                            parent = os.path.dirname(folder_path)
-                            if os.path.exists(parent) and len(os.listdir(parent)) == 0:
+                            parent = os.path.dirname(resolved_path)
+                            if (
+                                os.path.commonpath([os.path.abspath(base_root), os.path.abspath(parent)]) == os.path.abspath(base_root)
+                                and os.path.exists(parent)
+                                and len(os.listdir(parent)) == 0
+                            ):
                                 os.rmdir(parent)
                         else:
-                            errors.append(f"Folder not empty: {folder_path}")
+                            errors.append(f"Folder not empty: {raw_path}")
                 except Exception as e:
                     errors.append(f"Failed to delete {folder_path}: {str(e)}")
             
@@ -545,4 +572,3 @@ if server:
             })
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
-

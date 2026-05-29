@@ -20,6 +20,7 @@ from ..utils import (
     load_character_info, save_config,
     character_dir, sheets_dir, MAIN_DIRS, EMOTIONS
 )
+from ._safe_utils import safe_join_under, safe_relative_path
 
 SKIN_COLOR_OPTIONS = [
     "light skin",
@@ -92,10 +93,14 @@ class CharacterCloner:
                 else:
                     base_dir = folder_paths.get_output_directory()
                 
-                if subfolder:
-                    img_path = os.path.join(base_dir, subfolder, img_name)
-                else:
-                    img_path = os.path.join(base_dir, img_name)
+                try:
+                    image_parts = []
+                    if subfolder:
+                        image_parts.append(safe_relative_path(subfolder, "subfolder"))
+                    image_parts.append(safe_relative_path(img_name, "image_name"))
+                    img_path = safe_join_under(base_dir, *image_parts)
+                except ValueError:
+                    continue
 
                 if img_path and os.path.exists(img_path):
                     i = Image.open(img_path)
@@ -378,8 +383,14 @@ if server:
             elif img_type == "temp": base_dir = folder_paths.get_temp_directory()
             else: base_dir = folder_paths.get_output_directory()
             
-            if subfolder: image_path = os.path.join(base_dir, subfolder, img_name)
-            else: image_path = os.path.join(base_dir, img_name)
+            try:
+                image_parts = []
+                if subfolder:
+                    image_parts.append(safe_relative_path(subfolder, "subfolder"))
+                image_parts.append(safe_relative_path(img_name, "image_name"))
+                image_path = safe_join_under(base_dir, *image_parts)
+            except ValueError as e:
+                return web.Response(status=400, text=str(e))
 
             if not image_path or not os.path.exists(image_path):
                 return web.Response(status=404, text=f"Image {img_name} not found")

@@ -10,7 +10,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 pytest.importorskip("torch")
 
-from nodes.character_creator_v2 import CharacterCreatorV2, decode_generation_samples, normalize_gen_settings
+from nodes.character_creator_v2 import (
+    CharacterCreatorV2,
+    decode_generation_samples,
+    normalize_gen_settings,
+    postprocess_character_wizard_result,
+)
 from utils import normalize_hair_tags
 
 
@@ -252,6 +257,40 @@ class TestGenerationModes:
         assert settings["turbo_enabled"] is True
         assert settings["lora_stack"] == [{"name": "extra.safetensors", "strength": 0.5}]
 
+    def test_character_wizard_postprocess_afro_student(self):
+        parsed = {
+            "sex": "male",
+            "age": 20,
+            "race": "afro_student",
+            "skin_color": "",
+            "body": "",
+            "face": "",
+            "hair": "black_hair, medium_hair",
+            "eyes": "brown_eyes",
+            "additional_details": "",
+        }
+
+        result = postprocess_character_wizard_result(parsed, "young afro student")
+
+        assert result["race"] == "human"
+        assert result["skin_color"] == "dark skin"
+        assert "average build" in result["body"]
+
+    def test_character_wizard_postprocess_russian_afro_student(self):
+        parsed = {
+            "sex": "male",
+            "age": 20,
+            "race": "afro_student",
+            "skin_color": "",
+            "body": "",
+        }
+
+        result = postprocess_character_wizard_result(parsed, "молодой афро студент")
+
+        assert result["race"] == "human"
+        assert result["skin_color"] == "dark skin"
+        assert "average build" in result["body"]
+
     def test_decode_generation_samples_unwraps_common_ksampler_dict(self):
         class DummyVAE:
             def __init__(self):
@@ -267,6 +306,27 @@ class TestGenerationModes:
         result = decode_generation_samples(
             vae,
             {"samples": latent_samples},
+            {"generation_mode": "illustrious"},
+        )
+
+        assert result == "decoded"
+        assert vae.received is latent_samples
+
+    def test_decode_generation_samples_unwraps_nested_latent_dict(self):
+        class DummyVAE:
+            def __init__(self):
+                self.received = None
+
+            def decode_tiled(self, samples, tile_x, tile_y):
+                self.received = samples
+                return "decoded"
+
+        vae = DummyVAE()
+        latent_samples = object()
+
+        result = decode_generation_samples(
+            vae,
+            {"samples": {"samples": latent_samples}},
             {"generation_mode": "illustrious"},
         )
 

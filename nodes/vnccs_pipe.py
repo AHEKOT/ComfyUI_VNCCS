@@ -12,7 +12,7 @@ Sampler / scheduler:
 """
 
 
-"""Prepare enumeration lists once so both inputs and outputs share identical types."""
+"""Prepare enumeration lists once for input validation."""
 import os
 import folder_paths
 from .sampler_scheduler_picker import (
@@ -45,8 +45,8 @@ class VNCCS_Pipe:
         "FLOAT",
         "FLOAT",
         "VNCCS_PIPE",
-        SAMPLER_ENUM,
-        SCHEDULER_ENUM,
+        "STRING",
+        "STRING",
     )
     RETURN_NAMES = (
         "model", "clip", "vae", "pos", "neg",
@@ -81,7 +81,9 @@ class VNCCS_Pipe:
                 "sample_steps": ("INT", {"default": 0, "min": 0, "max": 10000}),
                 "cfg": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 100.0, "step": 0.1}),
                 "denoise": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "pipe": ("VNCCS_PIPE",),
+                # Wildcard keeps old saved workflows from failing validation if
+                # this optional passthrough was accidentally linked to a string.
+                "pipe": ("*",),
                 # PIPE_INHERIT sentinel = pass the pipe value through unchanged
                 "sampler_name": (sampler_input, {"default": PIPE_INHERIT}),
                 "scheduler": (scheduler_input, {"default": PIPE_INHERIT}),
@@ -106,6 +108,9 @@ class VNCCS_Pipe:
                      sampler_name=PIPE_INHERIT, scheduler=PIPE_INHERIT,
                      lora_name="none", lora_strength=1.0, lora_options_json='["none"]', **_):
         """Aggregate pipe values, inheriting from upstream pipe if not provided."""
+        if pipe is not None and not any(hasattr(pipe, attr) for attr in ("model", "clip", "vae", "pos", "neg")):
+            pipe = None
+
         # Inherit object references when not connected
         model = self._inherit(model, pipe, "model", zero_is_empty=False)
         clip = self._inherit(clip, pipe, "clip", zero_is_empty=False)

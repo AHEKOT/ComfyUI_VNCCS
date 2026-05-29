@@ -25,6 +25,7 @@ from ..utils import (
     list_characters, character_dir, base_output_dir,
     sheets_dir, faces_dir, normalize_hair_tags
 )
+from ._safe_utils import ensure_safe_name
 
 # --------------------------------------------------------------------
 # Helper Functions
@@ -204,7 +205,37 @@ SKIN_COLOR_OPTIONS = [
 
 SKIN_COLOR_HINT_RE = re.compile(
     r"\b(skin|complexion|pale|fair|light[- ]skinned|tan|tanned|dark[- ]skinned|"
-    r"brown[- ]skinned|olive|blue[- ]skinned|green[- ]skinned|grey[- ]skinned|gray[- ]skinned)\b",
+    r"brown[- ]skinned|black|black[- ]skinned|afro|african|african[- ]american|"
+    r"olive|blue[- ]skinned|green[- ]skinned|grey[- ]skinned|gray[- ]skinned)\b|"
+    r"(афро|африкан|темн[а-яё]+(?:\\s+кож[а-яё]+)?|смугл[а-яё]+)",
+    re.IGNORECASE,
+)
+
+RACE_OPTION_TAGS = {
+    "animal_ears", "cat_girl", "fox_girl", "rabbit_girl", "horse_girl", "kemonomimi",
+    "furry", "furry_female", "demon_girl", "demon_horns", "dragon_girl", "dragon_horns",
+    "wings", "feathered_wings", "pointy_ears", "vampire", "mermaid", "naga",
+    "rabbit_ears", "horse_tail", "tail",
+}
+HUMAN_HINT_RE = re.compile(
+    r"\b(human|person|student|schoolboy|schoolgirl|man|woman|boy|girl|guy|"
+    r"afro|african|african[- ]american|black)\b|"
+    r"(человек|студент|студентка|парень|девушка|мужчина|женщина|афро|африкан)",
+    re.IGNORECASE,
+)
+YOUNG_BODY_HINT_RE = re.compile(
+    r"\b(young|student|teen|teenage|schoolboy|schoolgirl|college)\b|"
+    r"(молод|юноша|юная|студент|студентка|подрост)",
+    re.IGNORECASE,
+)
+SLIM_BODY_HINT_RE = re.compile(
+    r"\b(slim|slender|thin|skinny|lean|petite)\b|"
+    r"(стройн|худ|тонк)",
+    re.IGNORECASE,
+)
+ATHLETIC_BODY_HINT_RE = re.compile(
+    r"\b(athletic|fit|sporty|muscular)\b|"
+    r"(атлет|спорт|мускул|подтянут)",
     re.IGNORECASE,
 )
 
@@ -254,6 +285,104 @@ def _parse_character_wizard_json(content):
     except Exception:
         age = 18
     result["age"] = max(1, min(100, age))
+    return result
+
+
+def _split_prompt_tokens(value):
+    return [part.strip() for part in str(value or "").split(",") if part.strip()]
+
+
+def _join_prompt_tokens(tokens):
+    seen = set()
+    out = []
+    for token in tokens:
+        normalized = token.strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(normalized)
+    return ", ".join(out)
+
+
+def _infer_skin_color_from_description(description):
+    text = str(description or "").lower()
+    if re.search(r"\b(afro|african|african[- ]american|black|black[- ]skinned)\b|афро|африкан|темн|смугл", text):
+        return "dark skin"
+    if re.search(r"\b(brown[- ]skinned|brown skin)\b|коричнев", text):
+        return "brown skin"
+    if re.search(r"\b(tan|tanned)\b|загорел", text):
+        return "tan skin"
+    if re.search(r"\b(olive)\b|оливков", text):
+        return "olive skin"
+    if re.search(r"\b(pale)\b|бледн", text):
+        return "pale skin"
+    if re.search(r"\b(fair|light[- ]skinned|light skin)\b|светл", text):
+        return "fair skin"
+    return ""
+
+
+def _normalize_wizard_race(race, description):
+    tokens = _split_prompt_tokens(race)
+    kept = []
+    for token in tokens:
+        key = token.strip().lower()
+        if key in {"human", "person", "man", "woman", "boy", "girl"}:
+            continue
+        if key in {"afro", "afro_student", "african", "african_student", "black", "black_student", "student"}:
+            continue
+        if key in RACE_OPTION_TAGS:
+            kept.append(token)
+    if kept:
+        return _join_prompt_tokens(kept)
+    if HUMAN_HINT_RE.search(description or ""):
+        return "human"
+    return ""
+
+
+def _normalize_wizard_body(body, description, sex):
+    tokens = _split_prompt_tokens(body)
+    kept = []
+    for token in tokens:
+        key = token.lower()
+        if key in {"body", "unknown", "none", "n/a"}:
+            continue
+        kept.append(token)
+
+    if any(re.search(r"\b(slim|slender|thin|skinny|lean|petite|athletic|fit|muscular|average build|normal build)\b", t, re.I) for t in kept):
+        return _join_prompt_tokens(kept)
+
+    text = str(description or "")
+    if SLIM_BODY_HINT_RE.search(text):
+        kept.append("slim build")
+    elif ATHLETIC_BODY_HINT_RE.search(text):
+        kept.append("athletic build")
+    elif YOUNG_BODY_HINT_RE.search(text):
+        kept.append("average build")
+
+    if sex == "female" and not any("breast" in t.lower() or "chest" in t.lower() for t in kept):
+        kept.append("small_breasts")
+
+    return _join_prompt_tokens(kept)
+
+
+def postprocess_character_wizard_result(parsed, user_description):
+    result = dict(parsed or {})
+    description = str(user_description or "")
+    result["race"] = _normalize_wizard_race(result.get("race", ""), description)
+
+    inferred_skin = _infer_skin_color_from_description(description)
+    if inferred_skin:
+        result["skin_color"] = inferred_skin
+    elif not SKIN_COLOR_HINT_RE.search(description):
+        result["skin_color"] = ""
+
+    result["body"] = _normalize_wizard_body(
+        result.get("body", ""),
+        description,
+        result.get("sex", "female"),
+    )
     return result
 
 
@@ -523,20 +652,36 @@ def validate_anima_conditioning(positive, negative, clip_name):
 
 
 def decode_generation_samples(vae, samples, gen_settings):
+    def unwrap_latent_samples(value):
+        while isinstance(value, (list, tuple)) and value:
+            value = value[0]
+        seen_ids = set()
+        while isinstance(value, dict) and "samples" in value:
+            value_id = id(value)
+            if value_id in seen_ids:
+                break
+            seen_ids.add(value_id)
+            value = value["samples"]
+            while isinstance(value, (list, tuple)) and value:
+                value = value[0]
+        return value
+
     if str(gen_settings.get("generation_mode", "illustrious")).lower() == "anima":
         latent_payload = samples if isinstance(samples, dict) else {"samples": samples}
+        latent_tensor = unwrap_latent_samples(latent_payload)
+        decode_payload = {"samples": latent_tensor}
         decoded = _call_node_method(
             ["VAEDecode"],
             ["decode"],
-            samples=latent_payload,
+            samples=decode_payload,
             vae=vae,
         )
         if isinstance(decoded, tuple) and decoded:
             return decoded[0]
         if decoded is not None:
             return decoded
-        return vae.decode(latent_payload["samples"])
-    latent_samples = samples.get("samples") if isinstance(samples, dict) else samples
+        return vae.decode(latent_tensor)
+    latent_samples = unwrap_latent_samples(samples)
     return vae.decode_tiled(latent_samples, tile_x=512, tile_y=512)
 
 if server:
@@ -578,6 +723,7 @@ if server:
             name = request.rel_url.query.get("character", "")
             if not name:
                 return web.json_response({})
+            name = ensure_safe_name(name, "character")
                 
             config = load_config(name)
             if config and "character_info" in config:
@@ -711,7 +857,11 @@ Return a raw JSON object with exactly these keys:
 
 Rules:
 - Use comma-separated prompt fragments for text fields.
-- For race, hair, eyes, body and additional_details, prefer exact tags from the provided tag list.
+- The race field is for species/fantasy traits only. For normal humans set race to "human".
+- Never put ethnicity, nationality, profession, role, clothing, or archetype in race. Examples of invalid race values: "afro_student", "black student", "asian girl", "teacher".
+- Put skin tone in skin_color, not race. "afro", "African", "African-American", "black", or similar means skin_color should be "dark skin" unless another skin tone is explicit.
+- For body, always provide a visible body/build descriptor. Use listed breast/chest tags when relevant, and add concise build phrases like "slim build", "average build", "athletic build" when useful.
+- For race, hair, eyes, body and additional_details, prefer exact tags from the provided tag list when they fit.
 - For skin_color, do not guess a default. Use an empty string unless the user's idea explicitly mentions skin tone, complexion, or non-human skin color.
 - Do not use "pale skin" as a fallback.
 - Do not describe clothing or outfit items.
@@ -760,8 +910,7 @@ Example:
                     "message": "Failed to parse Character Wizard JSON output.",
                     "raw": content or "",
                 }, status=500)
-            if not SKIN_COLOR_HINT_RE.search(user_description or ""):
-                parsed["skin_color"] = ""
+            parsed = postprocess_character_wizard_result(parsed, user_description)
 
             return web.json_response(parsed)
         except Exception as e:

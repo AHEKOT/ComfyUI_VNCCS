@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from nodes.vnccs_pipe import VNCCS_Pipe, PIPE_INHERIT
+from nodes.sampler_scheduler_picker import VNCCSSamplerSchedulerPicker
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -215,6 +216,23 @@ class TestProcessPipeLoaderContext:
 # ── return tuple shape ────────────────────────────────────────────────────────
 
 class TestProcessPipeReturnShape:
+    def test_declares_sampler_outputs_as_strings(self):
+        assert VNCCS_Pipe.RETURN_TYPES[10] == "STRING"
+        assert VNCCS_Pipe.RETURN_TYPES[11] == "STRING"
+        assert VNCCSSamplerSchedulerPicker.RETURN_TYPES == ("STRING", "STRING")
+
+    def test_accepts_legacy_non_pipe_input_without_inheriting(self):
+        node = VNCCS_Pipe()
+        result = node.process_pipe(
+            model="model", clip=None, vae=None, pos=None, neg=None,
+            seed_int=0, sample_steps=0, cfg=0.0, denoise=0.0,
+            pipe="legacy-string-link",
+            sampler_name=PIPE_INHERIT, scheduler=PIPE_INHERIT,
+            lora_name="none", lora_strength=1.0, lora_options_json='["none"]',
+        )
+        assert result[0] == "model"
+        assert result[9] is node
+
     def test_returns_12_values(self):
         node = VNCCS_Pipe()
         pipe = _make_pipe()

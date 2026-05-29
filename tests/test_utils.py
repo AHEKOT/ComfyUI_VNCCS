@@ -3,6 +3,8 @@
 import json
 import os
 import sys
+import importlib
+import types
 
 import pytest
 
@@ -265,6 +267,38 @@ class TestPathHelpers:
     def test_character_dir_contains_name(self):
         path = U.character_dir("Alice")
         assert path.endswith("Alice")
+
+    @pytest.mark.parametrize("bad", ["..", "../Alice", "Alice/../../Bob", "Alice\\Bob", "Alice:Bob"])
+    def test_character_dir_rejects_unsafe_names(self, bad):
+        with pytest.raises(ValueError):
+            U.character_dir(bad)
+
+    def test_safe_join_under_rejects_escape(self, tmp_path):
+        with pytest.raises(ValueError):
+            U.safe_join_under(str(tmp_path), "..", "outside")
+
+    def test_safe_relative_path_normalizes_backslashes(self):
+        assert U.safe_relative_path("Sheets\\Naked\\neutral") == "Sheets/Naked/neutral"
+
+    @pytest.mark.parametrize("bad", ["/abs/path", "../x", "a/../b", "~/.ssh"])
+    def test_safe_relative_path_rejects_unsafe_paths(self, bad):
+        with pytest.raises(ValueError):
+            U.safe_relative_path(bad)
+
+    def test_node_safe_utils_fallback_when_utils_is_old(self, monkeypatch):
+        original_utils = sys.modules.get("_vnccs.utils")
+        fake_utils = types.ModuleType("_vnccs.utils")
+        monkeypatch.setitem(sys.modules, "_vnccs.utils", fake_utils)
+        sys.modules.pop("_vnccs.nodes._safe_utils", None)
+        try:
+            safe_mod = importlib.import_module("_vnccs.nodes._safe_utils")
+            with pytest.raises(ValueError):
+                safe_mod.ensure_safe_name("../bad", "character")
+            assert safe_mod.safe_relative_path("A\\B") == "A/B"
+        finally:
+            sys.modules.pop("_vnccs.nodes._safe_utils", None)
+            if original_utils is not None:
+                monkeypatch.setitem(sys.modules, "_vnccs.utils", original_utils)
 
     def test_config_path_filename(self):
         path = U.config_path("Alice")

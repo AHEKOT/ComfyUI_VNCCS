@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 EMOTIONS = ["neutral"]
 MAIN_DIRS = ["Sprites", "Faces", "Sheets"]
+SAFE_NAME_RE = re.compile(r"^[^/\\:\0]{1,120}$")
 AGE_CONTROL_POINTS = [
     (0, -5.0),
     (3, -4.0),
@@ -40,6 +41,46 @@ def base_output_dir() -> str:
         # Fallback for local usage
         current_dir = os.path.dirname(__file__)
         return os.path.abspath(os.path.join(current_dir, "..", "..", "output", "VNCCS", "Characters"))
+
+
+def ensure_safe_name(value: str, field: str = "name") -> str:
+    """Validate a user-controlled path segment used by VNCCS."""
+    if value is None:
+        raise ValueError(f"{field} is required")
+    value = str(value).strip()
+    if not value:
+        raise ValueError(f"{field} is required")
+    if value in {".", ".."} or ".." in value:
+        raise ValueError(f"{field} contains invalid path traversal")
+    if not SAFE_NAME_RE.match(value):
+        raise ValueError(f"{field} contains invalid characters")
+    return value
+
+
+def safe_join_under(base: str, *parts: str) -> str:
+    """Join path parts and ensure the result remains under base."""
+    base_abs = os.path.abspath(base)
+    target = os.path.abspath(os.path.join(base_abs, *[str(part) for part in parts]))
+    if os.path.commonpath([base_abs, target]) != base_abs:
+        raise ValueError("path escapes allowed directory")
+    return target
+
+
+def safe_relative_path(value: str, field: str = "path") -> str:
+    """Validate a relative path sent by UI for resources below a known root."""
+    if value is None:
+        raise ValueError(f"{field} is required")
+    normalized = str(value).strip().replace("\\", "/")
+    if not normalized:
+        raise ValueError(f"{field} is required")
+    if normalized.startswith("/") or normalized.startswith("~"):
+        raise ValueError(f"{field} must be relative")
+    parts = [part for part in normalized.split("/") if part]
+    if not parts or any(part in {".", ".."} for part in parts):
+        raise ValueError(f"{field} contains invalid path traversal")
+    if any("\0" in part for part in parts):
+        raise ValueError(f"{field} contains invalid characters")
+    return "/".join(parts)
 
 
 def get_legacy_output_dir() -> str:
@@ -165,7 +206,7 @@ def migrate_legacy_data() -> dict:
 
 def character_dir(name: str) -> str:
     """Get character directory path."""
-    return os.path.join(base_output_dir(), name)
+    return safe_join_under(base_output_dir(), ensure_safe_name(name, "character"))
 
 
 def faces_dir(name: str, costume: str = "Naked", emotion: str = "neutral") -> str:

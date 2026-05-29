@@ -1071,9 +1071,7 @@ class VNCCSControlCenterWidget {
         this.state.selected_type = nextType;
 
         const variants = this._visibleModelsByType(nextType);
-        if (nextType === "custom") {
-            this.state.selected_model = "";
-        } else {
+        if (nextType !== "custom") {
             const selectedModel = this._getSelectedModelName(nextType);
             if (!variants.find(m => m.name === selectedModel) && variants.length) {
                 this._setSelectedModelName(nextType, variants[0].name);
@@ -1143,9 +1141,16 @@ class VNCCSControlCenterWidget {
     _getSelectedModelEntry() {
         if (!this.config?.models?.length) return null;
         const selectedType = this._getSelectedType();
-        if (selectedType === "custom") return null;
+        if (selectedType === "custom") return this._getCustomContextModelEntry();
         const selectedModel = this._getSelectedModelName(selectedType);
         const variants = this._visibleModelsByType(selectedType);
+        return variants.find(m => m.name === selectedModel) ?? variants[0] ?? null;
+    }
+
+    _getCustomContextModelEntry() {
+        const contextType = "gguf";
+        const variants = this._visibleModelsByType(contextType);
+        const selectedModel = this._getSelectedModelName(contextType);
         return variants.find(m => m.name === selectedModel) ?? variants[0] ?? null;
     }
 

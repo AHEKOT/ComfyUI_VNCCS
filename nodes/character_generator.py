@@ -41,6 +41,7 @@ from .vnccs_control_center import (
     _apply_lora_standard,
     _find_model_on_disk,
     _rel_within_folder,
+    _entry_kind,
 )
 from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder
 from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, VNCCS_RMBG2
@@ -578,7 +579,53 @@ class VNCCS_CharacterGenerator:
             "cfg": float(out[7] or 1.0),
             "sampler": out[10] or "euler",
             "scheduler": out[11] or "simple",
+            "model_entry": getattr(pipe, "model_entry", None),
         }
+
+    def _expected_conditioning_width(self, pipe_values):
+        model_entry = pipe_values.get("model_entry") or {}
+        identity = " ".join([
+            str(model_entry.get("name", "")),
+            str(model_entry.get("local_path", "")),
+            str(_entry_kind(model_entry)),
+        ]).lower()
+        if "qie2511" in identity or "qwen-image-edit-2511" in identity or "qwen_image_edit_2511" in identity:
+            return 3584
+        if "anima" in identity:
+            return 2048
+        return None
+
+    def _conditioning_width(self, conditioning):
+        try:
+            if not conditioning:
+                return None
+            first = conditioning[0]
+            tensor = first[0] if isinstance(first, (list, tuple)) else first
+            return tensor.shape[-1]
+        except Exception:
+            return None
+
+    def _validate_conditioning_for_model(self, pipe_values, positive, negative, stage_label):
+        expected = self._expected_conditioning_width(pipe_values)
+        if expected is None:
+            return
+        widths = [
+            width for width in (
+                self._conditioning_width(positive),
+                self._conditioning_width(negative),
+            )
+            if width is not None
+        ]
+        bad = [width for width in widths if width != expected]
+        if not bad:
+            return
+        model_entry = pipe_values.get("model_entry") or {}
+        raise RuntimeError(
+            f"{stage_label} has incompatible text conditioning width {bad[0]} for "
+            f"'{model_entry.get('name', 'selected model')}'. Expected {expected}. "
+            "Select the matching Control Center text encoder for this model family "
+            "(for Qwen-Image-Edit 2511 use QIE2511_Text_Encoder, not the Anima text encoder)."
+        )
 
     def _find_lora(self, pipe, lora_name):
         entries = getattr(pipe, "lora_entries", []) or []
@@ -756,6 +803,8 @@ class VNCCS_CharacterGenerator:
         )
 
         sampler_model = self._apply_pose_lora_to_model(pipe_values["model"], pipe_values["clip"], pipe, lora_info)
+        for index, (positive, negative) in enumerate(zip(positive_list, negative_list), start=1):
+            self._validate_conditioning_for_model(pipe_values, positive, negative, f"Pose Generation item {index}")
         sampled_list = self._run_list_mapped(
             "KSampler",
             {"positive": positive_list, "negative": negative_list, "latent_image": latent_list},
@@ -817,6 +866,7 @@ class VNCCS_CharacterGenerator:
             lora_info,
             "Remove Clothes",
         )
+        self._validate_conditioning_for_model(pipe_values, positive, negative, "Remove Clothes")
         sampled = _call_comfy_node(
             "KSampler",
             model=sampler_model,

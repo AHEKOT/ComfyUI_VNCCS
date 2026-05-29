@@ -864,11 +864,11 @@ app.registerExtension({
                         btnConfirm.innerText = "Delete";
                         btnConfirm.onclick = async () => {
                             try {
-                                const foldersToDelete = emptyFolders.map(f => f.full_path);
+                                const foldersToDelete = emptyFolders.map(f => f.path);
                                 const deleteRes = await fetch("/vnccs/delete_empty_folders", {
                                     method: "POST",
                                     headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify({ folders: foldersToDelete })
+                                    body: JSON.stringify({ character: state.character, folders: foldersToDelete })
                                 });
                                 const deleteData = await deleteRes.json();
 

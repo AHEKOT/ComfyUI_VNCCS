@@ -18,6 +18,7 @@ from huggingface_hub import hf_hub_download, hf_hub_url
 from PIL import Image
 import numpy as np
 import traceback
+import struct
 
 
 class AnyType(str):
@@ -54,6 +55,7 @@ _FOLDER_MAP = {
     "checkpoints": ["checkpoints"],
     "loras": ["loras"],
     "clip": ["clip"],
+    "text_encoders": ["text_encoders", "clip"],
     "vae": ["vae"],
     "controlnet": ["controlnet"],
     "upscale_models": ["upscale_models"],
@@ -61,6 +63,8 @@ _FOLDER_MAP = {
     "gguf": ["unet", "diffusion_models"],
     "diffusion_models": ["diffusion_models", "unet"],
 }
+_MODEL_FILE_EXTENSIONS = {".safetensors", ".gguf", ".ckpt", ".pt", ".pth", ".bin"}
+_MIN_MODEL_FILE_SIZE = 1024
 
 def _get_node_class_mappings():
     import nodes as comfy_nodes
@@ -123,6 +127,84 @@ def resolve_path(relative_path):
         return os.path.abspath(expanded)
     base = getattr(folder_paths, "base_path", os.getcwd())
     return os.path.abspath(os.path.join(base, expanded))
+
+
+def _models_root():
+    return os.path.abspath(getattr(folder_paths, "models_dir", os.path.join(getattr(folder_paths, "base_path", os.getcwd()), "models")))
+
+
+def _validate_https_url(url):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
+        raise ValueError("Download URL must be an absolute HTTPS URL")
+    return url
+
+
+def _validate_model_filename(path):
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in _MODEL_FILE_EXTENSIONS:
+        allowed = ", ".join(sorted(_MODEL_FILE_EXTENSIONS))
+        raise ValueError(f"Unsupported model file extension '{ext}'. Allowed: {allowed}")
+    return ext
+
+
+def _resolve_model_download_path(local_path):
+    if not local_path:
+        raise ValueError("Model local_path is required")
+    normalized = str(local_path).strip().replace("\\", "/")
+    if normalized.startswith("/") or normalized.startswith("~"):
+        raise ValueError("Model local_path must be relative to ComfyUI models directory")
+    parts = [part for part in normalized.split("/") if part]
+    if len(parts) < 3 or parts[0] != "models":
+        raise ValueError("Model local_path must use 'models/<type>/<file>'")
+    if any(part in {".", ".."} for part in parts):
+        raise ValueError("Model local_path contains invalid path traversal")
+    folder_type = parts[1]
+    if folder_type not in _FOLDER_MAP:
+        raise ValueError(f"Unsupported model folder '{folder_type}'")
+    _validate_model_filename(parts[-1])
+    target = os.path.abspath(os.path.join(_models_root(), *parts[1:]))
+    if os.path.commonpath([_models_root(), target]) != _models_root():
+        raise ValueError("Model local_path escapes ComfyUI models directory")
+    return target
+
+
+def _validate_downloaded_model_file(path, expected_name="model"):
+    size = os.path.getsize(path)
+    if size < _MIN_MODEL_FILE_SIZE:
+        raise ValueError(f"{expected_name} is too small to be a valid model file ({size} bytes)")
+
+    ext = _validate_model_filename(expected_name)
+    with open(path, "rb") as handle:
+        head = handle.read(256)
+
+    if head.lstrip().lower().startswith((b"<html", b"<!doctype html", b"<?xml")):
+        raise ValueError(f"{expected_name} looks like an HTML/XML response, not a model file")
+
+    if ext == ".gguf":
+        if head[:4] != b"GGUF":
+            raise ValueError(f"{expected_name} is not a valid GGUF file")
+        return True
+
+    if ext == ".safetensors":
+        if len(head) < 9:
+            raise ValueError(f"{expected_name} is not a valid safetensors file")
+        header_len = struct.unpack("<Q", head[:8])[0]
+        if header_len <= 0 or header_len > size - 8 or header_len > 100 * 1024 * 1024:
+            raise ValueError(f"{expected_name} has an invalid safetensors header")
+        with open(path, "rb") as handle:
+            handle.seek(8)
+            first_header_byte = handle.read(1)
+        if first_header_byte != b"{":
+            raise ValueError(f"{expected_name} has an invalid safetensors JSON header")
+        return True
+
+    if ext in {".ckpt", ".pt", ".pth", ".bin"}:
+        if not (head.startswith(b"PK\x03\x04") or head[:1] == b"\x80"):
+            raise ValueError(f"{expected_name} does not look like a PyTorch model checkpoint")
+        return True
+
+    return True
 
 
 def get_vnccs_config():
@@ -329,6 +411,29 @@ def _find_entry(entries, name):
     return None
 
 
+def _find_first_entry_by_type(entries, entry_type):
+    wanted = str(entry_type or "").strip().lower()
+    for entry in entries or []:
+        if _entry_type(entry) == wanted:
+            return entry
+    return None
+
+
+def _selected_model_name_for_type(state, entry_type):
+    selected_models = state.get("selected_models", {}) if isinstance(state, dict) else {}
+    if isinstance(selected_models, dict):
+        name = selected_models.get(entry_type)
+        if name:
+            return name
+    return ""
+
+
+def _custom_context_model_entry(config, state):
+    models = config.get("models", []) if isinstance(config, dict) else []
+    name = _selected_model_name_for_type(state, "gguf") or state.get("selected_model", "")
+    return _find_entry(models, name) or _find_first_entry_by_type(models, "gguf")
+
+
 def _rel_within_folder(local_path):
     parts = local_path.replace("\\", "/").split("/")
     if len(parts) >= 3 and parts[0] == "models":
@@ -338,6 +443,10 @@ def _rel_within_folder(local_path):
 
 def _find_model_on_disk(local_path):
     if not local_path:
+        return "", False
+    try:
+        _validate_model_filename(local_path)
+    except ValueError:
         return "", False
 
     parts = local_path.replace("\\", "/").split("/")
@@ -371,7 +480,10 @@ def _find_model_on_disk(local_path):
             except Exception:
                 pass
 
-    fallback = resolve_path(local_path)
+    try:
+        fallback = _resolve_model_download_path(local_path)
+    except ValueError:
+        return "", False
     return fallback, os.path.exists(fallback)
 
 
@@ -417,10 +529,21 @@ def _lora_matches_model_kind(lora_entry, model_entry):
 
 def _filter_entries_by_kind(entries, kind):
     normalized_kind = _normalize_meta_value(kind)
+    entries = list(entries or [])
     if not normalized_kind:
-        return list(entries or [])
-    matched = [entry for entry in (entries or []) if _entry_kind(entry) == normalized_kind]
-    return matched or list(entries or [])
+        return entries
+    matched = [entry for entry in entries if _entry_kind(entry) == normalized_kind]
+    if matched:
+        return matched
+    generic = [entry for entry in entries if not _entry_kind(entry)]
+    if generic:
+        return generic
+    available = sorted({_entry_kind(entry) for entry in entries if _entry_kind(entry)})
+    available_text = ", ".join(available) if available else "none"
+    raise RuntimeError(
+        f"[VNCCS Control Center] No assets compatible with model kind '{normalized_kind}'. "
+        f"Available asset kinds: {available_text}."
+    )
 
 
 def _load_checkpoint(full_path):
@@ -761,6 +884,7 @@ def _download_worker_loop():
 
         repo_id, model_key, target_model = task
         download_repo_id = target_model.get("hf_repo", repo_id)
+        temp_path = ""
 
         try:
             _DOWNLOAD_STATUS[model_key] = {"status": "downloading", "message": "Initializing..."}
@@ -788,6 +912,7 @@ def _download_worker_loop():
                 if hf_token:
                     headers = {"Authorization": f"Bearer {hf_token}"}
 
+            _validate_https_url(url)
             response = requests.get(url, headers=headers, stream=True, allow_redirects=True)
             response.raise_for_status()
 
@@ -819,8 +944,10 @@ def _download_worker_loop():
                             "progress": 0,
                         }
 
+            _DOWNLOAD_STATUS[model_key]["message"] = "Validating..."
+            target_abs_path = _resolve_model_download_path(target_model["local_path"])
+            _validate_downloaded_model_file(temp_path, os.path.basename(target_abs_path))
             _DOWNLOAD_STATUS[model_key]["message"] = "Installing..."
-            target_abs_path = resolve_path(target_model["local_path"])
             os.makedirs(os.path.dirname(target_abs_path), exist_ok=True)
 
             import shutil
@@ -829,6 +956,11 @@ def _download_worker_loop():
             update_installed_version(model_key, target_model.get("version", ""))
             _DOWNLOAD_STATUS[model_key] = {"status": "success", "message": "Installed"}
         except Exception as exc:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
             is_auth_error = False
             if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
                 is_auth_error = exc.response.status_code == 401
@@ -912,8 +1044,7 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None):
 
     config = _get_cc_config(repo_id)
     if selected_type == "custom":
-        selected_model = ""
-        model_entry = None
+        model_entry = _custom_context_model_entry(config, state)
     else:
         model_entry = _find_entry(config.get("models", []), selected_model)
     lora_entry_by_name = {
@@ -1148,12 +1279,20 @@ def _apply_nunchaku_qwen_fix():
 
 @server.PromptServer.instance.routes.get("/vnccs/control_center/nunchaku_fix_status")
 async def cc_nunchaku_fix_status(request):
-    return web.json_response(_check_nunchaku_qwen_fix())
+    return web.json_response({
+        "installed": False,
+        "disabled": True,
+        "message": "Nunchaku auto-patch is disabled in VNCCS web API.",
+    })
 
 
 @server.PromptServer.instance.routes.post("/vnccs/control_center/nunchaku_apply_fix")
 async def cc_nunchaku_apply_fix(request):
-    return web.json_response(_apply_nunchaku_qwen_fix())
+    return web.json_response({
+        "ok": False,
+        "disabled": True,
+        "message": "Nunchaku auto-patch is disabled. Apply upstream fixes manually if you use Nunchaku.",
+    }, status=410)
 
 
 @server.PromptServer.instance.routes.post("/vnccs/control_center/dependencies")
@@ -1386,6 +1525,16 @@ async def cc_download(request):
     entry = _find_entry(config.get(category, []), name)
     if not entry:
         return web.json_response({"error": f"Entry '{name}' not found in '{category}'"}, status=404)
+    try:
+        _resolve_model_download_path(entry.get("local_path", ""))
+        if entry.get("url"):
+            _validate_https_url(entry["url"])
+        elif entry.get("hf_path"):
+            _validate_model_filename(entry["hf_path"])
+        else:
+            return web.json_response({"error": "Entry must define either url or hf_path"}, status=400)
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
 
     key = f"cc_{category}_{name}"
     _DOWNLOAD_STATUS[key] = {"status": "queued", "message": "Queued..."}
