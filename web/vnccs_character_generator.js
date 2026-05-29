@@ -50,17 +50,7 @@ const DEFAULT_DATA = {
     },
     bg_remove: {
         use_internal_rmbg: true,
-        tolerance: 0.2,
-        softness: 0.16,
-        despill_strength: 0.5,
-        edge_width: 3,
-        matte_cleanup: 0.2,
-        foreground_recover: 0.35,
-        edge_decontaminate: 0.7,
-        edge_choke: 0.2,
-        matte_method: "guided_edge",
-        screen_mode: "auto",
-        output_mode: "straight_rgba",
+        preset: "balanced",
     },
     ui: {
         selected_preview: "pose_generation",
@@ -1227,6 +1217,7 @@ class CharacterGeneratorWidget {
             ]));
             this.settingsEl.appendChild(this.block("BG Remove", [
                 this.field("bg_remove", "use_internal_rmbg", "use internal RMBG", "checkbox"),
+                this.field("bg_remove", "preset", "chroma preset", "select", ["light", "balanced", "strong", "aggressive"]),
             ]));
             return;
         }
@@ -1254,27 +1245,13 @@ class CharacterGeneratorWidget {
         } else {
             upscalerFields.push(
                 this.field("upscaler", "model", "dit model", "select", this.getWorkflowModelOptions("SeedVR2LoadDiTModel", "model", WORKFLOW_UPSCALER_DIT_MODELS, this.data.upscaler.model)),
-                this.field("upscaler", "vae", "vae model", "select", this.getWorkflowModelOptions("SeedVR2LoadVAEModel", "model", WORKFLOW_UPSCALER_VAE_MODELS, this.data.upscaler.vae)),
-                this.field("upscaler", "device", "device", "select", this.getOptions("SeedVR2LoadDiTModel", "device", ["cuda:0", "cuda:1", "cpu", "mps"])),
-                this.field("upscaler", "offload_device", "offload", "select", this.getOptions("SeedVR2LoadDiTModel", "offload_device", ["cpu", "cuda:0", "cuda:1", "mps"])),
-                this.field("upscaler", "seed", "seed", "number"),
                 this.field("upscaler", "resolution", "resolution", "number"),
             );
         }
         this.settingsEl.appendChild(this.block("Upscaler", upscalerFields));
         this.settingsEl.appendChild(this.block("BG Remove", [
             this.field("bg_remove", "use_internal_rmbg", "use internal RMBG", "checkbox"),
-            this.field("bg_remove", "tolerance", "tolerance", "number"),
-            this.field("bg_remove", "softness", "softness", "number"),
-            this.field("bg_remove", "despill_strength", "despill strength", "number"),
-            this.field("bg_remove", "edge_width", "edge width", "number"),
-            this.field("bg_remove", "matte_cleanup", "matte cleanup", "number"),
-            this.field("bg_remove", "foreground_recover", "foreground recover", "number"),
-            this.field("bg_remove", "edge_decontaminate", "edge decontaminate", "number"),
-            this.field("bg_remove", "edge_choke", "edge choke", "number"),
-            this.field("bg_remove", "matte_method", "matte method", "select", ["chroma_soft", "guided_edge", "pymatting_if_available"]),
-            this.field("bg_remove", "screen_mode", "screen mode", "select", ["auto", "green", "blue", "red"]),
-            this.field("bg_remove", "output_mode", "output mode", "select", ["straight_rgba", "premultiplied_rgba"]),
+            this.field("bg_remove", "preset", "chroma preset", "select", ["light", "balanced", "strong", "aggressive"]),
         ]));
     }
 

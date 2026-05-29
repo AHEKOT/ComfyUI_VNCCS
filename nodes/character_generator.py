@@ -284,17 +284,7 @@ DEFAULT_WIDGET_DATA = {
     },
     "bg_remove": {
         "use_internal_rmbg": True,
-        "tolerance": 0.2,
-        "softness": 0.16,
-        "despill_strength": 0.5,
-        "edge_width": 3,
-        "matte_cleanup": 0.2,
-        "foreground_recover": 0.35,
-        "edge_decontaminate": 0.7,
-        "edge_choke": 0.2,
-        "matte_method": "guided_edge",
-        "screen_mode": "auto",
-        "output_mode": "straight_rgba",
+        "preset": "balanced",
     },
     "pose_generation": {
         "target_size": "1024",
@@ -304,6 +294,57 @@ DEFAULT_WIDGET_DATA = {
     },
     "remove_clothes": {
         "prompt": "Dress character: White underwear",
+    },
+}
+
+CHROMA_KEY_PRESETS = {
+    "light": {
+        "tolerance": 0.14,
+        "softness": 0.10,
+        "despill_strength": 0.35,
+        "edge_width": 2,
+        "matte_cleanup": 0.10,
+        "foreground_recover": 0.20,
+        "edge_decontaminate": 0.45,
+        "edge_choke": 0.08,
+        "matte_method": "chroma_soft",
+        "output_mode": "straight_rgba",
+    },
+    "balanced": {
+        "tolerance": 0.20,
+        "softness": 0.16,
+        "despill_strength": 0.50,
+        "edge_width": 3,
+        "matte_cleanup": 0.20,
+        "foreground_recover": 0.35,
+        "edge_decontaminate": 0.70,
+        "edge_choke": 0.20,
+        "matte_method": "guided_edge",
+        "output_mode": "straight_rgba",
+    },
+    "strong": {
+        "tolerance": 0.24,
+        "softness": 0.20,
+        "despill_strength": 0.65,
+        "edge_width": 4,
+        "matte_cleanup": 0.30,
+        "foreground_recover": 0.45,
+        "edge_decontaminate": 0.82,
+        "edge_choke": 0.28,
+        "matte_method": "guided_edge",
+        "output_mode": "straight_rgba",
+    },
+    "aggressive": {
+        "tolerance": 0.30,
+        "softness": 0.24,
+        "despill_strength": 0.80,
+        "edge_width": 5,
+        "matte_cleanup": 0.42,
+        "foreground_recover": 0.55,
+        "edge_decontaminate": 0.95,
+        "edge_choke": 0.38,
+        "matte_method": "guided_edge",
+        "output_mode": "straight_rgba",
     },
 }
 
@@ -658,29 +699,30 @@ class VNCCS_CharacterGenerator:
         )[0]
 
     def _run_upscaler_models(self, settings):
+        defaults = DEFAULT_WIDGET_DATA["upscaler"]
         dit = _call_comfy_node(
             "SeedVR2LoadDiTModel",
             model=settings["model"],
-            device=settings["device"],
-            blocks_to_swap=int(settings["blocks_to_swap"]),
-            swap_io_components=bool(settings["swap_io_components"]),
-            offload_device=settings["offload_device"],
-            cache_model=bool(settings["cache_dit"]),
-            attention_mode=settings["attention_mode"],
+            device=defaults["device"],
+            blocks_to_swap=int(defaults["blocks_to_swap"]),
+            swap_io_components=bool(defaults["swap_io_components"]),
+            offload_device=defaults["offload_device"],
+            cache_model=bool(defaults["cache_dit"]),
+            attention_mode=defaults["attention_mode"],
         )[0]
         vae = _call_comfy_node(
             "SeedVR2LoadVAEModel",
-            model=settings["vae"],
-            device=settings["device"],
-            encode_tiled=bool(settings["encode_tiled"]),
-            encode_tile_size=int(settings["encode_tile_size"]),
-            encode_tile_overlap=int(settings["encode_tile_overlap"]),
-            decode_tiled=bool(settings["decode_tiled"]),
-            decode_tile_size=int(settings["decode_tile_size"]),
-            decode_tile_overlap=int(settings["decode_tile_overlap"]),
-            tile_debug=settings["tile_debug"],
-            offload_device=settings["offload_device"],
-            cache_model=bool(settings["cache_vae"]),
+            model=defaults["vae"],
+            device=defaults["device"],
+            encode_tiled=bool(defaults["encode_tiled"]),
+            encode_tile_size=int(defaults["encode_tile_size"]),
+            encode_tile_overlap=int(defaults["encode_tile_overlap"]),
+            decode_tiled=bool(defaults["decode_tiled"]),
+            decode_tile_size=int(defaults["decode_tile_size"]),
+            decode_tile_overlap=int(defaults["decode_tile_overlap"]),
+            tile_debug=defaults["tile_debug"],
+            offload_device=defaults["offload_device"],
+            cache_model=bool(defaults["cache_vae"]),
         )[0]
         return dit, vae
 
@@ -690,8 +732,8 @@ class VNCCS_CharacterGenerator:
             model_name=settings["gan_model"],
         )[0]
 
-    def _run_upscale_one(self, image, dit, vae, background, settings, use_internal_rmbg=True):
-        upscaled = self._run_seedvr_upscale_one(image, dit, vae, settings)
+    def _run_upscale_one(self, image, dit, vae, background, settings, seed, use_internal_rmbg=True):
+        upscaled = self._run_seedvr_upscale_one(image, dit, vae, settings, seed)
         if not _as_bool(use_internal_rmbg, True):
             return upscaled
         return VNCCS_RMBG2().process_image(
@@ -706,24 +748,25 @@ class VNCCS_CharacterGenerator:
             background=str(background or "Green"),
         )[0]
 
-    def _run_seedvr_upscale_one(self, image, dit, vae, settings):
+    def _run_seedvr_upscale_one(self, image, dit, vae, settings, seed):
+        defaults = DEFAULT_WIDGET_DATA["upscaler"]
         return _call_comfy_node(
             "SeedVR2VideoUpscaler",
             image=image,
             dit=dit,
             vae=vae,
-            seed=int(settings["seed"]),
+            seed=int(seed),
             resolution=int(settings["resolution"]),
-            max_resolution=int(settings["max_resolution"]),
-            batch_size=int(settings["batch_size"]),
-            uniform_batch_size=bool(settings["uniform_batch_size"]),
-            color_correction=settings["color_correction"],
-            temporal_overlap=int(settings["temporal_overlap"]),
-            prepend_frames=int(settings["prepend_frames"]),
-            input_noise_scale=float(settings["input_noise_scale"]),
-            latent_noise_scale=float(settings["latent_noise_scale"]),
-            offload_device=settings["offload_device"],
-            enable_debug=bool(settings["enable_debug"]),
+            max_resolution=int(defaults["max_resolution"]),
+            batch_size=int(defaults["batch_size"]),
+            uniform_batch_size=bool(defaults["uniform_batch_size"]),
+            color_correction=defaults["color_correction"],
+            temporal_overlap=int(defaults["temporal_overlap"]),
+            prepend_frames=int(defaults["prepend_frames"]),
+            input_noise_scale=float(defaults["input_noise_scale"]),
+            latent_noise_scale=float(defaults["latent_noise_scale"]),
+            offload_device=defaults["offload_device"],
+            enable_debug=bool(defaults["enable_debug"]),
         )[0]
 
     def _run_gan_upscale_one(self, image, upscale_model):
@@ -733,7 +776,7 @@ class VNCCS_CharacterGenerator:
             image=image,
         )[0]
 
-    def _run_upscaler(self, image, background, settings, unique_id=None, cache_dir=None, stage="upscaler", use_internal_rmbg=True):
+    def _run_upscaler(self, image, background, settings, seed, unique_id=None, cache_dir=None, stage="upscaler", use_internal_rmbg=True):
         images = self._split_batch(image)
         total = len(images)
         mode = str(settings.get("mode", "seedvr") or "seedvr").lower()
@@ -759,7 +802,7 @@ class VNCCS_CharacterGenerator:
         dit, vae = self._run_upscaler_models(settings)
         results = []
         for index, item in enumerate(images, start=1):
-            result = self._run_upscale_one(item, dit, vae, background, settings, use_internal_rmbg=use_internal_rmbg)
+            result = self._run_upscale_one(item, dit, vae, background, settings, seed, use_internal_rmbg=use_internal_rmbg)
             results.append(self._list_to_batch(result))
             partial = torch.cat(results, dim=0)
             self._emit(
@@ -774,7 +817,7 @@ class VNCCS_CharacterGenerator:
             )
         return torch.cat(results, dim=0) if results else image
 
-    def _run_source_upscaler(self, image, settings, unique_id=None, cache_dir=None, stage="source_upscaler"):
+    def _run_source_upscaler(self, image, settings, seed, unique_id=None, cache_dir=None, stage="source_upscaler"):
         images = self._split_batch(image)
         total = len(images)
         mode = str(settings.get("mode", "seedvr") or "seedvr").lower()
@@ -800,7 +843,7 @@ class VNCCS_CharacterGenerator:
         dit, vae = self._run_upscaler_models(settings)
         results = []
         for index, item in enumerate(images, start=1):
-            result = self._run_seedvr_upscale_one(item, dit, vae, settings)
+            result = self._run_seedvr_upscale_one(item, dit, vae, settings, seed)
             results.append(self._list_to_batch(result))
             partial = torch.cat(results, dim=0)
             self._emit(
@@ -815,20 +858,31 @@ class VNCCS_CharacterGenerator:
             )
         return torch.cat(results, dim=0) if results else image
 
-    def _run_bg_remove(self, images, settings):
+    def _screen_mode_from_background(self, background):
+        normalized = str(background or "").strip().lower()
+        if normalized in {"green", "blue", "red"}:
+            return normalized
+        return "auto"
+
+    def _chroma_preset(self, settings):
+        preset_name = str(settings.get("preset", "balanced") or "balanced").strip().lower()
+        return CHROMA_KEY_PRESETS.get(preset_name, CHROMA_KEY_PRESETS["balanced"])
+
+    def _run_bg_remove(self, images, settings, background="Green"):
+        preset = self._chroma_preset(settings)
         return VNCCSChromaKey().chroma_key(
             images,
-            float(settings.get("tolerance", 0.2)),
-            float(settings.get("softness", 0.16)),
-            float(settings.get("despill_strength", 0.5)),
-            int(settings.get("edge_width", 3)),
-            float(settings.get("matte_cleanup", 0.2)),
-            float(settings.get("foreground_recover", 0.35)),
-            float(settings.get("edge_decontaminate", 0.7)),
-            float(settings.get("edge_choke", 0.2)),
-            str(settings.get("matte_method", "guided_edge")),
-            str(settings.get("screen_mode", "auto")),
-            str(settings.get("output_mode", "straight_rgba")),
+            float(preset["tolerance"]),
+            float(preset["softness"]),
+            float(preset["despill_strength"]),
+            int(preset["edge_width"]),
+            float(preset["matte_cleanup"]),
+            float(preset["foreground_recover"]),
+            float(preset["edge_decontaminate"]),
+            float(preset["edge_choke"]),
+            str(preset["matte_method"]),
+            self._screen_mode_from_background(background),
+            str(preset["output_mode"]),
         )[0]
 
     def _tensor_item_to_pil(self, image):
@@ -923,6 +977,7 @@ class VNCCS_CharacterGenerator:
                 pose_images,
                 background,
                 settings["upscaler"],
+                self._extract_pipe(pipe)["seed"],
                 unique_id=unique_id,
                 cache_dir=cache_dir,
                 use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", True),
@@ -930,7 +985,7 @@ class VNCCS_CharacterGenerator:
 
             bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
             self._emit(unique_id, "bg_remove", "running", upscaled, f"Removing background for {bg_total} images", 0, bg_total, cache_dir=cache_dir)
-            final_images = self._run_bg_remove(upscaled, settings["bg_remove"])
+            final_images = self._run_bg_remove(upscaled, settings["bg_remove"], background=background)
             saved_paths = self._save_final_sprites(final_images, sheets_path, character_name)
             saved_suffix = f"; saved {len(saved_paths)} sprites" if saved_paths else ""
             self._emit(unique_id, "bg_remove", "done", final_images, f"Background removed from {bg_total} images{saved_suffix}", bg_total, bg_total, cache_dir=cache_dir)
@@ -1019,6 +1074,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
             pose_images,
             background,
             settings["upscaler"],
+            self._extract_pipe(pipe)["seed"],
             unique_id=unique_id,
             cache_dir=cache_dir,
             stage=up_stage,
@@ -1027,7 +1083,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
 
         bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
         self._emit(unique_id, bg_stage, "running", upscaled, f"Removing background for {bg_total} images", 0, bg_total, cache_dir=cache_dir)
-        final_images = self._run_bg_remove(upscaled, settings["bg_remove"])
+        final_images = self._run_bg_remove(upscaled, settings["bg_remove"], background=background)
         self._emit(unique_id, bg_stage, "done", final_images, f"Background removed from {bg_total} images", bg_total, bg_total, cache_dir=cache_dir)
         return final_images, pose_images, upscaled
 
@@ -1206,6 +1262,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
             source_upscaled = self._run_source_upscaler(
                 character,
                 settings["upscaler"],
+                self._extract_pipe(pipe)["seed"],
                 unique_id=unique_id,
                 cache_dir=cache_dir,
                 stage="source_upscaler",
@@ -1240,6 +1297,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                 pose_images,
                 background,
                 settings["upscaler"],
+                self._extract_pipe(pipe)["seed"],
                 unique_id=unique_id,
                 cache_dir=cache_dir,
                 use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", True),
@@ -1247,7 +1305,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
 
             bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
             self._emit(unique_id, "bg_remove", "running", upscaled, f"Removing background for {bg_total} images", 0, bg_total, cache_dir=cache_dir)
-            final_images = self._run_bg_remove(upscaled, settings["bg_remove"])
+            final_images = self._run_bg_remove(upscaled, settings["bg_remove"], background=background)
             saved_paths = self._save_final_sprites(final_images, sheets_path, character_name, costume_name)
             saved_suffix = f"; saved {len(saved_paths)} sprites to {costume_name}" if saved_paths else ""
             self._emit(unique_id, "bg_remove", "done", final_images, f"Background removed from {bg_total} images{saved_suffix}", bg_total, bg_total, cache_dir=cache_dir)
