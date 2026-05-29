@@ -825,7 +825,16 @@ def _load_model_block(model_entry, selected_type, type_settings, config, selecte
 
 
 def _apply_lora_standard(model, clip, full_path, strength):
-    lora_sd = comfy.utils.load_torch_file(full_path, safe_load=True)
+    lora_name = os.path.basename(full_path)
+    try:
+        _validate_downloaded_model_file(full_path, lora_name)
+        lora_sd = comfy.utils.load_torch_file(full_path, safe_load=True)
+    except Exception as exc:
+        raise RuntimeError(
+            "[VNCCS Control Center] Failed to load LoRA "
+            f"'{lora_name}'. The file appears to be invalid or incomplete; "
+            "delete it and download/copy the LoRA again."
+        ) from exc
     clip_strength = strength if clip is not None else 0.0
     return comfy.sd.load_lora_for_models(model, clip, lora_sd, strength, clip_strength)
 

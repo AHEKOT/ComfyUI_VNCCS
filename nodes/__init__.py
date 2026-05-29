@@ -23,6 +23,7 @@ try:
     from .character_creator_v2 import CharacterCreatorV2
     from .character_cloner import CharacterCloner
     from .clothes_designer import ClothesDesigner
+    from .migration_assistant import VNCCS_MigrationAssistant
     from .sprite_manager import SpriteManager
     from .advanced_ply_viewer import VNCCS_AdvancedPlyViewer
 
@@ -70,6 +71,7 @@ try:
         "CharacterCreatorV2": CharacterCreatorV2,
         "CharacterCloner": CharacterCloner,
         "ClothesDesigner": ClothesDesigner,
+        "VNCCS_MigrationAssistant": VNCCS_MigrationAssistant,
         "SpriteManager": SpriteManager,
         "VNCCS_AdvancedPlyViewer": VNCCS_AdvancedPlyViewer,
     }
@@ -97,6 +99,7 @@ try:
         "CharacterCreatorV2": "VNCCS Character Creator V2",
         "CharacterCloner": "VNCCS Character Cloner",
         "ClothesDesigner": "VNCCS Clothes Designer",
+        "VNCCS_MigrationAssistant": "VNCCS Migration Assistent",
         "SpriteManager": "VNCCS Sprite Manager",
         "VNCCS_AdvancedPlyViewer": "👁️ Advanced PLY Viewer",
     }

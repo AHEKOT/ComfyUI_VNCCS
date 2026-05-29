@@ -17,6 +17,7 @@ from nodes.vnccs_control_center import (
     _validate_downloaded_model_file,
     _validate_download_response,
     _validate_https_url,
+    _apply_lora_standard,
     _filter_entries_by_kind,
     _build_dynamic_paths,
     _build_custom_lora_name,
@@ -170,6 +171,20 @@ class TestDownloadSafety:
         f = tmp_path / "model.gguf"
         f.write_bytes(b"GGUF" + b"\0" * 2048)
         assert _validate_downloaded_model_file(str(f), "model.gguf") is True
+
+    def test_apply_lora_standard_wraps_invalid_safetensors(self, tmp_path, monkeypatch):
+        import comfy.utils
+
+        f = tmp_path / "broken.safetensors"
+        f.write_bytes((16).to_bytes(8, "little") + b"not-json" + b"x" * 2048)
+
+        def fail_if_called(*_args, **_kwargs):
+            raise AssertionError("invalid LoRA should be rejected before torch load")
+
+        monkeypatch.setattr(comfy.utils, "load_torch_file", fail_if_called, raising=False)
+
+        with pytest.raises(RuntimeError, match="Failed to load LoRA 'broken.safetensors'"):
+            _apply_lora_standard(object(), None, str(f), 1.0)
 
 
 class TestKindFiltering:

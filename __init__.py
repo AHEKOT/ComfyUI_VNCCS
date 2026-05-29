@@ -16,7 +16,7 @@ def _vnccs_auto_migrate():
     except Exception as e:
         print(f"[VNCCS] Migration skipped: {e}")
 
-_vnccs_auto_migrate()
+print("[VNCCS] Automatic legacy migration is disabled. Use the VNCCS Migration Assistent node to migrate legacy sheets.")
 
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 
