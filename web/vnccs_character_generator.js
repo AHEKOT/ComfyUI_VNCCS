@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "./vnccs_common.js";
+import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
 
 const DEFAULT_DATA = {
     nsfw_enabled: true,
@@ -723,6 +723,7 @@ class CharacterGeneratorWidget {
         root.className = "vnccs-pipe-root";
         this.root = root;
         enableMiddleMouseCanvasPan(root);
+        attachHelpTooltips(root);
         this.updateModeClasses();
 
         this.settingsEl = document.createElement("div");
@@ -1395,6 +1396,16 @@ class CharacterGeneratorWidget {
     field(section, key, label, type = "text", options = null) {
         const wrap = document.createElement("label");
         wrap.className = "vnccs-pipe-field";
+        const help = {
+            target_size: "Changes the target size of the generated image before the next workflow stage.",
+            prompt: "Prompt text used for the remove-clothes/preparation stage.",
+            gan_model: "Upscale model used when GAN upscaling is selected.",
+            model: "SeedVR diffusion model used for the upscaler stage.",
+            resolution: "Output resolution target for SeedVR upscaling.",
+            use_internal_rmbg: "Uses the built-in background remover instead of relying only on chroma key.",
+            preset: "Strength preset for chroma/background removal."
+        }[key];
+        setHelpText(wrap, help);
         const caption = document.createElement("div");
         caption.className = "vnccs-pipe-label";
         caption.textContent = label;
@@ -1456,6 +1467,7 @@ class CharacterGeneratorWidget {
 
         const wrap = document.createElement("label");
         wrap.className = "vnccs-pipe-slider-field";
+        setHelpText(wrap, "Controls how strongly the face detailer redraws each emotion face. Low preserves more, high changes more.");
 
         const head = document.createElement("div");
         head.className = "vnccs-pipe-slider-head";

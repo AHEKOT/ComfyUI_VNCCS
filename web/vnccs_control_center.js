@@ -1,7 +1,7 @@
 // web/vnccs_control_center.js
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "./vnccs_common.js";
+import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
 
 // Global registry cache — prevents API storms when multiple CC nodes exist
 window.VNCCS_CC_REGISTRY = window.VNCCS_CC_REGISTRY || {};
@@ -1412,6 +1412,7 @@ class VNCCSControlCenterWidget {
         c.className = "vnccs-cc-root";
         this.container = c;
         enableMiddleMouseCanvasPan(c);
+        attachHelpTooltips(c);
 
         this.node.addDOMWidget("cc_widget", "cc_panel", c, {
             getValue: () => "{}", setValue: () => {}, serialize: false,
@@ -2482,6 +2483,11 @@ class VNCCSControlCenterWidget {
         const field = (labelText, el) => {
             const wrap = document.createElement("div");
             wrap.className = "vnccs-cc-param-field";
+            const help = {
+                Steps: "Default sampling step count shared with connected VNCCS generator nodes.",
+                CFG: "Default prompt guidance strength shared with connected VNCCS generator nodes."
+            }[labelText];
+            setHelpText(wrap, help);
             wrap.appendChild(this._label(labelText));
             wrap.appendChild(el);
             return wrap;
@@ -2505,6 +2511,11 @@ class VNCCSControlCenterWidget {
         const field = (labelText, el) => {
             const wrap = document.createElement("div");
             wrap.className = "vnccs-cc-param-field";
+            const help = {
+                Sampler: "Default sampler algorithm shared with connected VNCCS generator nodes.",
+                Scheduler: "Default scheduler/noise schedule shared with connected VNCCS generator nodes."
+            }[labelText];
+            setHelpText(wrap, help);
             wrap.appendChild(this._label(labelText));
             wrap.appendChild(el);
             return wrap;
@@ -2855,6 +2866,16 @@ class VNCCSControlCenterWidget {
         const field = (labelText, el) => {
             const w = document.createElement("div");
             w.className = "vnccs-cc-settings-field";
+            const help = {
+                "Weight Dtype": "Precision mode for UNet loading. Default follows the loader; fp8 modes can reduce memory use.",
+                "dequant_dtype": "Dequantization precision for GGUF models.",
+                "CPU Offload": "Controls whether Nunchaku can offload model blocks to CPU memory.",
+                "Blocks On GPU": "How many Nunchaku blocks should stay on GPU. Higher uses more VRAM and can be faster.",
+                "Pinned Memory": "Enables pinned CPU memory for Nunchaku transfers when supported.",
+                "HuggingFace Token": "Access token used to download gated HuggingFace models.",
+                "Civitai Token": "API key used to download Civitai models."
+            }[labelText];
+            setHelpText(w, help);
             const l = document.createElement("label");
             l.className = "vnccs-cc-settings-label";
             l.textContent = labelText;

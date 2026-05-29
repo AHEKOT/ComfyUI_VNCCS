@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { registerCleanup, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "./vnccs_common.js";
+import { registerCleanup, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
 
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -996,8 +996,24 @@ app.registerExtension({
                 };
 
                 // UI Builders
+                const FIELD_HELP = {
+                    character: "Character whose current body/sprite will be used as the base for clothing generation.",
+                    costume: "Costume slot to edit or regenerate.",
+                    top: "Upper-body clothing description, such as shirt, jacket, dress top, sleeves, and colors.",
+                    bottom: "Lower-body clothing description, such as skirt, pants, shorts, belts, and colors.",
+                    shoes: "Footwear description used in the clothing prompt.",
+                    head: "Headwear and hair accessories, such as hats, ribbons, crowns, or headphones.",
+                    face: "Face accessories, such as glasses, mask, piercings, or makeup tied to the outfit.",
+                    background_color: "Sets the solid chroma key background for the generated clothing sheet.",
+                    lora_name: "VNCCS Clothes Core LoRA used to keep outfit generation compatible with this workflow.",
+                    seed: "Numeric seed for reproducible clothing previews.",
+                    seed_mode: "Toggles fixed seed versus a fresh random seed for each preview."
+                };
+                const helpFor = (key, fallback = "") => FIELD_HELP[key] || fallback;
+
                 const createField = (key, placeholder, multiline = true) => {
                     const wrap = document.createElement("div"); wrap.className = "vnccs-field";
+                    setHelpText(wrap, helpFor(key));
                     const l = document.createElement("div"); l.className = "vnccs-label";
                     l.innerText = key.toUpperCase();
                     wrap.appendChild(l);
@@ -1033,6 +1049,7 @@ app.registerExtension({
                 const createSegmentedField = (lbl, key, options, targetObj = state.gen_settings) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-field";
+                    setHelpText(wrap, helpFor(key));
                     const label = document.createElement("div");
                     label.className = "vnccs-label";
                     label.innerText = lbl;
@@ -1117,6 +1134,7 @@ app.registerExtension({
 
                     const loraWrap = document.createElement("div");
                     loraWrap.className = "vnccs-field";
+                    setHelpText(loraWrap, helpFor("lora_name"));
                     loraWrap.innerHTML = '<div class="vnccs-label">VNCCS Clothes Core</div>';
                     const loraCard = document.createElement("div");
                     loraCard.className = "vnccs-lora-card";
@@ -1126,6 +1144,7 @@ app.registerExtension({
 
                     const seedWrap = document.createElement("div");
                     seedWrap.className = "vnccs-field";
+                    setHelpText(seedWrap, helpFor("seed"));
                     seedWrap.innerHTML = '<div class="vnccs-label">Seed</div>';
                     const seedRow = document.createElement("div");
                     seedRow.className = "vnccs-seed-row";
@@ -1141,6 +1160,7 @@ app.registerExtension({
                     const seedMode = document.createElement("button");
                     seedMode.type = "button";
                     seedMode.className = "vnccs-seed-dice-btn";
+                    setHelpText(seedMode, helpFor("seed_mode"));
                     seedMode.innerHTML = `
                         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
                             <rect x="4" y="4" width="16" height="16" rx="3.5" stroke="currentColor" stroke-width="2"/>
@@ -1264,6 +1284,7 @@ app.registerExtension({
 
                 // Character Select
                 const charRow = document.createElement("div"); charRow.className = "vnccs-field";
+                setHelpText(charRow, helpFor("character"));
                 charRow.innerHTML = '<div class="vnccs-label">CHARACTER</div>';
                 const charSel = document.createElement("select"); charSel.className = "vnccs-select";
                 charSel.onchange = async (e) => {
@@ -1279,6 +1300,7 @@ app.registerExtension({
 
                 // Costume Select
                 const costRow = document.createElement("div"); costRow.className = "vnccs-field";
+                setHelpText(costRow, helpFor("costume"));
                 costRow.innerHTML = '<div class="vnccs-label">COSTUME (Select to Edit)</div>';
                 const costSel = document.createElement("select"); costSel.className = "vnccs-select";
                 costSel.onchange = async (e) => {
@@ -1630,6 +1652,7 @@ app.registerExtension({
                 registerCleanup(node, () => api.removeEventListener("vnccs.preview.updated", onPreviewUpdated));
 
                 enableMiddleMouseCanvasPan(container);
+                attachHelpTooltips(container);
                 node.addDOMWidget("clothes_designer_ui", "ui", container, {
                     serialize: false,
                     hideOnZoom: false

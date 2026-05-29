@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "./vnccs_common.js";
+import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
 
 // --- CSS STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -1361,9 +1361,22 @@ app.registerExtension({
                     return card;
                 };
 
-                function createField(label, input) {
+                const FIELD_HELP = {
+                    steps: "Number of sampling steps for each emotion image. Higher values can add detail but take longer.",
+                    sampler: "Sampling algorithm used to denoise emotion generations.",
+                    cfg: "Prompt guidance strength. Higher values follow the emotion prompt more strongly.",
+                    scheduler: "Noise schedule used together with the sampler.",
+                    seed: "Numeric seed for reproducible emotion generations.",
+                    seed_mode: "Toggles fixed seed versus a fresh random seed for each generation.",
+                    lora_stack: "Additional Anima LoRAs mixed into emotion generation.",
+                    lora_strength: "Strength of the LoRA in this row."
+                };
+                const helpFor = (key, fallback = "") => FIELD_HELP[key] || fallback;
+
+                function createField(label, input, helpKey = "") {
                     const wrap = document.createElement("label");
                     wrap.className = "ems-field";
+                    setHelpText(wrap, helpFor(helpKey));
                     const title = document.createElement("div");
                     title.className = "ems-label";
                     title.innerText = label;
@@ -1836,10 +1849,10 @@ app.registerExtension({
                 generationEls.sampler = createSelectInput("sampler", ["euler", "er_sde", "dpmpp_2m", "dpmpp_sde", "dpmpp_3m_sde"]);
                 generationEls.cfg = createNumberInput("cfg", 0, 20, 0.1);
                 generationEls.scheduler = createSelectInput("scheduler", ["normal", "simple", "karras", "exponential", "sgm_uniform"]);
-                genGrid.appendChild(createField("Steps", generationEls.steps));
-                genGrid.appendChild(createField("Sampler", generationEls.sampler));
-                genGrid.appendChild(createField("CFG", generationEls.cfg));
-                genGrid.appendChild(createField("Scheduler", generationEls.scheduler));
+                genGrid.appendChild(createField("Steps", generationEls.steps, "steps"));
+                genGrid.appendChild(createField("Sampler", generationEls.sampler, "sampler"));
+                genGrid.appendChild(createField("CFG", generationEls.cfg, "cfg"));
+                genGrid.appendChild(createField("Scheduler", generationEls.scheduler, "scheduler"));
                 generationSection.appendChild(genGrid);
 
                 const seedInput = document.createElement("input");
@@ -1849,6 +1862,7 @@ app.registerExtension({
                 const seedDice = document.createElement("button");
                 seedDice.type = "button";
                 seedDice.className = "ems-seed-dice";
+                setHelpText(seedDice, helpFor("seed_mode"));
                 seedDice.innerHTML = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
                     <rect x="4" y="4" width="16" height="16" rx="3.5" stroke="currentColor" stroke-width="2"/>
                     <circle cx="8.5" cy="8.5" r="1.4" fill="currentColor"/>
@@ -1869,7 +1883,7 @@ app.registerExtension({
                 seedRow.appendChild(seedDice);
                 generationEls.seed = seedInput;
                 generationEls.seedMode = seedDice;
-                generationSection.appendChild(createField("Seed", seedRow));
+                generationSection.appendChild(createField("Seed", seedRow, "seed"));
 
                 const loraSection = document.createElement("div");
                 loraSection.className = "ems-lora-stack";
@@ -1886,8 +1900,10 @@ app.registerExtension({
                 for (let i = 0; i < 5; i++) {
                     const row = document.createElement("div");
                     row.className = "ems-lora-row";
+                    setHelpText(row, helpFor("lora_stack"));
                     const name = createSelectInput(`lora_${i}`, ["", "None"]);
                     const strength = createNumberInput(`lora_strength_${i}`, 0, 2, 0.05);
+                    setHelpText(strength, helpFor("lora_strength"));
                     name.onchange = () => {
                         state.gen.lora_stack = state.gen.lora_stack || [];
                         state.gen.lora_stack[i] = state.gen.lora_stack[i] || { name: "", strength: 1.0 };
@@ -2031,6 +2047,7 @@ app.registerExtension({
 
 
                 enableMiddleMouseCanvasPan(container);
+                attachHelpTooltips(container);
                 const widget = node.addDOMWidget("emotion_ui_v2", "ui", container, {
                     serialize: false,
                     hideOnZoom: false,

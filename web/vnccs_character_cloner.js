@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "./vnccs_common.js";
+import { showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
 
 // --- STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -1099,10 +1099,27 @@ app.registerExtension({
                     loadState();
                 };
 
+                const FIELD_HELP = {
+                    background_color: "Sets the chroma key background color for generated clone sheets.",
+                    sex: "Character gender profile used for prompt defaults and pose/body synchronization.",
+                    nsfw: "Allows adult-oriented prompt details and clone generation behavior.",
+                    age: "Controls the cloned character age used for prompt building and pose/body synchronization.",
+                    race: "Species or race tags detected or edited for the cloned character.",
+                    skin_color: "Skin tone tags for the cloned character prompt.",
+                    hair: "Hair color, length, and style tags for the cloned character.",
+                    eyes: "Eye color and eye-shape tags for generation.",
+                    face: "Face details such as makeup, marks, freckles, or other identifying traits.",
+                    body: "Body type and silhouette tags used when regenerating the clone.",
+                    additional_details: "Extra persistent details that should stay with the cloned character.",
+                    aesthetics: "Style and mood notes inferred from or added to the clone."
+                };
+                const helpFor = (key, fallback = "") => FIELD_HELP[key] || fallback;
+
                 // UI Builders
                 const createField = (lbl, key, type = "text", opts = [], targetObj = state.character_info) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-cloner-field";
+                    setHelpText(wrap, helpFor(key));
 
                     if (type === "checkbox") {
                         const toggleWrap = document.createElement("label");
@@ -1176,6 +1193,7 @@ app.registerExtension({
                 const createSegmentedField = (lbl, key, options, targetObj = state.character_info) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-cloner-field";
+                    setHelpText(wrap, helpFor(key));
                     wrap.innerHTML = `<div class="vnccs-cloner-label">${lbl}</div>`;
 
                     const segmented = document.createElement("div");
@@ -1214,6 +1232,7 @@ app.registerExtension({
                 const createGraphicToggle = (lbl, key, targetObj = state.character_info) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-cloner-field";
+                    setHelpText(wrap, helpFor(key));
 
                     const btn = document.createElement("button");
                     btn.type = "button";
@@ -1249,6 +1268,7 @@ app.registerExtension({
                 const createSlider = (lbl, key, min, max, step, targetObj = state.character_info) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-cloner-field";
+                    setHelpText(wrap, helpFor(key));
                     wrap.innerHTML = `<div class="vnccs-cloner-label">${lbl}</div>`;
 
                     const container = document.createElement("div");
@@ -2019,6 +2039,7 @@ app.registerExtension({
 
                 // ADD WIDGET
                 enableMiddleMouseCanvasPan(container);
+                attachHelpTooltips(container);
                 node.addDOMWidget("ui", "ui", container, { serialize: false, hideOnZoom: false });
                 syncDOMWidgetWidthSoon(node, "ui");
 

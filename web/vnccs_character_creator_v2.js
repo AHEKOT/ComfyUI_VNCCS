@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { debounce, registerCleanup, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "./vnccs_common.js";
+import { debounce, registerCleanup, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
 
 // --- STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -1759,10 +1759,42 @@ app.registerExtension({
                     saveState();
                 };
 
+                const FIELD_HELP = {
+                    background_color: "Sets the chroma key background color for generated character sheets. Use the color that is easiest to remove in your downstream workflow.",
+                    sex: "Character gender profile used for prompt defaults and pose/body synchronization.",
+                    nsfw: "Allows adult-oriented prompt details and generation behavior for this character.",
+                    age: "Controls the character age used for prompt building and pose/body synchronization.",
+                    race: "Species or race tags for the character, such as human, elf, demon girl, or kemonomimi.",
+                    skin_color: "Skin tone tags added to the character prompt.",
+                    body: "Body type and silhouette details, including chest/body build tags.",
+                    face: "Face-specific details such as freckles, scars, makeup, or other defining features.",
+                    hair: "Hair color, length, and style tags used when generating the character.",
+                    eyes: "Eye color and eye-shape tags used in the character prompt.",
+                    additional_details: "Extra persistent character traits that should appear across outfits and emotions.",
+                    aesthetics: "Visual style notes for the character, such as mood, fashion direction, or rendering flavor.",
+                    generation_mode: "Chooses the generation backend profile. Illustrious uses checkpoint-style generation; Anima uses the Qwen/Anima stack.",
+                    ckpt_name: "Checkpoint used for Illustrious generation.",
+                    diffusion_model_name: "Diffusion model used for Anima generation.",
+                    clip_name: "CLIP/text encoder used by the Anima pipeline.",
+                    vae_name: "VAE used to decode generated images.",
+                    steps: "Number of sampling steps. Higher values can add detail but take longer.",
+                    sampler: "Sampling algorithm used to denoise the image.",
+                    cfg: "Prompt guidance strength. Higher values follow the prompt harder; too high can make images brittle.",
+                    scheduler: "Noise schedule used together with the sampler.",
+                    seed: "Numeric seed for reproducible generation. Reuse it to get similar results.",
+                    seed_mode: "Toggles fixed seed versus a fresh random seed for each generation.",
+                    dmd_lora_name: "Turbo/DMD LoRA used by the active generation profile.",
+                    dmd_lora_strength: "Enables or disables the selected Turbo/DMD LoRA strength.",
+                    age_lora_name: "Optional age helper LoRA applied to reinforce the selected age.",
+                    lora_stack: "Additional LoRAs mixed into generation for style or character refinements."
+                };
+                const helpFor = (key, fallback = "") => FIELD_HELP[key] || fallback;
+
                 // 4. UI Builders
                 const createField = (lbl, key, type = "text", opts = [], targetObj = state.character_info) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-field";
+                    setHelpText(wrap, helpFor(key));
 
                     if (type === "checkbox") {
                         const toggleWrap = document.createElement("label");
@@ -1846,6 +1878,7 @@ app.registerExtension({
                 const createSegmentedField = (lbl, key, options, targetObj = state.character_info) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-field";
+                    setHelpText(wrap, helpFor(key));
                     wrap.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
                     const segmented = document.createElement("div");
                     segmented.className = "vnccs-segmented-field";
@@ -1877,6 +1910,7 @@ app.registerExtension({
                 const createGraphicToggle = (lbl, key, targetObj = state.character_info) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-field";
+                    setHelpText(wrap, helpFor(key));
                     const btn = document.createElement("button");
                     btn.type = "button";
                     btn.className = "vnccs-graphic-toggle";
@@ -1909,6 +1943,7 @@ app.registerExtension({
                 const createSlider = (lbl, key, min, max, step, targetObj = state.gen_settings) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-field";
+                    setHelpText(wrap, helpFor(key));
                     wrap.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
 
                     const container = document.createElement("div");
@@ -1949,6 +1984,7 @@ app.registerExtension({
                 const createCompactNumberField = (lbl, key, min, max, step, targetObj = state.gen_settings) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-gen-param-field";
+                    setHelpText(wrap, helpFor(key));
                     wrap.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
 
                     const input = document.createElement("input");
@@ -1976,6 +2012,7 @@ app.registerExtension({
                 const createCompactSelectField = (lbl, key, targetObj = state.gen_settings) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-gen-param-field";
+                    setHelpText(wrap, helpFor(key));
                     wrap.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
 
                     const select = document.createElement("select");
@@ -1993,6 +2030,7 @@ app.registerExtension({
                 const makeFallbackSelect = (label, key, targetObj = state.gen_settings) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-field";
+                    setHelpText(wrap, helpFor(key));
                     wrap.innerHTML = `<div class="vnccs-label">${label}</div>`;
                     const select = document.createElement("select");
                     select.className = "vnccs-select";
@@ -2413,6 +2451,7 @@ app.registerExtension({
                 const container = document.createElement("div");
                 container.className = "vnccs-container";
                 enableMiddleMouseCanvasPan(container);
+                attachHelpTooltips(container);
 
                 // --- TOP ROW ---
                 const topRow = document.createElement("div");
@@ -2903,6 +2942,7 @@ app.registerExtension({
 
                 // SEED Section (Rebalanced)
                 const seedWrap = document.createElement("div"); seedWrap.className = "vnccs-field";
+                setHelpText(seedWrap, helpFor("seed"));
                 seedWrap.innerHTML = '<div class="vnccs-label">Seed</div>';
 
                 const seedRow = document.createElement("div");
@@ -2919,6 +2959,7 @@ app.registerExtension({
                 const seedMode = document.createElement("button");
                 seedMode.type = "button";
                 seedMode.className = "vnccs-seed-dice-btn";
+                setHelpText(seedMode, helpFor("seed_mode"));
                 seedMode.innerHTML = `
                     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
                         <rect x="4" y="4" width="16" height="16" rx="3.5" stroke="currentColor" stroke-width="2"/>

@@ -234,6 +234,124 @@ export function injectStyles(css, id) {
     document.head.appendChild(style);
 }
 
+// ── Delayed Field Help Tooltips ──────────────────────────────────────────────
+const HELP_TOOLTIP_CSS = `
+.vnccs-help-tooltip {
+    position: fixed;
+    z-index: 100000;
+    max-width: min(320px, calc(100vw - 24px));
+    padding: 10px 12px;
+    border: 1px solid rgba(255, 143, 163, 0.28);
+    border-radius: 8px;
+    background: rgba(18, 18, 26, 0.96);
+    color: #e8e8f0;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+    font-family: 'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 12px;
+    line-height: 1.45;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.16s ease, transform 0.16s ease;
+    white-space: normal;
+}
+.vnccs-help-tooltip.is-visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+`;
+
+let _helpTooltipEl = null;
+
+function getHelpTooltip() {
+    injectStyles(HELP_TOOLTIP_CSS, "vnccs-help-tooltip");
+    if (_helpTooltipEl?.isConnected) return _helpTooltipEl;
+    _helpTooltipEl = document.createElement("div");
+    _helpTooltipEl.className = "vnccs-help-tooltip";
+    document.body.appendChild(_helpTooltipEl);
+    return _helpTooltipEl;
+}
+
+function positionHelpTooltip(anchor, tooltip) {
+    const rect = anchor.getBoundingClientRect();
+    const margin = 12;
+    tooltip.style.left = "0px";
+    tooltip.style.top = "0px";
+    const width = tooltip.offsetWidth || 280;
+    const height = tooltip.offsetHeight || 80;
+    let left = rect.left + Math.min(24, rect.width * 0.5);
+    let top = rect.bottom + 8;
+
+    if (left + width > window.innerWidth - margin) left = window.innerWidth - width - margin;
+    if (left < margin) left = margin;
+    if (top + height > window.innerHeight - margin) top = rect.top - height - 8;
+    if (top < margin) top = margin;
+
+    tooltip.style.left = `${Math.round(left)}px`;
+    tooltip.style.top = `${Math.round(top)}px`;
+}
+
+export function setHelpText(element, text) {
+    if (!element || !text) return element;
+    element.dataset.vnccsHelp = text;
+    element.setAttribute("aria-describedby", "vnccs-field-help-tooltip");
+    return element;
+}
+
+export function attachHelpTooltips(root, { delay = 1800 } = {}) {
+    if (!root || root._vnccsHelpTooltipsAttached) return;
+    root._vnccsHelpTooltipsAttached = true;
+
+    let timer = null;
+    let activeAnchor = null;
+
+    const clear = () => {
+        if (timer) clearTimeout(timer);
+        timer = null;
+        activeAnchor = null;
+        if (_helpTooltipEl) _helpTooltipEl.classList.remove("is-visible");
+    };
+
+    const schedule = (anchor) => {
+        const text = anchor?.dataset?.vnccsHelp;
+        if (!text) return;
+        clear();
+        activeAnchor = anchor;
+        timer = setTimeout(() => {
+            if (!activeAnchor?.isConnected) return;
+            const tooltip = getHelpTooltip();
+            tooltip.id = "vnccs-field-help-tooltip";
+            tooltip.textContent = text;
+            tooltip.classList.add("is-visible");
+            positionHelpTooltip(activeAnchor, tooltip);
+        }, delay);
+    };
+
+    root.addEventListener("mouseover", (event) => {
+        const anchor = event.target?.closest?.("[data-vnccs-help]");
+        if (!anchor || !root.contains(anchor)) return;
+        schedule(anchor);
+    }, true);
+
+    root.addEventListener("focusin", (event) => {
+        const anchor = event.target?.closest?.("[data-vnccs-help]");
+        if (!anchor || !root.contains(anchor)) return;
+        schedule(anchor);
+    }, true);
+
+    root.addEventListener("mouseout", (event) => {
+        if (!activeAnchor) return;
+        if (event.relatedTarget && activeAnchor.contains(event.relatedTarget)) return;
+        clear();
+    }, true);
+
+    root.addEventListener("focusout", clear, true);
+    root.addEventListener("mousedown", clear, true);
+    root.addEventListener("wheel", clear, true);
+    window.addEventListener("blur", clear);
+    registerCleanup(root._node || root, () => window.removeEventListener("blur", clear));
+}
+
 // Shared CSS for modal/loading overlay (injected once)
 const COMMON_CSS = `
 .vnccs-common-modal-overlay {
