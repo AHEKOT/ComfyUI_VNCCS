@@ -75,10 +75,10 @@ export function syncDOMWidgetWidthSoon(node, widgetName, delay = 100) {
     setTimeout(() => syncDOMWidgetWidth(node, widgetName), delay);
 }
 
-// ── DOM Widget Middle-Mouse Canvas Pan ────────────────────────────────────────
+// ── DOM Widget Canvas Navigation ──────────────────────────────────────────────
 // DOM widgets sit above LiteGraph's canvas, so MMB events can never reach the
-// canvas naturally. Forward only the middle-button drag sequence and leave normal
-// widget interaction untouched.
+// canvas naturally. Forward canvas navigation gestures while leaving normal
+// widget interaction and real scroll containers untouched.
 export function enableMiddleMouseCanvasPan(root) {
     if (!root || root._vnccsMiddleMouseCanvasPan) return;
     root._vnccsMiddleMouseCanvasPan = true;
@@ -87,7 +87,7 @@ export function enableMiddleMouseCanvasPan(root) {
     let panning = false;
 
     const markForwarded = (event) => {
-        Object.defineProperty(event, "_vnccsForwardedMiddlePan", { value: true });
+        Object.defineProperty(event, "_vnccsForwardedCanvasInput", { value: true });
         return event;
     };
 
@@ -139,8 +139,45 @@ export function enableMiddleMouseCanvasPan(root) {
         canvasEl.dispatchEvent(cloneMouseEvent(type, event, buttons));
     };
 
+    const cloneWheelEvent = (source) => markForwarded(new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        detail: source.detail,
+        screenX: source.screenX,
+        screenY: source.screenY,
+        clientX: source.clientX,
+        clientY: source.clientY,
+        ctrlKey: source.ctrlKey,
+        altKey: source.altKey,
+        shiftKey: source.shiftKey,
+        metaKey: source.metaKey,
+        deltaX: source.deltaX,
+        deltaY: source.deltaY,
+        deltaZ: source.deltaZ,
+        deltaMode: source.deltaMode,
+    }));
+
+    const hasOwnWheelHandler = (target) => {
+        for (let el = target; el && el !== root; el = el.parentElement) {
+            if (typeof el.onwheel === "function") return true;
+        }
+        return false;
+    };
+
+    const hasScrollableAncestor = (target) => {
+        for (let el = target; el && el !== root; el = el.parentElement) {
+            if (!(el instanceof HTMLElement)) continue;
+            const style = getComputedStyle(el);
+            const scrollY = /(auto|scroll|overlay)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 1;
+            const scrollX = /(auto|scroll|overlay)/.test(style.overflowX) && el.scrollWidth > el.clientWidth + 1;
+            if (scrollY || scrollX) return true;
+        }
+        return false;
+    };
+
     const finishPan = (event) => {
-        if (event._vnccsForwardedMiddlePan) return;
+        if (event._vnccsForwardedCanvasInput) return;
         if (!panning) return;
         panning = false;
         event.preventDefault();
@@ -151,7 +188,7 @@ export function enableMiddleMouseCanvasPan(root) {
     };
 
     const movePan = (event) => {
-        if (event._vnccsForwardedMiddlePan) return;
+        if (event._vnccsForwardedCanvasInput) return;
         if (!panning) return;
         event.preventDefault();
         event.stopPropagation();
@@ -159,7 +196,7 @@ export function enableMiddleMouseCanvasPan(root) {
     };
 
     root.addEventListener("mousedown", (event) => {
-        if (event._vnccsForwardedMiddlePan) return;
+        if (event._vnccsForwardedCanvasInput) return;
         if (event.button !== 1) return;
         panning = true;
         event.preventDefault();
@@ -174,6 +211,16 @@ export function enableMiddleMouseCanvasPan(root) {
         event.preventDefault();
         event.stopPropagation();
     }, true);
+
+    root.addEventListener("wheel", (event) => {
+        if (event._vnccsForwardedCanvasInput) return;
+        if (hasOwnWheelHandler(event.target) || hasScrollableAncestor(event.target)) return;
+        const canvasEl = canvas();
+        if (!canvasEl) return;
+        canvasEl.dispatchEvent(cloneWheelEvent(event));
+        event.preventDefault();
+        event.stopPropagation();
+    }, { capture: true, passive: false });
 }
 
 // ── CSS Injection (once per class prefix) ─────────────────────────────────────
