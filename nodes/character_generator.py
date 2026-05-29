@@ -1742,6 +1742,37 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 items.append({"emotion_prompt": text})
         return items
 
+    def _emotion_face_details(self, meta):
+        if not isinstance(meta, dict):
+            return ""
+        face_details = str(meta.get("face_details", "") or "").strip()
+        parts = [face_details] if face_details else []
+        face = str(meta.get("costume_face", "") or "").strip()
+        head = str(meta.get("costume_head", "") or "").strip()
+        if face:
+            parts.append(f"(wear {face} on face:1.0)")
+        if head:
+            parts.append(f"(wear {head} on head:1.0)")
+        seen = set()
+        unique = []
+        for part in parts:
+            key = part.lower()
+            if key not in seen:
+                seen.add(key)
+                unique.append(part)
+        return ", ".join(unique)
+
+    def _with_emotion_face_details(self, prompt, meta):
+        details = self._emotion_face_details(meta)
+        text = str(prompt or "").strip()
+        if not details:
+            return text
+        if details.lower() in text.lower():
+            return text
+        if text:
+            return f"{text}, Character face details: {details}"
+        return f"Character face details: {details}"
+
     def _face_prefix_from_sprite_prefix(self, sprite_prefix):
         prefix = str(sprite_prefix or "").strip()
         if not prefix:
@@ -1975,7 +2006,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                         mask,
                         pipe,
                         meta.get("emotion_prompt", emotion_items[index]),
-                        meta.get("positive_prompt", ""),
+                        self._with_emotion_face_details(meta.get("positive_prompt", ""), meta),
                         meta.get("negative_prompt", ""),
                         seed + index,
                         face_denoise,

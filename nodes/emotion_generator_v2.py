@@ -13,7 +13,7 @@ from ..utils import (
     character_dir, list_characters,
     load_character_info,
     apply_sex, append_age, generate_seed, build_face_details, load_character_sheet,
-    list_costumes
+    list_costumes, load_costume_info
 )
 from .character_creator_v2 import (
     ANIMA_DEFAULTS,
@@ -203,6 +203,18 @@ def load_costume_sprite_images(character, costume):
     if image is not None:
         return [(image, mask, "")]
     return []
+
+
+def costume_face_details(character, costume):
+    costume_info = load_costume_info(character, costume) or {}
+    parts = []
+    face = str(costume_info.get("face", "") or "").strip()
+    head = str(costume_info.get("head", "") or "").strip()
+    if face:
+        parts.append(f"(wear {face} on face:1.0)")
+    if head:
+        parts.append(f"(wear {head} on head:1.0)")
+    return ", ".join(parts), face, head
 
 # --------------------------------------------------------------------
 # API Endpoints
@@ -428,6 +440,7 @@ class EmotionGeneratorV2:
         for costume in selected_costumes:
             # Check if valid costume dir
             # Note: selected_costumes comes from frontend which lists them via API
+            costume_details, costume_face, costume_head = costume_face_details(character, costume)
             
             sprite_items = load_costume_sprite_images(character, costume)
             if not sprite_items:
@@ -467,6 +480,8 @@ class EmotionGeneratorV2:
                 if lora_prompt: positive_prompt += f", {lora_prompt}"
 
                 face_details = build_face_details(info)
+                if costume_details:
+                    face_details = f"{face_details}, {costume_details}" if face_details else costume_details
                 
                 if prompt_style in ("Anima", "QWEN Style"):
                     if face_details:
@@ -487,6 +502,9 @@ class EmotionGeneratorV2:
                         "source_path": _source_path,
                         "character": character,
                         "costume": costume,
+                        "costume_face": costume_face,
+                        "costume_head": costume_head,
+                        "face_details": face_details,
                         "emotion": emotion_key,
                         "sprite_index": sprite_index,
                     }, ensure_ascii=False))
