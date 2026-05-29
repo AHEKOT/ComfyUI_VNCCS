@@ -1227,7 +1227,7 @@ app.registerExtension({
                         negative_prompt: "bad quality, worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia",
                     },
                 };
-                const CC_REPO_ID = "MIUProject/VNCCS_V2";
+                const CC_REPO_ID = "MIUProject/VNCCS_v3.0";
                 const CC_CACHE_KEY = `vnccs_cc_cache_${CC_REPO_ID}`;
                 let TAG_DATA = null;
                 let ccConfig = null;

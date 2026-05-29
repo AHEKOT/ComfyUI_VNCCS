@@ -54,7 +54,7 @@ _CC_CONFIG_CACHE = {}
 _DOWNLOAD_STATUS = {}
 _DOWNLOAD_QUEUE = queue.Queue()
 _CUSTOM_LORAS_FILE = "vnccs_custom_loras.json"
-_PACKAGED_CC_REPO_IDS = {"MIUProject/VNCCS_V2"}
+_PACKAGED_CC_REPO_IDS = {"MIUProject/VNCCS_v3.0"}
 _PIPELINE_LOCAL_LORAS = {"vnccs pose studio qie2511"}
 _FOLDER_MAP = {
     "unet": ["unet", "diffusion_models"],
@@ -1056,7 +1056,7 @@ class VNCCS_ControlCenter:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "repo_id": ("STRING", {"default": "MIUProject/VNCCS_V2", "multiline": False}),
+                "repo_id": ("STRING", {"default": "MIUProject/VNCCS_v3.0", "multiline": False}),
                 "node_state": ("STRING", {"default": "{}"}),
             },
             "optional": {

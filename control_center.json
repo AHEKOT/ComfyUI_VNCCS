@@ -115,7 +115,7 @@
       "name": "ILFlatMix",
       "type": "checkpoint",
       "kind": "Illustrious",
-      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_repo": "MIUProject/VNCCS_v3.0",
       "hf_path": "models/checkpoints/Illustrious/ILFlatMix.safetensors",
       "local_path": "models/checkpoints/Illustrious/ILFlatMix.safetensors",
       "version": "1.0",
@@ -125,7 +125,7 @@
       "name": "Newgrounds Mix v2.0",
       "type": "checkpoint",
       "kind": "Illustrious",
-      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_repo": "MIUProject/VNCCS_v3.0",
       "hf_path": "models/checkpoints/Illustrious/newgroundsMix_v20.safetensors",
       "local_path": "models/checkpoints/Illustrious/newgroundsMix_v20.safetensors",
       "version": "1.0",
@@ -135,7 +135,7 @@
       "name": "WAI Illustrious SDXL v1.70",
       "type": "checkpoint",
       "kind": "Illustrious",
-      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_repo": "MIUProject/VNCCS_v3.0",
       "hf_path": "models/checkpoints/Illustrious/waiIllustriousSDXL_v170.safetensors",
       "local_path": "models/checkpoints/Illustrious/waiIllustriousSDXL_v170.safetensors",
       "version": "1.0",
@@ -191,7 +191,7 @@
   "lora": [
     {
       "name": "VNCCS Clothes Core",
-      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_repo": "MIUProject/VNCCS_v3.0",
       "hf_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.safetensors",
       "local_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.safetensors",
       "version": "0.3.0",
@@ -201,7 +201,7 @@
     },
     {
       "name": "VNCCS Emotion Core",
-      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_repo": "MIUProject/VNCCS_v3.0",
       "hf_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_EmotionCore-RC1.safetensors",
       "local_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_EmotionCore-RC1.safetensors",
       "version": "0.1.0",
@@ -221,7 +221,7 @@
     },
     {
       "name": "Qwen Image Edit 2511 Lightning",
-      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_repo": "MIUProject/VNCCS_v3.0",
       "hf_path": "models/loras/qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
       "local_path": "models/loras/qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
       "version": "1.0.0",
@@ -231,7 +231,7 @@
     },
     {
       "name": "DMD2 SDXL Lightning",
-      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_repo": "MIUProject/VNCCS_v3.0",
       "hf_path": "models/loras/DMD2/dmd2_sdxl_4step_lora_fp16.safetensors",
       "local_path": "models/loras/DMD2/dmd2_sdxl_4step_lora_fp16.safetensors",
       "version": "1.0.0",
@@ -241,7 +241,7 @@
     },
     {
       "name": "Anima Turbo LoRA",
-      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_repo": "MIUProject/VNCCS_v3.0",
       "hf_path": "models/loras/Anima/anima-turbo-lora-v0.1.safetensors",
       "local_path": "models/loras/Anima/anima-turbo-lora-v0.1.safetensors",
       "version": "0.2.0",
@@ -251,7 +251,7 @@
     },
     {
       "name": "Mimimeter",
-      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_repo": "MIUProject/VNCCS_v3.0",
       "hf_path": "models/loras/IL/mimimeter.safetensors",
       "local_path": "models/loras/IL/mimimeter.safetensors",
       "version": "1.0.0",
@@ -263,7 +263,7 @@
   "other": [
     {
       "name": "4x_APISR_GRL_GAN",
-      "hf_repo": "MIUProject/VNCCS_V2",
+      "hf_repo": "MIUProject/VNCCS_v3.0",
       "hf_path": "models/upscale_models/4x_APISR_GRL_GAN_generator.pth",
       "local_path": "models/upscale_models/4x_APISR_GRL_GAN_generator.pth",
       "version": "1.0.0",

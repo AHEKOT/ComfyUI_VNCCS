@@ -1007,7 +1007,7 @@ app.registerExtension({
                 };
                 let receivedSerializedConfig = false;
                 let characterFetchToken = 0;
-                const CC_REPO_ID = "MIUProject/VNCCS_V2";
+                const CC_REPO_ID = "MIUProject/VNCCS_v3.0";
                 const CC_CACHE_KEY = `vnccs_cc_cache_${CC_REPO_ID}`;
                 let ccConfig = null;
                 let ccDlStatus = {};
