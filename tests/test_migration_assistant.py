@@ -26,6 +26,28 @@ def test_scan_legacy_characters_reports_missing_sprite_targets(tmp_path, monkeyp
     assert result["characters"][0]["missing_sprite_targets"] == 1
 
 
+def test_scan_legacy_character_uses_stable_target_when_already_migrated(tmp_path, monkeypatch):
+    legacy_root = tmp_path / "old"
+    new_root = tmp_path / "new"
+    sheet_dir = legacy_root / "Alina_test" / "Sheets" / "Naked" / "neutral"
+    sprite_dir = new_root / "Alina_test" / "Sprites" / "Naked" / "neutral"
+    duplicate_dir = new_root / "Alina_test 2"
+    sheet_dir.mkdir(parents=True)
+    sprite_dir.mkdir(parents=True)
+    duplicate_dir.mkdir(parents=True)
+    Image.new("RGB", (256, 256), "green").save(sheet_dir / "sheet_neutral_0001.png")
+    Image.new("RGBA", (128, 128), (255, 0, 0, 255)).save(sprite_dir / "sprite_neutral_0000.png")
+
+    monkeypatch.setattr(ma, "get_legacy_output_dir", lambda: str(legacy_root))
+    monkeypatch.setattr(ma, "base_output_dir", lambda: str(new_root))
+
+    result = ma.scan_legacy_characters()
+    item = result["characters"][0]
+    assert item["new_name"] == "Alina_test"
+    assert item["missing_sprite_targets"] == 0
+    assert item["status"] == "migrated"
+
+
 def test_migrate_character_crops_sheet_and_writes_alpha_sprite(tmp_path, monkeypatch):
     legacy_root = tmp_path / "old"
     new_root = tmp_path / "new"

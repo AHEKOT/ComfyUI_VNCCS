@@ -261,10 +261,6 @@ def scan_legacy_characters() -> dict:
     legacy_root = get_legacy_output_dir()
     new_root = base_output_dir()
     used = set()
-    try:
-        used.update(name for name in os.listdir(new_root) if os.path.isdir(os.path.join(new_root, name)))
-    except Exception:
-        used = set()
 
     characters = []
     if os.path.isdir(legacy_root):
@@ -282,12 +278,14 @@ def scan_legacy_characters() -> dict:
                 existing_sprites += count
                 if count == 0:
                     missing_targets += 1
+            status = "migrated" if sheet_files and missing_targets == 0 else "needs_migration"
             characters.append({
                 "legacy_name": name,
                 "new_name": new_name,
                 "sheet_count": len(sheet_files),
                 "existing_sprite_count": existing_sprites,
                 "missing_sprite_targets": missing_targets,
+                "status": status,
                 "config_exists": any(
                     os.path.isfile(os.path.join(legacy_char_dir, file_name))
                     and file_name.endswith("_config.json")

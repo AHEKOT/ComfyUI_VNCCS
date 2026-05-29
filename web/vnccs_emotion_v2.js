@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "./vnccs_common.js";
+import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "./vnccs_common.js";
 
 // --- CSS STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -1923,6 +1923,45 @@ app.registerExtension({
 
                 charHeader.appendChild(charSelect);
 
+                const setCharacterOptions = (characters, preferred = "") => {
+                    const previous = preferred || state.character || charWidget?.value || charSelect.value || "";
+                    const values = Array.isArray(characters) ? characters.filter(Boolean) : [];
+                    charSelect.innerHTML = "";
+                    if (!values.length) {
+                        charSelect.appendChild(new Option("No characters", ""));
+                        state.character = "";
+                        if (charWidget) commitWidget(charWidget, "", false);
+                        return "";
+                    }
+                    values.forEach(name => charSelect.appendChild(new Option(name, name)));
+                    const selected = values.includes(previous) ? previous : values[0];
+                    charSelect.value = selected;
+                    state.character = selected;
+                    if (charWidget) {
+                        charWidget.options.values = values;
+                        if (charWidget.value !== selected) commitWidget(charWidget, selected, false);
+                    }
+                    return selected;
+                };
+
+                let characterListRefreshToken = 0;
+                const refreshCharacterList = async ({ fetchData = false } = {}) => {
+                    const token = ++characterListRefreshToken;
+                    try {
+                        const response = await fetch("/vnccs/list_characters", { cache: "no-store" });
+                        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                        const characters = await response.json();
+                        if (token !== characterListRefreshToken) return;
+                        const before = state.character || charSelect.value || "";
+                        const selected = setCharacterOptions(characters, before);
+                        if (selected && (fetchData || selected !== before)) {
+                            fetchCharacterData(selected);
+                        }
+                    } catch (error) {
+                        console.error("[VNCCS Emotion Studio] Failed to refresh character list", error);
+                    }
+                };
+
                 if (charWidget) {
                     if (charWidget.options.values) {
                         charWidget.options.values.forEach(v => {
@@ -1940,6 +1979,16 @@ app.registerExtension({
                     };
                     charWidget.hidden = true;
                 }
+                charSelect.onfocus = () => refreshCharacterList();
+                charSelect.onpointerdown = () => refreshCharacterList();
+
+                const onCharactersUpdated = () => refreshCharacterList({ fetchData: true });
+                window.addEventListener("vnccs.characters.updated", onCharactersUpdated);
+                window.addEventListener("vnccs.migration.complete", onCharactersUpdated);
+                registerCleanup(node, () => {
+                    window.removeEventListener("vnccs.characters.updated", onCharactersUpdated);
+                    window.removeEventListener("vnccs.migration.complete", onCharactersUpdated);
+                });
 
                 // Add Prompt Style Select (Top)
                 const styleWidget = node.widgets.find(w => w.name === "prompt_style");
@@ -2377,6 +2426,7 @@ app.registerExtension({
                         if (!receivedSerializedConfig) fetchCharacterData(state.character);
                     }, 50);
                 }
+                setTimeout(() => refreshCharacterList({ fetchData: false }), 80);
 
                 // Hook callback
                 if (charWidget) {

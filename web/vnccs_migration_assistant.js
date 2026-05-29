@@ -64,6 +64,8 @@ const STYLE = `
 .vnccs-ma-name { font-size: 13px; font-weight: 650; color: #f1f3f7; }
 .vnccs-ma-meta { margin-top: 3px; font-size: 11px; color: #aab2c1; }
 .vnccs-ma-pill { font-size: 11px; color: #cdd6e5; background: #2a303c; border: 1px solid #3b4353; padding: 3px 6px; }
+.vnccs-ma-pill.ok { color: #bff4d1; background: #1d3b2b; border-color: #2f6847; }
+.vnccs-ma-row.done { opacity: .72; }
 .vnccs-ma-summary { display: flex; gap: 8px; flex-wrap: wrap; }
 .vnccs-ma-log {
     min-height: 0;
@@ -169,9 +171,12 @@ app.registerExtension({
                 }
                 for (const item of chars) {
                     const row = el("label", "vnccs-ma-row");
+                    const migrated = item.status === "migrated" || ((item.sheet_count || 0) > 0 && (item.missing_sprite_targets || 0) === 0);
+                    if (migrated) row.classList.add("done");
                     const check = document.createElement("input");
                     check.type = "checkbox";
-                    check.checked = state.selected.has(item.legacy_name);
+                    check.disabled = migrated;
+                    check.checked = !migrated && state.selected.has(item.legacy_name);
                     check.onchange = () => {
                         if (check.checked) state.selected.add(item.legacy_name);
                         else state.selected.delete(item.legacy_name);
@@ -180,8 +185,11 @@ app.registerExtension({
                     };
                     const body = el("div");
                     body.appendChild(el("div", "vnccs-ma-name", item.legacy_name === item.new_name ? item.legacy_name : `${item.legacy_name} -> ${item.new_name}`));
-                    body.appendChild(el("div", "vnccs-ma-meta", `${item.sheet_count} sheet(s), ${item.existing_sprite_count} existing sprite(s), ${item.missing_sprite_targets} target(s) missing`));
-                    const pill = el("span", "vnccs-ma-pill", item.config_exists ? "config" : "no config");
+                    body.appendChild(el("div", "vnccs-ma-meta", migrated
+                        ? `${item.sheet_count} sheet(s), ${item.existing_sprite_count} existing sprite(s), migrated`
+                        : `${item.sheet_count} sheet(s), ${item.existing_sprite_count} existing sprite(s), ${item.missing_sprite_targets} target(s) missing`
+                    ));
+                    const pill = el("span", "vnccs-ma-pill" + (migrated ? " ok" : ""), migrated ? "migrated" : (item.config_exists ? "config" : "no config"));
                     row.append(check, body, pill);
                     list.appendChild(row);
                 }
@@ -237,6 +245,10 @@ app.registerExtension({
                 renderStatus();
                 if (data.status === "done" || data.status === "error") {
                     setBusy(false);
+                    if (data.status === "done") {
+                        window.dispatchEvent(new CustomEvent("vnccs.characters.updated"));
+                        window.dispatchEvent(new CustomEvent("vnccs.migration.complete"));
+                    }
                     return;
                 }
                 setTimeout(poll, 700);
