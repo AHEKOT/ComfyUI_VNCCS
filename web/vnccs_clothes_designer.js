@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { registerCleanup, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "./vnccs_common.js";
+import { registerCleanup, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "./vnccs_common.js";
 
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -1629,6 +1629,7 @@ app.registerExtension({
                 api.addEventListener("vnccs.preview.updated", onPreviewUpdated);
                 registerCleanup(node, () => api.removeEventListener("vnccs.preview.updated", onPreviewUpdated));
 
+                enableMiddleMouseCanvasPan(container);
                 node.addDOMWidget("clothes_designer_ui", "ui", container, {
                     serialize: false,
                     hideOnZoom: false

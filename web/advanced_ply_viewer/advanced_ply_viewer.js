@@ -6,7 +6,7 @@
  */
 
 import { app } from "../../../scripts/app.js";
-import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "../vnccs_common.js";
+import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "../vnccs_common.js";
 
 // Auto-detect extension folder name
 const EXTENSION_FOLDER = (() => {
@@ -65,6 +65,7 @@ app.registerExtension({
                 // Add elements
                 container.appendChild(iframe);
                 container.appendChild(infoPanel);
+                enableMiddleMouseCanvasPan(container);
 
                 // Add widget
                 const domWidget = this.addDOMWidget("advanced_viewer", "ADVANCED_VIEWER", container, {

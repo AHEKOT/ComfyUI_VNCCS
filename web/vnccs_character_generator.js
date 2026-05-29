@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "./vnccs_common.js";
+import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "./vnccs_common.js";
 
 const DEFAULT_DATA = {
     nsfw_enabled: true,
@@ -722,6 +722,7 @@ class CharacterGeneratorWidget {
         const root = document.createElement("div");
         root.className = "vnccs-pipe-root";
         this.root = root;
+        enableMiddleMouseCanvasPan(root);
         this.updateModeClasses();
 
         this.settingsEl = document.createElement("div");

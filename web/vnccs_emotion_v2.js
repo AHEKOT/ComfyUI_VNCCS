@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "./vnccs_common.js";
+import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "./vnccs_common.js";
 
 // --- CSS STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -1981,6 +1981,7 @@ app.registerExtension({
                 leftCol.prepend(styleContainer);
 
 
+                enableMiddleMouseCanvasPan(container);
                 const widget = node.addDOMWidget("emotion_ui_v2", "ui", container, {
                     serialize: false,
                     hideOnZoom: false,

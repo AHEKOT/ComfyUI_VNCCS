@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "./vnccs_common.js";
+import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "./vnccs_common.js";
 
 const STYLE = `
 /* VNCCS Sprite Manager Styles */
@@ -968,6 +968,7 @@ app.registerExtension({
             };
 
             // === WIDGET REGISTRATION ===
+            enableMiddleMouseCanvasPan(container);
             node.addDOMWidget("sprite_manager_ui", "ui", container, {
                 serialize: false,
                 hideOnZoom: false

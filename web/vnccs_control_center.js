@@ -1,7 +1,7 @@
 // web/vnccs_control_center.js
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "./vnccs_common.js";
+import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "./vnccs_common.js";
 
 // Global registry cache — prevents API storms when multiple CC nodes exist
 window.VNCCS_CC_REGISTRY = window.VNCCS_CC_REGISTRY || {};
@@ -1406,6 +1406,7 @@ class VNCCSControlCenterWidget {
         const c = document.createElement("div");
         c.className = "vnccs-cc-root";
         this.container = c;
+        enableMiddleMouseCanvasPan(c);
 
         this.node.addDOMWidget("cc_widget", "cc_panel", c, {
             getValue: () => "{}", setValue: () => {}, serialize: false,

@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { debounce, registerCleanup, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "./vnccs_common.js";
+import { debounce, registerCleanup, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "./vnccs_common.js";
 
 // --- STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -2412,35 +2412,7 @@ app.registerExtension({
                 // 5. Build Layout
                 const container = document.createElement("div");
                 container.className = "vnccs-container";
-
-                // HACK: Forward MMB (Middle Click) to Canvas for Panning
-                container.addEventListener("mousedown", (e) => {
-                    if (e.button === 1) { // Middle Click
-                        e.preventDefault();
-                        e.stopPropagation();
-                        const canvasEl = app.canvas.canvas; // HTMLCanvasElement
-                        if (canvasEl) {
-                            // Clone event to dispatch to canvas
-                            const evt = new MouseEvent("mousedown", {
-                                bubbles: true,
-                                cancelable: true,
-                                view: window,
-                                detail: e.detail,
-                                screenX: e.screenX,
-                                screenY: e.screenY,
-                                clientX: e.clientX,
-                                clientY: e.clientY,
-                                ctrlKey: e.ctrlKey,
-                                altKey: e.altKey,
-                                shiftKey: e.shiftKey,
-                                metaKey: e.metaKey,
-                                button: 1,
-                                buttons: 4
-                            });
-                            canvasEl.dispatchEvent(evt);
-                        }
-                    }
-                });
+                enableMiddleMouseCanvasPan(container);
 
                 // --- TOP ROW ---
                 const topRow = document.createElement("div");

@@ -75,6 +75,107 @@ export function syncDOMWidgetWidthSoon(node, widgetName, delay = 100) {
     setTimeout(() => syncDOMWidgetWidth(node, widgetName), delay);
 }
 
+// ── DOM Widget Middle-Mouse Canvas Pan ────────────────────────────────────────
+// DOM widgets sit above LiteGraph's canvas, so MMB events can never reach the
+// canvas naturally. Forward only the middle-button drag sequence and leave normal
+// widget interaction untouched.
+export function enableMiddleMouseCanvasPan(root) {
+    if (!root || root._vnccsMiddleMouseCanvasPan) return;
+    root._vnccsMiddleMouseCanvasPan = true;
+
+    const canvas = () => app.canvasEl || app.canvas?.canvas || document.querySelector("canvas.litegraph");
+    let panning = false;
+
+    const markForwarded = (event) => {
+        Object.defineProperty(event, "_vnccsForwardedMiddlePan", { value: true });
+        return event;
+    };
+
+    const cloneMouseEvent = (type, source, buttons = source.buttons) => markForwarded(new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        detail: source.detail,
+        screenX: source.screenX,
+        screenY: source.screenY,
+        clientX: source.clientX,
+        clientY: source.clientY,
+        ctrlKey: source.ctrlKey,
+        altKey: source.altKey,
+        shiftKey: source.shiftKey,
+        metaKey: source.metaKey,
+        button: source.button,
+        buttons,
+    }));
+
+    const clonePointerEvent = (type, source, buttons = source.buttons) => {
+        const EventCtor = window.PointerEvent || window.MouseEvent;
+        return markForwarded(new EventCtor(type, {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+            detail: source.detail,
+            screenX: source.screenX,
+            screenY: source.screenY,
+            clientX: source.clientX,
+            clientY: source.clientY,
+            ctrlKey: source.ctrlKey,
+            altKey: source.altKey,
+            shiftKey: source.shiftKey,
+            metaKey: source.metaKey,
+            button: 1,
+            buttons,
+            pointerId: 1,
+            pointerType: "mouse",
+            isPrimary: true,
+        }));
+    };
+
+    const forward = (type, event, buttons) => {
+        const canvasEl = canvas();
+        if (!canvasEl) return;
+        const pointerType = type === "mousedown" ? "pointerdown" : type === "mousemove" ? "pointermove" : "pointerup";
+        canvasEl.dispatchEvent(clonePointerEvent(pointerType, event, buttons));
+        canvasEl.dispatchEvent(cloneMouseEvent(type, event, buttons));
+    };
+
+    const finishPan = (event) => {
+        if (event._vnccsForwardedMiddlePan) return;
+        if (!panning) return;
+        panning = false;
+        event.preventDefault();
+        event.stopPropagation();
+        forward("mouseup", event, 0);
+        window.removeEventListener("mousemove", movePan, true);
+        window.removeEventListener("mouseup", finishPan, true);
+    };
+
+    const movePan = (event) => {
+        if (event._vnccsForwardedMiddlePan) return;
+        if (!panning) return;
+        event.preventDefault();
+        event.stopPropagation();
+        forward("mousemove", event, event.buttons || 4);
+    };
+
+    root.addEventListener("mousedown", (event) => {
+        if (event._vnccsForwardedMiddlePan) return;
+        if (event.button !== 1) return;
+        panning = true;
+        event.preventDefault();
+        event.stopPropagation();
+        forward("mousedown", event, 4);
+        window.addEventListener("mousemove", movePan, true);
+        window.addEventListener("mouseup", finishPan, true);
+    }, true);
+
+    root.addEventListener("auxclick", (event) => {
+        if (event.button !== 1) return;
+        event.preventDefault();
+        event.stopPropagation();
+    }, true);
+}
+
 // ── CSS Injection (once per class prefix) ─────────────────────────────────────
 const _injectedStyles = new Set();
 

@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "./vnccs_common.js";
+import { showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "./vnccs_common.js";
 
 // --- STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -2010,6 +2010,7 @@ app.registerExtension({
                 container.appendChild(botRow);
 
                 // ADD WIDGET
+                enableMiddleMouseCanvasPan(container);
                 node.addDOMWidget("ui", "ui", container, { serialize: false, hideOnZoom: false });
                 syncDOMWidgetWidthSoon(node, "ui");
 
