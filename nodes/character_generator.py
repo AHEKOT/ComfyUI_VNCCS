@@ -45,7 +45,14 @@ from .vnccs_control_center import (
 )
 from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder
 from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, VNCCS_RMBG2
-from ..utils import base_output_dir, character_dir, ensure_safe_name
+from .model_path_utils import basename_agnostic
+from ..utils import (
+    base_output_dir,
+    character_dir,
+    ensure_safe_name,
+    is_path_under,
+    normalize_filesystem_path,
+)
 
 
 _LIVE_GENERATOR_CONTEXTS = {}
@@ -139,12 +146,7 @@ def _safe_cache_part(value, fallback="node"):
 
 
 def _is_under(base, path):
-    try:
-        base_abs = os.path.abspath(base)
-        path_abs = os.path.abspath(path)
-        return os.path.commonpath([base_abs, path_abs]) == base_abs
-    except Exception:
-        return False
+    return is_path_under(base, path)
 
 
 def _safe_character_root(character_name=""):
@@ -170,12 +172,12 @@ def _character_root_from_sheets_path(sheets_path, character_name=""):
     fallback_root = _safe_character_root(character_name)
     if isinstance(sheets_path, list):
         sheets_path = sheets_path[0] if sheets_path else ""
-    sheets_path = str(sheets_path or "").strip()
+    sheets_path = normalize_filesystem_path(sheets_path)
     if sheets_path:
         abs_sheets_path = os.path.abspath(sheets_path)
         output_root = base_output_dir()
         if _is_under(output_root, abs_sheets_path):
-            parts = abs_sheets_path.split(os.sep)
+            parts = normalize_filesystem_path(abs_sheets_path).split(os.sep)
             if "Sheets" in parts:
                 character_root = os.sep.join(parts[:parts.index("Sheets")])
                 if character_root and _is_under(output_root, character_root):
@@ -191,16 +193,16 @@ def _character_root_from_sheets_path(sheets_path, character_name=""):
 def _safe_cache_dir(cache_dir):
     if not cache_dir:
         return ""
-    cache_abs = os.path.abspath(str(cache_dir))
+    cache_abs = os.path.abspath(normalize_filesystem_path(cache_dir))
     if not _is_under(base_output_dir(), cache_abs):
         return ""
-    if "cache" not in cache_abs.split(os.sep):
+    if "cache" not in normalize_filesystem_path(cache_abs).split(os.sep):
         return ""
     return cache_abs
 
 
 def _safe_existing_character_image_path(path, character_name=""):
-    path = str(path or "").strip()
+    path = normalize_filesystem_path(path)
     if not path:
         return ""
     root = _safe_character_root(character_name)
@@ -215,7 +217,7 @@ def _safe_existing_character_image_path(path, character_name=""):
 
 
 def _safe_emotion_output_prefix(prefix, character_name="", root_name="Sprites"):
-    prefix = str(prefix or "").strip()
+    prefix = normalize_filesystem_path(prefix)
     if not prefix:
         return ""
     root = _safe_character_root(character_name)
@@ -245,7 +247,7 @@ def _safe_torch_load_tensor(path):
 def _costume_name_from_sheets_path(sheets_path, fallback="Naked"):
     if isinstance(sheets_path, list):
         sheets_path = sheets_path[0] if sheets_path else ""
-    parts = os.path.abspath(str(sheets_path or "")).split(os.sep)
+    parts = os.path.abspath(normalize_filesystem_path(sheets_path)).split(os.sep)
     if "Sheets" in parts:
         index = parts.index("Sheets")
         if len(parts) > index + 1 and parts[index + 1]:
@@ -737,7 +739,7 @@ class VNCCS_CharacterGenerator:
         )
         strength = float(state.get("strength", 1.0) if state else 1.0)
         full_path, exists = _find_model_on_disk(entry.get("local_path", ""))
-        filename = os.path.basename(full_path or entry.get("local_path", ""))
+        filename = basename_agnostic(full_path or entry.get("local_path", ""))
         rel_path = _rel_within_folder(entry.get("local_path", ""))
         return {
             "name": entry.get("name", lora_name),

@@ -302,14 +302,23 @@ class TestPathHelpers:
     def test_character_dir_allows_safe_display_names(self, good):
         assert os.path.basename(U.character_dir(good)) == good
 
+    @pytest.mark.parametrize("builder", [U.faces_dir, U.sheets_dir, U.sprites_dir])
+    def test_character_asset_dirs_reject_path_like_costumes(self, builder):
+        with pytest.raises(ValueError):
+            builder("Alice", "Bad\\Costume", "neutral")
+
     def test_safe_join_under_rejects_escape(self, tmp_path):
         with pytest.raises(ValueError):
             U.safe_join_under(str(tmp_path), "..", "outside")
 
+    def test_safe_join_under_accepts_windows_style_relative_parts(self, tmp_path):
+        path = U.safe_join_under(str(tmp_path), "Sprites\\Naked\\Neutral")
+        assert path == os.path.join(str(tmp_path), "Sprites", "Naked", "Neutral")
+
     def test_safe_relative_path_normalizes_backslashes(self):
         assert U.safe_relative_path("Sheets\\Naked\\neutral") == "Sheets/Naked/neutral"
 
-    @pytest.mark.parametrize("bad", ["/abs/path", "../x", "a/../b", "~/.ssh"])
+    @pytest.mark.parametrize("bad", ["/abs/path", "../x", "a/../b", "~/.ssh", "C:\\Users\\Alice", "\\\\server\\share\\x"])
     def test_safe_relative_path_rejects_unsafe_paths(self, bad):
         with pytest.raises(ValueError):
             U.safe_relative_path(bad)
@@ -326,6 +335,8 @@ class TestPathHelpers:
             with pytest.raises(ValueError):
                 safe_mod.ensure_safe_name("<script>", "character")
             assert safe_mod.safe_relative_path("A\\B") == "A/B"
+            with pytest.raises(ValueError):
+                safe_mod.safe_relative_path("C:\\Users\\Alice")
         finally:
             sys.modules.pop("_vnccs.nodes._safe_utils", None)
             if original_utils is not None:

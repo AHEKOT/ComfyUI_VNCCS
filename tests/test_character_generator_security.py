@@ -24,6 +24,19 @@ def test_character_root_ignores_external_sheets_path(tmp_path, monkeypatch):
     assert cg._character_root_from_sheets_path(str(external), "Alice") == str(char_root)
 
 
+def test_character_root_accepts_windows_style_sheets_path(tmp_path, monkeypatch):
+    base = tmp_path / "output" / "VNCCS" / "Characters"
+    char_root = base / "Alice"
+    sheets = char_root / "Sheets" / "Naked" / "neutral"
+    sheets.mkdir(parents=True)
+
+    monkeypatch.setattr(cg, "base_output_dir", lambda: str(base))
+
+    windows_style = str(sheets).replace(os.sep, "\\")
+    assert cg._character_root_from_sheets_path(windows_style, "Alice") == str(char_root)
+    assert cg._costume_name_from_sheets_path(windows_style) == "Naked"
+
+
 def test_cache_tensor_path_rejects_external_cache(tmp_path, monkeypatch):
     base = tmp_path / "output" / "VNCCS" / "Characters"
     outside = tmp_path / "outside" / "cache"
@@ -45,4 +58,3 @@ def test_emotion_output_prefix_must_stay_under_character_sprites(tmp_path, monke
 
     assert cg._safe_emotion_output_prefix(str(safe_prefix), "Alice") == str(safe_prefix)
     assert cg._safe_emotion_output_prefix(str(unsafe_prefix), "Alice") == ""
-

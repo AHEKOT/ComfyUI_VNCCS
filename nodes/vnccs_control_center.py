@@ -22,9 +22,14 @@ import traceback
 import struct
 
 try:
-    from ..utils import validate_privileged_request
+    from ..utils import is_absolute_path_any_os, normalize_filesystem_path, validate_privileged_request
 except Exception:
-    from utils import validate_privileged_request
+    from utils import is_absolute_path_any_os, normalize_filesystem_path, validate_privileged_request
+
+try:
+    from .model_path_utils import basename_agnostic, get_full_path_agnostic
+except Exception:
+    from model_path_utils import basename_agnostic, get_full_path_agnostic
 
 
 class AnyType(str):
@@ -131,10 +136,11 @@ def resolve_path(relative_path):
     if not relative_path:
         return ""
     expanded = os.path.expanduser(relative_path)
-    if os.path.isabs(expanded):
-        return os.path.abspath(expanded)
+    normalized = normalize_filesystem_path(expanded)
+    if is_absolute_path_any_os(expanded):
+        return os.path.abspath(normalized)
     base = getattr(folder_paths, "base_path", os.getcwd())
-    return os.path.abspath(os.path.join(base, expanded))
+    return os.path.abspath(os.path.join(base, normalized))
 
 
 def _models_root():
@@ -188,7 +194,7 @@ def _resolve_model_download_path(local_path):
     if not local_path:
         raise ValueError("Model local_path is required")
     normalized = str(local_path).strip().replace("\\", "/")
-    if normalized.startswith("/") or normalized.startswith("~"):
+    if is_absolute_path_any_os(normalized):
         raise ValueError("Model local_path must be relative to ComfyUI models directory")
     parts = [part for part in normalized.split("/") if part]
     if len(parts) < 3 or parts[0] != "models":
@@ -351,7 +357,7 @@ def _build_custom_lora_entry(rel_path, used_names=None):
     if not normalized:
         raise ValueError("LoRA path is empty")
 
-    full_path = folder_paths.get_full_path("loras", normalized)
+    full_path = get_full_path_agnostic(folder_paths, "loras", normalized, require_exists=True)
     if not full_path or not os.path.exists(full_path):
         raise FileNotFoundError(f"LoRA '{normalized}' not found in ComfyUI loras folder")
 
@@ -502,15 +508,12 @@ def _find_model_on_disk(local_path):
     for key in keys:
         searches = [rel_within, filename] if rel_within != filename else [filename]
         for search in searches:
-            try:
-                found = folder_paths.get_full_path(key, search)
-                if found and os.path.exists(found):
-                    return found, True
-            except Exception as exc:
-                print(f"[VNCCS Control Center] folder_paths.get_full_path failed for {key}/{search}: {exc}")
+            found = get_full_path_agnostic(folder_paths, key, search, require_exists=True)
+            if found:
+                return found, True
             try:
                 for folder in folder_paths.get_folder_paths(key) or []:
-                    candidate = os.path.join(folder, search)
+                    candidate = os.path.join(folder, search.replace("\\", os.sep).replace("/", os.sep))
                     if os.path.exists(candidate):
                         return candidate, True
             except Exception as exc:
@@ -616,7 +619,7 @@ def _load_gguf(full_path):
         )
 
     loader = comfy_nodes.NODE_CLASS_MAPPINGS["UnetLoaderGGUF"]()
-    model, = loader.load_unet(os.path.basename(full_path))
+    model, = loader.load_unet(basename_agnostic(full_path))
     return model
 
 
@@ -695,10 +698,15 @@ def _resolve_nunchaku_lora_loader_cls(model, model_entry=None):
 def _run_nunchaku_loader(loader_cls, load_target, settings):
     original = folder_paths.get_full_path_or_raise
     abs_target = os.path.abspath(load_target)
-    base_name = os.path.basename(abs_target.rstrip("\\/"))
+    base_name = basename_agnostic(abs_target)
 
     def patched(folder_name, filename):
-        if filename == base_name or os.path.abspath(filename) == abs_target:
+        filename_base = basename_agnostic(filename)
+        if (
+            filename in {base_name, load_target}
+            or filename_base == base_name
+            or os.path.abspath(str(filename)) == abs_target
+        ):
             return load_target
         return original(folder_name, filename)
 
@@ -825,7 +833,7 @@ def _load_model_block(model_entry, selected_type, type_settings, config, selecte
 
 
 def _apply_lora_standard(model, clip, full_path, strength):
-    lora_name = os.path.basename(full_path)
+    lora_name = basename_agnostic(full_path)
     try:
         _validate_downloaded_model_file(full_path, lora_name)
         lora_sd = comfy.utils.load_torch_file(full_path, safe_load=True)
@@ -842,10 +850,10 @@ def _apply_lora_standard(model, clip, full_path, strength):
 def _apply_lora_nunchaku(model, full_path, strength, settings=None, model_entry=None):
     loader_cls, loader_kind = _resolve_nunchaku_lora_loader_cls(model, model_entry=model_entry)
     original = folder_paths.get_full_path_or_raise
-    base_name = os.path.basename(full_path)
+    base_name = basename_agnostic(full_path)
 
     def patched(folder_name, filename):
-        if folder_name == "loras" and filename == base_name:
+        if folder_name == "loras" and basename_agnostic(filename) == base_name:
             return full_path
         return original(folder_name, filename)
 
@@ -961,7 +969,7 @@ def _download_worker_loop():
             response = requests.get(url, headers=headers, stream=True, allow_redirects=True, timeout=_DOWNLOAD_TIMEOUT)
             response.raise_for_status()
 
-            expected_name = os.path.basename(target_model.get("local_path", "") or target_model.get("hf_path", "") or "model")
+            expected_name = basename_agnostic(target_model.get("local_path", "") or target_model.get("hf_path", "") or "model")
             total_size, max_bytes = _validate_download_response(response, expected_name)
             downloaded = 0
             temp_dir = os.path.join(folder_paths.base_path, "temp")

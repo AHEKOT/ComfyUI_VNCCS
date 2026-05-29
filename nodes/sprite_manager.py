@@ -9,7 +9,8 @@ from PIL import Image
 
 from ..utils import (
     base_output_dir, character_dir, list_characters,
-    load_character_info, load_character_sheet, list_costumes
+    load_character_info, load_character_sheet, list_costumes,
+    is_absolute_path_any_os, is_path_under, normalize_filesystem_path,
 )
 from ._safe_utils import ensure_safe_name, safe_join_under, safe_relative_path
 
@@ -529,13 +530,13 @@ if server:
             
             for folder_path in folders_to_delete:
                 try:
-                    raw_path = str(folder_path or "")
+                    raw_path = normalize_filesystem_path(folder_path)
                     if not raw_path:
                         continue
 
-                    if os.path.isabs(raw_path):
+                    if is_absolute_path_any_os(raw_path):
                         resolved_path = os.path.abspath(raw_path)
-                        if os.path.commonpath([os.path.abspath(base_root), resolved_path]) != os.path.abspath(base_root):
+                        if not is_path_under(base_root, resolved_path):
                             errors.append(f"Folder outside VNCCS output: {raw_path}")
                             continue
                     else:
@@ -555,7 +556,7 @@ if server:
                             # Try to remove parent if it's now empty
                             parent = os.path.dirname(resolved_path)
                             if (
-                                os.path.commonpath([os.path.abspath(base_root), os.path.abspath(parent)]) == os.path.abspath(base_root)
+                                is_path_under(base_root, parent)
                                 and os.path.exists(parent)
                                 and len(os.listdir(parent)) == 0
                             ):

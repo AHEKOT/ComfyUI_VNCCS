@@ -28,6 +28,11 @@ try:
 except ImportError:
     COMFY_AVAILABLE = False
 
+try:
+    from .model_path_utils import get_full_path_agnostic
+except Exception:
+    from model_path_utils import get_full_path_agnostic
+
 
 class VNCCS_Variable:
     """
@@ -241,7 +246,7 @@ class VNCCS_LoraBypass:
 
         try:
             # Get full path to LoRA file
-            lora_path = folder_paths.get_full_path("loras", lora_name)
+            lora_path = get_full_path_agnostic(folder_paths, "loras", lora_name, require_exists=True)
 
             if lora_path is None:
                 raise FileNotFoundError(f"LoRA not found: {lora_name}")
@@ -348,7 +353,7 @@ class VNCCS_LoraStack:
 
             try:
                 # Get full path to LoRA file
-                lora_path = folder_paths.get_full_path("loras", name)
+                lora_path = get_full_path_agnostic(folder_paths, "loras", name, require_exists=True)
 
                 if lora_path is None:
                     raise FileNotFoundError(

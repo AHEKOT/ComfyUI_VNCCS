@@ -26,6 +26,7 @@ from ..utils import (
     sheets_dir, faces_dir, normalize_hair_tags
 )
 from ._safe_utils import ensure_safe_name
+from .model_path_utils import get_full_path_agnostic
 
 # --------------------------------------------------------------------
 # Helper Functions
@@ -125,13 +126,7 @@ def safe_filename_list(category):
 
 
 def get_lora_full_path(lora_name):
-    for candidate in (lora_name, str(lora_name or "").replace("\\", "/"), str(lora_name or "").replace("/", "\\")):
-        if not candidate:
-            continue
-        lora_path = folder_paths.get_full_path("loras", candidate)
-        if lora_path:
-            return lora_path
-    return None
+    return get_full_path_agnostic(folder_paths, "loras", lora_name, require_exists=True)
 
 
 def _validate_character_wizard_gguf(path, file_label="File"):
@@ -467,7 +462,7 @@ def load_anima_assets(gen_settings):
             weight_dtype="default",
         )
     if model is None and hasattr(comfy.sd, "load_diffusion_model"):
-        diffusion_model_path = folder_paths.get_full_path("diffusion_models", diffusion_model_name)
+        diffusion_model_path = get_full_path_agnostic(folder_paths, "diffusion_models", diffusion_model_name)
         if diffusion_model_path:
             model = comfy.sd.load_diffusion_model(diffusion_model_path)
 
@@ -482,7 +477,7 @@ def load_anima_assets(gen_settings):
             device="default",
         )
     if clip is None and hasattr(comfy.sd, "load_clip"):
-        clip_path = folder_paths.get_full_path("text_encoders", clip_name)
+        clip_path = get_full_path_agnostic(folder_paths, "text_encoders", clip_name)
         if clip_path:
             clip_type = getattr(comfy.sd.CLIPType, clip_type_name.upper(), None)
             if clip_type is None:
@@ -505,7 +500,7 @@ def load_anima_assets(gen_settings):
             model_name=vae_name,
         )
     if vae is None and hasattr(comfy.sd, "load_vae"):
-        vae_path = folder_paths.get_full_path("vae", vae_name)
+        vae_path = get_full_path_agnostic(folder_paths, "vae", vae_name)
         if vae_path:
             vae = comfy.sd.load_vae(vae_path)
 
@@ -536,7 +531,7 @@ def load_generation_assets(gen_settings):
     if not ckpt_name:
         raise ValueError("No Checkpoint selected in Character Creator V2")
 
-    ckpt_path = folder_paths.get_full_path("checkpoints", ckpt_name)
+    ckpt_path = get_full_path_agnostic(folder_paths, "checkpoints", ckpt_name, require_exists=True)
     if not ckpt_path:
         raise ValueError(f"Checkpoint path not found for '{ckpt_name}'")
 

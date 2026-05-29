@@ -1,6 +1,7 @@
 """VNCCS utilities - common functions for character management."""
 
 import os
+import ntpath
 import json
 import random
 import re
@@ -60,11 +61,53 @@ def ensure_safe_name(value: str, field: str = "name") -> str:
     return value
 
 
+def normalize_filesystem_path(value: str) -> str:
+    """Normalize slash direction for paths persisted by any OS."""
+    return str(value or "").strip().replace("\\", os.sep).replace("/", os.sep)
+
+
+def _portable_parts(value: str) -> List[str]:
+    normalized = str(value or "").strip().replace("\\", "/")
+    return [part for part in normalized.split("/") if part]
+
+
+def is_absolute_path_any_os(value: str) -> bool:
+    """Return True for POSIX, Windows drive, UNC, or home-rooted paths."""
+    raw = str(value or "").strip()
+    normalized = raw.replace("\\", "/")
+    return (
+        os.path.isabs(raw)
+        or ntpath.isabs(raw)
+        or bool(ntpath.splitdrive(raw)[0])
+        or normalized.startswith("/")
+        or normalized.startswith("~")
+    )
+
+
+def is_path_under(base: str, path: str) -> bool:
+    """Compare filesystem containment after normalizing slash style."""
+    try:
+        base_abs = os.path.abspath(normalize_filesystem_path(base))
+        path_abs = os.path.abspath(normalize_filesystem_path(path))
+        return os.path.commonpath([base_abs, path_abs]) == base_abs
+    except Exception:
+        return False
+
+
 def safe_join_under(base: str, *parts: str) -> str:
     """Join path parts and ensure the result remains under base."""
-    base_abs = os.path.abspath(base)
-    target = os.path.abspath(os.path.join(base_abs, *[str(part) for part in parts]))
-    if os.path.commonpath([base_abs, target]) != base_abs:
+    base_abs = os.path.abspath(normalize_filesystem_path(base))
+    normalized_parts = []
+    for part in parts:
+        raw = str(part)
+        if is_absolute_path_any_os(raw):
+            raise ValueError("path escapes allowed directory")
+        part_items = _portable_parts(raw)
+        if any(item in {".", ".."} or "\0" in item for item in part_items):
+            raise ValueError("path escapes allowed directory")
+        normalized_parts.extend(part_items)
+    target = os.path.abspath(os.path.join(base_abs, *normalized_parts))
+    if not is_path_under(base_abs, target):
         raise ValueError("path escapes allowed directory")
     return target
 
@@ -76,7 +119,7 @@ def safe_relative_path(value: str, field: str = "path") -> str:
     normalized = str(value).strip().replace("\\", "/")
     if not normalized:
         raise ValueError(f"{field} is required")
-    if normalized.startswith("/") or normalized.startswith("~"):
+    if is_absolute_path_any_os(normalized):
         raise ValueError(f"{field} must be relative")
     parts = [part for part in normalized.split("/") if part]
     if not parts or any(part in {".", ".."} for part in parts):
@@ -253,17 +296,35 @@ def character_dir(name: str) -> str:
 
 def faces_dir(name: str, costume: str = "Naked", emotion: str = "neutral") -> str:
     """Get faces directory path."""
-    return os.path.join(character_dir(name), "Faces", costume, emotion, "face_neutral")
+    return safe_join_under(
+        character_dir(name),
+        "Faces",
+        ensure_safe_name(costume, "costume"),
+        ensure_safe_name(emotion, "emotion"),
+        "face_neutral",
+    )
 
 
 def sheets_dir(name: str, costume: str = "Naked", emotion: str = "neutral") -> str:
     """Get sheets directory path."""
-    return os.path.join(character_dir(name), "Sheets", costume, emotion, "sheet_neutral")
+    return safe_join_under(
+        character_dir(name),
+        "Sheets",
+        ensure_safe_name(costume, "costume"),
+        ensure_safe_name(emotion, "emotion"),
+        "sheet_neutral",
+    )
 
 
 def sprites_dir(name: str, costume: str = "Naked", emotion: str = "neutral") -> str:
     """Get sprites directory path."""
-    return os.path.join(character_dir(name), "Sprites", costume, emotion, "sprite_neutral")
+    return safe_join_under(
+        character_dir(name),
+        "Sprites",
+        ensure_safe_name(costume, "costume"),
+        ensure_safe_name(emotion, "emotion"),
+        "sprite_neutral",
+    )
 
 
 def ensure_character_structure(name: str, emotions: List[str] = None, main_dirs: List[str] = None) -> None:
@@ -308,7 +369,7 @@ def ensure_costume_structure(name: str, costume: str, emotions: List[str] = None
         if not os.path.exists(main_dir_path):
             os.makedirs(main_dir_path)
         
-        costume_path = os.path.join(main_dir_path, costume)
+        costume_path = safe_join_under(main_dir_path, ensure_safe_name(costume, "costume"))
         if not os.path.exists(costume_path):
             os.makedirs(costume_path)
 

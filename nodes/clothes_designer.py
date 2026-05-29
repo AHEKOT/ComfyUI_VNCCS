@@ -19,6 +19,7 @@ from ..utils import (
     sheets_dir, load_character_info
 )
 from ._safe_utils import ensure_safe_name, safe_join_under, safe_relative_path
+from .model_path_utils import get_full_path_agnostic
 from .vnccs_control_center import _apply_lora_standard, _apply_lora_nunchaku
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -519,7 +520,7 @@ class ClothesDesigner:
             print(f"[ClothesDesigner] Ignoring non-Clothes-Core LoRA from widget state: {lora_name}")
             lora_name = "none"
         if lora_name != "none":
-            full_path = folder_paths.get_full_path("loras", lora_name)
+            full_path = get_full_path_agnostic(folder_paths, "loras", lora_name, require_exists=True)
             if full_path and os.path.exists(full_path):
                 print(f"[ClothesDesigner] Applying LoRA for generation: {lora_name} (strength={lora_strength})")
                 loader_type = getattr(pipe, "loader_type", "standard") or "standard"

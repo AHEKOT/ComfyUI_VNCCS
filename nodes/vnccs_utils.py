@@ -23,6 +23,11 @@ import cv2
 import types
 import torch.nn.functional as F
 
+try:
+    from .model_path_utils import get_full_path_agnostic
+except Exception:
+    from model_path_utils import get_full_path_agnostic
+
 
 class _CompatReturnTypes(tuple):
     def __getitem__(self, index):
@@ -908,7 +913,7 @@ class CustomBiRefNetModel(RMBGModel):
         if self.current_model_version != model_name:
             self.clear_model()
             
-            model_path = folder_paths.get_full_path("birefnet", model_name) if folder_paths else None
+            model_path = get_full_path_agnostic(folder_paths, "birefnet", model_name, require_exists=True) if folder_paths else None
             if not model_path or not os.path.exists(model_path):
                 raise RuntimeError(f"Custom model file {model_name} not found")
 

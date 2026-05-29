@@ -115,6 +115,35 @@ class TestFindModelOnDisk:
         path, exists = _find_model_on_disk("models/checkpoints/mymodel.safetensors")
         assert exists is True
 
+    def test_finds_windows_style_subpath_via_folder_paths(self, tmp_path, monkeypatch):
+        import folder_paths as fp
+        f = tmp_path / "packs" / "mymodel.safetensors"
+        f.parent.mkdir()
+        f.write_bytes(b"data")
+
+        def fake_get_full_path(key, name):
+            return str(f) if name == "packs/mymodel.safetensors" else None
+
+        monkeypatch.setattr(fp, "get_full_path", fake_get_full_path)
+        monkeypatch.setattr(fp, "get_folder_paths", lambda key: [str(tmp_path)])
+
+        path, exists = _find_model_on_disk("models\\checkpoints\\packs\\mymodel.safetensors")
+        assert path == str(f)
+        assert exists is True
+
+    def test_finds_windows_style_subpath_from_folder_scan(self, tmp_path, monkeypatch):
+        import folder_paths as fp
+        f = tmp_path / "packs" / "mymodel.safetensors"
+        f.parent.mkdir()
+        f.write_bytes(b"data")
+
+        monkeypatch.setattr(fp, "get_full_path", lambda *a: None)
+        monkeypatch.setattr(fp, "get_folder_paths", lambda key: [str(tmp_path)])
+
+        path, exists = _find_model_on_disk("models\\checkpoints\\packs\\mymodel.safetensors")
+        assert path == str(f)
+        assert exists is True
+
     def test_missing_file_falls_back_to_resolve(self, monkeypatch):
         import folder_paths as fp
         monkeypatch.setattr(fp, "get_full_path", lambda *a: None)

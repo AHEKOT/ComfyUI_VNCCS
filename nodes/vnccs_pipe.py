@@ -26,6 +26,7 @@ from .vnccs_control_center import (
     _apply_lora_standard,
     _apply_lora_nunchaku,
 )
+from .model_path_utils import get_full_path_agnostic
 
 
 SAMPLER_ENUM, SCHEDULER_ENUM = fetch_sampler_scheduler_lists()
@@ -142,7 +143,7 @@ class VNCCS_Pipe:
 
         if lora_name and lora_name != "none" and model is not None:
             loader_type = getattr(pipe, "loader_type", "standard") if pipe else "standard"
-            full_path = folder_paths.get_full_path("loras", lora_name)
+            full_path = get_full_path_agnostic(folder_paths, "loras", lora_name, require_exists=True)
             if full_path and os.path.exists(full_path):
                 print(f"[VNCCS Pipe] Applying LoRA: {lora_name} (strength={lora_strength}, loader={loader_type})")
                 if loader_type == "nunchaku":
