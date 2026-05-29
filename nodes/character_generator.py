@@ -67,6 +67,14 @@ def _first_tensor(value):
     return value
 
 
+def _as_bool(value, default=False):
+    if value is None:
+        return bool(default)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def _call_comfy_node(class_name, **kwargs):
     mappings = getattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {}) if comfy_nodes else {}
     cls = mappings.get(class_name)
@@ -275,10 +283,18 @@ DEFAULT_WIDGET_DATA = {
         "enable_debug": False,
     },
     "bg_remove": {
-        "tolerance": 0.5,
-        "despill_strength": 1.0,
-        "despill_kernel_size": 3,
-        "despill_color": "black",
+        "use_internal_rmbg": True,
+        "tolerance": 0.2,
+        "softness": 0.16,
+        "despill_strength": 0.5,
+        "edge_width": 3,
+        "matte_cleanup": 0.2,
+        "foreground_recover": 0.35,
+        "edge_decontaminate": 0.7,
+        "edge_choke": 0.2,
+        "matte_method": "guided_edge",
+        "screen_mode": "auto",
+        "output_mode": "straight_rgba",
     },
     "pose_generation": {
         "target_size": "1024",
@@ -428,6 +444,19 @@ class VNCCS_CharacterGenerator:
     def _find_clothes_lora(self, pipe):
         return self._find_lora(pipe, CLOTHES_CORE_LORA_NAME)
 
+    def _prompt_with_solid_background(self, prompt, background):
+        text = str(prompt or "").strip()
+        bg = str(background or "").strip()
+        if not bg:
+            return text
+
+        instruction = f"Change background to solid {bg} color"
+        if instruction.lower() in text.lower():
+            return text
+        if text:
+            return f"{text}, {instruction}"
+        return instruction
+
     def _apply_lora_to_model(self, model, clip, pipe, lora_info, stage_label):
         if not lora_info or not lora_info.get("exists") or not lora_info.get("path"):
             message = lora_info.get("message") if lora_info else stage_label
@@ -509,10 +538,11 @@ class VNCCS_CharacterGenerator:
                 outputs[out_index].append(value)
         return tuple(outputs or [])
 
-    def _run_pose_generation(self, poses, character, pipe, prompt, settings, lora_info=None):
+    def _run_pose_generation(self, poses, character, pipe, prompt, settings, lora_info=None, background="Green"):
         pipe_values = self._extract_pipe(pipe)
         pose_parts = self._image_list(poses)
         character_rgb = VNCCS_MaskExtractor().fill_alpha_with_color(character)[0]
+        prompt = self._prompt_with_solid_background(prompt, background)
 
         positive_list, negative_list, latent_list = self._run_list_mapped(
             "VNCCS_QWEN_Encoder",
@@ -660,8 +690,10 @@ class VNCCS_CharacterGenerator:
             model_name=settings["gan_model"],
         )[0]
 
-    def _run_upscale_one(self, image, dit, vae, background, settings):
+    def _run_upscale_one(self, image, dit, vae, background, settings, use_internal_rmbg=True):
         upscaled = self._run_seedvr_upscale_one(image, dit, vae, settings)
+        if not _as_bool(use_internal_rmbg, True):
+            return upscaled
         return VNCCS_RMBG2().process_image(
             upscaled,
             "RMBG-2.0",
@@ -701,7 +733,7 @@ class VNCCS_CharacterGenerator:
             image=image,
         )[0]
 
-    def _run_upscaler(self, image, background, settings, unique_id=None, cache_dir=None, stage="upscaler"):
+    def _run_upscaler(self, image, background, settings, unique_id=None, cache_dir=None, stage="upscaler", use_internal_rmbg=True):
         images = self._split_batch(image)
         total = len(images)
         mode = str(settings.get("mode", "seedvr") or "seedvr").lower()
@@ -727,7 +759,7 @@ class VNCCS_CharacterGenerator:
         dit, vae = self._run_upscaler_models(settings)
         results = []
         for index, item in enumerate(images, start=1):
-            result = self._run_upscale_one(item, dit, vae, background, settings)
+            result = self._run_upscale_one(item, dit, vae, background, settings, use_internal_rmbg=use_internal_rmbg)
             results.append(self._list_to_batch(result))
             partial = torch.cat(results, dim=0)
             self._emit(
@@ -786,10 +818,17 @@ class VNCCS_CharacterGenerator:
     def _run_bg_remove(self, images, settings):
         return VNCCSChromaKey().chroma_key(
             images,
-            float(settings["tolerance"]),
-            float(settings["despill_strength"]),
-            int(settings["despill_kernel_size"]),
-            settings["despill_color"],
+            float(settings.get("tolerance", 0.2)),
+            float(settings.get("softness", 0.16)),
+            float(settings.get("despill_strength", 0.5)),
+            int(settings.get("edge_width", 3)),
+            float(settings.get("matte_cleanup", 0.2)),
+            float(settings.get("foreground_recover", 0.35)),
+            float(settings.get("edge_decontaminate", 0.7)),
+            float(settings.get("edge_choke", 0.2)),
+            str(settings.get("matte_method", "guided_edge")),
+            str(settings.get("screen_mode", "auto")),
+            str(settings.get("output_mode", "straight_rgba")),
         )[0]
 
     def _tensor_item_to_pil(self, image):
@@ -866,13 +905,28 @@ class VNCCS_CharacterGenerator:
                 cache_dir=cache_dir,
                 lora_info=pose_lora_info,
             )
-            pose_images = self._run_pose_generation(poses, character, pipe, prompt, settings["pose_generation"], lora_info=pose_lora_info)
+            pose_images = self._run_pose_generation(
+                poses,
+                character,
+                pipe,
+                prompt,
+                settings["pose_generation"],
+                lora_info=pose_lora_info,
+                background=background,
+            )
             pose_total = pose_images.shape[0] if torch.is_tensor(pose_images) and pose_images.ndim == 4 else 0
             self._emit(unique_id, "pose_generation", "done", pose_images, f"Generated {pose_total} pose images", pose_total, pose_total, cache_dir=cache_dir, lora_info=pose_lora_info)
 
             up_total = pose_total
             self._emit(unique_id, "upscaler", "running", pose_images, f"Preparing upscaler for {up_total} images", 0, up_total, cache_dir=cache_dir)
-            upscaled = self._run_upscaler(pose_images, background, settings["upscaler"], unique_id=unique_id, cache_dir=cache_dir)
+            upscaled = self._run_upscaler(
+                pose_images,
+                background,
+                settings["upscaler"],
+                unique_id=unique_id,
+                cache_dir=cache_dir,
+                use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", True),
+            )
 
             bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
             self._emit(unique_id, "bg_remove", "running", upscaled, f"Removing background for {bg_total} images", 0, bg_total, cache_dir=cache_dir)
@@ -948,7 +1002,15 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
             cache_dir=cache_dir,
             lora_info=pose_lora_info,
         )
-        pose_images = self._run_pose_generation(poses, character, pipe, prompt, settings["pose_generation"], lora_info=pose_lora_info)
+        pose_images = self._run_pose_generation(
+            poses,
+            character,
+            pipe,
+            prompt,
+            settings["pose_generation"],
+            lora_info=pose_lora_info,
+            background=background,
+        )
         pose_total = pose_images.shape[0] if torch.is_tensor(pose_images) and pose_images.ndim == 4 else 0
         self._emit(unique_id, pose_stage, "done", pose_images, f"Generated {pose_total} pose images", pose_total, pose_total, cache_dir=cache_dir, lora_info=pose_lora_info)
 
@@ -960,6 +1022,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
             unique_id=unique_id,
             cache_dir=cache_dir,
             stage=up_stage,
+            use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", True),
         )
 
         bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
@@ -1086,8 +1149,18 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
     CATEGORY = "VNCCS"
     DESCRIPTION = "Clothes sprite generator with source upscale followed by pose generation, upscale, and BG remove."
 
-    def _run_clothes_pose_generation(self, poses, character, pipe, prompt, background, settings, lora_info=None):
-        pose_images = self._run_pose_generation(poses, character, pipe, prompt, settings, lora_info=lora_info)
+    def _run_clothes_pose_generation(self, poses, character, pipe, prompt, background, settings, lora_info=None, use_internal_rmbg=True):
+        pose_images = self._run_pose_generation(
+            poses,
+            character,
+            pipe,
+            prompt,
+            settings,
+            lora_info=lora_info,
+            background=background,
+        )
+        if not _as_bool(use_internal_rmbg, True):
+            return pose_images
         return VNCCS_RMBG2().process_image(
             pose_images,
             "RMBG-2.0",
@@ -1157,12 +1230,20 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                 background,
                 settings["pose_generation"],
                 lora_info=pose_lora_info,
+                use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", True),
             )
             pose_total = pose_images.shape[0] if torch.is_tensor(pose_images) and pose_images.ndim == 4 else 0
             self._emit(unique_id, "pose_generation", "done", pose_images, f"Generated {pose_total} clothed pose images", pose_total, pose_total, cache_dir=cache_dir, lora_info=pose_lora_info)
 
             self._emit(unique_id, "upscaler", "running", pose_images, f"Preparing upscaler for {pose_total} images", 0, pose_total, cache_dir=cache_dir)
-            upscaled = self._run_upscaler(pose_images, background, settings["upscaler"], unique_id=unique_id, cache_dir=cache_dir)
+            upscaled = self._run_upscaler(
+                pose_images,
+                background,
+                settings["upscaler"],
+                unique_id=unique_id,
+                cache_dir=cache_dir,
+                use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", True),
+            )
 
             bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
             self._emit(unique_id, "bg_remove", "running", upscaled, f"Removing background for {bg_total} images", 0, bg_total, cache_dir=cache_dir)

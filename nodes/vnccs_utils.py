@@ -58,6 +58,39 @@ def _ensure_float01(tensor: torch.Tensor) -> torch.Tensor:
     return t.clamp(0.0, 1.0)
 
 
+def _box_blur_2d(mask: torch.Tensor, radius: int) -> torch.Tensor:
+    if radius <= 0:
+        return mask
+    kernel_size = radius * 2 + 1
+    src = mask.unsqueeze(0).unsqueeze(0)
+    blurred = F.avg_pool2d(src, kernel_size=kernel_size, stride=1, padding=radius)
+    return blurred.squeeze(0).squeeze(0)
+
+
+def _morph(mask: torch.Tensor, radius: int, mode: str) -> torch.Tensor:
+    if radius <= 0:
+        return mask
+    kernel_size = radius * 2 + 1
+    src = mask.unsqueeze(0).unsqueeze(0)
+    if mode == "dilate":
+        out = F.max_pool2d(src, kernel_size=kernel_size, stride=1, padding=radius)
+    elif mode == "erode":
+        out = -F.max_pool2d(-src, kernel_size=kernel_size, stride=1, padding=radius)
+    else:
+        raise ValueError(f"Unsupported morph mode: {mode}")
+    return out.squeeze(0).squeeze(0)
+
+
+def _remove_small_islands(mask: torch.Tensor, min_neighbors: int) -> torch.Tensor:
+    if min_neighbors <= 0:
+        return mask
+    hard = (mask > 0.5).float()
+    src = hard.unsqueeze(0).unsqueeze(0)
+    neighbors = F.conv2d(src, torch.ones(1, 1, 3, 3, device=mask.device, dtype=mask.dtype), padding=1)
+    keep = (neighbors.squeeze(0).squeeze(0) >= float(min_neighbors)).float()
+    return torch.where(keep > 0.0, mask, torch.zeros_like(mask))
+
+
 
 
 
@@ -102,321 +135,6 @@ class FastGuidedFilter:
         # Resulting sharpened mask
         output = (mean_a * guidance + mean_b).mean(dim=1, keepdim=True)
         return torch.clamp(output, 0.0, 1.0)
-
-
-# --- Chroma Key Node ---
-class VNCCSChromaKey:
-    """VNCCS Chroma Key - simple RGB-based green screen removal."""
-    
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "image": ("IMAGE",),
-                "tolerance": ("FLOAT", {"default": 0.2, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "despill_strength": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "despill_kernel_size": ("INT", {"default": 3, "min": 1, "max": 31, "step": 1}),
-                "despill_color": (["limit", "interior_average", "guided_filter", "difference_trim", "black"], {"default": "limit"}),
-            }
-        }
-
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
-    CATEGORY = "VNCCS"
-    FUNCTION = "chroma_key"
-    DESCRIPTION = """
-    VNCCS Chroma Key - automatically detects background color from image borders.
-    Uses RGB distance with tolerance to mask out the background.
-    """
-
-    def chroma_key(self, image, tolerance, despill_strength, despill_kernel_size, despill_color):
-        if len(image.shape) == 4:
-            batch_size = image.shape[0]
-            rgba_list = []
-            for i in range(batch_size):
-                rgb_img, mask = self.chroma_key_single(image[i], tolerance, despill_strength, despill_kernel_size, despill_color)
-                alpha = (1.0 - mask).unsqueeze(-1).clamp(0.0, 1.0)
-                rgba = torch.cat([rgb_img, alpha], dim=-1)
-                rgba_list.append(rgba)
-            return (torch.stack(rgba_list),)
-        else:
-            rgb_img, mask = self.chroma_key_single(image, tolerance, despill_strength, despill_kernel_size, despill_color)
-            alpha = (1.0 - mask).unsqueeze(-1).clamp(0.0, 1.0)
-            rgba = torch.cat([rgb_img, alpha], dim=-1)
-            return (rgba.unsqueeze(0),)
-
-    def chroma_key_single(self, image, tolerance, despill_strength, despill_kernel_size, despill_color):
-        image = _ensure_float01(image)
-        height, width, _ = image.shape
-        
-        # Detection of background color by analyzing corners for "flatness" (low variance)
-        # sampled as 5% of height/width
-        ch = max(1, height // 20)
-        cw = max(1, width // 20)
-        
-        corners = [
-            image[0:ch, 0:cw, :3],           # Top-Left
-            image[0:ch, width-cw:width, :3], # Top-Right
-            image[height-ch:height, 0:cw, :3], # Bottom-Left
-            image[height-ch:height, width-cw:width, :3] # Bottom-Right
-        ]
-        
-        stable_colors = []
-        std_threshold = 0.015 # More conservative threshold for "flatness"
-        
-        for patch in corners:
-            pixels = patch.reshape(-1, 3)
-            # Calculate standard deviation per channel, then take mean
-            std = pixels.std(dim=0).mean()
-            if std < std_threshold:
-                stable_colors.append(pixels.mean(dim=0))
-        
-        if stable_colors:
-            # Use average of stable corners
-            key_color = torch.stack(stable_colors).mean(dim=0)
-        else:
-            # Fallback: Sampling 10% from each border (current logic)
-            y_margin = height // 10
-            x_margin = width // 10
-            
-            top_border = image[0:y_margin, :, :3]
-            bottom_border = image[height-y_margin:height, :, :3]
-            left_border = image[:, 0:x_margin, :3]
-            right_border = image[:, width-x_margin:width, :3]
-            
-            border_pixels = torch.cat([
-                top_border.reshape(-1, 3),
-                bottom_border.reshape(-1, 3),
-                left_border.reshape(-1, 3),
-                right_border.reshape(-1, 3)
-            ], dim=0)
-            
-            key_color = border_pixels.median(dim=0)[0]
-
-        key_r, key_g, key_b = key_color[0], key_color[1], key_color[2]
-        
-        r, g, b = image[..., 0], image[..., 1], image[..., 2]
-        distance = torch.sqrt((r - key_r)**2 + (g - key_g)**2 + (b - key_b)**2)
-        
-        if despill_color == "guided_filter":
-            # Soft mask generation for Guided Filter
-            # Transition zone from tolerance to tolerance + 0.1
-            soft_tol = tolerance
-            hard_tol = tolerance + 0.1
-            mask = torch.clamp((hard_tol - distance) / (hard_tol - soft_tol + 1e-6), 0.0, 1.0)
-            
-            # Refine mask using Guided Filter
-            # Guidance is the original image
-            guidance = image.permute(2, 0, 1).unsqueeze(0) # [1, 3, H, W]
-            input_mask = mask.unsqueeze(0).unsqueeze(0)    # [1, 1, H, W]
-            
-            gf = FastGuidedFilter(r=despill_kernel_size, eps=0.01)
-            mask = gf.filter(guidance, input_mask).squeeze().clamp(0.0, 1.0)
-        elif despill_color == "difference_trim":
-            # 1. Start with standard binary mask (1.0 = background, 0.0 = foreground)
-            mask = (distance <= tolerance).float()
-            
-            # 2. Identify the Halo Zone (foreground edges where green spill lives)
-            # We dilate the background mask into the foreground to find the fringe
-            mask_chw = mask.unsqueeze(0).unsqueeze(0)
-            dilation_kernel = torch.ones(1, 1, 5, 5, device=image.device)
-            bg_near_fg = (torch.nn.functional.conv2d(mask_chw, dilation_kernel, padding=2) > 0).float()
-            halo_mask = (bg_near_fg * (1.0 - mask_chw)).squeeze() # 1.0 at foreground edges
-            
-            # 2.1. Residual Green Cleanup (Edge-Only)
-            # Find obviously green pixels in the halo that the distance check missed
-            key_r, key_g, key_b = key_color[0], key_color[1], key_color[2]
-            if key_g > key_r and key_g > key_b: dom_idx, others = 1, [0, 2]
-            elif key_b > key_r and key_b > key_g: dom_idx, others = 2, [0, 1]
-            else: dom_idx, others = 0, [1, 2]
-            
-            chan_dom = image[..., dom_idx]
-            limit_ref = (image[..., others[0]] + image[..., others[1]]) / 2.0
-            # Higher threshold for "obviously green" to avoid eating face
-            is_stubborn_green = (chan_dom > limit_ref + 0.1).float() 
-            extra_trim = (is_stubborn_green * halo_mask)
-            mask = torch.clamp(mask + extra_trim * despill_strength, 0.0, 1.0)
-            
-            # 3. Get limit-based de-spilled version for comparison
-            limit_image = self.apply_dispill(image, mask, 1.0, despill_kernel_size, "limit", key_color)
-            
-            # 4. Calculate difference (where the "spill" was removed)
-            diff = torch.abs(image - limit_image).sum(dim=-1)
-            # Spill diff mask: pixels that changed significantly
-            spill_diff_mask = (diff > 0.05).float() 
-            
-            # 5. Restricted Trimming: Only trim if pixels are in the Halo Zone
-            mask = torch.clamp(mask + (spill_diff_mask * halo_mask) * despill_strength, 0.0, 1.0)
-        else:
-            mask = (distance <= tolerance).float()
-
-        corrected_image = self.apply_dispill(image, mask, despill_strength, despill_kernel_size, despill_color, key_color)
-        final_image = corrected_image * (1 - mask.unsqueeze(-1))
-        
-        return final_image, mask
-
-    def apply_dispill(self, image, mask, despill_strength, despill_kernel_size, despill_color, key_color):
-        foreground_mask = (mask == 0).float()
-        
-        # Determine the dominant channel from the key color
-        key_r, key_g, key_b = key_color[0], key_color[1], key_color[2]
-        if key_g > key_r and key_g > key_b:
-            dominant_idx = 1
-            other_indices = [0, 2]
-        elif key_b > key_r and key_b > key_g:
-            dominant_idx = 2
-            other_indices = [0, 1]
-        else:
-            dominant_idx = 0
-            other_indices = [1, 2]
-
-        # Limit method: identify pixels where dominant channel is higher than it should be
-        # compared to other channels, and limit it.
-        if despill_color == "guided_filter":
-            # Production-Grade Edge Decontamination (Unpremultiply-based)
-            # A (Alpha) = 1 - mask (where mask is background probability)
-            alpha = (1.0 - mask).unsqueeze(-1).clamp(0.001, 1.0)
-            
-            # Reconstruction: Pixel = A * Foreground + (1 - A) * Background
-            # Foreground = (Pixel - (1 - A) * Background) / A
-            bg_component = (1.0 - alpha) * key_color
-            decontaminated = (image - bg_component) / alpha
-            decontaminated = torch.clamp(decontaminated, 0.0, 1.0)
-            
-            # We apply this primarily to the edges (semi-transparent areas)
-            # The mask itself is the background probability, so it's a good weight
-            result = torch.lerp(image, decontaminated, despill_strength * mask.unsqueeze(-1))
-            return result
-
-        elif despill_color == "limit":
-            result = image.clone()
-            chan_dom = image[..., dominant_idx]
-            chan_other1 = image[..., other_indices[0]]
-            chan_other2 = image[..., other_indices[1]]
-            
-            # Limit dominant channel to the average of others (standard despill)
-            limit = (chan_other1 + chan_other2) / 2.0
-            spill_mask = (chan_dom > limit).float()
-            corrected_chan = torch.lerp(chan_dom, limit, despill_strength)
-            result[..., dominant_idx] = torch.where(spill_mask > 0, corrected_chan, chan_dom)
-            return result
-            
-        elif despill_color == "interior_average":
-            # Corrected Foreground Color Dilation
-            img_chw = image.permute(2, 0, 1).unsqueeze(0) # [1, 3, H, W]
-            mask_chw = foreground_mask.unsqueeze(0).unsqueeze(0) # [1, 1, H, W]
-            
-            # 1. Identify the Halo Zone (foreground edges where green spill lives)
-            # We dilate the background mask into the foreground to find the fringe
-            # Use iterations to match the width of the dilation
-            iterations = max(2, despill_kernel_size * 2)
-            
-            current_bg_mask = 1.0 - mask_chw
-            dilation_kernel = torch.ones(1, 1, 3, 3, device=image.device)
-            for _ in range(max(1, iterations // 2)): # Expand halo slightly less than dilation
-                current_bg_mask = (torch.nn.functional.conv2d(current_bg_mask, dilation_kernel, padding=1) > 0).float()
-            
-            halo_mask = (current_bg_mask * mask_chw).squeeze(0).permute(1, 2, 0)
-            
-            # 2. Identify "Safe" pixels (definitely foreground, definitely not green)
-            # A pixel is safe if it's deep inside AND its distance to green is large
-            # (distance is already calculated in chroma_key_single, but we'll use a simple heuristic here)
-            chan_dom = image[..., dominant_idx]
-            limit_ref = (image[..., other_indices[0]] + image[..., other_indices[1]]) / 2.0
-            is_not_green = (chan_dom < limit_ref + 0.05).float().unsqueeze(0).unsqueeze(0)
-            
-            # Safe = (Inside foreground) AND (Not green-heavy)
-            safe_mask = (mask_chw * is_not_green).float()
-            
-            # 3. Iterative Dilation of Safe Colors
-            current_color = img_chw * safe_mask
-            current_weight = safe_mask
-            
-            iterations = max(2, despill_kernel_size * 2) # More iterations for better reach
-            expand_kernel = torch.ones(1, 1, 3, 3, device=image.device)
-            
-            for _ in range(iterations):
-                sum_color = torch.nn.functional.conv2d(current_color, 
-                                                     torch.ones(3, 1, 3, 3, device=image.device), 
-                                                     padding=1, groups=3)
-                sum_weight = torch.nn.functional.conv2d(current_weight, expand_kernel, padding=1)
-                
-                new_color = sum_color / (sum_weight + 1e-6)
-                fill_mask = (current_weight < 0.1).float()
-                
-                # Expand colors only to where we have neighbors
-                can_fill = (sum_weight > 0).float()
-                current_color = current_color + fill_mask * new_color * can_fill
-                current_weight = current_weight + fill_mask * can_fill
-            
-            dilated_fg = current_color.squeeze(0).permute(1, 2, 0)
-            
-            # 4. Final Replacement in the Halo Zone
-            # We replace the color of the "halo" pixels with the dilated clean color
-            # Use despill_strength to control the intensity of replacement
-            result = torch.where(halo_mask > 0.5, 
-                               torch.lerp(image, dilated_fg, despill_strength), 
-                               image)
-            return result
-
-        elif despill_color == "difference_trim":
-            # Combined Color Fix for Difference Trim
-            # 1. Identify the Halo Zone (again, for color restriction)
-            mask_chw = mask.unsqueeze(0).unsqueeze(0)
-            dilation_kernel = torch.ones(1, 1, 5, 5, device=image.device)
-            bg_near_fg = (torch.nn.functional.conv2d(mask_chw, dilation_kernel, padding=2) > 0).float()
-            halo_mask = (bg_near_fg * (1.0 - mask_chw)).squeeze().unsqueeze(-1)
-            
-            # 2. Apply standard limit despill ONLY to the halo zone
-            # This protects green hair/clothes inside the subject
-            limit_full = self.apply_dispill(image, mask, despill_strength, despill_kernel_size, "limit", key_color)
-            result = torch.lerp(image, limit_full, halo_mask)
-            
-            # 3. Detect "Ultra-Thin" details (1-2 pixels) in the foreground
-            mask_chw_fg = foreground_mask.unsqueeze(0).unsqueeze(0)
-            kernel_3x3 = torch.ones(1, 1, 3, 3, device=image.device)
-            # Pixels that vanish when eroded are "thin"
-            eroded_fg = (torch.nn.functional.conv2d(mask_chw_fg, kernel_3x3, padding=1) == 9).float().squeeze()
-            thin_mask = (foreground_mask * (1.0 - eroded_fg)).unsqueeze(-1)
-            
-            # 4. Apply "Ink Outline" (darken thin details)
-            black_color = torch.zeros_like(result)
-            result = torch.lerp(result, black_color, despill_strength * thin_mask)
-            
-            return result
-
-        elif despill_color == "black":
-            despill_color_tensor = torch.zeros(3, device=image.device, dtype=image.dtype)
-            # Original blending logic for "black"
-            kernel_size = despill_kernel_size
-            kernel = torch.ones(1, 1, kernel_size, kernel_size, device=mask.device)
-            # Standard padding to keep size for conv2d
-            padding = kernel_size // 2 
-            
-            # Use functional padding to handle even/odd kernels for conv2d if needed, 
-            # though usually //2 is fine for odd. For even, we might need more care.
-            # However, the crash reported was: edges = foreground_mask * (1 - eroded)
-            # implying 'eroded' didn't match 'foreground_mask' shape.
-            
-            eroded_conv = torch.nn.functional.conv2d(foreground_mask.unsqueeze(0).unsqueeze(0), kernel, padding=padding)
-            eroded = (eroded_conv == kernel_size * kernel_size).float().squeeze()
-            
-            # Crop eroded to match foreground_mask if padding caused misalignment
-            if eroded.shape != foreground_mask.shape:
-                eroded = eroded[:foreground_mask.shape[0], :foreground_mask.shape[1]]
-            
-            edges = foreground_mask * (1 - eroded)
-            edges_bool = edges > 0
-            
-            blended = image.clone()
-            edges_expanded = edges_bool.unsqueeze(-1)
-            blended = torch.where(edges_expanded, 
-                                (1 - despill_strength) * image + despill_strength * despill_color_tensor, 
-                                image)
-            
-            return blended
-        else:
-            return image
 
 
 # --- Color Fix Node ---
@@ -1361,6 +1079,423 @@ class VNCCS_RMBG2:
             empty_mask = torch.zeros((image.shape[0], image.shape[2], image.shape[3]))
             empty_mask_image = empty_mask.reshape((-1, 1, empty_mask.shape[-2], empty_mask.shape[-1])).movedim(1, -1).expand(-1, -1, -1, 3)
             return (image, empty_mask, empty_mask_image)
+
+
+class VNCCSChromaKey:
+    """VNCCS Chroma Key - soft chroma key with edge decontamination."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "tolerance": ("FLOAT", {"default": 0.2, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "softness": ("FLOAT", {"default": 0.16, "min": 0.001, "max": 1.0, "step": 0.01}),
+                "despill_strength": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "edge_width": ("INT", {"default": 3, "min": 0, "max": 32, "step": 1}),
+                "matte_cleanup": ("FLOAT", {"default": 0.2, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "foreground_recover": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "edge_decontaminate": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "edge_choke": ("FLOAT", {"default": 0.2, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "matte_method": (["chroma_soft", "guided_edge", "pymatting_if_available"], {"default": "guided_edge"}),
+                "screen_mode": (["auto", "green", "blue", "red"], {"default": "auto"}),
+                "output_mode": (["straight_rgba", "premultiplied_rgba"], {"default": "straight_rgba"}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE")
+    RETURN_NAMES = ("image", "matte", "edge_debug")
+    CATEGORY = "VNCCS"
+    FUNCTION = "chroma_key"
+    DESCRIPTION = """
+    VNCCS Chroma Key - automatically detects background color from image borders.
+    Uses soft chroma keying, edge-guided matte cleanup, foreground recovery, and
+    edge-only decontamination for cleaner hair and outlines.
+    """
+
+    def chroma_key(
+        self,
+        image,
+        tolerance,
+        softness,
+        despill_strength,
+        edge_width,
+        matte_cleanup,
+        foreground_recover,
+        edge_decontaminate,
+        edge_choke,
+        matte_method,
+        screen_mode,
+        output_mode,
+    ):
+        if len(image.shape) == 4:
+            rgba_list = []
+            matte_list = []
+            debug_list = []
+            for frame in image:
+                rgba, alpha, debug = self._process_single(
+                    frame,
+                    tolerance,
+                    softness,
+                    despill_strength,
+                    edge_width,
+                    matte_cleanup,
+                    foreground_recover,
+                    edge_decontaminate,
+                    edge_choke,
+                    matte_method,
+                    screen_mode,
+                    output_mode,
+                )
+                rgba_list.append(rgba)
+                matte_list.append(alpha)
+                debug_list.append(debug)
+            return (torch.stack(rgba_list), torch.stack(matte_list), torch.stack(debug_list))
+
+        rgba, alpha, debug = self._process_single(
+            image,
+            tolerance,
+            softness,
+            despill_strength,
+            edge_width,
+            matte_cleanup,
+            foreground_recover,
+            edge_decontaminate,
+            edge_choke,
+            matte_method,
+            screen_mode,
+            output_mode,
+        )
+        return (rgba.unsqueeze(0), alpha.unsqueeze(0), debug.unsqueeze(0))
+
+    def _process_single(
+        self,
+        image,
+        tolerance,
+        softness,
+        despill_strength,
+        edge_width,
+        matte_cleanup,
+        foreground_recover,
+        edge_decontaminate,
+        edge_choke,
+        matte_method,
+        screen_mode,
+        output_mode,
+    ):
+        image = _ensure_float01(image)[..., :3]
+        height, width, _ = image.shape
+        key_color = self._detect_key_color(image)
+        dominant_idx = self._dominant_channel(key_color, screen_mode)
+        other_indices = [idx for idx in range(3) if idx != dominant_idx]
+
+        alpha = self._build_soft_alpha(
+            image=image,
+            key_color=key_color,
+            dominant_idx=dominant_idx,
+            other_indices=other_indices,
+            tolerance=float(tolerance),
+            softness=float(softness),
+        )
+        alpha = self._cleanup_alpha(alpha, int(edge_width), float(matte_cleanup))
+
+        if matte_method == "guided_edge":
+            alpha = self._guided_edge_refine(image, alpha, int(edge_width), float(matte_cleanup))
+        elif matte_method == "pymatting_if_available":
+            alpha = self._pymatting_refine_if_available(image, alpha, int(edge_width))
+
+        alpha = alpha.clamp(0.0, 1.0)
+        edge = self._edge_band(alpha, int(edge_width))
+        alpha = self._choke_spill_edge(
+            image=image,
+            alpha=alpha,
+            edge=edge,
+            key_color=key_color,
+            dominant_idx=dominant_idx,
+            other_indices=other_indices,
+            amount=float(edge_choke),
+        )
+        edge = self._edge_band(alpha, int(edge_width))
+
+        recovered = self._recover_foreground(
+            image=image,
+            alpha=alpha,
+            edge=edge,
+            key_color=key_color,
+            amount=float(foreground_recover),
+        )
+        despilled = self._edge_despill(
+            image=recovered,
+            alpha=alpha,
+            edge=edge,
+            dominant_idx=dominant_idx,
+            other_indices=other_indices,
+            strength=float(despill_strength),
+        )
+        despilled = self._edge_decontaminate(
+            image=despilled,
+            alpha=alpha,
+            edge=edge,
+            key_color=key_color,
+            dominant_idx=dominant_idx,
+            other_indices=other_indices,
+            amount=float(edge_decontaminate),
+        )
+
+        if output_mode == "premultiplied_rgba":
+            rgb_out = despilled * alpha.unsqueeze(-1)
+        else:
+            rgb_out = despilled
+
+        rgba = torch.cat([rgb_out.clamp(0.0, 1.0), alpha.unsqueeze(-1)], dim=-1)
+        debug = torch.stack([edge, alpha, 1.0 - alpha], dim=-1).clamp(0.0, 1.0)
+
+        if rgba.shape[:2] != (height, width):
+            raise RuntimeError("VNCCS Chroma Key changed image dimensions unexpectedly.")
+
+        return rgba, alpha, debug
+
+    def _detect_key_color(self, image: torch.Tensor) -> torch.Tensor:
+        height, width, _ = image.shape
+        ch = max(1, height // 20)
+        cw = max(1, width // 20)
+        patches = [
+            image[0:ch, 0:cw, :3],
+            image[0:ch, width - cw : width, :3],
+            image[height - ch : height, 0:cw, :3],
+            image[height - ch : height, width - cw : width, :3],
+        ]
+
+        stable_colors = []
+        for patch in patches:
+            pixels = patch.reshape(-1, 3)
+            if pixels.std(dim=0).mean() < 0.02:
+                stable_colors.append(pixels.median(dim=0)[0])
+
+        if stable_colors:
+            return torch.stack(stable_colors).median(dim=0)[0]
+
+        y_margin = max(1, height // 10)
+        x_margin = max(1, width // 10)
+        border_pixels = torch.cat(
+            [
+                image[0:y_margin, :, :3].reshape(-1, 3),
+                image[height - y_margin : height, :, :3].reshape(-1, 3),
+                image[:, 0:x_margin, :3].reshape(-1, 3),
+                image[:, width - x_margin : width, :3].reshape(-1, 3),
+            ],
+            dim=0,
+        )
+        return border_pixels.median(dim=0)[0]
+
+    def _dominant_channel(self, key_color: torch.Tensor, screen_mode: str) -> int:
+        if screen_mode == "red":
+            return 0
+        if screen_mode == "green":
+            return 1
+        if screen_mode == "blue":
+            return 2
+        return int(torch.argmax(key_color).item())
+
+    def _build_soft_alpha(
+        self,
+        image: torch.Tensor,
+        key_color: torch.Tensor,
+        dominant_idx: int,
+        other_indices: list[int],
+        tolerance: float,
+        softness: float,
+    ) -> torch.Tensor:
+        eps = 1e-6
+        chroma = image / (image.sum(dim=-1, keepdim=True) + eps)
+        key_chroma = key_color / (key_color.sum() + eps)
+        chroma_dist = torch.sqrt(((chroma - key_chroma) ** 2).sum(dim=-1))
+        rgb_dist = torch.sqrt(((image - key_color) ** 2).sum(dim=-1))
+
+        dom = image[..., dominant_idx]
+        other_max = torch.maximum(image[..., other_indices[0]], image[..., other_indices[1]])
+        other_avg = (image[..., other_indices[0]] + image[..., other_indices[1]]) * 0.5
+        screen_excess = dom - (other_max * 0.65 + other_avg * 0.35)
+
+        key_dom = key_color[dominant_idx]
+        key_other_max = torch.maximum(key_color[other_indices[0]], key_color[other_indices[1]])
+        key_other_avg = (key_color[other_indices[0]] + key_color[other_indices[1]]) * 0.5
+        key_excess = torch.clamp(key_dom - (key_other_max * 0.65 + key_other_avg * 0.35), min=0.05)
+
+        hue_similarity = 1.0 - self._smoothstep(tolerance, tolerance + softness, chroma_dist)
+        rgb_similarity = 1.0 - self._smoothstep(tolerance * 1.5, tolerance * 1.5 + softness * 2.0, rgb_dist)
+        screen_affinity = self._smoothstep(key_excess * 0.2, key_excess * 0.85 + 1e-6, screen_excess)
+
+        background = (hue_similarity * 0.55 + rgb_similarity * 0.45) * screen_affinity
+
+        strong_screen = self._smoothstep(key_excess * 0.75, key_excess * 1.25 + 1e-6, screen_excess)
+        background = torch.maximum(background, strong_screen * hue_similarity * 0.85).clamp(0.0, 1.0)
+        return 1.0 - background
+
+    def _smoothstep(self, edge0: float | torch.Tensor, edge1: float | torch.Tensor, value: torch.Tensor) -> torch.Tensor:
+        x = ((value - edge0) / (edge1 - edge0 + 1e-6)).clamp(0.0, 1.0)
+        return x * x * (3.0 - 2.0 * x)
+
+    def _cleanup_alpha(self, alpha: torch.Tensor, edge_width: int, amount: float) -> torch.Tensor:
+        if amount <= 0.0:
+            return alpha
+        cleaned = _remove_small_islands(alpha, min_neighbors=max(1, int(2 + amount * 5)))
+        if edge_width > 0:
+            opened = _morph(_morph(cleaned, 1, "erode"), 1, "dilate")
+            edge = self._edge_band(cleaned, max(1, edge_width))
+            cleaned = torch.lerp(cleaned, opened, edge * amount * 0.35)
+            blurred = _box_blur_2d(cleaned, max(1, edge_width // 2))
+            cleaned = torch.lerp(cleaned, blurred, edge * amount * 0.25)
+        return cleaned.clamp(0.0, 1.0)
+
+    def _guided_edge_refine(self, image: torch.Tensor, alpha: torch.Tensor, edge_width: int, amount: float) -> torch.Tensor:
+        if edge_width <= 0 or amount <= 0.0:
+            return alpha
+        luminance = image[..., 0] * 0.299 + image[..., 1] * 0.587 + image[..., 2] * 0.114
+        radius = max(1, edge_width)
+        mean_i = _box_blur_2d(luminance, radius)
+        mean_a = _box_blur_2d(alpha, radius)
+        corr_i = _box_blur_2d(luminance * luminance, radius)
+        corr_ia = _box_blur_2d(luminance * alpha, radius)
+        var_i = corr_i - mean_i * mean_i
+        cov_ia = corr_ia - mean_i * mean_a
+        linear_a = cov_ia / (var_i + 0.01)
+        linear_b = mean_a - linear_a * mean_i
+        refined = _box_blur_2d(linear_a, radius) * luminance + _box_blur_2d(linear_b, radius)
+        edge = self._edge_band(alpha, edge_width)
+        return torch.lerp(alpha, refined.clamp(0.0, 1.0), edge * amount).clamp(0.0, 1.0)
+
+    def _pymatting_refine_if_available(self, image: torch.Tensor, alpha: torch.Tensor, edge_width: int) -> torch.Tensor:
+        try:
+            from pymatting import estimate_alpha_cf
+        except Exception:
+            return self._guided_edge_refine(image, alpha, edge_width, 0.5)
+
+        trimap = torch.full_like(alpha, 0.5)
+        trimap = torch.where(alpha > 0.98, torch.ones_like(trimap), trimap)
+        trimap = torch.where(alpha < 0.02, torch.zeros_like(trimap), trimap)
+
+        image_np = image.detach().cpu().numpy().astype("float64")
+        trimap_np = trimap.detach().cpu().numpy().astype("float64")
+        try:
+            matte_np = estimate_alpha_cf(image_np, trimap_np)
+        except Exception:
+            return self._guided_edge_refine(image, alpha, edge_width, 0.5)
+
+        matte = torch.from_numpy(np.asarray(matte_np)).to(device=image.device, dtype=image.dtype)
+        return matte.clamp(0.0, 1.0)
+
+    def _edge_band(self, alpha: torch.Tensor, edge_width: int) -> torch.Tensor:
+        if edge_width <= 0:
+            return ((alpha > 0.01) & (alpha < 0.99)).float()
+        hard = (alpha > 0.5).float()
+        dilated = _morph(hard, edge_width, "dilate")
+        eroded = _morph(hard, edge_width, "erode")
+        return (dilated - eroded).clamp(0.0, 1.0)
+
+    def _recover_foreground(
+        self,
+        image: torch.Tensor,
+        alpha: torch.Tensor,
+        edge: torch.Tensor,
+        key_color: torch.Tensor,
+        amount: float,
+    ) -> torch.Tensor:
+        if amount <= 0.0:
+            return image
+        safe_alpha = alpha.unsqueeze(-1).clamp(0.08, 1.0)
+        reconstructed = (image - (1.0 - safe_alpha) * key_color) / safe_alpha
+        reconstructed = reconstructed.clamp(0.0, 1.0)
+        edge_weight = (1.0 - (alpha - 0.5).abs() * 2.0).clamp(0.0, 1.0).unsqueeze(-1)
+        edge_weight = edge_weight * edge.unsqueeze(-1)
+        return torch.lerp(image, reconstructed, edge_weight * amount).clamp(0.0, 1.0)
+
+    def _edge_despill(
+        self,
+        image: torch.Tensor,
+        alpha: torch.Tensor,
+        edge: torch.Tensor,
+        dominant_idx: int,
+        other_indices: list[int],
+        strength: float,
+    ) -> torch.Tensor:
+        if strength <= 0.0:
+            return image
+
+        result = image.clone()
+        dom = image[..., dominant_idx]
+        other1 = image[..., other_indices[0]]
+        other2 = image[..., other_indices[1]]
+        limit = torch.maximum(other1, other2) * 0.75 + ((other1 + other2) * 0.5) * 0.25
+        corrected_dom = torch.minimum(dom, limit)
+
+        spill = (dom - limit).clamp(0.0, 1.0)
+        neutral = image.clone()
+        neutral[..., dominant_idx] = corrected_dom
+        neutral[..., other_indices[0]] = (neutral[..., other_indices[0]] + spill * 0.25).clamp(0.0, 1.0)
+        neutral[..., other_indices[1]] = (neutral[..., other_indices[1]] + spill * 0.25).clamp(0.0, 1.0)
+
+        edge_weight = torch.maximum(edge, ((alpha > 0.0) & (alpha < 0.98)).float() * 0.5).unsqueeze(-1)
+        return torch.lerp(result, neutral, edge_weight * strength).clamp(0.0, 1.0)
+
+    def _choke_spill_edge(
+        self,
+        image: torch.Tensor,
+        alpha: torch.Tensor,
+        edge: torch.Tensor,
+        key_color: torch.Tensor,
+        dominant_idx: int,
+        other_indices: list[int],
+        amount: float,
+    ) -> torch.Tensor:
+        if amount <= 0.0:
+            return alpha
+
+        dom = image[..., dominant_idx]
+        other_max = torch.maximum(image[..., other_indices[0]], image[..., other_indices[1]])
+        other_avg = (image[..., other_indices[0]] + image[..., other_indices[1]]) * 0.5
+        screen_excess = dom - (other_max * 0.65 + other_avg * 0.35)
+
+        key_dom = key_color[dominant_idx]
+        key_other_max = torch.maximum(key_color[other_indices[0]], key_color[other_indices[1]])
+        key_other_avg = (key_color[other_indices[0]] + key_color[other_indices[1]]) * 0.5
+        key_excess = torch.clamp(key_dom - (key_other_max * 0.65 + key_other_avg * 0.35), min=0.05)
+
+        spill_weight = self._smoothstep(key_excess * 0.08, key_excess * 0.55 + 1e-6, screen_excess)
+        choke = edge * spill_weight * amount
+        return (alpha * (1.0 - choke)).clamp(0.0, 1.0)
+
+    def _edge_decontaminate(
+        self,
+        image: torch.Tensor,
+        alpha: torch.Tensor,
+        edge: torch.Tensor,
+        key_color: torch.Tensor,
+        dominant_idx: int,
+        other_indices: list[int],
+        amount: float,
+    ) -> torch.Tensor:
+        if amount <= 0.0:
+            return image
+
+        dom = image[..., dominant_idx]
+        other_max = torch.maximum(image[..., other_indices[0]], image[..., other_indices[1]])
+        other_avg = (image[..., other_indices[0]] + image[..., other_indices[1]]) * 0.5
+        screen_excess = (dom - (other_max * 0.7 + other_avg * 0.3)).clamp(0.0, 1.0)
+
+        key_strength = torch.clamp(key_color[dominant_idx], min=0.1)
+        subtract_amount = (screen_excess / key_strength).clamp(0.0, 1.0)
+        subtract_amount = subtract_amount * edge * amount
+
+        decontaminated = image - key_color * subtract_amount.unsqueeze(-1)
+        decontaminated = decontaminated.clamp(0.0, 1.0)
+
+        src_luma = image[..., 0] * 0.299 + image[..., 1] * 0.587 + image[..., 2] * 0.114
+        dst_luma = decontaminated[..., 0] * 0.299 + decontaminated[..., 1] * 0.587 + decontaminated[..., 2] * 0.114
+        luma_gain = (src_luma / (dst_luma + 1e-4)).clamp(0.5, 1.5).unsqueeze(-1)
+        decontaminated = (decontaminated * luma_gain).clamp(0.0, 1.0)
+
+        return torch.lerp(image, decontaminated, edge.unsqueeze(-1) * amount).clamp(0.0, 1.0)
 
 
 # --- Node Registration ---

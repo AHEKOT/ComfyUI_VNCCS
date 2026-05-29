@@ -49,10 +49,18 @@ const DEFAULT_DATA = {
         enable_debug: false,
     },
     bg_remove: {
-        tolerance: 0.5,
-        despill_strength: 1,
-        despill_kernel_size: 3,
-        despill_color: "black",
+        use_internal_rmbg: true,
+        tolerance: 0.2,
+        softness: 0.16,
+        despill_strength: 0.5,
+        edge_width: 3,
+        matte_cleanup: 0.2,
+        foreground_recover: 0.35,
+        edge_decontaminate: 0.7,
+        edge_choke: 0.2,
+        matte_method: "guided_edge",
+        screen_mode: "auto",
+        output_mode: "straight_rgba",
     },
     ui: {
         selected_preview: "pose_generation",
@@ -1217,6 +1225,9 @@ class CharacterGeneratorWidget {
             this.settingsEl.appendChild(this.block("Face Detailer", [
                 this.faceDenoiseSlider(),
             ]));
+            this.settingsEl.appendChild(this.block("BG Remove", [
+                this.field("bg_remove", "use_internal_rmbg", "use internal RMBG", "checkbox"),
+            ]));
             return;
         }
         if (this.isClone) {
@@ -1252,10 +1263,18 @@ class CharacterGeneratorWidget {
         }
         this.settingsEl.appendChild(this.block("Upscaler", upscalerFields));
         this.settingsEl.appendChild(this.block("BG Remove", [
+            this.field("bg_remove", "use_internal_rmbg", "use internal RMBG", "checkbox"),
             this.field("bg_remove", "tolerance", "tolerance", "number"),
+            this.field("bg_remove", "softness", "softness", "number"),
             this.field("bg_remove", "despill_strength", "despill strength", "number"),
-            this.field("bg_remove", "despill_kernel_size", "kernel size", "number"),
-            this.field("bg_remove", "despill_color", "despill color", "select", ["black", "limit", "interior_average", "guided_filter", "difference_trim"]),
+            this.field("bg_remove", "edge_width", "edge width", "number"),
+            this.field("bg_remove", "matte_cleanup", "matte cleanup", "number"),
+            this.field("bg_remove", "foreground_recover", "foreground recover", "number"),
+            this.field("bg_remove", "edge_decontaminate", "edge decontaminate", "number"),
+            this.field("bg_remove", "edge_choke", "edge choke", "number"),
+            this.field("bg_remove", "matte_method", "matte method", "select", ["chroma_soft", "guided_edge", "pymatting_if_available"]),
+            this.field("bg_remove", "screen_mode", "screen mode", "select", ["auto", "green", "blue", "red"]),
+            this.field("bg_remove", "output_mode", "output mode", "select", ["straight_rgba", "premultiplied_rgba"]),
         ]));
     }
 

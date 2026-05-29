@@ -56,12 +56,14 @@ class VNCCSChromaKeyExperimental:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "tolerance": ("FLOAT", {"default": 0.14, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "softness": ("FLOAT", {"default": 0.1, "min": 0.001, "max": 1.0, "step": 0.01}),
+                "tolerance": ("FLOAT", {"default": 0.2, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "softness": ("FLOAT", {"default": 0.16, "min": 0.001, "max": 1.0, "step": 0.01}),
                 "despill_strength": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "edge_width": ("INT", {"default": 3, "min": 0, "max": 32, "step": 1}),
                 "matte_cleanup": ("FLOAT", {"default": 0.2, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "foreground_recover": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "edge_decontaminate": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "edge_choke": ("FLOAT", {"default": 0.2, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "matte_method": (["chroma_soft", "guided_edge", "pymatting_if_available"], {"default": "guided_edge"}),
                 "screen_mode": (["auto", "green", "blue", "red"], {"default": "auto"}),
                 "output_mode": (["straight_rgba", "premultiplied_rgba"], {"default": "straight_rgba"}),
@@ -86,6 +88,8 @@ class VNCCSChromaKeyExperimental:
         edge_width,
         matte_cleanup,
         foreground_recover,
+        edge_decontaminate,
+        edge_choke,
         matte_method,
         screen_mode,
         output_mode,
@@ -103,6 +107,8 @@ class VNCCSChromaKeyExperimental:
                     edge_width,
                     matte_cleanup,
                     foreground_recover,
+                    edge_decontaminate,
+                    edge_choke,
                     matte_method,
                     screen_mode,
                     output_mode,
@@ -120,6 +126,8 @@ class VNCCSChromaKeyExperimental:
             edge_width,
             matte_cleanup,
             foreground_recover,
+            edge_decontaminate,
+            edge_choke,
             matte_method,
             screen_mode,
             output_mode,
@@ -135,6 +143,8 @@ class VNCCSChromaKeyExperimental:
         edge_width,
         matte_cleanup,
         foreground_recover,
+        edge_decontaminate,
+        edge_choke,
         matte_method,
         screen_mode,
         output_mode,
@@ -162,6 +172,16 @@ class VNCCSChromaKeyExperimental:
 
         alpha = alpha.clamp(0.0, 1.0)
         edge = self._edge_band(alpha, int(edge_width))
+        alpha = self._choke_spill_edge(
+            image=image,
+            alpha=alpha,
+            edge=edge,
+            key_color=key_color,
+            dominant_idx=dominant_idx,
+            other_indices=other_indices,
+            amount=float(edge_choke),
+        )
+        edge = self._edge_band(alpha, int(edge_width))
 
         recovered = self._recover_foreground(
             image=image,
@@ -177,6 +197,15 @@ class VNCCSChromaKeyExperimental:
             dominant_idx=dominant_idx,
             other_indices=other_indices,
             strength=float(despill_strength),
+        )
+        despilled = self._edge_decontaminate(
+            image=despilled,
+            alpha=alpha,
+            edge=edge,
+            key_color=key_color,
+            dominant_idx=dominant_idx,
+            other_indices=other_indices,
+            amount=float(edge_decontaminate),
         )
 
         if output_mode == "premultiplied_rgba":
@@ -377,6 +406,66 @@ class VNCCSChromaKeyExperimental:
 
         edge_weight = torch.maximum(edge, ((alpha > 0.0) & (alpha < 0.98)).float() * 0.5).unsqueeze(-1)
         return torch.lerp(result, neutral, edge_weight * strength).clamp(0.0, 1.0)
+
+    def _choke_spill_edge(
+        self,
+        image: torch.Tensor,
+        alpha: torch.Tensor,
+        edge: torch.Tensor,
+        key_color: torch.Tensor,
+        dominant_idx: int,
+        other_indices: list[int],
+        amount: float,
+    ) -> torch.Tensor:
+        if amount <= 0.0:
+            return alpha
+
+        dom = image[..., dominant_idx]
+        other_max = torch.maximum(image[..., other_indices[0]], image[..., other_indices[1]])
+        other_avg = (image[..., other_indices[0]] + image[..., other_indices[1]]) * 0.5
+        screen_excess = dom - (other_max * 0.65 + other_avg * 0.35)
+
+        key_dom = key_color[dominant_idx]
+        key_other_max = torch.maximum(key_color[other_indices[0]], key_color[other_indices[1]])
+        key_other_avg = (key_color[other_indices[0]] + key_color[other_indices[1]]) * 0.5
+        key_excess = torch.clamp(key_dom - (key_other_max * 0.65 + key_other_avg * 0.35), min=0.05)
+
+        spill_weight = self._smoothstep(key_excess * 0.08, key_excess * 0.55 + 1e-6, screen_excess)
+        choke = edge * spill_weight * amount
+        return (alpha * (1.0 - choke)).clamp(0.0, 1.0)
+
+    def _edge_decontaminate(
+        self,
+        image: torch.Tensor,
+        alpha: torch.Tensor,
+        edge: torch.Tensor,
+        key_color: torch.Tensor,
+        dominant_idx: int,
+        other_indices: list[int],
+        amount: float,
+    ) -> torch.Tensor:
+        if amount <= 0.0:
+            return image
+
+        dom = image[..., dominant_idx]
+        other_max = torch.maximum(image[..., other_indices[0]], image[..., other_indices[1]])
+        other_avg = (image[..., other_indices[0]] + image[..., other_indices[1]]) * 0.5
+        screen_excess = (dom - (other_max * 0.7 + other_avg * 0.3)).clamp(0.0, 1.0)
+
+        key_strength = torch.clamp(key_color[dominant_idx], min=0.1)
+        subtract_amount = (screen_excess / key_strength).clamp(0.0, 1.0)
+        subtract_amount = subtract_amount * edge * amount
+
+        decontaminated = image - key_color * subtract_amount.unsqueeze(-1)
+        decontaminated = decontaminated.clamp(0.0, 1.0)
+
+        # Restore some luminance after key subtraction so black hair does not become a dead outline.
+        src_luma = image[..., 0] * 0.299 + image[..., 1] * 0.587 + image[..., 2] * 0.114
+        dst_luma = decontaminated[..., 0] * 0.299 + decontaminated[..., 1] * 0.587 + decontaminated[..., 2] * 0.114
+        luma_gain = (src_luma / (dst_luma + 1e-4)).clamp(0.5, 1.5).unsqueeze(-1)
+        decontaminated = (decontaminated * luma_gain).clamp(0.0, 1.0)
+
+        return torch.lerp(image, decontaminated, edge.unsqueeze(-1) * amount).clamp(0.0, 1.0)
 
 
 NODE_CLASS_MAPPINGS = {
