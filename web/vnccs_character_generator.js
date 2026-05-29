@@ -282,7 +282,7 @@ const CSS = `
 }
 .vnccs-pipe-mode-tabs {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 6px;
 }
 .vnccs-pipe-mode-tab {
@@ -1236,13 +1236,13 @@ class CharacterGeneratorWidget {
             ]));
         }
         const upscalerFields = [
-            this.modeTabs("upscaler", "mode", [["seedvr", "SeedVR"], ["gan", "GAN"]]),
+            this.modeTabs("upscaler", "mode", [["seedvr", "SeedVR"], ["gan", "GAN"], ["off", "OFF"]]),
         ];
         if (this.data.upscaler.mode === "gan") {
             upscalerFields.push(
                 this.field("upscaler", "gan_model", "model", "select", this.getWorkflowModelOptions("UpscaleModelLoader", "model_name", WORKFLOW_GAN_UPSCALER_MODELS, this.data.upscaler.gan_model)),
             );
-        } else {
+        } else if (this.data.upscaler.mode !== "off") {
             upscalerFields.push(
                 this.field("upscaler", "model", "dit model", "select", this.getWorkflowModelOptions("SeedVR2LoadDiTModel", "model", WORKFLOW_UPSCALER_DIT_MODELS, this.data.upscaler.model)),
                 this.field("upscaler", "resolution", "resolution", "number"),

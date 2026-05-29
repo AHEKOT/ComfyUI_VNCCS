@@ -780,6 +780,20 @@ class VNCCS_CharacterGenerator:
         images = self._split_batch(image)
         total = len(images)
         mode = str(settings.get("mode", "seedvr") or "seedvr").lower()
+        if mode == "off":
+            result = self._list_to_batch(image)
+            self._emit(
+                unique_id,
+                stage,
+                "done",
+                result,
+                "Upscaler skipped",
+                total,
+                total,
+                cache_dir=cache_dir,
+            )
+            return result
+
         if mode == "gan":
             model = self._run_gan_upscaler_model(settings)
             results = []
@@ -821,6 +835,20 @@ class VNCCS_CharacterGenerator:
         images = self._split_batch(image)
         total = len(images)
         mode = str(settings.get("mode", "seedvr") or "seedvr").lower()
+        if mode == "off":
+            result = self._list_to_batch(image)
+            self._emit(
+                unique_id,
+                stage,
+                "done",
+                result,
+                "Source upscaler skipped",
+                total,
+                total,
+                cache_dir=cache_dir,
+            )
+            return result
+
         if mode == "gan":
             model = self._run_gan_upscaler_model(settings)
             results = []
