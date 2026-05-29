@@ -190,6 +190,26 @@ def _extract_character_tag_options(tags_data):
     }
 
 
+SKIN_COLOR_OPTIONS = [
+    "light skin",
+    "fair skin",
+    "pale skin",
+    "tan skin",
+    "dark skin",
+    "brown skin",
+    "olive skin",
+    "blue skin",
+    "green skin",
+    "grey skin",
+]
+
+SKIN_COLOR_HINT_RE = re.compile(
+    r"\b(skin|complexion|pale|fair|light[- ]skinned|tan|tanned|dark[- ]skinned|"
+    r"brown[- ]skinned|olive|blue[- ]skinned|green[- ]skinned|grey[- ]skinned|gray[- ]skinned)\b",
+    re.IGNORECASE,
+)
+
+
 def _parse_character_wizard_json(content):
     data = None
     try:
@@ -676,6 +696,9 @@ Create a character from this abstract idea:
 Prefer these exact existing tags when they fit. Only invent a different tag or phrase if no listed tag matches the character:
 {json.dumps(tag_options, ensure_ascii=False)}
 
+Use one of these skin_color values only when the user's idea explicitly mentions skin tone or complexion:
+{json.dumps(SKIN_COLOR_OPTIONS, ensure_ascii=False)}
+
 Return a raw JSON object with exactly these keys:
 - sex: "male" or "female"
 - age: integer from 1 to 100
@@ -690,6 +713,8 @@ Return a raw JSON object with exactly these keys:
 Rules:
 - Use comma-separated prompt fragments for text fields.
 - For race, hair, eyes, body and additional_details, prefer exact tags from the provided tag list.
+- For skin_color, do not guess a default. Use an empty string unless the user's idea explicitly mentions skin tone, complexion, or non-human skin color.
+- Do not use "pale skin" as a fallback.
 - Do not describe clothing or outfit items.
 - Do not add background, camera, pose, quality tags, style tags, nsfw, nudity, sex acts, or negative prompts.
 - Keep fields practical for the existing character form.
@@ -701,7 +726,7 @@ Example:
   "sex": "female",
   "age": 24,
   "race": "demon_girl, demon_horns",
-  "skin_color": "pale skin",
+  "skin_color": "",
   "body": "medium_breasts, slim waist",
   "face": "mole_under_eye, sharp features",
   "hair": "white_hair, long_hair, blunt_bangs",
@@ -736,6 +761,8 @@ Example:
                     "message": "Failed to parse Character Wizard JSON output.",
                     "raw": content or "",
                 }, status=500)
+            if not SKIN_COLOR_HINT_RE.search(user_description or ""):
+                parsed["skin_color"] = ""
 
             return web.json_response(parsed)
         except Exception as e:

@@ -21,6 +21,19 @@ from ..utils import (
     character_dir, sheets_dir, MAIN_DIRS, EMOTIONS
 )
 
+SKIN_COLOR_OPTIONS = [
+    "light skin",
+    "fair skin",
+    "pale skin",
+    "tan skin",
+    "dark skin",
+    "brown skin",
+    "olive skin",
+    "blue skin",
+    "green skin",
+    "grey skin",
+]
+
 # VNCCS Installer (REMOVED: User requested Qwen2)
 # Reverted to manual update instructions if needed.
 
@@ -463,9 +476,12 @@ if server:
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": [
-                    {"type": "text", "text": "Analyze the character. Output JSON with keys: sex, age (int), race, skin_color, hair, eyes, face, body, additional_details, aesthetics (style tags), nsfw (boolean)."},
-                    {"type": "image_url", "image_url": {"url": img_uri}}
-                ]}
+                    {
+                        "type": "text",
+                        "text": f"Analyze the character. Output JSON with keys: sex, age (int), race, skin_color, hair, eyes, face, body, additional_details, aesthetics (style tags), nsfw (boolean). For skin_color, choose only a clearly visible value from this list: {', '.join(SKIN_COLOR_OPTIONS)}. If the skin tone is obscured or uncertain, use an empty string. Do not use pale skin as a default.",
+                    },
+                    {"type": "image_url", "image_url": {"url": img_uri}},
+                ]},
             ]
 
              # 4. Initialize Llama
@@ -519,7 +535,7 @@ Keys:
 - sex (string: 'male' or 'female')
 - age (int: estimated number)
 - race (string: e.g. 'human', 'elf', 'cyborg')
-- skin_color (string: e.g. 'pale skin', 'tan skin', 'dark skin')
+- skin_color (string: choose only one clearly visible value from: light skin, fair skin, pale skin, tan skin, dark skin, brown skin, olive skin, blue skin, green skin, grey skin)
 - hair (string: comma-separated tags for color and style, e.g. 'blue hair, long hair, ponytail')
 - eyes (string: comma-separated tags for color and shape, e.g. 'green eyes, tsurime')
 - face (string: tags for features, e.g. 'blush', 'scars', 'makeup')
@@ -527,6 +543,11 @@ Keys:
 - additional_details (string: tags for clothing, accessories, pose, e.g. 'wearing suit, sitting, holding sword')
 - aesthetics (string: high quality tags e.g. 'masterpiece, best quality, anime style')
 - nsfw (boolean)
+
+Rules:
+- Determine skin_color from visible skin only.
+- Use "pale skin" only for unusually pale/very light skin, never as a generic default.
+- If skin is hidden, heavily stylized by lighting, or uncertain, set skin_color to "".
 
 Structure the response as a raw JSON object. Do not output the word 'tag' as a value. DESCRIBE the character."""
 
