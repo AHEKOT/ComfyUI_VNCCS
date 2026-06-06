@@ -37,7 +37,6 @@ except Exception:  # pragma: no cover
 
 from .vnccs_pipe import VNCCS_Pipe
 from .vnccs_control_center import (
-    _apply_lora_nunchaku,
     _apply_lora_standard,
     _find_model_on_disk,
     _rel_within_folder,
@@ -68,14 +67,141 @@ def _folder_list(kind, fallback):
         return list(fallback)
 
 
+def _flatten_image_tensors(value):
+    if isinstance(value, tuple):
+        value = value[0]
+    if torch.is_tensor(value):
+        if value.ndim == 4:
+            return [value[i:i + 1] for i in range(value.shape[0])]
+        if value.ndim == 3:
+            return [value.unsqueeze(0)]
+        return []
+    if isinstance(value, list):
+        result = []
+        for item in value:
+            result.extend(_flatten_image_tensors(item))
+        return result
+    return []
+
+
+def _coerce_image_batch(item):
+    if not torch.is_tensor(item):
+        return None
+    tensor = item
+    if tensor.ndim == 3:
+        tensor = tensor.unsqueeze(0)
+    if tensor.ndim != 4:
+        return None
+    if not torch.is_floating_point(tensor):
+        tensor = tensor.float()
+    if tensor.numel() and tensor.detach().max() > 1.5:
+        tensor = tensor / 255.0
+    return tensor.clamp(0.0, 1.0)
+
+
+def _resize_image_batch(batch, target_hw, mode="bilinear"):
+    if not torch.is_tensor(batch) or batch.ndim != 4 or target_hw is None:
+        return batch
+    target_h, target_w = int(target_hw[0]), int(target_hw[1])
+    if target_h <= 0 or target_w <= 0 or (batch.shape[1], batch.shape[2]) == (target_h, target_w):
+        return batch
+    resize_mode = str(mode or "bilinear")
+    kwargs = {"align_corners": False} if resize_mode in {"bilinear", "bicubic"} else {}
+    resized = torch.nn.functional.interpolate(
+        batch.movedim(-1, 1),
+        size=(target_h, target_w),
+        mode=resize_mode,
+        **kwargs,
+    )
+    return resized.movedim(1, -1).clamp(0.0, 1.0)
+
+
+def _normalize_channels(batch, target_channels):
+    if not torch.is_tensor(batch) or batch.ndim != 4:
+        return batch
+    channels = batch.shape[-1]
+    if channels == target_channels:
+        return batch
+    if channels > target_channels:
+        return batch[..., :target_channels]
+    if channels == 1 and target_channels >= 3:
+        rgb = batch.expand(-1, -1, -1, 3)
+        if target_channels == 4:
+            alpha = torch.ones((*rgb.shape[:-1], 1), dtype=rgb.dtype, device=rgb.device)
+            return torch.cat([rgb, alpha], dim=-1)
+        return rgb
+    pad_channels = target_channels - channels
+    if target_channels == 4 and channels == 3:
+        pad = torch.ones((*batch.shape[:-1], 1), dtype=batch.dtype, device=batch.device)
+    else:
+        pad = torch.zeros((*batch.shape[:-1], pad_channels), dtype=batch.dtype, device=batch.device)
+    return torch.cat([batch, pad], dim=-1)
+
+
+def normalize_image_batch(items, target_hw=None, mode="bilinear", stage="batch"):
+    tensors = [_coerce_image_batch(item) for item in _flatten_image_tensors(items)]
+    tensors = [item for item in tensors if item is not None]
+    if not tensors:
+        return None
+
+    if target_hw is None:
+        target_hw = (int(tensors[0].shape[1]), int(tensors[0].shape[2]))
+
+    target_channels = max(int(item.shape[-1]) for item in tensors)
+    if target_channels not in (1, 3, 4):
+        target_channels = 4 if target_channels > 3 else 3
+
+    shapes = [(int(item.shape[1]), int(item.shape[2]), int(item.shape[3])) for item in tensors]
+    target_shape = (int(target_hw[0]), int(target_hw[1]), target_channels)
+    if any(shape != target_shape for shape in shapes):
+        print(f"[VNCCS Batch Safety] Normalizing {stage}: {len(tensors)} image(s), shapes={shapes}, target={target_shape}")
+
+    normalized = []
+    for item in tensors:
+        item = _normalize_channels(item, target_channels)
+        item = _resize_image_batch(item, target_hw, mode=mode)
+        normalized.append(item)
+    return torch.cat(normalized, dim=0)
+
+
+def resize_mask_batch(mask, target_hw, mode="bilinear"):
+    if mask is None or target_hw is None:
+        return mask
+    if not torch.is_tensor(mask):
+        return mask
+    item = mask
+    if item.ndim == 2:
+        item = item.unsqueeze(0)
+    if item.ndim == 3:
+        item = item.unsqueeze(1)
+    elif item.ndim == 4 and item.shape[-1] == 1:
+        item = item.movedim(-1, 1)
+    elif item.ndim == 4 and item.shape[1] != 1:
+        item = item[:, :1]
+    if item.ndim != 4:
+        return mask
+    target_h, target_w = int(target_hw[0]), int(target_hw[1])
+    if (item.shape[-2], item.shape[-1]) != (target_h, target_w):
+        resize_mode = str(mode or "bilinear")
+        kwargs = {"align_corners": False} if resize_mode in {"bilinear", "bicubic"} else {}
+        item = torch.nn.functional.interpolate(
+            item.float(),
+            size=(target_h, target_w),
+            mode=resize_mode,
+            **kwargs,
+        )
+    return item[:, 0].clamp(0.0, 1.0)
+
+
 def _first_tensor(value):
     if isinstance(value, tuple):
         value = value[0]
     if isinstance(value, list):
         if not value:
             return None
-        if all(torch.is_tensor(v) for v in value):
-            return torch.cat(value, dim=0)
+        normalized = normalize_image_batch(value, stage="preview")
+        if normalized is not None:
+            return normalized
         return value[0]
     return value
 
@@ -210,6 +336,10 @@ def _safe_existing_character_image_path(path, character_name=""):
         return ""
     abs_path = os.path.abspath(path)
     if not _is_under(root, abs_path) or not os.path.exists(abs_path):
+        return ""
+    parts = normalize_filesystem_path(abs_path).split(os.sep)
+    if "Sheets" in parts:
+        print(f"[VNCCS Character Generator] Ignoring deprecated sheet image source: {abs_path}")
         return ""
     if os.path.splitext(abs_path)[1].lower() not in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}:
         return ""
@@ -455,7 +585,8 @@ DEFAULT_WIDGET_DATA = {
         "enable_debug": False,
     },
     "bg_remove": {
-        "use_internal_rmbg": True,
+        # TODO: Decide whether internal RMBG should return as a supported generator option.
+        "use_internal_rmbg": False,
         "preset": "balanced",
     },
     "pose_generation": {
@@ -621,7 +752,8 @@ class VNCCS_CharacterGenerator:
         item = self._list_to_batch(item)
         if index is None or cached is None or item is None:
             return item
-        cached = self._list_to_batch(cached)
+        target_hw = (int(item.shape[1]), int(item.shape[2])) if torch.is_tensor(item) and item.ndim == 4 else None
+        cached = self._safe_image_batch(cached, target_hw=target_hw, stage="cache replace")
         if not torch.is_tensor(cached) or not torch.is_tensor(item) or cached.ndim != 4 or item.ndim != 4:
             return item
         if index < 0 or index >= cached.shape[0] or item.shape[0] < 1 or cached.shape[1:] != item.shape[1:]:
@@ -779,13 +911,9 @@ class VNCCS_CharacterGenerator:
         loader_type = getattr(pipe, "loader_type", "standard") or "standard"
         print(f"[VNCCS Character Generator] Applying {stage_label} LoRA before sampler: {lora_info.get('name')} ({lora_info.get('file')}, strength={strength})")
         if loader_type == "nunchaku":
-            return _apply_lora_nunchaku(
-                model,
-                lora_info["path"],
-                strength,
-                settings=getattr(pipe, "nunchaku_settings", None) or {},
-                model_entry=getattr(pipe, "model_entry", None),
-            )
+            # TECH DEBT: legacy Nunchaku path disabled. Delete this guard after
+            # old workflow JSON no longer carries loader_type="nunchaku".
+            loader_type = "standard"
         rel_path = lora_info.get("rel_path") or lora_info.get("file")
         try:
             return _call_comfy_node(
@@ -803,17 +931,12 @@ class VNCCS_CharacterGenerator:
         return self._apply_lora_to_model(model, clip, pipe, lora_info, "Pose Generation")
 
     def _list_to_batch(self, values):
-        if torch.is_tensor(values):
-            return values if values.ndim == 4 else values.unsqueeze(0)
-        if isinstance(values, list):
-            tensors = []
-            for value in values:
-                value = self._list_to_batch(value)
-                if value is not None:
-                    tensors.append(value)
-            if tensors:
-                return torch.cat(tensors, dim=0)
-        return values
+        normalized = normalize_image_batch(values, stage="generator list_to_batch")
+        return normalized if normalized is not None else values
+
+    def _safe_image_batch(self, values, target_hw=None, stage="generator batch"):
+        normalized = normalize_image_batch(values, target_hw=target_hw, stage=stage)
+        return normalized if normalized is not None else values
 
     def _split_batch(self, images):
         images = self._list_to_batch(images)
@@ -910,7 +1033,7 @@ class VNCCS_CharacterGenerator:
             temporal_overlap=8,
         )[0]
 
-        return torch.cat([self._list_to_batch(image) for image in decoded_list], dim=0)
+        return self._safe_image_batch(decoded_list, stage="pose generation decode")
 
     def _run_remove_clothes(self, character, pipe, settings, lora_info=None):
         pipe_values = self._extract_pipe(pipe)
@@ -1076,7 +1199,7 @@ class VNCCS_CharacterGenerator:
             for index, item in enumerate(images, start=1):
                 result = self._run_gan_upscale_one(item, model)
                 results.append(self._list_to_batch(result))
-                partial = torch.cat(results, dim=0)
+                partial = self._safe_image_batch(results, stage=f"{stage} partial")
                 self._emit(
                     unique_id,
                     stage,
@@ -1087,14 +1210,14 @@ class VNCCS_CharacterGenerator:
                     total,
                     cache_dir=cache_dir,
                 )
-            return torch.cat(results, dim=0) if results else image
+            return self._safe_image_batch(results, stage=stage) if results else image
 
         dit, vae = self._run_upscaler_models(settings)
         results = []
         for index, item in enumerate(images, start=1):
             result = self._run_upscale_one(item, dit, vae, background, settings, seed, use_internal_rmbg=use_internal_rmbg)
             results.append(self._list_to_batch(result))
-            partial = torch.cat(results, dim=0)
+            partial = self._safe_image_batch(results, stage=f"{stage} partial")
             self._emit(
                 unique_id,
                 stage,
@@ -1105,7 +1228,7 @@ class VNCCS_CharacterGenerator:
                 total,
                 cache_dir=cache_dir,
             )
-        return torch.cat(results, dim=0) if results else image
+        return self._safe_image_batch(results, stage=stage) if results else image
 
     def _run_source_upscaler(self, image, settings, seed, unique_id=None, cache_dir=None, stage="source_upscaler"):
         images = self._split_batch(image)
@@ -1131,7 +1254,7 @@ class VNCCS_CharacterGenerator:
             for index, item in enumerate(images, start=1):
                 result = self._run_gan_upscale_one(item, model)
                 results.append(self._list_to_batch(result))
-                partial = torch.cat(results, dim=0)
+                partial = self._safe_image_batch(results, stage=f"{stage} partial")
                 self._emit(
                     unique_id,
                     stage,
@@ -1142,14 +1265,14 @@ class VNCCS_CharacterGenerator:
                     total,
                     cache_dir=cache_dir,
                 )
-            return torch.cat(results, dim=0) if results else image
+            return self._safe_image_batch(results, stage=stage) if results else image
 
         dit, vae = self._run_upscaler_models(settings)
         results = []
         for index, item in enumerate(images, start=1):
             result = self._run_seedvr_upscale_one(item, dit, vae, settings, seed)
             results.append(self._list_to_batch(result))
-            partial = torch.cat(results, dim=0)
+            partial = self._safe_image_batch(results, stage=f"{stage} partial")
             self._emit(
                 unique_id,
                 stage,
@@ -1160,7 +1283,7 @@ class VNCCS_CharacterGenerator:
                 total,
                 cache_dir=cache_dir,
             )
-        return torch.cat(results, dim=0) if results else image
+        return self._safe_image_batch(results, stage=stage) if results else image
 
     def _screen_mode_from_background(self, background):
         normalized = str(background or "").strip().lower()
@@ -1172,10 +1295,15 @@ class VNCCS_CharacterGenerator:
         preset_name = str(settings.get("preset", "balanced") or "balanced").strip().lower()
         return CHROMA_KEY_PRESETS.get(preset_name, CHROMA_KEY_PRESETS["balanced"])
 
+    def _bg_remove_disabled(self, settings):
+        return str(settings.get("preset", "") or "").strip().lower() == "disabled"
+
     def _run_bg_remove(self, images, settings, background="Green"):
+        if self._bg_remove_disabled(settings):
+            return self._list_to_batch(images)
         preset = self._chroma_preset(settings)
         return VNCCSChromaKey().chroma_key(
-            images,
+            self._list_to_batch(images),
             float(preset["tolerance"]),
             float(preset["softness"]),
             float(preset["despill_strength"]),
@@ -1329,14 +1457,17 @@ class VNCCS_CharacterGenerator:
             bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
             bg_input = self._slice_batch_item(upscaled, regenerate_index) if regenerate_index is not None else upscaled
             bg_run_total = 1 if regenerate_index is not None else bg_total
-            self._emit(unique_id, "bg_remove", "running", bg_input, f"Removing background for {bg_run_total} images", 0, bg_run_total, cache_dir=cache_dir)
+            bg_disabled = self._bg_remove_disabled(settings["bg_remove"])
+            bg_action = "Skipping chroma key for" if bg_disabled else "Removing background for"
+            self._emit(unique_id, "bg_remove", "running", bg_input, f"{bg_action} {bg_run_total} images", 0, bg_run_total, cache_dir=cache_dir)
             final_images = self._run_bg_remove(bg_input, settings["bg_remove"], background=background)
             if regenerate_index is not None:
                 final_images = self._replace_batch_item(_load_cached_tensor(cache_dir, "bg_remove"), regenerate_index, final_images)
             self._save_stage(cache_dir, "bg_remove", final_images)
             saved_paths = self._save_final_sprites(final_images, sheets_path, character_name, version_existing=not regenerate_from)
             saved_suffix = f"; saved {len(saved_paths)} sprites" if saved_paths else ""
-            self._emit(unique_id, "bg_remove", "done", final_images, f"Background removed from {bg_total} images{saved_suffix}", bg_total, bg_total, cache_dir=cache_dir)
+            bg_done = "Chroma key skipped for" if bg_disabled else "Background removed from"
+            self._emit(unique_id, "bg_remove", "done", final_images, f"{bg_done} {bg_total} images{saved_suffix}", bg_total, bg_total, cache_dir=cache_dir)
             return final_images, final_images, pose_images, upscaled
         except Exception as exc:
             print("[VNCCS Character Generator] Failed:", exc)
@@ -1465,12 +1596,15 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
         if final_images is None:
             bg_input = self._slice_batch_item(upscaled, regenerate_index) if regenerate_index is not None else upscaled
             bg_run_total = 1 if regenerate_index is not None else bg_total
-            self._emit(unique_id, bg_stage, "running", bg_input, f"Removing background for {bg_run_total} images", 0, bg_run_total, cache_dir=cache_dir)
+            bg_disabled = self._bg_remove_disabled(settings["bg_remove"])
+            bg_action = "Skipping chroma key for" if bg_disabled else "Removing background for"
+            self._emit(unique_id, bg_stage, "running", bg_input, f"{bg_action} {bg_run_total} images", 0, bg_run_total, cache_dir=cache_dir)
             final_images = self._run_bg_remove(bg_input, settings["bg_remove"], background=background)
             if regenerate_index is not None:
                 final_images = self._replace_batch_item(_load_cached_tensor(cache_dir, bg_stage), regenerate_index, final_images)
             self._save_stage(cache_dir, bg_stage, final_images)
-            self._emit(unique_id, bg_stage, "done", final_images, f"Background removed from {bg_total} images", bg_total, bg_total, cache_dir=cache_dir)
+            bg_done = "Chroma key skipped for" if bg_disabled else "Background removed from"
+            self._emit(unique_id, bg_stage, "done", final_images, f"{bg_done} {bg_total} images", bg_total, bg_total, cache_dir=cache_dir)
         return final_images, pose_images, upscaled
 
     def process(self, poses, character, pipe, prompt, background="Green", widget_data="{}", sheets_path="", unique_id=None):
@@ -1777,14 +1911,17 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
             bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
             bg_input = self._slice_batch_item(upscaled, regenerate_index) if regenerate_index is not None else upscaled
             bg_run_total = 1 if regenerate_index is not None else bg_total
-            self._emit(unique_id, "bg_remove", "running", bg_input, f"Removing background for {bg_run_total} images", 0, bg_run_total, cache_dir=cache_dir)
+            bg_disabled = self._bg_remove_disabled(settings["bg_remove"])
+            bg_action = "Skipping chroma key for" if bg_disabled else "Removing background for"
+            self._emit(unique_id, "bg_remove", "running", bg_input, f"{bg_action} {bg_run_total} images", 0, bg_run_total, cache_dir=cache_dir)
             final_images = self._run_bg_remove(bg_input, settings["bg_remove"], background=background)
             if regenerate_index is not None:
                 final_images = self._replace_batch_item(_load_cached_tensor(cache_dir, "bg_remove"), regenerate_index, final_images)
             self._save_stage(cache_dir, "bg_remove", final_images)
             saved_paths = self._save_final_sprites(final_images, sheets_path, character_name, costume_name, version_existing=not regenerate_from)
             saved_suffix = f"; saved {len(saved_paths)} sprites to {costume_name}" if saved_paths else ""
-            self._emit(unique_id, "bg_remove", "done", final_images, f"Background removed from {bg_total} images{saved_suffix}", bg_total, bg_total, cache_dir=cache_dir)
+            bg_done = "Chroma key skipped for" if bg_disabled else "Background removed from"
+            self._emit(unique_id, "bg_remove", "done", final_images, f"{bg_done} {bg_total} images{saved_suffix}", bg_total, bg_total, cache_dir=cache_dir)
             return final_images, final_images, source_upscaled, pose_images, upscaled
         except Exception as exc:
             print("[VNCCS Clothes Generator] Failed:", exc)
@@ -2089,6 +2226,17 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 source_mask = None
             if source_image is not None:
                 source_items.append((source_image, source_mask))
+        emotion_target_hw = None
+        if source_items:
+            first_source = self._list_to_batch(source_items[0][0])
+            if torch.is_tensor(first_source) and first_source.ndim == 4:
+                emotion_target_hw = (int(first_source.shape[1]), int(first_source.shape[2]))
+            normalized_sources = []
+            for source_image, source_mask in source_items:
+                source_image = self._safe_image_batch(source_image, target_hw=emotion_target_hw, stage="emotion source")
+                source_mask = resize_mask_batch(source_mask, emotion_target_hw)
+                normalized_sources.append((source_image, source_mask))
+            source_items = normalized_sources
         emotion_items = [str(item.get("emotion_prompt", "")) for item in data_items]
         sprite_paths = [str(item.get("sprite_output_path", "")) for item in data_items]
         total = min(len(source_items), len(data_items))
@@ -2122,7 +2270,11 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                         faces.append(cached)
                         continue
 
-                group_source = torch.cat([source_items[i][0] for i in group["indices"]], dim=0)
+                group_source = self._safe_image_batch(
+                    [source_items[i][0] for i in group["indices"]],
+                    target_hw=emotion_target_hw,
+                    stage=f"{stage_key} source",
+                )
                 run_indices = group["indices"]
                 if regenerate_index is not None and regenerate_index < len(group["indices"]):
                     run_indices = [group["indices"][regenerate_index]]
@@ -2181,7 +2333,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                                 widget_payload.get("character_name", ""),
                                 root_name="Faces",
                             )
-                    partial = torch.cat(group_results, dim=0)
+                    partial = self._safe_image_batch(group_results, target_hw=emotion_target_hw, stage=f"{stage_key} partial")
                     self._emit(
                         unique_id,
                         stage_key,
@@ -2193,7 +2345,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                         cache_dir=cache_dir,
                     )
                 if group_results:
-                    merged = torch.cat(group_results, dim=0)
+                    merged = self._safe_image_batch(group_results, target_hw=emotion_target_hw, stage=f"{stage_key} merge")
                     if regenerate_index is not None:
                         merged = self._replace_batch_item(_load_cached_tensor(cache_dir, stage_key), regenerate_index, merged)
                     self._save_stage(cache_dir, stage_key, merged)
@@ -2203,7 +2355,10 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
 
             if not results:
                 raise RuntimeError("No emotion images to generate. Select at least one costume and one emotion.")
-            return torch.cat(results, dim=0), torch.cat(faces, dim=0)
+            return (
+                self._safe_image_batch(results, target_hw=emotion_target_hw, stage="emotion results"),
+                self._safe_image_batch(faces, target_hw=emotion_target_hw, stage="emotion faces"),
+            )
         except Exception as exc:
             print("[VNCCS Emotions Generator] Failed:", exc)
             traceback.print_exc()

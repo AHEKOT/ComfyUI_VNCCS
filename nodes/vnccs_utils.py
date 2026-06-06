@@ -84,6 +84,61 @@ def pil2tensor(image):
     return torch.from_numpy(np.array(image).astype(np.float32) / 255.0).unsqueeze(0)
 
 
+def _flatten_image_tensors(value):
+    if isinstance(value, tuple):
+        value = value[0]
+    if torch.is_tensor(value):
+        if value.ndim == 4:
+            return [value[i:i + 1] for i in range(value.shape[0])]
+        if value.ndim == 3:
+            return [value.unsqueeze(0)]
+        return []
+    if isinstance(value, list):
+        result = []
+        for item in value:
+            result.extend(_flatten_image_tensors(item))
+        return result
+    return []
+
+
+def _normalize_image_batch(value, target_hw=None, stage="utils batch"):
+    items = []
+    for item in _flatten_image_tensors(value):
+        if not torch.is_tensor(item):
+            continue
+        if not torch.is_floating_point(item):
+            item = item.float()
+        if item.numel() and item.max() > 1.5:
+            item = item / 255.0
+        items.append(item.clamp(0.0, 1.0))
+    if not items:
+        return value
+    if target_hw is None:
+        target_hw = (int(items[0].shape[1]), int(items[0].shape[2]))
+    target_channels = max(int(item.shape[-1]) for item in items)
+    shapes = [(int(item.shape[1]), int(item.shape[2]), int(item.shape[3])) for item in items]
+    target_shape = (int(target_hw[0]), int(target_hw[1]), target_channels)
+    if any(shape != target_shape for shape in shapes):
+        print(f"[VNCCS Batch Safety] Normalizing {stage}: {shapes} -> {target_shape}")
+    normalized = []
+    for item in items:
+        if item.shape[-1] < target_channels:
+            pad_value = 1.0 if target_channels == 4 and item.shape[-1] == 3 else 0.0
+            pad = torch.full((*item.shape[:-1], target_channels - item.shape[-1]), pad_value, dtype=item.dtype, device=item.device)
+            item = torch.cat([item, pad], dim=-1)
+        elif item.shape[-1] > target_channels:
+            item = item[..., :target_channels]
+        if (item.shape[1], item.shape[2]) != target_hw:
+            item = F.interpolate(
+                item.movedim(-1, 1),
+                size=target_hw,
+                mode="bilinear",
+                align_corners=False,
+            ).movedim(1, -1).clamp(0.0, 1.0)
+        normalized.append(item)
+    return torch.cat(normalized, dim=0)
+
+
 def handle_model_error(message):
     print(f"[RMBG ERROR] {message}")
     raise RuntimeError(message)
@@ -482,8 +537,7 @@ class VNCCS_ColorFix:
         return rgb.clamp(0.0, 1.0)
 
     def color_fix(self, image, contrast=1.0, saturation=1.0):
-        if isinstance(image, list):
-            image = image[0]
+        image = _normalize_image_batch(image, stage="color fix")
 
         if len(image.shape) == 4:
             results = []
@@ -552,8 +606,7 @@ class VNCCS_Resize:
         return torch.from_numpy(a)
 
     def resize(self, image, width, height, method="bilinear"):
-        if isinstance(image, list):
-            image = image[0]
+        image = _normalize_image_batch(image, target_hw=(int(height), int(width)), stage="resize")
 
         if len(image.shape) == 4:
             results = []
@@ -1275,6 +1328,7 @@ class VNCCS_RMBG2:
 
     def process_image(self, image, model, **params):
         try:
+            image = _normalize_image_batch(image, stage="rmbg input")
             processed_images = []
             processed_masks = []
             
@@ -1391,9 +1445,15 @@ class VNCCS_RMBG2:
                 mask_image = mask_tensor.reshape((-1, 1, mask_tensor.shape[-2], mask_tensor.shape[-1])).movedim(1, -1).expand(-1, -1, -1, 3)
                 mask_images.append(mask_image)
             
-            mask_image_output = torch.cat(mask_images, dim=0)
+            target_hw = None
+            if processed_images:
+                first = processed_images[0]
+                target_hw = (int(first.shape[1]), int(first.shape[2]))
+            mask_image_output = _normalize_image_batch(mask_images, target_hw=target_hw, stage="rmbg mask image")
+            processed_image_output = _normalize_image_batch(processed_images, target_hw=target_hw, stage="rmbg output")
+            processed_mask_output = torch.cat(processed_masks, dim=0)
             
-            return (torch.cat(processed_images, dim=0), torch.cat(processed_masks, dim=0), mask_image_output)
+            return (processed_image_output, processed_mask_output, mask_image_output)
             
         except Exception as e:
             handle_model_error(f"Error in image processing: {str(e)}")
@@ -1449,6 +1509,7 @@ class VNCCSChromaKey:
         screen_mode,
         output_mode,
     ):
+        image = _normalize_image_batch(image, stage="chroma key input")
         if len(image.shape) == 4:
             rgba_list = []
             matte_list = []

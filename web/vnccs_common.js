@@ -75,6 +75,182 @@ export function syncDOMWidgetWidthSoon(node, widgetName, delay = 100) {
     setTimeout(() => syncDOMWidgetWidth(node, widgetName), delay);
 }
 
+// ── Character Sprite Preview Navigation ──────────────────────────────────────
+export function createSpritePreviewNavigator({
+    image,
+    placeholder,
+    loading,
+    nav,
+    prevButton,
+    nextButton,
+    countLabel,
+    onLoaded,
+    onMissing,
+    onError,
+} = {}) {
+    const state = {
+        character: "",
+        costume: "",
+        count: 0,
+        index: 0,
+        cacheBust: "",
+        requestId: 0,
+    };
+
+    const setLoading = (value) => {
+        loading?.classList.toggle("is-visible", !!value);
+        if (prevButton) prevButton.disabled = !!value;
+        if (nextButton) nextButton.disabled = !!value;
+    };
+
+    const updateNav = () => {
+        const visible = state.count > 1;
+        nav?.classList.toggle("is-visible", visible);
+        if (countLabel) countLabel.textContent = visible ? `${state.index + 1}/${state.count}` : "";
+    };
+
+    const hideNav = () => {
+        state.count = 0;
+        state.index = 0;
+        updateNav();
+    };
+
+    const spriteUrl = (character, index, costume = "") => {
+        const params = new URLSearchParams({
+            character,
+            index: String(index),
+            v: state.cacheBust || "current",
+        });
+        if (costume) params.set("costume", costume);
+        return `/vnccs/get_character_pose_preview?${params.toString()}`;
+    };
+
+    const applyImage = (url) => {
+        if (image) {
+            image.src = url;
+            image.style.display = "block";
+        }
+        if (placeholder) placeholder.style.display = "none";
+        onLoaded?.(url, { ...state });
+    };
+
+    const applyMissing = () => {
+        if (image) image.style.display = "none";
+        if (placeholder) placeholder.style.display = "flex";
+        hideNav();
+        onMissing?.({ ...state });
+    };
+
+    const prefetch = (index) => {
+        if (!state.character || state.count <= 1) return;
+        const normalized = ((Number(index || 0) % state.count) + state.count) % state.count;
+        const img = new Image();
+        img.src = spriteUrl(state.character, normalized, state.costume);
+    };
+
+    const showFallback = (url) => {
+        if (!url) {
+            applyMissing();
+            return;
+        }
+        const requestId = state.requestId + 1;
+        state.requestId = requestId;
+        hideNav();
+        setLoading(true);
+        const loader = new Image();
+        loader.onerror = () => {
+            if (requestId !== state.requestId) return;
+            setLoading(false);
+            applyMissing();
+        };
+        loader.onload = () => {
+            if (requestId !== state.requestId) return;
+            setLoading(false);
+            applyImage(url);
+        };
+        loader.src = url;
+    };
+
+    const show = (index) => {
+        if (!state.character || state.count <= 0) return;
+        const normalized = ((Number(index || 0) % state.count) + state.count) % state.count;
+        const requestId = state.requestId + 1;
+        const url = spriteUrl(state.character, normalized, state.costume);
+        state.requestId = requestId;
+        state.index = normalized;
+        setLoading(true);
+        updateNav();
+
+        const loader = new Image();
+        loader.onerror = () => {
+            if (requestId !== state.requestId) return;
+            setLoading(false);
+            showFallback(state.fallbackUrl);
+            onError?.({ ...state });
+        };
+        loader.onload = () => {
+            if (requestId !== state.requestId) return;
+            setLoading(false);
+            applyImage(url);
+            updateNav();
+            prefetch(normalized - 1);
+            prefetch(normalized + 1);
+        };
+        loader.src = url;
+    };
+
+    const load = async (character, { costume = "", random = true, index = 0, fallbackUrl = "" } = {}) => {
+        state.character = character || "";
+        state.costume = costume || "";
+        state.fallbackUrl = fallbackUrl || "";
+        state.cacheBust = `${state.character}:${state.costume}:${Date.now()}`;
+        const loadRequestId = state.requestId + 1;
+        state.requestId = loadRequestId;
+
+        if (!state.character) {
+            setLoading(false);
+            applyMissing();
+            return;
+        }
+
+        setLoading(true);
+        try {
+            const params = new URLSearchParams({ character: state.character, t: String(Date.now()) });
+            if (state.costume) params.set("costume", state.costume);
+            const response = await api.fetchApi(`/vnccs/get_character_pose_preview_meta?${params.toString()}`);
+            if (loadRequestId !== state.requestId) return;
+            const meta = response.ok ? await response.json() : {};
+            if (loadRequestId !== state.requestId) return;
+            state.count = Number(meta.count || 0);
+            if (state.count <= 0) {
+                setLoading(false);
+                showFallback(state.fallbackUrl);
+                return;
+            }
+            const nextIndex = random ? Math.floor(Math.random() * state.count) : index;
+            show(nextIndex);
+        } catch (error) {
+            console.warn("[VNCCS] Failed to load sprite preview metadata:", error);
+            setLoading(false);
+            showFallback(state.fallbackUrl);
+            onError?.({ ...state, error });
+        }
+    };
+
+    prevButton?.addEventListener("click", () => show(state.index - 1));
+    nextButton?.addEventListener("click", () => show(state.index + 1));
+    updateNav();
+
+    return {
+        load,
+        show,
+        showFallback,
+        hideNav,
+        setLoading,
+        state,
+    };
+}
+
 // ── DOM Widget Canvas Navigation ──────────────────────────────────────────────
 // DOM widgets sit above LiteGraph's canvas, so MMB events can never reach the
 // canvas naturally. Forward canvas navigation gestures while leaving normal

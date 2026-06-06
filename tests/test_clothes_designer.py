@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 pytest.importorskip("torch")
+import torch
 
 from nodes.clothes_designer import ClothesDesigner, PipeContext
 
@@ -162,6 +163,27 @@ class TestGetCachePaths:
         assert os.path.isdir(tmp_path / "Alice" / "cache")
 
 
+# ── SAM3 clone reference preparation ──────────────────────────────────────────
+
+class TestCloneSam3ReferencePreparation:
+    def test_composites_rgba_on_white(self):
+        rgba = torch.tensor([[[[0.2, 0.4, 0.6, 0.5]]]], dtype=torch.float32)
+
+        result = ClothesDesigner._composite_alpha_on_white(rgba)
+
+        assert result.shape == (1, 1, 1, 3)
+        assert torch.allclose(result, torch.tensor([[[[0.6, 0.7, 0.8]]]]))
+
+    def test_applies_mask_on_white(self):
+        image = torch.tensor([[[[0.2, 0.4, 0.6], [0.8, 0.2, 0.1]]]], dtype=torch.float32)
+        mask = torch.tensor([[[1.0, 0.0]]], dtype=torch.float32)
+
+        result = ClothesDesigner._apply_mask_on_white(image, mask)
+
+        assert torch.allclose(result[0, 0, 0], torch.tensor([0.2, 0.4, 0.6]))
+        assert torch.allclose(result[0, 0, 1], torch.tensor([1.0, 1.0, 1.0]))
+
+
 # ── PipeContext ───────────────────────────────────────────────────────────────
 
 class TestPipeContext:
@@ -224,6 +246,6 @@ class TestPipeContext:
             nunchaku_settings={"precision": "fp4"}, model_entry={"name": "x"},
         )
         ctx = PipeContext(source=src)
-        assert ctx.loader_type == "nunchaku"
-        assert ctx.nunchaku_kind == "flux"
-        assert ctx.nunchaku_settings == {"precision": "fp4"}
+        assert ctx.loader_type == "standard"
+        assert ctx.nunchaku_kind is None
+        assert ctx.nunchaku_settings is None

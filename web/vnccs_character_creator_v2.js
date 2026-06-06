@@ -233,7 +233,80 @@ const STYLE = `
     object-fit: contain;
     animation: vnccs-fadein 0.4s ease;
 }
+.vnccs-preview-loading {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 10, 16, 0.28);
+    backdrop-filter: blur(1px);
+    pointer-events: none;
+}
+.vnccs-preview-loading.is-visible {
+    display: flex;
+}
+.vnccs-preview-spinner {
+    width: 34px;
+    height: 34px;
+    border: 2px solid rgba(255, 143, 163, 0.24);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    box-shadow: 0 0 18px rgba(255,143,163,0.25);
+    animation: vnccs-spin 0.75s linear infinite;
+}
+.vnccs-sprite-nav {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding-top: 7px;
+    pointer-events: auto;
+}
+.vnccs-sprite-nav.is-visible {
+    display: flex;
+}
+.vnccs-sprite-nav-btn {
+    width: 34px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-md);
+    background: linear-gradient(180deg, rgba(255,143,163,0.14), rgba(255,255,255,0.04));
+    color: var(--accent);
+    box-shadow: 0 0 12px rgba(255,143,163,0.12);
+    cursor: pointer;
+    transition: all var(--transition);
+}
+.vnccs-sprite-nav-btn:hover {
+    border-color: var(--accent);
+    background: linear-gradient(180deg, rgba(255,143,163,0.22), rgba(255,255,255,0.06));
+    box-shadow: 0 0 16px rgba(255,143,163,0.22);
+}
+.vnccs-sprite-nav-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+.vnccs-sprite-nav-btn svg {
+    width: 16px;
+    height: 16px;
+    stroke: currentColor;
+    stroke-width: 2.6;
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.vnccs-sprite-nav-count {
+    min-width: 46px;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+}
 @keyframes vnccs-fadein { from { opacity: 0; } to { opacity: 1; } }
+@keyframes vnccs-spin { to { transform: rotate(360deg); } }
 .vnccs-placeholder { color: var(--text-muted); text-align: center; font-size: 11px; }
 
 /* LoRA stack */
@@ -1109,6 +1182,10 @@ app.registerExtension({
                 const state = {
                     preview_valid: false, // Smart Cache Flag
                     preview_source: "gen", // "gen" or "pose" - tracks what user sees
+                    sprite_preview_index: 0,
+                    sprite_preview_count: 0,
+                    sprite_preview_cache_bust: "",
+                    sprite_preview_request_id: 0,
                     character: "",
                     prompt_modes: {
                         illustrious: {
@@ -1542,6 +1619,108 @@ app.registerExtension({
                     if (!els.previewImg) return;
                     els.previewImg.onload = null;
                     els.previewImg.onerror = null;
+                };
+
+                const setPreviewLoading = (isLoading) => {
+                    els.previewLoading?.classList.toggle("is-visible", !!isLoading);
+                    if (els.spritePrevBtn) els.spritePrevBtn.disabled = !!isLoading;
+                    if (els.spriteNextBtn) els.spriteNextBtn.disabled = !!isLoading;
+                };
+
+                const updateSpriteNav = () => {
+                    const count = Number(state.sprite_preview_count || 0);
+                    const visible = state.preview_source === "pose" && count > 1;
+                    els.spriteNav?.classList.toggle("is-visible", visible);
+                    if (els.spriteCount) {
+                        const current = count ? ((Number(state.sprite_preview_index || 0) % count + count) % count) + 1 : 0;
+                        els.spriteCount.textContent = count > 1 ? `${current}/${count}` : "";
+                    }
+                };
+
+                const hideSpriteNav = () => {
+                    state.sprite_preview_count = 0;
+                    state.sprite_preview_index = 0;
+                    updateSpriteNav();
+                };
+
+                const tryCachePreview = (character) => {
+                    console.log("[VNCCS] Trying to load cached preview...");
+                    const cacheUrl = `/vnccs/get_cached_preview?character=${encodeURIComponent(character)}&t=${Date.now()}`;
+                    clearPreviewHandlers();
+                    hideSpriteNav();
+                    setPreviewLoading(true);
+
+                    els.previewImg.onerror = () => {
+                        console.warn("[VNCCS] Both pose and cache preview failed.");
+                        setPreviewLoading(false);
+                        els.previewImg.style.display = "none";
+                        els.placeholder.innerText = "No Preview Image";
+                        els.placeholder.style.display = "block";
+                        els.previewImg.onerror = null;
+                        state.preview_valid = false;
+                        state.preview_source = "gen";
+                        hideSpriteNav();
+                        saveState(false);
+                    };
+                    els.previewImg.onload = () => {
+                        setPreviewLoading(false);
+                        state.preview_valid = true;
+                        state.preview_source = "gen";
+                        hideSpriteNav();
+                        saveState(true);
+                    };
+
+                    els.previewImg.src = cacheUrl;
+                };
+
+                const spritePreviewUrl = (character, index) => {
+                    const cacheBust = state.sprite_preview_cache_bust || "current";
+                    return `/vnccs/get_character_pose_preview?character=${encodeURIComponent(character)}&index=${index}&v=${encodeURIComponent(cacheBust)}`;
+                };
+
+                const prefetchSpritePreview = (character, index) => {
+                    const count = Number(state.sprite_preview_count || 0);
+                    if (!character || count <= 1) return;
+                    const normalized = ((Number(index || 0) % count) + count) % count;
+                    const prefetch = new Image();
+                    prefetch.src = spritePreviewUrl(character, normalized);
+                };
+
+                const showSpritePreview = (character, index) => {
+                    const count = Number(state.sprite_preview_count || 0);
+                    if (!character || count <= 0) return;
+                    const normalized = ((Number(index || 0) % count) + count) % count;
+                    const requestId = Number(state.sprite_preview_request_id || 0) + 1;
+                    const url = spritePreviewUrl(character, normalized);
+                    state.sprite_preview_request_id = requestId;
+                    state.sprite_preview_index = normalized;
+                    clearPreviewHandlers();
+                    setPreviewLoading(true);
+
+                    const loader = new Image();
+                    loader.onerror = () => {
+                        if (requestId !== state.sprite_preview_request_id) return;
+                        console.warn("[VNCCS] Pose preview load failed. Fallback to cache.");
+                        setPreviewLoading(false);
+                        hideSpriteNav();
+                        tryCachePreview(character);
+                    };
+                    loader.onload = () => {
+                        if (requestId !== state.sprite_preview_request_id) return;
+                        clearPreviewHandlers();
+                        els.previewImg.src = url;
+                        els.previewImg.style.display = "block";
+                        els.placeholder.style.display = "none";
+                        setPreviewLoading(false);
+                        state.preview_valid = true;
+                        state.preview_source = "pose";
+                        updateSpriteNav();
+                        prefetchSpritePreview(character, normalized - 1);
+                        prefetchSpritePreview(character, normalized + 1);
+                        saveState(true);
+                    };
+                    loader.src = url;
+                    updateSpriteNav();
                 };
 
                 const applyStoredPrefs = (characterOnly = false) => {
@@ -2828,8 +3007,36 @@ app.registerExtension({
                 const img = document.createElement("img");
                 img.className = "vnccs-preview-img"; img.style.display = "none";
                 frame.appendChild(img);
+                const previewLoading = document.createElement("div");
+                previewLoading.className = "vnccs-preview-loading";
+                previewLoading.innerHTML = '<div class="vnccs-preview-spinner"></div>';
+                frame.appendChild(previewLoading);
                 els.previewImg = img; els.placeholder = frame.querySelector(".vnccs-placeholder");
+                els.previewLoading = previewLoading;
                 colLeft.appendChild(frame);
+
+                const spriteNav = document.createElement("div");
+                spriteNav.className = "vnccs-sprite-nav";
+                const spritePrevBtn = document.createElement("button");
+                spritePrevBtn.type = "button";
+                spritePrevBtn.className = "vnccs-sprite-nav-btn";
+                spritePrevBtn.title = "Previous sprite";
+                spritePrevBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>';
+                const spriteCount = document.createElement("div");
+                spriteCount.className = "vnccs-sprite-nav-count";
+                const spriteNextBtn = document.createElement("button");
+                spriteNextBtn.type = "button";
+                spriteNextBtn.className = "vnccs-sprite-nav-btn";
+                spriteNextBtn.title = "Next sprite";
+                spriteNextBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+                spriteNav.append(spritePrevBtn, spriteCount, spriteNextBtn);
+                els.spriteNav = spriteNav;
+                els.spritePrevBtn = spritePrevBtn;
+                els.spriteNextBtn = spriteNextBtn;
+                els.spriteCount = spriteCount;
+                els.spritePrevBtn.onclick = () => showSpritePreview(state.character, Number(state.sprite_preview_index || 0) - 1);
+                els.spriteNextBtn.onclick = () => showSpritePreview(state.character, Number(state.sprite_preview_index || 0) + 1);
+                colLeft.appendChild(spriteNav);
 
                 topRow.appendChild(colLeft);
 
@@ -3148,11 +3355,13 @@ app.registerExtension({
                         if (charName === state.character) {
                             console.log("[VNCCS] Character matches. Refreshing local preview...");
                             clearPreviewHandlers();
+                            setPreviewLoading(false);
                             els.previewImg.src = `/vnccs/get_cached_preview?character=${encodeURIComponent(charName)}&t=${Date.now()}`;
                             els.previewImg.style.display = "block";
                             els.placeholder.style.display = "none";
                             state.preview_valid = true;
                             state.preview_source = "gen";
+                            hideSpriteNav();
                             saveState(true);
                         }
                     }
@@ -3316,46 +3525,25 @@ app.registerExtension({
                         });
 
                         // 2. Fetch Preview Image
-                        // Strategy: Try Sheet -> Fail -> Try Cache -> Fail -> Placeholder
+                        try {
+                            const metaResponse = await api.fetchApi(`/vnccs/get_character_pose_preview_meta?character=${encodeURIComponent(n)}&t=${Date.now()}`);
+                            const meta = metaResponse.ok ? await metaResponse.json() : {};
+                            const count = Number(meta.count || 0);
+                            state.sprite_preview_count = count;
+                            state.sprite_preview_cache_bust = `${n}:${Date.now()}`;
 
-                        // Function to try loading cache
-                        const tryCache = () => {
-                            console.log("[VNCCS] Trying to load cached preview...");
-                            const cacheUrl = `/vnccs/get_cached_preview?character=${encodeURIComponent(n)}&t=${Date.now()}`;
-
-                            els.previewImg.onerror = () => {
-                                console.warn("[VNCCS] Both pose and cache preview failed.");
-                                els.previewImg.style.display = "none";
-                                els.placeholder.innerText = "No Preview Image";
-                                els.placeholder.style.display = "block";
-                                els.previewImg.onerror = null;
-                                state.preview_valid = false;
-                                state.preview_source = "gen";
-                                saveState(false);
-                            };
-                            els.previewImg.onload = () => {
-                                state.preview_valid = true;
-                                state.preview_source = "gen";
-                                saveState(true);
-                            };
-
-                            els.previewImg.src = cacheUrl;
-                        };
-
-                        // First try a random saved pose sprite.
-                        els.previewImg.onerror = () => {
-                            console.warn("[VNCCS] Pose preview load failed. Fallback to cache.");
-                            tryCache();
-                        };
-                        els.previewImg.onload = () => {
-                            state.preview_valid = true;
-                            state.preview_source = "pose";
-                            saveState(true);
-                        };
-
-                        els.previewImg.src = `/vnccs/get_character_pose_preview?character=${encodeURIComponent(n)}&t=${Date.now()}`;
-                        els.previewImg.style.display = "block";
-                        els.placeholder.style.display = "none";
+                            if (count > 0) {
+                                const index = Math.floor(Math.random() * count);
+                                showSpritePreview(n, index);
+                            } else {
+                                hideSpriteNav();
+                                tryCachePreview(n);
+                            }
+                        } catch (previewError) {
+                            console.warn("[VNCCS] Failed to load pose preview metadata. Fallback to cache.", previewError);
+                            hideSpriteNav();
+                            tryCachePreview(n);
+                        }
 
                     } catch (e) { console.error(e); }
                 };
@@ -3418,11 +3606,13 @@ app.registerExtension({
                         const d = await r.json();
                         if (d.image) {
                             clearPreviewHandlers();
+                            setPreviewLoading(false);
                             els.previewImg.src = "data:image/png;base64," + d.image;
                             els.previewImg.style.display = "block";
                             els.placeholder.style.display = "none";
                             // Successful generation -> Cache is Valid AND source is 'gen'
                             state.preview_source = "gen";
+                            hideSpriteNav();
                             saveState(true);
                         }
                     } catch (e) { showMessage(container, "Error: " + e, true); }

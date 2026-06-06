@@ -49,7 +49,8 @@ const DEFAULT_DATA = {
         enable_debug: false,
     },
     bg_remove: {
-        use_internal_rmbg: true,
+        // TODO: Decide what to do with internal RMBG later.
+        use_internal_rmbg: false,
         preset: "balanced",
     },
     ui: {
@@ -1397,7 +1398,7 @@ class CharacterGeneratorWidget {
         const wrap = document.createElement("label");
         wrap.className = "vnccs-pipe-field";
         const help = {
-            target_size: "Changes the target size of the generated image before the next workflow stage.",
+            target_size: "Scales the QWEN encoder latent by total pixel area while preserving the pose aspect ratio.",
             prompt: "Prompt text used for the remove-clothes/preparation stage.",
             gan_model: "Upscale model used when GAN upscaling is selected.",
             model: "SeedVR diffusion model used for the upscaler stage.",
@@ -1540,7 +1541,7 @@ class CharacterGeneratorWidget {
         }
         if (this.isClone) {
             this.settingsEl.appendChild(this.block("Common", [
-                this.field("common", "target_size", "target size", "select", [1024, 1344, 1536, 2048, 768, 512]),
+                this.field("common", "target_size", "scale area", "select", [1024, 1344, 1536, 2048, 768, 512]),
             ]));
             if (this.isCloneNsfwEnabled()) {
                 this.settingsEl.appendChild(this.block("Remove Clothes", [
@@ -1549,7 +1550,7 @@ class CharacterGeneratorWidget {
             }
         } else {
             this.settingsEl.appendChild(this.block("Pose Generation", [
-                this.field("pose_generation", "target_size", "target size", "select", [1024, 1344, 1536, 2048, 768, 512]),
+                this.field("pose_generation", "target_size", "scale area", "select", [1024, 1344, 1536, 2048, 768, 512]),
             ]));
         }
         const upscalerFields = [
@@ -1567,8 +1568,8 @@ class CharacterGeneratorWidget {
         }
         this.settingsEl.appendChild(this.block("Upscaler", upscalerFields));
         this.settingsEl.appendChild(this.block("BG Remove", [
-            this.field("bg_remove", "use_internal_rmbg", "use internal RMBG", "checkbox"),
-            this.field("bg_remove", "preset", "chroma preset", "select", ["light", "balanced", "strong", "aggressive"]),
+            // TODO: Decide what to do with internal RMBG later.
+            this.field("bg_remove", "preset", "chroma preset", "select", ["disabled", "light", "balanced", "strong", "aggressive"]),
         ]));
     }
 

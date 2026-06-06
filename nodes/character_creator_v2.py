@@ -37,19 +37,21 @@ def pil2tensor(image):
 def tensor2pil(image):
     return Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
 
-def get_random_pose_preview(character_name):
-    """
-    Pick any current pose image from the selected character's Sprites folder.
-    Returns: torch.Tensor (1,H,W,3) or None
-    """
+def list_pose_preview_files(character_name, costume=None):
     try:
         base_char_path = character_dir(character_name)
-        sprite_roots = [
+        sprite_roots = []
+        if costume:
+            sprite_roots.extend([
+                os.path.join(base_char_path, "Sprites", costume, "Neutral"),
+                os.path.join(base_char_path, "Sprites", costume),
+            ])
+        sprite_roots.extend([
             os.path.join(base_char_path, "Sprites", "Naked", "Neutral"),
             os.path.join(base_char_path, "Sprites", "Original", "Neutral"),
             os.path.join(base_char_path, "Sprites", "Naked"),
             os.path.join(base_char_path, "Sprites", "Original"),
-        ]
+        ])
         print(f"[VNCCS Debug] Checking Pose Preview Paths: {sprite_roots}")
 
         image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -64,19 +66,42 @@ def get_random_pose_preview(character_name):
                 and os.path.splitext(filename)[1].lower() in image_exts
             ]
             if root_files:
-                files = root_files
+                files = sorted(root_files)
                 break
         print(f"[VNCCS Debug] Pose preview files found: {len(files)}")
-        if not files:
-            return None
+        return files
+    except Exception as e:
+        print(f"[VNCCS] Pose Preview List Failed: {e}")
+        return []
 
-        selected_file = random.choice(files)
+
+def get_pose_preview(character_name, index=None, costume=None):
+    """
+    Pick a current pose image from the selected character's Sprites folder.
+    Returns: (torch.Tensor (1,H,W,3), index, count) or (None, None, 0)
+    """
+    try:
+        files = list_pose_preview_files(character_name, costume=costume)
+        if not files:
+            return None, None, 0
+
+        count = len(files)
+        if index is None:
+            selected_index = random.randrange(count)
+        else:
+            selected_index = int(index) % count
+        selected_file = files[selected_index]
         print(f"[VNCCS Debug] Using pose preview file: {selected_file}")
         img = Image.open(selected_file).convert("RGB")
-        return pil2tensor(img)
+        return pil2tensor(img), selected_index, count
     except Exception as e:
         print(f"[VNCCS] Pose Preview Fallback Failed: {e}")
-        return None
+        return None, None, 0
+
+
+def get_random_pose_preview(character_name):
+    image, _index, _count = get_pose_preview(character_name)
+    return image
 
 # --------------------------------------------------------------------
 # API Endpoints
@@ -751,17 +776,52 @@ if server:
             character = request.rel_url.query.get("character", "")
             if not character or ".." in character or "/" in character or "\\" in character:
                 return web.Response(status=400)
+            costume = request.rel_url.query.get("costume") or None
+            if costume:
+                try:
+                    costume = ensure_safe_name(costume, "costume")
+                except ValueError:
+                    return web.Response(status=400)
 
-            image = get_random_pose_preview(character)
-            if image is None:
+            index_raw = request.rel_url.query.get("index")
+            try:
+                index = int(index_raw) if index_raw not in (None, "") else None
+            except (TypeError, ValueError):
+                index = None
+            files = list_pose_preview_files(character, costume=costume)
+            if not files:
                 return web.Response(status=404)
 
-            buffer = io.BytesIO()
-            tensor2pil(image).save(buffer, format="PNG")
-            return web.Response(body=buffer.getvalue(), content_type="image/png")
+            count = len(files)
+            selected_index = random.randrange(count) if index is None else index % count
+            return web.FileResponse(
+                files[selected_index],
+                headers={
+                    "X-VNCCS-Preview-Index": str(selected_index),
+                    "X-VNCCS-Preview-Count": str(count),
+                },
+            )
         except Exception as e:
             print(f"[VNCCS] Error serving character pose preview: {e}")
             return web.Response(status=500, text=str(e))
+
+    @server.PromptServer.instance.routes.get("/vnccs/get_character_pose_preview_meta")
+    async def get_character_pose_preview_meta(request):
+        try:
+            character = request.rel_url.query.get("character", "")
+            if not character or ".." in character or "/" in character or "\\" in character:
+                return web.json_response({"count": 0}, status=400)
+            costume = request.rel_url.query.get("costume") or None
+            if costume:
+                try:
+                    costume = ensure_safe_name(costume, "costume")
+                except ValueError:
+                    return web.json_response({"count": 0}, status=400)
+            files = list_pose_preview_files(character, costume=costume)
+            return web.json_response({"count": len(files)})
+        except Exception as e:
+            print(f"[VNCCS] Error serving character pose preview metadata: {e}")
+            return web.json_response({"count": 0, "error": str(e)}, status=500)
 
     @server.PromptServer.instance.routes.get("/vnccs/get_tags")
     async def get_tags(request):
@@ -1284,8 +1344,13 @@ class CharacterCreatorV2:
         
         if preview_valid:
              if preview_source == "pose":
-                  print("[VNCCS] Source is Pose. Force-loading pose preview.")
-                  image = get_random_pose_preview(character_name)
+                  selected_index = data.get("sprite_preview_index")
+                  try:
+                      selected_index = int(selected_index)
+                  except (TypeError, ValueError):
+                      selected_index = None
+                  print(f"[VNCCS] Source is Pose. Force-loading selected pose preview index={selected_index}.")
+                  image, _selected_index, _count = get_pose_preview(character_name, index=selected_index)
                   if image is not None:
                        print("[VNCCS] Pose preview loaded successfully. Overwriting Cache.")
                        try:

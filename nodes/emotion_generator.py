@@ -6,7 +6,7 @@ from ..utils import (
     base_output_dir, character_dir, list_characters, 
     load_character_info, ensure_costume_structure, EMOTIONS,
     apply_sex, append_age, generate_seed, build_face_details, load_character_sheet,
-    sheets_dir, load_costume_info
+    load_costume_info, list_costumes
 )
 
 
@@ -76,9 +76,7 @@ class EmotionGenerator:
     def generate_emotions(self, character, emotions, emotion_selector):
         character_path = character_dir(character)
         info = load_character_info(character)
-        sheets_dir = os.path.join(character_path, "Sheets")
-        costumes = [d for d in os.listdir(sheets_dir) if os.path.isdir(os.path.join(sheets_dir, d))] if os.path.exists(
-            sheets_dir) else []
+        costumes = list_costumes(character)
         images = []
         emotions_out = []
         face_output_paths = []
@@ -121,7 +119,9 @@ class EmotionGenerator:
             bottom = costume_info.get("bottom", "")
             shoes = costume_info.get("shoes", "")
             
-            neutral_dir = os.path.join(sheets_dir, costume, "neutral")
+            neutral_dir = os.path.join(character_path, "Sprites", costume, "Neutral")
+            if not os.path.exists(neutral_dir):
+                neutral_dir = os.path.join(character_path, "Sprites", costume, "neutral")
             if not os.path.exists(neutral_dir):
                 print(f"Folder {neutral_dir} does not exist")
                 continue
@@ -135,10 +135,10 @@ class EmotionGenerator:
             for emotion_key in emotions_list:
                 face_dir = os.path.join(character_path, "Faces", costume, emotion_key)
                 os.makedirs(face_dir, exist_ok=True)
-                sheet_dir = os.path.join(character_path, "Sheets", costume, emotion_key)
-                os.makedirs(sheet_dir, exist_ok=True)
+                sprite_dir = os.path.join(character_path, "Sprites", costume, emotion_key)
+                os.makedirs(sprite_dir, exist_ok=True)
                 face_output_path = os.path.join(face_dir, f"face_{emotion_key}_")
-                sheet_output_path = os.path.join(sheet_dir, f"sheet_{emotion_key}_")
+                sheet_output_path = os.path.join(sprite_dir, f"sprite_{emotion_key}_")
                 
                 positive_prompt = f"{aesthetics}"
                 if background_color:

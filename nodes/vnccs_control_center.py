@@ -8,6 +8,7 @@ import time
 import urllib.parse
 import inspect
 import ipaddress
+import sys
 
 import folder_paths
 import comfy.sd
@@ -78,6 +79,11 @@ _MODEL_FILE_EXTENSIONS = {".safetensors", ".gguf", ".ckpt", ".pt", ".pth", ".bin
 _MIN_MODEL_FILE_SIZE = 1024
 _DEFAULT_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024 * 1024
 _DOWNLOAD_TIMEOUT = (10, 60)
+DEFAULT_MODEL_STEPS = 4
+DEFAULT_MODEL_CFG = 1.0
+NUNCHAKU_DISABLED_MESSAGE = (
+    "Nunchaku support is disabled in VNCCS. Use GGUF models instead."
+)
 
 def _get_node_class_mappings():
     import nodes as comfy_nodes
@@ -86,6 +92,8 @@ def _get_node_class_mappings():
 
 
 def _detect_nunchaku_model_kind(model_entry=None, full_path=""):
+    # TECH DEBT: Nunchaku support is disabled. Delete this legacy helper after
+    # old saved workflows and tests no longer carry Nunchaku state.
     entry_name = (model_entry.get("name", "") if model_entry else "").lower()
     entry_path = (model_entry.get("local_path", "") if model_entry else "").lower()
     identity = " ".join([entry_name, entry_path, full_path.lower()])
@@ -93,42 +101,22 @@ def _detect_nunchaku_model_kind(model_entry=None, full_path=""):
 
 
 def _get_nunchaku_dependency_status(model_entry=None, full_path="", has_enabled_loras=False):
-    mappings = _get_node_class_mappings()
-    model_kind = _detect_nunchaku_model_kind(model_entry=model_entry, full_path=full_path)
-
-    if model_kind == "qwen-image":
-        loader_name = "NunchakuQwenImageDiTLoader"
-        lora_loader_name = "NunchakuQwenImageLoraLoader"
-        install_hint = (
-            "Install ComfyUI-nunchaku for the model loader and ComfyUI-QwenImageLoraLoader "
-            "for Qwen-Image LoRA support."
-        )
-    else:
-        loader_name = "NunchakuFluxDiTLoader"
-        lora_loader_name = "NunchakuFluxLoraLoader"
-        install_hint = "Install ComfyUI-nunchaku to get the required FLUX Nunchaku nodes."
-
-    has_loader = loader_name in mappings
-    has_lora_loader = lora_loader_name in mappings
-    missing = []
-
-    if not has_loader:
-        missing.append(loader_name)
-    if has_enabled_loras and not has_lora_loader:
-        missing.append(lora_loader_name)
-
+    # TECH DEBT: Nunchaku dependency probing is intentionally commented out at
+    # runtime. Delete the legacy Nunchaku support once old workflow state is gone.
+    # Legacy behavior checked NODE_CLASS_MAPPINGS for:
+    # - NunchakuQwenImageDiTLoader / NunchakuFluxDiTLoader
+    # - NunchakuQwenImageLoraLoader / NunchakuFluxLoraLoader
     return {
-        "model_kind": model_kind,
-        "loader_name": loader_name,
-        "lora_loader_name": lora_loader_name,
-        "has_loader": has_loader,
-        "has_lora_loader": has_lora_loader,
+        "model_kind": _detect_nunchaku_model_kind(model_entry=model_entry, full_path=full_path),
+        "loader_name": None,
+        "lora_loader_name": None,
+        "has_loader": False,
+        "has_lora_loader": False,
         "has_enabled_loras": has_enabled_loras,
-        "ok": not missing,
-        "missing": missing,
-        "message": "" if not missing else (
-            f"Missing required dependency nodes: {', '.join(missing)}. {install_hint}"
-        ),
+        "ok": False,
+        "disabled": True,
+        "missing": [],
+        "message": NUNCHAKU_DISABLED_MESSAGE,
     }
 
 
@@ -624,6 +612,8 @@ def _load_gguf(full_path):
 
 
 def _get_nunchaku_load_candidates(full_path):
+    # TECH DEBT: Nunchaku loading is disabled. Keep this legacy helper only so
+    # stale imports fail gracefully until the old code is deleted.
     normalized = os.path.abspath(full_path)
     candidates = []
 
@@ -655,106 +645,23 @@ def _get_nunchaku_load_candidates(full_path):
 
 
 def _resolve_nunchaku_loader_cls(model_entry, full_path):
-    import nodes as comfy_nodes
-
-    entry_name = (model_entry.get("name", "") if model_entry else "").lower()
-    entry_path = (model_entry.get("local_path", "") if model_entry else "").lower()
-    full_path_lower = full_path.lower()
-    identity = " ".join([entry_name, entry_path, full_path_lower])
-
-    if "qwen" in identity and "NunchakuQwenImageDiTLoader" in comfy_nodes.NODE_CLASS_MAPPINGS:
-        return comfy_nodes.NODE_CLASS_MAPPINGS["NunchakuQwenImageDiTLoader"], "qwen-image"
-
-    if "NunchakuFluxDiTLoader" in comfy_nodes.NODE_CLASS_MAPPINGS:
-        return comfy_nodes.NODE_CLASS_MAPPINGS["NunchakuFluxDiTLoader"], "flux"
-
-    raise RuntimeError(
-        "[VNCCS Control Center] No compatible Nunchaku loader found. "
-        "Expected NunchakuQwenImageDiTLoader or NunchakuFluxDiTLoader."
-    )
+    # TECH DEBT: legacy Nunchaku loader resolution is disabled. Delete later.
+    raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
 
 
 def _resolve_nunchaku_lora_loader_cls(model, model_entry=None):
-    import nodes as comfy_nodes
-
-    entry_name = (model_entry.get("name", "") if model_entry else "").lower()
-    entry_path = (model_entry.get("local_path", "") if model_entry else "").lower()
-    model_wrapper = getattr(getattr(model, "model", None), "diffusion_model", None)
-    wrapper_type_name = type(model_wrapper).__name__.lower() if model_wrapper is not None else ""
-    identity = " ".join([entry_name, entry_path, wrapper_type_name])
-
-    if "qwen" in identity and "NunchakuQwenImageLoraLoader" in comfy_nodes.NODE_CLASS_MAPPINGS:
-        return comfy_nodes.NODE_CLASS_MAPPINGS["NunchakuQwenImageLoraLoader"], "qwen-image"
-
-    if "NunchakuFluxLoraLoader" in comfy_nodes.NODE_CLASS_MAPPINGS:
-        return comfy_nodes.NODE_CLASS_MAPPINGS["NunchakuFluxLoraLoader"], "flux"
-
-    raise RuntimeError(
-        "[VNCCS Control Center] No compatible Nunchaku LoRA loader found. "
-        "Expected NunchakuQwenImageLoraLoader or NunchakuFluxLoraLoader."
-    )
+    # TECH DEBT: legacy Nunchaku LoRA resolution is disabled. Delete later.
+    raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
 
 
 def _run_nunchaku_loader(loader_cls, load_target, settings):
-    original = folder_paths.get_full_path_or_raise
-    abs_target = os.path.abspath(load_target)
-    base_name = basename_agnostic(abs_target)
-
-    def patched(folder_name, filename):
-        filename_base = basename_agnostic(filename)
-        if (
-            filename in {base_name, load_target}
-            or filename_base == base_name
-            or os.path.abspath(str(filename)) == abs_target
-        ):
-            return load_target
-        return original(folder_name, filename)
-
-    folder_paths.get_full_path_or_raise = patched
-    try:
-        loader = loader_cls()
-        signature = inspect.signature(loader.load_model)
-        default_values = {
-            "model_name": base_name,
-            "model_path": base_name,
-            "attention": settings.get("attention", "nunchaku-fp16"),
-            "cache_threshold": float(settings.get("cache_threshold", 0.0)),
-            "cpu_offload": settings.get("cpu_offload", "auto"),
-            "device_id": int(settings.get("device_id", 0)),
-            "data_type": settings.get("data_type", "bfloat16"),
-            "i2f_mode": settings.get("i2f_mode", "enabled"),
-            "num_blocks_on_gpu": int(settings.get("num_blocks_on_gpu", 1)),
-            "use_pin_memory": settings.get("use_pin_memory", "disable"),
-        }
-        call_kwargs = {
-            name: default_values[name]
-            for name in signature.parameters
-            if name != "self" and name in default_values
-        }
-        return loader.load_model(**call_kwargs)
-    finally:
-        folder_paths.get_full_path_or_raise = original
+    # TECH DEBT: legacy Nunchaku model invocation is disabled. Delete later.
+    raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
 
 
 def _load_nunchaku(full_path, settings, model_entry=None):
-    loader_cls, loader_kind = _resolve_nunchaku_loader_cls(model_entry, full_path)
-    candidates = _get_nunchaku_load_candidates(full_path)
-    errors = []
-
-    for candidate in candidates:
-        try:
-            result = _run_nunchaku_loader(loader_cls, candidate, settings)
-            return result[0]
-        except KeyError as exc:
-            errors.append(f"{candidate}: missing key {exc}")
-        except Exception as exc:
-            errors.append(f"{candidate}: {exc}")
-
-    details = "; ".join(errors) if errors else "unknown error"
-    raise RuntimeError(
-        f"[VNCCS Control Center] Failed to load Nunchaku {loader_kind} model. "
-        f"Tried: {', '.join(candidates)}. Details: {details}"
-    )
+    # TECH DEBT: legacy Nunchaku model loading is disabled. Delete later.
+    raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
 
 
 def _load_clips(clip_entries, selected_names):
@@ -823,7 +730,8 @@ def _load_model_block(model_entry, selected_type, type_settings, config, selecte
     elif model_type == "gguf":
         model = _load_gguf(full_path)
     elif model_type == "nunchaku":
-        model = _load_nunchaku(full_path, type_settings.get("nunchaku", {}), model_entry=model_entry)
+        # TECH DEBT: legacy Nunchaku branch disabled. Delete this branch later.
+        raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
     else:
         raise RuntimeError(f"[VNCCS Control Center] Unknown model type: '{model_type}'")
 
@@ -848,41 +756,16 @@ def _apply_lora_standard(model, clip, full_path, strength):
 
 
 def _apply_lora_nunchaku(model, full_path, strength, settings=None, model_entry=None):
-    loader_cls, loader_kind = _resolve_nunchaku_lora_loader_cls(model, model_entry=model_entry)
-    original = folder_paths.get_full_path_or_raise
-    base_name = basename_agnostic(full_path)
-
-    def patched(folder_name, filename):
-        if folder_name == "loras" and basename_agnostic(filename) == base_name:
-            return full_path
-        return original(folder_name, filename)
-
-    folder_paths.get_full_path_or_raise = patched
-    try:
-        loader = loader_cls()
-        signature = inspect.signature(loader.load_lora)
-        default_values = {
-            "model": model,
-            "lora_name": base_name,
-            "lora_strength": strength,
-            "cpu_offload": (settings or {}).get("cpu_offload", "disable"),
-        }
-        call_kwargs = {
-            name: default_values[name]
-            for name in signature.parameters
-            if name != "self" and name in default_values
-        }
-        result = loader.load_lora(**call_kwargs)
-    finally:
-        folder_paths.get_full_path_or_raise = original
-    if not isinstance(result, (tuple, list)) or not result:
-        raise RuntimeError(f"[VNCCS Control Center] Unexpected result from Nunchaku {loader_kind} LoRA loader.")
-    return result[0]
+    # TECH DEBT: legacy Nunchaku LoRA application is disabled. Delete later.
+    raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
 
 
 def _apply_loras(model, clip, lora_states, config, model_type, type_settings=None, model_entry=None):
     entries = config.get("lora", [])
-    is_nunchaku = model_type == "nunchaku"
+    is_nunchaku = False
+    if model_type == "nunchaku":
+        # TECH DEBT: legacy Nunchaku LoRA path disabled. Delete later.
+        raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
     state_by_name = {item["name"]: item for item in (lora_states or []) if item.get("name")}
 
     for entry in entries:
@@ -915,16 +798,7 @@ def _apply_loras(model, clip, lora_states, config, model_type, type_settings=Non
             continue
 
         print(f"[VNCCS Control Center] Applying LoRA: {name} (strength={strength})")
-        if is_nunchaku:
-            model = _apply_lora_nunchaku(
-                model,
-                full_path,
-                strength,
-                settings=(type_settings or {}).get("nunchaku", {}),
-                model_entry=model_entry,
-            )
-        else:
-            model, clip = _apply_lora_standard(model, clip, full_path, strength)
+        model, clip = _apply_lora_standard(model, clip, full_path, strength)
 
     return model, clip
 
@@ -1045,8 +919,8 @@ class VNCCSPipeProxy:
         self.pos = None
         self.neg = None
         self.seed_int = 0
-        self.sample_steps = 0
-        self.cfg = 0.0
+        self.sample_steps = DEFAULT_MODEL_STEPS
+        self.cfg = DEFAULT_MODEL_CFG
         self.denoise = 0.0
         self.sampler_name = None
         self.scheduler = None
@@ -1122,14 +996,10 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None):
             has_enabled_loras = True
             break
 
-    if selected_type == "nunchaku" and model_entry is not None:
-        dependency_status = _get_nunchaku_dependency_status(
-            model_entry=model_entry,
-            full_path=model_entry.get("local_path", ""),
-            has_enabled_loras=has_enabled_loras,
-        )
-        if not dependency_status["ok"]:
-            raise RuntimeError(f"[VNCCS Control Center] {dependency_status['message']}")
+    if selected_type == "nunchaku":
+        # TECH DEBT: old saved workflows may still request Nunchaku. Delete this
+        # guard together with all legacy Nunchaku state after migration.
+        raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
 
     model_kind = _entry_kind(model_entry)
     compatible_clips = _filter_entries_by_kind(config.get("clip", []), model_kind)
@@ -1161,23 +1031,15 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None):
     pipe.lora_entries = list(config.get("lora", []) or [])
     pipe.lora_states = list(loras or [])
 
-    if selected_type == "nunchaku":
-        pipe.loader_type = "nunchaku"
-        pipe.nunchaku_kind = _detect_nunchaku_model_kind(
-            model_entry=model_entry,
-            full_path=model_entry.get("local_path", "") if model_entry else "",
-        )
-        pipe.nunchaku_settings = type_settings.get("nunchaku", {})
-    else:
-        pipe.loader_type = "standard"
-        pipe.nunchaku_kind = None
-        pipe.nunchaku_settings = None
+    pipe.loader_type = "standard"
+    # TECH DEBT: deprecated Nunchaku pipe fields kept as None for old node state
+    # compatibility. Delete these fields after old workflow JSON is migrated.
+    pipe.nunchaku_kind = None
+    pipe.nunchaku_settings = None
     pipe.model_entry = model_entry
 
-    if model_params.get("steps"):
-        pipe.sample_steps = int(model_params["steps"])
-    if model_params.get("cfg") is not None:
-        pipe.cfg = float(model_params["cfg"])
+    pipe.sample_steps = int(model_params.get("steps") or DEFAULT_MODEL_STEPS)
+    pipe.cfg = float(model_params.get("cfg") if model_params.get("cfg") is not None else DEFAULT_MODEL_CFG)
     if model_params.get("sampler"):
         pipe.sampler_name = model_params["sampler"]
     if model_params.get("scheduler"):
@@ -1219,13 +1081,13 @@ async def cc_dependencies(request):
     if model_type != "nunchaku":
         return web.json_response({"ok": True, "message": ""})
 
-    model_entry = {"name": model_name, "local_path": model_path}
-    status = _get_nunchaku_dependency_status(
-        model_entry=model_entry,
+    # TECH DEBT: legacy Nunchaku dependency API is kept only for old frontend
+    # code paths. Delete after stale workflows are migrated.
+    return web.json_response(_get_nunchaku_dependency_status(
+        model_entry={"name": model_name, "local_path": model_path},
         full_path=model_path,
         has_enabled_loras=has_enabled_loras,
-    )
-    return web.json_response(status)
+    ))
 
 
 @server.PromptServer.instance.routes.post("/vnccs/control_center/clothes_preview")
@@ -1297,15 +1159,22 @@ async def cc_check(request):
             })
         return result
 
+    # TECH DEBT: Nunchaku entries remain in older control_center.json files, but
+    # VNCCS no longer exposes or uses them. Delete this filter after the catalog
+    # is cleaned up.
+    visible_models = [
+        entry for entry in config.get("models", [])
+        if entry.get("type") != "nunchaku"
+    ]
     available_types = list(dict.fromkeys(
-        entry.get("type", "") for entry in config.get("models", []) if entry.get("type")
+        entry.get("type", "") for entry in visible_models if entry.get("type")
     ))
 
     return web.json_response({
         "name": config.get("name", ""),
         "source": "packaged" if _uses_packaged_cc_config(repo_id) else "huggingface",
         "available_types": available_types,
-        "models": enrich(config.get("models", []), "models"),
+        "models": enrich(visible_models, "models"),
         "clip": enrich(config.get("clip", []), "clip"),
         "vae": enrich(config.get("vae", []), "vae"),
         "lora": enrich(config.get("lora", []), "lora"),
@@ -1497,6 +1366,45 @@ async def vnccs_module_status(request):
         "main": ["vnccs", "ComfyUI_VNCCS"],
         "utils": ["vnccs-utils", "ComfyUI_VNCCS_Utils"],
     }
+    dependency_modules = {
+        "sam3": {
+            "label": "SAM3",
+            "github_url": "https://github.com/yolain/ComfyUI-Easy-SAM3",
+            "folders": ["comfyui-easy-sam3"],
+            "nodes": [
+                {"node_id": "easy sam3ModelLoader", "class_names": ["LoadSam3Model"]},
+                {"node_id": "easy sam3ImageSegmentation", "class_names": ["Sam3ImageSegmentation"]},
+            ],
+        },
+        "seedvr": {
+            "label": "SeedVR",
+            "github_url": "https://github.com/TencentARC/ComfyUI-SeedVR2_VideoUpscaler",
+            "folders": ["ComfyUI-SeedVR2_VideoUpscaler", "comfyui-seedvr2-videoupscaler", "ComfyUI-SeedVR"],
+            "nodes": [
+                {"class_names": ["SeedVR2LoadDiTModel"]},
+                {"class_names": ["SeedVR2LoadVAEModel"]},
+                {"class_names": ["SeedVR2VideoUpscaler"]},
+            ],
+        },
+        "gguf": {
+            "label": "GGUF",
+            "github_url": "https://github.com/city96/ComfyUI-GGUF",
+            "folders": ["ComfyUI-GGUF"],
+            "nodes": [
+                {"class_names": ["UnetLoaderGGUF"]},
+            ],
+        },
+        "impact": {
+            "label": "Impact",
+            "github_url": "https://github.com/ltdrdata/ComfyUI-Impact-Pack",
+            "folders": ["ComfyUI-Impact-Pack", "ComfyUI-Impact-Subpack"],
+            "nodes": [
+                {"class_names": ["UltralyticsDetectorProvider"]},
+                {"class_names": ["SAMLoader"]},
+                {"class_names": ["FaceDetailer"]},
+            ],
+        },
+    }
 
     def read_version(dirpath):
         pyproject = os.path.join(dirpath, "pyproject.toml")
@@ -1509,6 +1417,66 @@ async def vnccs_module_status(request):
             return match.group(1) if match else None
         except Exception:
             return None
+
+    def comfy_node_available(spec):
+        mappings = _get_node_class_mappings()
+        node_id = spec.get("node_id")
+        if node_id and node_id in mappings:
+            return True
+
+        for class_name in spec.get("class_names", []):
+            if class_name in mappings:
+                return True
+
+        for module in list(sys.modules.values()):
+            if module is None:
+                continue
+            for class_name in spec.get("class_names", []):
+                if getattr(module, class_name, None) is not None:
+                    return True
+            if node_id:
+                try:
+                    values = vars(module).values()
+                except Exception:
+                    continue
+                for candidate in values:
+                    if not inspect.isclass(candidate) or not hasattr(candidate, "define_schema"):
+                        continue
+                    try:
+                        schema = candidate.define_schema()
+                        if getattr(schema, "node_id", None) == node_id:
+                            return True
+                    except Exception:
+                        continue
+        return False
+
+    def dependency_status(spec):
+        folders = []
+        for folder in spec.get("folders", []):
+            path = os.path.join(custom_nodes_dir, folder)
+            if os.path.isdir(path):
+                folders.append(folder)
+
+        missing_nodes = []
+        for node_spec in spec.get("nodes", []):
+            if not comfy_node_available(node_spec):
+                missing_nodes.append(node_spec.get("node_id") or "/".join(node_spec.get("class_names", [])))
+
+        if not missing_nodes:
+            return {
+                "label": spec["label"],
+                "github_url": spec.get("github_url"),
+                "status": "ok",
+                "folder": folders[0] if folders else None,
+                "missing_nodes": [],
+            }
+        return {
+            "label": spec["label"],
+            "github_url": spec.get("github_url"),
+            "status": "partial" if folders else "missing",
+            "folder": folders[0] if folders else None,
+            "missing_nodes": missing_nodes,
+        }
 
     result = {}
     for key, name_variants in modules.items():
@@ -1534,6 +1502,11 @@ async def vnccs_module_status(request):
                 "folder": found[0]["folder"],
                 "duplicate": False,
             }
+
+    result["dependencies"] = {
+        key: dependency_status(spec)
+        for key, spec in dependency_modules.items()
+    }
 
     return web.json_response(result)
 

@@ -10,7 +10,8 @@ from PIL import Image
 import io
 import numpy as np
 import traceback
-import glob
+import inspect
+import sys
 import re
 
 from ..utils import (
@@ -20,9 +21,20 @@ from ..utils import (
 )
 from ._safe_utils import ensure_safe_name, safe_join_under, safe_relative_path
 from .model_path_utils import get_full_path_agnostic
-from .vnccs_control_center import _apply_lora_standard, _apply_lora_nunchaku
+from .vnccs_control_center import _apply_lora_standard
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+DEFAULT_CLONE_SAM_PROMPT = "clothes, boots, footwear, accessories,"
+CLONE_QWEN_INSTRUCTION = (
+    "Describe the character and their key features (body shape, physical characteristics, "
+    "clothing, items, accessories). Then explain how the user's text instruction should alter "
+    "or modify the character. Generate a new image that meets the user's requirements while "
+    "maintaining consistency with the original character where appropriate."
+)
+BACKGROUND_RGB = {
+    "Green": (0.0, 1.0, 0.0),
+    "Blue": (0.0, 0.0, 1.0),
+}
 
 
 def _latest_image_file(files):
@@ -66,29 +78,61 @@ def get_latest_sprite_path(character, costume="Naked"):
         return None
 
 
-def get_latest_sheet_path(character, costume="Naked"):
+def list_preview_sprite_files(character, costume=None):
     try:
-        path = os.path.join(character_dir(character), "Sheets", costume, "neutral")
-        files = glob.glob(os.path.join(path, "sheet_neutral_*.png"))
-        if not files:
-            return None
+        base_char_path = character_dir(character)
+        sprite_roots = []
+        if costume:
+            sprite_roots.extend([
+                os.path.join(base_char_path, "Sprites", costume, "Neutral"),
+                os.path.join(base_char_path, "Sprites", costume),
+            ])
+        sprite_roots.extend([
+            os.path.join(base_char_path, "Sprites", "Naked", "Neutral"),
+            os.path.join(base_char_path, "Sprites", "Original", "Neutral"),
+            os.path.join(base_char_path, "Sprites", "Naked"),
+            os.path.join(base_char_path, "Sprites", "Original"),
+        ])
+        for root in sprite_roots:
+            if not os.path.isdir(root):
+                continue
+            files = [
+                os.path.join(root, filename)
+                for filename in os.listdir(root)
+                if os.path.isfile(os.path.join(root, filename))
+                and os.path.splitext(filename)[1].lower() in IMAGE_EXTS
+            ]
+            if files:
+                return sorted(files)
+        return []
+    except Exception as exc:
+        print(f"[ClothesDesigner] Failed to list preview sprites for {character}/{costume}: {exc}")
+        return []
 
-        def get_idx(filename):
-            match = re.search(r"(\d+)", os.path.basename(filename))
-            return int(match.group(1)) if match else 0
 
-        files.sort(key=get_idx)
-        return files[-1]
-    except Exception:
-        return None
+def resolve_comfy_image_path(image_info):
+    if isinstance(image_info, dict):
+        image_name = image_info.get("name")
+        subfolder = image_info.get("subfolder", "")
+    else:
+        image_name = image_info
+        subfolder = ""
 
+    if not image_name:
+        raise FileNotFoundError("Clone image entry has no file name.")
 
-def crop_sheet_preview(sheet_path):
-    img = Image.open(sheet_path)
-    w, h = img.size
-    item_w = w // 6
-    item_h = h // 2
-    return img.crop((5 * item_w, item_h, 6 * item_w, 2 * item_h))
+    safe_name = safe_relative_path(image_name, "image_name")
+    safe_subfolder = safe_relative_path(subfolder, "subfolder") if subfolder else ""
+    parts = [safe_subfolder, safe_name] if safe_subfolder else [safe_name]
+    candidate = safe_join_under(folder_paths.get_input_directory(), *parts)
+
+    if os.path.exists(candidate):
+        return candidate
+
+    raise FileNotFoundError(
+        f"Clone image '{image_name}' was not found in ComfyUI input folder. "
+        "Upload the clone reference image again in VNCCS Clothes Designer."
+    )
 
 
 def _validate_clothes_wizard_gguf(path, file_label="File"):
@@ -183,9 +227,12 @@ class PipeContext:
         self.denoise = getattr(s, "denoise", 1.0) if s is not None else 1.0
         self.sampler_name = getattr(s, "sampler_name", None) if s is not None else None
         self.scheduler = getattr(s, "scheduler", None) if s is not None else None
-        self.loader_type = getattr(s, "loader_type", None) if s is not None else None
-        self.nunchaku_kind = getattr(s, "nunchaku_kind", None) if s is not None else None
-        self.nunchaku_settings = getattr(s, "nunchaku_settings", None) if s is not None else None
+        raw_loader_type = getattr(s, "loader_type", None) if s is not None else None
+        self.loader_type = "standard" if raw_loader_type == "nunchaku" else raw_loader_type
+        # TECH DEBT: deprecated Nunchaku fields kept as None for compatibility.
+        # Delete after old workflow JSON is migrated.
+        self.nunchaku_kind = None
+        self.nunchaku_settings = None
         self.model_entry = getattr(s, "model_entry", None) if s is not None else None
         for key, value in updates.items():
             setattr(self, key, value)
@@ -214,6 +261,150 @@ class ClothesDesigner:
     CATEGORY = "VNCCS"
 
     @staticmethod
+    def _normalize_background_color(value):
+        bg_col = str(value or "Green").strip().capitalize()
+        return bg_col if bg_col in BACKGROUND_RGB else "Green"
+
+    @staticmethod
+    def _node_output_to_tuple(value):
+        if hasattr(value, "result"):
+            value = value.result
+        if value is None:
+            return ()
+        if isinstance(value, tuple):
+            return value
+        if isinstance(value, list):
+            return tuple(value)
+        return (value,)
+
+    @staticmethod
+    def _resolve_comfy_api_node(node_id, class_names=()):
+        if node_id in getattr(nodes, "NODE_CLASS_MAPPINGS", {}):
+            return nodes.NODE_CLASS_MAPPINGS[node_id]
+
+        for module in list(sys.modules.values()):
+            if module is None:
+                continue
+            for class_name in class_names:
+                cls = getattr(module, class_name, None)
+                if cls is not None:
+                    return cls
+            for candidate in vars(module).values():
+                if not inspect.isclass(candidate) or not hasattr(candidate, "define_schema"):
+                    continue
+                try:
+                    schema = candidate.define_schema()
+                    if getattr(schema, "node_id", None) == node_id:
+                        return candidate
+                except Exception:
+                    continue
+        return None
+
+    @staticmethod
+    def _call_comfy_node(cls, method_name, **kwargs):
+        method = getattr(cls, method_name, None)
+        instance = None
+        if method is None:
+            instance = cls()
+            method = getattr(instance, method_name)
+
+        try:
+            sig = inspect.signature(method)
+            filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
+        except (TypeError, ValueError):
+            filtered = kwargs
+        return ClothesDesigner._node_output_to_tuple(method(**filtered))
+
+    @staticmethod
+    def _apply_mask_on_background(image, mask, background_color="Green"):
+        if image is None:
+            return None
+        if not torch.is_tensor(image):
+            raise ValueError(f"SAM3 returned unsupported image type: {type(image).__name__}")
+        if image.ndim == 3:
+            image = image.unsqueeze(0)
+        if image.ndim != 4:
+            raise ValueError(f"SAM3 returned unsupported image shape: {tuple(image.shape)}")
+
+        image = image.detach().to(dtype=torch.float32).clamp(0.0, 1.0)
+        if image.shape[-1] == 1:
+            rgb = image.repeat(1, 1, 1, 3)
+        elif image.shape[-1] == 4:
+            rgb = image[..., :3]
+        else:
+            rgb = image[..., :3]
+
+        bg_col = ClothesDesigner._normalize_background_color(background_color)
+        bg_rgb = torch.tensor(BACKGROUND_RGB[bg_col], dtype=rgb.dtype, device=rgb.device).view(1, 1, 1, 3)
+        bg = bg_rgb.expand_as(rgb)
+
+        alpha = torch.ones_like(rgb[..., :1])
+        if torch.is_tensor(mask):
+            if mask.ndim == 2:
+                mask = mask.unsqueeze(0)
+            if mask.ndim == 3:
+                mask = mask.unsqueeze(-1)
+            if mask.ndim == 4:
+                mask = mask.detach().to(device=image.device, dtype=torch.float32).clamp(0.0, 1.0)
+                if mask.shape[1:3] != image.shape[1:3]:
+                    mask = torch.nn.functional.interpolate(
+                        mask.movedim(-1, 1),
+                        size=image.shape[1:3],
+                        mode="nearest",
+                    ).movedim(1, -1)
+                if mask.shape[0] != image.shape[0]:
+                    mask = mask[:1].expand(image.shape[0], -1, -1, -1)
+                alpha = alpha * mask
+
+        return (rgb * alpha + bg * (1.0 - alpha)).clamp(0.0, 1.0)
+
+    @staticmethod
+    def _run_clone_sam3_reference(image, prompt, background_color="Green"):
+        prompt = (prompt or DEFAULT_CLONE_SAM_PROMPT).strip() or DEFAULT_CLONE_SAM_PROMPT
+        loader_cls = ClothesDesigner._resolve_comfy_api_node("easy sam3ModelLoader", ("LoadSam3Model",))
+        segment_cls = ClothesDesigner._resolve_comfy_api_node("easy sam3ImageSegmentation", ("Sam3ImageSegmentation",))
+        if loader_cls is None or segment_cls is None:
+            raise RuntimeError("SAM3 clone clothes preprocessing requires comfyui-easy-sam3 nodes loaded in ComfyUI.")
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        precision = "bf16" if torch.cuda.is_available() else "fp32"
+        print(f"[ClothesDesigner] SAM3 clone preprocessing: prompt='{prompt}', device={device}, precision={precision}")
+
+        sam3_model = ClothesDesigner._call_comfy_node(
+            loader_cls,
+            "execute",
+            model="sam3.pt",
+            segmentor="image",
+            device=device,
+            precision=precision,
+        )[0]
+        sam3_result = ClothesDesigner._call_comfy_node(
+            segment_cls,
+            "execute",
+            sam3_model=sam3_model,
+            images=image,
+            prompt=prompt,
+            threshold=0.4,
+            keep_model_loaded=False,
+            add_background="none",
+            detection_limit=-1,
+            coordinates_positive=None,
+            coordinates_negative=None,
+            bboxes=None,
+            mask=None,
+        )
+        if len(sam3_result) < 2:
+            raise RuntimeError("SAM3 clone clothes preprocessing returned no segmented image.")
+
+        mask = sam3_result[0]
+        segmented = ClothesDesigner._apply_mask_on_background(sam3_result[1], mask, background_color)
+        print(
+            f"[ClothesDesigner] SAM3 clone preprocessing output shape: {tuple(segmented.shape)}, "
+            f"background={ClothesDesigner._normalize_background_color(background_color)}"
+        )
+        return segmented
+
+    @staticmethod
     def _find_breasts_desc(char_info):
         """Search all string fields in character info for a breast/chest description."""
         # Prioritise 'body' field, then check the rest
@@ -230,24 +421,13 @@ class ClothesDesigner:
     @staticmethod
     def construct_prompt(data):
         active_tab = data.get("activeTab", "generate")
-        character_name = data.get("character", "")
-
-        # Determine breasts suffix for female characters
-        breasts_suffix = ""
-        if character_name:
-            char_info = load_character_info(character_name) or {}
-            sex = char_info.get("sex") or char_info.get("gender") or "female"
-            if sex == "female":
-                desc = ClothesDesigner._find_breasts_desc(char_info)
-                if desc:
-                    breasts_suffix = f", Girl with {desc}"
 
         if active_tab == "clone" and data.get("clone_image"):
-            bg_col = data.get("gen_settings", {}).get("background_color", "Green")
+            bg_col = ClothesDesigner._normalize_background_color(data.get("gen_settings", {}).get("background_color"))
             hex_col = "00FF00" if bg_col == "Green" else "0000FF"
             return (
-                f"Put clothes, footwear and accessories from Picture 3 to character on Picture 1\n"
-                f"solid {bg_col.lower()} ({hex_col}) background{breasts_suffix}",
+                f"Put clothes, footwear and accessories from Picture 2 to character on Picture 1\n"
+                f"solid {bg_col.lower()} ({hex_col}) background",
                 ""
             )
 
@@ -258,13 +438,12 @@ class ClothesDesigner:
             if v: parts.append(v)
 
         clothes_desc = "\n".join(parts)
-        bg_col = data.get("gen_settings", {}).get("background_color", "Green")
-        if bg_col not in ["Green", "Blue"]: bg_col = "Green"
+        bg_col = ClothesDesigner._normalize_background_color(data.get("gen_settings", {}).get("background_color"))
         hex_col = "00FF00" if bg_col == "Green" else "0000FF"
 
         positive_prompt = (
             f"Dress the character:\n{clothes_desc}\n"
-            f"solid {bg_col.lower()} ({hex_col}) background{breasts_suffix}"
+            f"solid {bg_col.lower()} ({hex_col}) background"
         )
         negative_prompt = "bad quality, worst quality, (naked, nude, nipple, penis, vagina:2.0)"
         return positive_prompt, negative_prompt
@@ -282,36 +461,34 @@ class ClothesDesigner:
         info_path = os.path.join(cache_dir, f"preview_info_{safe_costume}.json")
         return img_path, info_path
 
-    def get_naked_sheet_crop(self, character_name):
+    def get_naked_sheet_crop(self, character_name, data=None):
         try:
+            selected = data.get("selected_preview_sprite") if isinstance(data, dict) else None
+            if isinstance(selected, dict) and selected.get("character") == character_name:
+                costume = selected.get("costume") or None
+                try:
+                    if costume:
+                        costume = ensure_safe_name(costume, "costume")
+                    index = int(selected.get("index", 0))
+                    files = list_preview_sprite_files(character_name, costume)
+                    if files:
+                        sprite_path = files[index % len(files)]
+                        img = Image.open(sprite_path).convert("RGB")
+                        image_np = np.array(img).astype(np.float32) / 255.0
+                        sprite_tensor = torch.from_numpy(image_np).unsqueeze(0)
+                        print(f"[ClothesDesigner] Using selected preview sprite for Picture 1: {sprite_path} (index={index})")
+                        return sprite_tensor, sprite_tensor
+                    print(f"[ClothesDesigner] Selected preview sprite list is empty for {character_name}/{costume}; falling back to latest base sprite.")
+                except Exception as exc:
+                    print(f"[ClothesDesigner] Failed to load selected preview sprite {selected}: {exc}. Falling back to latest base sprite.")
+
             sprite_path = get_latest_sprite_path(character_name, "Naked") or get_latest_sprite_path(character_name, "Original")
             if sprite_path:
                 img = Image.open(sprite_path).convert("RGB")
                 image_np = np.array(img).astype(np.float32) / 255.0
                 sprite_tensor = torch.from_numpy(image_np).unsqueeze(0)
                 return sprite_tensor, sprite_tensor
-
-            best = get_latest_sheet_path(character_name, "Naked") or get_latest_sheet_path(character_name, "Original")
-            if not best:
-                return None, None
-
-            img = Image.open(best)
-            w, h = img.size
-            if w > 0 and h > 0:
-                # Full sheet
-                image_np = np.array(img).astype(np.float32) / 255.0
-                if image_np.shape[-1] == 4: image_np = image_np[..., :3]
-                full_sheet = torch.from_numpy(image_np).unsqueeze(0)
-
-                # Crop
-                item_w = w // 6; item_h = h // 2
-                left = 5 * item_w; upper = 1 * item_h
-                crop_img = img.crop((left, upper, left+item_w, upper+item_h))
-                crop_np = np.array(crop_img).astype(np.float32) / 255.0
-                if crop_np.shape[-1] == 4: crop_np = crop_np[..., :3]
-                crop_tensor = torch.from_numpy(crop_np).unsqueeze(0)
-                
-                return crop_tensor, full_sheet
+            print(f"[ClothesDesigner] No Naked/Original sprites found for {character_name}. Run migration or generate sprites first.")
             return None, None
         except: return None, None
 
@@ -363,8 +540,6 @@ class ClothesDesigner:
              return bool(
                  get_latest_sprite_path(c, "Naked")
                  or get_latest_sprite_path(c, "Original")
-                 or get_latest_sheet_path(c, "Naked")
-                 or get_latest_sheet_path(c, "Original")
              )
 
         if not has_base_body(character_name):
@@ -389,7 +564,7 @@ class ClothesDesigner:
                 template_suffix = "<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n"
                 instruction_content = ""
                 if instruction == "":
-                    instruction_content = "Describe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate."
+                    instruction_content = CLONE_QWEN_INSTRUCTION
                 else:
                     if template_prefix in instruction: instruction = instruction.split(template_prefix)[1]
                     if template_suffix in instruction: instruction = instruction.split(template_suffix)[0]
@@ -411,14 +586,7 @@ class ClothesDesigner:
 
                 for i, image in enumerate(input_images):
                     if image is not None:
-                        if image.shape[-1] == 4: image = image[..., :3]
-                        
-                        # Fix: Pass Clone Image (Index 2) "AS IS" without resizing/cropping
-                        if i == 2:
-                            processed_ref = image
-                        else:
-                            processed_ref = self._process_image(image, target_size, upscale_method, crop_method)
-                            
+                        processed_ref = self._process_image(image, target_size, upscale_method, crop_method)
                         ref_latents.append(vae.encode(processed_ref[:, :, :, :3]))
                         image_sq = pad_to_square(image)
                         processed_vl = self._process_image(image_sq, vl_size, upscale_method, crop_method)
@@ -449,26 +617,18 @@ class ClothesDesigner:
 
         encoder = SafeQwenEncoder()
         
-        ref_image, full_naked_sheet = self.get_naked_sheet_crop(character_name)
+        ref_image, full_naked_sheet = self.get_naked_sheet_crop(character_name, data)
         if ref_image is None: 
             ref_image = torch.zeros((1, 512, 512, 3))
             full_naked_sheet = torch.zeros((1, 512, 512, 3))
         
-        # Load Clone Image (Image 3)
+        # Load Clone Image. After SAM3 isolation it is passed to Qwen as Picture 2.
         clone_image_tensor = None
         if active_tab == "clone" and data.get("clone_image"):
              try:
                  c_info = data["clone_image"]
-                 c_name = c_info.get("name")
-                 c_sub = c_info.get("subfolder", "")
-                 c_type = c_info.get("type", "input")
-                 
-                 base_dir = folder_paths.get_input_directory()
-                 image_parts = []
-                 if c_sub:
-                     image_parts.append(safe_relative_path(c_sub, "subfolder"))
-                 image_parts.append(safe_relative_path(c_name, "image_name"))
-                 image_path = safe_join_under(base_dir, *image_parts)
+                 image_path = resolve_comfy_image_path(c_info)
+                 print(f"[ClothesDesigner] Clone reference image resolved: {image_path}")
                  
                  i = Image.open(image_path)
                  
@@ -478,16 +638,28 @@ class ClothesDesigner:
                  # Strip Alpha if present
                  if i.shape[-1] == 4: i = i[..., :3]
                  
-                 clone_image_tensor = i
+                 sam_prompt = data.get("clone_sam_prompt") or data.get("sam_prompt") or DEFAULT_CLONE_SAM_PROMPT
+                 bg_col = self._normalize_background_color(gen_settings.get("background_color"))
+                 clone_image_tensor = self._run_clone_sam3_reference(i, sam_prompt, bg_col)
              except Exception as e:
-                 print(f"[ClothesDesigner] Failed to load clone image: {e}")
+                 print(f"[ClothesDesigner] Failed to preprocess clone image with SAM3: {e}")
+                 raise
 
+        if active_tab == "clone":
+            print(
+                "[ClothesDesigner] Qwen clone encoder settings: "
+                f"prompt={positive_prompt!r}, target_size=1024, crop_method=disabled, "
+                "upscale_method=lanczos, latent_image_index=1, weights=(1.0,1.0,1.0), "
+                "image1_name=Picture 1, image2_name=Picture 2, image3_name=Picture 3, "
+                "image2=SAM3 segmented clothes, image3=None, vl_size=392, qwen_2511=True"
+            )
         pos_cond, neg_cond, empty_latent = encoder.encode(
             clip=clip, prompt=positive_prompt, vae=vae,
-            image1=ref_image, image2=None, image3=clone_image_tensor,
-            target_size=1536,
+            image1=ref_image, image2=clone_image_tensor, image3=None,
+            target_size=1024,
             crop_method="disabled",
-            vl_size=384,
+            instruction=CLONE_QWEN_INSTRUCTION,
+            vl_size=392,
             qwen_2511=True
         )
         
@@ -514,6 +686,8 @@ class ClothesDesigner:
         lora_name = gen_settings.get("lora_name", "none") or "none"
         lora_strength = float(gen_settings.get("lora_strength", 1.0) or 1.0)
         lora_strength = max(0.0, min(1.0, lora_strength))
+        if active_tab == "clone":
+            lora_strength = 0.5
         gen_model = model
         gen_clip = clip
         if lora_name != "none" and not _is_clothes_core_lora_name(lora_name):
@@ -525,13 +699,10 @@ class ClothesDesigner:
                 print(f"[ClothesDesigner] Applying LoRA for generation: {lora_name} (strength={lora_strength})")
                 loader_type = getattr(pipe, "loader_type", "standard") or "standard"
                 if loader_type == "nunchaku":
-                    gen_model = _apply_lora_nunchaku(
-                        gen_model, full_path, lora_strength,
-                        settings=getattr(pipe, "nunchaku_settings", None) or {},
-                        model_entry=getattr(pipe, "model_entry", None),
-                    )
-                else:
-                    gen_model, gen_clip = _apply_lora_standard(gen_model, gen_clip, full_path, lora_strength)
+                    # TECH DEBT: legacy Nunchaku path disabled. Delete this
+                    # guard after old workflow JSON no longer carries it.
+                    loader_type = "standard"
+                gen_model, gen_clip = _apply_lora_standard(gen_model, gen_clip, full_path, lora_strength)
             else:
                 print(f"[ClothesDesigner] LoRA not found: '{lora_name}', skipping.")
 
@@ -761,10 +932,8 @@ async def vnccs_get_preview(request):
 
     naked_sprite = get_latest_sprite_path(character, "Naked")
     original_sprite = get_latest_sprite_path(character, "Original")
-    naked_sheet = get_latest_sheet_path(character, "Naked")
-    original_sheet = get_latest_sheet_path(character, "Original")
-    if not naked_sprite and not original_sprite and not naked_sheet and not original_sheet:
-         return web.Response(status=400, text="Character Incomplete.")
+    if not naked_sprite and not original_sprite:
+         return web.Response(status=400, text="Character incomplete. Run migration or generate sprites first.")
 
     force_cache = request.rel_url.query.get("force_cache", "") == "true"
     
@@ -786,29 +955,15 @@ async def vnccs_get_preview(request):
     if not target_file and costume == "Naked":
          target_file = original_sprite
 
-    # Legacy fallback: costume sheet.
-    if not target_file:
-         target_file = get_latest_sheet_path(character, costume)
-    
-    # Fallback to cache if sheet not found (legacy behavior)
+    # Fallback to cache if sprites are not available for this costume.
     if not target_file:
          if os.path.exists(cache_file): target_file = cache_file
          
-    # Final fallback to base sprites, then legacy sheets.
+    # Final fallback to base sprites.
     if not target_file:
-         target_file = naked_sprite or original_sprite or naked_sheet or original_sheet
+         target_file = naked_sprite or original_sprite
 
     if target_file and os.path.exists(target_file):
-         is_sheet = "Sheets" in target_file or "sheet_neutral" in os.path.basename(target_file)
-         if is_sheet:
-             try:
-                 crop = crop_sheet_preview(target_file)
-                 buffered = io.BytesIO()
-                 crop.save(buffered, format="PNG")
-                 return web.Response(body=buffered.getvalue(), content_type="image/png")
-             except Exception as exc:
-                 print(f"[ClothesDesigner] Failed to crop sheet preview '{target_file}', serving original file: {exc}")
-         
          with open(target_file, "rb") as f:
              return web.Response(body=f.read(), content_type="image/png")
              

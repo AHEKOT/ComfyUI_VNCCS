@@ -24,7 +24,6 @@ from .sampler_scheduler_picker import (
 )
 from .vnccs_control_center import (
     _apply_lora_standard,
-    _apply_lora_nunchaku,
 )
 from .model_path_utils import get_full_path_agnostic
 
@@ -143,17 +142,14 @@ class VNCCS_Pipe:
 
         if lora_name and lora_name != "none" and model is not None:
             loader_type = getattr(pipe, "loader_type", "standard") if pipe else "standard"
+            if loader_type == "nunchaku":
+                # TECH DEBT: legacy Nunchaku LoRA passthrough disabled. Delete
+                # this guard after old workflow JSON no longer stores it.
+                loader_type = "standard"
             full_path = get_full_path_agnostic(folder_paths, "loras", lora_name, require_exists=True)
             if full_path and os.path.exists(full_path):
                 print(f"[VNCCS Pipe] Applying LoRA: {lora_name} (strength={lora_strength}, loader={loader_type})")
-                if loader_type == "nunchaku":
-                    model = _apply_lora_nunchaku(
-                        model, full_path, lora_strength,
-                        settings=getattr(pipe, "nunchaku_settings", None) or {},
-                        model_entry=getattr(pipe, "model_entry", None),
-                    )
-                else:
-                    model, clip = _apply_lora_standard(model, clip, full_path, lora_strength)
+                model, clip = _apply_lora_standard(model, clip, full_path, lora_strength)
             else:
                 print(f"[VNCCS Pipe] LoRA not found on disk: '{lora_name}', skipping.")
 
@@ -169,9 +165,11 @@ class VNCCS_Pipe:
         self.denoise = denoise
         self.sampler_name = sampler_name
         self.scheduler = scheduler
-        self.loader_type = getattr(pipe, "loader_type", None)
-        self.nunchaku_kind = getattr(pipe, "nunchaku_kind", None)
-        self.nunchaku_settings = getattr(pipe, "nunchaku_settings", None)
+        self.loader_type = "standard" if getattr(pipe, "loader_type", None) == "nunchaku" else getattr(pipe, "loader_type", None)
+        # TECH DEBT: deprecated Nunchaku fields kept as None for compatibility.
+        # Delete after old workflow JSON is migrated.
+        self.nunchaku_kind = None
+        self.nunchaku_settings = None
         self.model_entry = getattr(pipe, "model_entry", None)
         self.repo_id = getattr(pipe, "repo_id", None)
         self.lora_entries = getattr(pipe, "lora_entries", [])

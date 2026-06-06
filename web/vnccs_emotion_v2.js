@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
+import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator } from "./vnccs_common.js";
 
 // --- CSS STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -135,6 +135,73 @@ const STYLE = `
     height: 100%;
     object-fit: contain;
 }
+.ems-char-preview-loading {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 10, 16, 0.28);
+    backdrop-filter: blur(1px);
+    pointer-events: none;
+}
+.ems-char-preview-loading.is-visible { display: flex; }
+.ems-char-preview-loading::before {
+    content: '';
+    width: 34px;
+    height: 34px;
+    border: 2px solid rgba(255, 143, 163, 0.24);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    box-shadow: 0 0 18px rgba(255,143,163,0.25);
+    animation: ems-spin 0.75s linear infinite;
+}
+.ems-sprite-nav {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding-top: 7px;
+    pointer-events: auto;
+}
+.ems-sprite-nav.is-visible { display: flex; }
+.ems-sprite-nav-btn {
+    width: 34px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-md);
+    background: linear-gradient(180deg, rgba(255,143,163,0.14), rgba(255,255,255,0.04));
+    color: var(--accent);
+    box-shadow: 0 0 12px rgba(255,143,163,0.12);
+    cursor: pointer;
+    transition: all var(--transition);
+}
+.ems-sprite-nav-btn:hover {
+    border-color: var(--accent);
+    background: linear-gradient(180deg, rgba(255,143,163,0.22), rgba(255,255,255,0.06));
+    box-shadow: 0 0 16px rgba(255,143,163,0.22);
+}
+.ems-sprite-nav-btn:disabled { opacity: 0.55; cursor: default; }
+.ems-sprite-nav-btn svg {
+    width: 16px;
+    height: 16px;
+    stroke: currentColor;
+    stroke-width: 2.6;
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.ems-sprite-nav-count {
+    min-width: 46px;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+}
+@keyframes ems-spin { to { transform: rotate(360deg); } }
 
 /* ── Costumes ── */
 .ems-costumes-header {
@@ -1003,10 +1070,12 @@ app.registerExtension({
                     emotions: [],
                     selectedEmotions: new Set(),
                     searchTerm: "",
+                    selectedPreviewSprite: null,
                     gen: parseGenerationSettings()
                 };
                 let receivedSerializedConfig = false;
                 let characterFetchToken = 0;
+                let spritePreviewNavigator = null;
                 const CC_REPO_ID = "MIUProject/VNCCS_v3.0";
                 const CC_CACHE_KEY = `vnccs_cc_cache_${CC_REPO_ID}`;
                 let ccConfig = null;
@@ -1732,6 +1801,9 @@ app.registerExtension({
                     <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;font-family:'Sora',sans-serif;">Character</div>
                 `;
                 previewContainer.appendChild(charPlaceholder);
+                const charPreviewLoading = document.createElement("div");
+                charPreviewLoading.className = "ems-char-preview-loading";
+                previewContainer.appendChild(charPreviewLoading);
 
                 // Show/hide placeholder when image loads
                 charImg.onload = () => { charImg.style.display = "block"; charPlaceholder.style.display = "none"; };
@@ -1739,6 +1811,48 @@ app.registerExtension({
 
                 charSection.appendChild(charHeader);
                 charSection.appendChild(previewContainer);
+                const spriteNav = document.createElement("div");
+                spriteNav.className = "ems-sprite-nav";
+                const spritePrevBtn = document.createElement("button");
+                spritePrevBtn.type = "button";
+                spritePrevBtn.className = "ems-sprite-nav-btn";
+                spritePrevBtn.title = "Previous sprite";
+                spritePrevBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>';
+                const spriteCount = document.createElement("div");
+                spriteCount.className = "ems-sprite-nav-count";
+                const spriteNextBtn = document.createElement("button");
+                spriteNextBtn.type = "button";
+                spriteNextBtn.className = "ems-sprite-nav-btn";
+                spriteNextBtn.title = "Next sprite";
+                spriteNextBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+                spriteNav.append(spritePrevBtn, spriteCount, spriteNextBtn);
+                charSection.appendChild(spriteNav);
+                spritePreviewNavigator = createSpritePreviewNavigator({
+                    image: charImg,
+                    placeholder: charPlaceholder,
+                    loading: charPreviewLoading,
+                    nav: spriteNav,
+                    prevButton: spritePrevBtn,
+                    nextButton: spriteNextBtn,
+                    countLabel: spriteCount,
+                    onLoaded: (_url, previewState) => {
+                        state.selectedPreviewSprite = previewState.count > 0
+                            ? {
+                                character: previewState.character,
+                                costume: previewState.costume || "",
+                                index: previewState.index,
+                                count: previewState.count,
+                            }
+                            : null;
+                        state.gen.selected_preview_sprite = state.selectedPreviewSprite;
+                        saveGenerationSettings(false);
+                    },
+                    onMissing: () => {
+                        state.selectedPreviewSprite = null;
+                        delete state.gen.selected_preview_sprite;
+                        saveGenerationSettings(false);
+                    },
+                });
                 leftCol.appendChild(charSection);
 
                 container.appendChild(leftCol);
@@ -1946,6 +2060,7 @@ app.registerExtension({
                     if (!values.length) {
                         charSelect.appendChild(new Option("No characters", ""));
                         state.character = "";
+                        spritePreviewNavigator?.hideNav();
                         if (charWidget) commitWidget(charWidget, "", false);
                         return "";
                     }
@@ -2388,8 +2503,7 @@ app.registerExtension({
                     if (!charName || charName === "Character Name") return;
                     const token = ++characterFetchToken;
 
-                    // Preview (randomize to force reload from disk)
-                    charImg.src = `/vnccs/get_character_pose_preview?character=${encodeURIComponent(charName)}&t=${Date.now()}`;
+                    spritePreviewNavigator?.load(charName);
 
                     // Costumes
                     try {

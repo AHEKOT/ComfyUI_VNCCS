@@ -86,7 +86,7 @@ class VNCCS_QWEN_Encoder:
             "image1_name": "Name tag for the first image, used in the prompt construction (e.g. 'Picture 1').",
             "image2_name": "Name tag for the second image.",
             "image3_name": "Name tag for the third image.",
-            "target_size": "Target resolution for reference inputs. Images are resized/padded to this size before ease.",
+            "target_size": "Target scale in square-pixel area. With crop disabled, aspect ratio is preserved and only total megapixels change.",
             "upscale_method": "Method used for resizing images.",
             "crop_method": "How to handle aspect ratio changes: 'center' crop, 'pad' with black bars, or 'disabled'.",
             "weight1": "Influence strength of Image 1 reference latents.",
@@ -132,7 +132,7 @@ class VNCCS_QWEN_Encoder:
     CATEGORY = "VNCCS/encoding"
 
     def _process_image(self, image: torch.Tensor, target_size: int, upscale_method: str, crop_method: str) -> torch.Tensor:
-        """Process image: resize and pad/crop to target size."""
+        """Resize image to target_size^2 pixels while preserving aspect unless crop mode changes it."""
         samples = image.movedim(-1, 1)
         current_total = (samples.shape[3] * samples.shape[2])
         total = int(target_size * target_size)

@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { registerCleanup, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
+import { registerCleanup, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator } from "./vnccs_common.js";
 
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -340,7 +340,74 @@ const STYLE = `
     width: 100%; height: 100%; object-fit: contain;
     animation: cd-fadein 0.4s ease;
 }
+.vnccs-preview-loading {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 10, 16, 0.28);
+    backdrop-filter: blur(1px);
+    pointer-events: none;
+}
+.vnccs-preview-loading.is-visible { display: flex; }
+.vnccs-preview-loading::before {
+    content: '';
+    width: 34px;
+    height: 34px;
+    border: 2px solid rgba(255, 143, 163, 0.24);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    box-shadow: 0 0 18px rgba(255,143,163,0.25);
+    animation: cd-spin 0.75s linear infinite;
+}
+.cd-sprite-nav {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding-top: 7px;
+    pointer-events: auto;
+}
+.cd-sprite-nav.is-visible { display: flex; }
+.cd-sprite-nav-btn {
+    width: 34px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-md);
+    background: linear-gradient(180deg, rgba(255,143,163,0.14), rgba(255,255,255,0.04));
+    color: var(--accent);
+    box-shadow: 0 0 12px rgba(255,143,163,0.12);
+    cursor: pointer;
+    transition: all var(--transition);
+}
+.cd-sprite-nav-btn:hover {
+    border-color: var(--accent);
+    background: linear-gradient(180deg, rgba(255,143,163,0.22), rgba(255,255,255,0.06));
+    box-shadow: 0 0 16px rgba(255,143,163,0.22);
+}
+.cd-sprite-nav-btn:disabled { opacity: 0.55; cursor: default; }
+.cd-sprite-nav-btn svg {
+    width: 16px;
+    height: 16px;
+    stroke: currentColor;
+    stroke-width: 2.6;
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.cd-sprite-nav-count {
+    min-width: 46px;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+}
 @keyframes cd-fadein { from { opacity: 0; } to { opacity: 1; } }
+@keyframes cd-spin { to { transform: rotate(360deg); } }
 .vnccs-placeholder {
     display: flex; flex-direction: column; align-items: center; gap: 10px;
     color: var(--text-muted); font-size: 11px; letter-spacing: 0.05em;
@@ -544,6 +611,8 @@ app.registerExtension({
                     costume: "Naked",
                     activeTab: "generate", // 'generate' or 'clone'
                     clone_image: null,     // { name, type, subfolder }
+                    clone_sam_prompt: "clothes, boots, footwear, accessories,",
+                    selected_preview_sprite: null,
                     costume_info: {
                         top: "", bottom: "", head: "", shoes: "", face: ""
                     },
@@ -583,6 +652,27 @@ app.registerExtension({
                 };
 
                 const els = {};
+                let spritePreviewNavigator = null;
+
+                const normalizeUploadFile = (file, prefix = "vnccs_upload") => {
+                    const originalName = String(file?.name || "").trim();
+                    const extMatch = originalName.match(/(\.[A-Za-z0-9]{1,8})$/);
+                    const ext = extMatch ? extMatch[1] : ".png";
+                    let name = originalName.replace(/[\\/]/g, "_").trim();
+                    name = name.replace(/^[\s.-]+/, "");
+                    name = name.replace(/\s+/g, "_");
+                    name = name.replace(/[^A-Za-z0-9._-]/g, "_");
+                    if (!name || !/[A-Za-z0-9]/.test(name)) {
+                        name = `${prefix}_${Date.now()}${ext}`;
+                    }
+                    if (name !== originalName) {
+                        name = `${prefix}_${name}`;
+                    }
+                    return name === file.name ? file : new File([file], name, {
+                        type: file.type,
+                        lastModified: file.lastModified,
+                    });
+                };
 
                 const saveState = () => {
                     if (dataWidget) dataWidget.value = JSON.stringify(state);
@@ -1007,7 +1097,8 @@ app.registerExtension({
                     background_color: "Sets the solid chroma key background for the generated clothing sheet.",
                     lora_name: "VNCCS Clothes Core LoRA used to keep outfit generation compatible with this workflow.",
                     seed: "Numeric seed for reproducible clothing previews.",
-                    seed_mode: "Toggles fixed seed versus a fresh random seed for each preview."
+                    seed_mode: "Toggles fixed seed versus a fresh random seed for each preview.",
+                    clone_sam_prompt: "Text prompts for SAM3 to isolate clothing, shoes, and accessories before Qwen sees the clone reference."
                 };
                 const helpFor = (key, fallback = "") => FIELD_HELP[key] || fallback;
 
@@ -1207,6 +1298,33 @@ app.registerExtension({
                     desc.innerText = "Upload an image to clone clothes from. The AI will attempt to transfer the outfit to your character.";
                     container.appendChild(desc);
 
+                    const samWrap = document.createElement("div");
+                    samWrap.className = "vnccs-field";
+                    samWrap.style.marginBottom = "10px";
+                    setHelpText(samWrap, helpFor("clone_sam_prompt"));
+                    const samLabel = document.createElement("div");
+                    samLabel.className = "vnccs-label";
+                    samLabel.innerText = "SAM PROMPT";
+                    const samInput = document.createElement("textarea");
+                    samInput.className = "vnccs-textarea";
+                    samInput.placeholder = "clothes, boots, footwear, accessories,";
+                    samInput.value = state.clone_sam_prompt || "clothes, boots, footwear, accessories,";
+                    samInput.style.resize = "none";
+                    samInput.style.overflow = "hidden";
+                    const resizeSamInput = () => {
+                        samInput.style.height = "auto";
+                        samInput.style.height = samInput.scrollHeight + "px";
+                    };
+                    samInput.addEventListener("input", () => {
+                        state.clone_sam_prompt = samInput.value;
+                        resizeSamInput();
+                        saveState();
+                    });
+                    setTimeout(resizeSamInput, 10);
+                    els.clone_sam_prompt = samInput;
+                    samWrap.append(samLabel, samInput);
+                    container.appendChild(samWrap);
+
                     // Preview / Upload Area
                     const pContainer = document.createElement("div");
                     pContainer.className = "vnccs-preview-container";
@@ -1222,7 +1340,11 @@ app.registerExtension({
                     img.style.maxWidth = "100%"; img.style.maxHeight = "100%"; img.style.objectFit = "contain";
                     img.style.display = "none";
                     if (state.clone_image) {
-                        img.src = api.apiURL(`/view?filename=${encodeURIComponent(state.clone_image.name)}&type=${state.clone_image.type}&subfolder=${state.clone_image.subfolder}`);
+                        const params = new URLSearchParams();
+                        params.set("filename", state.clone_image.name || "");
+                        params.set("type", state.clone_image.type || "input");
+                        if (state.clone_image.subfolder) params.set("subfolder", state.clone_image.subfolder);
+                        img.src = api.apiURL(`/view?${params.toString()}`);
                         img.style.display = "block";
                     }
                     pContainer.appendChild(img);
@@ -1245,15 +1367,25 @@ app.registerExtension({
                     fileInp.type = "file"; fileInp.accept = "image/*"; fileInp.style.display = "none";
                     fileInp.onchange = async (e) => {
                         if (e.target.files.length) {
-                            const file = e.target.files[0];
+                            const file = normalizeUploadFile(e.target.files[0], "clone_reference");
                             try {
                                 btn.innerText = "UPLOADING...";
                                 const body = new FormData();
-                                body.append("image", file);
+                                body.append("image", file, file.name);
+                                body.append("type", "input");
+                                body.append("overwrite", "true");
                                 const resp = await api.fetchApi("/upload/image", { method: "POST", body });
+                                if (!resp.ok) {
+                                    throw new Error(await resp.text() || `Upload failed (${resp.status})`);
+                                }
                                 const json = await resp.json();
+                                if (!json.name) {
+                                    throw new Error("Upload response did not include an image name.");
+                                }
                                 state.clone_image = {
-                                    name: json.name, type: json.type || "input", subfolder: json.subfolder || ""
+                                    name: json.name,
+                                    type: "input",
+                                    subfolder: json.subfolder || ""
                                 };
                                 saveState();
                                 // Update View
@@ -1433,8 +1565,53 @@ app.registerExtension({
                 const pImg = document.createElement("img"); pImg.className = "vnccs-preview-img"; pImg.style.display = "none";
                 pImg.onclick = () => window.open(pImg.src, "_blank");
                 frame.appendChild(pImg);
+                const previewLoading = document.createElement("div");
+                previewLoading.className = "vnccs-preview-loading";
+                frame.appendChild(previewLoading);
                 els.previewImg = pImg; els.placeholder = frame.querySelector(".vnccs-placeholder");
                 colLeft.appendChild(frame);
+                const spriteNav = document.createElement("div");
+                spriteNav.className = "cd-sprite-nav";
+                const spritePrevBtn = document.createElement("button");
+                spritePrevBtn.type = "button";
+                spritePrevBtn.className = "cd-sprite-nav-btn";
+                spritePrevBtn.title = "Previous sprite";
+                spritePrevBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>';
+                const spriteCount = document.createElement("div");
+                spriteCount.className = "cd-sprite-nav-count";
+                const spriteNextBtn = document.createElement("button");
+                spriteNextBtn.type = "button";
+                spriteNextBtn.className = "cd-sprite-nav-btn";
+                spriteNextBtn.title = "Next sprite";
+                spriteNextBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+                spriteNav.append(spritePrevBtn, spriteCount, spriteNextBtn);
+                colLeft.appendChild(spriteNav);
+                spritePreviewNavigator = createSpritePreviewNavigator({
+                    image: pImg,
+                    placeholder: els.placeholder,
+                    loading: previewLoading,
+                    nav: spriteNav,
+                    prevButton: spritePrevBtn,
+                    nextButton: spriteNextBtn,
+                    countLabel: spriteCount,
+                    onLoaded: (_url, previewState) => {
+                        if (previewState.count > 0) {
+                            state.selected_preview_sprite = {
+                                character: previewState.character,
+                                costume: previewState.costume || "",
+                                index: previewState.index,
+                                count: previewState.count,
+                            };
+                        } else {
+                            state.selected_preview_sprite = null;
+                        }
+                        saveState();
+                    },
+                    onMissing: () => {
+                        state.selected_preview_sprite = null;
+                        saveState();
+                    },
+                });
 
                 topRow.appendChild(colLeft);
 
@@ -1579,6 +1756,10 @@ app.registerExtension({
                     const ts = Date.now();
                     let url = `/vnccs/get_preview?character=${encodeURIComponent(state.character)}&costume=${encodeURIComponent(state.costume)}&ts=${ts}`;
                     if (forceCache) url += "&force_cache=true";
+                    if (!forceCache) {
+                        state.selected_preview_sprite = null;
+                        saveState();
+                    }
 
                     // Check validity first to show message
                     try {
@@ -1627,17 +1808,23 @@ app.registerExtension({
                             }
                             els.previewImg.style.display = "none";
                             els.placeholder.style.display = "block";
+                            spritePreviewNavigator?.hideNav();
+                            state.selected_preview_sprite = null;
+                            saveState();
                             return;
                         }
                     } catch (e) { console.warn("[VNCCS] ClothesDesigner: Error in preview update", e); }
 
-                    els.previewImg.src = url;
-                    els.previewImg.style.display = "block";
-                    els.placeholder.style.display = "none";
-                    els.previewImg.onerror = () => {
-                        els.previewImg.style.display = "none";
-                        els.placeholder.style.display = "block";
-                    };
+                    if (forceCache) {
+                        state.selected_preview_sprite = null;
+                        saveState();
+                        spritePreviewNavigator?.showFallback(url);
+                    } else {
+                        await spritePreviewNavigator?.load(state.character, {
+                            costume: state.costume,
+                            fallbackUrl: url,
+                        });
+                    }
                 };
 
                 const onPreviewUpdated = (event) => {

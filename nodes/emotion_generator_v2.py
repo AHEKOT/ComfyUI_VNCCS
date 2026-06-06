@@ -2,8 +2,8 @@
 import os
 import json
 import re
+import io
 import torch
-import glob
 import numpy as np
 import comfy.sd
 import comfy.utils
@@ -12,7 +12,7 @@ from PIL import Image, ImageOps
 from ..utils import (
     character_dir, list_characters,
     load_character_info,
-    apply_sex, append_age, generate_seed, build_face_details, load_character_sheet,
+    apply_sex, append_age, generate_seed, build_face_details,
     list_costumes, load_costume_info
 )
 from .character_creator_v2 import (
@@ -195,13 +195,7 @@ def load_costume_sprite_images(character, costume):
     if loaded:
         return loaded
 
-    loaded_sheet = load_character_sheet(character, costume, "neutral", with_mask=True)
-    if isinstance(loaded_sheet, tuple):
-        image, mask = loaded_sheet
-    else:
-        image, mask = loaded_sheet, None
-    if image is not None:
-        return [(image, mask, "")]
+    print(f"[VNCCS Emotion Studio] No sprites found for {character}/{costume}. Run migration or generate sprites first.")
     return []
 
 
@@ -243,70 +237,22 @@ if server:
         character = request.rel_url.query.get("character", "")
         if not character:
              return web.Response(status=404)
-        
+
         try:
-            # 1. Find the Sheet
-            # Try Naked/neutral first
-            sheet_dir_path = os.path.join(character_dir(character), "Sheets", "Naked", "neutral")
-            
-            if not os.path.exists(sheet_dir_path):
-                 found = False
-                 base = os.path.join(character_dir(character), "Sheets")
-                 if os.path.exists(base):
-                     # Sort costumes to be deterministic
-                     costumes = sorted(os.listdir(base))
-                     for costume in costumes:
-                         path = os.path.join(base, costume, "neutral")
-                         if os.path.isdir(path):
-                             sheet_dir_path = path
-                             found = True
-                             break
-                 if not found:
-                     return web.Response(status=404, text="Sheet not found")
+            costume = request.rel_url.query.get("costume", "Naked")
+            sprites = load_costume_sprite_images(character, costume) or load_costume_sprite_images(character, "Original")
+            if not sprites:
+                return web.Response(status=404, text="No sprites found. Run migration or generate sprites first.")
 
-            # 2. Find the best file (highest index)
-            pattern = os.path.join(sheet_dir_path, "sheet_neutral_*.png")
-            files = glob.glob(pattern)
-            if not files:
-                 return web.Response(status=404, text="No sheet images found")
-            
-            def get_index(f):
-                m = re.search(r'(\d+)', os.path.basename(f))
-                return int(m.group(1)) if m else 0
-            
-            files.sort(key=get_index)
-            best_file = files[-1]
-
-            # 3. Load and Crop
-            import cv2
-            from PIL import Image
-            import io
-
-            # Using Pillow for simple grid cropping
-            img = Image.open(best_file)
-            w, h = img.size
-            
-            # Layout: 2 Rows, 6 Columns
-            # We want Index 11 (The last one) -> Row 1 (2nd row), Col 5 (6th col)
-            
-            item_w = w // 6
-            item_h = h // 2
-            
-            row = 1
-            col = 5
-            
-            left = col * item_w
-            upper = row * item_h
-            right = left + item_w
-            lower = upper + item_h
-            
-            crop = img.crop((left, upper, right, lower))
-            
+            image, _mask, _path = sprites[0]
+            tensor = image[0].detach().cpu().clamp(0, 1)
+            arr = (tensor.numpy() * 255).astype(np.uint8)
+            img = Image.fromarray(arr, mode="RGB")
             img_byte_arr = io.BytesIO()
-            crop.save(img_byte_arr, format='PNG')
+            img.save(img_byte_arr, format='PNG')
             return web.Response(body=img_byte_arr.getvalue(), content_type='image/png')
-            
         except Exception as e:
+            print(f"[VNCCS Emotion Studio] Failed to serve sprite preview: {e}")
             return web.Response(status=500)
 
     @server.PromptServer.instance.routes.get("/vnccs/get_emotion_image")

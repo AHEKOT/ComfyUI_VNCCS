@@ -10,9 +10,9 @@ import torch
 import torch.nn.functional as F
 
 try:
-    from .vnccs_utils import _ensure_float01
+    from .vnccs_utils import _ensure_float01, _normalize_image_batch
 except ImportError:
-    from vnccs_utils import _ensure_float01
+    from vnccs_utils import _ensure_float01, _normalize_image_batch
 
 
 def _box_blur_2d(mask: torch.Tensor, radius: int) -> torch.Tensor:
@@ -94,6 +94,7 @@ class VNCCSChromaKeyExperimental:
         screen_mode,
         output_mode,
     ):
+        image = _normalize_image_batch(image, stage="experimental chroma key input")
         if len(image.shape) == 4:
             rgba_list = []
             matte_list = []

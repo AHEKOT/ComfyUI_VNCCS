@@ -478,7 +478,7 @@ class TestListCharacters:
         monkeypatch.setattr(U, "base_output_dir", lambda: str(tmp_path))
         assert U.list_characters() == []
 
-    def test_fallback_to_legacy_when_new_empty(self, tmp_path, monkeypatch):
+    def test_does_not_fallback_to_legacy_when_new_empty(self, tmp_path, monkeypatch):
         new_dir = tmp_path / "new"
         legacy_dir = tmp_path / "legacy"
         new_dir.mkdir()
@@ -487,7 +487,21 @@ class TestListCharacters:
 
         monkeypatch.setattr(U, "base_output_dir", lambda: str(new_dir))
         monkeypatch.setattr(U, "get_legacy_output_dir", lambda: str(legacy_dir))
-        assert U.list_characters() == ["OldChar"]
+        assert U.list_characters() == []
+
+
+def test_deprecated_load_character_sheet_ignores_sheet_files(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    Image = pytest.importorskip("PIL.Image")
+
+    base = tmp_path / "characters"
+    sheet_dir = base / "Alice" / "Sheets" / "Naked" / "neutral"
+    sheet_dir.mkdir(parents=True)
+    Image.new("RGB", (16, 16), "green").save(sheet_dir / "sheet_neutral_0001.png")
+
+    monkeypatch.setattr(U, "base_output_dir", lambda: str(base))
+
+    assert U.load_character_sheet("Alice", "Naked", "neutral") is None
 
 
 # ── ensure_character_structure ────────────────────────────────────────────────

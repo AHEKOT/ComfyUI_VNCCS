@@ -2,6 +2,7 @@
 
 import os
 import json
+import io
 import torch
 import numpy as np
 import cv2
@@ -9,7 +10,7 @@ from PIL import Image
 
 from ..utils import (
     base_output_dir, character_dir, list_characters,
-    load_character_info, load_character_sheet, list_costumes,
+    load_character_info, list_costumes,
     is_absolute_path_any_os, is_path_under, normalize_filesystem_path,
 )
 from ._safe_utils import ensure_safe_name, safe_join_under, safe_relative_path
@@ -117,11 +118,7 @@ class SpriteManager:
         return results
 
     def create_sprites(self, widget_data="{}", unique_id=None):
-        """Main process function for sprite generation.
-        
-        Creates sprites for ALL costumes and ALL emotions that have sheets.
-        The widget_data is only used for character selection.
-        """
+        """Return current sprites for the selected character. Runtime no longer reads Sheets."""
         try:
             if isinstance(widget_data, str):
                 data = json.loads(widget_data)
@@ -136,142 +133,38 @@ class SpriteManager:
             print("[SpriteManager] No character specified.")
             return [], [], []
 
-        print(f"[SpriteManager] Processing ALL sprites for character: {character}")
+        print(f"[SpriteManager] Listing current sprites for character: {character}")
 
         all_sprites = []
         all_paths = []
         all_masks = []
-        
-        # First pass: collect all crops with metadata
-        pending_crops = []  # List of (cropped_img, cropped_mask, sprite_path, costume, emotion)
 
-        # Scan Sheets directory to find all costume/emotion combinations
-        sheets_path = os.path.join(character_dir(character), "Sheets")
-        if not os.path.exists(sheets_path):
-            print(f"[SpriteManager] Sheets directory not found: {sheets_path}")
+        sprites_root = os.path.join(character_dir(character), "Sprites")
+        if not os.path.isdir(sprites_root):
+            print(f"[SpriteManager] Sprites directory not found: {sprites_root}. Run migration or generate sprites first.")
             return [], [], []
 
-        # Iterate through all costumes
-        for costume in sorted(os.listdir(sheets_path)):
-            costume_path = os.path.join(sheets_path, costume)
-            if not os.path.isdir(costume_path):
-                continue
+        image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+        paths = []
+        for root, _dirs, filenames in os.walk(sprites_root):
+            for filename in filenames:
+                if os.path.splitext(filename)[1].lower() in image_exts:
+                    paths.append(os.path.join(root, filename))
 
-            # Iterate through all emotions in this costume
-            for emotion in sorted(os.listdir(costume_path)):
-                emotion_path = os.path.join(costume_path, emotion)
-                if not os.path.isdir(emotion_path):
-                    continue
-
-                # Check if has sheet files
-                sheet_files = [f for f in os.listdir(emotion_path) 
-                              if f.endswith('.png') and f.startswith('sheet_')]
-                if not sheet_files:
-                    continue
-
-                print(f"[SpriteManager] Processing: {costume}/{emotion}")
-
-                # Load sheet with mask
-                result = load_character_sheet(character, costume, emotion, with_mask=True)
-                if result is None or result[0] is None:
-                    print(f"[SpriteManager] Failed to load sheet for {character}/{costume}/{emotion}")
-                    continue
-
-                img_tensor, mask_tensor = result
-
-                if mask_tensor is None:
-                    # Create default mask from alpha or full opaque
-                    if img_tensor.shape[-1] == 4:
-                        mask_tensor = img_tensor[..., 3]
-                    else:
-                        mask_tensor = torch.ones((img_tensor.shape[0], img_tensor.shape[1], img_tensor.shape[2]))
-
-                # Crop characters from sheet
-                crops = self.crop_characters_from_sheet(img_tensor, mask_tensor, min_size=128)
-
-                if not crops:
-                    print(f"[SpriteManager] No characters found in sheet for {costume}/{emotion}")
-                    continue
-
-                # Prepare output directory
-                sprite_base_dir = os.path.join(character_dir(character), "Sprites", costume, emotion)
-                os.makedirs(sprite_base_dir, exist_ok=True)
-
-                for idx, (cropped_img, cropped_mask) in enumerate(crops):
-                    sprite_filename = f"sprite_{emotion}_{idx:04d}.png"
-                    sprite_path = os.path.join(sprite_base_dir, sprite_filename)
-                    pending_crops.append((cropped_img, cropped_mask, sprite_path, costume, emotion))
-
-        if not pending_crops:
-            print("[SpriteManager] No sprites to process")
-            return [], [], []
-
-        # Analyze heights for normalization
-        heights = []
-        MIN_HEIGHT_THRESHOLD = 200  # Ignore sprites smaller than this (likely broken)
-        
-        for cropped_img, _, _, _, _ in pending_crops:
-            h = cropped_img.shape[1]  # Shape is (batch, H, W, C)
-            if h >= MIN_HEIGHT_THRESHOLD:
-                heights.append(h)
-        
-        if not heights:
-            print("[SpriteManager] No valid sprites found (all below height threshold)")
-            return [], [], []
-        
-        # Use median height (more robust than min) but with safety
-        heights.sort()
-        # Use 10th percentile to avoid outliers but not the absolute minimum
-        target_idx = max(0, len(heights) // 10)
-        target_height = heights[target_idx]
-        
-        print(f"[SpriteManager] Normalizing all sprites to height: {target_height}")
-
-        # Second pass: resize and save
-        for cropped_img, cropped_mask, sprite_path, costume, emotion in pending_crops:
+        for sprite_path in sorted(paths):
             try:
-                img_np = (cropped_img.squeeze(0).cpu().numpy() * 255).astype(np.uint8)
-                pil_img = Image.fromarray(img_np, mode="RGBA")
-                
-                # Skip if below threshold (broken crop)
-                if pil_img.height < MIN_HEIGHT_THRESHOLD:
-                    print(f"[SpriteManager] Skipping broken sprite (height {pil_img.height}): {sprite_path}")
-                    continue
-                
-                # Resize to target height maintaining aspect ratio
-                if pil_img.height != target_height:
-                    ratio = target_height / pil_img.height
-                    new_width = int(pil_img.width * ratio)
-                    pil_img = pil_img.resize((new_width, target_height), Image.Resampling.LANCZOS)
-                
-                pil_img.save(sprite_path)
-                print(f"[SpriteManager] Saved: {sprite_path} ({pil_img.width}x{pil_img.height})")
-                
-                # Convert back to tensor for output
-                resized_np = np.array(pil_img).astype(np.float32) / 255.0
-                resized_tensor = torch.from_numpy(resized_np).unsqueeze(0)
-                
-                # Create resized mask
-                mask_np = (cropped_mask.squeeze(0).cpu().numpy() * 255).astype(np.uint8)
-                mask_pil = Image.fromarray(mask_np, mode="L")
-                if mask_pil.height != target_height:
-                    ratio = target_height / mask_pil.height
-                    new_width = int(mask_pil.width * ratio)
-                    mask_pil = mask_pil.resize((new_width, target_height), Image.Resampling.LANCZOS)
-                mask_resized_np = np.array(mask_pil).astype(np.float32) / 255.0
-                mask_resized_tensor = torch.from_numpy(mask_resized_np).unsqueeze(0)
-                
-                all_sprites.append(resized_tensor)
+                pil_img = Image.open(sprite_path).convert("RGBA")
+                arr = np.array(pil_img).astype(np.float32) / 255.0
+                all_sprites.append(torch.from_numpy(arr).unsqueeze(0))
                 all_paths.append(sprite_path)
-                all_masks.append(mask_resized_tensor)
-                
+                all_masks.append(torch.from_numpy(1.0 - arr[..., 3]).unsqueeze(0))
             except Exception as e:
-                print(f"[SpriteManager] Failed to save sprite: {e}")
-                continue
+                print(f"[SpriteManager] Failed to load sprite '{sprite_path}': {e}")
 
-        print(f"[SpriteManager] Total sprites created: {len(all_sprites)}")
+        print(f"[SpriteManager] Total sprites listed: {len(all_sprites)}")
 
         if not all_sprites:
+            print("[SpriteManager] No sprites found. Run migration or generate sprites first.")
             return [], [], []
 
         return all_sprites, all_paths, all_masks
@@ -291,14 +184,11 @@ NODE_CATEGORY_MAPPINGS = {
 
 # --- API Endpoints ---
 if server:
-    import glob
-    import re
     from PIL import Image
-    import io
 
     @server.PromptServer.instance.routes.get("/vnccs/get_sheet_preview")
     async def get_sheet_preview(request):
-        """Get preview image for a specific character/costume/emotion sheet. No fallback."""
+        """Backward-compatible route: get preview image from Sprites only."""
         character = request.rel_url.query.get("character", "")
         costume = request.rel_url.query.get("costume", "Naked")
         emotion = request.rel_url.query.get("emotion", "neutral")
@@ -307,50 +197,25 @@ if server:
             return web.Response(status=404, text="No character specified")
 
         try:
-            sheet_dir_path = os.path.join(character_dir(character), "Sheets", costume, emotion)
-
-            if not os.path.exists(sheet_dir_path):
-                return web.Response(status=404, text="Sheet not found")
-
-            # Find best file (highest index)
-            pattern = os.path.join(sheet_dir_path, f"sheet_{emotion}_*.png")
-            files = glob.glob(pattern)
-            
-            # Also try sheet_*.png pattern
+            sprite_dir_path = os.path.join(character_dir(character), "Sprites", costume, emotion)
+            if not os.path.isdir(sprite_dir_path):
+                return web.Response(status=404, text="Sprite folder not found. Run migration or generate sprites first.")
+            image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+            files = [
+                os.path.join(sprite_dir_path, filename)
+                for filename in os.listdir(sprite_dir_path)
+                if os.path.splitext(filename)[1].lower() in image_exts
+            ]
             if not files:
-                pattern = os.path.join(sheet_dir_path, "sheet_*.png")
-                files = glob.glob(pattern)
+                return web.Response(status=404, text="No sprite images found")
 
-            if not files:
-                return web.Response(status=404, text="No sheet images found")
-
-            def get_index(f):
-                m = re.search(r'(\d+)', os.path.basename(f))
-                return int(m.group(1)) if m else 0
-
-            files.sort(key=get_index)
-            best_file = files[-1]
-
-            # Load and crop (same as get_character_sheet_preview)
-            img = Image.open(best_file)
-            w, h = img.size
-
-            # Layout: 2 Rows, 6 Columns. Get Index 11 (Row 1, Col 5)
-            item_w = w // 6
-            item_h = h // 2
-            left = 5 * item_w
-            upper = 1 * item_h
-            right = left + item_w
-            lower = upper + item_h
-
-            crop = img.crop((left, upper, right, lower))
-
+            best_file = max(files, key=lambda path: (os.path.getmtime(path), path))
             img_byte_arr = io.BytesIO()
-            crop.save(img_byte_arr, format='PNG')
+            Image.open(best_file).save(img_byte_arr, format='PNG')
             return web.Response(body=img_byte_arr.getvalue(), content_type='image/png')
 
         except Exception as e:
-            print(f"[SpriteManager] Error in get_sheet_preview: {e}")
+            print(f"[SpriteManager] Error in get_sheet_preview sprite fallback: {e}")
             return web.Response(status=500, text=str(e))
 
     @server.PromptServer.instance.routes.get("/vnccs/list_characters")
@@ -364,7 +229,7 @@ if server:
 
     @server.PromptServer.instance.routes.get("/vnccs/get_costumes_by_emotion")
     async def get_costumes_by_emotion(request):
-        """Get costumes that have sheets for the specified emotion."""
+        """Get costumes that have sprites for the specified emotion."""
         character = request.rel_url.query.get("character", "")
         emotion = request.rel_url.query.get("emotion", "neutral")
         
@@ -373,15 +238,15 @@ if server:
 
         try:
             char_path = character_dir(character)
-            sheets_path = os.path.join(char_path, "Sheets")
+            sprites_path = os.path.join(char_path, "Sprites")
             
-            if not os.path.exists(sheets_path):
+            if not os.path.exists(sprites_path):
                 return web.json_response([])
 
             costumes_with_emotion = []
             
-            for costume in os.listdir(sheets_path):
-                costume_path = os.path.join(sheets_path, costume)
+            for costume in os.listdir(sprites_path):
+                costume_path = os.path.join(sprites_path, costume)
                 if not os.path.isdir(costume_path):
                     continue
                 
@@ -389,9 +254,8 @@ if server:
                 if not os.path.isdir(emotion_path):
                     continue
                 
-                # Check if has any sheet files
                 files = [f for f in os.listdir(emotion_path) 
-                        if f.endswith('.png') and f.startswith('sheet_')]
+                        if os.path.splitext(f)[1].lower() in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}]
                 if len(files) > 0:
                     costumes_with_emotion.append(costume)
             
@@ -402,23 +266,22 @@ if server:
 
     @server.PromptServer.instance.routes.get("/vnccs/get_character_emotions")
     async def get_character_emotions(request):
-        """Get emotions that actually exist for a character (have sheet files)."""
+        """Get emotions that actually exist for a character (have sprite files)."""
         character = request.rel_url.query.get("character", "")
         if not character:
             return web.json_response([])
 
         try:
             char_path = character_dir(character)
-            sheets_path = os.path.join(char_path, "Sheets")
+            sprites_path = os.path.join(char_path, "Sprites")
             
-            if not os.path.exists(sheets_path):
+            if not os.path.exists(sprites_path):
                 return web.json_response(["neutral"])
 
             found_emotions = set()
             
-            # Scan all costumes for emotions with actual files
-            for costume in os.listdir(sheets_path):
-                costume_path = os.path.join(sheets_path, costume)
+            for costume in os.listdir(sprites_path):
+                costume_path = os.path.join(sprites_path, costume)
                 if not os.path.isdir(costume_path):
                     continue
                     
@@ -427,9 +290,8 @@ if server:
                     if not os.path.isdir(emotion_path):
                         continue
                     
-                    # Check if has any sheet files
                     files = [f for f in os.listdir(emotion_path) 
-                            if f.endswith('.png') and f.startswith('sheet_')]
+                            if os.path.splitext(f)[1].lower() in {".png", ".jpg", ".jpeg", ".webp", ".bmp"}]
                     if len(files) > 0:
                         found_emotions.add(emotion)
             
@@ -454,8 +316,8 @@ if server:
             char_path = character_dir(character)
             empty_folders = []
 
-            # Check Sheets, Faces, Sprites directories
-            for main_dir in ["Sheets", "Faces", "Sprites"]:
+            # Runtime cleanup only scans current asset folders.
+            for main_dir in ["Faces", "Sprites"]:
                 main_path = os.path.join(char_path, main_dir)
                 if not os.path.exists(main_path):
                     continue

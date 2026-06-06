@@ -199,12 +199,12 @@ class TestProcessPipeLoaderContext:
     def test_propagates_loader_type(self):
         pipe = _make_pipe(loader_type="nunchaku")
         result = self._run(pipe)
-        assert result[9].loader_type == "nunchaku"
+        assert result[9].loader_type == "standard"
 
-    def test_propagates_nunchaku_kind(self):
+    def test_drops_deprecated_nunchaku_kind(self):
         pipe = _make_pipe(nunchaku_kind="qwen-image")
         result = self._run(pipe)
-        assert result[9].nunchaku_kind == "qwen-image"
+        assert result[9].nunchaku_kind is None
 
     def test_propagates_model_entry(self):
         entry = {"name": "mymodel", "local_path": "models/unet/x.safetensors"}

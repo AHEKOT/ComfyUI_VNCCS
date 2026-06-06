@@ -9,7 +9,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from nodes.vnccs_control_center import (
     _build_control_center_pipe,
-    _detect_nunchaku_model_kind,
     _find_entry,
     _rel_within_folder,
     _find_model_on_disk,
@@ -25,28 +24,6 @@ from nodes.vnccs_control_center import (
     _remove_custom_lora,
     VNCCSPipeProxy,
 )
-
-
-# ── _detect_nunchaku_model_kind ───────────────────────────────────────────────
-
-class TestDetectNunchakuModelKind:
-    def test_detects_qwen_from_entry_name(self):
-        entry = {"name": "Nunchaku Qwen Image Edit", "local_path": "models/unet/x.safetensors"}
-        assert _detect_nunchaku_model_kind(model_entry=entry, full_path="") == "qwen-image"
-
-    def test_detects_qwen_from_path(self):
-        assert _detect_nunchaku_model_kind(model_entry=None, full_path="/models/nunchaku_qwen_image_edit.safetensors") == "qwen-image"
-
-    def test_defaults_to_flux(self):
-        entry = {"name": "Nunchaku FLUX", "local_path": "models/unet/flux.safetensors"}
-        assert _detect_nunchaku_model_kind(model_entry=entry, full_path="") == "flux"
-
-    def test_none_entry_uses_path(self):
-        assert _detect_nunchaku_model_kind(model_entry=None, full_path="/models/flux_dev.safetensors") == "flux"
-
-    def test_case_insensitive(self):
-        entry = {"name": "QWEN MODEL", "local_path": ""}
-        assert _detect_nunchaku_model_kind(model_entry=entry, full_path="") == "qwen-image"
 
 
 # ── _find_entry ───────────────────────────────────────────────────────────────
@@ -356,8 +333,8 @@ class TestVNCCSPipeProxy:
         assert proxy.pos is None
         assert proxy.neg is None
         assert proxy.seed_int == 0
-        assert proxy.sample_steps == 0
-        assert proxy.cfg == 0.0
+        assert proxy.sample_steps == 4
+        assert proxy.cfg == 1.0
         assert proxy.denoise == 0.0
         assert proxy.sampler_name is None
         assert proxy.scheduler is None
@@ -419,3 +396,5 @@ class TestControlCenterCustomModel:
         assert pipe.nunchaku_settings is None
         assert pipe.model_entry == context_model
         assert captured["model_entry"] == context_model
+        assert pipe.sample_steps == 4
+        assert pipe.cfg == 1.0

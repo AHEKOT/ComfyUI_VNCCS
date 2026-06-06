@@ -21,6 +21,8 @@ const DEFAULT_SCHEDULERS = [
     "ddim_uniform","beta","linear_quadratic","cosine",
     "align_your_steps","gits",
 ];
+const DEFAULT_MODEL_STEPS = 4;
+const DEFAULT_MODEL_CFG = 1.0;
 
 // ─── CSS injection (once per page load) ──────────────────────────────────────
 
@@ -852,6 +854,60 @@ function _injectVNCCSControlCenterStyles() {
     justify-content: flex-end;
     padding-top: 4px;
 }
+.vnccs-cc-deps-modal-title {
+    font-size: 14px;
+    font-weight: 800;
+    color: #ffe8ef;
+    margin-bottom: 8px;
+}
+.vnccs-cc-deps-modal-text {
+    font-size: 11px;
+    line-height: 1.45;
+    color: #b8b8c8;
+    margin-bottom: 12px;
+}
+.vnccs-cc-deps-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 14px;
+}
+.vnccs-cc-deps-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    padding: 8px;
+    border: 1px solid rgba(255,143,163,0.16);
+    background: rgba(255,255,255,0.03);
+    border-radius: 6px;
+}
+.vnccs-cc-deps-name {
+    font-size: 11px;
+    font-weight: 800;
+    color: #f3f3fb;
+}
+.vnccs-cc-deps-missing {
+    margin-top: 3px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 9px;
+    color: #ffaa00;
+    word-break: break-word;
+}
+.vnccs-cc-link-btn {
+    border: 1px solid rgba(0,214,143,0.28);
+    background: rgba(0,214,143,0.1);
+    color: #00d68f;
+    border-radius: 6px;
+    padding: 6px 9px;
+    font-size: 10px;
+    font-weight: 800;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.vnccs-cc-link-btn:hover {
+    background: rgba(0,214,143,0.16);
+}
 
 /* ── Module status strip ───────────────────────────────────────────────── */
 .vnccs-cc-status-strip {
@@ -864,8 +920,10 @@ function _injectVNCCSControlCenterStyles() {
 .vnccs-cc-status-pills {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 6px;
-    padding: 4px 10px;
+    padding: 4px 10px 5px;
+    min-width: 0;
 }
 .vnccs-cc-status-label {
     font-size: 9px;
@@ -889,6 +947,12 @@ function _injectVNCCSControlCenterStyles() {
     transition: all 0.18s ease;
     white-space: nowrap;
 }
+.vnccs-cc-pill--dependency {
+    padding-inline: 6px;
+    max-width: 92px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
 .vnccs-cc-pill--ok {
     background: rgba(0,214,143,0.08);
     border-color: rgba(0,214,143,0.22);
@@ -911,6 +975,11 @@ function _injectVNCCSControlCenterStyles() {
     color: #5e5e70;
 }
 .vnccs-cc-pill--dup {
+    background: rgba(255,170,0,0.08);
+    border-color: rgba(255,170,0,0.25);
+    color: #ffaa00;
+}
+.vnccs-cc-pill--partial {
     background: rgba(255,170,0,0.08);
     border-color: rgba(255,170,0,0.25);
     color: #ffaa00;
@@ -1033,10 +1102,9 @@ class VNCCSControlCenterWidget {
     }
 
     _getModelTypeTabs() {
-        // TECH DEBT: Nunchaku/NVFP model support remains in the backend and
-        // loader code, but it is intentionally hidden from the Control Center
-        // UI for now. Re-enable by restoring "nunchaku"/"unet" here and in the
-        // visible model filters below when those model families are ready again.
+        // TECH DEBT: Nunchaku/NVFP entries can remain in old catalogs/state, but
+        // are intentionally hidden from the Control Center UI. Delete this after
+        // catalogs are cleaned and old workflow JSON is migrated.
         const preferred = ["gguf", "custom"];
         const available = new Set(this.config?.available_types ?? []);
         available.add("custom");
@@ -1255,6 +1323,13 @@ class VNCCSControlCenterWidget {
     }
 
     async _refreshDependencyStatus(showModal = false) {
+        // TECH DEBT: Nunchaku dependency checks are disabled. Delete this no-op
+        // and the commented legacy implementation after stale workflows migrate.
+        this.dependencyStatus = { ok: true, message: "" };
+        this._lastDependencyModalMessage = "";
+        return this.dependencyStatus;
+
+        /*
         const selectedType = this._getSelectedType();
         const selectedModelEntry = this._getSelectedModelEntry();
 
@@ -1311,9 +1386,15 @@ class VNCCSControlCenterWidget {
         }
 
         return this.dependencyStatus;
+        */
     }
 
     _showQwenFixModal() {
+        // TECH DEBT: Nunchaku/Qwen fix modal is disabled. Delete this legacy
+        // modal after old Nunchaku support is removed completely.
+        return;
+
+        /*
         const ov = document.createElement("div");
         ov.style.cssText = `
             position: absolute; top:0; left:0; width:100%; height:100%;
@@ -1360,6 +1441,7 @@ class VNCCSControlCenterWidget {
         ov.appendChild(box);
         ov.onclick = e => { if (e.target === ov) ov.remove(); };
         this.container.appendChild(ov);
+        */
     }
 
     // ── Polling ───────────────────────────────────────────────────────────────
@@ -1496,6 +1578,8 @@ class VNCCSControlCenterWidget {
         this._pillMain = this._makePill("VNCCS", null, "loading");
         this._pillUtils = this._makePill("Utils", null, "loading");
         pills.append(this._pillMain, this._pillUtils);
+        this._statusPills = pills;
+        this._dependencyPills = {};
 
         this.statusStrip.appendChild(pills);
         this._updateBanner = null; // created lazily
@@ -1505,25 +1589,109 @@ class VNCCSControlCenterWidget {
     _makePill(name, version, state, extra = "") {
         const p = document.createElement("span");
         p.className = `vnccs-cc-pill vnccs-cc-pill--${state}`;
-        const icons = { ok: "●", update: "↑", error: "✕", loading: "…", dup: "⚠" };
+        const icons = { ok: "●", update: "↑", error: "✕", loading: "…", dup: "⚠", partial: "⚠" };
         p.textContent = version
             ? `${name} v${version} ${icons[state] ?? ""}${extra ? " " + extra : ""}`
             : `${name} ${icons[state] ?? ""}${extra ? " " + extra : ""}`;
         if (state === "update") p.title = `Update available: ${extra}`;
         if (state === "dup")   p.title = `Duplicate install detected: ${extra}`;
+        if (state === "partial") p.title = extra || "Installed but node classes are not loaded";
         if (state === "error") p.title = extra || "Module not found";
         return p;
     }
 
     _updatePill(pillEl, name, version, state, extra = "") {
-        const icons = { ok: "●", update: "↑", error: "✕", loading: "…", dup: "⚠" };
+        const icons = { ok: "●", update: "↑", error: "✕", loading: "…", dup: "⚠", partial: "⚠" };
         pillEl.className = `vnccs-cc-pill vnccs-cc-pill--${state}`;
         pillEl.textContent = version
             ? `${name} v${version} ${icons[state] ?? ""}${extra ? " " + extra : ""}`
             : `${name} ${icons[state] ?? ""}${extra ? " " + extra : ""}`;
         if (state === "update") pillEl.title = `Update available: v${extra}`;
         if (state === "dup")   pillEl.title = `Duplicate install: ${extra}`;
+        if (state === "partial") pillEl.title = extra || "Installed but node classes are not loaded";
         if (state === "error") pillEl.title = extra || "Module not found";
+    }
+
+    _ensureDependencyPill(key, label) {
+        if (this._dependencyPills[key]) return this._dependencyPills[key];
+        const pill = this._makePill(label, null, "loading");
+        pill.classList.add("vnccs-cc-pill--dependency");
+        this._dependencyPills[key] = pill;
+        this._statusPills?.appendChild(pill);
+        return pill;
+    }
+
+    _openDependencyUrl(url) {
+        if (!url) return;
+        window.open(url, "_blank", "noopener,noreferrer");
+    }
+
+    _showMissingDependenciesModal(items) {
+        if (!items?.length) return;
+        const signature = items
+            .map(item => `${item.key}:${item.status}:${(item.missing_nodes || []).join("|")}`)
+            .sort()
+            .join(";");
+        if (this._lastMissingDependencyModalSignature === signature) return;
+        this._lastMissingDependencyModalSignature = signature;
+
+        const ov = document.createElement("div");
+        ov.className = "vnccs-cc-settings-overlay";
+
+        const panel = document.createElement("div");
+        panel.className = "vnccs-cc-settings-panel";
+        panel.style.maxWidth = "460px";
+
+        const title = document.createElement("div");
+        title.className = "vnccs-cc-deps-modal-title";
+        title.textContent = "Missing custom nodes";
+
+        const text = document.createElement("div");
+        text.className = "vnccs-cc-deps-modal-text";
+        text.textContent = "VNCCS uses these custom nodes internally. Install them, then restart ComfyUI.";
+
+        const list = document.createElement("div");
+        list.className = "vnccs-cc-deps-list";
+
+        for (const item of items) {
+            const row = document.createElement("div");
+            row.className = "vnccs-cc-deps-item";
+
+            const meta = document.createElement("div");
+            const name = document.createElement("div");
+            name.className = "vnccs-cc-deps-name";
+            name.textContent = item.label || item.key;
+            meta.appendChild(name);
+
+            const missing = Array.isArray(item.missing_nodes) ? item.missing_nodes : [];
+            if (missing.length) {
+                const missingEl = document.createElement("div");
+                missingEl.className = "vnccs-cc-deps-missing";
+                missingEl.textContent = `missing: ${missing.join(", ")}`;
+                meta.appendChild(missingEl);
+            }
+
+            row.appendChild(meta);
+            if (item.github_url) {
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "vnccs-cc-link-btn";
+                btn.textContent = "GitHub";
+                btn.onclick = () => this._openDependencyUrl(item.github_url);
+                row.appendChild(btn);
+            }
+            list.appendChild(row);
+        }
+
+        const btns = document.createElement("div");
+        btns.className = "vnccs-cc-settings-btns";
+        const closeBtn = this._btn("Close", () => ov.remove());
+        btns.appendChild(closeBtn);
+
+        panel.append(title, text, list, btns);
+        ov.appendChild(panel);
+        ov.onclick = event => { if (event.target === ov) ov.remove(); };
+        this.container.appendChild(ov);
     }
 
     _showUpdateBanner(lines) {
@@ -1619,6 +1787,29 @@ class VNCCSControlCenterWidget {
                 this._updatePill(pill, label, locVer, "ok");
             }
         }
+
+        const dependencies = local.dependencies || {};
+        const missingDependencies = [];
+        for (const [key, info] of Object.entries(dependencies)) {
+            const label = info.label || key;
+            const pill = this._ensureDependencyPill(key, label);
+            const missing = Array.isArray(info.missing_nodes) ? info.missing_nodes : [];
+            const detail = missing.length ? `missing: ${missing.join(", ")}` : (info.folder ? `folder: ${info.folder}` : "");
+            if (info.status === "ok") {
+                this._updatePill(pill, label, null, "ok");
+                pill.title = detail || "Installed";
+            } else if (info.status === "partial") {
+                this._updatePill(pill, label, null, "partial");
+                pill.title = detail || "installed but not loaded";
+            } else {
+                this._updatePill(pill, label, null, "error");
+                pill.title = detail || "not installed";
+            }
+            if (info.status !== "ok") {
+                missingDependencies.push({ key, ...info });
+            }
+        }
+        this._showMissingDependenciesModal(missingDependencies);
 
         this._showUpdateBanner(updateNeeded);
     }
@@ -1761,12 +1952,16 @@ class VNCCSControlCenterWidget {
         if (!this.config) return;
         this.scrollArea.innerHTML = "";
 
+        // TECH DEBT: legacy Nunchaku error rendering disabled. Delete after
+        // stale workflow state cannot select Nunchaku anymore.
+        /*
         if (this._getSelectedType() === "nunchaku" && this.dependencyStatus && !this.dependencyStatus.ok) {
             const err = document.createElement("div");
             err.className = "vnccs-cc-error";
             err.textContent = "✕ " + this.dependencyStatus.message;
             this.scrollArea.appendChild(err);
         }
+        */
 
         const selType = this._getSelectedType();
         const isCP    = selType === "checkpoint";
@@ -2475,7 +2670,7 @@ class VNCCSControlCenterWidget {
 
     _renderModelParams() {
         const p  = this.state.model_params ?? {};
-        const mp = { steps: 20, cfg: 3.5, ...p };
+        const mp = { steps: DEFAULT_MODEL_STEPS, cfg: DEFAULT_MODEL_CFG, ...p };
 
         const panel = document.createElement("div");
         panel.className = "vnccs-cc-params";
@@ -2861,7 +3056,9 @@ class VNCCSControlCenterWidget {
         const sel  = this._getSelectedType() || "gguf";
         const gguf = ts.gguf ?? {};
         const unet = ts.unet ?? {};
-        const nun  = ts.nunchaku ?? {};
+        // TECH DEBT: legacy Nunchaku settings are disabled. Delete after stale
+        // workflow state no longer stores type_settings.nunchaku.
+        // const nun  = ts.nunchaku ?? {};
 
         const field = (labelText, el) => {
             const w = document.createElement("div");
@@ -2869,9 +3066,10 @@ class VNCCSControlCenterWidget {
             const help = {
                 "Weight Dtype": "Precision mode for UNet loading. Default follows the loader; fp8 modes can reduce memory use.",
                 "dequant_dtype": "Dequantization precision for GGUF models.",
-                "CPU Offload": "Controls whether Nunchaku can offload model blocks to CPU memory.",
-                "Blocks On GPU": "How many Nunchaku blocks should stay on GPU. Higher uses more VRAM and can be faster.",
-                "Pinned Memory": "Enables pinned CPU memory for Nunchaku transfers when supported.",
+                // TECH DEBT: Nunchaku settings help removed with disabled UI.
+                // "CPU Offload": "Controls whether Nunchaku can offload model blocks to CPU memory.",
+                // "Blocks On GPU": "How many Nunchaku blocks should stay on GPU. Higher uses more VRAM and can be faster.",
+                // "Pinned Memory": "Enables pinned CPU memory for Nunchaku transfers when supported.",
                 "HuggingFace Token": "Access token used to download gated HuggingFace models.",
                 "Civitai Token": "API key used to download Civitai models."
             }[labelText];
@@ -2934,7 +3132,9 @@ class VNCCSControlCenterWidget {
                 gguf.dequant_dtype ?? "default")));
         panel.appendChild(ggufDet);
 
-        // Nunchaku
+        /*
+        // TECH DEBT: Nunchaku settings UI is disabled. Delete this commented
+        // legacy block after old workflow JSON no longer references Nunchaku.
         const nunDet = document.createElement("details");
         nunDet.className = "vnccs-cc-settings-details";
         nunDet.open = sel === "nunchaku";
@@ -2999,6 +3199,7 @@ class VNCCSControlCenterWidget {
         }).catch(() => { fixBtn.textContent = "N/A"; });
 
         panel.appendChild(nunDet);
+        */
 
         // Tokens
         const tokDet = document.createElement("details");
@@ -3028,11 +3229,9 @@ class VNCCSControlCenterWidget {
             this.state.type_settings.gguf = {
                 dequant_dtype: panel.querySelector("#vnccs-cc-gguf-dequant")?.value ?? "default",
             };
-            this.state.type_settings.nunchaku = {
-                cpu_offload:     panel.querySelector("#vnccs-cc-nun-offload")?.value ?? "auto",
-                num_blocks_on_gpu: parseInt(panel.querySelector("#vnccs-cc-nun-blocks")?.value ?? 1, 10),
-                use_pin_memory: panel.querySelector("#vnccs-cc-nun-pin")?.value ?? "disable",
-            };
+            // TECH DEBT: Nunchaku settings persistence disabled. Delete after
+            // stale workflow state no longer stores type_settings.nunchaku.
+            delete this.state.type_settings.nunchaku;
             const hf = hfIn.value.trim(), cv = cvIn.value.trim();
             if (hf || cv) {
                 await api.fetchApi("/vnccs/manager/save_token", {

@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
+import { showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator } from "./vnccs_common.js";
 
 // --- STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -586,6 +586,73 @@ const STYLE = `
     text-transform: uppercase;
     letter-spacing: 1px;
 }
+.vnccs-cloner-preview-loading {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 10, 16, 0.28);
+    backdrop-filter: blur(1px);
+    pointer-events: none;
+    z-index: 12;
+}
+.vnccs-cloner-preview-loading.is-visible { display: flex; }
+.vnccs-cloner-preview-loading::before {
+    content: '';
+    width: 34px;
+    height: 34px;
+    border: 2px solid rgba(255, 143, 163, 0.24);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    box-shadow: 0 0 18px rgba(255,143,163,0.25);
+    animation: clonerSpin 0.75s linear infinite;
+}
+.vnccs-cloner-sprite-nav {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding-top: 7px;
+    pointer-events: auto;
+}
+.vnccs-cloner-sprite-nav.is-visible { display: flex; }
+.vnccs-cloner-sprite-nav-btn {
+    width: 34px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-md);
+    background: linear-gradient(180deg, rgba(255,143,163,0.14), rgba(255,255,255,0.04));
+    color: var(--accent);
+    box-shadow: 0 0 12px rgba(255,143,163,0.12);
+    cursor: pointer;
+    transition: all var(--transition);
+}
+.vnccs-cloner-sprite-nav-btn:hover {
+    border-color: var(--accent);
+    background: linear-gradient(180deg, rgba(255,143,163,0.22), rgba(255,255,255,0.06));
+    box-shadow: 0 0 16px rgba(255,143,163,0.22);
+}
+.vnccs-cloner-sprite-nav-btn:disabled { opacity: 0.55; cursor: default; }
+.vnccs-cloner-sprite-nav-btn svg {
+    width: 16px;
+    height: 16px;
+    stroke: currentColor;
+    stroke-width: 2.6;
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.vnccs-cloner-sprite-nav-count {
+    min-width: 46px;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-secondary);
+}
 .vnccs-cloner-upload-overlay {
     position: absolute;
     inset: 0;
@@ -915,6 +982,7 @@ app.registerExtension({
                 const state = {
                     character: "",
                     source_images: [], // List of filenames
+                    selected_preview_sprite: null,
                     character_info: {
                         sex: "female", age: 18, race: "human", skin_color: "",
                         hair: "", eyes: "", face: "", body: "", additional_details: "",
@@ -927,6 +995,25 @@ app.registerExtension({
                 let TAG_DATA = null;
 
                 const els = {};
+                const normalizeUploadFile = (file, prefix = "vnccs_upload") => {
+                    const originalName = String(file?.name || "").trim();
+                    const extMatch = originalName.match(/(\.[A-Za-z0-9]{1,8})$/);
+                    const ext = extMatch ? extMatch[1] : ".png";
+                    let name = originalName.replace(/[\\/]/g, "_").trim();
+                    name = name.replace(/^[\s.-]+/, "");
+                    name = name.replace(/\s+/g, "_");
+                    name = name.replace(/[^A-Za-z0-9._-]/g, "_");
+                    if (!name || !/[A-Za-z0-9]/.test(name)) {
+                        name = `${prefix}_${Date.now()}${ext}`;
+                    }
+                    if (name !== originalName) {
+                        name = `${prefix}_${name}`;
+                    }
+                    return name === file.name ? file : new File([file], name, {
+                        type: file.type,
+                        lastModified: file.lastModified,
+                    });
+                };
                 const saveState = () => {
                     if (dataWidget) dataWidget.value = JSON.stringify(state);
                     node._vnccsGetClonerState = () => state;
@@ -1317,6 +1404,7 @@ app.registerExtension({
 
                 // Define renderThumbs placeholder (populated later)
                 let renderThumbs = () => { };
+                let spritePreviewNavigator = null;
 
                 const updateUIFromState = () => {
                     // Fields
@@ -1459,6 +1547,7 @@ app.registerExtension({
                 const loadChar = async (name, skipInfoLoad = false) => {
                     if (!name || name === "None") {
                         state.char_preview_url = null;
+                        spritePreviewNavigator?.hideNav();
                         updateUIFromState();
                         return;
                     }
@@ -1478,26 +1567,8 @@ app.registerExtension({
                             updateUIFromState();
                         }
 
-                        // Load Preview Image URL Logic
-                        const ts = Date.now();
-                        const poseUrl = `/vnccs/get_character_pose_preview?character=${encodeURIComponent(name)}&t=${ts}`;
-                        const cacheUrl = `/vnccs/get_cached_preview?character=${encodeURIComponent(name)}&t=${ts}`;
-
-                        // Helper to find valid one
-                        const checkImage = (url) => {
-                            return new Promise((resolve) => {
-                                const img = new Image();
-                                img.onload = () => resolve(url);
-                                img.onerror = () => resolve(null);
-                                img.src = url;
-                            });
-                        };
-
-                        let finalUrl = await checkImage(poseUrl);
-                        if (!finalUrl) finalUrl = await checkImage(cacheUrl);
-
-                        state.char_preview_url = finalUrl;
-                        updateUIFromState(); // Trigger renderThumbs
+                        const cacheUrl = `/vnccs/get_cached_preview?character=${encodeURIComponent(name)}&t=${Date.now()}`;
+                        await spritePreviewNavigator?.load(name, { fallbackUrl: cacheUrl });
 
                     } catch (e) {
                         console.error(e);
@@ -1689,6 +1760,9 @@ app.registerExtension({
                     <div class="vnccs-cloner-preview-placeholder-text">Source Preview</div>
                 `;
                 previewContainer.appendChild(previewPlaceholder);
+                const previewLoading = document.createElement("div");
+                previewLoading.className = "vnccs-cloner-preview-loading";
+                previewContainer.appendChild(previewLoading);
 
                 // Overlay Controls (Upload Button) - Always visible or overlay?
                 // User wants standard behaviour: Empty -> Upload Button. Filled -> Image + Mini Overlay?
@@ -1716,8 +1790,9 @@ app.registerExtension({
                         uploadBtn.innerText = "UPLOADING...";
                         for (const file of e.target.files) {
                             try {
+                                const uploadFile = normalizeUploadFile(file, "clone_source");
                                 const body = new FormData();
-                                body.append("image", file);
+                                body.append("image", uploadFile, uploadFile.name);
                                 const resp = await api.fetchApi("/upload/image", { method: "POST", body });
                                 const json = await resp.json();
                                 if (json.name) {
@@ -1758,6 +1833,48 @@ app.registerExtension({
 
                 previewContainer.appendChild(uploadOverlay);
                 colSrc.appendChild(previewContainer);
+                const spriteNav = document.createElement("div");
+                spriteNav.className = "vnccs-cloner-sprite-nav";
+                const spritePrevBtn = document.createElement("button");
+                spritePrevBtn.type = "button";
+                spritePrevBtn.className = "vnccs-cloner-sprite-nav-btn";
+                spritePrevBtn.title = "Previous sprite";
+                spritePrevBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>';
+                const spriteCount = document.createElement("div");
+                spriteCount.className = "vnccs-cloner-sprite-nav-count";
+                const spriteNextBtn = document.createElement("button");
+                spriteNextBtn.type = "button";
+                spriteNextBtn.className = "vnccs-cloner-sprite-nav-btn";
+                spriteNextBtn.title = "Next sprite";
+                spriteNextBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+                spriteNav.append(spritePrevBtn, spriteCount, spriteNextBtn);
+                colSrc.appendChild(spriteNav);
+                spritePreviewNavigator = createSpritePreviewNavigator({
+                    image: previewImg,
+                    placeholder: previewPlaceholder,
+                    loading: previewLoading,
+                    nav: spriteNav,
+                    prevButton: spritePrevBtn,
+                    nextButton: spriteNextBtn,
+                    countLabel: spriteCount,
+                    onLoaded: (url, previewState) => {
+                        state.char_preview_url = url;
+                        state.selected_preview_sprite = previewState.count > 0
+                            ? {
+                                character: previewState.character,
+                                costume: previewState.costume || "",
+                                index: previewState.index,
+                                count: previewState.count,
+                            }
+                            : null;
+                        saveState();
+                    },
+                    onMissing: () => {
+                        state.char_preview_url = null;
+                        state.selected_preview_sprite = null;
+                        saveState();
+                    },
+                });
                 colSrc.appendChild(fileInput);
 
 
@@ -1773,7 +1890,7 @@ app.registerExtension({
                 autoGenBtn.className = "vnccs-cloner-btn vnccs-cloner-btn-primary";
                 autoGenBtn.style.fontSize = "12px";
                 autoGenBtn.style.flex = "0 0 auto"; // Prevent stretching
-                autoGenBtn.innerText = "Analyze Captions (Qwen2-VL-7B)";
+                autoGenBtn.innerText = "Analyze Captions";
                 autoGenBtn.onclick = async () => {
                     if (autoGenBtn.disabled) return;
 
@@ -1911,7 +2028,7 @@ app.registerExtension({
                         }, [{ text: "Close" }]);
                     } finally {
                         loading.remove();
-                        autoGenBtn.innerText = "Analyze Captions (Qwen2-VL-7B)";
+                        autoGenBtn.innerText = "Analyze Captions";
                         autoGenBtn.disabled = false;
                         if (thumb) thumb.classList.remove("generating");
                     }
@@ -2073,6 +2190,7 @@ app.registerExtension({
                             previewContainer.onmouseleave = null;
                         }
                     } else {
+                        spritePreviewNavigator?.hideNav();
                         // Show Selected Image
                         const imgObj = images[state.selected_idx];
                         let name = "", type = "input", sub = "";

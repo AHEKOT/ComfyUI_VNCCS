@@ -13,6 +13,59 @@ from typing import List
 from PIL import Image
 
 
+def _flatten_images(value):
+    if torch.is_tensor(value):
+        if value.ndim == 4:
+            return [value[i:i + 1] for i in range(value.shape[0])]
+        if value.ndim == 3:
+            return [value.unsqueeze(0)]
+        return []
+    if isinstance(value, list):
+        result = []
+        for item in value:
+            result.extend(_flatten_images(item))
+        return result
+    return []
+
+
+def _normalize_image_batch(value, target_hw=None, stage="sheet batch"):
+    items = []
+    for item in _flatten_images(value):
+        if not torch.is_tensor(item):
+            continue
+        if not torch.is_floating_point(item):
+            item = item.float()
+        if item.numel() and item.max() > 1.5:
+            item = item / 255.0
+        items.append(item.clamp(0.0, 1.0))
+    if not items:
+        return None
+    if target_hw is None:
+        target_hw = (int(items[0].shape[1]), int(items[0].shape[2]))
+    target_channels = max(int(item.shape[-1]) for item in items)
+    shapes = [(int(item.shape[1]), int(item.shape[2]), int(item.shape[3])) for item in items]
+    target_shape = (int(target_hw[0]), int(target_hw[1]), target_channels)
+    if any(shape != target_shape for shape in shapes):
+        print(f"[VNCCS Batch Safety] Normalizing {stage}: {shapes} -> {target_shape}")
+    normalized = []
+    for item in items:
+        if item.shape[-1] < target_channels:
+            pad_value = 1.0 if target_channels == 4 and item.shape[-1] == 3 else 0.0
+            pad = torch.full((*item.shape[:-1], target_channels - item.shape[-1]), pad_value, dtype=item.dtype, device=item.device)
+            item = torch.cat([item, pad], dim=-1)
+        elif item.shape[-1] > target_channels:
+            item = item[..., :target_channels]
+        if (item.shape[1], item.shape[2]) != target_hw:
+            item = torch.nn.functional.interpolate(
+                item.movedim(-1, 1),
+                size=target_hw,
+                mode="bilinear",
+                align_corners=False,
+            ).movedim(1, -1).clamp(0.0, 1.0)
+        normalized.append(item)
+    return torch.cat(normalized, dim=0)
+
+
 class VNCCSSheetManager:
     """VNCCS Sheet Manager - split sheets into parts or compose images into square sheets."""
     
@@ -151,10 +204,7 @@ class VNCCSSheetManager:
             parts = self.split_sheet(images, target_width, target_height)
             result_list = [part.unsqueeze(0) for part in parts]
         elif mode == "compose":
-            if isinstance(images, list):
-                images = torch.cat(images, dim=0)
-            elif len(images.shape) == 3:
-                images = images.unsqueeze(0)
+            images = _normalize_image_batch(images, stage="sheet manager compose")
             result = self.compose_sheet(images, target_height, safe_margin)
             result_list = [result]
         else:
@@ -338,7 +388,8 @@ class VNCCS_QuadSplitter:
         if not isinstance(imgs, list):
             raise ValueError("Compose expects a list or batch of images")
 
-        imgs = self._normalize_image_list(imgs)
+        normalized_batch = _normalize_image_batch(imgs, stage="quad splitter compose")
+        imgs = self._normalize_image_list(normalized_batch)
         if len(imgs) < 4:
             raise ValueError("Compose expects at least 4 images")
 

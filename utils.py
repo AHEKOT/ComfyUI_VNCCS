@@ -376,23 +376,13 @@ def ensure_costume_structure(name: str, costume: str, emotions: List[str] = None
 
 
 def list_characters() -> List[str]:
-    """Get list of existing characters from new and (as fallback) legacy paths."""
+    """Get list of existing characters from the current VNCCS character root."""
     base_path = base_output_dir()
     try:
-        chars = sorted([d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))])
+        return sorted([d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))])
     except Exception as exc:
         print(f"[VNCCS] list_characters: failed to list new character path '{base_path}': {exc}")
-        chars = []
-    if not chars:
-        try:
-            legacy = get_legacy_output_dir()
-            legacy_chars = sorted([d for d in os.listdir(legacy) if os.path.isdir(os.path.join(legacy, d))])
-            if legacy_chars:
-                print(f"[VNCCS] list_characters: new path empty, falling back to legacy. Run migration to fix.")
-            chars = legacy_chars
-        except Exception as exc:
-            print(f"[VNCCS] list_characters: failed to list legacy character path: {exc}")
-    return chars
+        return []
 
 
 def generate_seed(value: int) -> int:
@@ -675,7 +665,7 @@ def save_costume_info(character_name: str, costume_name: str, costume_data: Dict
 
 
 def load_character_sheet(character: str, costume: str = "Naked", emotion: str = "neutral", with_mask: bool = False) -> Optional["torch.Tensor"]:
-    """Load character sheet image.
+    """Deprecated runtime loader: load a current sprite image, never a sheet.
     
     Args:
         character (str): Character name
@@ -685,7 +675,7 @@ def load_character_sheet(character: str, costume: str = "Naked", emotion: str = 
         
     Returns:
         torch.Tensor or Tuple[torch.Tensor, torch.Tensor] or None: 
-        - If with_mask=False: RGBA image tensor [1, H, W, 4] or None on error
+        - If with_mask=False: RGBA sprite tensor [1, H, W, 4] or None on error
         - If with_mask=True: (RGB image [1, H, W, 3], alpha mask [1, H, W]) or (None, None) on error
     """
     try:
@@ -701,78 +691,49 @@ def load_character_sheet(character: str, costume: str = "Naked", emotion: str = 
         if costume == "Naked":
             costume_candidates.append("Original")
 
-        sheet_dir = None
-        candidates = []
-        pattern = f"sheet_{emotion}_*(\\d+)_*\\.png"
-
-        for candidate_costume in costume_candidates:
-            candidate_dir = os.path.join(character_dir(character), "Sheets", candidate_costume, emotion)
-            if not os.path.isdir(candidate_dir):
-                continue
-
-            candidate_files = []
-            for fname in os.listdir(candidate_dir):
-                m = re.match(pattern, fname)
-                if m:
-                    idx = int(m.group(1))
-                    candidate_files.append((idx, fname))
-
-            if candidate_files:
-                sheet_dir = candidate_dir
-                candidates = candidate_files
-                break
-
         best_path = None
-        if sheet_dir and candidates:
-            candidates.sort(key=lambda x: x[0])
-            _, best_name = candidates[-1]
-            best_path = os.path.join(sheet_dir, best_name)
-        if not best_path:
-            image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-            for candidate_costume in costume_candidates:
-                sprite_root = os.path.join(character_dir(character), "Sprites", candidate_costume)
-                if not os.path.isdir(sprite_root):
+        image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+        for candidate_costume in costume_candidates:
+            sprite_root = os.path.join(character_dir(character), "Sprites", candidate_costume)
+            if not os.path.isdir(sprite_root):
+                continue
+            neutral_files = []
+            for neutral_name in ("Neutral", "neutral"):
+                neutral_root = os.path.join(sprite_root, neutral_name)
+                if not os.path.isdir(neutral_root):
                     continue
-                neutral_files = []
-                for neutral_name in ("Neutral", "neutral"):
-                    neutral_root = os.path.join(sprite_root, neutral_name)
-                    if not os.path.isdir(neutral_root):
-                        continue
-                    for root, _dirs, filenames in os.walk(neutral_root):
-                        neutral_files.extend(
-                            os.path.join(root, filename)
-                            for filename in filenames
-                            if os.path.splitext(filename)[1].lower() in image_exts
-                        )
-                if neutral_files:
-                    best_path = max(neutral_files, key=lambda path: (os.path.getmtime(path), path))
-                    print(f"[VNCCS Utils] Using neutral sprite fallback for sheet load: {best_path}")
-                    break
-
-                sprite_files = []
-                for root, _dirs, filenames in os.walk(sprite_root):
-                    parts = set(os.path.normpath(root).split(os.sep))
-                    if "Neutral" in parts or "neutral" in parts:
-                        continue
-                    sprite_files.extend(
+                for root, _dirs, filenames in os.walk(neutral_root):
+                    neutral_files.extend(
                         os.path.join(root, filename)
                         for filename in filenames
                         if os.path.splitext(filename)[1].lower() in image_exts
                     )
-                if sprite_files:
-                    best_path = max(sprite_files, key=lambda path: (os.path.getmtime(path), path))
-                    print(f"[VNCCS Utils] Using sprite fallback for sheet load: {best_path}")
-                    break
+            if neutral_files:
+                best_path = max(neutral_files, key=lambda path: (os.path.getmtime(path), path))
+                print(f"[VNCCS Utils] Using neutral sprite for deprecated sheet load: {best_path}")
+                break
+
+            sprite_files = []
+            for root, _dirs, filenames in os.walk(sprite_root):
+                parts = set(os.path.normpath(root).split(os.sep))
+                if "Neutral" in parts or "neutral" in parts:
+                    continue
+                sprite_files.extend(
+                    os.path.join(root, filename)
+                    for filename in filenames
+                    if os.path.splitext(filename)[1].lower() in image_exts
+                )
+            if sprite_files:
+                best_path = max(sprite_files, key=lambda path: (os.path.getmtime(path), path))
+                print(f"[VNCCS Utils] Using sprite for deprecated sheet load: {best_path}")
+                break
 
         if not best_path:
             checked = [
-                os.path.join(character_dir(character), "Sheets", candidate_costume, emotion)
-                for candidate_costume in costume_candidates
-            ] + [
                 os.path.join(character_dir(character), "Sprites", candidate_costume)
                 for candidate_costume in costume_candidates
             ]
-            print(f"[VNCCS Utils] No sheet/sprite fallback found for {character}/{costume}/{emotion}: {checked}")
+            print(f"[VNCCS Utils] No sprite found for {character}/{costume}/{emotion}: {checked}. Run migration or generate sprites first.")
             if with_mask:
                 return None, None
             else:
@@ -795,29 +756,29 @@ def load_character_sheet(character: str, costume: str = "Naked", emotion: str = 
                 # PNG alpha: 1.0 = opaque (keep), 0.0 = transparent (inpaint). Invert.
                 mask_alpha_channel = 1.0 - image_np[..., 3]
                 mask_tensor = torch.from_numpy(mask_alpha_channel).unsqueeze(0)
-                print(f"[VNCCS Utils] Loaded sheet with mask: {best_path}")
+                print(f"[VNCCS Utils] Loaded sprite with mask: {best_path}")
                 return img_tensor, mask_tensor
             else:
                 img_tensor = torch.from_numpy(image_np[..., :3])[None,]
-                print(f"[VNCCS Utils] Loaded sheet without mask: {best_path}")
+                print(f"[VNCCS Utils] Loaded sprite without mask: {best_path}")
                 return img_tensor, None
         else:
             # Return RGBA image for ComfyUI compatibility
             if has_alpha:
                 # Keep alpha channel for proper transparency handling
                 sheet_image_tensor = torch.from_numpy(image_np)[None,]  # [1, H, W, 4]
-                print(f"[VNCCS Utils] Loaded RGBA sheet: {best_path}")
+                print(f"[VNCCS Utils] Loaded RGBA sprite: {best_path}")
             else:
                 # Convert RGB to RGBA by adding opaque alpha channel
                 rgb_image = image_np[..., :3]
                 alpha_channel = np.ones((image_np.shape[0], image_np.shape[1], 1), dtype=np.float32)
                 rgba_image = np.concatenate([rgb_image, alpha_channel], axis=2)
                 sheet_image_tensor = torch.from_numpy(rgba_image)[None,]  # [1, H, W, 4]
-                print(f"[VNCCS Utils] Loaded RGB sheet (converted to RGBA): {best_path}")
+                print(f"[VNCCS Utils] Loaded RGB sprite (converted to RGBA): {best_path}")
             return sheet_image_tensor
         
     except Exception as e:
-        print(f"[VNCCS Utils] Error loading sheet image: {e}")
+        print(f"[VNCCS Utils] Error loading sprite image: {e}")
         if with_mask:
             return None, None
         else:
@@ -836,16 +797,6 @@ def list_costumes(character_name: str) -> List[str]:
                 costumes.append(c)
     
     char_dir = character_dir(character_name)
-    sheets_dir_path = os.path.join(char_dir, "Sheets")
-    if os.path.exists(sheets_dir_path):
-        try:
-            for item in os.listdir(sheets_dir_path):
-                item_path = os.path.join(sheets_dir_path, item)
-                if os.path.isdir(item_path) and item not in costumes:
-                    costumes.append(item)
-        except OSError as exc:
-            print(f"[VNCCS Utils] Failed to scan Sheets costumes for '{character_name}': {exc}")
-
     sprites_dir_path = os.path.join(char_dir, "Sprites")
     if os.path.exists(sprites_dir_path):
         try:
