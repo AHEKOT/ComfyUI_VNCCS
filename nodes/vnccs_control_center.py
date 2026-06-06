@@ -1378,8 +1378,8 @@ async def vnccs_module_status(request):
         },
         "seedvr": {
             "label": "SeedVR",
-            "github_url": "https://github.com/TencentARC/ComfyUI-SeedVR2_VideoUpscaler",
-            "folders": ["ComfyUI-SeedVR2_VideoUpscaler", "comfyui-seedvr2-videoupscaler", "ComfyUI-SeedVR"],
+            "github_url": "https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler",
+            "folders": ["seedvr2_videoupscaler", "ComfyUI-SeedVR2_VideoUpscaler", "comfyui-seedvr2-videoupscaler", "ComfyUI-SeedVR"],
             "nodes": [
                 {"class_names": ["SeedVR2LoadDiTModel"]},
                 {"class_names": ["SeedVR2LoadVAEModel"]},
