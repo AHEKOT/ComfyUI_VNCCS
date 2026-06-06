@@ -18,10 +18,26 @@ The character creation process is divided into 5 stages:
 4. **Create emotion sets**
 5. **Generate finished sprites**
 6. **Create a dataset for LoRA training** (optional)
----
-## **If you find my project useful, please consider supporting it! I work on it completely on my own, and your support will allow me to continue maintaining it and adding even more cool features!**
 
-[![Buy Me a Coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20rtx%203090&emoji=☕&slug=MIUProject&button_colour=FFDD00&font_colour=000000&font_family=Comic&outline_colour=000000&coffee_colour=ffffff)](https://www.buymeacoffee.com/MIUProject)
+---
+
+<table>
+<tr>
+<td width="50%" align="center">
+<strong>Join The Community</strong><br>
+Share results, ask questions, and follow VNCCS updates.<br><br>
+<a href="https://discord.com/invite/9Dacp4wvQw" target="_blank"><img src="images/VNCCS_Discord_Button.png" alt="Join our Discord"></a>
+</td>
+<td width="50%" align="center">
+<strong>Support VNCCS</strong><br>
+VNCCS is developed independently. Support helps keep the project moving.<br><br>
+<a href="https://www.buymeacoffee.com/MIUProject" target="_blank"><img src="images/VNCCS_Donate_Button.png" alt="Support VNCCS"></a>
+</td>
+</tr>
+</table>
+
+---
+
 
 ## Installation
 
