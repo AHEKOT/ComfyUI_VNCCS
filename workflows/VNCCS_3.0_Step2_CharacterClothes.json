@@ -34,102 +34,6 @@
       "widgets_values": []
     },
     {
-      "id": 726,
-      "type": "VNCCS_ControlCenter",
-      "pos": [
-        -340,
-        1940
-      ],
-      "size": [
-        620,
-        920
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "pipe",
-          "type": "VNCCS_PIPE",
-          "links": [
-            2251,
-            2256
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "vnccs-utils",
-        "ver": "488460aecb7306d2ef6ef3891be68a58d3cccb8d",
-        "Node name for S&R": "VNCCS_ControlCenter"
-      },
-      "widgets_values": [
-        "MIUProject/VNCCS_V2",
-        "{\"output_slot_names\":[],\"selected_model\":\"Qwen-Image-Edit-2511-GGUF-Q5\",\"selected_type\":\"gguf\",\"model_params\":{\"steps\":4,\"cfg\":1},\"type_settings\":{\"unet\":{\"weight_dtype\":\"default\"},\"gguf\":{\"dequant_dtype\":\"default\"},\"nunchaku\":{\"cpu_offload\":\"enable\",\"num_blocks_on_gpu\":1,\"use_pin_memory\":\"disable\"}},\"loras\":[{\"name\":\"VNCCS Clothes Core\",\"enabled\":true,\"strength\":1,\"auto_apply\":true},{\"name\":\"VNCCS Emotion Core\",\"enabled\":false,\"strength\":-2,\"auto_apply\":false},{\"name\":\"VNCCS Transfer Clothes\",\"enabled\":false,\"strength\":-2,\"auto_apply\":false},{\"name\":\"DMD2 SDXL Lightning\",\"enabled\":false,\"strength\":-2,\"auto_apply\":false},{\"name\":\"Mimimeter\",\"enabled\":false,\"strength\":-2,\"auto_apply\":false},{\"name\":\"Qwen Image Edit 2511 Lightning\",\"enabled\":true,\"strength\":1,\"auto_apply\":true},{\"name\":\"VNCCS Pose Studio ART\",\"enabled\":true,\"strength\":1,\"auto_apply\":true}],\"collapsed\":{\"models\":false},\"selected_models\":{\"nunchaku\":\"Qwen-Image-Edit-2511-nunchaku-best-quality-fp4\",\"gguf\":\"Qwen-Image-Edit-2511-GGUF-Q5\"}}",
-        "{}"
-      ],
-      "color": "#222",
-      "bgcolor": "#000"
-    },
-    {
-      "id": 753,
-      "type": "ClothesDesigner",
-      "pos": [
-        300,
-        1940
-      ],
-      "size": [
-        710,
-        920
-      ],
-      "flags": {},
-      "order": 2,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "pipe",
-          "shape": 7,
-          "type": "VNCCS_PIPE",
-          "link": 2256
-        }
-      ],
-      "outputs": [
-        {
-          "name": "character",
-          "type": "IMAGE",
-          "links": [
-            2257,
-            2258
-          ]
-        },
-        {
-          "name": "sheets_path",
-          "type": "STRING",
-          "links": [
-            2259
-          ]
-        },
-        {
-          "name": "background",
-          "type": "*",
-          "links": [
-            2260
-          ]
-        }
-      ],
-      "properties": {
-        "cnr_id": "vnccs",
-        "ver": "3.0.0",
-        "Node name for S&R": "ClothesDesigner"
-      },
-      "widgets_values": [
-        "{\"character\":\"Alina_test 2\",\"costume\":\"Test_costume1\",\"activeTab\":\"generate\",\"clone_image\":{\"name\":\"f765bd5e-396f-4952-bf13-95c70edbb0901.png\",\"type\":\"input\",\"subfolder\":\"\"},\"clone_sam_prompt\":\"clothes, boots, footwear, accessories,\",\"selected_preview_sprite\":{\"character\":\"Alina_test 2\",\"costume\":\"Test_costume1\",\"index\":10,\"count\":12},\"costume_info\":{\"top\":\"black leather school blouse with white lace trim on the collar and cuffs, fitted but slightly revealing, with a low-cut neckline, revealing a hint of cleavage\",\"bottom\":\"black leather skirt with a high slit on the side, revealing one leg, with a tight fit and a short length, ending above the knee\",\"head\":\"black leather beret with a small white lace bow on the side\",\"face\":\"black leather eye patches with lace detailing, covering the eyes\",\"shoes\":\"black leather high-heeled boots with a slight heel, featuring a strap across the ankle\"},\"character_info\":{\"sex\":\"female\",\"age\":13,\"race\":\"human\",\"skin_color\":\"\",\"hair\":\"two-tone hair, dyed hair, red hair, white hair, very long hair, braid\",\"eyes\":\"pink eyes\",\"face\":\"dot nose, mole under eye\",\"body\":\"small breasts\",\"additional_details\":\"\",\"nsfw\":true,\"aesthetics\":\"masterpiece\",\"negative_prompt\":\"bad quality,worst quality,worst detail,sketch,censor, missing arm, missing leg, distorted body\",\"lora_prompt\":\"\",\"name\":\"Alina_test 2\",\"background_color\":\"Blue\",\"seed\":3644386310840},\"gen_settings\":{\"background_color\":\"Green\",\"seed\":0,\"seed_mode\":\"fixed\",\"lora_name\":\"qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.safetensors\",\"lora_strength\":1}}",
-        ""
-      ],
-      "color": "#222",
-      "bgcolor": "#000"
-    },
-    {
       "id": 751,
       "type": "VNCCS_ClothesGenerator",
       "pos": [
@@ -220,6 +124,102 @@
         "{\"nsfw_enabled\":true,\"emotion_pairs\":[],\"common\":{\"target_size\":\"1024\"},\"pose_generation\":{\"target_size\":\"1024\"},\"emotion_generation\":{\"face_denoise\":0.55},\"remove_clothes\":{\"prompt\":\"Dress character: White underwear\"},\"upscaler\":{\"mode\":\"seedvr\",\"model\":\"seedvr2_ema_3b-Q4_K_M.gguf\",\"vae\":\"ema_vae_fp16.safetensors\",\"gan_model\":\"2x_APISR_RRDB_GAN_generator.pth\",\"device\":\"cuda:0\",\"offload_device\":\"cpu\",\"seed\":42,\"resolution\":2048,\"max_resolution\":3840,\"batch_size\":1,\"uniform_batch_size\":false,\"color_correction\":\"lab\",\"temporal_overlap\":0,\"prepend_frames\":0,\"input_noise_scale\":0,\"latent_noise_scale\":0,\"blocks_to_swap\":0,\"swap_io_components\":false,\"cache_dit\":false,\"attention_mode\":\"sdpa\",\"attention_mode_manual\":true,\"encode_tiled\":true,\"encode_tile_size\":1024,\"encode_tile_overlap\":128,\"decode_tiled\":true,\"decode_tile_size\":1024,\"decode_tile_overlap\":128,\"tile_debug\":\"false\",\"cache_vae\":false,\"enable_debug\":false},\"bg_remove\":{\"use_internal_rmbg\":false,\"preset\":\"balanced\",\"tolerance\":0.5,\"despill_strength\":1,\"despill_kernel_size\":3,\"despill_color\":\"black\"},\"ui\":{\"selected_preview\":\"source_upscaler\",\"user_selected_preview\":false}}",
         ""
       ]
+    },
+    {
+      "id": 726,
+      "type": "VNCCS_ControlCenter",
+      "pos": [
+        -340,
+        1940
+      ],
+      "size": [
+        620,
+        920
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "pipe",
+          "type": "VNCCS_PIPE",
+          "links": [
+            2251,
+            2256
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs-utils",
+        "ver": "488460aecb7306d2ef6ef3891be68a58d3cccb8d",
+        "Node name for S&R": "VNCCS_ControlCenter"
+      },
+      "widgets_values": [
+        "MIUProject/VNCCS_V3",
+        "{\"output_slot_names\":[],\"selected_model\":\"Qwen-Image-Edit-2511-GGUF-Q5\",\"selected_type\":\"gguf\",\"model_params\":{\"steps\":4,\"cfg\":1},\"type_settings\":{\"unet\":{\"weight_dtype\":\"default\"},\"gguf\":{\"dequant_dtype\":\"default\"},\"nunchaku\":{\"cpu_offload\":\"enable\",\"num_blocks_on_gpu\":1,\"use_pin_memory\":\"disable\"}},\"loras\":[{\"name\":\"VNCCS Clothes Core\",\"enabled\":true,\"strength\":1,\"auto_apply\":true},{\"name\":\"VNCCS Emotion Core\",\"enabled\":false,\"strength\":-2,\"auto_apply\":false},{\"name\":\"VNCCS Transfer Clothes\",\"enabled\":false,\"strength\":-2,\"auto_apply\":false},{\"name\":\"DMD2 SDXL Lightning\",\"enabled\":false,\"strength\":-2,\"auto_apply\":false},{\"name\":\"Mimimeter\",\"enabled\":false,\"strength\":-2,\"auto_apply\":false},{\"name\":\"Qwen Image Edit 2511 Lightning\",\"enabled\":true,\"strength\":1,\"auto_apply\":true},{\"name\":\"VNCCS Pose Studio ART\",\"enabled\":true,\"strength\":1,\"auto_apply\":true}],\"collapsed\":{\"models\":false},\"selected_models\":{\"nunchaku\":\"Qwen-Image-Edit-2511-nunchaku-best-quality-fp4\",\"gguf\":\"Qwen-Image-Edit-2511-GGUF-Q5\"}}",
+        "{}"
+      ],
+      "color": "#222",
+      "bgcolor": "#000"
+    },
+    {
+      "id": 753,
+      "type": "ClothesDesigner",
+      "pos": [
+        300,
+        1940
+      ],
+      "size": [
+        710,
+        920
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pipe",
+          "shape": 7,
+          "type": "VNCCS_PIPE",
+          "link": 2256
+        }
+      ],
+      "outputs": [
+        {
+          "name": "character",
+          "type": "IMAGE",
+          "links": [
+            2257,
+            2258
+          ]
+        },
+        {
+          "name": "sheets_path",
+          "type": "STRING",
+          "links": [
+            2259
+          ]
+        },
+        {
+          "name": "background",
+          "type": "*",
+          "links": [
+            2260
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs",
+        "ver": "3.0.0",
+        "Node name for S&R": "ClothesDesigner"
+      },
+      "widgets_values": [
+        "{\"character\":\"Alina_test\",\"costume\":\"Test_costume1\",\"activeTab\":\"generate\",\"clone_image\":{\"name\":\"f765bd5e-396f-4952-bf13-95c70edbb0901.png\",\"type\":\"input\",\"subfolder\":\"\"},\"clone_sam_prompt\":\"clothes, boots, footwear, accessories,\",\"selected_preview_sprite\":{\"character\":\"Alina_test\",\"costume\":\"Test_costume1\",\"index\":0,\"count\":12},\"costume_info\":{\"top\":\"black leather school blouse with white lace trim on the collar and cuffs, fitted but slightly revealing, with a low-cut neckline, revealing a hint of cleavage\",\"bottom\":\"black leather skirt with a high slit on the side, revealing one leg, with a tight fit and a short length, ending above the knee\",\"head\":\"black leather beret with a small white lace bow on the side\",\"face\":\"black leather eye patches with lace detailing, covering the eyes\",\"shoes\":\"black leather high-heeled boots with a slight heel, featuring a strap across the ankle\"},\"character_info\":{\"sex\":\"female\",\"age\":13,\"race\":\"human\",\"skin_color\":\"\",\"hair\":\"two-tone hair, dyed hair, red hair, white hair, very long hair, braid\",\"eyes\":\"pink eyes\",\"face\":\"dot nose, mole under eye\",\"body\":\"small breasts\",\"additional_details\":\"\",\"nsfw\":true,\"aesthetics\":\"masterpiece\",\"negative_prompt\":\"bad quality,worst quality,worst detail,sketch,censor, missing arm, missing leg, distorted body\",\"lora_prompt\":\"\",\"name\":\"Alina_test\",\"background_color\":\"Blue\",\"seed\":3644386310840},\"gen_settings\":{\"background_color\":\"Green\",\"seed\":0,\"seed_mode\":\"fixed\",\"lora_name\":\"qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.safetensors\",\"lora_strength\":1}}",
+        ""
+      ],
+      "color": "#222",
+      "bgcolor": "#000"
     },
     {
       "id": 728,
@@ -359,10 +359,10 @@
     "VHS_MetadataImage": true,
     "VHS_KeepIntermediate": true,
     "ds": {
-      "scale": 0.7627768444385489,
+      "scale": 1.0152559799477088,
       "offset": [
-        1424.947434901124,
-        -1080.7942276401295
+        1031.2576905589267,
+        -1580.3700603169518
       ]
     }
   },
