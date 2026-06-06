@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -43,6 +44,8 @@ except Exception:
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 MIN_SPRITE_HEIGHT = 128
+LEGACY_SHEET_COLS = 6
+LEGACY_SHEET_ROWS = 2
 RUNS: Dict[str, dict] = {}
 
 
@@ -106,8 +109,56 @@ def _rgba_with_alpha(image: Image.Image) -> Tuple[Image.Image, np.ndarray, str]:
     return rgba, mask, "background removed"
 
 
+def _has_visible_pixels(image: Image.Image) -> bool:
+    if not _has_alpha(image):
+        return True
+    return image.getchannel("A").getbbox() is not None
+
+
+def _legacy_grid_sprites(rgba: Image.Image, min_size: int) -> List[Image.Image]:
+    width, height = rgba.size
+    if width < LEGACY_SHEET_COLS * min_size or height < LEGACY_SHEET_ROWS * min_size:
+        return []
+    item_w, item_h = width // LEGACY_SHEET_COLS, height // LEGACY_SHEET_ROWS
+    if item_w < min_size or item_h < min_size:
+        return []
+    usable_w, usable_h = item_w * LEGACY_SHEET_COLS, item_h * LEGACY_SHEET_ROWS
+    if usable_w <= 0 or usable_h <= 0:
+        return []
+
+    sprites = []
+    for row in range(LEGACY_SHEET_ROWS):
+        for col in range(LEGACY_SHEET_COLS):
+            crop = rgba.crop((col * item_w, row * item_h, (col + 1) * item_w, (row + 1) * item_h))
+            if _has_visible_pixels(crop):
+                sprites.append(crop)
+    return sprites
+
+
+def _pad_sprites_to_uniform_canvas(sprites: List[Image.Image]) -> List[Image.Image]:
+    if not sprites:
+        return sprites
+    max_w = max(sprite.width for sprite in sprites)
+    max_h = max(sprite.height for sprite in sprites)
+    uniform = []
+    for sprite in sprites:
+        if sprite.width == max_w and sprite.height == max_h:
+            uniform.append(sprite)
+            continue
+        canvas = Image.new("RGBA", (max_w, max_h), (0, 0, 0, 0))
+        x = (max_w - sprite.width) // 2
+        y = max_h - sprite.height
+        canvas.alpha_composite(sprite.convert("RGBA"), (x, y))
+        uniform.append(canvas)
+    return uniform
+
+
 def _crop_sprites(image: Image.Image, min_size: int = MIN_SPRITE_HEIGHT) -> List[Image.Image]:
     rgba, alpha, _ = _rgba_with_alpha(image)
+    grid_sprites = _legacy_grid_sprites(rgba, min_size)
+    if grid_sprites:
+        return grid_sprites
+
     mask_uint8 = (alpha > 10).astype(np.uint8) * 255
     boxes = []
     if cv2 is not None:
@@ -134,13 +185,9 @@ def _crop_sprites(image: Image.Image, min_size: int = MIN_SPRITE_HEIGHT) -> List
     sprites = []
     for x, y, w, h in boxes:
         crop = rgba.crop((x, y, x + w, y + h))
-        if _has_alpha(crop):
-            bbox = crop.getchannel("A").getbbox()
-            if bbox:
-                crop = crop.crop(bbox)
         if crop.width >= min_size and crop.height >= min_size:
             sprites.append(crop)
-    return sprites
+    return _pad_sprites_to_uniform_canvas(sprites)
 
 
 def _connected_component_boxes(mask_uint8: np.ndarray, min_size: int) -> List[Tuple[int, int, int, int]]:
@@ -213,6 +260,129 @@ def _sprite_files(path: str) -> List[str]:
         and os.path.splitext(name)[1].lower() == ".png"
         and name.startswith("sprite_")
     )
+
+
+def _sprite_dirs(root: str) -> List[str]:
+    dirs = []
+    if not os.path.isdir(root):
+        return dirs
+    for walk_root, _dirs, filenames in os.walk(root):
+        if any(
+            os.path.isfile(os.path.join(walk_root, name))
+            and os.path.splitext(name)[1].lower() == ".png"
+            and name.startswith("sprite_")
+            for name in filenames
+        ):
+            dirs.append(walk_root)
+    return sorted(dirs)
+
+
+def _sprite_size_groups(paths: List[str]) -> Dict[Tuple[int, int], List[str]]:
+    groups: Dict[Tuple[int, int], List[str]] = {}
+    for path in paths:
+        try:
+            with Image.open(path) as image:
+                groups.setdefault(image.size, []).append(path)
+        except Exception:
+            continue
+    return groups
+
+
+def _scan_sprite_canvas_issues() -> List[dict]:
+    output_root = base_output_dir()
+    issues = []
+    for directory in _sprite_dirs(output_root):
+        paths = _sprite_files(directory)
+        if len(paths) < 2:
+            continue
+        groups = _sprite_size_groups(paths)
+        if len(groups) <= 1:
+            continue
+        rel = os.path.relpath(directory, output_root)
+        issues.append({
+            "directory": directory,
+            "relative": rel,
+            "count": len(paths),
+            "sizes": [
+                {"width": size[0], "height": size[1], "count": len(group)}
+                for size, group in sorted(groups.items())
+            ],
+        })
+    return issues
+
+
+def _repair_sprite_canvas_folder(directory: str, backup: bool = True) -> dict:
+    paths = _sprite_files(directory)
+    groups = _sprite_size_groups(paths)
+    if len(groups) <= 1:
+        return {"directory": directory, "changed": 0, "skipped": 0, "target_size": None}
+
+    max_w = max(size[0] for size in groups)
+    max_h = max(size[1] for size in groups)
+    backup_dir = ""
+    if backup:
+        backup_dir = os.path.join(directory, f".vnccs_canvas_repair_backup_{int(time.time())}")
+        os.makedirs(backup_dir, exist_ok=True)
+
+    changed = skipped = 0
+    for path in paths:
+        try:
+            with Image.open(path) as image:
+                rgba = image.convert("RGBA")
+            if rgba.size == (max_w, max_h):
+                continue
+            if not _has_alpha(rgba):
+                skipped += 1
+                continue
+            if backup_dir:
+                shutil.copy2(path, os.path.join(backup_dir, os.path.basename(path)))
+            canvas = Image.new("RGBA", (max_w, max_h), (0, 0, 0, 0))
+            x = (max_w - rgba.width) // 2
+            y = max_h - rgba.height
+            canvas.alpha_composite(rgba, (x, y))
+            canvas.save(path, format="PNG")
+            changed += 1
+        except Exception:
+            skipped += 1
+
+    return {
+        "directory": directory,
+        "changed": changed,
+        "skipped": skipped,
+        "target_size": {"width": max_w, "height": max_h},
+        "backup_dir": backup_dir,
+    }
+
+
+def _run_canvas_repair(run_id: str, backup: bool = True) -> None:
+    run = RUNS[run_id]
+    try:
+        issues = _scan_sprite_canvas_issues()
+        _set_status(run, status="running", total=len(issues), current=0)
+        if not issues:
+            _set_status(run, status="done", current=0, total=0, results=[], message="No mismatched sprite canvases found")
+            _log(run, "No mismatched sprite canvases found")
+            return
+
+        results = []
+        for index, issue in enumerate(issues, start=1):
+            _set_status(run, current=index, current_character=issue["relative"], current_sheet="")
+            size_text = ", ".join(f"{item['width']}x{item['height']} ({item['count']})" for item in issue["sizes"])
+            _log(run, f"Repairing {issue['relative']}: {size_text}")
+            result = _repair_sprite_canvas_folder(issue["directory"], backup=backup)
+            results.append(result)
+            target = result.get("target_size") or {}
+            _log(
+                run,
+                f"Repaired {issue['relative']}: padded {result.get('changed', 0)} sprite(s) "
+                f"to {target.get('width')}x{target.get('height')}; skipped {result.get('skipped', 0)}",
+            )
+
+        _set_status(run, status="done", current=len(issues), results=results, message="Sprite canvas repair complete")
+        _log(run, "Sprite canvas repair complete")
+    except Exception as exc:
+        _set_status(run, status="error", error=str(exc), message=str(exc))
+        _log(run, f"Sprite canvas repair failed: {exc}")
 
 
 def _ensure_sprite_alpha(path: str) -> bool:
@@ -432,6 +602,35 @@ if server and web:
         thread = threading.Thread(
             target=_run_migration,
             args=(run_id, characters, bool(data.get("force", False))),
+            daemon=True,
+        )
+        thread.start()
+        return web.json_response({"run_id": run_id})
+
+    @server.PromptServer.instance.routes.post("/vnccs/migration/repair-sprites")
+    async def vnccs_migration_repair_sprites(request):
+        try:
+            validate_privileged_request(request)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=403)
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        run_id = uuid.uuid4().hex
+        RUNS[run_id] = {
+            "id": run_id,
+            "status": "queued",
+            "message": "Queued sprite canvas repair",
+            "log": [],
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "total": 0,
+            "current": 0,
+        }
+        thread = threading.Thread(
+            target=_run_canvas_repair,
+            args=(run_id, bool(data.get("backup", True))),
             daemon=True,
         )
         thread.start()

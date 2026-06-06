@@ -127,9 +127,10 @@ app.registerExtension({
 
             const actions = el("div", "vnccs-ma-actions");
             const scanBtn = el("button", "vnccs-ma-btn", "Scan");
+            const repairBtn = el("button", "vnccs-ma-btn", "Repair Sprites");
             const selectedBtn = el("button", "vnccs-ma-btn primary", "Migrate Selected");
             const allBtn = el("button", "vnccs-ma-btn", "Migrate All");
-            actions.append(scanBtn, selectedBtn, allBtn);
+            actions.append(scanBtn, repairBtn, selectedBtn, allBtn);
             top.append(titleWrap, actions);
 
             const progress = el("div", "vnccs-ma-progress");
@@ -215,6 +216,7 @@ app.registerExtension({
                 selectedBtn.disabled = busy || state.selected.size === 0;
                 allBtn.disabled = busy || !(state.scan?.characters || []).length;
                 scanBtn.disabled = busy;
+                repairBtn.disabled = busy;
             };
 
             const scan = async () => {
@@ -275,7 +277,27 @@ app.registerExtension({
                 }
             };
 
+            const repairSprites = async () => {
+                setBusy(true);
+                log.textContent = "Scanning current VNCCS sprites for mismatched canvases...";
+                try {
+                    const response = await api.fetchApi("/vnccs/migration/repair-sprites", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
+                        body: JSON.stringify({ backup: true }),
+                    });
+                    const data = await response.json();
+                    if (!response.ok || data.error) throw new Error(data.error || "Repair failed");
+                    state.runId = data.run_id;
+                    await poll();
+                } catch (error) {
+                    log.textContent = `Repair failed: ${error?.message || error}`;
+                    setBusy(false);
+                }
+            };
+
             scanBtn.onclick = scan;
+            repairBtn.onclick = repairSprites;
             selectedBtn.onclick = () => start(false);
             allBtn.onclick = () => start(true);
 

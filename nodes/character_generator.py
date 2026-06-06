@@ -2208,6 +2208,98 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             parts[-1] = "face_" + basename[len("sprite_"):]
         return os.sep.join(parts)
 
+    def _source_shape_report(self, data_items, source_items):
+        seen = {}
+        for index, (source_image, _source_mask) in enumerate(source_items):
+            image = self._list_to_batch(source_image)
+            if not torch.is_tensor(image) or image.ndim != 4:
+                continue
+            shape = (int(image.shape[2]), int(image.shape[1]))
+            meta = data_items[index] if index < len(data_items) and isinstance(data_items[index], dict) else {}
+            source_path = str(meta.get("source_path", "") or f"source #{index + 1}")
+            seen.setdefault(shape, []).append(source_path)
+        if len(seen) <= 1:
+            return None
+
+        lines = []
+        for shape, paths in sorted(seen.items()):
+            preview = ", ".join(os.path.basename(path) for path in paths[:4])
+            if len(paths) > 4:
+                preview += f", +{len(paths) - 4} more"
+            lines.append(f"{shape[0]}x{shape[1]}: {preview}")
+        return (
+            "Emotion source sprites have different canvas sizes. VNCCS Emotions Generator will not resize "
+            "or stretch source sprites. Regenerate or remigrate the source sprites so every selected sprite "
+            "has the same size.\n" + "\n".join(lines)
+        )
+
+    def _pad_tensor_image(self, image, target_hw):
+        image = self._list_to_batch(image)
+        if not torch.is_tensor(image) or image.ndim != 4 or target_hw is None:
+            return image
+        target_h, target_w = int(target_hw[0]), int(target_hw[1])
+        h, w = int(image.shape[1]), int(image.shape[2])
+        if (h, w) == (target_h, target_w):
+            return image
+        if h > target_h or w > target_w:
+            return None
+        padded = torch.zeros((image.shape[0], target_h, target_w, image.shape[3]), dtype=image.dtype, device=image.device)
+        y = target_h - h
+        x = (target_w - w) // 2
+        padded[:, y:y + h, x:x + w, :] = image
+        return padded
+
+    def _pad_tensor_mask(self, mask, target_hw):
+        if mask is None or target_hw is None:
+            return mask
+        if not torch.is_tensor(mask):
+            return mask
+        item = mask
+        if item.ndim == 2:
+            item = item.unsqueeze(0)
+        if item.ndim == 4 and item.shape[-1] == 1:
+            item = item[..., 0]
+        if item.ndim != 3:
+            return mask
+        target_h, target_w = int(target_hw[0]), int(target_hw[1])
+        h, w = int(item.shape[-2]), int(item.shape[-1])
+        if (h, w) == (target_h, target_w):
+            return item
+        if h > target_h or w > target_w:
+            return None
+        padded = torch.ones((item.shape[0], target_h, target_w), dtype=item.dtype, device=item.device)
+        y = target_h - h
+        x = (target_w - w) // 2
+        padded[:, y:y + h, x:x + w] = item
+        return padded
+
+    def _pad_alpha_sources_to_uniform_canvas(self, data_items, source_items):
+        shapes = []
+        for source_image, _source_mask in source_items:
+            image = self._list_to_batch(source_image)
+            if torch.is_tensor(image) and image.ndim == 4:
+                shapes.append((int(image.shape[1]), int(image.shape[2])))
+        if not shapes:
+            return source_items, None
+        target_hw = (max(shape[0] for shape in shapes), max(shape[1] for shape in shapes))
+        if len(set(shapes)) <= 1:
+            return source_items, target_hw
+        if any(source_mask is None for _source_image, source_mask in source_items):
+            raise RuntimeError(self._source_shape_report(data_items, source_items))
+
+        padded_items = []
+        for source_image, source_mask in source_items:
+            padded_image = self._pad_tensor_image(source_image, target_hw)
+            padded_mask = self._pad_tensor_mask(source_mask, target_hw)
+            if padded_image is None or padded_mask is None:
+                raise RuntimeError(self._source_shape_report(data_items, source_items))
+            padded_items.append((padded_image, padded_mask))
+        print(
+            "[VNCCS Emotions Generator] Padded source sprites to uniform transparent canvas "
+            f"{target_hw[1]}x{target_hw[0]} without resizing content."
+        )
+        return padded_items, target_hw
+
     def _rotate_existing_images(self, directory):
         directory = str(directory or "").strip()
         if not directory or not os.path.isdir(directory):
@@ -2377,9 +2469,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 source_items.append((source_image, source_mask))
         emotion_target_hw = None
         if source_items:
-            first_source = self._list_to_batch(source_items[0][0])
-            if torch.is_tensor(first_source) and first_source.ndim == 4:
-                emotion_target_hw = (int(first_source.shape[1]), int(first_source.shape[2]))
+            source_items, emotion_target_hw = self._pad_alpha_sources_to_uniform_canvas(data_items, source_items)
             normalized_sources = []
             for source_image, source_mask in source_items:
                 source_image = self._safe_image_batch(source_image, target_hw=emotion_target_hw, stage="emotion source")
