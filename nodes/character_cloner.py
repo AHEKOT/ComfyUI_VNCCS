@@ -18,9 +18,9 @@ import traceback
 
 from ..utils import (
     load_character_info, save_config,
-    character_dir, sheets_dir, MAIN_DIRS, EMOTIONS
+    character_dir, sheets_dir, MAIN_DIRS, EMOTIONS,
+    safe_join_under, safe_relative_path
 )
-from ._safe_utils import safe_join_under, safe_relative_path
 
 SKIN_COLOR_OPTIONS = [
     "light skin",

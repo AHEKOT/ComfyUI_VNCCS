@@ -3,7 +3,6 @@
 import json
 import os
 import sys
-import importlib
 import types
 import tomllib
 
@@ -322,25 +321,6 @@ class TestPathHelpers:
     def test_safe_relative_path_rejects_unsafe_paths(self, bad):
         with pytest.raises(ValueError):
             U.safe_relative_path(bad)
-
-    def test_node_safe_utils_fallback_when_utils_is_old(self, monkeypatch):
-        original_utils = sys.modules.get("_vnccs.utils")
-        fake_utils = types.ModuleType("_vnccs.utils")
-        monkeypatch.setitem(sys.modules, "_vnccs.utils", fake_utils)
-        sys.modules.pop("_vnccs.nodes._safe_utils", None)
-        try:
-            safe_mod = importlib.import_module("_vnccs.nodes._safe_utils")
-            with pytest.raises(ValueError):
-                safe_mod.ensure_safe_name("../bad", "character")
-            with pytest.raises(ValueError):
-                safe_mod.ensure_safe_name("<script>", "character")
-            assert safe_mod.safe_relative_path("A\\B") == "A/B"
-            with pytest.raises(ValueError):
-                safe_mod.safe_relative_path("C:\\Users\\Alice")
-        finally:
-            sys.modules.pop("_vnccs.nodes._safe_utils", None)
-            if original_utils is not None:
-                monkeypatch.setitem(sys.modules, "_vnccs.utils", original_utils)
 
     def test_config_path_filename(self):
         path = U.config_path("Alice")
