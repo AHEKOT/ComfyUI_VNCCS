@@ -132,4 +132,13 @@ class VNCCS_AdvancedPlyViewer:
         }
         
         return {"ui": ui_data, "result": (image_out, extrinsics_tgt, intrinsics_tgt)}
+
+
+NODE_CLASS_MAPPINGS = {
+    "VNCCS_AdvancedPlyViewer": VNCCS_AdvancedPlyViewer,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "VNCCS_AdvancedPlyViewer": "👁️ Advanced PLY Viewer",
+}
         

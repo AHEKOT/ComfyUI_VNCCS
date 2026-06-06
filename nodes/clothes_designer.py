@@ -968,3 +968,12 @@ async def vnccs_get_preview(request):
              return web.Response(body=f.read(), content_type="image/png")
              
     return web.Response(status=404)
+
+
+NODE_CLASS_MAPPINGS = {
+    "ClothesDesigner": ClothesDesigner,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "ClothesDesigner": "VNCCS Clothes Designer",
+}

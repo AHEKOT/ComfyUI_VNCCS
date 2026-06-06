@@ -720,3 +720,12 @@ Structure the response as a raw JSON object. Do not output the word 'tag' as a v
         except Exception as e:
             traceback.print_exc()
             return web.Response(status=500, text=str(e))
+
+
+NODE_CLASS_MAPPINGS = {
+    "CharacterCloner": CharacterCloner,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "CharacterCloner": "VNCCS Character Cloner",
+}

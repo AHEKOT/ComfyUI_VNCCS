@@ -2364,7 +2364,18 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         Image.fromarray(np.dstack([rgb_arr[..., :3], alpha]), mode="RGBA").save(path, format="PNG")
         return path
 
-    def _run_emotion_generation_one(self, image, mask, pipe, emotion_prompt, positive_prompt, negative_prompt, seed, face_denoise=0.55):
+    def _run_emotion_generation_one(
+        self,
+        image,
+        mask,
+        pipe,
+        emotion_prompt,
+        positive_prompt,
+        negative_prompt,
+        seed,
+        face_denoise=0.55,
+        bbox_crop_factor=1.0,
+    ):
         pipe_values = self._extract_pipe(pipe)
 
         positive = _call_comfy_node(
@@ -2417,7 +2428,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             force_inpaint=True,
             bbox_threshold=0.1,
             bbox_dilation=10,
-            bbox_crop_factor=1.7,
+            bbox_crop_factor=float(bbox_crop_factor),
             sam_detection_hint="center-1",
             sam_dilation=25,
             sam_threshold=0.93,

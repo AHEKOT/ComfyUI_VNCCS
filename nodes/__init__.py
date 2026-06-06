@@ -20,12 +20,13 @@ try:
     from .vnccs_api import NODE_CLASS_MAPPINGS as VNCCS_API_MAPPINGS
     from .vnccs_control_center import NODE_CLASS_MAPPINGS as VNCCS_CONTROL_CENTER_MAPPINGS
     from .character_generator import NODE_CLASS_MAPPINGS as CHARACTER_GENERATOR_MAPPINGS
-    from .character_creator_v2 import CharacterCreatorV2
-    from .character_cloner import CharacterCloner
-    from .clothes_designer import ClothesDesigner
-    from .migration_assistant import VNCCS_MigrationAssistant
-    from .sprite_manager import SpriteManager
-    from .advanced_ply_viewer import VNCCS_AdvancedPlyViewer
+    from .service_nodes import NODE_CLASS_MAPPINGS as SERVICE_NODES_MAPPINGS
+    from .character_creator_v2 import NODE_CLASS_MAPPINGS as CHARACTER_CREATOR_V2_MAPPINGS
+    from .character_cloner import NODE_CLASS_MAPPINGS as CHARACTER_CLONER_MAPPINGS
+    from .clothes_designer import NODE_CLASS_MAPPINGS as CLOTHES_DESIGNER_MAPPINGS
+    from .migration_assistant import NODE_CLASS_MAPPINGS as MIGRATION_ASSISTANT_MAPPINGS
+    from .sprite_manager import NODE_CLASS_MAPPINGS as SPRITE_MANAGER_MAPPINGS
+    from .advanced_ply_viewer import NODE_CLASS_MAPPINGS as ADVANCED_PLY_VIEWER_MAPPINGS
 
 
     from .character_creator import NODE_DISPLAY_NAME_MAPPINGS as CHARACTER_CREATOR_DISPLAY_MAPPINGS
@@ -46,6 +47,13 @@ try:
     from .vnccs_api import NODE_DISPLAY_NAME_MAPPINGS as VNCCS_API_DISPLAY_MAPPINGS
     from .vnccs_control_center import NODE_DISPLAY_NAME_MAPPINGS as VNCCS_CONTROL_CENTER_DISPLAY_MAPPINGS
     from .character_generator import NODE_DISPLAY_NAME_MAPPINGS as CHARACTER_GENERATOR_DISPLAY_MAPPINGS
+    from .service_nodes import NODE_DISPLAY_NAME_MAPPINGS as SERVICE_NODES_DISPLAY_MAPPINGS
+    from .character_creator_v2 import NODE_DISPLAY_NAME_MAPPINGS as CHARACTER_CREATOR_V2_DISPLAY_MAPPINGS
+    from .character_cloner import NODE_DISPLAY_NAME_MAPPINGS as CHARACTER_CLONER_DISPLAY_MAPPINGS
+    from .clothes_designer import NODE_DISPLAY_NAME_MAPPINGS as CLOTHES_DESIGNER_DISPLAY_MAPPINGS
+    from .migration_assistant import NODE_DISPLAY_NAME_MAPPINGS as MIGRATION_ASSISTANT_DISPLAY_MAPPINGS
+    from .sprite_manager import NODE_DISPLAY_NAME_MAPPINGS as SPRITE_MANAGER_DISPLAY_MAPPINGS
+    from .advanced_ply_viewer import NODE_DISPLAY_NAME_MAPPINGS as ADVANCED_PLY_VIEWER_DISPLAY_MAPPINGS
 
 
     NODE_CLASS_MAPPINGS = {
@@ -67,13 +75,13 @@ try:
         **VNCCS_API_MAPPINGS,
         **VNCCS_CONTROL_CENTER_MAPPINGS,
         **CHARACTER_GENERATOR_MAPPINGS,
-
-        "CharacterCreatorV2": CharacterCreatorV2,
-        "CharacterCloner": CharacterCloner,
-        "ClothesDesigner": ClothesDesigner,
-        "VNCCS_MigrationAssistant": VNCCS_MigrationAssistant,
-        "SpriteManager": SpriteManager,
-        "VNCCS_AdvancedPlyViewer": VNCCS_AdvancedPlyViewer,
+        **SERVICE_NODES_MAPPINGS,
+        **CHARACTER_CREATOR_V2_MAPPINGS,
+        **CHARACTER_CLONER_MAPPINGS,
+        **CLOTHES_DESIGNER_MAPPINGS,
+        **MIGRATION_ASSISTANT_MAPPINGS,
+        **SPRITE_MANAGER_MAPPINGS,
+        **ADVANCED_PLY_VIEWER_MAPPINGS,
     }
 
     NODE_DISPLAY_NAME_MAPPINGS = {
@@ -95,13 +103,13 @@ try:
         **VNCCS_API_DISPLAY_MAPPINGS,
         **VNCCS_CONTROL_CENTER_DISPLAY_MAPPINGS,
         **CHARACTER_GENERATOR_DISPLAY_MAPPINGS,
-
-        "CharacterCreatorV2": "VNCCS Character Creator V2",
-        "CharacterCloner": "VNCCS Character Cloner",
-        "ClothesDesigner": "VNCCS Clothes Designer",
-        "VNCCS_MigrationAssistant": "VNCCS Migration Assistant",
-        "SpriteManager": "VNCCS Sprite Manager",
-        "VNCCS_AdvancedPlyViewer": "👁️ Advanced PLY Viewer",
+        **SERVICE_NODES_DISPLAY_MAPPINGS,
+        **CHARACTER_CREATOR_V2_DISPLAY_MAPPINGS,
+        **CHARACTER_CLONER_DISPLAY_MAPPINGS,
+        **CLOTHES_DESIGNER_DISPLAY_MAPPINGS,
+        **MIGRATION_ASSISTANT_DISPLAY_MAPPINGS,
+        **SPRITE_MANAGER_DISPLAY_MAPPINGS,
+        **ADVANCED_PLY_VIEWER_DISPLAY_MAPPINGS,
     }
 except Exception as e:
     import traceback

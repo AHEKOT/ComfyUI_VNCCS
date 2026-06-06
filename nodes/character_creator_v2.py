@@ -1440,3 +1440,12 @@ class CharacterCreatorV2:
             sheets_path,
             background_color
         )
+
+
+NODE_CLASS_MAPPINGS = {
+    "CharacterCreatorV2": CharacterCreatorV2,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "CharacterCreatorV2": "VNCCS Character Creator V2",
+}
