@@ -36,8 +36,9 @@ const DEFAULT_DATA = {
         latent_noise_scale: 0,
         blocks_to_swap: 0,
         swap_io_components: false,
-        cache_dit: false,
+        cache_dit: true,
         attention_mode: "sdpa",
+        attention_mode_manual: false,
         encode_tiled: true,
         encode_tile_size: 1024,
         encode_tile_overlap: 128,
@@ -113,6 +114,8 @@ const WORKFLOW_GAN_UPSCALER_MODELS = [
     "2x_APISR_RRDB_GAN_generator.pth",
     "4x_APISR_GRL_GAN_generator.pth",
 ];
+
+const SEEDVR_ATTENTION_MODES = ["sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3"];
 
 const POSE_GENERATION_LORA_LABEL = "VNCCS Pose Studio QIE2511";
 const CLOTHES_CORE_LORA_LABEL = "VNCCS Clothes Core";
@@ -694,6 +697,7 @@ class CharacterGeneratorWidget {
         this.isEmotions = Boolean(options.isEmotions);
         this.title = options.title || "VNCCS Character Generator";
         this.data = readData(node);
+        this.seedvrAttention = { current: null, available: SEEDVR_ATTENTION_MODES };
         this.syncCharacterSourceData();
         this.stages = this.currentStages();
         this.stageState = Object.fromEntries(this.stages.map(([key]) => [key, { status: "waiting", images: null, message: "" }]));
@@ -1357,7 +1361,29 @@ class CharacterGeneratorWidget {
                 this.nodeDefs[name] = allNodeDefs[name];
             }
         }
+        await this.loadSeedvrAttentionInfo();
         this.renderSettings();
+    }
+
+    async loadSeedvrAttentionInfo() {
+        try {
+            const r = await api.fetchApi("/vnccs/character_generator/seedvr_attention");
+            if (!r.ok) return;
+            const data = await r.json();
+            const available = Array.isArray(data?.available) && data.available.length ? data.available : SEEDVR_ATTENTION_MODES;
+            this.seedvrAttention = {
+                current: data?.current || "sdpa",
+                available: uniqueOptions([data?.current, ...available, ...SEEDVR_ATTENTION_MODES]),
+            };
+            const upscaler = this.data.upscaler || {};
+            if (!upscaler.attention_mode_manual && (!upscaler.attention_mode || upscaler.attention_mode === "sdpa") && data?.current) {
+                upscaler.attention_mode = data.current;
+                this.data.upscaler = upscaler;
+                writeData(this.node, this.data);
+            }
+        } catch {
+            this.seedvrAttention = { current: null, available: SEEDVR_ATTENTION_MODES };
+        }
     }
 
     getInputSpec(nodeName, inputName) {
@@ -1403,6 +1429,7 @@ class CharacterGeneratorWidget {
             gan_model: "Upscale model used when GAN upscaling is selected.",
             model: "SeedVR diffusion model used for the upscaler stage.",
             resolution: "Output resolution target for SeedVR upscaling.",
+            attention_mode: "Attention backend for SeedVR. Auto-detected from installed ComfyUI packages until changed manually.",
             use_internal_rmbg: "Uses the built-in background remover instead of relying only on chroma key.",
             preset: "Strength preset for chroma/background removal."
         }[key];
@@ -1439,6 +1466,9 @@ class CharacterGeneratorWidget {
         input.value = this.data[section][key];
         input.oninput = () => {
             const raw = type === "number" ? Number(input.value) : input.value;
+            if (section === "upscaler" && key === "attention_mode") {
+                this.data.upscaler.attention_mode_manual = true;
+            }
             this.set(section, key, raw);
         };
         wrap.append(caption, input);
@@ -1564,6 +1594,7 @@ class CharacterGeneratorWidget {
             upscalerFields.push(
                 this.field("upscaler", "model", "dit model", "select", this.getWorkflowModelOptions("SeedVR2LoadDiTModel", "model", WORKFLOW_UPSCALER_DIT_MODELS, this.data.upscaler.model)),
                 this.field("upscaler", "resolution", "resolution", "number"),
+                this.field("upscaler", "attention_mode", "attention mode", "select", this.getOptions("SeedVR2LoadDiTModel", "attention_mode", this.seedvrAttention.available, this.data.upscaler.attention_mode)),
             );
         }
         this.settingsEl.appendChild(this.block("Upscaler", upscalerFields));

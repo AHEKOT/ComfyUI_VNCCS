@@ -982,6 +982,7 @@ app.registerExtension({
                 const state = {
                     character: "",
                     source_images: [], // List of filenames
+                    source_images_character: "",
                     selected_preview_sprite: null,
                     character_info: {
                         sex: "female", age: 18, race: "human", skin_color: "",
@@ -1156,6 +1157,11 @@ app.registerExtension({
                             }
                             if (Array.isArray(parsed.source_images)) {
                                 state.source_images = parsed.source_images;
+                            }
+                            if (Object.prototype.hasOwnProperty.call(parsed, "source_images_character")) {
+                                state.source_images_character = parsed.source_images_character || "";
+                            } else if (state.source_images.length && !state.source_images_character) {
+                                state.source_images_character = state.character || "";
                             }
                             if (Object.prototype.hasOwnProperty.call(parsed, "selected_idx")) {
                                 state.selected_idx = parsed.selected_idx;
@@ -1406,6 +1412,28 @@ app.registerExtension({
                 let renderThumbs = () => { };
                 let spritePreviewNavigator = null;
 
+                const clearSourceImages = () => {
+                    state.source_images = [];
+                    state.selected_idx = 0;
+                    state.source_images_character = state.character || "";
+                    state.char_preview_url = null;
+                    state.selected_preview_sprite = null;
+                    if (fileInput) fileInput.value = "";
+                    renderThumbs();
+                };
+
+                const setCharacter = async (name, { clearSources = false, skipInfoLoad = false } = {}) => {
+                    const nextName = name || "";
+                    const changed = state.character !== nextName;
+                    state.character = nextName;
+                    if (els.charSelect) els.charSelect.value = nextName;
+                    if (clearSources && changed) {
+                        clearSourceImages();
+                    }
+                    await loadChar(state.character, skipInfoLoad);
+                    saveState();
+                };
+
                 const updateUIFromState = () => {
                     // Fields
                     for (let k in state.character_info) {
@@ -1623,9 +1651,7 @@ app.registerExtension({
                                     await api.fetchApi(`/vnccs/create?name=${encodeURIComponent(n)}`);
                                     const exists = Array.from(els.charSelect.options).some(o => o.value === n);
                                     if (!exists) els.charSelect.add(new Option(n, n));
-                                    state.character = n; els.charSelect.value = n;
-                                    await loadChar(n);
-                                    saveState();
+                                    await setCharacter(n, { clearSources: true });
                                     return false;
                                 } catch (e) {
                                     showModal("Error", () => { const d = document.createElement("div"); d.innerText = "Create Failed: " + e; return d; }, [{ text: "Close" }]);
@@ -1662,11 +1688,8 @@ app.registerExtension({
                                     if (r.ok) {
                                         const idx = Array.from(els.charSelect.options).findIndex(o => o.value === charName);
                                         if (idx > -1) els.charSelect.remove(idx);
-                                        if (els.charSelect.options.length > 0) state.character = els.charSelect.options[0].value;
-                                        else state.character = "";
-                                        els.charSelect.value = state.character;
-                                        await loadChar(state.character);
-                                        saveState();
+                                        const nextCharacter = els.charSelect.options.length > 0 ? els.charSelect.options[0].value : "";
+                                        await setCharacter(nextCharacter, { clearSources: true });
                                         return false;
                                     }
                                 } catch (e) {
@@ -1700,9 +1723,7 @@ app.registerExtension({
                 const charSel = document.createElement("select");
                 charSel.className = "vnccs-cloner-select";
                 charSel.onchange = async (e) => {
-                    state.character = e.target.value;
-                    await loadChar(state.character);
-                    saveState();
+                    await setCharacter(e.target.value, { clearSources: true });
                 };
                 els.charSelect = charSel;
                 charRow.appendChild(charSel);
@@ -1801,6 +1822,7 @@ app.registerExtension({
                                         type: json.type || "input",
                                         subfolder: json.subfolder || ""
                                     });
+                                    state.source_images_character = state.character || "";
                                 }
                             } catch (err) {
                                 showModal("Upload Error", () => { const d = document.createElement("div"); d.innerText = "Upload Failed: " + err; return d; }, [{ text: "Close" }]);

@@ -6,6 +6,8 @@ DOM widget for stage previews/settings.
 """
 
 import base64
+import gc
+import importlib
 import inspect
 import io
 import json
@@ -35,6 +37,11 @@ try:
 except Exception:  # pragma: no cover
     server = None
 
+try:
+    import comfy.model_management as model_management
+except Exception:  # pragma: no cover
+    model_management = None
+
 from .vnccs_pipe import VNCCS_Pipe
 from .vnccs_control_center import (
     _apply_lora_standard,
@@ -55,6 +62,40 @@ from ..utils import (
 
 
 _LIVE_GENERATOR_CONTEXTS = {}
+SEEDVR_ATTENTION_MODES = ("sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3")
+
+
+def _can_import_attr(module_name, attr_name):
+    try:
+        module = importlib.import_module(module_name)
+        return getattr(module, attr_name, None) is not None
+    except (ImportError, AttributeError, OSError, RuntimeError, ValueError):
+        return False
+
+
+def _available_seedvr_attention_modes():
+    modes = ["sdpa"]
+    if _can_import_attr("flash_attn", "flash_attn_varlen_func"):
+        try:
+            importlib.import_module("flash_attn_2_cuda")
+            modes.append("flash_attn_2")
+        except (ImportError, OSError, RuntimeError, ValueError):
+            pass
+    if _can_import_attr("flash_attn_interface", "flash_attn_varlen_func"):
+        modes.append("flash_attn_3")
+    if _can_import_attr("sageattention", "sageattn_varlen"):
+        modes.append("sageattn_2")
+    if _can_import_attr("sageattn3", "sageattn3_blackwell") or _can_import_attr("sageattention", "sageattn_blackwell"):
+        modes.append("sageattn_3")
+    return modes
+
+
+def _detect_seedvr_attention_mode():
+    available = set(_available_seedvr_attention_modes())
+    for mode in ("flash_attn_3", "flash_attn_2", "sageattn_3", "sageattn_2", "sdpa"):
+        if mode in available:
+            return mode
+    return "sdpa"
 
 
 def _folder_list(kind, fallback):
@@ -572,8 +613,9 @@ DEFAULT_WIDGET_DATA = {
         "latent_noise_scale": 0,
         "blocks_to_swap": 0,
         "swap_io_components": False,
-        "cache_dit": False,
-        "attention_mode": "sdpa",
+        "cache_dit": True,
+        "attention_mode": _detect_seedvr_attention_mode(),
+        "attention_mode_manual": False,
         "encode_tiled": True,
         "encode_tile_size": 1024,
         "encode_tile_overlap": 128,
@@ -998,6 +1040,7 @@ class VNCCS_CharacterGenerator:
             weight2=1,
             weight3=1,
             vl_size=384,
+            background_color=str(background or "White"),
             latent_image_index=1,
             instruction=(
                 "Describe the character and their key features (body shape, physical characteristics, clothing, "
@@ -1055,6 +1098,7 @@ class VNCCS_CharacterGenerator:
             weight2=1,
             weight3=1,
             vl_size=384,
+            background_color="White",
             latent_image_index=1,
             instruction=(
                 "Describe the character and their key features (body shape, physical characteristics, clothing, "
@@ -1099,31 +1143,55 @@ class VNCCS_CharacterGenerator:
 
     def _run_upscaler_models(self, settings):
         defaults = DEFAULT_WIDGET_DATA["upscaler"]
+        self._clean_vram_for_seedvr()
+        cache_dit = bool(settings.get("cache_dit", defaults["cache_dit"]))
+        if defaults["cache_dit"] and not cache_dit:
+            # Legacy VNCCS widget_data stored this hidden SeedVR option as false.
+            # The working standalone SeedVR graph keeps the DiT model cached.
+            cache_dit = True
         dit = _call_comfy_node(
             "SeedVR2LoadDiTModel",
             model=settings["model"],
-            device=defaults["device"],
-            blocks_to_swap=int(defaults["blocks_to_swap"]),
-            swap_io_components=bool(defaults["swap_io_components"]),
-            offload_device=defaults["offload_device"],
-            cache_model=bool(defaults["cache_dit"]),
-            attention_mode=defaults["attention_mode"],
+            device=settings.get("device", defaults["device"]),
+            blocks_to_swap=int(settings.get("blocks_to_swap", defaults["blocks_to_swap"])),
+            swap_io_components=bool(settings.get("swap_io_components", defaults["swap_io_components"])),
+            offload_device=settings.get("offload_device", defaults["offload_device"]),
+            cache_model=cache_dit,
+            attention_mode=self._resolve_seedvr_attention_mode(settings),
         )[0]
         vae = _call_comfy_node(
             "SeedVR2LoadVAEModel",
-            model=defaults["vae"],
-            device=defaults["device"],
-            encode_tiled=bool(defaults["encode_tiled"]),
-            encode_tile_size=int(defaults["encode_tile_size"]),
-            encode_tile_overlap=int(defaults["encode_tile_overlap"]),
-            decode_tiled=bool(defaults["decode_tiled"]),
-            decode_tile_size=int(defaults["decode_tile_size"]),
-            decode_tile_overlap=int(defaults["decode_tile_overlap"]),
-            tile_debug=defaults["tile_debug"],
-            offload_device=defaults["offload_device"],
-            cache_model=bool(defaults["cache_vae"]),
+            model=settings.get("vae", defaults["vae"]),
+            device=settings.get("device", defaults["device"]),
+            encode_tiled=bool(settings.get("encode_tiled", defaults["encode_tiled"])),
+            encode_tile_size=int(settings.get("encode_tile_size", defaults["encode_tile_size"])),
+            encode_tile_overlap=int(settings.get("encode_tile_overlap", defaults["encode_tile_overlap"])),
+            decode_tiled=bool(settings.get("decode_tiled", defaults["decode_tiled"])),
+            decode_tile_size=int(settings.get("decode_tile_size", defaults["decode_tile_size"])),
+            decode_tile_overlap=int(settings.get("decode_tile_overlap", defaults["decode_tile_overlap"])),
+            tile_debug=settings.get("tile_debug", defaults["tile_debug"]),
+            offload_device=settings.get("offload_device", defaults["offload_device"]),
+            cache_model=bool(settings.get("cache_vae", defaults["cache_vae"])),
         )[0]
         return dit, vae
+
+    def _resolve_seedvr_attention_mode(self, settings):
+        defaults = DEFAULT_WIDGET_DATA["upscaler"]
+        requested = str(settings.get("attention_mode", "") or "").strip()
+        manual = _as_bool(settings.get("attention_mode_manual", False), False)
+        if not manual and requested in {"", "sdpa"}:
+            return _detect_seedvr_attention_mode()
+        if requested in SEEDVR_ATTENTION_MODES:
+            return requested
+        return defaults.get("attention_mode", "sdpa")
+
+    def _clean_vram_for_seedvr(self):
+        gc.collect()
+        if model_management is not None:
+            model_management.unload_all_models()
+            model_management.soft_empty_cache()
+        elif torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def _run_gan_upscaler_model(self, settings):
         return _call_comfy_node(
@@ -1147,6 +1215,13 @@ class VNCCS_CharacterGenerator:
             background=str(background or "Green"),
         )[0]
 
+    def _run_seedvr_upscale_batch(self, images, dit, vae, settings, seed, stage="upscaler"):
+        batch = self._safe_image_batch(images, stage=f"{stage} SeedVR input")
+        if not torch.is_tensor(batch) or batch.ndim != 4 or batch.shape[0] == 0:
+            return []
+        upscaled = self._run_seedvr_upscale_one(batch, dit, vae, settings, seed)
+        return self._split_batch(upscaled)
+
     def _run_seedvr_upscale_one(self, image, dit, vae, settings, seed):
         defaults = DEFAULT_WIDGET_DATA["upscaler"]
         return _call_comfy_node(
@@ -1156,16 +1231,16 @@ class VNCCS_CharacterGenerator:
             vae=vae,
             seed=int(seed),
             resolution=int(settings["resolution"]),
-            max_resolution=int(defaults["max_resolution"]),
-            batch_size=int(defaults["batch_size"]),
-            uniform_batch_size=bool(defaults["uniform_batch_size"]),
-            color_correction=defaults["color_correction"],
-            temporal_overlap=int(defaults["temporal_overlap"]),
-            prepend_frames=int(defaults["prepend_frames"]),
-            input_noise_scale=float(defaults["input_noise_scale"]),
-            latent_noise_scale=float(defaults["latent_noise_scale"]),
-            offload_device=defaults["offload_device"],
-            enable_debug=bool(defaults["enable_debug"]),
+            max_resolution=int(settings.get("max_resolution", defaults["max_resolution"])),
+            batch_size=int(settings.get("batch_size", defaults["batch_size"])),
+            uniform_batch_size=bool(settings.get("uniform_batch_size", defaults["uniform_batch_size"])),
+            color_correction=settings.get("color_correction", defaults["color_correction"]),
+            temporal_overlap=int(settings.get("temporal_overlap", defaults["temporal_overlap"])),
+            prepend_frames=int(settings.get("prepend_frames", defaults["prepend_frames"])),
+            input_noise_scale=float(settings.get("input_noise_scale", defaults["input_noise_scale"])),
+            latent_noise_scale=float(settings.get("latent_noise_scale", defaults["latent_noise_scale"])),
+            offload_device=settings.get("offload_device", defaults["offload_device"]),
+            enable_debug=bool(settings.get("enable_debug", defaults["enable_debug"])),
         )[0]
 
     def _run_gan_upscale_one(self, image, upscale_model):
@@ -1213,22 +1288,34 @@ class VNCCS_CharacterGenerator:
             return self._safe_image_batch(results, stage=stage) if results else image
 
         dit, vae = self._run_upscaler_models(settings)
-        results = []
-        for index, item in enumerate(images, start=1):
-            result = self._run_upscale_one(item, dit, vae, background, settings, seed, use_internal_rmbg=use_internal_rmbg)
-            results.append(self._list_to_batch(result))
-            partial = self._safe_image_batch(results, stage=f"{stage} partial")
-            self._emit(
-                unique_id,
-                stage,
-                "running" if index < total else "done",
-                partial,
-                f"Upscaled image {index} of {total}",
-                index,
-                total,
-                cache_dir=cache_dir,
-            )
-        return self._safe_image_batch(results, stage=stage) if results else image
+        results = self._run_seedvr_upscale_batch(images, dit, vae, settings, seed, stage=stage)
+        result_batch = self._safe_image_batch(results, stage=stage) if results else self._list_to_batch(image)
+        if _as_bool(use_internal_rmbg, True):
+            result_batch = VNCCS_RMBG2().process_image(
+                result_batch,
+                "RMBG-2.0",
+                sensitivity=0.85,
+                process_res=1024,
+                mask_blur=0,
+                mask_offset=0,
+                invert_output=False,
+                refine_foreground=False,
+                background=str(background or "Green"),
+            )[0]
+            results = self._split_batch(result_batch)
+            result_batch = self._safe_image_batch(results, stage=stage) if results else result_batch
+        done_total = result_batch.shape[0] if torch.is_tensor(result_batch) and result_batch.ndim == 4 else total
+        self._emit(
+            unique_id,
+            stage,
+            "done",
+            result_batch,
+            f"SeedVR upscaled batch of {done_total} image(s)",
+            done_total,
+            done_total,
+            cache_dir=cache_dir,
+        )
+        return result_batch
 
     def _run_source_upscaler(self, image, settings, seed, unique_id=None, cache_dir=None, stage="source_upscaler"):
         images = self._split_batch(image)
@@ -1268,22 +1355,20 @@ class VNCCS_CharacterGenerator:
             return self._safe_image_batch(results, stage=stage) if results else image
 
         dit, vae = self._run_upscaler_models(settings)
-        results = []
-        for index, item in enumerate(images, start=1):
-            result = self._run_seedvr_upscale_one(item, dit, vae, settings, seed)
-            results.append(self._list_to_batch(result))
-            partial = self._safe_image_batch(results, stage=f"{stage} partial")
-            self._emit(
-                unique_id,
-                stage,
-                "running" if index < total else "done",
-                partial,
-                f"Upscaled source image {index} of {total}",
-                index,
-                total,
-                cache_dir=cache_dir,
-            )
-        return self._safe_image_batch(results, stage=stage) if results else image
+        results = self._run_seedvr_upscale_batch(images, dit, vae, settings, seed, stage=stage)
+        result_batch = self._safe_image_batch(results, stage=stage) if results else self._list_to_batch(image)
+        done_total = result_batch.shape[0] if torch.is_tensor(result_batch) and result_batch.ndim == 4 else total
+        self._emit(
+            unique_id,
+            stage,
+            "done",
+            result_batch,
+            f"SeedVR upscaled source batch of {done_total} image(s)",
+            done_total,
+            done_total,
+            cache_dir=cache_dir,
+        )
+        return result_batch
 
     def _screen_mode_from_background(self, background):
         normalized = str(background or "").strip().lower()
@@ -2367,6 +2452,15 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
 
 
 if server is not None:
+    @server.PromptServer.instance.routes.get("/vnccs/character_generator/seedvr_attention")
+    async def vnccs_character_generator_seedvr_attention(request):
+        available = _available_seedvr_attention_modes()
+        return web.json_response({
+            "current": _detect_seedvr_attention_mode(),
+            "available": available,
+            "options": list(SEEDVR_ATTENTION_MODES),
+        })
+
     @server.PromptServer.instance.routes.post("/vnccs/character_generator/regenerate")
     async def vnccs_character_generator_regenerate(request):
         try:

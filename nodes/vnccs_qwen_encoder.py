@@ -69,6 +69,27 @@ except Exception:
     Image = None
 
 
+ENCODER_BACKGROUND_RGB = {
+    "white": (1.0, 1.0, 1.0),
+    "green": (0.0, 1.0, 0.0),
+    "blue": (0.0, 0.0, 1.0),
+}
+
+
+def _encoder_background_rgb(background_color):
+    if isinstance(background_color, str):
+        value = background_color.strip()
+        lowered = value.lower()
+        if lowered in ENCODER_BACKGROUND_RGB:
+            return ENCODER_BACKGROUND_RGB[lowered]
+        if lowered.startswith("#") and len(lowered) == 7:
+            try:
+                return tuple(int(lowered[i:i + 2], 16) / 255.0 for i in (1, 3, 5))
+            except ValueError:
+                pass
+    return ENCODER_BACKGROUND_RGB["white"]
+
+
 class VNCCS_QWEN_Encoder:
     upscale_methods = ["lanczos", "bicubic", "area"]
     crop_methods = ["pad", "center", "disabled"]
@@ -93,6 +114,7 @@ class VNCCS_QWEN_Encoder:
             "weight2": "Influence strength of Image 2 reference latents.",
             "weight3": "Influence strength of Image 3 reference latents.",
             "vl_size": "Resolution for Vision-Language processing (Qwen). Lower values are faster but less detailed.",
+            "background_color": "Color used only to flatten transparent pixels before Qwen/VAE encoding.",
             "instruction": "System instruction for the Qwen model describing how to interpret the images and prompt.",
             "qwen_2511": "Enable special handling for Qwen 2511 model versions (strongly recommended).",
         }
@@ -122,6 +144,7 @@ class VNCCS_QWEN_Encoder:
                 "vl_size": ("INT", {"default": 384, "min": 256, "max": 1024, "step": 8, "tooltip": tooltips["vl_size"]}),
                 "instruction": ("STRING", {"multiline": True, "default": "Describe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate.", "tooltip": tooltips["instruction"]}),
                 "qwen_2511": ("BOOLEAN", {"default": True, "tooltip": tooltips["qwen_2511"]}),
+                "background_color": ("STRING", {"default": "White", "tooltip": tooltips["background_color"]}),
             }
         }
 
@@ -169,6 +192,36 @@ class VNCCS_QWEN_Encoder:
             
         return s.movedim(1, -1)
 
+    def _prepare_encoder_image(self, image: torch.Tensor, background_color="White") -> torch.Tensor:
+        """Flatten alpha immediately before Qwen/VAE encoding; leave RGB tensors untouched."""
+        if image is None or not torch.is_tensor(image):
+            return image
+        if image.ndim == 3:
+            image = image.unsqueeze(0)
+        if image.ndim != 4:
+            return image
+        if not torch.is_floating_point(image):
+            image = image.float()
+        if image.numel() and image.detach().max() > 1.5:
+            image = image / 255.0
+        image = image.clamp(0.0, 1.0)
+        channels = int(image.shape[-1])
+        if channels == 1:
+            return image.repeat(1, 1, 1, 3)
+        if channels < 4:
+            return image
+
+        rgb = image[..., :3]
+        alpha = image[..., 3:4].clamp(0.0, 1.0)
+        if bool((alpha < 0.999).any().item()):
+            bg = torch.tensor(
+                _encoder_background_rgb(background_color),
+                dtype=rgb.dtype,
+                device=rgb.device,
+            ).view(1, 1, 1, 3)
+            rgb = rgb * alpha + bg * (1.0 - alpha)
+        return rgb.clamp(0.0, 1.0)
+
     def encode(self, clip, prompt, vae=None, 
                image1=None, image2=None, image3=None,
                target_size=1024, 
@@ -180,6 +233,7 @@ class VNCCS_QWEN_Encoder:
                vl_size=384,
                latent_image_index=1,
                qwen_2511=True,
+               background_color="White",
                ):
         
         ref_latents = []
@@ -212,6 +266,7 @@ class VNCCS_QWEN_Encoder:
         # Process each input image
         for i, image in enumerate(input_images):
             if image is not None:
+                image = self._prepare_encoder_image(image, background_color)
                 # 1. Processing for Reference Latents (VAE)
                 processed_ref = self._process_image(image, target_size, upscale_method, crop_method)
                 ref_latents.append(vae.encode(processed_ref[:, :, :, :3]))

@@ -555,7 +555,7 @@ class ClothesDesigner:
         from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder, node_helpers
         
         class SafeQwenEncoder(VNCCS_QWEN_Encoder):
-            def encode(self, clip, prompt, vae=None, image1=None, image2=None, image3=None, target_size=1024, upscale_method="lanczos", crop_method="center", instruction="", image1_name="Picture 1", image2_name="Picture 2", image3_name="Picture 3", weight1=1.0, weight2=1.0, weight3=1.0, vl_size=384, latent_image_index=1, qwen_2511=True):
+            def encode(self, clip, prompt, vae=None, image1=None, image2=None, image3=None, target_size=1024, upscale_method="lanczos", crop_method="center", instruction="", image1_name="Picture 1", image2_name="Picture 2", image3_name="Picture 3", weight1=1.0, weight2=1.0, weight3=1.0, vl_size=384, background_color="White", latent_image_index=1, qwen_2511=True):
                 ref_latents = []
                 input_images = [image1, image2, image3]
                 names = [image1_name, image2_name, image3_name]
@@ -586,6 +586,7 @@ class ClothesDesigner:
 
                 for i, image in enumerate(input_images):
                     if image is not None:
+                        image = self._prepare_encoder_image(image, background_color)
                         processed_ref = self._process_image(image, target_size, upscale_method, crop_method)
                         ref_latents.append(vae.encode(processed_ref[:, :, :, :3]))
                         image_sq = pad_to_square(image)
@@ -624,6 +625,7 @@ class ClothesDesigner:
         
         # Load Clone Image. After SAM3 isolation it is passed to Qwen as Picture 2.
         clone_image_tensor = None
+        encoder_bg_col = self._normalize_background_color(gen_settings.get("background_color"))
         if active_tab == "clone" and data.get("clone_image"):
              try:
                  c_info = data["clone_image"]
@@ -635,12 +637,9 @@ class ClothesDesigner:
                  # Convert to Tensor (H,W,C)
                  i = torch.from_numpy(np.array(i).astype(np.float32) / 255.0).unsqueeze(0)
                  
-                 # Strip Alpha if present
-                 if i.shape[-1] == 4: i = i[..., :3]
-                 
                  sam_prompt = data.get("clone_sam_prompt") or data.get("sam_prompt") or DEFAULT_CLONE_SAM_PROMPT
-                 bg_col = self._normalize_background_color(gen_settings.get("background_color"))
-                 clone_image_tensor = self._run_clone_sam3_reference(i, sam_prompt, bg_col)
+                 i = encoder._prepare_encoder_image(i, encoder_bg_col)
+                 clone_image_tensor = self._run_clone_sam3_reference(i, sam_prompt, encoder_bg_col)
              except Exception as e:
                  print(f"[ClothesDesigner] Failed to preprocess clone image with SAM3: {e}")
                  raise
@@ -660,6 +659,7 @@ class ClothesDesigner:
             crop_method="disabled",
             instruction=CLONE_QWEN_INSTRUCTION,
             vl_size=392,
+            background_color=encoder_bg_col,
             qwen_2511=True
         )
         

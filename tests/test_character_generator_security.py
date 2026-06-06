@@ -139,3 +139,93 @@ def test_pose_generation_decode_preserves_encoder_aspect(monkeypatch):
     )
 
     assert result.shape == (1, 1584, 664, 3)
+
+
+def test_seedvr_loader_cleans_vram_and_uses_settings(monkeypatch):
+    torch = pytest.importorskip("torch")
+    calls = []
+
+    class FakeModelManagement:
+        def __init__(self):
+            self.unloaded = 0
+            self.emptied = 0
+
+        def unload_all_models(self):
+            self.unloaded += 1
+
+        def soft_empty_cache(self):
+            self.emptied += 1
+
+    fake_mm = FakeModelManagement()
+    monkeypatch.setattr(cg, "model_management", fake_mm)
+
+    def fake_call(class_name, **kwargs):
+        calls.append((class_name, kwargs))
+        return (f"{class_name}_out",)
+
+    monkeypatch.setattr(cg, "_call_comfy_node", fake_call)
+
+    settings = cg.VNCCS_CharacterGenerator()._settings("{}")["upscaler"]
+    settings.update(
+        {
+            "model": "custom_dit.gguf",
+            "vae": "custom_vae.safetensors",
+            "offload_device": "cpu",
+            "cache_dit": True,
+            "cache_vae": False,
+            "resolution": 4096,
+            "max_resolution": 3840,
+        }
+    )
+
+    generator = cg.VNCCS_CharacterGenerator()
+    dit, vae = generator._run_upscaler_models(settings)
+    generator._run_seedvr_upscale_one(torch.rand(1, 1584, 664, 3), dit, vae, settings, seed=42)
+
+    assert fake_mm.unloaded == 1
+    assert fake_mm.emptied == 1
+    assert calls[0][0] == "SeedVR2LoadDiTModel"
+    assert calls[0][1]["model"] == "custom_dit.gguf"
+    assert calls[0][1]["cache_model"] is True
+    assert calls[1][0] == "SeedVR2LoadVAEModel"
+    assert calls[1][1]["model"] == "custom_vae.safetensors"
+    assert calls[2][0] == "SeedVR2VideoUpscaler"
+    assert calls[2][1]["resolution"] == 4096
+    assert calls[2][1]["max_resolution"] == 3840
+    assert calls[2][1]["offload_device"] == "cpu"
+
+
+def test_seedvr_upscaler_runs_whole_batch_once(monkeypatch):
+    torch = pytest.importorskip("torch")
+    generator = cg.VNCCS_CharacterGenerator()
+    calls = []
+
+    monkeypatch.setattr(generator, "_run_upscaler_models", lambda settings: ("dit", "vae"))
+
+    def fake_seedvr(image, dit, vae, settings, seed):
+        calls.append(image)
+        assert image.shape == (4, 1584, 664, 3)
+        return image
+
+    monkeypatch.setattr(generator, "_run_seedvr_upscale_one", fake_seedvr)
+
+    images = torch.rand(4, 1584, 664, 3)
+    result = generator._run_upscaler(
+        images,
+        "Green",
+        generator._settings("{}")["upscaler"],
+        seed=42,
+        use_internal_rmbg=False,
+    )
+
+    assert len(calls) == 1
+    assert result.shape == images.shape
+
+
+def test_seedvr_attention_auto_detects_until_manual(monkeypatch):
+    generator = cg.VNCCS_CharacterGenerator()
+    monkeypatch.setattr(cg, "_detect_seedvr_attention_mode", lambda: "flash_attn_3")
+
+    assert generator._resolve_seedvr_attention_mode({"attention_mode": "sdpa"}) == "flash_attn_3"
+    assert generator._resolve_seedvr_attention_mode({"attention_mode": "sdpa", "attention_mode_manual": True}) == "sdpa"
+    assert generator._resolve_seedvr_attention_mode({"attention_mode": "flash_attn_2", "attention_mode_manual": True}) == "flash_attn_2"

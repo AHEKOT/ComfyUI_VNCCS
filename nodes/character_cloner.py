@@ -41,6 +41,29 @@ SKIN_COLOR_OPTIONS = [
 def pil2tensor(image):
     return torch.from_numpy(np.array(image).astype(np.float32) / 255.0).unsqueeze(0)
 
+def _background_rgb(value, default=(255, 255, 255)):
+    normalized = str(value or "").strip().lower()
+    if normalized == "green":
+        return (0, 255, 0)
+    if normalized == "blue":
+        return (0, 0, 255)
+    if normalized.startswith("#") and len(normalized) == 7:
+        try:
+            return tuple(int(normalized[i:i + 2], 16) for i in (1, 3, 5))
+        except ValueError:
+            pass
+    return default
+
+def _composite_pil_alpha(image, background_color=None):
+    if image.mode not in ("RGBA", "LA") and not (image.mode == "P" and "transparency" in image.info):
+        return image.convert("RGB")
+    rgba = image.convert("RGBA")
+    alpha = np.array(rgba.getchannel("A"))
+    if not np.any(alpha < 255):
+        return rgba.convert("RGB")
+    bg = Image.new("RGBA", rgba.size, (*_background_rgb(background_color), 255))
+    return Image.alpha_composite(bg, rgba).convert("RGB")
+
 class CharacterCloner:
     @classmethod
     def INPUT_TYPES(cls):
@@ -67,6 +90,7 @@ class CharacterCloner:
         character_name = data.get("character", "Unknown")
         info = data.get("character_info", {})
         source_images = data.get("source_images", []) # List of filenames in input dir
+        background_color = info.get("background_color", "White")
 
         # 4. Process Images
         # Load all source images, make a grid
@@ -105,7 +129,7 @@ class CharacterCloner:
                 if img_path and os.path.exists(img_path):
                     i = Image.open(img_path)
                     i = ImageOps.exif_transpose(i)
-                    if i.mode != "RGB": i = i.convert("RGB")
+                    i = _composite_pil_alpha(i, background_color)
                     images_tensors.append(i)
         
         if images_tensors:
