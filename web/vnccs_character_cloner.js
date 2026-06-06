@@ -1467,6 +1467,26 @@ app.registerExtension({
                     }));
                     return showCommonModal(container, title, contentFunc, mappedButtons);
                 };
+                const showSourceImageRequiredModal = (message) => {
+                    showModal("Нужно изображение", () => {
+                        const d = document.createElement("div");
+                        d.style.lineHeight = "1.45";
+                        d.innerText = message || "Сначала загрузите изображение персонажа.";
+                        return d;
+                    }, [{ text: "OK", class: "vnccs-btn-primary" }]);
+                };
+                const onValidationError = (event) => {
+                    const detail = event?.detail || {};
+                    if (String(detail.node_id || "") !== String(node.id)) return;
+                    if (detail.code !== "SOURCE_IMAGE_REQUIRED") return;
+                    showSourceImageRequiredModal(detail.message);
+                };
+                api.addEventListener("vnccs.character_cloner.validation_error", onValidationError);
+                const origOnRemoved = node.onRemoved;
+                node.onRemoved = function () {
+                    api.removeEventListener("vnccs.character_cloner.validation_error", onValidationError);
+                    origOnRemoved?.apply(this, arguments);
+                };
 
                 const openTagConstructor = async (fieldKey, inputEl, targetObj = state.character_info) => {
                     if (!TAG_DATA) {

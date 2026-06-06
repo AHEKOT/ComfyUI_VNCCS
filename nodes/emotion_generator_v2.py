@@ -164,12 +164,12 @@ def load_costume_sprite_images(character, costume):
             if neutral_key in seen_neutral_roots:
                 continue
             seen_neutral_roots.add(neutral_key)
-            for walk_root, _dirs, filenames in os.walk(neutral_root):
-                neutral_paths.extend(
-                    os.path.join(walk_root, name)
-                    for name in filenames
-                    if os.path.splitext(name)[1].lower() in IMAGE_EXTS
-                )
+            neutral_paths.extend(
+                os.path.join(neutral_root, name)
+                for name in os.listdir(neutral_root)
+                if os.path.isfile(os.path.join(neutral_root, name))
+                and os.path.splitext(name)[1].lower() in IMAGE_EXTS
+            )
         direct = [
             os.path.join(root, name)
             for name in os.listdir(root)

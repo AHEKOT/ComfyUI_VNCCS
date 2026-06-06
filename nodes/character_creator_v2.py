@@ -23,9 +23,8 @@ from ..utils import (
     save_config, build_face_details, generate_seed, dedupe_tokens,
     apply_sex, append_age, load_config, age_strength,
     list_characters, character_dir, base_output_dir,
-    sheets_dir, faces_dir, normalize_hair_tags
+    sheets_dir, faces_dir, normalize_hair_tags, ensure_safe_name
 )
-from ._safe_utils import ensure_safe_name
 from .model_path_utils import get_full_path_agnostic
 
 # --------------------------------------------------------------------
@@ -1440,3 +1439,12 @@ class CharacterCreatorV2:
             sheets_path,
             background_color
         )
+
+
+NODE_CLASS_MAPPINGS = {
+    "CharacterCreatorV2": CharacterCreatorV2,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "CharacterCreatorV2": "VNCCS Character Creator V2",
+}

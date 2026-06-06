@@ -17,10 +17,7 @@ import numpy as np
 from typing import Tuple
 from PIL import Image, ImageFilter
 from torchvision import transforms
-import sys
-import importlib.util
 import cv2
-import types
 import torch.nn.functional as F
 
 try:
@@ -701,10 +698,8 @@ class VNCCS_MaskExtractor:
 
 
 # --- RMBG Model Loaders ---
-# Security model: bundled RMBG/BEN architecture files are downloaded from fixed
-# HuggingFace commit revisions below. BiRefNet still requires executing its
-# architecture Python file, but VNCCS no longer falls back to trust_remote_code
-# or arbitrary local HuggingFace directories.
+# Security model: RMBG/BEN architecture code is vendored in this repository.
+# The HuggingFace downloads below are limited to model weights/config data.
 AVAILABLE_MODELS = {
     "RMBG-2.0": {
         "type": "rmbg",
@@ -712,9 +707,7 @@ AVAILABLE_MODELS = {
         "revision": "1cd4787601caeb4c8e826dba7ea8e2163b5208df",
         "files": {
             "config.json": "config.json",
-            "model.safetensors": "model.safetensors",
-            "birefnet.py": "birefnet.py",
-            "BiRefNet_config.py": "BiRefNet_config.py"
+            "model.safetensors": "model.safetensors"
         },
         "cache_dir": "RMBG-2.0"
     },
@@ -732,7 +725,6 @@ AVAILABLE_MODELS = {
         "repo_id": "1038lab/BEN",
         "revision": "12124b2fa3f6a519e7b8771a81fa9f5cb5ed5078",
         "files": {
-            "model.py": "model.py",
             "BEN_Base.pth": "BEN_Base.pth"
         },
         "cache_dir": "BEN"
@@ -742,8 +734,7 @@ AVAILABLE_MODELS = {
         "repo_id": "1038lab/BEN2",
         "revision": "7e1bfdf0b53c9d93d82ed2bccf240ba33b3aed38",
         "files": {
-            "BEN2_Base.pth": "BEN2_Base.pth",
-            "BEN2.py": "BEN2.py"
+            "BEN2_Base.pth": "BEN2_Base.pth"
         },
         "cache_dir": "BEN2"
     }
@@ -827,67 +818,28 @@ class RMBGModel(BaseModelLoader):
             cache_dir = self.get_cache_dir(model_name)
             try:
                 try:
-                    from transformers import PreTrainedModel
-                    import json
+                    from ._vendored_birefnet import BiRefNet
+                    from ._vendored_birefnet_config import BiRefNetConfig
+                except Exception:
+                    from _vendored_birefnet import BiRefNet
+                    from _vendored_birefnet_config import BiRefNetConfig
 
-                    config_path = os.path.join(cache_dir, "config.json")
-                    with open(config_path, 'r') as f:
-                        config = json.load(f)
-
-                    birefnet_path = os.path.join(cache_dir, "birefnet.py")
-                    BiRefNetConfig_path = os.path.join(cache_dir, "BiRefNet_config.py")
-
-                    config_spec = importlib.util.spec_from_file_location("BiRefNetConfig", BiRefNetConfig_path)
-                    config_module = importlib.util.module_from_spec(config_spec)
-                    sys.modules["BiRefNetConfig"] = config_module
-                    config_spec.loader.exec_module(config_module)
-
-                    with open(birefnet_path, 'r') as f:
-                        birefnet_content = f.read()
-
-                    birefnet_content = birefnet_content.replace(
-                        "from .BiRefNet_config import BiRefNetConfig",
-                        "from BiRefNetConfig import BiRefNetConfig"
-                    )
-
-                    module_name = f"custom_birefnet_model_{hash(birefnet_path)}"
-                    module = types.ModuleType(module_name)
-                    module.__file__ = birefnet_path  # required for transformers model registration
-                    sys.modules[module_name] = module
-                    exec(birefnet_content, module.__dict__)
-
-                    for attr_name in dir(module):
-                        attr = getattr(module, attr_name)
-                        if isinstance(attr, type) and issubclass(attr, PreTrainedModel) and attr != PreTrainedModel:
-                            BiRefNetConfig = getattr(config_module, "BiRefNetConfig")
-                            model_config = BiRefNetConfig()
-                            self.model = attr(model_config)
-
-                            weights_path = os.path.join(cache_dir, "model.safetensors")
-                            try:
-                                try:
-                                    import safetensors.torch
-                                    self.model.load_state_dict(safetensors.torch.load_file(weights_path))
-                                except ImportError:
-                                    from transformers.modeling_utils import load_state_dict
-                                    state_dict = load_state_dict(weights_path)
-                                    self.model.load_state_dict(state_dict)
-                            except Exception as load_error:
-                                pytorch_weights = os.path.join(cache_dir, "pytorch_model.bin")
-                                if os.path.exists(pytorch_weights):
-                                    self.model.load_state_dict(torch.load(pytorch_weights, map_location="cpu"))
-                                else:
-                                    raise RuntimeError(f"Failed to load weights: {str(load_error)}")
-                            break
-
-                    if self.model is None:
-                        raise RuntimeError("Could not find suitable model class")
-
-                except Exception as modern_e:
-                    handle_model_error(
-                        "Failed to load pinned RMBG architecture without remote-code fallback. "
-                        f"Clear the RMBG cache and download the pinned files again. Details: {modern_e}"
-                    )
+                self.model = BiRefNet(config=BiRefNetConfig())
+                weights_path = os.path.join(cache_dir, "model.safetensors")
+                try:
+                    try:
+                        import safetensors.torch
+                        self.model.load_state_dict(safetensors.torch.load_file(weights_path))
+                    except ImportError:
+                        from transformers.modeling_utils import load_state_dict
+                        state_dict = load_state_dict(weights_path)
+                        self.model.load_state_dict(state_dict)
+                except Exception as load_error:
+                    pytorch_weights = os.path.join(cache_dir, "pytorch_model.bin")
+                    if os.path.exists(pytorch_weights):
+                        self.model.load_state_dict(torch.load(pytorch_weights, map_location="cpu"))
+                    else:
+                        raise RuntimeError(f"Failed to load weights: {str(load_error)}")
 
             except Exception as e:
                 handle_model_error(f"Error loading model: {str(e)}")
@@ -977,80 +929,42 @@ class CustomBiRefNetModel(RMBGModel):
                     "RMBG-2.0 architecture instead."
                 )
             else:
-                arch_cache_dir = self.get_cache_dir("RMBG-2.0")
-                cache_status, _ = self.check_model_cache("RMBG-2.0")
-                if not cache_status:
-                    print("Downloading required BiRefNet architecture files from RMBG-2.0...")
-                    self.download_model("RMBG-2.0")
-                
                 try:
-                    from transformers import PreTrainedModel
-                    import json
+                    try:
+                        from ._vendored_birefnet import BiRefNet
+                        from ._vendored_birefnet_config import BiRefNetConfig
+                    except Exception:
+                        from _vendored_birefnet import BiRefNet
+                        from _vendored_birefnet_config import BiRefNetConfig
 
-                    config_path = os.path.join(arch_cache_dir, "config.json")
-                    with open(config_path, 'r') as f:
-                        config = json.load(f)
-
-                    birefnet_path = os.path.join(arch_cache_dir, "birefnet.py")
-                    BiRefNetConfig_path = os.path.join(arch_cache_dir, "BiRefNet_config.py")
-
-                    config_spec = importlib.util.spec_from_file_location("BiRefNetConfig", BiRefNetConfig_path)
-                    config_module = importlib.util.module_from_spec(config_spec)
-                    sys.modules["BiRefNetConfig"] = config_module
-                    config_spec.loader.exec_module(config_module)
-
-                    with open(birefnet_path, 'r') as f:
-                        birefnet_content = f.read()
-
-                    birefnet_content = birefnet_content.replace(
-                        "from .BiRefNet_config import BiRefNetConfig",
-                        "from BiRefNetConfig import BiRefNetConfig"
-                    )
-
-                    module_name = f"custom_birefnet_{hash(model_name)}"
-                    module = types.ModuleType(module_name)
-                    module.__file__ = birefnet_path  # required for transformers model registration
-                    sys.modules[module_name] = module
-                    exec(birefnet_content, module.__dict__)
-
-                    for attr_name in dir(module):
-                        attr = getattr(module, attr_name)
-                        if isinstance(attr, type) and issubclass(attr, PreTrainedModel) and attr != PreTrainedModel:
-                            BiRefNetConfig = getattr(config_module, "BiRefNetConfig")
-                            model_config = BiRefNetConfig()
-                            self.model = attr(model_config)
-
-                            weights_path = model_path
+                    self.model = BiRefNet(config=BiRefNetConfig())
+                    weights_path = model_path
+                    try:
+                        if weights_path.endswith(".safetensors"):
                             try:
-                                if weights_path.endswith(".safetensors"):
-                                    try:
-                                        import safetensors.torch
-                                        state_dict = safetensors.torch.load_file(weights_path)
-                                    except ImportError:
-                                        from transformers.modeling_utils import load_state_dict
-                                        state_dict = load_state_dict(weights_path)
-                                else:
-                                    state_dict = torch.load(weights_path, map_location="cpu")
-                                    
-                                if "state_dict" in state_dict:
-                                    state_dict = state_dict["state_dict"]
-                                elif "net" in state_dict:
-                                    state_dict = state_dict["net"]
-                                
-                                unwrapped_state_dict = {}
-                                for k, v in state_dict.items():
-                                    if k.startswith('module.'):
-                                        unwrapped_state_dict[k[7:]] = v
-                                    else:
-                                        unwrapped_state_dict[k] = v
+                                import safetensors.torch
+                                state_dict = safetensors.torch.load_file(weights_path)
+                            except ImportError:
+                                from transformers.modeling_utils import load_state_dict
+                                state_dict = load_state_dict(weights_path)
+                        else:
+                            state_dict = torch.load(weights_path, map_location="cpu")
+                            
+                        if "state_dict" in state_dict:
+                            state_dict = state_dict["state_dict"]
+                        elif "net" in state_dict:
+                            state_dict = state_dict["net"]
+                        
+                        unwrapped_state_dict = {}
+                        for k, v in state_dict.items():
+                            if k.startswith('module.'):
+                                unwrapped_state_dict[k[7:]] = v
+                            else:
+                                unwrapped_state_dict[k] = v
 
-                                self.model.load_state_dict(unwrapped_state_dict)
-                            except Exception as load_error:
-                                raise RuntimeError(f"Failed to load weights from {weights_path}: {str(load_error)}")
-                            break
-
-                    if self.model is None:
-                        raise RuntimeError("Could not find suitable model class in birefnet.py")
+                        self.model.load_state_dict(unwrapped_state_dict)
+                    except Exception as load_error:
+                        raise RuntimeError(f"Failed to load weights from {weights_path}: {str(load_error)}")
 
                 except Exception as e:
                     handle_model_error(f"Error loading custom BiRefNet file {model_name}: {str(e)}")
@@ -1110,16 +1024,13 @@ class BENModel(BaseModelLoader):
             self.clear_model()
             
             cache_dir = self.get_cache_dir(model_name)
-            model_path = os.path.join(cache_dir, "model.py")
-            module_name = f"custom_ben_model_{hash(model_path)}"
-            
-            spec = importlib.util.spec_from_file_location(module_name, model_path)
-            ben_module = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = ben_module
-            spec.loader.exec_module(ben_module)
+            try:
+                from ._vendored_ben import BEN_Base
+            except Exception:
+                from _vendored_ben import BEN_Base
             
             model_weights_path = os.path.join(cache_dir, "BEN_Base.pth")
-            self.model = ben_module.BEN_Base()
+            self.model = BEN_Base()
             self.model.loadcheckpoints(model_weights_path)
             
             self.model.eval()
@@ -1166,16 +1077,13 @@ class BEN2Model(BaseModelLoader):
             
             try:
                 cache_dir = self.get_cache_dir(model_name)
-                model_path = os.path.join(cache_dir, "BEN2.py")
-                module_name = f"custom_ben2_model_{hash(model_path)}"
-                
-                spec = importlib.util.spec_from_file_location(module_name, model_path)
-                ben2_module = importlib.util.module_from_spec(spec)
-                sys.modules[module_name] = ben2_module
-                spec.loader.exec_module(ben2_module)
+                try:
+                    from ._vendored_ben2 import BEN_Base
+                except Exception:
+                    from _vendored_ben2 import BEN_Base
                 
                 model_weights_path = os.path.join(cache_dir, "BEN2_Base.pth")
-                self.model = ben2_module.BEN_Base()
+                self.model = BEN_Base()
                 self.model.loadcheckpoints(model_weights_path)
                 
                 self.model.eval()

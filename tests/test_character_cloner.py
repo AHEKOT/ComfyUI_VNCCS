@@ -149,14 +149,18 @@ class TestImagePathResolution:
 class TestClonerConfigSave:
     def test_config_written_for_valid_character(self, tmp_path, monkeypatch):
         pytest.importorskip("torch")
+        Image = pytest.importorskip("PIL.Image")
         import utils
         monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path))
 
         from nodes.character_cloner import CharacterCloner
         import nodes.character_cloner as cc_mod
         monkeypatch.setattr(cc_mod, "character_dir", lambda n: str(tmp_path / n), raising=False)
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        Image.new("RGB", (32, 64), "green").save(input_dir / "clone.png")
+        monkeypatch.setattr(cc_mod.folder_paths, "get_input_directory", lambda: str(input_dir), raising=False)
 
-        # Minimal widget_data — no source_images so no PIL needed
         info = {
             "sex": "female", "age": 20, "race": "human",
             "hair": "blonde", "eyes": "green", "face": "", "body": "",
@@ -167,7 +171,7 @@ class TestClonerConfigSave:
         widget_data = json.dumps({
             "character": "CloneTest",
             "character_info": info,
-            "source_images": [],
+            "source_images": [{"name": "clone.png", "type": "input", "subfolder": ""}],
         })
 
         node = CharacterCloner()
@@ -180,6 +184,28 @@ class TestClonerConfigSave:
         assert config is not None
         assert config["character_info"]["sex"] == "female"
 
+    def test_missing_source_image_raises_before_saving_config(self, tmp_path, monkeypatch):
+        pytest.importorskip("torch")
+        import utils
+        monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path))
+
+        from nodes.character_cloner import CharacterCloner
+        import nodes.character_cloner as cc_mod
+        monkeypatch.setattr(cc_mod, "character_dir", lambda n: str(tmp_path / n), raising=False)
+        monkeypatch.setattr(cc_mod.folder_paths, "get_input_directory", lambda: str(tmp_path / "input"), raising=False)
+
+        widget_data = json.dumps({
+            "character": "CloneMissing",
+            "character_info": {"background_color": "Green"},
+            "source_images": [{"name": "missing.png", "type": "input", "subfolder": ""}],
+        })
+
+        node = CharacterCloner()
+        with pytest.raises(ValueError, match="загрузите изображение персонажа"):
+            node.process(widget_data=widget_data)
+
+        assert utils.load_config("CloneMissing") is None
+
     def test_config_not_written_for_unknown_character(self, tmp_path, monkeypatch):
         pytest.importorskip("torch")
         import utils
@@ -189,10 +215,8 @@ class TestClonerConfigSave:
 
         widget_data = json.dumps({"character": "Unknown", "character_info": {}, "source_images": []})
         node = CharacterCloner()
-        try:
+        with pytest.raises(ValueError, match="загрузите изображение персонажа"):
             node.process(widget_data=widget_data)
-        except Exception:
-            pass
 
         # "Unknown" should not create a config
         assert utils.load_config("Unknown") is None
