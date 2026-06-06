@@ -121,7 +121,7 @@ app.registerExtension({
             const root = el("div", "vnccs-ma");
             const top = el("div", "vnccs-ma-top");
             const titleWrap = el("div");
-            titleWrap.appendChild(el("div", "vnccs-ma-title", "VNCCS Migration Assistent"));
+            titleWrap.appendChild(el("div", "vnccs-ma-title", "VNCCS Migration Assistant"));
             const paths = el("div", "vnccs-ma-paths", "Legacy: scanning...\nNew: scanning...");
             titleWrap.appendChild(paths);
 

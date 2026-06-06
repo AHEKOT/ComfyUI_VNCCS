@@ -592,7 +592,7 @@ def _remember_generator_context(unique_id, generator_type, cache_dir, pipe):
 
 DEFAULT_WIDGET_DATA = {
     "common": {
-        "target_size": "1024",
+        "target_size": 1024,
     },
     "upscaler": {
         "mode": "seedvr",
@@ -632,7 +632,7 @@ DEFAULT_WIDGET_DATA = {
         "preset": "balanced",
     },
     "pose_generation": {
-        "target_size": "1024",
+        "target_size": 1024,
     },
     "emotion_generation": {
         "face_denoise": 0.55,
@@ -1650,7 +1650,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
 
     def _clone_settings(self, widget_data):
         settings = self._settings(widget_data)
-        common_size = settings.get("common", {}).get("target_size") or settings["pose_generation"].get("target_size", "1024")
+        common_size = settings.get("common", {}).get("target_size") or settings["pose_generation"].get("target_size", 1024)
         settings["pose_generation"]["target_size"] = common_size
         settings["remove_clothes"]["target_size"] = common_size
         return settings

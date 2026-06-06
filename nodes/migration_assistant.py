@@ -650,7 +650,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "VNCCS_MigrationAssistant": "VNCCS Migration Assistent",
+    "VNCCS_MigrationAssistant": "VNCCS Migration Assistant",
 }
 
 NODE_CATEGORY_MAPPINGS = {

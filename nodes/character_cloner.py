@@ -64,6 +64,21 @@ def _composite_pil_alpha(image, background_color=None):
     bg = Image.new("RGBA", rgba.size, (*_background_rgb(background_color), 255))
     return Image.alpha_composite(bg, rgba).convert("RGB")
 
+def _emit_cloner_validation_error(unique_id, message):
+    if server is None or not unique_id:
+        return
+    try:
+        server.PromptServer.instance.send_sync(
+            "vnccs.character_cloner.validation_error",
+            {
+                "node_id": str(unique_id),
+                "code": "SOURCE_IMAGE_REQUIRED",
+                "message": message,
+            },
+        )
+    except Exception as exc:
+        print(f"[CharacterCloner] Failed to send validation error event: {exc}")
+
 class CharacterCloner:
     @classmethod
     def INPUT_TYPES(cls):
@@ -127,10 +142,13 @@ class CharacterCloner:
                     continue
 
                 if img_path and os.path.exists(img_path):
-                    i = Image.open(img_path)
-                    i = ImageOps.exif_transpose(i)
-                    i = _composite_pil_alpha(i, background_color)
-                    images_tensors.append(i)
+                    try:
+                        with Image.open(img_path) as opened:
+                            i = ImageOps.exif_transpose(opened)
+                            i = _composite_pil_alpha(i, background_color)
+                            images_tensors.append(i)
+                    except Exception as exc:
+                        print(f"[CharacterCloner] Failed to load source image '{img_name}': {exc}")
         
         if images_tensors:
             # Create a simple grid: standard collage
@@ -188,8 +206,9 @@ class CharacterCloner:
             final_image = pil2tensor(grid)
 
         else:
-            # Empty image
-            final_image = torch.zeros((1, 512, 512, 3))
+            message = "Сначала загрузите изображение персонажа в Character Cloner."
+            _emit_cloner_validation_error(unique_id, message)
+            raise ValueError(message)
 
         # 5. Paths
         character_path = character_dir(character_name)

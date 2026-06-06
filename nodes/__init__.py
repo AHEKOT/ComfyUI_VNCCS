@@ -99,7 +99,7 @@ try:
         "CharacterCreatorV2": "VNCCS Character Creator V2",
         "CharacterCloner": "VNCCS Character Cloner",
         "ClothesDesigner": "VNCCS Clothes Designer",
-        "VNCCS_MigrationAssistant": "VNCCS Migration Assistent",
+        "VNCCS_MigrationAssistant": "VNCCS Migration Assistant",
         "SpriteManager": "VNCCS Sprite Manager",
         "VNCCS_AdvancedPlyViewer": "👁️ Advanced PLY Viewer",
     }

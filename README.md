@@ -128,7 +128,7 @@ Everything is saved in:
 
 ## Step 0: Migration Assistant
 
-Open `VNCCS_MigrationAssistent.json` if you have characters from old VNCCS versions.
+Open `VNCCS_MigrationAssistant.json` if you have characters from old VNCCS versions.
 
 This node scans legacy folders and moves characters into the new 3.0 structure.
 

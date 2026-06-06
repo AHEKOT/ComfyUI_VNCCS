@@ -134,7 +134,7 @@ def test_pose_generation_decode_preserves_encoder_aspect(monkeypatch):
         torch.rand(1, 1536, 640, 3),
         object(),
         "prompt",
-        {"target_size": "1024"},
+        {"target_size": 1024},
         background="Green",
     )
 
