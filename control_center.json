@@ -192,9 +192,9 @@
     {
       "name": "VNCCS Clothes Core",
       "hf_repo": "MIUProject/VNCCS_v3.0",
-      "hf_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.safetensors",
-      "local_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.safetensors",
-      "version": "0.3.0",
+      "hf_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.5.safetensors",
+      "local_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.5.safetensors",
+      "version": "0.3.5",
       "description": "Helps maintain clothing consistency.",
       "type": "Helper",
       "kind": "QIE2511"

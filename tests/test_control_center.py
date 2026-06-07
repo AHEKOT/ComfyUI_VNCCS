@@ -20,6 +20,8 @@ from nodes.vnccs_control_center import (
     _filter_entries_by_kind,
     _build_dynamic_paths,
     _build_custom_lora_name,
+    _dedupe_config_by_name,
+    _enrich_config_entries,
     _merge_custom_loras,
     _remove_custom_lora,
     VNCCSPipeProxy,
@@ -253,6 +255,72 @@ class TestBuildDynamicPaths:
         }
         result = _build_dynamic_paths(config, ["Missing"])
         assert result == [""]
+
+
+class TestEnrichConfigEntries:
+    def test_dedupes_same_name_to_newest_version(self):
+        deduped = _dedupe_config_by_name({
+            "lora": [
+                {
+                    "name": "VNCCS Clothes Core",
+                    "hf_path": "models/loras/old.safetensors",
+                    "local_path": "models/loras/old.safetensors",
+                    "version": "0.3.0",
+                },
+                {
+                    "name": "VNCCS Clothes Core",
+                    "hf_path": "models/loras/new.safetensors",
+                    "local_path": "models/loras/new.safetensors",
+                    "version": "0.3.5",
+                },
+            ],
+        })
+
+        assert len(deduped["lora"]) == 1
+        assert deduped["lora"][0]["version"] == "0.3.5"
+        assert deduped["lora"][0]["local_path"] == "models/loras/new.safetensors"
+
+    def test_marks_installed_file_as_outdated_when_registry_version_is_old(self, monkeypatch):
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._find_model_on_disk",
+            lambda local_path: ("/models/loras/model.safetensors", True),
+        )
+
+        result = _enrich_config_entries(
+            [
+                {
+                    "name": "Model",
+                    "local_path": "models/loras/model.safetensors",
+                    "version": "0.3.5",
+                }
+            ],
+            "lora",
+            {"cc_lora_Model": "0.3.0"},
+        )
+
+        assert result[0]["status"] == "outdated"
+        assert result[0]["active_version"] == "0.3.0"
+
+    def test_unregistered_existing_file_uses_catalog_version(self, monkeypatch):
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._find_model_on_disk",
+            lambda local_path: ("/models/loras/model.safetensors", True),
+        )
+
+        result = _enrich_config_entries(
+            [
+                {
+                    "name": "Model",
+                    "local_path": "models/loras/model.safetensors",
+                    "version": "0.3.5",
+                }
+            ],
+            "lora",
+            {},
+        )
+
+        assert result[0]["status"] == "installed"
+        assert result[0]["active_version"] == "0.3.5"
 
 
 # ── custom LoRA helpers ──────────────────────────────────────────────────────

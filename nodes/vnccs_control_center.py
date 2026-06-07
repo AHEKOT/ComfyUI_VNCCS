@@ -409,27 +409,111 @@ def _uses_packaged_cc_config(repo_id):
     return repo_id in _PACKAGED_CC_REPO_IDS and os.path.exists(_get_packaged_cc_path())
 
 
-def _get_cc_config(repo_id):
+def _get_cc_config(repo_id, prefer_remote=False):
     cached = _CC_CONFIG_CACHE.get(repo_id)
     now = time.time()
-    if cached and now - cached.get("ts", 0) < 300:
-        return _merge_custom_loras(cached["data"])
+    if not prefer_remote and cached and now - cached.get("ts", 0) < 300:
+        return _dedupe_config_by_name(_merge_custom_loras(cached["data"]))
 
-    if _uses_packaged_cc_config(repo_id):
+    source = "packaged"
+    if _uses_packaged_cc_config(repo_id) and not prefer_remote:
         path = _get_packaged_cc_path()
     else:
         user_config = get_vnccs_config()
         hf_token = user_config.get("hf_token")
-        path = hf_hub_download(
-            repo_id=repo_id,
-            filename="control_center.json",
-            local_files_only=False,
-            token=hf_token,
-        )
+        try:
+            path = hf_hub_download(
+                repo_id=repo_id,
+                filename="control_center.json",
+                local_files_only=False,
+                token=hf_token,
+            )
+            source = "huggingface"
+        except Exception:
+            if not _uses_packaged_cc_config(repo_id):
+                raise
+            path = _get_packaged_cc_path()
+            source = "packaged"
     with open(path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
-    _CC_CONFIG_CACHE[repo_id] = {"ts": now, "data": data}
-    return _merge_custom_loras(data)
+    _CC_CONFIG_CACHE[repo_id] = {"ts": now, "data": data, "source": source}
+    return _dedupe_config_by_name(_merge_custom_loras(data))
+
+
+def _get_cc_config_source(repo_id):
+    cached = _CC_CONFIG_CACHE.get(repo_id) or {}
+    return cached.get("source") or ("packaged" if _uses_packaged_cc_config(repo_id) else "huggingface")
+
+
+def _version_sort_key(version):
+    parts = []
+    for part in str(version or "").replace("-", ".").replace("_", ".").split("."):
+        if part.isdigit():
+            parts.append((1, int(part)))
+        elif part:
+            parts.append((0, part.lower()))
+    return tuple(parts)
+
+
+def _dedupe_entries_by_name(entries):
+    chosen = {}
+    order = []
+    for index, entry in enumerate(entries or []):
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name", "")).strip()
+        if not name:
+            order.append((index, entry))
+            continue
+        key = name.lower()
+        current = chosen.get(key)
+        candidate_rank = (_version_sort_key(entry.get("version")), index)
+        if current is None:
+            order.append((index, key))
+            chosen[key] = (entry, candidate_rank)
+            continue
+        if candidate_rank > current[1]:
+            chosen[key] = (entry, candidate_rank)
+
+    result = []
+    for _, item in order:
+        if isinstance(item, str):
+            entry = chosen.pop(item, (None, None))[0]
+            if entry is not None:
+                result.append(entry)
+        else:
+            result.append(item)
+    return result
+
+
+def _dedupe_config_by_name(config):
+    if not isinstance(config, dict):
+        return config
+    result = dict(config)
+    for category in ("models", "clip", "vae", "lora", "controlnet", "other"):
+        result[category] = _dedupe_entries_by_name(config.get(category, []))
+    return result
+
+
+def _enrich_config_entries(entries, category, installed=None):
+    installed = installed or {}
+    result = []
+    for entry in entries:
+        key = f"cc_{category}_{entry['name']}"
+        active_ver = installed.get(key)
+        _, on_disk = _find_model_on_disk(entry["local_path"])
+        target_ver = entry.get("version", "")
+        if on_disk and not active_ver:
+            active_ver = target_ver
+        status = "missing"
+        if on_disk:
+            status = "outdated" if active_ver and target_ver and active_ver != target_ver else "installed"
+        result.append({
+            **entry,
+            "status": status,
+            "active_version": active_ver,
+        })
+    return result
 
 
 def _find_entry(entries, name):
@@ -1135,7 +1219,7 @@ async def cc_check(request):
         import asyncio
 
         loop = asyncio.get_running_loop()
-        config = await loop.run_in_executor(None, lambda: _get_cc_config(repo_id))
+        config = await loop.run_in_executor(None, lambda: _get_cc_config(repo_id, prefer_remote=True))
     except Exception as exc:
         err = str(exc)
         if "404" in err or "not found" in err.lower():
@@ -1143,21 +1227,6 @@ async def cc_check(request):
         return web.json_response({"error": err}, status=500)
 
     installed = get_installed_version_info()
-
-    def enrich(entries, category):
-        result = []
-        for entry in entries:
-            key = f"cc_{category}_{entry['name']}"
-            active_ver = installed.get(key)
-            _, on_disk = _find_model_on_disk(entry["local_path"])
-            if on_disk and not active_ver:
-                active_ver = entry.get("version", "")
-            result.append({
-                **entry,
-                "status": "installed" if on_disk else "missing",
-                "active_version": active_ver,
-            })
-        return result
 
     # TECH DEBT: Nunchaku entries remain in older control_center.json files, but
     # VNCCS no longer exposes or uses them. Delete this filter after the catalog
@@ -1172,14 +1241,14 @@ async def cc_check(request):
 
     return web.json_response({
         "name": config.get("name", ""),
-        "source": "packaged" if _uses_packaged_cc_config(repo_id) else "huggingface",
+        "source": _get_cc_config_source(repo_id),
         "available_types": available_types,
-        "models": enrich(visible_models, "models"),
-        "clip": enrich(config.get("clip", []), "clip"),
-        "vae": enrich(config.get("vae", []), "vae"),
-        "lora": enrich(config.get("lora", []), "lora"),
-        "controlnet": enrich(config.get("controlnet", []), "controlnet"),
-        "other": enrich(config.get("other", []), "other"),
+        "models": _enrich_config_entries(visible_models, "models", installed),
+        "clip": _enrich_config_entries(config.get("clip", []), "clip", installed),
+        "vae": _enrich_config_entries(config.get("vae", []), "vae", installed),
+        "lora": _enrich_config_entries(config.get("lora", []), "lora", installed),
+        "controlnet": _enrich_config_entries(config.get("controlnet", []), "controlnet", installed),
+        "other": _enrich_config_entries(config.get("other", []), "other", installed),
     })
 
 
@@ -1301,7 +1370,7 @@ async def cc_download(request):
         import asyncio
 
         loop = asyncio.get_running_loop()
-        config = await loop.run_in_executor(None, lambda: _get_cc_config(repo_id))
+        config = await loop.run_in_executor(None, lambda: _get_cc_config(repo_id, prefer_remote=True))
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
 

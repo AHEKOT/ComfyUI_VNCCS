@@ -1554,7 +1554,7 @@ class VNCCSControlCenterWidget {
 
         const b = document.createElement("button");
         b.className = "vnccs-cc-btn--download-all";
-        b.textContent = "⬇ Download All Missing";
+        b.textContent = "⬇ Download / Update";
         b.onclick = () => this._downloadAllMissing();
 
         f.appendChild(b);
@@ -1946,6 +1946,23 @@ class VNCCSControlCenterWidget {
         const transient = new Set(["queued", "downloading", "error", "auth_required"]);
         if (dlsStatus && transient.has(dlsStatus)) return dlsStatus;
         return serverStatus || "missing";
+    }
+
+    _isDownloadableStatus(status) {
+        return status === "missing" || status === "error" || status === "outdated";
+    }
+
+    _downloadLabel(status) {
+        return status === "outdated" ? "↑ Update" : "⬇ Download";
+    }
+
+    _statusLabel(status, dls = {}) {
+        if (status === "installed") return "✓ Installed";
+        if (status === "outdated") return "↑ Update";
+        if (status === "queued") return "⏳ Queued";
+        if (status === "downloading") return dls.message || "Downloading…";
+        if (status === "auth_required") return "⚠ Key Required";
+        return "↓ Missing";
     }
 
     _renderAll() {
@@ -2515,13 +2532,16 @@ class VNCCSControlCenterWidget {
         const statusLbl = document.createElement("span");
         statusLbl.className = "vnccs-cc-model-card-status";
         if (status === "installed") {
-            statusLbl.textContent = "✓ Installed";
+            statusLbl.textContent = this._statusLabel(status, dls);
             statusLbl.classList.add("vnccs-cc-model-card-status--ok");
         } else if (status === "downloading" || status === "queued") {
-            statusLbl.textContent = status === "queued" ? "⏳ Queued" : (dls.message || "Downloading…");
+            statusLbl.textContent = this._statusLabel(status, dls);
             statusLbl.classList.add("vnccs-cc-model-card-status--progress");
+        } else if (status === "outdated") {
+            statusLbl.textContent = this._statusLabel(status, dls);
+            statusLbl.classList.add("vnccs-cc-model-card-status--missing");
         } else {
-            statusLbl.textContent = "↓ Missing";
+            statusLbl.textContent = this._statusLabel(status, dls);
             statusLbl.classList.add("vnccs-cc-model-card-status--missing");
         }
         top.appendChild(statusLbl);
@@ -2550,7 +2570,7 @@ class VNCCSControlCenterWidget {
                                  first.slice(0, prefixLen).lastIndexOf("_"));
             if (sep > 0) prefixLen = sep + 1;
 
-            const icon = s => ({ installed:"●", missing:"↓", queued:"…", downloading:"⬇", error:"✕", auth_required:"⚠" }[s] ?? "?");
+            const icon = s => ({ installed:"●", missing:"↓", outdated:"↑", queued:"…", downloading:"⬇", error:"✕", auth_required:"⚠" }[s] ?? "?");
 
             const sel = document.createElement("select");
             sel.className = "vnccs-cc-model-card-select";
@@ -2580,8 +2600,8 @@ class VNCCSControlCenterWidget {
             const b = this._btn("⚠ Enter Key", () => this.showApiKeyDialog("models", cur));
             b.style.color = "#ffaa00"; b.style.borderColor = "rgba(255,170,0,0.4)";
             footer.appendChild(b);
-        } else if (status === "missing" || status === "error") {
-            footer.appendChild(this._btn("⬇ Download", () => this._downloadEntry("models", cur)));
+        } else if (this._isDownloadableStatus(status)) {
+            footer.appendChild(this._btn(this._downloadLabel(status), () => this._downloadEntry("models", cur)));
         }
 
         if (footer.children.length) card.appendChild(footer);
@@ -2628,16 +2648,16 @@ class VNCCSControlCenterWidget {
         const statusLbl = document.createElement("span");
         statusLbl.className = "vnccs-cc-model-card-status";
         if (status === "installed") {
-            statusLbl.textContent = "✓ Installed";
+            statusLbl.textContent = this._statusLabel(status, dls);
             statusLbl.classList.add("vnccs-cc-model-card-status--ok");
         } else if (status === "downloading" || status === "queued") {
-            statusLbl.textContent = status === "queued" ? "⏳ Queued" : (dls.message || "Downloading…");
+            statusLbl.textContent = this._statusLabel(status, dls);
             statusLbl.classList.add("vnccs-cc-model-card-status--progress");
         } else if (status === "auth_required") {
-            statusLbl.textContent = "⚠ Key Required";
+            statusLbl.textContent = this._statusLabel(status, dls);
             statusLbl.classList.add("vnccs-cc-model-card-status--missing");
         } else {
-            statusLbl.textContent = "↓ Missing";
+            statusLbl.textContent = this._statusLabel(status, dls);
             statusLbl.classList.add("vnccs-cc-model-card-status--missing");
         }
         top.appendChild(statusLbl);
@@ -2650,10 +2670,10 @@ class VNCCSControlCenterWidget {
             card.appendChild(desc);
         }
 
-        if (status === "missing" || status === "error") {
+        if (this._isDownloadableStatus(status)) {
             const footer = document.createElement("div");
             footer.className = "vnccs-cc-model-card-footer";
-            footer.appendChild(this._btn("⬇ Download", () => this._downloadEntry(cat, entry)));
+            footer.appendChild(this._btn(this._downloadLabel(status), () => this._downloadEntry(cat, entry)));
             card.appendChild(footer);
         }
 
@@ -2772,8 +2792,8 @@ class VNCCSControlCenterWidget {
             const b = this._btn("⚠ Enter Key", () => this.showApiKeyDialog(cat, entry));
             b.style.color = "#ffaa00"; b.style.borderColor = "rgba(255,170,0,0.4)";
             row.appendChild(b);
-        } else if (status === "missing" || status === "error") {
-            row.appendChild(this._btn("↓", () => this._downloadEntry(cat, entry)));
+        } else if (this._isDownloadableStatus(status)) {
+            row.appendChild(this._btn(status === "outdated" ? "↑" : "↓", () => this._downloadEntry(cat, entry)));
         }
         return row;
     }
@@ -2839,10 +2859,13 @@ class VNCCSControlCenterWidget {
             statusLbl.textContent = effectiveActive ? "Active" : "Pipe";
             statusLbl.classList.add(effectiveActive ? "vnccs-cc-lora-card-status--active" : "vnccs-cc-lora-card-status--pipe");
         } else if (status === "downloading" || status === "queued") {
-            statusLbl.textContent = status === "queued" ? "⏳ Queued" : (dls.message || "Downloading…");
+            statusLbl.textContent = this._statusLabel(status, dls);
             statusLbl.classList.add("vnccs-cc-model-card-status--progress");
+        } else if (status === "outdated") {
+            statusLbl.textContent = this._statusLabel(status, dls);
+            statusLbl.classList.add("vnccs-cc-model-card-status--missing");
         } else {
-            statusLbl.textContent = "↓ Missing";
+            statusLbl.textContent = this._statusLabel(status, dls);
             statusLbl.classList.add("vnccs-cc-model-card-status--missing");
         }
         if ((compact && status === "installed" && (isPipeMode || ls.auto_apply !== true)) ||
@@ -2866,8 +2889,8 @@ class VNCCSControlCenterWidget {
         footer.className = active ? "vnccs-cc-lora-strength-row" : "vnccs-cc-lora-card-actions";
         footer.onclick = e => e.stopPropagation();
 
-        if (status === "missing" || status === "error") {
-            const btn = this._btn("⬇ Download", () => this._downloadEntry("lora", entry));
+        if (this._isDownloadableStatus(status)) {
+            const btn = this._btn(this._downloadLabel(status), () => this._downloadEntry("lora", entry));
             btn.addEventListener("click", e => e.stopPropagation());
             footer.appendChild(btn);
         } else if (status === "auth_required") {
@@ -3003,8 +3026,8 @@ class VNCCSControlCenterWidget {
             const b = this._btn("⚠ Enter Key", () => this.showApiKeyDialog(cat, entry));
             b.style.color = "#ffaa00"; b.style.borderColor = "rgba(255,170,0,0.4)";
             row.appendChild(b);
-        } else if (status === "missing" || status === "error") {
-            row.appendChild(this._btn("↓", () => this._downloadEntry(cat, entry)));
+        } else if (this._isDownloadableStatus(status)) {
+            row.appendChild(this._btn(status === "outdated" ? "↑" : "↓", () => this._downloadEntry(cat, entry)));
         }
         return row;
     }
@@ -3292,19 +3315,19 @@ class VNCCSControlCenterWidget {
         // MODEL: only the currently selected variant
         const selModel = this._getSelectedModelName();
         const modelEntry = (this.config.models ?? []).find(e => e.name === selModel);
-        if (modelEntry && (modelEntry.status === "missing" || modelEntry.status === "error")) {
+        if (modelEntry && this._isDownloadableStatus(modelEntry.status)) {
             tasks.push({ cat: "models", e: modelEntry });
         }
 
-        // Everything else: all missing or errored
+        // Everything else: all missing, errored, or outdated
         for (const cat of ["clip", "vae", "lora", "controlnet", "other"]) {
             for (const e of (this.config[cat] ?? [])) {
-                if (e.status === "missing" || e.status === "error") tasks.push({ cat, e });
+                if (this._isDownloadableStatus(e.status)) tasks.push({ cat, e });
             }
         }
 
         if (!tasks.length) { this.showMessage("All selected items are installed."); return; }
-        this.showConfirm(`Download ${tasks.length} missing item(s)?`, async () => {
+        this.showConfirm(`Download/update ${tasks.length} item(s)?`, async () => {
             for (const { cat, e } of tasks) {
                 await this._downloadEntry(cat, e);
                 await new Promise(r => setTimeout(r, 300));
