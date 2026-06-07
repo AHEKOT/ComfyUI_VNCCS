@@ -623,6 +623,24 @@ function _injectVNCCSControlCenterStyles() {
     white-space: normal;
     overflow: visible;
 }
+.vnccs-cc-lora-card-detail-row {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+}
+.vnccs-cc-lora-card-detail-row .vnccs-cc-lora-card-desc {
+    flex: 1;
+    min-width: 0;
+}
+.vnccs-cc-lora-card-version {
+    flex-shrink: 0;
+    color: #777889;
+    font-size: 7.5px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    line-height: 1;
+    white-space: nowrap;
+}
 .vnccs-cc-lora-card--compact .vnccs-cc-lora-card-desc {
     display: -webkit-box;
     -webkit-box-orient: vertical;
@@ -2878,11 +2896,24 @@ class VNCCSControlCenterWidget {
         top.appendChild(meta);
         card.appendChild(top);
 
-        if (entry.description) {
+        if (entry.description || entry.version) {
+            const detailRow = document.createElement("div");
+            detailRow.className = "vnccs-cc-lora-card-detail-row";
+
             const desc = document.createElement("div");
             desc.className = "vnccs-cc-lora-card-desc";
-            desc.textContent = entry.description;
-            card.appendChild(desc);
+            desc.textContent = entry.description || "";
+            detailRow.appendChild(desc);
+
+            if (entry.version) {
+                const versionEl = document.createElement("span");
+                versionEl.className = "vnccs-cc-lora-card-version";
+                versionEl.textContent = `v${entry.version}`;
+                versionEl.title = `Version ${entry.version}`;
+                detailRow.appendChild(versionEl);
+            }
+
+            card.appendChild(detailRow);
         }
 
         const footer = document.createElement("div");
