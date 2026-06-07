@@ -88,7 +88,7 @@ There is also a **Custom** tab if you want to pass your own model into the Contr
 
 **V-chan:** These are the little helpers that keep the whole character factory from falling apart dramatically.
 
-- `VNCCS Clothes Core` -> `models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.safetensors`
+- `VNCCS Clothes Core` -> `models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.5.safetensors`
 - `VNCCS Emotion Core` -> `models/loras/qwen/VNCCS/VNCCS_QIE2511_EmotionCore-RC1.safetensors`
 - `VNCCS Pose Studio QIE2511` -> `models/loras/qwen/VNCCS/VNCCS_QIE2511_PoseStudio_ART_V5.9.5.safetensors`
 - `Qwen Image Edit 2511 Lightning` -> `models/loras/qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors`
