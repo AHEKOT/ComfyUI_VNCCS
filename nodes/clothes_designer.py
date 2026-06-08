@@ -3,11 +3,9 @@ import os
 import json
 import torch
 import folder_paths
-import nodes
 import server
 from aiohttp import web
 from PIL import Image
-import io
 import numpy as np
 import traceback
 import re
@@ -15,19 +13,47 @@ import re
 from ..utils import (
     character_dir, save_costume_info,
     load_costume_info, list_costumes, ensure_costume_structure,
-    sheets_dir, load_character_info,
+    sheets_dir,
     ensure_safe_name, safe_join_under, safe_relative_path
 )
-from .model_path_utils import get_full_path_agnostic
-from .vnccs_control_center import _apply_lora_standard
+from .character_generator import _call_comfy_node
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-CLONE_QWEN_INSTRUCTION = (
+WORKFLOW_ENCODER_CLASS = "VNCCS_QWEN_Encoder"
+WORKFLOW_ENCODER_INSTRUCTION = (
     "Describe the character and their key features (body shape, physical characteristics, "
     "clothing, items, accessories). Then explain how the user's text instruction should alter "
     "or modify the character. Generate a new image that meets the user's requirements while "
     "maintaining consistency with the original character where appropriate."
 )
+WORKFLOW_ENCODER_DEFAULTS = {
+    "target_size": 1344,
+    "upscale_method": "lanczos",
+    "crop_method": "disabled",
+    "latent_image_index": 1,
+    "weight1": 1,
+    "weight2": 1,
+    "weight3": 1,
+    "vl_size": 384,
+    "instruction": WORKFLOW_ENCODER_INSTRUCTION,
+    "qwen_2511": True,
+    "background_color": "White",
+}
+WORKFLOW_SAMPLER_DEFAULTS = {
+    "seed": 200413815563996,
+    "steps": 4,
+    "cfg": 1,
+    "sampler_name": "euler",
+    "scheduler": "karras",
+    "denoise": 1,
+}
+WORKFLOW_DECODE_DEFAULTS = {
+    "tile_size": 512,
+    "overlap": 64,
+    "temporal_size": 64,
+    "temporal_overlap": 8,
+}
+WORKFLOW_CLOTHES_CORE_LORA = "qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.6.safetensors"
 BACKGROUND_RGB = {
     "Green": (0.0, 1.0, 0.0),
     "Blue": (0.0, 0.0, 1.0),
@@ -210,6 +236,27 @@ def _is_clothes_core_lora_name(value):
     return "vnccs" in normalized and "clothes" in normalized and "core" in normalized
 
 
+def _normalize_lora_rel_path(value):
+    raw = str(value or "").strip().replace("\\", "/")
+    if not raw or raw.lower() == "none":
+        return ""
+    for prefix in ("models/loras/", "loras/"):
+        if raw.lower().startswith(prefix):
+            return raw[len(prefix):]
+    return raw
+
+
+def _resolve_pipe_clothes_core_lora(pipe):
+    for entry in getattr(pipe, "lora_entries", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name", "")
+        rel_path = _normalize_lora_rel_path(entry.get("local_path") or entry.get("path"))
+        if _is_clothes_core_lora_name(name) or _is_clothes_core_lora_name(rel_path):
+            return rel_path
+    raise ValueError("VNCCS Clothes Designer requires VNCCS Clothes Core LoRA from Control Center pipe.")
+
+
 class PipeContext:
     def __init__(self, source=None, **updates):
         s = source
@@ -298,13 +345,7 @@ class ClothesDesigner:
         active_tab = data.get("activeTab", "generate")
 
         if active_tab == "clone" and data.get("clone_image"):
-            bg_col = ClothesDesigner._normalize_background_color(data.get("gen_settings", {}).get("background_color"))
-            hex_col = "00FF00" if bg_col == "Green" else "0000FF"
-            return (
-                f"Put clothes, footwear and accessories from Picture 2 to character on Picture 1\n"
-                f"solid {bg_col.lower()} ({hex_col}) background",
-                ""
-            )
+            return "Dress character: clothes, footwear and accessories from Picture 2", ""
 
         info = data.get("costume_info", {})
         parts = []
@@ -401,7 +442,7 @@ class ClothesDesigner:
         
         # 0. Cache Check
         import hashlib
-        cache_img_path, cache_info_path = self.get_cache_paths(character_name, costume_name)
+        self.get_cache_paths(character_name, costume_name)
 
         # Stable Hash Calculation
         try:
@@ -432,25 +473,19 @@ class ClothesDesigner:
         # 2. Paths
         sheet_path = sheets_dir(character_name, costume_name, "neutral") 
 
-        # 3. VNCCS Qwen Encoder using model objects from the incoming pipe
-        from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder
-
-        encoder = VNCCS_QWEN_Encoder()
-        
         ref_image = self.get_reference_sprite(character_name, data)
         if ref_image is None:
             raise ValueError(f"Character '{character_name}' is incomplete. Missing 'Naked' or 'Original' sprites.")
         
-        # Load Clone Image. It is passed directly to Qwen as Picture 2.
+        # Load Clone Image. In clone mode it becomes Picture 2 from the reference workflow.
         clone_image_tensor = None
-        encoder_bg_col = self._normalize_background_color(gen_settings.get("background_color"))
         if active_tab == "clone" and data.get("clone_image"):
              try:
                  c_info = data["clone_image"]
                  image_path = resolve_comfy_image_path(c_info)
                  print(f"[ClothesDesigner] Clone reference image resolved: {image_path}")
                  
-                 i = Image.open(image_path)
+                 i = Image.open(image_path).convert("RGB")
                  
                  # Convert to Tensor (H,W,C)
                  i = torch.from_numpy(np.array(i).astype(np.float32) / 255.0).unsqueeze(0)
@@ -460,31 +495,32 @@ class ClothesDesigner:
                  print(f"[ClothesDesigner] Failed to load clone image for encoder: {e}")
                  raise
 
-        if active_tab == "clone":
-            print(
-                "[ClothesDesigner] Qwen clone encoder settings: "
-                f"prompt={positive_prompt!r}, target_size=1344, crop_method=disabled, "
-                "upscale_method=lanczos, latent_image_index=1, weights=(1.0,1.0,1.0), "
-                "image1_name=Picture 1, image2_name=Picture 2, image3_name=Picture 3, "
-                "image2=clone reference image, image3=None, vl_size=384, qwen_2511=True"
-            )
-        pos_cond, neg_cond, empty_latent = encoder.encode(
-            clip=clip, prompt=positive_prompt, vae=vae,
-            image1=ref_image, image2=clone_image_tensor, image3=None,
-            target_size=1344,
-            crop_method="disabled",
-            instruction=CLONE_QWEN_INSTRUCTION,
-            vl_size=384,
-            background_color=encoder_bg_col,
-            qwen_2511=True
+        image2 = clone_image_tensor if active_tab == "clone" and clone_image_tensor is not None else None
+        print(
+            "[ClothesDesigner] Encoder inputs: "
+            f"mode={active_tab}, image1=reference sprite, "
+            f"image2={'clone reference' if image2 is not None else 'none'}, prompt={positive_prompt!r}"
+        )
+        pos_cond, neg_cond, empty_latent = _call_comfy_node(
+            WORKFLOW_ENCODER_CLASS,
+            clip=clip,
+            prompt=positive_prompt,
+            vae=vae,
+            image1=ref_image,
+            image2=image2,
+            image3=None,
+            image1_name="Picture 1",
+            image2_name="Picture 2",
+            image3_name="Picture 3",
+            **WORKFLOW_ENCODER_DEFAULTS,
         )
         
-        seed_int = int(gen_settings.get("seed", 0)) or int(getattr(pipe, "seed_int", getattr(pipe, "seed", 0)) or 0)
-        sample_steps = int(getattr(pipe, "sample_steps", getattr(pipe, "steps", 0)) or 4)
-        cfg = float(getattr(pipe, "cfg", 1.0) or 1.0)
-        denoise = float(getattr(pipe, "denoise", 1.0) or 1.0)
-        sampler_name = getattr(pipe, "sampler_name", None) or "euler"
-        scheduler = getattr(pipe, "scheduler", None) or "normal"
+        seed_int = int(getattr(pipe, "seed_int", getattr(pipe, "seed", 0)) or WORKFLOW_SAMPLER_DEFAULTS["seed"])
+        sample_steps = int(getattr(pipe, "sample_steps", getattr(pipe, "steps", 0)) or WORKFLOW_SAMPLER_DEFAULTS["steps"])
+        cfg = float(getattr(pipe, "cfg", 0.0) or WORKFLOW_SAMPLER_DEFAULTS["cfg"])
+        denoise = float(getattr(pipe, "denoise", 0.0) or WORKFLOW_SAMPLER_DEFAULTS["denoise"])
+        sampler_name = getattr(pipe, "sampler_name", None) or WORKFLOW_SAMPLER_DEFAULTS["sampler_name"]
+        scheduler = getattr(pipe, "scheduler", None) or WORKFLOW_SAMPLER_DEFAULTS["scheduler"]
 
         out_pipe = PipeContext(
             source=pipe,
@@ -498,36 +534,20 @@ class ClothesDesigner:
             scheduler=scheduler,
         )
 
-        # Apply LoRA temporarily for generation only — output pipe keeps the original model
-        lora_name = gen_settings.get("lora_name", "none") or "none"
-        lora_strength = float(gen_settings.get("lora_strength", 1.0) or 1.0)
-        lora_strength = max(0.0, min(1.0, lora_strength))
-        if active_tab == "clone":
-            lora_strength = 1.0
-        gen_model = model
-        gen_clip = clip
-        if lora_name != "none" and not _is_clothes_core_lora_name(lora_name):
-            print(f"[ClothesDesigner] Ignoring non-Clothes-Core LoRA from widget state: {lora_name}")
-            lora_name = "none"
-        if lora_name != "none":
-            full_path = get_full_path_agnostic(folder_paths, "loras", lora_name, require_exists=True)
-            if full_path and os.path.exists(full_path):
-                print(f"[ClothesDesigner] Applying LoRA for generation: {lora_name} (strength={lora_strength})")
-                loader_type = getattr(pipe, "loader_type", "standard") or "standard"
-                if loader_type == "nunchaku":
-                    # TECH DEBT: legacy Nunchaku path disabled. Delete this
-                    # guard after old workflow JSON no longer carries it.
-                    loader_type = "standard"
-                gen_model, gen_clip = _apply_lora_standard(gen_model, gen_clip, full_path, lora_strength)
-            else:
-                print(f"[ClothesDesigner] LoRA not found: '{lora_name}', skipping.")
+        clothes_core_lora = _resolve_pipe_clothes_core_lora(pipe)
+        print(f"[ClothesDesigner] Applying VNCCS Clothes Core LoRA from pipe: {clothes_core_lora} (strength=1)")
+        sampler_model = _call_comfy_node(
+            "LoraLoaderModelOnly",
+            model=model,
+            lora_name=clothes_core_lora,
+            strength_model=1,
+        )[0]
 
         # 4. Sampling using the incoming Control Center pipe configuration
-        k_sampler = nodes.KSampler()
-
         print("[ClothesDesigner] Sampling...")
-        latent_result = k_sampler.sample(
-            model=gen_model, seed=out_pipe.seed_int, steps=out_pipe.sample_steps,
+        latent_result = _call_comfy_node(
+            "KSampler",
+            model=sampler_model, seed=out_pipe.seed_int, steps=out_pipe.sample_steps,
             cfg=out_pipe.cfg, sampler_name=out_pipe.sampler_name, scheduler=out_pipe.scheduler,
             positive=pos_cond, negative=neg_cond, latent_image=empty_latent, denoise=out_pipe.denoise
         )[0]
@@ -548,21 +568,17 @@ class ClothesDesigner:
         # 5. Decode
         print("[ClothesDesigner] VAE Decoding...")
         try:
-            vae_decode_node = nodes.NODE_CLASS_MAPPINGS["VAEDecodeTiled"]()
-            decode_kwargs = dict(vae=vae, samples=latent_for_decode, tile_size=512, overlap=64)
-            # Newer ComfyUI versions added temporal params; pass them if accepted
-            import inspect
-            sig = inspect.signature(vae_decode_node.decode)
-            if "temporal_size" in sig.parameters:
-                decode_kwargs["temporal_size"] = 0
-                decode_kwargs["temporal_overlap"] = 0
             with torch.inference_mode():
-                image, = vae_decode_node.decode(**decode_kwargs)
+                image, = _call_comfy_node(
+                    "VAEDecodeTiled",
+                    vae=vae,
+                    samples=latent_for_decode,
+                    **WORKFLOW_DECODE_DEFAULTS,
+                )
         except Exception as e:
             print(f"[ClothesDesigner] VAEDecodeTiled failed ({e}), falling back to VAEDecode...")
-            vae_decode_node = nodes.NODE_CLASS_MAPPINGS["VAEDecode"]()
             with torch.inference_mode():
-                image, = vae_decode_node.decode(vae=vae, samples=latent_for_decode)
+                image, = _call_comfy_node("VAEDecode", vae=vae, samples=latent_for_decode)
 
         # Cache for UI preview
         try:
@@ -627,6 +643,7 @@ async def vnccs_save_costume(request):
         return web.json_response({"status": "ok"})
     except Exception as e:
         return web.Response(status=500, text=str(e))
+
 
 @server.PromptServer.instance.routes.post("/vnccs/clothes_wizard")
 async def vnccs_clothes_wizard(request):
@@ -734,6 +751,7 @@ Example for "Santa Claus costume":
             "message": f"Engine Error: {e}",
             "model_name": "Qwen2VL (Check Console)",
         }, status=500)
+
 
 @server.PromptServer.instance.routes.get("/vnccs/get_preview")
 async def vnccs_get_preview(request):

@@ -9,6 +9,7 @@ import urllib.parse
 import inspect
 import ipaddress
 import sys
+import re
 
 import folder_paths
 import comfy.sd
@@ -61,7 +62,7 @@ _DOWNLOAD_STATUS = {}
 _DOWNLOAD_QUEUE = queue.Queue()
 _CUSTOM_LORAS_FILE = "vnccs_custom_loras.json"
 _PACKAGED_CC_REPO_IDS = {"MIUProject/VNCCS_v3.0"}
-_PIPELINE_LOCAL_LORAS = {"vnccs pose studio qie2511"}
+_PIPELINE_LOCAL_LORAS = {"vnccs clothes core", "vnccs pose studio qie2511"}
 _FOLDER_MAP = {
     "unet": ["unet", "diffusion_models"],
     "checkpoints": ["checkpoints"],
@@ -598,6 +599,83 @@ def _find_model_on_disk(local_path):
     return fallback, os.path.exists(fallback)
 
 
+def _entry_family_stem(local_path):
+    stem = os.path.splitext(os.path.basename(str(local_path or "").replace("\\", "/")))[0]
+    stem = re.sub(r"[-_](?:RC|V)?\d+(?:[._]\d+)*$", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"[-_]V\d+[-_]\d+$", "", stem, flags=re.IGNORECASE)
+    return stem.lower()
+
+
+def _active_version_hints(version):
+    parts = [part for part in re.split(r"[^0-9]+", str(version or "")) if part]
+    if len(parts) > 1 and int(parts[0]) == 0:
+        parts = parts[1:]
+    if not parts:
+        return []
+    dotted = ".".join(parts)
+    underscored = "_".join(parts)
+    compact = "".join(parts)
+    return [dotted, underscored, compact]
+
+
+def _find_active_installed_local_path(entry, active_version):
+    local_path = str(entry.get("local_path", "") or "").replace("\\", "/")
+    if not local_path or not active_version:
+        return ""
+    try:
+        target = _resolve_model_download_path(local_path)
+    except ValueError:
+        return ""
+
+    folder = os.path.dirname(target)
+    if not os.path.isdir(folder):
+        return ""
+
+    family = _entry_family_stem(local_path)
+    ext = os.path.splitext(local_path)[1].lower()
+    hints = [hint.lower() for hint in _active_version_hints(active_version)]
+    matches = []
+    for filename in os.listdir(folder):
+        if ext and os.path.splitext(filename)[1].lower() != ext:
+            continue
+        candidate_family = _entry_family_stem(filename)
+        if candidate_family != family:
+            continue
+        normalized = os.path.splitext(filename)[0].lower().replace("_", ".").replace("-", ".")
+        if hints and not any(hint in normalized or hint.replace(".", "") in normalized.replace(".", "") for hint in hints):
+            continue
+        matches.append(filename)
+
+    if not matches:
+        return ""
+    matches.sort(key=lambda name: (_version_sort_key(name), name))
+    parts = local_path.split("/")[:-1] + [matches[-1]]
+    return "/".join(parts)
+
+
+def _apply_active_installed_paths(config):
+    installed = get_installed_version_info()
+    if not installed:
+        return config
+
+    result = dict(config)
+    for category in ("models", "clip", "vae", "lora", "controlnet", "other"):
+        updated = []
+        for entry in config.get(category, []) or []:
+            if not isinstance(entry, dict):
+                updated.append(entry)
+                continue
+            key = f"cc_{category}_{entry.get('name', '')}"
+            active_version = installed.get(key)
+            if active_version and active_version != entry.get("version"):
+                active_path = _find_active_installed_local_path(entry, active_version)
+                if active_path:
+                    entry = {**entry, "local_path": active_path, "version": active_version}
+            updated.append(entry)
+        result[category] = updated
+    return result
+
+
 def _build_dynamic_paths(config, output_slot_names):
     all_entries = {}
     for entry in config.get("controlnet", []):
@@ -1056,7 +1134,7 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None):
     type_settings = state.get("type_settings", {})
     model_params = state.get("model_params", {})
 
-    config = _get_cc_config(repo_id)
+    config = _apply_active_installed_paths(_get_cc_config(repo_id))
     if selected_type == "custom":
         model_entry = _custom_context_model_entry(config, state)
     else:
@@ -1090,7 +1168,6 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None):
     compatible_vaes = _filter_entries_by_kind(config.get("vae", []), model_kind)
     all_clip_names = [entry["name"] for entry in compatible_clips]
     first_vae_name = compatible_vaes[0]["name"] if compatible_vaes else ""
-
     model, clip, vae = _load_model_block(
         model_entry,
         selected_type,
@@ -1436,15 +1513,6 @@ async def vnccs_module_status(request):
         "utils": ["vnccs-utils", "ComfyUI_VNCCS_Utils"],
     }
     dependency_modules = {
-        "sam3": {
-            "label": "SAM3",
-            "github_url": "https://github.com/yolain/ComfyUI-Easy-SAM3",
-            "folders": ["comfyui-easy-sam3"],
-            "nodes": [
-                {"node_id": "easy sam3ModelLoader", "class_names": ["LoadSam3Model"]},
-                {"node_id": "easy sam3ImageSegmentation", "class_names": ["Sam3ImageSegmentation"]},
-            ],
-        },
         "seedvr": {
             "label": "SeedVR",
             "github_url": "https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler",
