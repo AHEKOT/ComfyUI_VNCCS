@@ -1513,15 +1513,6 @@ async def vnccs_module_status(request):
         "utils": ["vnccs-utils", "ComfyUI_VNCCS_Utils"],
     }
     dependency_modules = {
-        "sam3": {
-            "label": "SAM3",
-            "github_url": "https://github.com/yolain/ComfyUI-Easy-SAM3",
-            "folders": ["comfyui-easy-sam3"],
-            "nodes": [
-                {"node_id": "easy sam3ModelLoader", "class_names": ["LoadSam3Model"]},
-                {"node_id": "easy sam3ImageSegmentation", "class_names": ["Sam3ImageSegmentation"]},
-            ],
-        },
         "seedvr": {
             "label": "SeedVR",
             "github_url": "https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler",
