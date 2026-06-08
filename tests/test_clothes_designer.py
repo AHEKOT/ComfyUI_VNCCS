@@ -163,25 +163,12 @@ class TestGetCachePaths:
         assert os.path.isdir(tmp_path / "Alice" / "cache")
 
 
-# ── SAM3 clone reference preparation ──────────────────────────────────────────
+# ── Clone reference preparation ───────────────────────────────────────────────
 
-class TestCloneSam3ReferencePreparation:
-    def test_composites_rgba_on_white(self):
-        rgba = torch.tensor([[[[0.2, 0.4, 0.6, 0.5]]]], dtype=torch.float32)
-
-        result = ClothesDesigner._composite_alpha_on_white(rgba)
-
-        assert result.shape == (1, 1, 1, 3)
-        assert torch.allclose(result, torch.tensor([[[[0.6, 0.7, 0.8]]]]))
-
-    def test_applies_mask_on_white(self):
-        image = torch.tensor([[[[0.2, 0.4, 0.6], [0.8, 0.2, 0.1]]]], dtype=torch.float32)
-        mask = torch.tensor([[[1.0, 0.0]]], dtype=torch.float32)
-
-        result = ClothesDesigner._apply_mask_on_white(image, mask)
-
-        assert torch.allclose(result[0, 0, 0], torch.tensor([0.2, 0.4, 0.6]))
-        assert torch.allclose(result[0, 0, 1], torch.tensor([1.0, 1.0, 1.0]))
+class TestCloneReferencePreparation:
+    def test_sam3_preprocessing_helpers_are_not_exposed(self):
+        assert not hasattr(ClothesDesigner, "_run_clone_sam3_reference")
+        assert not hasattr(ClothesDesigner, "_apply_mask_on_background")
 
 
 # ── PipeContext ───────────────────────────────────────────────────────────────

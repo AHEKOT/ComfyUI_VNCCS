@@ -10,8 +10,6 @@ from PIL import Image
 import io
 import numpy as np
 import traceback
-import inspect
-import sys
 import re
 
 from ..utils import (
@@ -24,7 +22,6 @@ from .model_path_utils import get_full_path_agnostic
 from .vnccs_control_center import _apply_lora_standard
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-DEFAULT_CLONE_SAM_PROMPT = "clothes, boots, footwear, accessories,"
 CLONE_QWEN_INSTRUCTION = (
     "Describe the character and their key features (body shape, physical characteristics, "
     "clothing, items, accessories). Then explain how the user's text instruction should alter "
@@ -266,145 +263,6 @@ class ClothesDesigner:
         return bg_col if bg_col in BACKGROUND_RGB else "Green"
 
     @staticmethod
-    def _node_output_to_tuple(value):
-        if hasattr(value, "result"):
-            value = value.result
-        if value is None:
-            return ()
-        if isinstance(value, tuple):
-            return value
-        if isinstance(value, list):
-            return tuple(value)
-        return (value,)
-
-    @staticmethod
-    def _resolve_comfy_api_node(node_id, class_names=()):
-        if node_id in getattr(nodes, "NODE_CLASS_MAPPINGS", {}):
-            return nodes.NODE_CLASS_MAPPINGS[node_id]
-
-        for module in list(sys.modules.values()):
-            if module is None:
-                continue
-            for class_name in class_names:
-                cls = getattr(module, class_name, None)
-                if cls is not None:
-                    return cls
-            for candidate in vars(module).values():
-                if not inspect.isclass(candidate) or not hasattr(candidate, "define_schema"):
-                    continue
-                try:
-                    schema = candidate.define_schema()
-                    if getattr(schema, "node_id", None) == node_id:
-                        return candidate
-                except Exception:
-                    continue
-        return None
-
-    @staticmethod
-    def _call_comfy_node(cls, method_name, **kwargs):
-        method = getattr(cls, method_name, None)
-        instance = None
-        if method is None:
-            instance = cls()
-            method = getattr(instance, method_name)
-
-        try:
-            sig = inspect.signature(method)
-            filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
-        except (TypeError, ValueError):
-            filtered = kwargs
-        return ClothesDesigner._node_output_to_tuple(method(**filtered))
-
-    @staticmethod
-    def _apply_mask_on_background(image, mask, background_color="Green"):
-        if image is None:
-            return None
-        if not torch.is_tensor(image):
-            raise ValueError(f"SAM3 returned unsupported image type: {type(image).__name__}")
-        if image.ndim == 3:
-            image = image.unsqueeze(0)
-        if image.ndim != 4:
-            raise ValueError(f"SAM3 returned unsupported image shape: {tuple(image.shape)}")
-
-        image = image.detach().to(dtype=torch.float32).clamp(0.0, 1.0)
-        if image.shape[-1] == 1:
-            rgb = image.repeat(1, 1, 1, 3)
-        elif image.shape[-1] == 4:
-            rgb = image[..., :3]
-        else:
-            rgb = image[..., :3]
-
-        bg_col = ClothesDesigner._normalize_background_color(background_color)
-        bg_rgb = torch.tensor(BACKGROUND_RGB[bg_col], dtype=rgb.dtype, device=rgb.device).view(1, 1, 1, 3)
-        bg = bg_rgb.expand_as(rgb)
-
-        alpha = torch.ones_like(rgb[..., :1])
-        if torch.is_tensor(mask):
-            if mask.ndim == 2:
-                mask = mask.unsqueeze(0)
-            if mask.ndim == 3:
-                mask = mask.unsqueeze(-1)
-            if mask.ndim == 4:
-                mask = mask.detach().to(device=image.device, dtype=torch.float32).clamp(0.0, 1.0)
-                if mask.shape[1:3] != image.shape[1:3]:
-                    mask = torch.nn.functional.interpolate(
-                        mask.movedim(-1, 1),
-                        size=image.shape[1:3],
-                        mode="nearest",
-                    ).movedim(1, -1)
-                if mask.shape[0] != image.shape[0]:
-                    mask = mask[:1].expand(image.shape[0], -1, -1, -1)
-                alpha = alpha * mask
-
-        return (rgb * alpha + bg * (1.0 - alpha)).clamp(0.0, 1.0)
-
-    @staticmethod
-    def _run_clone_sam3_reference(image, prompt, background_color="Green"):
-        prompt = (prompt or DEFAULT_CLONE_SAM_PROMPT).strip() or DEFAULT_CLONE_SAM_PROMPT
-        loader_cls = ClothesDesigner._resolve_comfy_api_node("easy sam3ModelLoader", ("LoadSam3Model",))
-        segment_cls = ClothesDesigner._resolve_comfy_api_node("easy sam3ImageSegmentation", ("Sam3ImageSegmentation",))
-        if loader_cls is None or segment_cls is None:
-            raise RuntimeError("SAM3 clone clothes preprocessing requires comfyui-easy-sam3 nodes loaded in ComfyUI.")
-
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        precision = "bf16" if torch.cuda.is_available() else "fp32"
-        print(f"[ClothesDesigner] SAM3 clone preprocessing: prompt='{prompt}', device={device}, precision={precision}")
-
-        sam3_model = ClothesDesigner._call_comfy_node(
-            loader_cls,
-            "execute",
-            model="sam3.pt",
-            segmentor="image",
-            device=device,
-            precision=precision,
-        )[0]
-        sam3_result = ClothesDesigner._call_comfy_node(
-            segment_cls,
-            "execute",
-            sam3_model=sam3_model,
-            images=image,
-            prompt=prompt,
-            threshold=0.4,
-            keep_model_loaded=False,
-            add_background="none",
-            detection_limit=-1,
-            coordinates_positive=None,
-            coordinates_negative=None,
-            bboxes=None,
-            mask=None,
-        )
-        if len(sam3_result) < 2:
-            raise RuntimeError("SAM3 clone clothes preprocessing returned no segmented image.")
-
-        mask = sam3_result[0]
-        segmented = ClothesDesigner._apply_mask_on_background(sam3_result[1], mask, background_color)
-        print(
-            f"[ClothesDesigner] SAM3 clone preprocessing output shape: {tuple(segmented.shape)}, "
-            f"background={ClothesDesigner._normalize_background_color(background_color)}"
-        )
-        return segmented
-
-    @staticmethod
     def _find_breasts_desc(char_info):
         """Search all string fields in character info for a breast/chest description."""
         # Prioritise 'body' field, then check the rest
@@ -623,7 +481,7 @@ class ClothesDesigner:
             ref_image = torch.zeros((1, 512, 512, 3))
             full_naked_sheet = torch.zeros((1, 512, 512, 3))
         
-        # Load Clone Image. After SAM3 isolation it is passed to Qwen as Picture 2.
+        # Load Clone Image. It is passed directly to Qwen as Picture 2.
         clone_image_tensor = None
         encoder_bg_col = self._normalize_background_color(gen_settings.get("background_color"))
         if active_tab == "clone" and data.get("clone_image"):
@@ -637,11 +495,9 @@ class ClothesDesigner:
                  # Convert to Tensor (H,W,C)
                  i = torch.from_numpy(np.array(i).astype(np.float32) / 255.0).unsqueeze(0)
                  
-                 sam_prompt = data.get("clone_sam_prompt") or data.get("sam_prompt") or DEFAULT_CLONE_SAM_PROMPT
-                 i = encoder._prepare_encoder_image(i, encoder_bg_col)
-                 clone_image_tensor = self._run_clone_sam3_reference(i, sam_prompt, encoder_bg_col)
+                 clone_image_tensor = encoder._prepare_encoder_image(i, encoder_bg_col)
              except Exception as e:
-                 print(f"[ClothesDesigner] Failed to preprocess clone image with SAM3: {e}")
+                 print(f"[ClothesDesigner] Failed to load clone image for encoder: {e}")
                  raise
 
         if active_tab == "clone":
@@ -650,7 +506,7 @@ class ClothesDesigner:
                 f"prompt={positive_prompt!r}, target_size=1024, crop_method=disabled, "
                 "upscale_method=lanczos, latent_image_index=1, weights=(1.0,1.0,1.0), "
                 "image1_name=Picture 1, image2_name=Picture 2, image3_name=Picture 3, "
-                "image2=SAM3 segmented clothes, image3=None, vl_size=392, qwen_2511=True"
+                "image2=clone reference image, image3=None, vl_size=392, qwen_2511=True"
             )
         pos_cond, neg_cond, empty_latent = encoder.encode(
             clip=clip, prompt=positive_prompt, vae=vae,
@@ -687,7 +543,7 @@ class ClothesDesigner:
         lora_strength = float(gen_settings.get("lora_strength", 1.0) or 1.0)
         lora_strength = max(0.0, min(1.0, lora_strength))
         if active_tab == "clone":
-            lora_strength = 0.5
+            lora_strength = 1.0
         gen_model = model
         gen_clip = clip
         if lora_name != "none" and not _is_clothes_core_lora_name(lora_name):
