@@ -611,7 +611,6 @@ app.registerExtension({
                     costume: "Naked",
                     activeTab: "generate", // 'generate' or 'clone'
                     clone_image: null,     // { name, type, subfolder }
-                    clone_sam_prompt: "clothes, boots, footwear, accessories,",
                     selected_preview_sprite: null,
                     costume_info: {
                         top: "", bottom: "", head: "", shoes: "", face: ""
@@ -1097,8 +1096,7 @@ app.registerExtension({
                     background_color: "Sets the solid chroma key background for the generated clothing sheet.",
                     lora_name: "VNCCS Clothes Core LoRA used to keep outfit generation compatible with this workflow.",
                     seed: "Numeric seed for reproducible clothing previews.",
-                    seed_mode: "Toggles fixed seed versus a fresh random seed for each preview.",
-                    clone_sam_prompt: "Text prompts for SAM3 to isolate clothing, shoes, and accessories before Qwen sees the clone reference."
+                    seed_mode: "Toggles fixed seed versus a fresh random seed for each preview."
                 };
                 const helpFor = (key, fallback = "") => FIELD_HELP[key] || fallback;
 
@@ -1297,33 +1295,6 @@ app.registerExtension({
                     desc.style.fontSize = "12px"; desc.style.color = "#aaa"; desc.style.marginBottom = "10px";
                     desc.innerText = "Upload an image to clone clothes from. The AI will attempt to transfer the outfit to your character.";
                     container.appendChild(desc);
-
-                    const samWrap = document.createElement("div");
-                    samWrap.className = "vnccs-field";
-                    samWrap.style.marginBottom = "10px";
-                    setHelpText(samWrap, helpFor("clone_sam_prompt"));
-                    const samLabel = document.createElement("div");
-                    samLabel.className = "vnccs-label";
-                    samLabel.innerText = "SAM PROMPT";
-                    const samInput = document.createElement("textarea");
-                    samInput.className = "vnccs-textarea";
-                    samInput.placeholder = "clothes, boots, footwear, accessories,";
-                    samInput.value = state.clone_sam_prompt || "clothes, boots, footwear, accessories,";
-                    samInput.style.resize = "none";
-                    samInput.style.overflow = "hidden";
-                    const resizeSamInput = () => {
-                        samInput.style.height = "auto";
-                        samInput.style.height = samInput.scrollHeight + "px";
-                    };
-                    samInput.addEventListener("input", () => {
-                        state.clone_sam_prompt = samInput.value;
-                        resizeSamInput();
-                        saveState();
-                    });
-                    setTimeout(resizeSamInput, 10);
-                    els.clone_sam_prompt = samInput;
-                    samWrap.append(samLabel, samInput);
-                    container.appendChild(samWrap);
 
                     // Preview / Upload Area
                     const pContainer = document.createElement("div");
