@@ -724,6 +724,25 @@ app.registerExtension({
                     }, [{ text: "OK", class: "vnccs-btn-primary" }]);
                 };
 
+                const hasSelectedEditableCostume = () => {
+                    const costume = String(state.costume || "").trim();
+                    return !!costume && costume !== "Naked" && costume !== "Original";
+                };
+
+                const showCreateCostumeRequired = () => {
+                    showInfo("Costume Required", "Create a new costume first, then select it before generating a preview.");
+                };
+
+                const onValidationError = (event) => {
+                    const targetId = String(event.detail?.node_id);
+                    const myId = String(node.id);
+                    if (targetId === myId) {
+                        showInfo("Costume Required", event.detail?.message || "Create a new costume first, then select it before generating a preview.");
+                    }
+                };
+                api.addEventListener("vnccs.clothes_designer.validation_error", onValidationError);
+                registerCleanup(node, () => api.removeEventListener("vnccs.clothes_designer.validation_error", onValidationError));
+
                 const startWizardDownloadPolling = () => {
                     const { overlay, modal } = showModal("Downloading Model...", () => {
                         const d = document.createElement("div");
@@ -1474,6 +1493,7 @@ app.registerExtension({
                 btnGen.style.flex = "0 0 auto"; // Prevent vertical stretching
                 btnGen.onclick = async () => {
                     if (!state.character) { showInfo("Error", "Select Character"); return; }
+                    if (!hasSelectedEditableCostume()) { showCreateCostumeRequired(); return; }
                     if (btnGen.disabled) return;
 
                     setClothesCoreLora();
@@ -1513,7 +1533,7 @@ app.registerExtension({
                                 els.previewImg.style.display = "block";
                                 els.placeholder.style.display = "none";
                             }
-                        } else showInfo("Error", "Failed");
+                        } else showInfo("Error", await r.text() || "Failed");
                     } catch (e) { showInfo("Error", e.toString()); }
                     finally {
                         loadingOverlay.remove();
@@ -1674,8 +1694,8 @@ app.registerExtension({
 
                     // Logic: If only Naked exists (displayList empty), prevent generation/deletion
                     if (displayList.length === 0) {
-                        state.costume = "Naked";
-                        if (els.btnGen) els.btnGen.disabled = true;
+                        state.costume = "";
+                        if (els.btnGen) els.btnGen.disabled = false;
                         if (els.btnDel) els.btnDel.disabled = true;
                         if (els.costSel) els.costSel.disabled = true;
                         // Disable Inputs
@@ -1725,7 +1745,8 @@ app.registerExtension({
                 const updatePreviewImage = async (forceCache = false) => {
                     if (!state.character) return;
                     const ts = Date.now();
-                    let url = `/vnccs/get_preview?character=${encodeURIComponent(state.character)}&costume=${encodeURIComponent(state.costume)}&ts=${ts}`;
+                    const previewCostume = hasSelectedEditableCostume() ? state.costume : "Naked";
+                    let url = `/vnccs/get_preview?character=${encodeURIComponent(state.character)}&costume=${encodeURIComponent(previewCostume)}&ts=${ts}`;
                     if (forceCache) url += "&force_cache=true";
                     if (!forceCache) {
                         state.selected_preview_sprite = null;
@@ -1736,47 +1757,6 @@ app.registerExtension({
                     try {
                         const r = await fetch(url);
                         if (!r.ok) {
-                            if (r.status === 400) {
-                                const txt = await r.text();
-                                showModal("Character don't have body yet. Complete Step1 workflow first.", () => {
-                                    const d = document.createElement("div"); d.innerText = txt; return d;
-                                }, [
-                                    {
-                                        text: "OK", class: "vnccs-btn-primary", action: async (overlay) => {
-                                            // Auto-switch to first valid character
-                                            overlay.remove(); // Close modal immediately
-
-                                            // Helper to check validity
-                                            const checkChar = async (c) => {
-                                                try {
-                                                    const testUrl = `/vnccs/get_preview?character=${encodeURIComponent(c)}&costume=Naked&ts=${Date.now()}`;
-                                                    const testR = await fetch(testUrl);
-                                                    return testR.ok;
-                                                } catch (e) { return false; }
-                                            };
-
-                                            const opts = els.charSelect.options;
-                                            for (let i = 0; i < opts.length; i++) {
-                                                const candidate = opts[i].value;
-                                                // Check validity (even if it's the current one, though we know current failed)
-                                                // Actually, try next ones mainly, but user said "reset to first valid", implies order 0..N
-                                                if (await checkChar(candidate)) {
-                                                    console.log("Found valid character:", candidate);
-                                                    state.character = candidate;
-                                                    els.charSelect.value = candidate;
-                                                    await loadCharacterInfo();
-                                                    saveState();
-                                                    await loadCostumes();
-                                                    updatePreviewImage();
-                                                    return false; // Done
-                                                }
-                                            }
-                                            showInfo("Error", "No valid characters found in the list.");
-                                            return false;
-                                        }
-                                    }
-                                ]);
-                            }
                             els.previewImg.style.display = "none";
                             els.placeholder.style.display = "block";
                             spritePreviewNavigator?.hideNav();
@@ -1792,7 +1772,7 @@ app.registerExtension({
                         spritePreviewNavigator?.showFallback(url);
                     } else {
                         await spritePreviewNavigator?.load(state.character, {
-                            costume: state.costume,
+                            costume: previewCostume,
                             fallbackUrl: url,
                         });
                     }
