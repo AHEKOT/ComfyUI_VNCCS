@@ -11,7 +11,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 pytest.importorskip("torch")
 import torch
 
-from nodes.clothes_designer import ClothesDesigner, PipeContext
+from nodes.clothes_designer import (
+    ClothesDesigner,
+    PipeContext,
+    _resolve_clothes_core_lora,
+)
 
 
 # ── _find_breasts_desc ────────────────────────────────────────────────────────
@@ -117,18 +121,17 @@ class TestClothesDesignerConstructPrompt:
     def test_clone_tab_with_clone_image(self):
         data = self._data(activeTab="clone", clone_image="img.png")
         pos, neg = ClothesDesigner.construct_prompt(data)
-        assert "Picture 3" in pos
-        assert "Picture 1" in pos
+        assert pos == "Dress character: clothes, footwear and accessories from Picture 2"
         assert neg == ""
 
-    def test_clone_tab_uses_background_color(self):
+    def test_clone_tab_ignores_background_color(self):
         data = self._data(
             activeTab="clone",
             clone_image="img.png",
             gen_settings={"background_color": "Blue"},
         )
         pos, _ = ClothesDesigner.construct_prompt(data)
-        assert "0000FF" in pos
+        assert pos == "Dress character: clothes, footwear and accessories from Picture 2"
 
 
 # ── get_cache_paths ───────────────────────────────────────────────────────────
@@ -169,6 +172,36 @@ class TestCloneReferencePreparation:
     def test_sam3_preprocessing_helpers_are_not_exposed(self):
         assert not hasattr(ClothesDesigner, "_run_clone_sam3_reference")
         assert not hasattr(ClothesDesigner, "_apply_mask_on_background")
+
+
+# ── Clothes Core LoRA resolution ──────────────────────────────────────────────
+
+class TestClothesCoreLoraResolution:
+    def test_prefers_pipe_lora_entry(self):
+        pipe = types.SimpleNamespace(
+            lora_entries=[
+                {
+                    "name": "VNCCS Clothes Core",
+                    "local_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.5.safetensors",
+                }
+            ],
+            lora_states=[{"name": "VNCCS Clothes Core", "strength": 0.75}],
+        )
+        rel, strength = _resolve_clothes_core_lora(pipe, {"lora_name": "none"})
+        assert rel == "qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.5.safetensors"
+        assert strength == 0.75
+
+    def test_uses_widget_lora_when_pipe_has_none(self):
+        pipe = types.SimpleNamespace(lora_entries=[], lora_states=[])
+        rel, strength = _resolve_clothes_core_lora(
+            pipe,
+            {
+                "lora_name": "qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.safetensors",
+                "lora_strength": 0.5,
+            },
+        )
+        assert rel == "qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.safetensors"
+        assert strength == 0.5
 
 
 # ── Costume validation ───────────────────────────────────────────────────────
