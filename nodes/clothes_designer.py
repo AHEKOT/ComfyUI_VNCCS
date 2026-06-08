@@ -246,46 +246,15 @@ def _normalize_lora_rel_path(value):
     return raw
 
 
-def _find_pipe_clothes_core_lora(pipe):
-    entries = getattr(pipe, "lora_entries", []) or []
-    states = getattr(pipe, "lora_states", []) or []
-    state_by_name = {
-        str(item.get("name", "")).strip().lower(): item
-        for item in states
-        if isinstance(item, dict) and item.get("name")
-    }
-
-    for entry in entries:
+def _resolve_pipe_clothes_core_lora(pipe):
+    for entry in getattr(pipe, "lora_entries", []) or []:
         if not isinstance(entry, dict):
             continue
-        name = str(entry.get("name", "")).strip()
+        name = entry.get("name", "")
         rel_path = _normalize_lora_rel_path(entry.get("local_path") or entry.get("path"))
-        if not (_is_clothes_core_lora_name(name) or _is_clothes_core_lora_name(rel_path)):
-            continue
-        state = state_by_name.get(name.lower()) or {}
-        strength = state.get("strength", 1.0)
-        try:
-            strength = float(strength)
-        except Exception:
-            strength = 1.0
-        return rel_path, max(0.0, min(1.0, strength))
-    return "", 1.0
-
-
-def _resolve_clothes_core_lora(pipe, gen_settings):
-    rel_path, strength = _find_pipe_clothes_core_lora(pipe)
-    if rel_path:
-        return rel_path, strength
-
-    rel_path = _normalize_lora_rel_path((gen_settings or {}).get("lora_name"))
-    if _is_clothes_core_lora_name(rel_path):
-        try:
-            strength = float((gen_settings or {}).get("lora_strength", 1.0))
-        except Exception:
-            strength = 1.0
-        return rel_path, max(0.0, min(1.0, strength))
-
-    return WORKFLOW_CLOTHES_CORE_LORA, 1.0
+        if _is_clothes_core_lora_name(name) or _is_clothes_core_lora_name(rel_path):
+            return rel_path
+    raise ValueError("VNCCS Clothes Designer requires VNCCS Clothes Core LoRA from Control Center pipe.")
 
 
 class PipeContext:
@@ -504,7 +473,7 @@ class ClothesDesigner:
         # 2. Paths
         sheet_path = sheets_dir(character_name, costume_name, "neutral") 
 
-        ref_image = self.get_reference_sprite(character_name, None if active_tab == "clone" else data)
+        ref_image = self.get_reference_sprite(character_name, data)
         if ref_image is None:
             raise ValueError(f"Character '{character_name}' is incomplete. Missing 'Naked' or 'Original' sprites.")
         
@@ -516,7 +485,7 @@ class ClothesDesigner:
                  image_path = resolve_comfy_image_path(c_info)
                  print(f"[ClothesDesigner] Clone reference image resolved: {image_path}")
                  
-                 i = Image.open(image_path)
+                 i = Image.open(image_path).convert("RGB")
                  
                  # Convert to Tensor (H,W,C)
                  i = torch.from_numpy(np.array(i).astype(np.float32) / 255.0).unsqueeze(0)
@@ -565,16 +534,14 @@ class ClothesDesigner:
             scheduler=scheduler,
         )
 
-        sampler_model = model
-        lora_name, lora_strength = _resolve_clothes_core_lora(pipe, gen_settings)
-        if lora_name and lora_strength > 0:
-            print(f"[ClothesDesigner] Applying VNCCS Clothes Core LoRA: {lora_name} (strength={lora_strength})")
-            sampler_model = _call_comfy_node(
-                "LoraLoaderModelOnly",
-                model=model,
-                lora_name=lora_name,
-                strength_model=lora_strength,
-            )[0]
+        clothes_core_lora = _resolve_pipe_clothes_core_lora(pipe)
+        print(f"[ClothesDesigner] Applying VNCCS Clothes Core LoRA from pipe: {clothes_core_lora} (strength=1)")
+        sampler_model = _call_comfy_node(
+            "LoraLoaderModelOnly",
+            model=model,
+            lora_name=clothes_core_lora,
+            strength_model=1,
+        )[0]
 
         # 4. Sampling using the incoming Control Center pipe configuration
         print("[ClothesDesigner] Sampling...")
