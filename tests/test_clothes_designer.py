@@ -171,6 +171,18 @@ class TestCloneReferencePreparation:
         assert not hasattr(ClothesDesigner, "_apply_mask_on_background")
 
 
+# ── Costume validation ───────────────────────────────────────────────────────
+
+class TestEditableCostumeValidation:
+    @pytest.mark.parametrize("costume", ["Casual", "My Costume", "armor_01"])
+    def test_accepts_editable_costumes(self, costume):
+        assert ClothesDesigner._is_editable_costume(costume)
+
+    @pytest.mark.parametrize("costume", ["", None, "Naked", "Original"])
+    def test_rejects_missing_or_base_costumes(self, costume):
+        assert not ClothesDesigner._is_editable_costume(costume)
+
+
 # ── PipeContext ───────────────────────────────────────────────────────────────
 
 class TestPipeContext:

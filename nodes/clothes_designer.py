@@ -263,6 +263,23 @@ class ClothesDesigner:
         return bg_col if bg_col in BACKGROUND_RGB else "Green"
 
     @staticmethod
+    def _is_editable_costume(value):
+        costume = str(value or "").strip()
+        return bool(costume) and costume not in {"Naked", "Original"}
+
+    @staticmethod
+    def _emit_validation_error(unique_id, message):
+        if unique_id is None:
+            return
+        try:
+            server.PromptServer.instance.send_sync(
+                "vnccs.clothes_designer.validation_error",
+                {"node_id": str(unique_id), "message": message},
+            )
+        except Exception:
+            pass
+
+    @staticmethod
     def _find_breasts_desc(char_info):
         """Search all string fields in character info for a breast/chest description."""
         # Prioritise 'body' field, then check the rest
@@ -319,7 +336,7 @@ class ClothesDesigner:
         info_path = os.path.join(cache_dir, f"preview_info_{safe_costume}.json")
         return img_path, info_path
 
-    def get_naked_sheet_crop(self, character_name, data=None):
+    def get_reference_sprite(self, character_name, data=None):
         try:
             selected = data.get("selected_preview_sprite") if isinstance(data, dict) else None
             if isinstance(selected, dict) and selected.get("character") == character_name:
@@ -335,7 +352,7 @@ class ClothesDesigner:
                         image_np = np.array(img).astype(np.float32) / 255.0
                         sprite_tensor = torch.from_numpy(image_np).unsqueeze(0)
                         print(f"[ClothesDesigner] Using selected preview sprite for Picture 1: {sprite_path} (index={index})")
-                        return sprite_tensor, sprite_tensor
+                        return sprite_tensor
                     print(f"[ClothesDesigner] Selected preview sprite list is empty for {character_name}/{costume}; falling back to latest base sprite.")
                 except Exception as exc:
                     print(f"[ClothesDesigner] Failed to load selected preview sprite {selected}: {exc}. Falling back to latest base sprite.")
@@ -345,10 +362,11 @@ class ClothesDesigner:
                 img = Image.open(sprite_path).convert("RGB")
                 image_np = np.array(img).astype(np.float32) / 255.0
                 sprite_tensor = torch.from_numpy(image_np).unsqueeze(0)
-                return sprite_tensor, sprite_tensor
+                return sprite_tensor
             print(f"[ClothesDesigner] No Naked/Original sprites found for {character_name}. Run migration or generate sprites first.")
-            return None, None
-        except: return None, None
+            return None
+        except:
+            return None
 
     def process(self, pipe=None, widget_data="{}", unique_id=None):
         # CRITICAL FIX: Ensure PromptServer has last_prompt_id for preview system
@@ -363,9 +381,14 @@ class ClothesDesigner:
             data = {}
 
         character_name = data.get("character", "Unknown")
-        costume_name = data.get("costume", "Naked")
+        costume_name = str(data.get("costume") or "").strip()
         gen_settings = data.get("gen_settings", {})
         active_tab = data.get("activeTab", "generate")
+
+        if not self._is_editable_costume(costume_name):
+            message = "Create a new costume first, then select it before generating a preview."
+            self._emit_validation_error(unique_id, message)
+            raise ValueError(message)
 
         if pipe is None:
             raise ValueError("Clothes Designer requires an incoming VNCCS pipe from Control Center.")
@@ -410,76 +433,13 @@ class ClothesDesigner:
         sheet_path = sheets_dir(character_name, costume_name, "neutral") 
 
         # 3. VNCCS Qwen Encoder using model objects from the incoming pipe
-        from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder, node_helpers
+        from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder
+
+        encoder = VNCCS_QWEN_Encoder()
         
-        class SafeQwenEncoder(VNCCS_QWEN_Encoder):
-            def encode(self, clip, prompt, vae=None, image1=None, image2=None, image3=None, target_size=1024, upscale_method="lanczos", crop_method="center", instruction="", image1_name="Picture 1", image2_name="Picture 2", image3_name="Picture 3", weight1=1.0, weight2=1.0, weight3=1.0, vl_size=384, background_color="White", latent_image_index=1, qwen_2511=True):
-                ref_latents = []
-                input_images = [image1, image2, image3]
-                names = [image1_name, image2_name, image3_name]
-                vl_images = []
-                template_prefix = "<|im_start|>system\n"
-                template_suffix = "<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n"
-                instruction_content = ""
-                if instruction == "":
-                    instruction_content = CLONE_QWEN_INSTRUCTION
-                else:
-                    if template_prefix in instruction: instruction = instruction.split(template_prefix)[1]
-                    if template_suffix in instruction: instruction = instruction.split(template_suffix)[0]
-                    if "{}" in instruction: instruction = instruction.replace("{}", "")
-                    instruction_content = instruction
-                
-                llama_template = template_prefix + instruction_content + template_suffix
-                image_prompt = ""
-
-                def pad_to_square(img_tensor):
-                    B, H, W, C = img_tensor.shape
-                    if H == W: return img_tensor
-                    max_dim = max(H, W)
-                    padded = torch.zeros((B, max_dim, max_dim, C), dtype=img_tensor.dtype, device=img_tensor.device)
-                    y_off = (max_dim - H) // 2
-                    x_off = (max_dim - W) // 2
-                    padded[:, y_off:y_off+H, x_off:x_off+W, :] = img_tensor
-                    return padded
-
-                for i, image in enumerate(input_images):
-                    if image is not None:
-                        image = self._prepare_encoder_image(image, background_color)
-                        processed_ref = self._process_image(image, target_size, upscale_method, crop_method)
-                        ref_latents.append(vae.encode(processed_ref[:, :, :, :3]))
-                        image_sq = pad_to_square(image)
-                        processed_vl = self._process_image(image_sq, vl_size, upscale_method, crop_method)
-                        vl_images.append(processed_vl)
-                        image_prompt += "{}: <|vision_start|><|image_pad|><|vision_end|>".format(names[i])
-                        
-                tokens = clip.tokenize(image_prompt + prompt, images=vl_images, llama_template=llama_template)
-                conditioning = clip.encode_from_tokens_scheduled(tokens)
-                try:
-                    if qwen_2511:
-                        method = "index_timestep_zero"
-                        conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents_method": method})
-                except Exception as exc:
-                    print(f"[ClothesDesigner] Failed to apply Qwen reference latent conditioning metadata: {exc}")
-                
-                conditioning_full_ref = conditioning
-                if len(ref_latents) > 0:
-                    weights_list = [weight1, weight2, weight3]
-                    ref_latents_weighted = [ (w ** 2) * latent for w, latent in zip(weights_list[:len(ref_latents)], ref_latents) ]
-                    ref_latents_full = [latent for latent, w in zip(ref_latents_weighted, weights_list[:len(ref_latents)]) if w > 0]
-                    conditioning_full_ref = node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents_full}, append=True)
-                
-                conditioning_negative = [(torch.zeros_like(cond[0]), cond[1]) for cond in conditioning_full_ref]
-                if len(ref_latents) >= latent_image_index: samples = ref_latents[latent_image_index - 1]
-                else: samples = torch.zeros(1, 4, 128, 128)
-                latent_out = {"samples": samples}
-                return (conditioning_full_ref, conditioning_negative, latent_out)
-
-        encoder = SafeQwenEncoder()
-        
-        ref_image, full_naked_sheet = self.get_naked_sheet_crop(character_name, data)
-        if ref_image is None: 
-            ref_image = torch.zeros((1, 512, 512, 3))
-            full_naked_sheet = torch.zeros((1, 512, 512, 3))
+        ref_image = self.get_reference_sprite(character_name, data)
+        if ref_image is None:
+            raise ValueError(f"Character '{character_name}' is incomplete. Missing 'Naked' or 'Original' sprites.")
         
         # Load Clone Image. It is passed directly to Qwen as Picture 2.
         clone_image_tensor = None
@@ -495,7 +455,7 @@ class ClothesDesigner:
                  # Convert to Tensor (H,W,C)
                  i = torch.from_numpy(np.array(i).astype(np.float32) / 255.0).unsqueeze(0)
                  
-                 clone_image_tensor = encoder._prepare_encoder_image(i, encoder_bg_col)
+                 clone_image_tensor = i
              except Exception as e:
                  print(f"[ClothesDesigner] Failed to load clone image for encoder: {e}")
                  raise
@@ -503,18 +463,18 @@ class ClothesDesigner:
         if active_tab == "clone":
             print(
                 "[ClothesDesigner] Qwen clone encoder settings: "
-                f"prompt={positive_prompt!r}, target_size=1024, crop_method=disabled, "
+                f"prompt={positive_prompt!r}, target_size=1344, crop_method=disabled, "
                 "upscale_method=lanczos, latent_image_index=1, weights=(1.0,1.0,1.0), "
                 "image1_name=Picture 1, image2_name=Picture 2, image3_name=Picture 3, "
-                "image2=clone reference image, image3=None, vl_size=392, qwen_2511=True"
+                "image2=clone reference image, image3=None, vl_size=384, qwen_2511=True"
             )
         pos_cond, neg_cond, empty_latent = encoder.encode(
             clip=clip, prompt=positive_prompt, vae=vae,
             image1=ref_image, image2=clone_image_tensor, image3=None,
-            target_size=1024,
+            target_size=1344,
             crop_method="disabled",
             instruction=CLONE_QWEN_INSTRUCTION,
-            vl_size=392,
+            vl_size=384,
             background_color=encoder_bg_col,
             qwen_2511=True
         )
