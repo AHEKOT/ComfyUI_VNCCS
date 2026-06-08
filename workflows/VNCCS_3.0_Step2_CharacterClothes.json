@@ -1,8 +1,8 @@
 {
   "id": "6a9cbd8d-e7df-4ad2-9c22-d0b7cd8e1f56",
   "revision": 0,
-  "last_node_id": 755,
-  "last_link_id": 2262,
+  "last_node_id": 758,
+  "last_link_id": 2264,
   "nodes": [
     {
       "id": 752,
@@ -34,6 +34,51 @@
       "widgets_values": []
     },
     {
+      "id": 728,
+      "type": "VNCCS_PoseStudio",
+      "pos": [
+        1030,
+        1940
+      ],
+      "size": [
+        1220,
+        920
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "images",
+          "shape": 6,
+          "type": "IMAGE",
+          "links": [
+            2246
+          ]
+        },
+        {
+          "name": "lighting_prompt",
+          "shape": 6,
+          "type": "STRING",
+          "links": [
+            2249
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VNCCS_PoseStudio",
+        "cnr_id": "vnccs-utils",
+        "ver": "94b34c4888fc24c526d43cec21b04c0253fbe599"
+      },
+      "widgets_values": [
+        "{\"mesh\":{\"age\":24,\"gender\":0,\"weight\":0.5,\"muscle\":0.5,\"height\":0.85,\"breast_size\":0.5,\"firmness\":0.5,\"penis_len\":0.5,\"penis_circ\":0.5,\"penis_test\":0.5,\"head_size\":1.2,\"arm_size\":1,\"hand_size\":1,\"foot_size\":1,\"upper_arm_l_length\":0.5,\"upper_arm_r_length\":0.5,\"forearm_l_length\":0.5,\"forearm_r_length\":0.5,\"thigh_l_length\":0.5,\"thigh_r_length\":0.5,\"shin_l_length\":0.5,\"shin_r_length\":0.5,\"spine_length\":0.5},\"export\":{\"view_width\":640,\"view_height\":1536,\"cam_zoom\":1.292605931142884,\"cam_offset_x\":0,\"cam_offset_y\":0,\"cam_yaw_deg\":0,\"cam_pitch_deg\":0,\"output_mode\":\"LIST\",\"grid_columns\":6,\"bg_color\":[255,255,255],\"debugMode\":false,\"debugPortraitMode\":false,\"debugKeepLighting\":false,\"debugShowSAMHelper\":false,\"debugShowSAMMeshOverlay\":false,\"samApplyCamera\":false,\"keepOriginalLighting\":true,\"user_prompt\":\"\",\"prompt_template\":\"Draw character from image2\\n<lighting>\\n<user_prompt>\",\"skin_type\":\"naked\",\"interface_mode\":\"manager\",\"hand_controls_v2\":true},\"poses\":[{\"bones\":{\"spine_01\":[0,26.55333486985228,0],\"thigh_l\":[0,13.781017330061818,0],\"thigh_r\":[0,21.165944605204928,0],\"calf_l\":[9.209829008784881,2.483239514130135,0],\"calf_r\":[16.374549113066216,0,0],\"foot_l\":[-1.8510753945358354,0,0],\"foot_r\":[7.078812943901658,0,0],\"neck_01\":[0,84.497197764368,0],\"upperarm_l\":[0,0,-40.88187918026828],\"upperarm_r\":[0,0,35.84875239730214],\"lowerarm_l\":[0,15.202544000744366,-7.202913499819425],\"lowerarm_r\":[-8.869182715086607,-31.296167610307158,-16.720110324767695]},\"modelRotation\":[0,-180,0],\"camera\":{\"posX\":0,\"posY\":-1.892945766448972,\"posZ\":45.94416245818138,\"targetX\":0,\"targetY\":-1.8929457664489746,\"targetZ\":0.9441624581813812},\"cameraParams\":{\"offset_x\":0,\"offset_y\":0,\"yaw_deg\":0,\"pitch_deg\":0,\"zoom\":1.292605931142884},\"prompt\":\"\"},{\"bones\":{\"thigh_l\":[-0.6974462347530567,-12.30856173896081,-3.5018418908842435],\"thigh_r\":[-0.715842926159536,12.161913252277198,3.6393640057664856],\"upperarm_l\":[0,0,-34.75124302360503],\"upperarm_r\":[-8.150307570536985,13.287747326304968,24.069759181883537],\"lowerarm_l\":[69.85897829410857,-22.256980369740376,49.060592700496464],\"lowerarm_r\":[52.10214823012909,21.7842333329848,3.4506169885181976]},\"modelRotation\":[0,0,0],\"camera\":{\"posX\":0,\"posY\":-1.2786405086517307,\"posZ\":46.003026843070984,\"targetX\":0,\"targetY\":-1.2786405086517334,\"targetZ\":1.0030268430709839},\"cameraParams\":{\"offset_x\":0,\"offset_y\":0,\"yaw_deg\":0,\"pitch_deg\":0,\"zoom\":1.2773809316327287}},{\"bones\":{\"pelvis\":[0,10.110933393455731,-0.2207803020154991],\"spine_01\":[2.491610850650969e-17,-4.234779869291079,4.282287163705052],\"spine_02\":[0,0,-1.1763354438608666],\"thigh_l\":[2.2430417142313157,-10.283436789707777,-2.9877672112575437],\"thigh_r\":[-10.01983526991116,22.363931783693946,6.515252973342224],\"calf_l\":[-0.08862247812947169,-1.2967987535676413,0.06158913907726767],\"calf_r\":[16.464457573971295,8.112795278494014,-1.3518921003653164],\"foot_r\":[3.6524683853298185,0,0],\"upperarm_l\":[3.4084808709220673,1.4501372211204475,-16.11761468050724],\"upperarm_r\":[0,0,24.885015116908985],\"lowerarm_l\":[-10.622464356435056,-62.43009468391985,-1.3200626809207079],\"lowerarm_r\":[-27.76977357861185,37.97991323515391,62.921261393270754],\"hand_l\":[-33.412301061076384,-6.808425470223517,-68.07567299467341],\"hand_r\":[17.448955597846897,35.673933888999535,-30.91028591447108],\"index_01_l\":[91.54524647199699,-34.135324744856334,4.609666312901881],\"index_01_r\":[69.56888405095191,-5.98393745707872,25.735044174531474],\"index_02_r\":[-154.3883660577718,56.357436723709434,-161.24298769819632],\"middle_01_l\":[76.6911395652618,-31.44980870820755,-22.686705040841932],\"middle_01_r\":[23.000255982721256,21.533983278184042,43.01842183214661],\"middle_02_r\":[112.36495666479763,76.12337719744679,17.555054278158025],\"pinky_01_l\":[64.91765314395124,-22.98416465120273,-35.453422388627004],\"pinky_01_r\":[21.13049206667989,7.816861360850142,36.538398955356016],\"pinky_02_r\":[43.3671432756753,46.009121923721466,52.90243579525958],\"ring_01_l\":[68.8962389834204,-26.661673508158245,-37.35349540289883],\"ring_01_r\":[22.79769965447993,17.852061042741045,39.95458358326116],\"ring_02_r\":[41.841116778160746,58.19380889443149,87.16452953852324],\"ring_03_l\":[-4.293482612433274,1.8223896815266891,-0.4446905311583272],\"thumb_01_l\":[13.356828887129275,0,0],\"thumb_01_r\":[0.07289562666147967,-12.607758273329022,4.0628072610443535],\"thumb_03_r\":[10.693451878451008,-11.338887820694003,11.549441457433394]},\"modelRotation\":[0,0,0],\"camera\":{\"posX\":0,\"posY\":-1.2786405086517307,\"posZ\":46.003026843070984,\"targetX\":0,\"targetY\":-1.2786405086517334,\"targetZ\":1.0030268430709839},\"cameraParams\":{\"offset_x\":0,\"offset_y\":0,\"yaw_deg\":0,\"pitch_deg\":0,\"zoom\":1.2716193321408729}},{\"bones\":{\"spine_02\":[0,-19.86709560684628,0],\"thigh_l\":[0,-15.36392706423902,0],\"thigh_r\":[0,-16.764780780286465,0],\"calf_r\":[-0.9081768610032926,25.247423596823463,7.094864320856223],\"foot_r\":[10.897888542727697,0,0],\"upperarm_l\":[0,0,-29.552954062211583],\"upperarm_r\":[7.381517282529653,19.760564825411887,27.236674414961705],\"head\":[0,13.91796575748088,0],\"lowerarm_l\":[47.67862970107647,-0.47650459151249047,-0.4338975122484167],\"lowerarm_r\":[8.955616917706525,4.637755384171254,-1.2737342938698473]},\"modelRotation\":[0,0,0],\"camera\":{\"posX\":0,\"posY\":-2.314077496528623,\"posZ\":45.846095353364944,\"targetX\":0,\"targetY\":-2.3140774965286255,\"targetZ\":0.8460953533649443},\"cameraParams\":{\"offset_x\":0,\"offset_y\":0,\"yaw_deg\":0,\"pitch_deg\":0,\"zoom\":1.2643291699431647},\"prompt\":\"\"}],\"lights\":[{\"type\":\"ambient\",\"color\":\"#000000\",\"intensity\":0.5},{\"type\":\"directional\",\"color\":\"#ffffff\",\"intensity\":1,\"x\":-92.90202545475795,\"y\":0,\"z\":26.714380225787586}],\"activeTab\":0,\"capture_id\":\"vnccs_capture_728\",\"lighting_prompts\":[\"Draw character from image2\",\"Draw character from image2\",\"Draw character from image2\",\"Draw character from image2\"],\"background_url\":null}",
+        ""
+      ],
+      "color": "#222",
+      "bgcolor": "#000"
+    },
+    {
       "id": 751,
       "type": "VNCCS_ClothesGenerator",
       "pos": [
@@ -61,7 +106,7 @@
         {
           "name": "pipe",
           "type": "VNCCS_PIPE",
-          "link": 2261
+          "link": 2263
         },
         {
           "name": "sheets_path",
@@ -121,7 +166,7 @@
       "widgets_values": [
         "",
         "Green",
-        "{\"nsfw_enabled\":true,\"emotion_pairs\":[],\"common\":{\"target_size\":\"1024\"},\"pose_generation\":{\"target_size\":\"1024\"},\"emotion_generation\":{\"face_denoise\":0.55},\"remove_clothes\":{\"prompt\":\"Dress character: White underwear\"},\"upscaler\":{\"mode\":\"seedvr\",\"model\":\"seedvr2_ema_3b-Q4_K_M.gguf\",\"vae\":\"ema_vae_fp16.safetensors\",\"gan_model\":\"2x_APISR_RRDB_GAN_generator.pth\",\"device\":\"cuda:0\",\"offload_device\":\"cpu\",\"seed\":42,\"resolution\":2048,\"max_resolution\":3840,\"batch_size\":1,\"uniform_batch_size\":false,\"color_correction\":\"lab\",\"temporal_overlap\":0,\"prepend_frames\":0,\"input_noise_scale\":0,\"latent_noise_scale\":0,\"blocks_to_swap\":0,\"swap_io_components\":false,\"cache_dit\":false,\"attention_mode\":\"sdpa\",\"attention_mode_manual\":true,\"encode_tiled\":true,\"encode_tile_size\":1024,\"encode_tile_overlap\":128,\"decode_tiled\":true,\"decode_tile_size\":1024,\"decode_tile_overlap\":128,\"tile_debug\":\"false\",\"cache_vae\":false,\"enable_debug\":false},\"bg_remove\":{\"use_internal_rmbg\":false,\"preset\":\"balanced\",\"tolerance\":0.5,\"despill_strength\":1,\"despill_kernel_size\":3,\"despill_color\":\"black\"},\"ui\":{\"selected_preview\":\"source_upscaler\",\"user_selected_preview\":false}}",
+        "{\"nsfw_enabled\":true,\"emotion_pairs\":[],\"common\":{\"target_size\":\"1024\"},\"pose_generation\":{\"target_size\":\"1024\"},\"emotion_generation\":{\"face_denoise\":0.55},\"remove_clothes\":{\"prompt\":\"Dress character: White underwear\"},\"upscaler\":{\"mode\":\"seedvr\",\"model\":\"seedvr2_ema_3b-Q4_K_M.gguf\",\"vae\":\"ema_vae_fp16.safetensors\",\"gan_model\":\"2x_APISR_RRDB_GAN_generator.pth\",\"device\":\"cuda:0\",\"offload_device\":\"cpu\",\"seed\":42,\"resolution\":2048,\"max_resolution\":3840,\"batch_size\":1,\"uniform_batch_size\":false,\"color_correction\":\"lab\",\"temporal_overlap\":0,\"prepend_frames\":0,\"input_noise_scale\":0,\"latent_noise_scale\":0,\"blocks_to_swap\":0,\"swap_io_components\":false,\"cache_dit\":false,\"attention_mode\":\"sdpa\",\"attention_mode_manual\":true,\"encode_tiled\":true,\"encode_tile_size\":1024,\"encode_tile_overlap\":128,\"decode_tiled\":true,\"decode_tile_size\":1024,\"decode_tile_overlap\":128,\"tile_debug\":\"false\",\"cache_vae\":false,\"enable_debug\":false},\"bg_remove\":{\"use_internal_rmbg\":false,\"preset\":\"balanced\",\"tolerance\":0.5,\"despill_strength\":1,\"despill_kernel_size\":3,\"despill_color\":\"black\"},\"ui\":{\"selected_preview\":\"source_upscaler\",\"user_selected_preview\":true}}",
         ""
       ]
     },
@@ -144,7 +189,7 @@
           "name": "pipe",
           "shape": 7,
           "type": "VNCCS_PIPE",
-          "link": 2262
+          "link": 2264
         }
       ],
       "outputs": [
@@ -177,14 +222,14 @@
         "Node name for S&R": "ClothesDesigner"
       },
       "widgets_values": [
-        "{\"character\":\"Alina_test\",\"costume\":\"Test_costume1\",\"activeTab\":\"generate\",\"clone_image\":{\"name\":\"f765bd5e-396f-4952-bf13-95c70edbb0901.png\",\"type\":\"input\",\"subfolder\":\"\"},\"clone_sam_prompt\":\"clothes, boots, footwear, accessories,\",\"selected_preview_sprite\":{\"character\":\"Alina_test\",\"costume\":\"Test_costume1\",\"index\":6,\"count\":12},\"costume_info\":{\"top\":\"black leather school blouse with white lace trim on the collar and cuffs, fitted but slightly revealing, with a low-cut neckline, revealing a hint of cleavage\",\"bottom\":\"black leather skirt with a high slit on the side, revealing one leg, with a tight fit and a short length, ending above the knee\",\"head\":\"black leather beret with a small white lace bow on the side\",\"face\":\"black leather eye patches with lace detailing, covering the eyes\",\"shoes\":\"black leather high-heeled boots with a slight heel, featuring a strap across the ankle\"},\"character_info\":{\"sex\":\"female\",\"age\":13,\"race\":\"human\",\"skin_color\":\"\",\"hair\":\"two-tone hair, dyed hair, red hair, white hair, very long hair, braid\",\"eyes\":\"pink eyes\",\"face\":\"dot nose, mole under eye\",\"body\":\"small breasts\",\"additional_details\":\"\",\"nsfw\":true,\"aesthetics\":\"masterpiece\",\"negative_prompt\":\"bad quality,worst quality,worst detail,sketch,censor, missing arm, missing leg, distorted body\",\"lora_prompt\":\"\",\"name\":\"Alina_test\",\"background_color\":\"Blue\",\"seed\":3644386310840},\"gen_settings\":{\"background_color\":\"Green\",\"seed\":0,\"seed_mode\":\"fixed\",\"lora_name\":\"qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.safetensors\",\"lora_strength\":1}}",
+        "{\"character\":\"FurryTest\",\"costume\":\"clonecostume\",\"activeTab\":\"clone\",\"clone_image\":{\"name\":\"clone_reference_image__4_.png\",\"type\":\"input\",\"subfolder\":\"\"},\"selected_preview_sprite\":{\"character\":\"FurryTest\",\"costume\":\"clonecostume\",\"index\":1,\"count\":4},\"costume_info\":{\"top\":\"long-sleeved, loose-fitting tunic made of rugged, light brown leather with a high collar and wide sleeves, adorned with intricate, dark brown leather straps and buckles for an edgy, nomadic look\",\"bottom\":\"wide-legged, loose-fitting pants in a similar rugged brown leather, with a drawstring waist and decorative leather straps and buckles\",\"head\":\"a large, hooded cloak with a high collar, made of the same rugged brown leather, with a drawstring at the neck and decorative straps and buckles\",\"face\":\"\",\"shoes\":\"high-top, round-toe boots made of the same rugged brown leather as the top and bottom, with thick soles and decorative straps and buckles\"},\"character_info\":{\"sex\":\"female\",\"age\":24,\"race\":\"furry, furry_female\",\"skin_color\":\"\",\"hair\":\"black_hair, medium_hair\",\"eyes\":\"brown_eyes, bright_pupils\",\"face\":\"pointy_ears, furred\",\"body\":\"large_breasts, slim build\",\"additional_details\":\"\",\"nsfw\":false,\"aesthetics\":\"masterpiece, best quality, score_7, anime\",\"negative_prompt\":\"bad quality, worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia\",\"lora_prompt\":\"\",\"name\":\"FurryTest\",\"background_color\":\"Green\",\"seed\":8990876333716},\"gen_settings\":{\"background_color\":\"Green\",\"seed\":0,\"seed_mode\":\"fixed\",\"lora_name\":\"qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.6.safetensors\",\"lora_strength\":1},\"clone_sam_prompt\":\"clothes, boots, footwear, accessories,\"}",
         ""
       ],
       "color": "#222",
       "bgcolor": "#000"
     },
     {
-      "id": 755,
+      "id": 758,
       "type": "VNCCS_ControlCenter",
       "pos": [
         -340,
@@ -192,10 +237,10 @@
       ],
       "size": [
         630,
-        930
+        920
       ],
       "flags": {},
-      "order": 0,
+      "order": 1,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -203,8 +248,8 @@
           "name": "pipe",
           "type": "VNCCS_PIPE",
           "links": [
-            2261,
-            2262
+            2263,
+            2264
           ]
         }
       ],
@@ -215,51 +260,8 @@
       },
       "widgets_values": [
         "MIUProject/VNCCS_v3.0",
-        "{\"output_slot_names\":[],\"selected_models\":{\"gguf\":\"Qwen-Image-Edit-2511-GGUF-Q5\"},\"selected_model\":\"Qwen-Image-Edit-2511-GGUF-Q5\",\"selected_type\":\"gguf\"}",
+        "{\"output_slot_names\":[],\"selected_models\":{\"gguf\":\"Qwen-Image-Edit-2511-GGUF-Q5\"},\"selected_model\":\"Qwen-Image-Edit-2511-GGUF-Q5\",\"loras\":[{\"name\":\"Qwen Image Edit 2511 Lightning\",\"auto_apply\":true,\"strength\":1}],\"selected_type\":\"gguf\"}",
         "{}"
-      ]
-    },
-    {
-      "id": 728,
-      "type": "VNCCS_PoseStudio",
-      "pos": [
-        1030,
-        1940
-      ],
-      "size": [
-        1220,
-        920
-      ],
-      "flags": {},
-      "order": 1,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "images",
-          "shape": 6,
-          "type": "IMAGE",
-          "links": [
-            2246
-          ]
-        },
-        {
-          "name": "lighting_prompt",
-          "shape": 6,
-          "type": "STRING",
-          "links": [
-            2249
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "VNCCS_PoseStudio",
-        "cnr_id": "vnccs-utils",
-        "ver": "94b34c4888fc24c526d43cec21b04c0253fbe599"
-      },
-      "widgets_values": [
-        "{\"mesh\":{\"age\":29,\"gender\":0,\"weight\":0.5,\"muscle\":0.5,\"height\":0.85,\"breast_size\":0.5,\"firmness\":0.5,\"penis_len\":0.5,\"penis_circ\":0.5,\"penis_test\":0.5,\"head_size\":1.2,\"arm_size\":1,\"hand_size\":1,\"foot_size\":1,\"upper_arm_l_length\":0.5,\"upper_arm_r_length\":0.5,\"forearm_l_length\":0.5,\"forearm_r_length\":0.5,\"thigh_l_length\":0.5,\"thigh_r_length\":0.5,\"shin_l_length\":0.5,\"shin_r_length\":0.5,\"spine_length\":0.5},\"export\":{\"view_width\":640,\"view_height\":1536,\"cam_zoom\":1.207454919621627,\"cam_offset_x\":0,\"cam_offset_y\":0,\"cam_yaw_deg\":0,\"cam_pitch_deg\":0,\"output_mode\":\"LIST\",\"grid_columns\":6,\"bg_color\":[255,255,255],\"debugMode\":false,\"debugPortraitMode\":false,\"debugKeepLighting\":false,\"debugShowSAMHelper\":false,\"debugShowSAMMeshOverlay\":false,\"samApplyCamera\":false,\"keepOriginalLighting\":true,\"user_prompt\":\"\",\"prompt_template\":\"Draw character from image2\\n<lighting>\\n<user_prompt>\",\"skin_type\":\"naked\",\"interface_mode\":\"manager\",\"hand_controls_v2\":true},\"poses\":[{\"bones\":{\"spine_01\":[0,26.55333486985228,0],\"thigh_l\":[0,13.781017330061818,0],\"thigh_r\":[0,21.165944605204928,0],\"calf_l\":[9.209829008784881,2.483239514130135,0],\"calf_r\":[16.374549113066216,0,0],\"foot_l\":[-1.8510753945358354,0,0],\"foot_r\":[7.078812943901658,0,0],\"neck_01\":[0,84.497197764368,0],\"upperarm_l\":[0,0,-40.88187918026828],\"upperarm_r\":[0,0,35.84875239730214],\"lowerarm_l\":[0,15.202544000744366,-7.202913499819425],\"lowerarm_r\":[-8.869182715086607,-31.296167610307158,-16.720110324767695]},\"modelRotation\":[0,-180,0],\"camera\":{\"posX\":0,\"posY\":-1.892945766448972,\"posZ\":45.94416245818138,\"targetX\":0,\"targetY\":-1.8929457664489746,\"targetZ\":0.9441624581813812},\"cameraParams\":{\"offset_x\":0,\"offset_y\":0,\"yaw_deg\":0,\"pitch_deg\":0,\"zoom\":1.207454919621627},\"prompt\":\"\"},{\"bones\":{\"thigh_l\":[-0.6974462347530567,-12.30856173896081,-3.5018418908842435],\"thigh_r\":[-0.715842926159536,12.161913252277198,3.6393640057664856],\"upperarm_l\":[0,0,-34.75124302360503],\"upperarm_r\":[-8.150307570536985,13.287747326304968,24.069759181883537],\"lowerarm_l\":[69.85897829410857,-22.256980369740376,49.060592700496464],\"lowerarm_r\":[52.10214823012909,21.7842333329848,3.4506169885181976]},\"modelRotation\":[0,0,0],\"camera\":{\"posX\":0,\"posY\":-1.2786405086517307,\"posZ\":46.003026843070984,\"targetX\":0,\"targetY\":-1.2786405086517334,\"targetZ\":1.0030268430709839},\"cameraParams\":{\"offset_x\":0,\"offset_y\":0,\"yaw_deg\":0,\"pitch_deg\":0,\"zoom\":1.1917052660099834}},{\"bones\":{\"pelvis\":[0,10.110933393455731,-0.2207803020154991],\"spine_01\":[2.491610850650969e-17,-4.234779869291079,4.282287163705052],\"spine_02\":[0,0,-1.1763354438608666],\"thigh_l\":[2.2430417142313157,-10.283436789707777,-2.9877672112575437],\"thigh_r\":[-10.01983526991116,22.363931783693946,6.515252973342224],\"calf_l\":[-0.08862247812947169,-1.2967987535676413,0.06158913907726767],\"calf_r\":[16.464457573971295,8.112795278494014,-1.3518921003653164],\"foot_r\":[3.6524683853298185,0,0],\"upperarm_l\":[3.4084808709220673,1.4501372211204475,-16.11761468050724],\"upperarm_r\":[0,0,24.885015116908985],\"lowerarm_l\":[-10.622464356435056,-62.43009468391985,-1.3200626809207079],\"lowerarm_r\":[-27.76977357861185,37.97991323515391,62.921261393270754],\"hand_l\":[-33.412301061076384,-6.808425470223517,-68.07567299467341],\"hand_r\":[17.448955597846897,35.673933888999535,-30.91028591447108],\"index_01_l\":[91.54524647199699,-34.135324744856334,4.609666312901881],\"index_01_r\":[69.56888405095191,-5.98393745707872,25.735044174531474],\"index_02_r\":[-154.3883660577718,56.357436723709434,-161.24298769819632],\"middle_01_l\":[76.6911395652618,-31.44980870820755,-22.686705040841932],\"middle_01_r\":[23.000255982721256,21.533983278184042,43.01842183214661],\"middle_02_r\":[112.36495666479763,76.12337719744679,17.555054278158025],\"pinky_01_l\":[64.91765314395124,-22.98416465120273,-35.453422388627004],\"pinky_01_r\":[21.13049206667989,7.816861360850142,36.538398955356016],\"pinky_02_r\":[43.3671432756753,46.009121923721466,52.90243579525958],\"ring_01_l\":[68.8962389834204,-26.661673508158245,-37.35349540289883],\"ring_01_r\":[22.79769965447993,17.852061042741045,39.95458358326116],\"ring_02_r\":[41.841116778160746,58.19380889443149,87.16452953852324],\"ring_03_l\":[-4.293482612433274,1.8223896815266891,-0.4446905311583272],\"thumb_01_l\":[13.356828887129275,0,0],\"thumb_01_r\":[0.07289562666147967,-12.607758273329022,4.0628072610443535],\"thumb_03_r\":[10.693451878451008,-11.338887820694003,11.549441457433394]},\"modelRotation\":[0,0,0],\"camera\":{\"posX\":0,\"posY\":-1.2786405086517307,\"posZ\":46.003026843070984,\"targetX\":0,\"targetY\":-1.2786405086517334,\"targetZ\":1.0030268430709839},\"cameraParams\":{\"offset_x\":0,\"offset_y\":0,\"yaw_deg\":0,\"pitch_deg\":0,\"zoom\":1.1862679178696531}},{\"bones\":{\"spine_02\":[0,-19.86709560684628,0],\"thigh_l\":[0,-15.36392706423902,0],\"thigh_r\":[0,-16.764780780286465,0],\"calf_r\":[-0.9081768610032926,25.247423596823463,7.094864320856223],\"foot_r\":[10.897888542727697,0,0],\"upperarm_l\":[0,0,-29.552954062211583],\"upperarm_r\":[7.381517282529653,19.760564825411887,27.236674414961705],\"head\":[0,13.91796575748088,0],\"lowerarm_l\":[47.67862970107647,-0.47650459151249047,-0.4338975122484167],\"lowerarm_r\":[8.955616917706525,4.637755384171254,-1.2737342938698473]},\"modelRotation\":[0,0,0],\"camera\":{\"posX\":0,\"posY\":-2.314077496528623,\"posZ\":45.846095353364944,\"targetX\":0,\"targetY\":-2.3140774965286255,\"targetZ\":0.8460953533649443},\"cameraParams\":{\"offset_x\":0,\"offset_y\":0,\"yaw_deg\":0,\"pitch_deg\":0,\"zoom\":1.1795664326709274},\"prompt\":\"\"}],\"lights\":[{\"type\":\"ambient\",\"color\":\"#000000\",\"intensity\":0.5},{\"type\":\"directional\",\"color\":\"#ffffff\",\"intensity\":1,\"x\":-92.90202545475795,\"y\":0,\"z\":26.714380225787586}],\"activeTab\":0,\"capture_id\":\"vnccs_capture_728\",\"lighting_prompts\":[\"Draw character from image2\",\"Draw character from image2\",\"Draw character from image2\",\"Draw character from image2\"],\"background_url\":null}",
-        ""
       ],
       "color": "#222",
       "bgcolor": "#000"
@@ -315,16 +317,16 @@
       "COMBO"
     ],
     [
-      2261,
-      755,
+      2263,
+      758,
       0,
       751,
       2,
       "VNCCS_PIPE"
     ],
     [
-      2262,
-      755,
+      2264,
+      758,
       0,
       753,
       0,
@@ -357,10 +359,10 @@
     "VHS_MetadataImage": true,
     "VHS_KeepIntermediate": true,
     "ds": {
-      "scale": 0.9229599817706443,
+      "scale": 0.9229599817706473,
       "offset": [
-        1140.7450181472107,
-        -1452.9374012674705
+        1032.844089633048,
+        -1567.0542283304485
       ]
     }
   },
