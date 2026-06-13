@@ -395,6 +395,15 @@ const STYLE = `
     border: 1px solid var(--border);
     transition: border-color var(--transition);
 }
+.ems-emotion-img-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.035);
+    color: var(--text-muted);
+    font-size: 24px;
+    font-weight: 700;
+}
 .ems-emotion-item.selected .ems-emotion-img {
     border-color: var(--accent-border);
 }
@@ -415,6 +424,32 @@ const STYLE = `
 .ems-emotion-item.compact .ems-emotion-label {
     font-size: 12px;
     margin-top: 3px;
+}
+.ems-emotion-item.add-custom {
+    border: 1px dashed var(--accent-border);
+    background: rgba(255, 143, 163, 0.05);
+}
+.ems-emotion-item.add-custom:hover {
+    background: rgba(255, 143, 163, 0.1);
+}
+.ems-emotion-add-box {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: var(--radius-sm);
+    border: 1px dashed rgba(255, 143, 163, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent-hover);
+    font-size: 28px;
+    font-weight: 500;
+    box-sizing: border-box;
+    background: rgba(255, 255, 255, 0.025);
+}
+.ems-emotion-item.add-custom .ems-emotion-label {
+    color: var(--accent-hover);
+    font-weight: 700;
+    font-size: 11px;
 }
 
 /* ── Footer / Button ── */
@@ -874,6 +909,10 @@ const STYLE = `
     box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 143, 163, 0.08);
     position: relative;
 }
+.ems-modal--custom-emotion {
+    width: min(520px, calc(100% - 32px));
+    max-width: 520px;
+}
 .ems-modal::before {
     content: '';
     position: absolute;
@@ -944,6 +983,51 @@ const STYLE = `
     background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%) !important;
     color: #1a1525 !important;
     box-shadow: 0 6px 20px rgba(255, 143, 163, 0.4), 0 0 0 2px rgba(255,143,163,0.28);
+}
+.ems-custom-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.ems-custom-form textarea.ems-input {
+    min-height: 74px;
+    resize: vertical;
+    font-weight: 600;
+    line-height: 1.4;
+}
+.ems-custom-image-row {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 10px;
+    align-items: center;
+}
+.ems-custom-preview {
+    width: 88px;
+    aspect-ratio: 1 / 1;
+    border-radius: var(--radius-sm);
+    border: 1px dashed var(--accent-border);
+    background: rgba(255, 255, 255, 0.04);
+    object-fit: cover;
+    box-sizing: border-box;
+}
+.ems-custom-preview.is-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 24px;
+}
+.ems-custom-file {
+    color: var(--text-secondary);
+    font-family: var(--font);
+    font-size: 12px;
+    min-width: 0;
+}
+.ems-custom-error {
+    min-height: 16px;
+    color: var(--error);
+    font-size: 12px;
+    font-weight: 700;
 }
 `;
 
@@ -2235,6 +2319,161 @@ app.registerExtension({
                     btnOk.focus();
                 }
 
+                function createCustomEmotionField(labelText, inputEl) {
+                    const field = document.createElement("label");
+                    field.className = "ems-field";
+
+                    const label = document.createElement("span");
+                    label.className = "ems-label";
+                    label.innerText = labelText;
+
+                    field.appendChild(label);
+                    field.appendChild(inputEl);
+                    return field;
+                }
+
+                function showCustomEmotionModal() {
+                    const backdrop = document.createElement("div");
+                    backdrop.className = "ems-modal-backdrop";
+
+                    const modal = document.createElement("div");
+                    modal.className = "ems-modal ems-modal--custom-emotion";
+
+                    const text = document.createElement("div");
+                    text.className = "ems-modal-text";
+                    const titleEl = document.createElement("strong");
+                    titleEl.textContent = "Add Custom Emotion";
+                    text.appendChild(titleEl);
+
+                    const form = document.createElement("div");
+                    form.className = "ems-custom-form";
+
+                    const nameInput = document.createElement("input");
+                    nameInput.className = "ems-input";
+                    nameInput.type = "text";
+                    nameInput.placeholder = "Emotion name";
+
+                    const tagsInput = document.createElement("textarea");
+                    tagsInput.className = "ems-input";
+                    tagsInput.placeholder = "angry, furrowed_brow, open_mouth";
+
+                    const promptInput = document.createElement("textarea");
+                    promptInput.className = "ems-input";
+                    promptInput.placeholder = "The character looks...";
+
+                    const imageRow = document.createElement("div");
+                    imageRow.className = "ems-custom-image-row";
+
+                    let previewEl = document.createElement("div");
+                    previewEl.className = "ems-custom-preview is-empty";
+                    previewEl.innerText = "+";
+
+                    const fileInput = document.createElement("input");
+                    fileInput.className = "ems-custom-file";
+                    fileInput.type = "file";
+                    fileInput.accept = "image/*";
+
+                    let imageData = "";
+                    fileInput.onchange = () => {
+                        const file = fileInput.files?.[0];
+                        if (!file) {
+                            imageData = "";
+                            previewEl = document.createElement("div");
+                            previewEl.className = "ems-custom-preview is-empty";
+                            previewEl.innerText = "+";
+                            imageRow.replaceChildren(previewEl, fileInput);
+                            return;
+                        }
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                            imageData = String(reader.result || "");
+                            const img = document.createElement("img");
+                            img.className = "ems-custom-preview";
+                            img.src = imageData;
+                            previewEl = img;
+                            imageRow.replaceChildren(previewEl, fileInput);
+                        };
+                        reader.readAsDataURL(file);
+                    };
+
+                    imageRow.append(previewEl, fileInput);
+
+                    const imageField = document.createElement("div");
+                    imageField.className = "ems-field";
+                    const imageLabel = document.createElement("span");
+                    imageLabel.className = "ems-label";
+                    imageLabel.innerText = "Image";
+                    imageField.append(imageLabel, imageRow);
+
+                    const error = document.createElement("div");
+                    error.className = "ems-custom-error";
+
+                    form.append(
+                        createCustomEmotionField("Name", nameInput),
+                        createCustomEmotionField("Tags / Description", tagsInput),
+                        createCustomEmotionField("Natural Prompt", promptInput),
+                        imageField,
+                        error
+                    );
+
+                    const actions = document.createElement("div");
+                    actions.className = "ems-modal-actions";
+
+                    const btnCancel = document.createElement("button");
+                    btnCancel.className = "ems-modal-btn ems-modal-btn--cancel";
+                    btnCancel.innerText = "Cancel";
+                    btnCancel.onclick = () => backdrop.remove();
+
+                    const btnSave = document.createElement("button");
+                    btnSave.className = "ems-modal-btn ems-modal-btn--confirm";
+                    btnSave.innerText = "Save";
+                    btnSave.onclick = async () => {
+                        const name = nameInput.value.trim();
+                        if (!name) {
+                            error.innerText = "Name is required.";
+                            nameInput.focus();
+                            return;
+                        }
+
+                        error.innerText = "";
+                        btnSave.disabled = true;
+                        btnSave.innerText = "Saving...";
+                        try {
+                            const res = await fetch("/vnccs/add_custom_emotion", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                    name,
+                                    description: tagsInput.value.trim(),
+                                    natural_prompt: promptInput.value.trim(),
+                                    image_data: imageData,
+                                }),
+                            });
+                            const data = await res.json().catch(() => ({}));
+                            if (!res.ok) throw new Error(data.error || "Failed to save custom emotion.");
+
+                            const emotion = data.emotion;
+                            if (!emotion?.safe_name) throw new Error("Server did not return a valid emotion.");
+                            state.emotions = state.emotions.filter(e => e.safe_name !== emotion.safe_name);
+                            state.emotions.push(emotion);
+                            state.selectedEmotions.add(emotion.safe_name);
+                            renderEmotions();
+                            updateEmotionsData();
+                            backdrop.remove();
+                        } catch (e) {
+                            error.innerText = e.message || String(e);
+                            btnSave.disabled = false;
+                            btnSave.innerText = "Save";
+                        }
+                    };
+
+                    actions.append(btnCancel, btnSave);
+                    modal.append(text, form, actions);
+                    backdrop.appendChild(modal);
+                    container.appendChild(backdrop);
+                    nameInput.focus();
+                }
+
                 node._validateBeforeQueue = function() {
                     if (state.selectedCostumes.size === 0 && state.selectedEmotions.size === 0) {
                         showModalText("Nothing selected", "Please select at least one costume and one emotion before running.");
@@ -2416,7 +2655,12 @@ app.registerExtension({
                     const img = document.createElement("img");
                     img.className = "ems-emotion-img";
                     img.src = `/vnccs/get_emotion_image?name=${encodeURIComponent(e.safe_name)}`;
-                    img.onerror = () => { img.style.display = 'none'; };
+                    img.onerror = () => {
+                        const placeholder = document.createElement("div");
+                        placeholder.className = "ems-emotion-img ems-emotion-img-placeholder";
+                        placeholder.innerText = "No Image";
+                        img.replaceWith(placeholder);
+                    };
 
                     const lbl = document.createElement("div");
                     lbl.className = "ems-emotion-label";
@@ -2435,6 +2679,24 @@ app.registerExtension({
                         updateEmotionsData();
                     };
 
+                    return div;
+                }
+
+                function createAddCustomEmotionCard() {
+                    const div = document.createElement("div");
+                    div.className = "ems-emotion-item compact add-custom";
+                    div.title = "Add Custom Emotion";
+
+                    const box = document.createElement("div");
+                    box.className = "ems-emotion-add-box";
+                    box.innerText = "+";
+
+                    const lbl = document.createElement("div");
+                    lbl.className = "ems-emotion-label";
+                    lbl.innerText = "Add Custom Emotion";
+
+                    div.append(box, lbl);
+                    div.onclick = () => showCustomEmotionModal();
                     return div;
                 }
 
@@ -2478,6 +2740,7 @@ app.registerExtension({
                     selectedEmotionsList.innerHTML = "";
                     const selectedNames = Array.from(state.selectedEmotions);
                     selectedEmotionsHeader.innerText = `Selected emotions (${selectedNames.length})`;
+                    selectedEmotionsList.appendChild(createAddCustomEmotionCard());
                     if (selectedNames.length === 0) {
                         const empty = document.createElement("div");
                         empty.className = "ems-selected-emotions-empty";
