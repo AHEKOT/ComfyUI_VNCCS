@@ -61,7 +61,7 @@ def test_prompt_for_emotion_starts_with_anima_natural_prompt():
         "description": "light_smile",
     })
 
-    assert prompt == "The character smiles softly."
+    assert prompt == "The character smiles softly.\n\nEmotion Tags: light_smile"
 
 
 def test_prompt_for_emotion_includes_manual_character_prompt_in_wildcard():
@@ -77,7 +77,7 @@ def test_prompt_for_emotion_includes_manual_character_prompt_in_wildcard():
     )
 
     assert prompt == (
-        "The character smiles softly. Character details: "
+        "The character smiles softly.\n\nEmotion Tags: light_smile Character details: "
         "black hair, red eyes, school uniform"
     )
 

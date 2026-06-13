@@ -135,7 +135,25 @@ def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
         lora_name="none",
         lora_strength=1.0,
     )
-    return pipe_result[9], seed
+    pipe = pipe_result[9]
+    if mode == "anima":
+        pipe.model_entry = {
+            "name": "Anima",
+            "kind": "Anima",
+            "local_path": gen_settings.get("diffusion_model_name", ""),
+        }
+    return pipe, seed
+
+
+def build_anima_emotion_prompt(natural_prompt, emotion_description, fallback_emotion):
+    emotion_text = str(natural_prompt or "").strip()
+    if not emotion_text:
+        emotion_text = f"The character expresses {str(fallback_emotion or '').replace('-', ' ')}."
+
+    emotion_tags = str(emotion_description or "").strip()
+    if emotion_tags:
+        emotion_text = f"{emotion_text}\n\nEmotion Tags: {emotion_tags}"
+    return emotion_text
 
 
 def _load_sprite_tensor(path):
@@ -432,7 +450,7 @@ class EmotionGeneratorV2:
                 if prompt_style in ("Anima", "QWEN Style"):
                     if face_details:
                         positive_prompt += f", Character face details: {face_details}"
-                    emotion_text = natural_prompt.strip() or f"The character expresses {emotion_key.replace('-', ' ')}."
+                    emotion_text = build_anima_emotion_prompt(natural_prompt, emotion_description, emotion_key)
                 else:
                     # SDXL Style (Original logic)
                     emotion_text = f"({emotion_key}, {emotion_description}), {face_details}"
