@@ -12,7 +12,7 @@ except Exception:  # pragma: no cover - ComfyUI runtime import
     folder_paths = None
 
 from .character_generator import VNCCS_EmotionsGenerator
-from .emotion_generator_v2 import build_emotion_pipe, get_custom_node_path, load_emotions_data
+from .emotion_generator_v2 import build_anima_emotion_prompt, build_emotion_pipe, get_custom_node_path, load_emotions_data
 
 
 SERVICE_ANIMA_SETTINGS = {
@@ -145,7 +145,7 @@ class VNCCS_Service_Emotions_Generator(VNCCS_EmotionsGenerator):
         return pipe
 
     def _prompt_for_emotion(self, item, character_prompt=""):
-        prompt = item["prompt"]
+        prompt = build_anima_emotion_prompt(item.get("prompt", ""), item.get("description", ""), item.get("safe_name", ""))
         character_prompt = str(character_prompt or "").strip()
         if character_prompt:
             return f"{prompt} Character details: {character_prompt}"

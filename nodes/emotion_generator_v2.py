@@ -3,6 +3,7 @@ import os
 import json
 import re
 import io
+import base64
 import torch
 import numpy as np
 import comfy.sd
@@ -49,6 +50,50 @@ def load_emotions_data():
         data = json.load(f)
     
     return data
+
+
+def emotions_config_path():
+    return os.path.join(get_custom_node_path(), "emotions-config", "emotions.json")
+
+
+def emotion_images_dir():
+    return os.path.join(get_custom_node_path(), "emotions-config", "images")
+
+
+def make_unique_emotion_safe_name(title, existing_names):
+    base = re.sub(r"[^a-z0-9]+", "-", str(title or "").lower()).strip("-")
+    if not base:
+        base = "custom-emotion"
+
+    safe_name = base
+    counter = 2
+    existing = set(existing_names or [])
+    while safe_name in existing:
+        safe_name = f"{base}-{counter}"
+        counter += 1
+    return safe_name
+
+
+def save_custom_emotion_image(image_data, safe_name):
+    if not image_data:
+        return
+
+    if not isinstance(image_data, str) or not image_data.startswith("data:image/"):
+        raise ValueError("Image must be a data:image URL.")
+
+    try:
+        _header, encoded = image_data.split(",", 1)
+    except ValueError as exc:
+        raise ValueError("Invalid image data URL.") from exc
+
+    raw = base64.b64decode(encoded, validate=True)
+    if len(raw) > 12 * 1024 * 1024:
+        raise ValueError("Image is too large.")
+
+    with Image.open(io.BytesIO(raw)) as img:
+        img = ImageOps.exif_transpose(img).convert("RGBA")
+        os.makedirs(emotion_images_dir(), exist_ok=True)
+        img.save(os.path.join(emotion_images_dir(), f"{safe_name}.png"), format="PNG")
 
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -135,7 +180,25 @@ def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
         lora_name="none",
         lora_strength=1.0,
     )
-    return pipe_result[9], seed
+    pipe = pipe_result[9]
+    if mode == "anima":
+        pipe.model_entry = {
+            "name": "Anima",
+            "kind": "Anima",
+            "local_path": gen_settings.get("diffusion_model_name", ""),
+        }
+    return pipe, seed
+
+
+def build_anima_emotion_prompt(natural_prompt, emotion_description, fallback_emotion):
+    emotion_text = str(natural_prompt or "").strip()
+    if not emotion_text:
+        emotion_text = f"The character expresses {str(fallback_emotion or '').replace('-', ' ')}."
+
+    emotion_tags = str(emotion_description or "").strip()
+    if emotion_tags:
+        emotion_text = f"{emotion_text}\n\nEmotion Tags: {emotion_tags}"
+    return emotion_text
 
 
 def _load_sprite_tensor(path):
@@ -222,6 +285,58 @@ if server:
             return web.json_response(data)
         except Exception as e:
             return web.Response(status=500, text=f"Error loading emotions.json: {e}")
+
+    @server.PromptServer.instance.routes.post("/vnccs/add_custom_emotion")
+    async def add_custom_emotion(request):
+        try:
+            payload = await request.json()
+            title = str(payload.get("name", "") or "").strip()
+            if not title:
+                return web.json_response({"error": "Emotion name is required."}, status=400)
+
+            description = str(payload.get("description", "") or "").strip()
+            natural_prompt = str(payload.get("natural_prompt", "") or "").strip()
+            if not natural_prompt:
+                natural_prompt = f"The character expresses {title}."
+
+            config_path = emotions_config_path()
+            data = load_emotions_data()
+            existing_names = {
+                str(emotion.get("safe_name", "")).strip()
+                for emotion_list in data.values()
+                for emotion in emotion_list
+                if isinstance(emotion, dict)
+            }
+            safe_name = make_unique_emotion_safe_name(title, existing_names)
+            save_custom_emotion_image(payload.get("image_data"), safe_name)
+
+            emotion = {
+                "key": title,
+                "description": description,
+                "safe_name": safe_name,
+                "natural_prompt": natural_prompt,
+            }
+            category = "Custom"
+            data.setdefault(category, []).append(emotion)
+
+            tmp_path = f"{config_path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+                f.write("\n")
+            os.replace(tmp_path, config_path)
+
+            try:
+                EmotionGeneratorV2.SAFE_NAME_MAP = None
+                EmotionGeneratorV2.EMOTIONS_DATA = None
+            except NameError:
+                pass
+
+            return web.json_response({"emotion": {**emotion, "category": category}})
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        except Exception as e:
+            print(f"[VNCCS Emotion Studio] Failed to add custom emotion: {e}")
+            return web.json_response({"error": f"Failed to add custom emotion: {e}"}, status=500)
 
     @server.PromptServer.instance.routes.get("/vnccs/get_character_costumes")
     async def get_character_costumes(request):
@@ -432,7 +547,7 @@ class EmotionGeneratorV2:
                 if prompt_style in ("Anima", "QWEN Style"):
                     if face_details:
                         positive_prompt += f", Character face details: {face_details}"
-                    emotion_text = natural_prompt.strip() or f"The character expresses {emotion_key.replace('-', ' ')}."
+                    emotion_text = build_anima_emotion_prompt(natural_prompt, emotion_description, emotion_key)
                 else:
                     # SDXL Style (Original logic)
                     emotion_text = f"({emotion_key}, {emotion_description}), {face_details}"

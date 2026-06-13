@@ -636,6 +636,11 @@ DEFAULT_WIDGET_DATA = {
     },
     "emotion_generation": {
         "face_denoise": 0.55,
+        "bbox_threshold": 0.1,
+        "bbox_dilation": 10,
+        "sam_dilation": 25,
+        "sam_threshold": 0.93,
+        "sam_bbox_expansion": 0,
     },
     "remove_clothes": {
         "prompt": "Dress character: White underwear",
@@ -870,6 +875,33 @@ class VNCCS_CharacterGenerator:
         if "anima" in identity:
             return 2048
         return None
+
+    def _is_anima_pipe(self, pipe_values):
+        model_entry = pipe_values.get("model_entry") or {}
+        identity = " ".join([
+            str(model_entry.get("name", "")),
+            str(model_entry.get("local_path", "")),
+            str(_entry_kind(model_entry)),
+        ]).lower()
+        if "anima" in identity:
+            return True
+
+        model = pipe_values.get("model")
+        candidates = [
+            model,
+            getattr(model, "model", None),
+            getattr(getattr(model, "model", None), "diffusion_model", None),
+        ]
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            candidate_identity = " ".join([
+                candidate.__class__.__name__,
+                getattr(candidate.__class__, "__module__", ""),
+            ]).lower()
+            if "anima" in candidate_identity:
+                return True
+        return False
 
     def _conditioning_width(self, conditioning):
         try:
@@ -2375,8 +2407,14 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         seed,
         face_denoise=0.55,
         bbox_crop_factor=1.0,
+        bbox_threshold=0.1,
+        bbox_dilation=10,
+        sam_dilation=25,
+        sam_threshold=0.93,
+        sam_bbox_expansion=0,
     ):
         pipe_values = self._extract_pipe(pipe)
+        use_inpaint_model = self._is_anima_pipe(pipe_values)
 
         positive = _call_comfy_node(
             "CLIPTextEncode",
@@ -2426,19 +2464,19 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             feather=50,
             noise_mask=True,
             force_inpaint=True,
-            bbox_threshold=0.1,
-            bbox_dilation=10,
+            bbox_threshold=float(bbox_threshold),
+            bbox_dilation=int(bbox_dilation),
             bbox_crop_factor=float(bbox_crop_factor),
             sam_detection_hint="center-1",
-            sam_dilation=25,
-            sam_threshold=0.93,
-            sam_bbox_expansion=0,
+            sam_dilation=int(sam_dilation),
+            sam_threshold=float(sam_threshold),
+            sam_bbox_expansion=int(sam_bbox_expansion),
             sam_mask_hint_threshold=0.7,
             sam_mask_hint_use_negative="False",
             drop_size=10,
             wildcard=str(emotion_prompt or ""),
             cycle=1,
-            inpaint_model=False,
+            inpaint_model=use_inpaint_model,
             noise_mask_feather=20,
             tiled_encode=True,
             tiled_decode=True,
@@ -2452,11 +2490,28 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         regenerate_from = self._regenerate_from(widget_payload)
         regenerate_index = self._regenerate_index(widget_payload)
         emotion_settings = widget_payload.get("emotion_generation", {}) if isinstance(widget_payload, dict) else {}
-        try:
-            face_denoise = float(emotion_settings.get("face_denoise", DEFAULT_WIDGET_DATA["emotion_generation"]["face_denoise"]))
-        except Exception:
-            face_denoise = DEFAULT_WIDGET_DATA["emotion_generation"]["face_denoise"]
-        face_denoise = max(0.0, min(1.0, face_denoise))
+        emotion_defaults = DEFAULT_WIDGET_DATA["emotion_generation"]
+
+        def _clamp_float(key, min_value, max_value):
+            try:
+                value = float(emotion_settings.get(key, emotion_defaults[key]))
+            except Exception:
+                value = float(emotion_defaults[key])
+            return max(min_value, min(max_value, value))
+
+        def _clamp_int(key, min_value, max_value):
+            try:
+                value = int(float(emotion_settings.get(key, emotion_defaults[key])))
+            except Exception:
+                value = int(emotion_defaults[key])
+            return max(min_value, min(max_value, value))
+
+        face_denoise = _clamp_float("face_denoise", 0.0, 1.0)
+        bbox_threshold = _clamp_float("bbox_threshold", 0.0, 1.0)
+        bbox_dilation = _clamp_int("bbox_dilation", 0, 128)
+        sam_dilation = _clamp_int("sam_dilation", 0, 128)
+        sam_threshold = _clamp_float("sam_threshold", 0.0, 1.0)
+        sam_bbox_expansion = _clamp_int("sam_bbox_expansion", 0, 128)
         pipe = self._unwrap_scalar(pipe)
         unique_id = self._unwrap_scalar(unique_id)
         cache_dir = _character_cache_dir_from_sheets_path("", widget_payload.get("character_name", ""), unique_id)
@@ -2548,6 +2603,11 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                         meta.get("negative_prompt", ""),
                         seed + index,
                         face_denoise,
+                        bbox_threshold=bbox_threshold,
+                        bbox_dilation=bbox_dilation,
+                        sam_dilation=sam_dilation,
+                        sam_threshold=sam_threshold,
+                        sam_bbox_expansion=sam_bbox_expansion,
                     )
                     results.append(result)
                     # FaceDetailer crops are intentionally variable-size. Save them

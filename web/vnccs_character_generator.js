@@ -13,6 +13,11 @@ const DEFAULT_DATA = {
     },
     emotion_generation: {
         face_denoise: 0.55,
+        bbox_threshold: 0.1,
+        bbox_dilation: 10,
+        sam_dilation: 25,
+        sam_threshold: 0.93,
+        sam_bbox_expansion: 0,
     },
     remove_clothes: {
         prompt: "Dress character: White underwear",
@@ -1543,6 +1548,39 @@ class CharacterGeneratorWidget {
         return wrap;
     }
 
+    faceDetailerNumberField(key, label, { min = 0, max = 1, step = 0.01 } = {}) {
+        const wrap = document.createElement("label");
+        wrap.className = "vnccs-pipe-field";
+        const help = {
+            bbox_threshold: "Detection confidence threshold for the face bbox detector.",
+            bbox_dilation: "Pixel dilation applied around detected face bounding boxes.",
+            sam_dilation: "Pixel dilation applied to the SAM mask.",
+            sam_threshold: "SAM mask confidence threshold.",
+            sam_bbox_expansion: "Pixel expansion applied to the SAM bounding box."
+        }[key];
+        setHelpText(wrap, help);
+
+        const caption = document.createElement("div");
+        caption.className = "vnccs-pipe-label";
+        caption.textContent = label;
+
+        const input = document.createElement("input");
+        input.className = "vnccs-pipe-input";
+        input.type = "number";
+        input.min = String(min);
+        input.max = String(max);
+        input.step = String(step);
+        input.value = String(this.data.emotion_generation?.[key] ?? DEFAULT_DATA.emotion_generation[key]);
+        input.oninput = () => {
+            const raw = Number(input.value);
+            const next = Number.isFinite(raw) ? Math.max(min, Math.min(max, raw)) : DEFAULT_DATA.emotion_generation[key];
+            this.set("emotion_generation", key, next);
+        };
+
+        wrap.append(caption, input);
+        return wrap;
+    }
+
     renderSettings() {
         this.syncCharacterSourceData();
         this.syncStagesFromData();
@@ -1566,6 +1604,11 @@ class CharacterGeneratorWidget {
             this.settingsEl.appendChild(info);
             this.settingsEl.appendChild(this.block("Face Detailer", [
                 this.faceDenoiseSlider(),
+                this.faceDetailerNumberField("bbox_threshold", "bbox_threshold", { min: 0, max: 1, step: 0.01 }),
+                this.faceDetailerNumberField("bbox_dilation", "bbox_dilation", { min: 0, max: 128, step: 1 }),
+                this.faceDetailerNumberField("sam_dilation", "sam_dilation", { min: 0, max: 128, step: 1 }),
+                this.faceDetailerNumberField("sam_threshold", "sam_threshold", { min: 0, max: 1, step: 0.01 }),
+                this.faceDetailerNumberField("sam_bbox_expansion", "sam_bbox_expansion", { min: 0, max: 128, step: 1 }),
             ]));
             return;
         }
