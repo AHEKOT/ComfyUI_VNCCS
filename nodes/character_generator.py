@@ -78,6 +78,8 @@ ANIMA_LLLITE_CHOICES = {
     ANIMA_LLLITE_ANY_TEST_LIKE,
     ANIMA_LLLITE_INPAINTING,
 }
+ANIMA_LLLITE_RELATIVE_MIN = 0.7
+ANIMA_LLLITE_RELATIVE_MAX = 1.0
 
 
 def _can_import_attr(module_name, attr_name):
@@ -86,6 +88,16 @@ def _can_import_attr(module_name, attr_name):
         return getattr(module, attr_name, None) is not None
     except (ImportError, AttributeError, OSError, RuntimeError, ValueError):
         return False
+
+
+def _anima_lllite_effective_strength(relative_strength):
+    try:
+        relative = float(relative_strength)
+    except Exception:
+        relative = 1.0
+    relative = max(0.0, min(1.0, relative))
+    span = ANIMA_LLLITE_RELATIVE_MAX - ANIMA_LLLITE_RELATIVE_MIN
+    return ANIMA_LLLITE_RELATIVE_MIN + relative * span
 
 
 def _available_seedvr_attention_modes():
@@ -1035,7 +1047,7 @@ class VNCCS_CharacterGenerator:
         inpaint_masked_input = str(meta.get("lllite.inpaint_masked_input", "false")).lower() == "true"
         if cond_in_channels == 4 and control_mask is None:
             raise RuntimeError(f"Anima LLLite '{lllite_name}' requires source alpha/mask for inpainting mode")
-        strength = max(0.0, min(2.0, float(strength)))
+        strength = max(0.0, min(1.0, float(strength)))
 
         dit = self._anima_lllite_inner_dit(model)
         lllite = ControlNetLLLiteDiT(
@@ -2631,6 +2643,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         )[1]
 
         if use_inpaint_model and lllite_name in ANIMA_LLLITE_CHOICES:
+            anima_lllite_effective_strength = _anima_lllite_effective_strength(anima_lllite_strength)
             control_image, control_mask = self._face_detailer_control_crop(
                 image,
                 mask,
@@ -2645,8 +2658,10 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 control_image,
                 control_mask,
                 lllite_name,
-                strength=anima_lllite_strength,
+                strength=anima_lllite_effective_strength,
             )
+        else:
+            anima_lllite_effective_strength = 1.0
 
         detailer_positive_text = self._detailer_positive_prompt(emotion_prompt, face_details)
         print(f"[VNCCS Emotions Generator] FaceDetailer positive: {detailer_positive_text[:500]}")
@@ -2680,7 +2695,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             cfg=pipe_values["cfg"],
             sampler_name=pipe_values["sampler"],
             scheduler=pipe_values["scheduler"],
-            denoise=1.0 if use_inpaint_model else float(face_denoise),
+            denoise=anima_lllite_effective_strength if use_inpaint_model else float(face_denoise),
             feather=50,
             noise_mask=True,
             force_inpaint=True,
@@ -2695,7 +2710,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             sam_mask_hint_use_negative="False",
             drop_size=10,
             cycle=1,
-            inpaint_model=use_inpaint_model,
+            inpaint_model=False,
             noise_mask_feather=20,
             tiled_encode=True,
             tiled_decode=True,
@@ -2727,6 +2742,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             return max(min_value, min(max_value, value))
 
         face_denoise = _clamp_float("face_denoise", 0.0, 1.0)
+        anima_lllite_strength = _clamp_float("anima_lllite_strength", 0.0, 1.0)
         bbox_threshold = _clamp_float("bbox_threshold", 0.0, 1.0)
         bbox_dilation = _clamp_int("bbox_dilation", 0, 128)
         sam_dilation = _clamp_int("sam_dilation", 0, 128)
@@ -2832,6 +2848,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                         sam_threshold=sam_threshold,
                         sam_bbox_expansion=sam_bbox_expansion,
                         anima_lllite_name=anima_lllite_name,
+                        anima_lllite_strength=anima_lllite_strength,
                     )
                     results.append(result)
                     # FaceDetailer crops are intentionally variable-size. Save them

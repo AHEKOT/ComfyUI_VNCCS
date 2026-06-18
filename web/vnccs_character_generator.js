@@ -14,6 +14,7 @@ const DEFAULT_DATA = {
     emotion_generation: {
         face_denoise: 0.55,
         anima_lllite_name: "anima-lllite-any-test-like-v2.safetensors",
+        anima_lllite_strength: 1.0,
         bbox_threshold: 0.1,
         bbox_dilation: 10,
         sam_dilation: 25,
@@ -1649,6 +1650,81 @@ class CharacterGeneratorWidget {
         return wrap;
     }
 
+    animaControlNetStrengthSlider() {
+        const value = Math.max(0, Math.min(1, Number(this.data.emotion_generation?.anima_lllite_strength ?? 1.0)));
+        const effectiveStrength = (relativeValue) => 0.7 + Math.max(0, Math.min(1, Number(relativeValue))) * 0.3;
+        const wrap = document.createElement("label");
+        wrap.className = "vnccs-pipe-slider-field";
+        setHelpText(wrap, "Relative scale: 0 maps to 0.70, 1 maps to 1.00; drives emotion strength and FaceDetailer denoise.");
+
+        const head = document.createElement("div");
+        head.className = "vnccs-pipe-slider-head";
+        const caption = document.createElement("div");
+        caption.className = "vnccs-pipe-label";
+        caption.textContent = "emotion strenght";
+        const valueEl = document.createElement("div");
+        valueEl.className = "vnccs-pipe-slider-value";
+        valueEl.textContent = value.toFixed(2);
+        head.append(caption, valueEl);
+
+        const slider = document.createElement("input");
+        slider.className = "vnccs-pipe-slider";
+        slider.type = "range";
+        slider.min = "0";
+        slider.max = "1";
+        slider.step = "0.01";
+        slider.value = String(value);
+
+        const status = document.createElement("div");
+        status.className = "vnccs-pipe-slider-status";
+        const paint = (nextValue) => {
+            const next = Math.max(0, Math.min(1, Number(nextValue)));
+            const effective = effectiveStrength(next);
+            const fill = next * 100;
+            let zone = {
+                text: "WEAK",
+                color: "#00b7ff",
+                glow: "rgba(0,183,255,0.24)",
+                border: "rgba(0,183,255,0.46)",
+                bg: "rgba(0,183,255,0.1)",
+            };
+            if (effective >= 0.9 && effective <= 0.95) {
+                zone = {
+                    text: "OPTIMAL",
+                    color: "#00d68f",
+                    glow: "rgba(0,214,143,0.28)",
+                    border: "rgba(0,214,143,0.5)",
+                    bg: "rgba(0,214,143,0.1)",
+                };
+            } else if (effective > 0.95) {
+                zone = {
+                    text: "STRONG",
+                    color: "#ff6aa2",
+                    glow: "rgba(255,106,162,0.24)",
+                    border: "rgba(255,106,162,0.48)",
+                    bg: "rgba(255,106,162,0.1)",
+                };
+            }
+            slider.style.setProperty("--fill", `${fill}%`);
+            slider.style.setProperty("--zone-color", zone.color);
+            slider.style.setProperty("--zone-glow", zone.glow);
+            status.style.setProperty("--zone-color", zone.color);
+            status.style.setProperty("--zone-border", zone.border);
+            status.style.setProperty("--zone-bg", zone.bg);
+            valueEl.textContent = effective.toFixed(2);
+            status.textContent = zone.text;
+        };
+        paint(value);
+        slider.oninput = () => {
+            const next = Math.max(0, Math.min(1, Number(slider.value)));
+            paint(next);
+            this.set("emotion_generation", "anima_lllite_strength", next);
+        };
+
+        wrap.append(head, slider, status);
+        return wrap;
+    }
+
     renderSettings() {
         this.syncCharacterSourceData();
         this.syncStagesFromData();
@@ -1670,8 +1746,11 @@ class CharacterGeneratorWidget {
                     <div class="vnccs-pipe-empty" style="min-height:auto;padding:8px;">${count} costume / emotion pair(s)</div>
                 </div>`;
             this.settingsEl.appendChild(info);
+            const isAnima = this.connectedEmotionStudioIsAnima();
+            this.settingsEl.appendChild(this.block("Emotion Strenght", [
+                isAnima ? this.animaControlNetStrengthSlider() : this.faceDenoiseSlider(),
+            ]));
             const faceDetailerFields = [
-                this.faceDenoiseSlider(),
                 this.faceDetailerNumberField("bbox_threshold", "bbox_threshold", { min: 0, max: 1, step: 0.01 }),
                 this.faceDetailerNumberField("bbox_dilation", "bbox_dilation", { min: 0, max: 128, step: 1 }),
                 this.faceDetailerNumberField("sam_dilation", "sam_dilation", { min: 0, max: 128, step: 1 }),
@@ -1679,11 +1758,6 @@ class CharacterGeneratorWidget {
                 this.faceDetailerNumberField("sam_bbox_expansion", "sam_bbox_expansion", { min: 0, max: 128, step: 1 }),
             ];
             this.settingsEl.appendChild(this.block("Face Detailer", faceDetailerFields));
-            if (this.connectedEmotionStudioIsAnima()) {
-                this.settingsEl.appendChild(this.block("Anima ControlNet", [
-                    this.animaLLLiteField(),
-                ]));
-            }
             return;
         }
         if (this.isClone) {
