@@ -13,6 +13,7 @@ const DEFAULT_DATA = {
     },
     emotion_generation: {
         face_denoise: 0.55,
+        anima_lllite_name: "anima-lllite-any-test-like-v2.safetensors",
         bbox_threshold: 0.1,
         bbox_dilation: 10,
         sam_dilation: 25,
@@ -64,6 +65,11 @@ const DEFAULT_DATA = {
         user_selected_preview: false,
     },
 };
+
+const ANIMA_LLLITE_OPTIONS = [
+    "anima-lllite-any-test-like-v2.safetensors",
+    "anima-lllite-inpainting-v2.safetensors",
+];
 
 const STAGES = [
     ["pose_generation", "Pose Generation"],
@@ -853,6 +859,11 @@ class CharacterGeneratorWidget {
             window.addEventListener("vnccs-character-cloner-updated", this.onClonerUpdated);
             registerCleanup(this.node, () => window.removeEventListener("vnccs-character-cloner-updated", this.onClonerUpdated));
         }
+        if (this.isEmotions) {
+            this.onEmotionStudioModeChanged = () => this.renderSettings();
+            window.addEventListener("vnccs-emotion-studio-generation-mode-changed", this.onEmotionStudioModeChanged);
+            registerCleanup(this.node, () => window.removeEventListener("vnccs-emotion-studio-generation-mode-changed", this.onEmotionStudioModeChanged));
+        }
     }
 
     resetStagesFrom(stageKey) {
@@ -1408,6 +1419,15 @@ class CharacterGeneratorWidget {
         return uniqueOptions([currentValue, ...workflowOptions, ...nodeOptions]);
     }
 
+    protectNativeControl(input) {
+        if (!input || input._vnccsNativeControlProtected) return input;
+        input._vnccsNativeControlProtected = true;
+        for (const eventName of ["pointerdown", "mousedown", "mouseup", "click", "dblclick", "touchstart", "touchend", "keydown"]) {
+            input.addEventListener(eventName, event => event.stopPropagation(), true);
+        }
+        return input;
+    }
+
     modeTabs(section, key, options) {
         const wrap = document.createElement("div");
         wrap.className = "vnccs-pipe-mode-tabs";
@@ -1446,6 +1466,7 @@ class CharacterGeneratorWidget {
         if (type === "select") {
             input = document.createElement("select");
             input.className = "vnccs-pipe-select";
+            this.protectNativeControl(input);
             for (const opt of options || []) {
                 const option = document.createElement("option");
                 option.value = opt;
@@ -1581,6 +1602,53 @@ class CharacterGeneratorWidget {
         return wrap;
     }
 
+    connectedEmotionStudioIsAnima() {
+        if (!this.isEmotions) return false;
+        const pipeInput = (this.node.inputs || []).find(input => input.name === "pipe");
+        if (!pipeInput?.link) return false;
+        const link = app.graph?.links?.[pipeInput.link];
+        const sourceNode = app.graph?.getNodeById?.(link?.origin_id);
+        if (!sourceNode || sourceNode.type !== "EmotionGeneratorV2") return false;
+
+        const settingsWidget = sourceNode.widgets?.find(widget => widget.name === "generation_settings");
+        try {
+            const settings = settingsWidget?.value ? JSON.parse(settingsWidget.value) : {};
+            const settingsMode = String(settings?.generation_mode || "").toLowerCase();
+            if (settingsMode === "anima") return true;
+            if (settingsMode === "illustrious") return false;
+        } catch (_) {
+            // Fall back to the hidden mode widget below.
+        }
+        const modeWidget = sourceNode.widgets?.find(widget => widget.name === "generation_model");
+        return String(modeWidget?.value || "").toLowerCase() === "anima";
+    }
+
+    animaLLLiteField() {
+        const wrap = document.createElement("label");
+        wrap.className = "vnccs-pipe-field";
+        setHelpText(wrap, "Anima LLLite applied to the MODEL before FaceDetailer.");
+
+        const caption = document.createElement("div");
+        caption.className = "vnccs-pipe-label";
+        caption.textContent = "anima controlnet";
+
+        const input = document.createElement("select");
+        input.className = "vnccs-pipe-select";
+        this.protectNativeControl(input);
+        for (const opt of ANIMA_LLLITE_OPTIONS) {
+            const option = document.createElement("option");
+            option.value = opt;
+            option.textContent = opt;
+            input.appendChild(option);
+        }
+        const current = this.data.emotion_generation?.anima_lllite_name;
+        input.value = ANIMA_LLLITE_OPTIONS.includes(current) ? current : ANIMA_LLLITE_OPTIONS[0];
+        input.onchange = () => this.set("emotion_generation", "anima_lllite_name", input.value);
+
+        wrap.append(caption, input);
+        return wrap;
+    }
+
     renderSettings() {
         this.syncCharacterSourceData();
         this.syncStagesFromData();
@@ -1602,14 +1670,20 @@ class CharacterGeneratorWidget {
                     <div class="vnccs-pipe-empty" style="min-height:auto;padding:8px;">${count} costume / emotion pair(s)</div>
                 </div>`;
             this.settingsEl.appendChild(info);
-            this.settingsEl.appendChild(this.block("Face Detailer", [
+            const faceDetailerFields = [
                 this.faceDenoiseSlider(),
                 this.faceDetailerNumberField("bbox_threshold", "bbox_threshold", { min: 0, max: 1, step: 0.01 }),
                 this.faceDetailerNumberField("bbox_dilation", "bbox_dilation", { min: 0, max: 128, step: 1 }),
                 this.faceDetailerNumberField("sam_dilation", "sam_dilation", { min: 0, max: 128, step: 1 }),
                 this.faceDetailerNumberField("sam_threshold", "sam_threshold", { min: 0, max: 1, step: 0.01 }),
                 this.faceDetailerNumberField("sam_bbox_expansion", "sam_bbox_expansion", { min: 0, max: 128, step: 1 }),
-            ]));
+            ];
+            this.settingsEl.appendChild(this.block("Face Detailer", faceDetailerFields));
+            if (this.connectedEmotionStudioIsAnima()) {
+                this.settingsEl.appendChild(this.block("Anima ControlNet", [
+                    this.animaLLLiteField(),
+                ]));
+            }
             return;
         }
         if (this.isClone) {

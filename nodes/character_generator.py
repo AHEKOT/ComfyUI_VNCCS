@@ -19,7 +19,9 @@ from urllib.parse import urlencode
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from aiohttp import web
+from huggingface_hub import hf_hub_download
 from PIL import Image, ImageOps
 
 try:
@@ -52,6 +54,12 @@ from .vnccs_control_center import (
 from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder
 from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, VNCCS_RMBG2
 from .model_path_utils import basename_agnostic
+from .anima_lllite import (
+    ASPP_DEFAULT_DILATIONS,
+    ControlNetLLLiteDiT,
+    load_lllite_weights,
+    read_lllite_metadata,
+)
 from ..utils import (
     base_output_dir,
     character_dir,
@@ -63,6 +71,13 @@ from ..utils import (
 
 _LIVE_GENERATOR_CONTEXTS = {}
 SEEDVR_ATTENTION_MODES = ("sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3")
+ANIMA_LLLITE_REPO_ID = "kohya-ss/Anima-LLLite"
+ANIMA_LLLITE_ANY_TEST_LIKE = "anima-lllite-any-test-like-v2.safetensors"
+ANIMA_LLLITE_INPAINTING = "anima-lllite-inpainting-v2.safetensors"
+ANIMA_LLLITE_CHOICES = {
+    ANIMA_LLLITE_ANY_TEST_LIKE,
+    ANIMA_LLLITE_INPAINTING,
+}
 
 
 def _can_import_attr(module_name, attr_name):
@@ -636,6 +651,7 @@ DEFAULT_WIDGET_DATA = {
     },
     "emotion_generation": {
         "face_denoise": 0.55,
+        "anima_lllite_strength": 1.0,
         "bbox_threshold": 0.1,
         "bbox_dilation": 10,
         "sam_dilation": 25,
@@ -902,6 +918,185 @@ class VNCCS_CharacterGenerator:
             if "anima" in candidate_identity:
                 return True
         return False
+
+    def _anima_lllite_path(self, lllite_name):
+        lllite_name = os.path.basename(str(lllite_name or ANIMA_LLLITE_ANY_TEST_LIKE))
+        if lllite_name not in ANIMA_LLLITE_CHOICES:
+            lllite_name = ANIMA_LLLITE_ANY_TEST_LIKE
+        target_dir = os.path.join(folder_paths.models_dir, "controlnet", "Anima") if folder_paths else ""
+        target_path = os.path.join(target_dir, lllite_name)
+        if target_path and os.path.isfile(target_path):
+            return target_path
+        os.makedirs(target_dir, exist_ok=True)
+        downloaded = hf_hub_download(
+            repo_id=ANIMA_LLLITE_REPO_ID,
+            filename=lllite_name,
+            local_dir=target_dir,
+            local_dir_use_symlinks=False,
+        )
+        if downloaded != target_path and os.path.isfile(downloaded):
+            shutil.copy2(downloaded, target_path)
+        return target_path
+
+    def _anima_lllite_inner_dit(self, model):
+        inner = getattr(model, "model", None)
+        if inner is None:
+            raise RuntimeError("Anima LLLite input MODEL has no .model attribute")
+        dit = getattr(inner, "diffusion_model", None)
+        if dit is None:
+            raise RuntimeError("Anima LLLite input MODEL.model has no .diffusion_model")
+        return dit
+
+    def _anima_lllite_target_hw(self, latent_h, latent_w, patch_spatial=2):
+        padded_h = ((int(latent_h) + patch_spatial - 1) // patch_spatial) * patch_spatial
+        padded_w = ((int(latent_w) + patch_spatial - 1) // patch_spatial) * patch_spatial
+        return padded_h * 8, padded_w * 8
+
+    def _prepare_anima_lllite_image(self, image, latent_h, latent_w, device, dtype, patch_spatial=2):
+        img = image
+        if isinstance(img, list):
+            img = img[0]
+        if torch.is_tensor(img) and img.ndim == 3:
+            img = img.unsqueeze(0)
+        if not torch.is_tensor(img) or img.ndim != 4 or img.shape[-1] != 3:
+            raise ValueError(f"Unexpected Anima LLLite image shape: {tuple(img.shape) if torch.is_tensor(img) else type(img)}")
+        img = img[:1].permute(0, 3, 1, 2).contiguous()
+        target_h, target_w = self._anima_lllite_target_hw(latent_h, latent_w, patch_spatial)
+        if img.shape[-2:] != (target_h, target_w):
+            img = F.interpolate(img, size=(target_h, target_w), mode="bicubic", align_corners=False).clamp(0.0, 1.0)
+        return (img * 2.0 - 1.0).to(device=device, dtype=dtype)
+
+    def _prepare_anima_lllite_mask(self, mask, latent_h, latent_w, device, dtype, patch_spatial=2):
+        if mask is None:
+            return None
+        m = mask
+        if isinstance(m, list):
+            m = m[0]
+        if torch.is_tensor(m) and m.ndim == 2:
+            m = m.unsqueeze(0)
+        if torch.is_tensor(m) and m.ndim == 3:
+            m = m.unsqueeze(1)
+        if not torch.is_tensor(m) or m.ndim != 4 or m.shape[1] != 1:
+            raise ValueError(f"Unexpected Anima LLLite mask shape: {tuple(m.shape) if torch.is_tensor(m) else type(m)}")
+        m = m[:1]
+        target_h, target_w = self._anima_lllite_target_hw(latent_h, latent_w, patch_spatial)
+        if m.shape[-2:] != (target_h, target_w):
+            m = F.interpolate(m.float(), size=(target_h, target_w), mode="nearest")
+        return (m >= 0.5).to(device=device, dtype=dtype)
+
+    def _face_detailer_control_crop(self, image, mask, bbox_detector, bbox_threshold, bbox_dilation, bbox_crop_factor, drop_size=10):
+        crop_image = image
+        crop_mask = mask
+        if bbox_detector is None:
+            return crop_image, crop_mask
+        try:
+            bbox_detector.setAux("face")
+            segs = bbox_detector.detect(
+                image,
+                float(bbox_threshold),
+                int(bbox_dilation),
+                float(bbox_crop_factor),
+                int(drop_size),
+            )
+        except Exception as exc:
+            print(f"[VNCCS Emotions Generator] Failed to crop Anima ControlNet like FaceDetailer: {exc}")
+            return crop_image, crop_mask
+        finally:
+            try:
+                bbox_detector.setAux(None)
+            except Exception:
+                pass
+
+        try:
+            items = segs[1] if isinstance(segs, tuple) and len(segs) > 1 else []
+            if not items:
+                return crop_image, crop_mask
+            x1, y1, x2, y2 = [int(v) for v in items[0].crop_region]
+            if x2 <= x1 or y2 <= y1:
+                return crop_image, crop_mask
+            if torch.is_tensor(image):
+                crop_image = image[:1, y1:y2, x1:x2, :].contiguous()
+            if torch.is_tensor(mask):
+                if mask.ndim == 2:
+                    crop_mask = mask[y1:y2, x1:x2].contiguous()
+                elif mask.ndim == 3:
+                    crop_mask = mask[:1, y1:y2, x1:x2].contiguous()
+                elif mask.ndim == 4:
+                    crop_mask = mask[:1, :, y1:y2, x1:x2].contiguous()
+        except Exception as exc:
+            print(f"[VNCCS Emotions Generator] Failed to apply FaceDetailer crop to Anima ControlNet: {exc}")
+            return image, mask
+        return crop_image, crop_mask
+
+    def _patch_anima_lllite_model(self, model, control_image, control_mask, lllite_name, strength=1.0):
+        weights_path = self._anima_lllite_path(lllite_name)
+        meta = read_lllite_metadata(weights_path)
+        cond_in_channels = int(meta.get("lllite.cond_in_channels", 3))
+        inpaint_masked_input = str(meta.get("lllite.inpaint_masked_input", "false")).lower() == "true"
+        if cond_in_channels == 4 and control_mask is None:
+            raise RuntimeError(f"Anima LLLite '{lllite_name}' requires source alpha/mask for inpainting mode")
+        strength = max(0.0, min(2.0, float(strength)))
+
+        dit = self._anima_lllite_inner_dit(model)
+        lllite = ControlNetLLLiteDiT(
+            dit,
+            cond_emb_dim=int(meta.get("lllite.cond_emb_dim", 32)),
+            mlp_dim=int(meta.get("lllite.mlp_dim", 64)),
+            target_layers=meta.get("lllite.target_atomics", meta.get("lllite.target_layers", "self_attn_q")),
+            multiplier=strength,
+            cond_dim=int(meta.get("lllite.cond_dim", 64)),
+            cond_resblocks=int(meta.get("lllite.cond_resblocks", 1)),
+            use_aspp=str(meta.get("lllite.use_aspp", "false")).lower() == "true",
+            aspp_dilations=tuple(int(d) for d in str(meta.get("lllite.aspp_dilations", "")).split(",") if d.strip()) or ASPP_DEFAULT_DILATIONS,
+            cond_in_channels=cond_in_channels,
+            inpaint_masked_input=inpaint_masked_input,
+        )
+        load_lllite_weights(lllite, weights_path, strict=False)
+        lllite.eval().requires_grad_(False)
+
+        patched_model = model.clone()
+        old_wrapper = getattr(model, "model_options", {}).get("model_function_wrapper")
+        patch_spatial = int(getattr(dit, "patch_spatial", 2))
+        cache = {"key": None, "cond": None, "tag": None}
+
+        def call_next(apply_model, input_x, timestep, c):
+            if old_wrapper is not None:
+                return old_wrapper(apply_model, {"input": input_x, "timestep": timestep, "c": c})
+            return apply_model(input_x, timestep, **c)
+
+        def wrapper(apply_model, args):
+            input_x = args["input"]
+            timestep = args["timestep"]
+            c = args["c"]
+            device = input_x.device
+            dtype = input_x.dtype
+            tag = (device, dtype)
+            if cache["tag"] != tag:
+                lllite.to(device=device, dtype=dtype)
+                cache["tag"] = tag
+                cache["cond"] = None
+            latent_h, latent_w = int(input_x.shape[-2]), int(input_x.shape[-1])
+            key = (latent_h, latent_w, device, dtype)
+            if cache["key"] != key or cache["cond"] is None:
+                rgb = self._prepare_anima_lllite_image(control_image, latent_h, latent_w, device, dtype, patch_spatial)
+                if cond_in_channels == 4:
+                    mask = self._prepare_anima_lllite_mask(control_mask, latent_h, latent_w, device, dtype, patch_spatial)
+                    if inpaint_masked_input:
+                        rgb = rgb * (mask < 0.5).to(rgb.dtype)
+                    cache["cond"] = torch.cat([rgb, mask.to(rgb.dtype) * 2.0 - 1.0], dim=1)
+                else:
+                    cache["cond"] = rgb
+                cache["key"] = key
+            lllite.set_cond_image(cache["cond"])
+            lllite.apply_to()
+            try:
+                return call_next(apply_model, input_x, timestep, c)
+            finally:
+                lllite.restore()
+                lllite.clear_cond_image()
+
+        patched_model.set_model_unet_function_wrapper(wrapper)
+        return patched_model
 
     def _conditioning_width(self, conditioning):
         try:
@@ -2213,16 +2408,17 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 unique.append(part)
         return ", ".join(unique)
 
-    def _with_emotion_face_details(self, prompt, meta):
-        details = self._emotion_face_details(meta)
-        text = str(prompt or "").strip()
+    def _detailer_positive_prompt(self, emotion_prompt, face_details):
+        emotion = str(emotion_prompt or "").strip()
+        details = str(face_details or "").strip()
         if not details:
-            return text
-        if details.lower() in text.lower():
-            return text
-        if text:
-            return f"{text}, Character face details: {details}"
-        return f"Character face details: {details}"
+            return emotion
+        details_text = f"Character face details: {details}"
+        if not emotion:
+            return details_text
+        if details.lower() in emotion.lower():
+            return emotion
+        return f"{emotion}\n\n{details_text}"
 
     def _face_prefix_from_sprite_prefix(self, sprite_prefix):
         prefix = str(sprite_prefix or "").strip()
@@ -2402,7 +2598,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         mask,
         pipe,
         emotion_prompt,
-        positive_prompt,
+        face_details,
         negative_prompt,
         seed,
         face_denoise=0.55,
@@ -2412,20 +2608,13 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         sam_dilation=25,
         sam_threshold=0.93,
         sam_bbox_expansion=0,
+        anima_lllite_name="",
+        anima_lllite_strength=1.0,
     ):
         pipe_values = self._extract_pipe(pipe)
         use_inpaint_model = self._is_anima_pipe(pipe_values)
-
-        positive = _call_comfy_node(
-            "CLIPTextEncode",
-            clip=pipe_values["clip"],
-            text=str(positive_prompt or ""),
-        )[0]
-        negative = _call_comfy_node(
-            "CLIPTextEncode",
-            clip=pipe_values["clip"],
-            text=str(negative_prompt or ""),
-        )[0]
+        model_for_detailer = pipe_values["model"]
+        lllite_name = str(anima_lllite_name or "")
 
         bbox_detector = _call_comfy_node(
             "UltralyticsDetectorProvider",
@@ -2441,10 +2630,41 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             model_name="bbox/face_yolov8m.pt",
         )[1]
 
+        if use_inpaint_model and lllite_name in ANIMA_LLLITE_CHOICES:
+            control_image, control_mask = self._face_detailer_control_crop(
+                image,
+                mask,
+                bbox_detector,
+                bbox_threshold,
+                bbox_dilation,
+                bbox_crop_factor,
+                drop_size=10,
+            )
+            model_for_detailer = self._patch_anima_lllite_model(
+                pipe_values["model"],
+                control_image,
+                control_mask,
+                lllite_name,
+                strength=anima_lllite_strength,
+            )
+
+        detailer_positive_text = self._detailer_positive_prompt(emotion_prompt, face_details)
+        print(f"[VNCCS Emotions Generator] FaceDetailer positive: {detailer_positive_text[:500]}")
+        positive = _call_comfy_node(
+            "CLIPTextEncode",
+            clip=pipe_values["clip"],
+            text=detailer_positive_text,
+        )[0]
+        negative = _call_comfy_node(
+            "CLIPTextEncode",
+            clip=pipe_values["clip"],
+            text=str(negative_prompt or ""),
+        )[0]
+
         detailed = _call_comfy_node(
             "FaceDetailer",
             image=image,
-            model=pipe_values["model"],
+            model=model_for_detailer,
             clip=pipe_values["clip"],
             vae=pipe_values["vae"],
             positive=positive,
@@ -2460,7 +2680,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             cfg=pipe_values["cfg"],
             sampler_name=pipe_values["sampler"],
             scheduler=pipe_values["scheduler"],
-            denoise=float(face_denoise),
+            denoise=1.0 if use_inpaint_model else float(face_denoise),
             feather=50,
             noise_mask=True,
             force_inpaint=True,
@@ -2474,12 +2694,12 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             sam_mask_hint_threshold=0.7,
             sam_mask_hint_use_negative="False",
             drop_size=10,
-            wildcard=str(emotion_prompt or ""),
             cycle=1,
             inpaint_model=use_inpaint_model,
             noise_mask_feather=20,
             tiled_encode=True,
             tiled_decode=True,
+            wildcard=detailer_positive_text,
         )
         full_image = self._list_to_batch(detailed[0])
         face_crop = self._list_to_batch(detailed[1]) if len(detailed) > 1 and detailed[1] is not None else full_image
@@ -2512,6 +2732,9 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         sam_dilation = _clamp_int("sam_dilation", 0, 128)
         sam_threshold = _clamp_float("sam_threshold", 0.0, 1.0)
         sam_bbox_expansion = _clamp_int("sam_bbox_expansion", 0, 128)
+        anima_lllite_name = str(emotion_settings.get("anima_lllite_name") or ANIMA_LLLITE_ANY_TEST_LIKE)
+        if anima_lllite_name not in ANIMA_LLLITE_CHOICES:
+            anima_lllite_name = ANIMA_LLLITE_ANY_TEST_LIKE
         pipe = self._unwrap_scalar(pipe)
         unique_id = self._unwrap_scalar(unique_id)
         cache_dir = _character_cache_dir_from_sheets_path("", widget_payload.get("character_name", ""), unique_id)
@@ -2599,7 +2822,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                         mask,
                         pipe,
                         meta.get("emotion_prompt", emotion_items[index]),
-                        self._with_emotion_face_details(meta.get("positive_prompt", ""), meta),
+                        self._emotion_face_details(meta),
                         meta.get("negative_prompt", ""),
                         seed + index,
                         face_denoise,
@@ -2608,6 +2831,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                         sam_dilation=sam_dilation,
                         sam_threshold=sam_threshold,
                         sam_bbox_expansion=sam_bbox_expansion,
+                        anima_lllite_name=anima_lllite_name,
                     )
                     results.append(result)
                     # FaceDetailer crops are intentionally variable-size. Save them

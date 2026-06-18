@@ -1264,6 +1264,7 @@ app.registerExtension({
 
                     commitWidget(generationSettingsWidget, JSON.stringify(state.gen), callCallback);
                     commitWidget(modelWidget, mode === "anima" ? "Anima" : "Illustrious", callCallback);
+                    window.dispatchEvent(new CustomEvent("vnccs-emotion-studio-generation-mode-changed"));
                 }
 
                 function setGenerationMode(mode) {
