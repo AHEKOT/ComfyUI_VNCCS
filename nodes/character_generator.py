@@ -996,11 +996,27 @@ class VNCCS_CharacterGenerator:
             m = F.interpolate(m.float(), size=(target_h, target_w), mode="nearest")
         return (m >= 0.5).to(device=device, dtype=dtype)
 
-    def _face_detailer_control_crop(self, image, mask, bbox_detector, bbox_threshold, bbox_dilation, bbox_crop_factor, drop_size=10):
+    def _face_detailer_control_crop_with_region(
+        self,
+        image,
+        mask,
+        bbox_detector,
+        bbox_threshold,
+        bbox_dilation,
+        bbox_crop_factor,
+        drop_size=10,
+        sam_model=None,
+        sam_dilation=25,
+        sam_threshold=0.93,
+        sam_bbox_expansion=0,
+    ):
         crop_image = image
         crop_mask = mask
+        detail_mask = None
+        crop_region = None
+        detail_bbox = None
         if bbox_detector is None:
-            return crop_image, crop_mask
+            return crop_image, crop_mask, crop_region, detail_mask, detail_bbox
         try:
             bbox_detector.setAux("face")
             segs = bbox_detector.detect(
@@ -1012,20 +1028,43 @@ class VNCCS_CharacterGenerator:
             )
         except Exception as exc:
             print(f"[VNCCS Emotions Generator] Failed to crop Anima ControlNet like FaceDetailer: {exc}")
-            return crop_image, crop_mask
+            return crop_image, crop_mask, crop_region, detail_mask, detail_bbox
         finally:
             try:
                 bbox_detector.setAux(None)
             except Exception:
                 pass
 
+        if sam_model is not None:
+            try:
+                import impact.core as impact_core
+                sam_mask = impact_core.make_sam_mask(
+                    sam_model,
+                    segs,
+                    image,
+                    "center-1",
+                    int(sam_dilation),
+                    float(sam_threshold),
+                    int(sam_bbox_expansion),
+                    0.7,
+                    "False",
+                )
+                segs = impact_core.segs_bitwise_and_mask(segs, sam_mask)
+            except Exception as exc:
+                print(f"[VNCCS Emotions Generator] Failed to apply SAM mask to Anima crop: {exc}")
+
         try:
             items = segs[1] if isinstance(segs, tuple) and len(segs) > 1 else []
             if not items:
-                return crop_image, crop_mask
+                return crop_image, crop_mask, crop_region, detail_mask, detail_bbox
             x1, y1, x2, y2 = [int(v) for v in items[0].crop_region]
             if x2 <= x1 or y2 <= y1:
-                return crop_image, crop_mask
+                return crop_image, crop_mask, crop_region, detail_mask, detail_bbox
+            crop_region = (x1, y1, x2, y2)
+            detail_bbox = tuple(int(v) for v in getattr(items[0], "bbox", crop_region))
+            detail_mask = torch.as_tensor(items[0].cropped_mask, dtype=torch.float32).contiguous()
+            if detail_mask.ndim == 2:
+                detail_mask = detail_mask.unsqueeze(0)
             if torch.is_tensor(image):
                 crop_image = image[:1, y1:y2, x1:x2, :].contiguous()
             if torch.is_tensor(mask):
@@ -1037,8 +1076,133 @@ class VNCCS_CharacterGenerator:
                     crop_mask = mask[:1, :, y1:y2, x1:x2].contiguous()
         except Exception as exc:
             print(f"[VNCCS Emotions Generator] Failed to apply FaceDetailer crop to Anima ControlNet: {exc}")
-            return image, mask
+            return image, mask, None, None, None
+        return crop_image, crop_mask, crop_region, detail_mask, detail_bbox
+
+    def _face_detailer_control_crop(self, image, mask, bbox_detector, bbox_threshold, bbox_dilation, bbox_crop_factor, drop_size=10):
+        crop_image, crop_mask, _crop_region, _detail_mask, _detail_bbox = self._face_detailer_control_crop_with_region(
+            image,
+            mask,
+            bbox_detector,
+            bbox_threshold,
+            bbox_dilation,
+            bbox_crop_factor,
+            drop_size=drop_size,
+        )
         return crop_image, crop_mask
+
+    def _apply_differential_diffusion(self, model):
+        try:
+            import impact.utils as impact_utils
+            return impact_utils.apply_differential_diffusion(model)
+        except Exception:
+            from comfy_extras import nodes_differential_diffusion
+            return nodes_differential_diffusion.DifferentialDiffusion().execute(model)[0]
+
+    def _blur_detail_mask(self, mask, feather):
+        if mask is None:
+            return None
+        if int(feather) <= 0:
+            return mask.float().clamp(0.0, 1.0)
+        try:
+            import impact.utils as impact_utils
+            return impact_utils.tensor_gaussian_blur_mask(mask, int(feather)).float().clamp(0.0, 1.0)
+        except Exception:
+            m = mask.float()
+            if m.ndim == 2:
+                m = m.unsqueeze(0)
+            return m.clamp(0.0, 1.0)
+
+    def _tensor_resize_like_impact(self, image, width, height):
+        if not torch.is_tensor(image):
+            return image
+        width = max(1, int(width))
+        height = max(1, int(height))
+        if image.shape[1] == height and image.shape[2] == width:
+            return image
+        try:
+            import impact.utils as impact_utils
+            return impact_utils.tensor_resize(image, width, height).clamp(0.0, 1.0)
+        except Exception:
+            return F.interpolate(
+                image.permute(0, 3, 1, 2).float(),
+                size=(height, width),
+                mode="bicubic",
+                align_corners=False,
+            ).permute(0, 2, 3, 1).clamp(0.0, 1.0)
+
+    def _mask_resize(self, mask, width, height, mode="bilinear"):
+        if mask is None or not torch.is_tensor(mask):
+            return mask
+        width = max(1, int(width))
+        height = max(1, int(height))
+        m = mask.float()
+        if m.ndim == 2:
+            m = m.unsqueeze(0)
+        if m.ndim == 3:
+            m = m.unsqueeze(1)
+        if m.ndim != 4:
+            return mask
+        if m.shape[-2:] != (height, width):
+            interpolate_kwargs = {"size": (height, width), "mode": mode}
+            if mode != "nearest":
+                interpolate_kwargs["align_corners"] = False
+            m = F.interpolate(m, **interpolate_kwargs)
+        return m[:, 0].clamp(0.0, 1.0)
+
+    def _face_detailer_upscale_size(self, crop_image, detail_bbox, guide_size=1536, max_size=1536, force_inpaint=True):
+        if not torch.is_tensor(crop_image) or crop_image.ndim != 4:
+            return None
+        h = int(crop_image.shape[1])
+        w = int(crop_image.shape[2])
+        bbox_w = w
+        bbox_h = h
+        if detail_bbox is not None and len(detail_bbox) >= 4:
+            bbox_w = max(1, int(detail_bbox[2]) - int(detail_bbox[0]))
+            bbox_h = max(1, int(detail_bbox[3]) - int(detail_bbox[1]))
+        upscale = float(guide_size) / float(max(1, min(bbox_w, bbox_h)))
+        if force_inpaint and upscale <= 1.0:
+            upscale = 1.0
+        new_w = max(1, int(w * upscale))
+        new_h = max(1, int(h * upscale))
+        if int(max_size) > 0 and max(new_w, new_h) > int(max_size):
+            limit_scale = float(max_size) / float(max(new_w, new_h))
+            new_w = max(1, int(new_w * limit_scale))
+            new_h = max(1, int(new_h * limit_scale))
+        return new_w, new_h
+
+    def _paste_crop_direct(self, image, crop, crop_region, paste_mask=None, feather=0):
+        if crop_region is None:
+            return crop
+        x1, y1, x2, y2 = [int(v) for v in crop_region]
+        if not torch.is_tensor(image) or not torch.is_tensor(crop) or x2 <= x1 or y2 <= y1:
+            return image
+        result = image[:1].clone()
+        target_h = y2 - y1
+        target_w = x2 - x1
+        patch = crop[:1]
+        if patch.shape[1] != target_h or patch.shape[2] != target_w:
+            patch = self._tensor_resize_like_impact(patch, target_w, target_h)
+        patch = patch[:, :, :, :result.shape[-1]]
+        if paste_mask is not None:
+            mask = self._blur_detail_mask(paste_mask, feather)
+            if mask.ndim == 2:
+                mask = mask.unsqueeze(0)
+            if mask.ndim == 3:
+                mask = mask.unsqueeze(-1)
+            if mask.shape[1] != target_h or mask.shape[2] != target_w:
+                mask = F.interpolate(
+                    mask.permute(0, 3, 1, 2).float(),
+                    size=(target_h, target_w),
+                    mode="bilinear",
+                    align_corners=False,
+                ).permute(0, 2, 3, 1)
+            mask = mask[:1].to(device=result.device, dtype=result.dtype).clamp(0.0, 1.0)
+            region = result[:, y1:y2, x1:x2, :patch.shape[-1]]
+            result[:, y1:y2, x1:x2, :patch.shape[-1]] = (1.0 - mask) * region + mask * patch
+        else:
+            result[:, y1:y2, x1:x2, :patch.shape[-1]] = patch
+        return result
 
     def _patch_anima_lllite_model(self, model, control_image, control_mask, lllite_name, strength=1.0):
         weights_path = self._anima_lllite_path(lllite_name)
@@ -2632,39 +2796,9 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             "UltralyticsDetectorProvider",
             model_name="bbox/face_yolov8m.pt",
         )[0]
-        sam_model = _call_comfy_node(
-            "SAMLoader",
-            model_name="sam_vit_b_01ec64.pth",
-            device_mode="AUTO",
-        )[0]
-        segm_detector = _call_comfy_node(
-            "UltralyticsDetectorProvider",
-            model_name="bbox/face_yolov8m.pt",
-        )[1]
-
-        if use_inpaint_model and lllite_name in ANIMA_LLLITE_CHOICES:
-            anima_lllite_effective_strength = _anima_lllite_effective_strength(anima_lllite_strength)
-            control_image, control_mask = self._face_detailer_control_crop(
-                image,
-                mask,
-                bbox_detector,
-                bbox_threshold,
-                bbox_dilation,
-                bbox_crop_factor,
-                drop_size=10,
-            )
-            model_for_detailer = self._patch_anima_lllite_model(
-                pipe_values["model"],
-                control_image,
-                control_mask,
-                lllite_name,
-                strength=anima_lllite_effective_strength,
-            )
-        else:
-            anima_lllite_effective_strength = 1.0
 
         detailer_positive_text = self._detailer_positive_prompt(emotion_prompt, face_details)
-        print(f"[VNCCS Emotions Generator] FaceDetailer positive: {detailer_positive_text[:500]}")
+        print(f"[VNCCS Emotions Generator] Emotion crop positive: {detailer_positive_text[:500]}")
         positive = _call_comfy_node(
             "CLIPTextEncode",
             clip=pipe_values["clip"],
@@ -2675,6 +2809,105 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             clip=pipe_values["clip"],
             text=str(negative_prompt or ""),
         )[0]
+
+        if use_inpaint_model:
+            anima_lllite_effective_strength = _anima_lllite_effective_strength(anima_lllite_strength)
+            sam_model = _call_comfy_node(
+                "SAMLoader",
+                model_name="sam_vit_b_01ec64.pth",
+                device_mode="AUTO",
+            )[0]
+            control_image, control_mask, crop_region, detail_mask, detail_bbox = self._face_detailer_control_crop_with_region(
+                image,
+                mask,
+                bbox_detector,
+                bbox_threshold,
+                bbox_dilation,
+                bbox_crop_factor,
+                drop_size=10,
+                sam_model=sam_model,
+                sam_dilation=sam_dilation,
+                sam_threshold=sam_threshold,
+                sam_bbox_expansion=sam_bbox_expansion,
+            )
+            if crop_region is None:
+                return image, image
+            upscale_size = self._face_detailer_upscale_size(
+                control_image,
+                detail_bbox,
+                guide_size=1536,
+                max_size=1536,
+                force_inpaint=True,
+            )
+            sample_image = control_image
+            sample_mask = control_mask
+            sample_detail_mask = detail_mask
+            if upscale_size is not None:
+                sample_w, sample_h = upscale_size
+                sample_image = self._tensor_resize_like_impact(control_image, sample_w, sample_h)
+                sample_mask = self._mask_resize(control_mask, sample_w, sample_h, mode="nearest")
+                sample_detail_mask = self._mask_resize(detail_mask, sample_w, sample_h, mode="bilinear")
+                print(
+                    "[VNCCS Emotions Generator] Emotion crop upscale: "
+                    f"{tuple(control_image.shape[1:3])} -> {(sample_h, sample_w)}"
+                )
+            model_for_crop = self._patch_anima_lllite_model(
+                pipe_values["model"],
+                sample_image,
+                sample_mask,
+                lllite_name if lllite_name in ANIMA_LLLITE_CHOICES else ANIMA_LLLITE_ANY_TEST_LIKE,
+                strength=anima_lllite_effective_strength,
+            )
+            model_for_crop = self._apply_differential_diffusion(model_for_crop)
+            latent = _call_comfy_node(
+                "VAEEncodeTiled",
+                pixels=sample_image,
+                vae=pipe_values["vae"],
+                tile_size=512,
+                overlap=64,
+                temporal_size=64,
+                temporal_overlap=8,
+            )[0]
+            sampler_mask = self._blur_detail_mask(sample_detail_mask, 20)
+            if sampler_mask is not None:
+                latent["noise_mask"] = sampler_mask
+            sampled = _call_comfy_node(
+                "KSampler",
+                model=model_for_crop,
+                positive=positive,
+                negative=negative,
+                latent_image=latent,
+                seed=int(seed or pipe_values["seed"]),
+                steps=pipe_values["steps"],
+                cfg=pipe_values["cfg"],
+                sampler_name=pipe_values["sampler"],
+                scheduler=pipe_values["scheduler"],
+                denoise=anima_lllite_effective_strength,
+            )[0]
+            generated_crop = _call_comfy_node(
+                "VAEDecodeTiled",
+                samples=sampled,
+                vae=pipe_values["vae"],
+                tile_size=512,
+                overlap=64,
+                temporal_size=64,
+                temporal_overlap=8,
+            )[0]
+            target_h = int(control_image.shape[1])
+            target_w = int(control_image.shape[2])
+            generated_detail = self._tensor_resize_like_impact(generated_crop, target_w, target_h)
+            full_image = self._paste_crop_direct(image, generated_detail, crop_region, paste_mask=detail_mask, feather=50)
+            return self._list_to_batch(full_image), self._list_to_batch(generated_detail)
+
+        sam_model = _call_comfy_node(
+            "SAMLoader",
+            model_name="sam_vit_b_01ec64.pth",
+            device_mode="AUTO",
+        )[0]
+        segm_detector = _call_comfy_node(
+            "UltralyticsDetectorProvider",
+            model_name="bbox/face_yolov8m.pt",
+        )[1]
 
         detailed = _call_comfy_node(
             "FaceDetailer",

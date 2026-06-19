@@ -678,11 +678,11 @@ function readData(node) {
     }
 }
 
-function writeData(node, data) {
+function writeData(node, data, { notify = true } = {}) {
     const widget = node.widgets?.find(w => w.name === "widget_data");
     if (!widget) return;
     widget.value = JSON.stringify(data);
-    widget.callback?.(widget.value);
+    if (notify) widget.callback?.(widget.value);
     app.graph?.setDirtyCanvas(true, true);
 }
 
@@ -938,7 +938,7 @@ class CharacterGeneratorWidget {
         this.syncCharacterSourceData();
         if (!this.data[section] || typeof this.data[section] !== "object") this.data[section] = {};
         this.data[section][key] = value;
-        writeData(this.node, this.data);
+        writeData(this.node, this.data, { notify: false });
         this.saveBrowserState();
     }
 
