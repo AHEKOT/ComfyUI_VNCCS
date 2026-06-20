@@ -52,7 +52,7 @@ from .vnccs_control_center import (
 )
 from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder
 from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, VNCCS_RMBG2
-from .model_path_utils import basename_agnostic, get_full_path_agnostic
+from .model_path_utils import basename_agnostic
 from ..utils import (
     base_output_dir,
     character_dir,
@@ -64,9 +64,6 @@ from ..utils import (
 
 _LIVE_GENERATOR_CONTEXTS = {}
 SEEDVR_ATTENTION_MODES = ("sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3")
-ANIMA_EDIT_LORA_NAME = "anima\\AnimaEditV1.safetensors"
-COSMOS_REFERENCE_WRAPPER_KEY = "vnccs_cosmos_reference"
-COSMOS_REFERENCE_COND_KEY = "ref_latents"
 
 
 def _can_import_attr(module_name, attr_name):
@@ -1234,114 +1231,6 @@ class VNCCS_CharacterGenerator:
 
     def _apply_pose_lora_to_model(self, model, clip, pipe, lora_info):
         return self._apply_lora_to_model(model, clip, pipe, lora_info, "Pose Generation")
-
-    def _apply_anima_edit_lora_to_model(self, model, clip):
-        if folder_paths is None:
-            raise RuntimeError("AnimaEditV1 LoRA requires ComfyUI folder_paths")
-        rel_path = ANIMA_EDIT_LORA_NAME
-        full_path = get_full_path_agnostic(folder_paths, "loras", rel_path, require_exists=True)
-        if not full_path:
-            raise RuntimeError(f"AnimaEditV1 LoRA not found: {rel_path}")
-        print(f"[VNCCS Emotions Generator] Applying Anima edit LoRA: {rel_path}")
-        try:
-            return _call_comfy_node(
-                "LoraLoaderModelOnly",
-                model=model,
-                lora_name=rel_path,
-                strength_model=1.0,
-            )[0]
-        except Exception as exc:
-            print(f"[VNCCS Emotions Generator] LoraLoaderModelOnly failed for '{rel_path}', using direct loader: {exc}")
-        import comfy.sd
-        import comfy.utils
-        lora = comfy.utils.load_torch_file(full_path, safe_load=True)
-        model_lora, _ = comfy.sd.load_lora_for_models(model, None, lora, 1.0, 0.0)
-        return model_lora
-
-    def _apply_cosmos_reference_latent(self, model, ref_latent):
-        try:
-            import comfy.conds
-            import comfy.patcher_extension
-            from comfy.model_base import Anima
-        except Exception as exc:
-            raise RuntimeError(f"Cosmos Reference Latent requires newer ComfyUI APIs: {exc}") from exc
-
-        patched = model.clone()
-        model_type = type(patched.model)
-        if not issubclass(model_type, Anima):
-            return patched
-
-        extra_conds = patched.get_model_object("extra_conds")
-        process_latent_in = patched.get_model_object("process_latent_in")
-        ref_latents = {"ref_latent_1": ref_latent}
-
-        def extra_conds_reference(**kwargs):
-            out = extra_conds(**kwargs)
-            latents = [process_latent_in(latent["samples"]) for latent in ref_latents.values()]
-            out[COSMOS_REFERENCE_COND_KEY] = comfy.conds.CONDList(latents)
-            return out
-
-        def diffusion_reference_wrapper(executor, *args, **kwargs):
-            x = args[0]
-            x_temporal_dim = x.shape[2]
-            refs = kwargs.get(COSMOS_REFERENCE_COND_KEY)
-            newargs = list(args)
-            if refs is not None:
-                for ref in refs:
-                    if ref.ndim == 4:
-                        ref = ref.unsqueeze(2)
-                    x = torch.cat([x, ref.to(dtype=x.dtype, device=x.device)], dim=2)
-            newargs[0] = x
-            return executor(*newargs, **kwargs)[:, :, :x_temporal_dim]
-
-        patched.add_object_patch("extra_conds", extra_conds_reference)
-        patched.add_wrapper_with_key(
-            comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL,
-            COSMOS_REFERENCE_WRAPPER_KEY,
-            diffusion_reference_wrapper,
-        )
-        return patched
-
-    def _load_easy_sam3_model(self):
-        cached = getattr(self, "_easy_sam3_model", None)
-        if cached is not None:
-            return cached
-        for class_name in ("easy sam3ModelLoader", "LoadSam3Model"):
-            try:
-                model = _call_comfy_node(
-                    class_name,
-                    model="sam3.pt",
-                    segmentor="image",
-                    device="cuda",
-                    precision="bf16",
-                )[0]
-                self._easy_sam3_model = model
-                return model
-            except RuntimeError:
-                continue
-        raise RuntimeError("Easy-SAM3 nodes are not available. Install yolain/ComfyUI-Easy-Sam3 and restart ComfyUI.")
-
-    def _easy_sam3_face_mask(self, image):
-        sam3_model = self._load_easy_sam3_model()
-        last_error = None
-        for class_name in ("easy sam3ImageSegmentation", "Sam3ImageSegmentation"):
-            try:
-                return _call_comfy_node(
-                    class_name,
-                    sam3_model=sam3_model,
-                    images=image,
-                    prompt="face",
-                    threshold=0.40,
-                    keep_model_loaded=True,
-                    add_background="none",
-                    detection_limit=-1,
-                )[0]
-            except RuntimeError as exc:
-                last_error = exc
-                continue
-        if last_error is not None:
-            raise last_error
-        raise RuntimeError("Easy-SAM3 image segmentation node is not available.")
 
     def _list_to_batch(self, values):
         normalized = normalize_image_batch(values, stage="generator list_to_batch")
@@ -2735,7 +2624,6 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         sam_bbox_expansion=0,
     ):
         pipe_values = self._extract_pipe(pipe)
-        use_inpaint_model = self._is_anima_pipe(pipe_values)
         model_for_detailer = pipe_values["model"]
 
         detailer_positive_text = self._detailer_positive_prompt(emotion_prompt, face_details)
@@ -2756,57 +2644,11 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             model_name="bbox/face_yolov8m.pt",
         )[0]
 
-        if use_inpaint_model:
-            source_crop, _sample_mask, crop_region, _detail_mask, _detail_bbox = self._face_detailer_control_crop_with_region(
-                image,
-                mask,
-                bbox_detector,
-                bbox_threshold,
-                bbox_dilation,
-                bbox_crop_factor,
-                drop_size=10,
-                sam_model=None,
-            )
-            if crop_region is None:
-                return image, image
-            sample_image = source_crop
-            paste_mask = self._easy_sam3_face_mask(sample_image)
-            model_for_sampler = self._apply_anima_edit_lora_to_model(pipe_values["model"], pipe_values["clip"])
-            latent = _call_comfy_node(
-                "VAEEncodeTiled",
-                pixels=sample_image,
-                vae=pipe_values["vae"],
-                tile_size=512,
-                overlap=64,
-                temporal_size=64,
-                temporal_overlap=8,
-            )[0]
-            model_for_sampler = self._apply_cosmos_reference_latent(model_for_sampler, latent)
-            sampled = _call_comfy_node(
-                "KSampler",
-                model=model_for_sampler,
-                positive=positive,
-                negative=negative,
-                latent_image=latent,
-                seed=int(seed or pipe_values["seed"]),
-                steps=pipe_values["steps"],
-                cfg=pipe_values["cfg"],
-                sampler_name=pipe_values["sampler"],
-                scheduler=pipe_values["scheduler"],
-                denoise=1.0,
-            )[0]
-            generated = _call_comfy_node(
-                "VAEDecodeTiled",
-                samples=sampled,
-                vae=pipe_values["vae"],
-                tile_size=512,
-                overlap=64,
-                temporal_size=64,
-                temporal_overlap=8,
-            )[0]
-            full_image = self._paste_crop_direct(image, generated, crop_region, paste_mask=paste_mask, feather=50)
-            return self._list_to_batch(full_image), self._list_to_batch(generated)
-
+        sam_model = _call_comfy_node(
+            "SAMLoader",
+            model_name="sam_vit_b_01ec64.pth",
+            device_mode="AUTO",
+        )[0]
         segm_detector = _call_comfy_node(
             "UltralyticsDetectorProvider",
             model_name="bbox/face_yolov8m.pt",
@@ -2821,7 +2663,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             positive=positive,
             negative=negative,
             bbox_detector=bbox_detector,
-            sam_model_opt=None,
+            sam_model_opt=sam_model,
             segm_detector_opt=segm_detector,
             guide_size=1536,
             guide_size_for=True,

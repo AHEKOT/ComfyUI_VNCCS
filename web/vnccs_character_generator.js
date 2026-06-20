@@ -1677,11 +1677,9 @@ class CharacterGeneratorWidget {
                     <div class="vnccs-pipe-empty" style="min-height:auto;padding:8px;">${count} costume / emotion pair(s)</div>
                 </div>`;
             this.settingsEl.appendChild(info);
-            if (!this.connectedEmotionStudioIsAnima()) {
-                this.settingsEl.appendChild(this.block("Emotion Strenght", [
-                    this.faceDenoiseSlider(),
-                ]));
-            }
+            this.settingsEl.appendChild(this.block("Emotion Strenght", [
+                this.faceDenoiseSlider(),
+            ]));
             const faceDetailerFields = [
                 this.faceDetailerNumberField("bbox_threshold", "bbox_threshold", { min: 0, max: 1, step: 0.01 }),
                 this.faceDetailerNumberField("bbox_dilation", "bbox_dilation", { min: 0, max: 128, step: 1 }),
