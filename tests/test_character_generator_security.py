@@ -90,6 +90,24 @@ def test_list_to_batch_normalizes_mixed_image_sizes():
     assert result.shape == (2, 12, 8, 3)
 
 
+def test_emotion_detailer_prompt_orders_emotion_then_face_details():
+    generator = cg.VNCCS_EmotionsGenerator()
+
+    result = generator._detailer_positive_prompt(
+        "The character is furious.\n\nEmotion Tags: angry, open_mouth",
+        "1girl, blue eyes, long black hair, (wear glasses on face:1.0), (wear hood on head:1.0)",
+    )
+
+    assert result.index("The character is furious.") < result.index("Character face details:")
+    assert "blue eyes" in result
+    assert "long black hair" in result
+    assert "(wear glasses on face:1.0)" in result
+    assert "(wear hood on head:1.0)" in result
+    assert "The character is furious." in result
+    assert "Emotion Tags: angry, open_mouth" in result
+    assert "masterpiece" not in result
+
+
 def test_pose_generation_decode_preserves_encoder_aspect(monkeypatch):
     torch = pytest.importorskip("torch")
 

@@ -671,11 +671,11 @@ function readData(node) {
     }
 }
 
-function writeData(node, data) {
+function writeData(node, data, { notify = true } = {}) {
     const widget = node.widgets?.find(w => w.name === "widget_data");
     if (!widget) return;
     widget.value = JSON.stringify(data);
-    widget.callback?.(widget.value);
+    if (notify) widget.callback?.(widget.value);
     app.graph?.setDirtyCanvas(true, true);
 }
 
@@ -718,6 +718,7 @@ class CharacterGeneratorWidget {
         this._saveBrowserStateTimer = null;
         this.nodeDefs = {};
         this.imageMetrics = new Map();
+        this.fieldDrafts = new Map();
         this.previewLayoutFrame = null;
         this.regenerateState = null;
         this.regenerateTimer = null;
@@ -853,6 +854,11 @@ class CharacterGeneratorWidget {
             window.addEventListener("vnccs-character-cloner-updated", this.onClonerUpdated);
             registerCleanup(this.node, () => window.removeEventListener("vnccs-character-cloner-updated", this.onClonerUpdated));
         }
+        if (this.isEmotions) {
+            this.onEmotionStudioModeChanged = () => this.renderSettings();
+            window.addEventListener("vnccs-emotion-studio-generation-mode-changed", this.onEmotionStudioModeChanged);
+            registerCleanup(this.node, () => window.removeEventListener("vnccs-emotion-studio-generation-mode-changed", this.onEmotionStudioModeChanged));
+        }
     }
 
     resetStagesFrom(stageKey) {
@@ -926,7 +932,7 @@ class CharacterGeneratorWidget {
         this.syncCharacterSourceData();
         if (!this.data[section] || typeof this.data[section] !== "object") this.data[section] = {};
         this.data[section][key] = value;
-        writeData(this.node, this.data);
+        writeData(this.node, this.data, { notify: false });
         this.saveBrowserState();
     }
 
@@ -1408,6 +1414,15 @@ class CharacterGeneratorWidget {
         return uniqueOptions([currentValue, ...workflowOptions, ...nodeOptions]);
     }
 
+    protectNativeControl(input) {
+        if (!input || input._vnccsNativeControlProtected) return input;
+        input._vnccsNativeControlProtected = true;
+        for (const eventName of ["pointerdown", "mousedown", "mouseup", "click", "dblclick", "touchstart", "touchend", "keydown"]) {
+            input.addEventListener(eventName, event => event.stopPropagation(), true);
+        }
+        return input;
+    }
+
     modeTabs(section, key, options) {
         const wrap = document.createElement("div");
         wrap.className = "vnccs-pipe-mode-tabs";
@@ -1446,6 +1461,7 @@ class CharacterGeneratorWidget {
         if (type === "select") {
             input = document.createElement("select");
             input.className = "vnccs-pipe-select";
+            this.protectNativeControl(input);
             for (const opt of options || []) {
                 const option = document.createElement("option");
                 option.value = opt;
@@ -1456,6 +1472,7 @@ class CharacterGeneratorWidget {
             wrap.className = "vnccs-pipe-check";
             input = document.createElement("input");
             input.type = "checkbox";
+            this.protectNativeControl(input);
             input.checked = Boolean(this.data[section][key]);
             input.onchange = () => this.set(section, key, input.checked);
             wrap.append(input, caption);
@@ -1463,10 +1480,12 @@ class CharacterGeneratorWidget {
         } else if (type === "textarea") {
             input = document.createElement("textarea");
             input.className = "vnccs-pipe-textarea";
+            this.protectNativeControl(input);
         } else {
             input = document.createElement("input");
             input.className = "vnccs-pipe-input";
             input.type = type;
+            this.protectNativeControl(input);
         }
         input.value = this.data[section][key];
         input.oninput = () => {
@@ -1522,6 +1541,7 @@ class CharacterGeneratorWidget {
         slider.max = "1";
         slider.step = "0.01";
         slider.value = String(value);
+        this.protectNativeControl(slider);
 
         const status = document.createElement("div");
         status.className = "vnccs-pipe-slider-status";
@@ -1549,6 +1569,7 @@ class CharacterGeneratorWidget {
     }
 
     faceDetailerNumberField(key, label, { min = 0, max = 1, step = 0.01 } = {}) {
+        const draftKey = `emotion_generation.${key}`;
         const wrap = document.createElement("label");
         wrap.className = "vnccs-pipe-field";
         const help = {
@@ -1570,15 +1591,69 @@ class CharacterGeneratorWidget {
         input.min = String(min);
         input.max = String(max);
         input.step = String(step);
-        input.value = String(this.data.emotion_generation?.[key] ?? DEFAULT_DATA.emotion_generation[key]);
-        input.oninput = () => {
-            const raw = Number(input.value);
-            const next = Number.isFinite(raw) ? Math.max(min, Math.min(max, raw)) : DEFAULT_DATA.emotion_generation[key];
+        this.protectNativeControl(input);
+        input.value = this.fieldDrafts.has(draftKey)
+            ? this.fieldDrafts.get(draftKey)
+            : String(this.data.emotion_generation?.[key] ?? DEFAULT_DATA.emotion_generation[key]);
+
+        const commit = () => {
+            const normalized = String(input.value).trim().replace(",", ".");
+            const raw = Number(normalized);
+            if (!Number.isFinite(raw)) {
+                input.value = String(this.data.emotion_generation?.[key] ?? DEFAULT_DATA.emotion_generation[key]);
+                this.fieldDrafts.delete(draftKey);
+                return;
+            }
+            const next = Math.max(min, Math.min(max, raw));
+            this.fieldDrafts.delete(draftKey);
+            input.value = String(next);
             this.set("emotion_generation", key, next);
+        };
+
+        input.onfocus = () => {
+            this.fieldDrafts.set(draftKey, input.value);
+        };
+        input.oninput = () => {
+            this.fieldDrafts.set(draftKey, input.value);
+        };
+        input.onchange = commit;
+        input.onblur = commit;
+        input.onkeydown = (event) => {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                commit();
+                input.blur();
+            } else if (event.key === "Escape") {
+                event.preventDefault();
+                this.fieldDrafts.delete(draftKey);
+                input.value = String(this.data.emotion_generation?.[key] ?? DEFAULT_DATA.emotion_generation[key]);
+                input.blur();
+            }
         };
 
         wrap.append(caption, input);
         return wrap;
+    }
+
+    connectedEmotionStudioIsAnima() {
+        if (!this.isEmotions) return false;
+        const pipeInput = (this.node.inputs || []).find(input => input.name === "pipe");
+        if (!pipeInput?.link) return false;
+        const link = app.graph?.links?.[pipeInput.link];
+        const sourceNode = app.graph?.getNodeById?.(link?.origin_id);
+        if (!sourceNode || sourceNode.type !== "EmotionGeneratorV2") return false;
+
+        const settingsWidget = sourceNode.widgets?.find(widget => widget.name === "generation_settings");
+        try {
+            const settings = settingsWidget?.value ? JSON.parse(settingsWidget.value) : {};
+            const settingsMode = String(settings?.generation_mode || "").toLowerCase();
+            if (settingsMode === "anima") return true;
+            if (settingsMode === "illustrious") return false;
+        } catch (_) {
+            // Fall back to the hidden mode widget below.
+        }
+        const modeWidget = sourceNode.widgets?.find(widget => widget.name === "generation_model");
+        return String(modeWidget?.value || "").toLowerCase() === "anima";
     }
 
     renderSettings() {
@@ -1602,14 +1677,17 @@ class CharacterGeneratorWidget {
                     <div class="vnccs-pipe-empty" style="min-height:auto;padding:8px;">${count} costume / emotion pair(s)</div>
                 </div>`;
             this.settingsEl.appendChild(info);
-            this.settingsEl.appendChild(this.block("Face Detailer", [
+            this.settingsEl.appendChild(this.block("Emotion Strenght", [
                 this.faceDenoiseSlider(),
+            ]));
+            const faceDetailerFields = [
                 this.faceDetailerNumberField("bbox_threshold", "bbox_threshold", { min: 0, max: 1, step: 0.01 }),
                 this.faceDetailerNumberField("bbox_dilation", "bbox_dilation", { min: 0, max: 128, step: 1 }),
                 this.faceDetailerNumberField("sam_dilation", "sam_dilation", { min: 0, max: 128, step: 1 }),
                 this.faceDetailerNumberField("sam_threshold", "sam_threshold", { min: 0, max: 1, step: 0.01 }),
                 this.faceDetailerNumberField("sam_bbox_expansion", "sam_bbox_expansion", { min: 0, max: 128, step: 1 }),
-            ]));
+            ];
+            this.settingsEl.appendChild(this.block("Face Detailer", faceDetailerFields));
             return;
         }
         if (this.isClone) {

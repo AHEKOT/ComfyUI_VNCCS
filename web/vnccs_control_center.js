@@ -548,6 +548,9 @@ function _injectVNCCSControlCenterStyles() {
     max-height: 56px;
     overflow: hidden;
 }
+.vnccs-cc-lora-card--compact.vnccs-cc-lora-card--downloadable {
+    padding-right: 78px;
+}
 .vnccs-cc-lora-card--compact .vnccs-cc-lora-card-meta {
     gap: 1px;
 }
@@ -615,6 +618,28 @@ function _injectVNCCSControlCenterStyles() {
 .vnccs-cc-lora-remove-btn:hover {
     background: rgba(255, 71, 87, 0.16);
     border-color: rgba(255, 71, 87, 0.42);
+}
+.vnccs-cc-lora-download-btn {
+    position: absolute;
+    right: 7px;
+    top: 5px;
+    min-width: 58px;
+    height: 20px;
+    padding: 0 7px;
+    border-radius: 6px;
+    border: 1px solid rgba(255,143,163,0.32);
+    background: rgba(255,143,163,0.08);
+    color: #ff8fa3;
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    line-height: 1;
+    cursor: pointer;
+    font-family: inherit;
+}
+.vnccs-cc-lora-download-btn:hover {
+    background: rgba(255,143,163,0.2);
+    border-color: rgba(255,143,163,0.52);
 }
 .vnccs-cc-lora-card-desc {
     font-size: 8.5px;
@@ -1307,7 +1332,7 @@ class VNCCSControlCenterWidget {
         const selectedKind = this._selectedKind();
         const options = [];
         for (const entry of this.config.lora) {
-            if (entry.custom || this._isTurboLora(entry) || !this._isHelperLora(entry) || !this._sameKind(entry, selectedKind)) continue;
+            if (entry.custom || this._isTurboLora(entry) || !this._isHelperLora(entry)) continue;
             const norm = (entry.local_path || "").replace(/\\/g, "/");
             const rel = norm.startsWith("models/loras/") ? norm.slice("models/loras/".length) : norm.split("/").pop();
             options.push(rel);
@@ -2146,7 +2171,7 @@ class VNCCSControlCenterWidget {
     _buildLoraBlock() {
         const selectedKind = this._selectedKind();
         const entries = (this.config.lora || []).filter(entry =>
-            !entry.custom && !this._isTurboLora(entry) && this._sameKind(entry, selectedKind)
+            !entry.custom && !this._isTurboLora(entry) && (this._isHelperLora(entry) || this._sameKind(entry, selectedKind))
         );
         const collapsed = this.state.collapsed?.lora ?? false;
         const block = this._blockShell("LORA", entries.length, "lora", collapsed);
@@ -2833,6 +2858,7 @@ class VNCCSControlCenterWidget {
         card.className = "vnccs-cc-model-card vnccs-cc-lora-card";
         if (active && !isPipeMode) card.classList.add("vnccs-cc-lora-card--active");
         if (compact) card.classList.add("vnccs-cc-lora-card--compact");
+        if (compact && this._isDownloadableStatus(status)) card.classList.add("vnccs-cc-lora-card--downloadable");
         if (entry.custom) card.classList.add("vnccs-cc-lora-card--has-remove");
         this._applyProgressLayer(card, loraKey, dls);
         if (status === "installed" && isInteractive) {
@@ -2856,6 +2882,19 @@ class VNCCSControlCenterWidget {
                 this._removeCustomLora(entry);
             };
             card.appendChild(removeBtn);
+        }
+
+        if (compact && this._isDownloadableStatus(status)) {
+            const downloadBtn = document.createElement("button");
+            downloadBtn.type = "button";
+            downloadBtn.className = "vnccs-cc-lora-download-btn";
+            downloadBtn.textContent = status === "outdated" ? "Update" : "Download";
+            downloadBtn.title = this._downloadLabel(status);
+            downloadBtn.onclick = e => {
+                e.stopPropagation();
+                this._downloadEntry("lora", entry);
+            };
+            card.appendChild(downloadBtn);
         }
 
         const top = document.createElement("div");
@@ -2920,7 +2959,7 @@ class VNCCSControlCenterWidget {
         footer.className = active ? "vnccs-cc-lora-strength-row" : "vnccs-cc-lora-card-actions";
         footer.onclick = e => e.stopPropagation();
 
-        if (this._isDownloadableStatus(status)) {
+        if (this._isDownloadableStatus(status) && !compact) {
             const btn = this._btn(this._downloadLabel(status), () => this._downloadEntry("lora", entry));
             btn.addEventListener("click", e => e.stopPropagation());
             footer.appendChild(btn);

@@ -189,7 +189,7 @@ class VNCCS_Service_Emotions_Generator(VNCCS_EmotionsGenerator):
                 None,
                 pipe,
                 self._prompt_for_emotion(item, character_prompt),
-                positive_prompt,
+                character_prompt,
                 negative_prompt,
                 base_seed + index,
                 face_denoise,

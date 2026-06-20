@@ -427,6 +427,7 @@ def _get_cc_config(repo_id, prefer_remote=False):
                 repo_id=repo_id,
                 filename="control_center.json",
                 local_files_only=False,
+                force_download=bool(prefer_remote),
                 token=hf_token,
             )
             source = "huggingface"
@@ -1537,8 +1538,16 @@ async def vnccs_module_status(request):
             "folders": ["ComfyUI-Impact-Pack", "ComfyUI-Impact-Subpack"],
             "nodes": [
                 {"class_names": ["UltralyticsDetectorProvider"]},
-                {"class_names": ["SAMLoader"]},
                 {"class_names": ["FaceDetailer"]},
+            ],
+        },
+        "easy_sam3": {
+            "label": "Easy SAM3",
+            "github_url": "https://github.com/yolain/ComfyUI-Easy-Sam3",
+            "folders": ["ComfyUI-Easy-Sam3", "comfyui-easy-sam3"],
+            "nodes": [
+                {"node_id": "easy sam3ModelLoader", "class_names": ["LoadSam3Model"]},
+                {"node_id": "easy sam3ImageSegmentation", "class_names": ["Sam3ImageSegmentation"]},
             ],
         },
     }
