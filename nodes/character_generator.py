@@ -2757,7 +2757,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         )[0]
 
         if use_inpaint_model:
-            sample_image, _sample_mask, crop_region, _detail_mask, _detail_bbox = self._face_detailer_control_crop_with_region(
+            source_crop, _sample_mask, crop_region, _detail_mask, _detail_bbox = self._face_detailer_control_crop_with_region(
                 image,
                 mask,
                 bbox_detector,
@@ -2769,6 +2769,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             )
             if crop_region is None:
                 return image, image
+            sample_image = source_crop
             paste_mask = self._easy_sam3_face_mask(sample_image)
             model_for_sampler = self._apply_anima_edit_lora_to_model(pipe_values["model"], pipe_values["clip"])
             latent = _call_comfy_node(
@@ -2792,7 +2793,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 cfg=pipe_values["cfg"],
                 sampler_name=pipe_values["sampler"],
                 scheduler=pipe_values["scheduler"],
-                denoise=float(face_denoise),
+                denoise=1.0,
             )[0]
             generated = _call_comfy_node(
                 "VAEDecodeTiled",
