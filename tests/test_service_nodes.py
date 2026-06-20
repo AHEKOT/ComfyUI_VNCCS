@@ -171,3 +171,30 @@ def test_service_generate_saves_named_emotion_files_to_output(tmp_path, monkeypa
         {"filename": "light-smile.png", "subfolder": "VNCCS/ServiceEmotions", "type": "output"},
         {"filename": "angry.png", "subfolder": "VNCCS/ServiceEmotions", "type": "output"},
     ]
+
+
+def test_service_generate_uses_emotion_detailer_defaults(tmp_path, monkeypatch):
+    import torch
+    import nodes.service_nodes as service_nodes
+
+    monkeypatch.setattr(service_nodes.folder_paths, "get_output_directory", lambda: str(tmp_path))
+    monkeypatch.setattr(service_nodes, "_flatten_emotions_config", lambda: [
+        {"safe_name": "light-smile", "prompt": "Smile.", "description": ""},
+    ])
+
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+        return torch.zeros((1, 4, 4, 3)), torch.ones((1, 4, 4, 3))
+
+    node = service_nodes.VNCCS_Service_Emotions_Generator()
+    monkeypatch.setattr(node, "_default_pipe", lambda: {"seed": 10})
+    monkeypatch.setattr(node, "_extract_pipe", lambda pipe: pipe)
+    monkeypatch.setattr(node, "_run_emotion_generation_one", fake_run)
+
+    node.generate(torch.zeros((1, 4, 4, 3)), character_prompt="green hair")
+
+    assert len(calls) == 1
+    assert "bbox_crop_factor" not in calls[0]["kwargs"]
+    assert "use_sam" not in calls[0]["kwargs"]

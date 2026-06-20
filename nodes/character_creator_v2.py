@@ -23,9 +23,9 @@ from ..utils import (
     save_config, build_face_details, generate_seed, dedupe_tokens,
     apply_sex, append_age, load_config, age_strength,
     list_characters, character_dir, base_output_dir,
-    sheets_dir, faces_dir, normalize_hair_tags, ensure_safe_name
+    sheets_dir, faces_dir, normalize_hair_tags, ensure_safe_name,
+    get_full_path_agnostic,
 )
-from .model_path_utils import get_full_path_agnostic
 
 # --------------------------------------------------------------------
 # Helper Functions

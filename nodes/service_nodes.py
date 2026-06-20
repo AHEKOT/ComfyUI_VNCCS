@@ -193,7 +193,6 @@ class VNCCS_Service_Emotions_Generator(VNCCS_EmotionsGenerator):
                 negative_prompt,
                 base_seed + index,
                 face_denoise,
-                bbox_crop_factor=1.0,
             )
             face_crop = self._safe_image_batch(face_crop, stage="service emotion cropped result")
             _tensor_to_rgb_png(face_crop, out_path)

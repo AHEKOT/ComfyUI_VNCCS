@@ -25,7 +25,7 @@ from .sampler_scheduler_picker import (
 from .vnccs_control_center import (
     _apply_lora_standard,
 )
-from .model_path_utils import get_full_path_agnostic
+from ..utils import get_full_path_agnostic
 
 
 SAMPLER_ENUM, SCHEDULER_ENUM = fetch_sampler_scheduler_lists()

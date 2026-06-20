@@ -21,9 +21,9 @@ import cv2
 import torch.nn.functional as F
 
 try:
-    from .model_path_utils import get_full_path_agnostic
+    from ..utils import get_full_path_agnostic
 except Exception:
-    from model_path_utils import get_full_path_agnostic
+    from utils import get_full_path_agnostic
 
 
 class _CompatReturnTypes(tuple):

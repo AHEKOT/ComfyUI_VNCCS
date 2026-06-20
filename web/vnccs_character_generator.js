@@ -97,6 +97,7 @@ const CLOTHES_STAGES = [
 
 const DEFAULT_EMOTION_STAGES = [
     ["emotion_0001", "Emotion"],
+    ["emotion_0001_bg_remove", "Emotion BG"],
 ];
 
 const WORKFLOW_UPSCALER_DIT_MODELS = [
@@ -830,11 +831,11 @@ class CharacterGeneratorWidget {
                         this.data.ui.user_selected_preview = false;
                     }
                 }
+                const previousStageState = this.stageState[stage] || {};
+                const hasImages = Object.prototype.hasOwnProperty.call(detail, "images");
                 this.stageState[stage] = {
                     status,
-                    images: Object.prototype.hasOwnProperty.call(detail, "images")
-                        ? detail.images
-                        : (status === "running" ? null : this.stageState[stage]?.images || null),
+                    images: hasImages ? detail.images : (previousStageState.images || null),
                     message: detail.message || "",
                     current: detail.current,
                     total: detail.total,
@@ -1151,9 +1152,15 @@ class CharacterGeneratorWidget {
         if (this.isClone) return this.isCloneNsfwEnabled() ? CLONE_STAGES : CLONE_SFW_STAGES;
         if (this.isEmotions) {
             const pairs = Array.isArray(this.data.emotion_pairs) ? this.data.emotion_pairs : [];
-            return pairs.length
-                ? pairs.map((pair, index) => [`emotion_${String(index + 1).padStart(4, "0")}`, `${pair.costume || "Costume"} / ${pair.emotion || "Emotion"}`])
-                : DEFAULT_EMOTION_STAGES;
+            if (!pairs.length) return DEFAULT_EMOTION_STAGES;
+            return pairs.flatMap((pair, index) => {
+                const key = `emotion_${String(index + 1).padStart(4, "0")}`;
+                const label = `${pair.costume || "Costume"} / ${pair.emotion || "Emotion"}`;
+                return [
+                    [key, label],
+                    [`${key}_bg_remove`, `${label} BG`],
+                ];
+            });
         }
         return this.isClothes ? CLOTHES_STAGES : STAGES;
     }
@@ -1716,6 +1723,9 @@ class CharacterGeneratorWidget {
                 this.faceDetailerNumberField("sam_bbox_expansion", "sam_bbox_expansion", { min: 0, max: 128, step: 1 }),
             ];
             this.settingsEl.appendChild(this.block("Face Detailer", faceDetailerFields));
+            this.settingsEl.appendChild(this.block("BG Remove", [
+                this.field("bg_remove", "preset", "chroma preset", "select", ["disabled", "light", "balanced", "strong", "aggressive"]),
+            ]));
             return;
         }
         if (this.isClone) {
