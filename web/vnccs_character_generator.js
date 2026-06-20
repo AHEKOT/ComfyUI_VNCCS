@@ -13,6 +13,7 @@ const DEFAULT_DATA = {
     },
     emotion_generation: {
         face_denoise: 0.55,
+        use_sam: true,
         bbox_threshold: 0.1,
         bbox_dilation: 10,
         sam_dilation: 25,
@@ -288,6 +289,9 @@ const CSS = `
     gap: 7px;
     color: #cfcfda;
     font-size: 11px;
+    cursor: pointer;
+    user-select: none;
+    padding: 2px 0;
 }
 .vnccs-pipe-mode-tabs {
     display: grid;
@@ -665,7 +669,16 @@ function deepMerge(base, patch) {
 function readData(node) {
     const widget = node.widgets?.find(w => w.name === "widget_data");
     try {
-        return deepMerge(DEFAULT_DATA, JSON.parse(widget?.value || "{}"));
+        const parsed = JSON.parse(widget?.value || "{}");
+        const data = deepMerge(DEFAULT_DATA, parsed);
+        if (
+            parsed?.emotion_generation
+            && parsed.emotion_generation.use_sam === undefined
+            && parsed.emotion_generation.use_sam_model !== undefined
+        ) {
+            data.emotion_generation.use_sam = Boolean(parsed.emotion_generation.use_sam_model);
+        }
+        return data;
     } catch {
         return JSON.parse(JSON.stringify(DEFAULT_DATA));
     }
@@ -1451,7 +1464,8 @@ class CharacterGeneratorWidget {
             resolution: "Output resolution target for SeedVR upscaling.",
             attention_mode: "Attention backend for SeedVR. Auto-detected from installed ComfyUI packages until changed manually.",
             use_internal_rmbg: "Uses the built-in background remover instead of relying only on chroma key.",
-            preset: "Strength preset for chroma/background removal."
+            preset: "Strength preset for chroma/background removal.",
+            use_sam: "Passes SAM and the optional segmentation detector into FaceDetailer."
         }[key];
         setHelpText(wrap, help);
         const caption = document.createElement("div");
@@ -1475,6 +1489,16 @@ class CharacterGeneratorWidget {
             this.protectNativeControl(input);
             input.checked = Boolean(this.data[section][key]);
             input.onchange = () => this.set(section, key, input.checked);
+            for (const eventName of ["pointerdown", "mousedown", "mouseup", "dblclick", "touchstart", "touchend", "keydown"]) {
+                wrap.addEventListener(eventName, event => event.stopPropagation(), true);
+            }
+            wrap.onclick = (event) => {
+                event.stopPropagation();
+                if (event.target === input) return;
+                event.preventDefault();
+                input.checked = !input.checked;
+                this.set(section, key, input.checked);
+            };
             wrap.append(input, caption);
             return wrap;
         } else if (type === "textarea") {
@@ -1514,9 +1538,12 @@ class CharacterGeneratorWidget {
 
     faceDenoiseSlider() {
         const value = Math.max(0, Math.min(1, Number(this.data.emotion_generation?.face_denoise ?? 0.55)));
-        const denoiseZone = (next) => next < 0.5
+        const isAnima = this.connectedEmotionStudioIsAnima();
+        const weakLimit = isAnima ? 0.6 : 0.5;
+        const optimalLimit = isAnima ? 0.75 : 0.65;
+        const denoiseZone = (next) => next < weakLimit
             ? { status: "weak", color: "#64a8ff", border: "rgba(100,168,255,0.5)", bg: "rgba(100,168,255,0.1)", glow: "rgba(100,168,255,0.3)" }
-            : (next <= 0.65
+            : (next <= optimalLimit
                 ? { status: "optimal", color: "#00d68f", border: "rgba(0,214,143,0.5)", bg: "rgba(0,214,143,0.1)", glow: "rgba(0,214,143,0.28)" }
                 : { status: "excessive", color: "#ff5f78", border: "rgba(255,95,120,0.58)", bg: "rgba(255,95,120,0.12)", glow: "rgba(255,95,120,0.32)" });
 
@@ -1681,6 +1708,7 @@ class CharacterGeneratorWidget {
                 this.faceDenoiseSlider(),
             ]));
             const faceDetailerFields = [
+                this.field("emotion_generation", "use_sam", "Use SAM", "checkbox"),
                 this.faceDetailerNumberField("bbox_threshold", "bbox_threshold", { min: 0, max: 1, step: 0.01 }),
                 this.faceDetailerNumberField("bbox_dilation", "bbox_dilation", { min: 0, max: 128, step: 1 }),
                 this.faceDetailerNumberField("sam_dilation", "sam_dilation", { min: 0, max: 128, step: 1 }),

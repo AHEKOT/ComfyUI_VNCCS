@@ -637,6 +637,7 @@ DEFAULT_WIDGET_DATA = {
     },
     "emotion_generation": {
         "face_denoise": 0.55,
+        "use_sam": True,
         "bbox_threshold": 0.1,
         "bbox_dilation": 10,
         "sam_dilation": 25,
@@ -2616,12 +2617,13 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         negative_prompt,
         seed,
         face_denoise=0.55,
-        bbox_crop_factor=1.0,
+        bbox_crop_factor=4.5,
         bbox_threshold=0.1,
         bbox_dilation=10,
         sam_dilation=25,
         sam_threshold=0.93,
         sam_bbox_expansion=0,
+        use_sam=True,
     ):
         pipe_values = self._extract_pipe(pipe)
         model_for_detailer = pipe_values["model"]
@@ -2644,15 +2646,18 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             model_name="bbox/face_yolov8m.pt",
         )[0]
 
-        sam_model = _call_comfy_node(
-            "SAMLoader",
-            model_name="sam_vit_b_01ec64.pth",
-            device_mode="AUTO",
-        )[0]
-        segm_detector = _call_comfy_node(
-            "UltralyticsDetectorProvider",
-            model_name="bbox/face_yolov8m.pt",
-        )[1]
+        sam_model = None
+        segm_detector = None
+        if _as_bool(use_sam, True):
+            sam_model = _call_comfy_node(
+                "SAMLoader",
+                model_name="sam_vit_b_01ec64.pth",
+                device_mode="AUTO",
+            )[0]
+            segm_detector = _call_comfy_node(
+                "UltralyticsDetectorProvider",
+                model_name="bbox/face_yolov8m.pt",
+            )[1]
 
         detailed = _call_comfy_node(
             "FaceDetailer",
@@ -2674,7 +2679,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             sampler_name=pipe_values["sampler"],
             scheduler=pipe_values["scheduler"],
             denoise=float(face_denoise),
-            feather=50,
+            feather=5,
             noise_mask=True,
             force_inpaint=True,
             bbox_threshold=float(bbox_threshold),
@@ -2720,6 +2725,13 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             return max(min_value, min(max_value, value))
 
         face_denoise = _clamp_float("face_denoise", 0.0, 1.0)
+        use_sam = _as_bool(
+            emotion_settings.get(
+                "use_sam",
+                emotion_settings.get("use_sam_model", emotion_defaults.get("use_sam", True)),
+            ),
+            True,
+        )
         bbox_threshold = _clamp_float("bbox_threshold", 0.0, 1.0)
         bbox_dilation = _clamp_int("bbox_dilation", 0, 128)
         sam_dilation = _clamp_int("sam_dilation", 0, 128)
@@ -2821,6 +2833,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                         sam_dilation=sam_dilation,
                         sam_threshold=sam_threshold,
                         sam_bbox_expansion=sam_bbox_expansion,
+                        use_sam=use_sam,
                     )
                     results.append(result)
                     # FaceDetailer crops are intentionally variable-size. Save them

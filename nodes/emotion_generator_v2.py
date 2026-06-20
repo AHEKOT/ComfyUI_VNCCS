@@ -262,6 +262,28 @@ def load_costume_sprite_images(character, costume):
     return []
 
 
+def costume_has_source_sprites(character, costume):
+    root = os.path.join(character_dir(character), "Sprites", costume)
+    if not os.path.isdir(root):
+        return False
+    search_roots = [
+        os.path.join(root, "Neutral"),
+        os.path.join(root, "neutral"),
+        root,
+    ]
+    seen = set()
+    for folder in search_roots:
+        folder_key = os.path.normcase(os.path.abspath(folder))
+        if folder_key in seen or not os.path.isdir(folder):
+            continue
+        seen.add(folder_key)
+        for name in os.listdir(folder):
+            path = os.path.join(folder, name)
+            if os.path.isfile(path) and os.path.splitext(name)[1].lower() in IMAGE_EXTS:
+                return True
+    return False
+
+
 def costume_face_details(character, costume):
     costume_info = load_costume_info(character, costume) or {}
     parts = []
@@ -344,7 +366,10 @@ if server:
         if not character:
             return web.json_response([])
         
-        costumes = list_costumes(character)
+        costumes = [
+            costume for costume in list_costumes(character)
+            if costume_has_source_sprites(character, costume)
+        ]
         return web.json_response(costumes)
 
     @server.PromptServer.instance.routes.get("/vnccs/get_character_sheet_preview")
@@ -454,6 +479,10 @@ class EmotionGeneratorV2:
             selected_costumes = json.loads(costumes_data)
         except:
             selected_costumes = []
+        selected_costumes = [
+            costume for costume in selected_costumes
+            if costume_has_source_sprites(character, costume)
+        ]
 
         try:
             selected_emotions = json.loads(emotions_data)
