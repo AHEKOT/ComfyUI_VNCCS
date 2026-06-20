@@ -21,7 +21,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from aiohttp import web
-from huggingface_hub import hf_hub_download
 from PIL import Image, ImageOps
 
 try:
@@ -53,13 +52,7 @@ from .vnccs_control_center import (
 )
 from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder
 from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, VNCCS_RMBG2
-from .model_path_utils import basename_agnostic
-from .anima_lllite import (
-    ASPP_DEFAULT_DILATIONS,
-    ControlNetLLLiteDiT,
-    load_lllite_weights,
-    read_lllite_metadata,
-)
+from .model_path_utils import basename_agnostic, get_full_path_agnostic
 from ..utils import (
     base_output_dir,
     character_dir,
@@ -71,15 +64,9 @@ from ..utils import (
 
 _LIVE_GENERATOR_CONTEXTS = {}
 SEEDVR_ATTENTION_MODES = ("sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3")
-ANIMA_LLLITE_REPO_ID = "kohya-ss/Anima-LLLite"
-ANIMA_LLLITE_ANY_TEST_LIKE = "anima-lllite-any-test-like-v2.safetensors"
-ANIMA_LLLITE_INPAINTING = "anima-lllite-inpainting-v2.safetensors"
-ANIMA_LLLITE_CHOICES = {
-    ANIMA_LLLITE_ANY_TEST_LIKE,
-    ANIMA_LLLITE_INPAINTING,
-}
-ANIMA_LLLITE_RELATIVE_MIN = 0.7
-ANIMA_LLLITE_RELATIVE_MAX = 1.0
+ANIMA_EDIT_LORA_NAME = "anima\\AnimaEditV1.safetensors"
+COSMOS_REFERENCE_WRAPPER_KEY = "vnccs_cosmos_reference"
+COSMOS_REFERENCE_COND_KEY = "ref_latents"
 
 
 def _can_import_attr(module_name, attr_name):
@@ -88,16 +75,6 @@ def _can_import_attr(module_name, attr_name):
         return getattr(module, attr_name, None) is not None
     except (ImportError, AttributeError, OSError, RuntimeError, ValueError):
         return False
-
-
-def _anima_lllite_effective_strength(relative_strength):
-    try:
-        relative = float(relative_strength)
-    except Exception:
-        relative = 1.0
-    relative = max(0.0, min(1.0, relative))
-    span = ANIMA_LLLITE_RELATIVE_MAX - ANIMA_LLLITE_RELATIVE_MIN
-    return ANIMA_LLLITE_RELATIVE_MIN + relative * span
 
 
 def _available_seedvr_attention_modes():
@@ -299,7 +276,7 @@ def _call_comfy_node(class_name, **kwargs):
     method_name = getattr(cls, "FUNCTION", None)
     method = getattr(instance, method_name, None) if method_name else None
     if method is None:
-        for candidate in ("process", "process_image", "load_model", "loadmodel", "load", "sample", "decode"):
+        for candidate in ("execute", "process", "process_image", "load_model", "loadmodel", "load", "sample", "decode"):
             method = getattr(instance, candidate, None)
             if method is not None:
                 break
@@ -663,7 +640,6 @@ DEFAULT_WIDGET_DATA = {
     },
     "emotion_generation": {
         "face_denoise": 0.55,
-        "anima_lllite_strength": 1.0,
         "bbox_threshold": 0.1,
         "bbox_dilation": 10,
         "sam_dilation": 25,
@@ -931,71 +907,6 @@ class VNCCS_CharacterGenerator:
                 return True
         return False
 
-    def _anima_lllite_path(self, lllite_name):
-        lllite_name = os.path.basename(str(lllite_name or ANIMA_LLLITE_ANY_TEST_LIKE))
-        if lllite_name not in ANIMA_LLLITE_CHOICES:
-            lllite_name = ANIMA_LLLITE_ANY_TEST_LIKE
-        target_dir = os.path.join(folder_paths.models_dir, "controlnet", "Anima") if folder_paths else ""
-        target_path = os.path.join(target_dir, lllite_name)
-        if target_path and os.path.isfile(target_path):
-            return target_path
-        os.makedirs(target_dir, exist_ok=True)
-        downloaded = hf_hub_download(
-            repo_id=ANIMA_LLLITE_REPO_ID,
-            filename=lllite_name,
-            local_dir=target_dir,
-            local_dir_use_symlinks=False,
-        )
-        if downloaded != target_path and os.path.isfile(downloaded):
-            shutil.copy2(downloaded, target_path)
-        return target_path
-
-    def _anima_lllite_inner_dit(self, model):
-        inner = getattr(model, "model", None)
-        if inner is None:
-            raise RuntimeError("Anima LLLite input MODEL has no .model attribute")
-        dit = getattr(inner, "diffusion_model", None)
-        if dit is None:
-            raise RuntimeError("Anima LLLite input MODEL.model has no .diffusion_model")
-        return dit
-
-    def _anima_lllite_target_hw(self, latent_h, latent_w, patch_spatial=2):
-        padded_h = ((int(latent_h) + patch_spatial - 1) // patch_spatial) * patch_spatial
-        padded_w = ((int(latent_w) + patch_spatial - 1) // patch_spatial) * patch_spatial
-        return padded_h * 8, padded_w * 8
-
-    def _prepare_anima_lllite_image(self, image, latent_h, latent_w, device, dtype, patch_spatial=2):
-        img = image
-        if isinstance(img, list):
-            img = img[0]
-        if torch.is_tensor(img) and img.ndim == 3:
-            img = img.unsqueeze(0)
-        if not torch.is_tensor(img) or img.ndim != 4 or img.shape[-1] != 3:
-            raise ValueError(f"Unexpected Anima LLLite image shape: {tuple(img.shape) if torch.is_tensor(img) else type(img)}")
-        img = img[:1].permute(0, 3, 1, 2).contiguous()
-        target_h, target_w = self._anima_lllite_target_hw(latent_h, latent_w, patch_spatial)
-        if img.shape[-2:] != (target_h, target_w):
-            img = F.interpolate(img, size=(target_h, target_w), mode="bicubic", align_corners=False).clamp(0.0, 1.0)
-        return (img * 2.0 - 1.0).to(device=device, dtype=dtype)
-
-    def _prepare_anima_lllite_mask(self, mask, latent_h, latent_w, device, dtype, patch_spatial=2):
-        if mask is None:
-            return None
-        m = mask
-        if isinstance(m, list):
-            m = m[0]
-        if torch.is_tensor(m) and m.ndim == 2:
-            m = m.unsqueeze(0)
-        if torch.is_tensor(m) and m.ndim == 3:
-            m = m.unsqueeze(1)
-        if not torch.is_tensor(m) or m.ndim != 4 or m.shape[1] != 1:
-            raise ValueError(f"Unexpected Anima LLLite mask shape: {tuple(m.shape) if torch.is_tensor(m) else type(m)}")
-        m = m[:1]
-        target_h, target_w = self._anima_lllite_target_hw(latent_h, latent_w, patch_spatial)
-        if m.shape[-2:] != (target_h, target_w):
-            m = F.interpolate(m.float(), size=(target_h, target_w), mode="nearest")
-        return (m >= 0.5).to(device=device, dtype=dtype)
-
     def _face_detailer_control_crop_with_region(
         self,
         image,
@@ -1027,7 +938,7 @@ class VNCCS_CharacterGenerator:
                 int(drop_size),
             )
         except Exception as exc:
-            print(f"[VNCCS Emotions Generator] Failed to crop Anima ControlNet like FaceDetailer: {exc}")
+            print(f"[VNCCS Emotions Generator] Failed to crop FaceDetailer region: {exc}")
             return crop_image, crop_mask, crop_region, detail_mask, detail_bbox
         finally:
             try:
@@ -1075,7 +986,7 @@ class VNCCS_CharacterGenerator:
                 elif mask.ndim == 4:
                     crop_mask = mask[:1, :, y1:y2, x1:x2].contiguous()
         except Exception as exc:
-            print(f"[VNCCS Emotions Generator] Failed to apply FaceDetailer crop to Anima ControlNet: {exc}")
+            print(f"[VNCCS Emotions Generator] Failed to apply FaceDetailer crop: {exc}")
             return image, mask, None, None, None
         return crop_image, crop_mask, crop_region, detail_mask, detail_bbox
 
@@ -1204,76 +1115,6 @@ class VNCCS_CharacterGenerator:
             result[:, y1:y2, x1:x2, :patch.shape[-1]] = patch
         return result
 
-    def _patch_anima_lllite_model(self, model, control_image, control_mask, lllite_name, strength=1.0):
-        weights_path = self._anima_lllite_path(lllite_name)
-        meta = read_lllite_metadata(weights_path)
-        cond_in_channels = int(meta.get("lllite.cond_in_channels", 3))
-        inpaint_masked_input = str(meta.get("lllite.inpaint_masked_input", "false")).lower() == "true"
-        if cond_in_channels == 4 and control_mask is None:
-            raise RuntimeError(f"Anima LLLite '{lllite_name}' requires source alpha/mask for inpainting mode")
-        strength = max(0.0, min(1.0, float(strength)))
-
-        dit = self._anima_lllite_inner_dit(model)
-        lllite = ControlNetLLLiteDiT(
-            dit,
-            cond_emb_dim=int(meta.get("lllite.cond_emb_dim", 32)),
-            mlp_dim=int(meta.get("lllite.mlp_dim", 64)),
-            target_layers=meta.get("lllite.target_atomics", meta.get("lllite.target_layers", "self_attn_q")),
-            multiplier=strength,
-            cond_dim=int(meta.get("lllite.cond_dim", 64)),
-            cond_resblocks=int(meta.get("lllite.cond_resblocks", 1)),
-            use_aspp=str(meta.get("lllite.use_aspp", "false")).lower() == "true",
-            aspp_dilations=tuple(int(d) for d in str(meta.get("lllite.aspp_dilations", "")).split(",") if d.strip()) or ASPP_DEFAULT_DILATIONS,
-            cond_in_channels=cond_in_channels,
-            inpaint_masked_input=inpaint_masked_input,
-        )
-        load_lllite_weights(lllite, weights_path, strict=False)
-        lllite.eval().requires_grad_(False)
-
-        patched_model = model.clone()
-        old_wrapper = getattr(model, "model_options", {}).get("model_function_wrapper")
-        patch_spatial = int(getattr(dit, "patch_spatial", 2))
-        cache = {"key": None, "cond": None, "tag": None}
-
-        def call_next(apply_model, input_x, timestep, c):
-            if old_wrapper is not None:
-                return old_wrapper(apply_model, {"input": input_x, "timestep": timestep, "c": c})
-            return apply_model(input_x, timestep, **c)
-
-        def wrapper(apply_model, args):
-            input_x = args["input"]
-            timestep = args["timestep"]
-            c = args["c"]
-            device = input_x.device
-            dtype = input_x.dtype
-            tag = (device, dtype)
-            if cache["tag"] != tag:
-                lllite.to(device=device, dtype=dtype)
-                cache["tag"] = tag
-                cache["cond"] = None
-            latent_h, latent_w = int(input_x.shape[-2]), int(input_x.shape[-1])
-            key = (latent_h, latent_w, device, dtype)
-            if cache["key"] != key or cache["cond"] is None:
-                rgb = self._prepare_anima_lllite_image(control_image, latent_h, latent_w, device, dtype, patch_spatial)
-                if cond_in_channels == 4:
-                    mask = self._prepare_anima_lllite_mask(control_mask, latent_h, latent_w, device, dtype, patch_spatial)
-                    if inpaint_masked_input:
-                        rgb = rgb * (mask < 0.5).to(rgb.dtype)
-                    cache["cond"] = torch.cat([rgb, mask.to(rgb.dtype) * 2.0 - 1.0], dim=1)
-                else:
-                    cache["cond"] = rgb
-                cache["key"] = key
-            lllite.set_cond_image(cache["cond"])
-            lllite.apply_to()
-            try:
-                return call_next(apply_model, input_x, timestep, c)
-            finally:
-                lllite.restore()
-                lllite.clear_cond_image()
-
-        patched_model.set_model_unet_function_wrapper(wrapper)
-        return patched_model
-
     def _conditioning_width(self, conditioning):
         try:
             if not conditioning:
@@ -1393,6 +1234,114 @@ class VNCCS_CharacterGenerator:
 
     def _apply_pose_lora_to_model(self, model, clip, pipe, lora_info):
         return self._apply_lora_to_model(model, clip, pipe, lora_info, "Pose Generation")
+
+    def _apply_anima_edit_lora_to_model(self, model, clip):
+        if folder_paths is None:
+            raise RuntimeError("AnimaEditV1 LoRA requires ComfyUI folder_paths")
+        rel_path = ANIMA_EDIT_LORA_NAME
+        full_path = get_full_path_agnostic(folder_paths, "loras", rel_path, require_exists=True)
+        if not full_path:
+            raise RuntimeError(f"AnimaEditV1 LoRA not found: {rel_path}")
+        print(f"[VNCCS Emotions Generator] Applying Anima edit LoRA: {rel_path}")
+        try:
+            return _call_comfy_node(
+                "LoraLoaderModelOnly",
+                model=model,
+                lora_name=rel_path,
+                strength_model=1.0,
+            )[0]
+        except Exception as exc:
+            print(f"[VNCCS Emotions Generator] LoraLoaderModelOnly failed for '{rel_path}', using direct loader: {exc}")
+        import comfy.sd
+        import comfy.utils
+        lora = comfy.utils.load_torch_file(full_path, safe_load=True)
+        model_lora, _ = comfy.sd.load_lora_for_models(model, None, lora, 1.0, 0.0)
+        return model_lora
+
+    def _apply_cosmos_reference_latent(self, model, ref_latent):
+        try:
+            import comfy.conds
+            import comfy.patcher_extension
+            from comfy.model_base import Anima
+        except Exception as exc:
+            raise RuntimeError(f"Cosmos Reference Latent requires newer ComfyUI APIs: {exc}") from exc
+
+        patched = model.clone()
+        model_type = type(patched.model)
+        if not issubclass(model_type, Anima):
+            return patched
+
+        extra_conds = patched.get_model_object("extra_conds")
+        process_latent_in = patched.get_model_object("process_latent_in")
+        ref_latents = {"ref_latent_1": ref_latent}
+
+        def extra_conds_reference(**kwargs):
+            out = extra_conds(**kwargs)
+            latents = [process_latent_in(latent["samples"]) for latent in ref_latents.values()]
+            out[COSMOS_REFERENCE_COND_KEY] = comfy.conds.CONDList(latents)
+            return out
+
+        def diffusion_reference_wrapper(executor, *args, **kwargs):
+            x = args[0]
+            x_temporal_dim = x.shape[2]
+            refs = kwargs.get(COSMOS_REFERENCE_COND_KEY)
+            newargs = list(args)
+            if refs is not None:
+                for ref in refs:
+                    if ref.ndim == 4:
+                        ref = ref.unsqueeze(2)
+                    x = torch.cat([x, ref.to(dtype=x.dtype, device=x.device)], dim=2)
+            newargs[0] = x
+            return executor(*newargs, **kwargs)[:, :, :x_temporal_dim]
+
+        patched.add_object_patch("extra_conds", extra_conds_reference)
+        patched.add_wrapper_with_key(
+            comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL,
+            COSMOS_REFERENCE_WRAPPER_KEY,
+            diffusion_reference_wrapper,
+        )
+        return patched
+
+    def _load_easy_sam3_model(self):
+        cached = getattr(self, "_easy_sam3_model", None)
+        if cached is not None:
+            return cached
+        for class_name in ("easy sam3ModelLoader", "LoadSam3Model"):
+            try:
+                model = _call_comfy_node(
+                    class_name,
+                    model="sam3.pt",
+                    segmentor="image",
+                    device="cuda",
+                    precision="bf16",
+                )[0]
+                self._easy_sam3_model = model
+                return model
+            except RuntimeError:
+                continue
+        raise RuntimeError("Easy-SAM3 nodes are not available. Install yolain/ComfyUI-Easy-Sam3 and restart ComfyUI.")
+
+    def _easy_sam3_face_mask(self, image):
+        sam3_model = self._load_easy_sam3_model()
+        last_error = None
+        for class_name in ("easy sam3ImageSegmentation", "Sam3ImageSegmentation"):
+            try:
+                return _call_comfy_node(
+                    class_name,
+                    sam3_model=sam3_model,
+                    images=image,
+                    prompt="face",
+                    threshold=0.40,
+                    keep_model_loaded=True,
+                    add_background="none",
+                    detection_limit=-1,
+                )[0]
+            except RuntimeError as exc:
+                last_error = exc
+                continue
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Easy-SAM3 image segmentation node is not available.")
 
     def _list_to_batch(self, values):
         normalized = normalize_image_batch(values, stage="generator list_to_batch")
@@ -2784,21 +2733,13 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         sam_dilation=25,
         sam_threshold=0.93,
         sam_bbox_expansion=0,
-        anima_lllite_name="",
-        anima_lllite_strength=1.0,
     ):
         pipe_values = self._extract_pipe(pipe)
         use_inpaint_model = self._is_anima_pipe(pipe_values)
         model_for_detailer = pipe_values["model"]
-        lllite_name = str(anima_lllite_name or "")
-
-        bbox_detector = _call_comfy_node(
-            "UltralyticsDetectorProvider",
-            model_name="bbox/face_yolov8m.pt",
-        )[0]
 
         detailer_positive_text = self._detailer_positive_prompt(emotion_prompt, face_details)
-        print(f"[VNCCS Emotions Generator] Emotion crop positive: {detailer_positive_text[:500]}")
+        print(f"[VNCCS Emotions Generator] Emotion positive: {detailer_positive_text[:500]}")
         positive = _call_comfy_node(
             "CLIPTextEncode",
             clip=pipe_values["clip"],
@@ -2810,14 +2751,13 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             text=str(negative_prompt or ""),
         )[0]
 
+        bbox_detector = _call_comfy_node(
+            "UltralyticsDetectorProvider",
+            model_name="bbox/face_yolov8m.pt",
+        )[0]
+
         if use_inpaint_model:
-            anima_lllite_effective_strength = _anima_lllite_effective_strength(anima_lllite_strength)
-            sam_model = _call_comfy_node(
-                "SAMLoader",
-                model_name="sam_vit_b_01ec64.pth",
-                device_mode="AUTO",
-            )[0]
-            control_image, control_mask, crop_region, detail_mask, detail_bbox = self._face_detailer_control_crop_with_region(
+            sample_image, _sample_mask, crop_region, _detail_mask, _detail_bbox = self._face_detailer_control_crop_with_region(
                 image,
                 mask,
                 bbox_detector,
@@ -2825,40 +2765,12 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 bbox_dilation,
                 bbox_crop_factor,
                 drop_size=10,
-                sam_model=sam_model,
-                sam_dilation=sam_dilation,
-                sam_threshold=sam_threshold,
-                sam_bbox_expansion=sam_bbox_expansion,
+                sam_model=None,
             )
             if crop_region is None:
                 return image, image
-            upscale_size = self._face_detailer_upscale_size(
-                control_image,
-                detail_bbox,
-                guide_size=1536,
-                max_size=1536,
-                force_inpaint=True,
-            )
-            sample_image = control_image
-            sample_mask = control_mask
-            sample_detail_mask = detail_mask
-            if upscale_size is not None:
-                sample_w, sample_h = upscale_size
-                sample_image = self._tensor_resize_like_impact(control_image, sample_w, sample_h)
-                sample_mask = self._mask_resize(control_mask, sample_w, sample_h, mode="nearest")
-                sample_detail_mask = self._mask_resize(detail_mask, sample_w, sample_h, mode="bilinear")
-                print(
-                    "[VNCCS Emotions Generator] Emotion crop upscale: "
-                    f"{tuple(control_image.shape[1:3])} -> {(sample_h, sample_w)}"
-                )
-            model_for_crop = self._patch_anima_lllite_model(
-                pipe_values["model"],
-                sample_image,
-                sample_mask,
-                lllite_name if lllite_name in ANIMA_LLLITE_CHOICES else ANIMA_LLLITE_ANY_TEST_LIKE,
-                strength=anima_lllite_effective_strength,
-            )
-            model_for_crop = self._apply_differential_diffusion(model_for_crop)
+            paste_mask = self._easy_sam3_face_mask(sample_image)
+            model_for_sampler = self._apply_anima_edit_lora_to_model(pipe_values["model"], pipe_values["clip"])
             latent = _call_comfy_node(
                 "VAEEncodeTiled",
                 pixels=sample_image,
@@ -2868,12 +2780,10 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 temporal_size=64,
                 temporal_overlap=8,
             )[0]
-            sampler_mask = self._blur_detail_mask(sample_detail_mask, 20)
-            if sampler_mask is not None:
-                latent["noise_mask"] = sampler_mask
+            model_for_sampler = self._apply_cosmos_reference_latent(model_for_sampler, latent)
             sampled = _call_comfy_node(
                 "KSampler",
-                model=model_for_crop,
+                model=model_for_sampler,
                 positive=positive,
                 negative=negative,
                 latent_image=latent,
@@ -2882,9 +2792,9 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 cfg=pipe_values["cfg"],
                 sampler_name=pipe_values["sampler"],
                 scheduler=pipe_values["scheduler"],
-                denoise=anima_lllite_effective_strength,
+                denoise=float(face_denoise),
             )[0]
-            generated_crop = _call_comfy_node(
+            generated = _call_comfy_node(
                 "VAEDecodeTiled",
                 samples=sampled,
                 vae=pipe_values["vae"],
@@ -2893,17 +2803,9 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 temporal_size=64,
                 temporal_overlap=8,
             )[0]
-            target_h = int(control_image.shape[1])
-            target_w = int(control_image.shape[2])
-            generated_detail = self._tensor_resize_like_impact(generated_crop, target_w, target_h)
-            full_image = self._paste_crop_direct(image, generated_detail, crop_region, paste_mask=detail_mask, feather=50)
-            return self._list_to_batch(full_image), self._list_to_batch(generated_detail)
+            full_image = self._paste_crop_direct(image, generated, crop_region, paste_mask=paste_mask, feather=50)
+            return self._list_to_batch(full_image), self._list_to_batch(generated)
 
-        sam_model = _call_comfy_node(
-            "SAMLoader",
-            model_name="sam_vit_b_01ec64.pth",
-            device_mode="AUTO",
-        )[0]
         segm_detector = _call_comfy_node(
             "UltralyticsDetectorProvider",
             model_name="bbox/face_yolov8m.pt",
@@ -2918,7 +2820,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             positive=positive,
             negative=negative,
             bbox_detector=bbox_detector,
-            sam_model_opt=sam_model,
+            sam_model_opt=None,
             segm_detector_opt=segm_detector,
             guide_size=1536,
             guide_size_for=True,
@@ -2928,7 +2830,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             cfg=pipe_values["cfg"],
             sampler_name=pipe_values["sampler"],
             scheduler=pipe_values["scheduler"],
-            denoise=anima_lllite_effective_strength if use_inpaint_model else float(face_denoise),
+            denoise=float(face_denoise),
             feather=50,
             noise_mask=True,
             force_inpaint=True,
@@ -2975,15 +2877,11 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             return max(min_value, min(max_value, value))
 
         face_denoise = _clamp_float("face_denoise", 0.0, 1.0)
-        anima_lllite_strength = _clamp_float("anima_lllite_strength", 0.0, 1.0)
         bbox_threshold = _clamp_float("bbox_threshold", 0.0, 1.0)
         bbox_dilation = _clamp_int("bbox_dilation", 0, 128)
         sam_dilation = _clamp_int("sam_dilation", 0, 128)
         sam_threshold = _clamp_float("sam_threshold", 0.0, 1.0)
         sam_bbox_expansion = _clamp_int("sam_bbox_expansion", 0, 128)
-        anima_lllite_name = str(emotion_settings.get("anima_lllite_name") or ANIMA_LLLITE_ANY_TEST_LIKE)
-        if anima_lllite_name not in ANIMA_LLLITE_CHOICES:
-            anima_lllite_name = ANIMA_LLLITE_ANY_TEST_LIKE
         pipe = self._unwrap_scalar(pipe)
         unique_id = self._unwrap_scalar(unique_id)
         cache_dir = _character_cache_dir_from_sheets_path("", widget_payload.get("character_name", ""), unique_id)
@@ -3080,8 +2978,6 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                         sam_dilation=sam_dilation,
                         sam_threshold=sam_threshold,
                         sam_bbox_expansion=sam_bbox_expansion,
-                        anima_lllite_name=anima_lllite_name,
-                        anima_lllite_strength=anima_lllite_strength,
                     )
                     results.append(result)
                     # FaceDetailer crops are intentionally variable-size. Save them
