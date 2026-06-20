@@ -650,6 +650,18 @@ DEFAULT_WIDGET_DATA = {
 }
 
 CHROMA_KEY_PRESETS = {
+    "ultra_light": {
+        "tolerance": 0.0,
+        "softness": 0.10,
+        "despill_strength": 0.35,
+        "edge_width": 2,
+        "matte_cleanup": 0.10,
+        "foreground_recover": 0.20,
+        "edge_decontaminate": 0.45,
+        "edge_choke": 0.08,
+        "matte_method": "chroma_soft",
+        "output_mode": "straight_rgba",
+    },
     "light": {
         "tolerance": 0.14,
         "softness": 0.10,

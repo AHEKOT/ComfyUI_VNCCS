@@ -1724,7 +1724,7 @@ class CharacterGeneratorWidget {
             ];
             this.settingsEl.appendChild(this.block("Face Detailer", faceDetailerFields));
             this.settingsEl.appendChild(this.block("BG Remove", [
-                this.field("bg_remove", "preset", "chroma preset", "select", ["disabled", "light", "balanced", "strong", "aggressive"]),
+                this.field("bg_remove", "preset", "chroma preset", "select", ["disabled", "ultra_light", "light", "balanced", "strong", "aggressive"]),
             ]));
             return;
         }
@@ -1759,7 +1759,7 @@ class CharacterGeneratorWidget {
         this.settingsEl.appendChild(this.block("Upscaler", upscalerFields));
         this.settingsEl.appendChild(this.block("BG Remove", [
             // TODO: Decide what to do with internal RMBG later.
-            this.field("bg_remove", "preset", "chroma preset", "select", ["disabled", "light", "balanced", "strong", "aggressive"]),
+            this.field("bg_remove", "preset", "chroma preset", "select", ["disabled", "ultra_light", "light", "balanced", "strong", "aggressive"]),
         ]));
     }
 
