@@ -13,6 +13,7 @@ const DEFAULT_DATA = {
     },
     emotion_generation: {
         face_denoise: 0.55,
+        use_sam: true,
         bbox_threshold: 0.1,
         bbox_dilation: 10,
         sam_dilation: 25,
@@ -58,6 +59,7 @@ const DEFAULT_DATA = {
         // TODO: Decide what to do with internal RMBG later.
         use_internal_rmbg: false,
         preset: "balanced",
+        use_sam3_details_recovery: true,
     },
     ui: {
         selected_preview: "pose_generation",
@@ -96,6 +98,7 @@ const CLOTHES_STAGES = [
 
 const DEFAULT_EMOTION_STAGES = [
     ["emotion_0001", "Emotion"],
+    ["emotion_0001_bg_remove", "Emotion BG"],
 ];
 
 const WORKFLOW_UPSCALER_DIT_MODELS = [
@@ -288,6 +291,9 @@ const CSS = `
     gap: 7px;
     color: #cfcfda;
     font-size: 11px;
+    cursor: pointer;
+    user-select: none;
+    padding: 2px 0;
 }
 .vnccs-pipe-mode-tabs {
     display: grid;
@@ -665,7 +671,16 @@ function deepMerge(base, patch) {
 function readData(node) {
     const widget = node.widgets?.find(w => w.name === "widget_data");
     try {
-        return deepMerge(DEFAULT_DATA, JSON.parse(widget?.value || "{}"));
+        const parsed = JSON.parse(widget?.value || "{}");
+        const data = deepMerge(DEFAULT_DATA, parsed);
+        if (
+            parsed?.emotion_generation
+            && parsed.emotion_generation.use_sam === undefined
+            && parsed.emotion_generation.use_sam_model !== undefined
+        ) {
+            data.emotion_generation.use_sam = Boolean(parsed.emotion_generation.use_sam_model);
+        }
+        return data;
     } catch {
         return JSON.parse(JSON.stringify(DEFAULT_DATA));
     }
@@ -817,11 +832,11 @@ class CharacterGeneratorWidget {
                         this.data.ui.user_selected_preview = false;
                     }
                 }
+                const previousStageState = this.stageState[stage] || {};
+                const hasImages = Object.prototype.hasOwnProperty.call(detail, "images");
                 this.stageState[stage] = {
                     status,
-                    images: Object.prototype.hasOwnProperty.call(detail, "images")
-                        ? detail.images
-                        : (status === "running" ? null : this.stageState[stage]?.images || null),
+                    images: hasImages ? detail.images : (previousStageState.images || null),
                     message: detail.message || "",
                     current: detail.current,
                     total: detail.total,
@@ -1138,9 +1153,15 @@ class CharacterGeneratorWidget {
         if (this.isClone) return this.isCloneNsfwEnabled() ? CLONE_STAGES : CLONE_SFW_STAGES;
         if (this.isEmotions) {
             const pairs = Array.isArray(this.data.emotion_pairs) ? this.data.emotion_pairs : [];
-            return pairs.length
-                ? pairs.map((pair, index) => [`emotion_${String(index + 1).padStart(4, "0")}`, `${pair.costume || "Costume"} / ${pair.emotion || "Emotion"}`])
-                : DEFAULT_EMOTION_STAGES;
+            if (!pairs.length) return DEFAULT_EMOTION_STAGES;
+            return pairs.flatMap((pair, index) => {
+                const key = `emotion_${String(index + 1).padStart(4, "0")}`;
+                const label = `${pair.costume || "Costume"} / ${pair.emotion || "Emotion"}`;
+                return [
+                    [key, label],
+                    [`${key}_bg_remove`, `${label} BG`],
+                ];
+            });
         }
         return this.isClothes ? CLOTHES_STAGES : STAGES;
     }
@@ -1451,7 +1472,9 @@ class CharacterGeneratorWidget {
             resolution: "Output resolution target for SeedVR upscaling.",
             attention_mode: "Attention backend for SeedVR. Auto-detected from installed ComfyUI packages until changed manually.",
             use_internal_rmbg: "Uses the built-in background remover instead of relying only on chroma key.",
-            preset: "Strength preset for chroma/background removal."
+            preset: "Strength preset for chroma/background removal.",
+            use_sam3_details_recovery: "Uses Easy SAM3 to restore character details after background removal.",
+            use_sam: "Passes SAM and the optional segmentation detector into FaceDetailer."
         }[key];
         setHelpText(wrap, help);
         const caption = document.createElement("div");
@@ -1475,6 +1498,16 @@ class CharacterGeneratorWidget {
             this.protectNativeControl(input);
             input.checked = Boolean(this.data[section][key]);
             input.onchange = () => this.set(section, key, input.checked);
+            for (const eventName of ["pointerdown", "mousedown", "mouseup", "dblclick", "touchstart", "touchend", "keydown"]) {
+                wrap.addEventListener(eventName, event => event.stopPropagation(), true);
+            }
+            wrap.onclick = (event) => {
+                event.stopPropagation();
+                if (event.target === input) return;
+                event.preventDefault();
+                input.checked = !input.checked;
+                this.set(section, key, input.checked);
+            };
             wrap.append(input, caption);
             return wrap;
         } else if (type === "textarea") {
@@ -1514,9 +1547,12 @@ class CharacterGeneratorWidget {
 
     faceDenoiseSlider() {
         const value = Math.max(0, Math.min(1, Number(this.data.emotion_generation?.face_denoise ?? 0.55)));
-        const denoiseZone = (next) => next < 0.5
+        const isAnima = this.connectedEmotionStudioIsAnima();
+        const weakLimit = isAnima ? 0.6 : 0.5;
+        const optimalLimit = isAnima ? 0.75 : 0.65;
+        const denoiseZone = (next) => next < weakLimit
             ? { status: "weak", color: "#64a8ff", border: "rgba(100,168,255,0.5)", bg: "rgba(100,168,255,0.1)", glow: "rgba(100,168,255,0.3)" }
-            : (next <= 0.65
+            : (next <= optimalLimit
                 ? { status: "optimal", color: "#00d68f", border: "rgba(0,214,143,0.5)", bg: "rgba(0,214,143,0.1)", glow: "rgba(0,214,143,0.28)" }
                 : { status: "excessive", color: "#ff5f78", border: "rgba(255,95,120,0.58)", bg: "rgba(255,95,120,0.12)", glow: "rgba(255,95,120,0.32)" });
 
@@ -1681,6 +1717,7 @@ class CharacterGeneratorWidget {
                 this.faceDenoiseSlider(),
             ]));
             const faceDetailerFields = [
+                this.field("emotion_generation", "use_sam", "Use SAM", "checkbox"),
                 this.faceDetailerNumberField("bbox_threshold", "bbox_threshold", { min: 0, max: 1, step: 0.01 }),
                 this.faceDetailerNumberField("bbox_dilation", "bbox_dilation", { min: 0, max: 128, step: 1 }),
                 this.faceDetailerNumberField("sam_dilation", "sam_dilation", { min: 0, max: 128, step: 1 }),
@@ -1688,6 +1725,10 @@ class CharacterGeneratorWidget {
                 this.faceDetailerNumberField("sam_bbox_expansion", "sam_bbox_expansion", { min: 0, max: 128, step: 1 }),
             ];
             this.settingsEl.appendChild(this.block("Face Detailer", faceDetailerFields));
+            this.settingsEl.appendChild(this.block("BG Remove", [
+                this.field("bg_remove", "preset", "chroma preset", "select", ["disabled", "ultra_light", "light", "balanced", "strong", "aggressive"]),
+                this.field("bg_remove", "use_sam3_details_recovery", "Use SAM3 Details Recovery", "checkbox"),
+            ]));
             return;
         }
         if (this.isClone) {
@@ -1721,7 +1762,8 @@ class CharacterGeneratorWidget {
         this.settingsEl.appendChild(this.block("Upscaler", upscalerFields));
         this.settingsEl.appendChild(this.block("BG Remove", [
             // TODO: Decide what to do with internal RMBG later.
-            this.field("bg_remove", "preset", "chroma preset", "select", ["disabled", "light", "balanced", "strong", "aggressive"]),
+            this.field("bg_remove", "preset", "chroma preset", "select", ["disabled", "ultra_light", "light", "balanced", "strong", "aggressive"]),
+            this.field("bg_remove", "use_sam3_details_recovery", "Use SAM3 Details Recovery", "checkbox"),
         ]));
     }
 

@@ -66,6 +66,78 @@ def normalize_filesystem_path(value: str) -> str:
     return str(value or "").strip().replace("\\", os.sep).replace("/", os.sep)
 
 
+def _model_path_variants(name: str) -> List[str]:
+    raw = str(name or "").strip()
+    if not raw:
+        return []
+
+    variants = []
+    for candidate in (raw, raw.replace("\\", "/"), raw.replace("/", "\\")):
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+    return variants
+
+
+def _safe_get_model_folder_paths(folder_paths, category: str) -> List[str]:
+    try:
+        return folder_paths.get_folder_paths(category) or []
+    except Exception:
+        return []
+
+
+def _is_under_any_model_folder(path: str, folders: List[str]) -> bool:
+    try:
+        path_abs = os.path.abspath(normalize_filesystem_path(path))
+        for folder in folders:
+            folder_abs = os.path.abspath(normalize_filesystem_path(folder))
+            if os.path.commonpath([folder_abs, path_abs]) == folder_abs:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def get_full_path_agnostic(folder_paths, category: str, name: str, require_exists: bool = False):
+    """Find a ComfyUI model path regardless of slash style or host OS."""
+    folders = _safe_get_model_folder_paths(folder_paths, category)
+    first_match = None
+
+    for candidate in _model_path_variants(name):
+        try:
+            found = folder_paths.get_full_path(category, candidate)
+        except Exception:
+            found = None
+        if found:
+            if os.path.exists(found):
+                return found
+            if first_match is None:
+                first_match = found
+
+        for folder in folders:
+            joined = os.path.join(folder, normalize_filesystem_path(candidate))
+            if os.path.exists(joined):
+                return joined
+            if first_match is None:
+                first_match = joined
+
+        if is_absolute_path_any_os(candidate) and _is_under_any_model_folder(candidate, folders):
+            normalized_candidate = normalize_filesystem_path(candidate)
+            if os.path.exists(normalized_candidate):
+                return normalized_candidate
+            if first_match is None:
+                first_match = normalized_candidate
+
+    return None if require_exists else first_match
+
+
+def basename_agnostic(path: str) -> str:
+    """Return a basename for either POSIX or Windows-style paths."""
+    normalized = str(path or "").rstrip("\\/")
+    if not normalized:
+        return ""
+    return normalized.replace("\\", "/").rsplit("/", 1)[-1]
+
+
 def _portable_parts(value: str) -> List[str]:
     normalized = str(value or "").strip().replace("\\", "/")
     return [part for part in normalized.split("/") if part]

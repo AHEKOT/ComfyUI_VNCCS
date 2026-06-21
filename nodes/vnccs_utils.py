@@ -12,6 +12,7 @@ import json
 import random
 import base64
 import io
+import inspect
 import torch
 import numpy as np
 from typing import Tuple
@@ -21,9 +22,9 @@ import cv2
 import torch.nn.functional as F
 
 try:
-    from .model_path_utils import get_full_path_agnostic
+    from ..utils import get_full_path_agnostic
 except Exception:
-    from model_path_utils import get_full_path_agnostic
+    from utils import get_full_path_agnostic
 
 
 class _CompatReturnTypes(tuple):
@@ -459,6 +460,140 @@ def _remove_small_islands(mask: torch.Tensor, min_neighbors: int) -> torch.Tenso
     neighbors = F.conv2d(src, torch.ones(1, 1, 3, 3, device=mask.device, dtype=mask.dtype), padding=1)
     keep = (neighbors.squeeze(0).squeeze(0) >= float(min_neighbors)).float()
     return torch.where(keep > 0.0, mask, torch.zeros_like(mask))
+
+
+def _as_bool(value, default=False):
+    if value is None:
+        return bool(default)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _get_comfy_node_class(class_names):
+    try:
+        import nodes as comfy_nodes
+    except Exception:
+        comfy_nodes = None
+    mappings = getattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {}) if comfy_nodes else {}
+    for class_name in class_names:
+        cls = mappings.get(class_name)
+        if cls is not None:
+            return cls
+    return None
+
+
+def _is_comfy_node_output(value):
+    return hasattr(value, "result") and hasattr(value, "args") and type(value).__name__ == "NodeOutput"
+
+
+def _unwrap_node_result(value):
+    if _is_comfy_node_output(value):
+        block_execution = getattr(value, "block_execution", None)
+        if block_execution:
+            raise RuntimeError(str(block_execution))
+        value = getattr(value, "result", None)
+    if isinstance(value, tuple) and len(value) == 1:
+        return value[0]
+    return value
+
+
+def _call_registered_node(class_names, method_names=None, **kwargs):
+    cls = _get_comfy_node_class(class_names)
+    if cls is None:
+        raise RuntimeError(f"Required node '{'/'.join(class_names)}' is not available")
+
+    instance = cls()
+    candidates = []
+    function_name = getattr(cls, "FUNCTION", None)
+    if function_name:
+        candidates.append(function_name)
+    if method_names:
+        candidates.extend(method_names)
+    candidates.extend(("execute", "process", "process_image", "load_model", "loadmodel", "load", "segment", "segment_image"))
+
+    for method_name in candidates:
+        method = getattr(instance, method_name, None)
+        if method is None:
+            continue
+        signature = inspect.signature(method)
+        accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values())
+        accepted = kwargs if accepts_kwargs else {key: value for key, value in kwargs.items() if key in signature.parameters}
+        while True:
+            try:
+                result = method(**accepted)
+                break
+            except TypeError as exc:
+                message = str(exc)
+                marker = "unexpected keyword argument "
+                if marker not in message:
+                    raise
+                unexpected = message.split(marker, 1)[1].strip().strip("'\"")
+                if unexpected not in accepted:
+                    raise
+                accepted = dict(accepted)
+                accepted.pop(unexpected, None)
+        return _unwrap_node_result(result)
+
+    raise RuntimeError(f"Node '{'/'.join(class_names)}' has no callable FUNCTION")
+
+
+def _normalize_mask_batch(value, target_hw, batch_size, stage="mask"):
+    tensors = []
+
+    def collect(item):
+        if isinstance(item, tuple):
+            if item:
+                collect(item[0])
+            return
+        if isinstance(item, list):
+            for child in item:
+                collect(child)
+            return
+        if torch.is_tensor(item):
+            tensors.append(item)
+
+    collect(value)
+    if not tensors:
+        raise RuntimeError(f"VNCCS Chroma Key: {stage} did not return a tensor mask")
+
+    masks = []
+    for tensor in tensors:
+        t = _ensure_float01(tensor.detach() if tensor.requires_grad else tensor)
+        if t.ndim == 2:
+            t = t.unsqueeze(0)
+        elif t.ndim == 3:
+            if t.shape[0] == batch_size and tuple(t.shape[-2:]) == tuple(target_hw):
+                pass
+            elif t.shape[-1] <= 4 and tuple(t.shape[:2]) == tuple(target_hw):
+                t = t[..., 0].unsqueeze(0)
+            elif t.shape[0] <= 4 and tuple(t.shape[-2:]) == tuple(target_hw):
+                t = t[0:1]
+        elif t.ndim == 4:
+            if t.shape[-1] <= 4:
+                t = t[..., 0]
+            elif t.shape[1] <= 4:
+                t = t[:, 0, :, :]
+        if t.ndim != 3:
+            continue
+        if tuple(t.shape[-2:]) != tuple(target_hw):
+            t = F.interpolate(
+                t.unsqueeze(1),
+                size=target_hw,
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(1)
+        masks.append(t.clamp(0.0, 1.0))
+
+    if not masks:
+        raise RuntimeError(f"VNCCS Chroma Key: {stage} mask shape is unsupported")
+
+    mask = torch.cat(masks, dim=0)
+    if mask.shape[0] == 1 and batch_size > 1:
+        mask = mask.expand(batch_size, -1, -1)
+    if mask.shape[0] < batch_size:
+        raise RuntimeError(f"VNCCS Chroma Key: {stage} returned {mask.shape[0]} masks for {batch_size} images")
+    return mask[:batch_size].clamp(0.0, 1.0)
 
 
 
@@ -1389,6 +1524,10 @@ class VNCCSChromaKey:
                 "matte_method": (["chroma_soft", "guided_edge", "pymatting_if_available"], {"default": "guided_edge"}),
                 "screen_mode": (["auto", "green", "blue", "red"], {"default": "auto"}),
                 "output_mode": (["straight_rgba", "premultiplied_rgba"], {"default": "straight_rgba"}),
+                "use_sam3_recovery_mask": (
+                    "BOOLEAN",
+                    {"default": False, "label_on": "enabled", "label_off": "disabled", "display_name": "Use SAM3 Recovery Mask"},
+                ),
             }
         }
 
@@ -1416,8 +1555,25 @@ class VNCCSChromaKey:
         matte_method,
         screen_mode,
         output_mode,
+        use_sam3_recovery_mask=False,
     ):
         image = _normalize_image_batch(image, stage="chroma key input")
+        if _as_bool(use_sam3_recovery_mask, False):
+            return self._chroma_key_with_sam3_recovery(
+                image=image,
+                tolerance=tolerance,
+                softness=softness,
+                despill_strength=despill_strength,
+                edge_width=edge_width,
+                matte_cleanup=matte_cleanup,
+                foreground_recover=foreground_recover,
+                edge_decontaminate=edge_decontaminate,
+                edge_choke=edge_choke,
+                matte_method=matte_method,
+                screen_mode=screen_mode,
+                output_mode=output_mode,
+            )
+
         if len(image.shape) == 4:
             rgba_list = []
             matte_list = []
@@ -1457,6 +1613,105 @@ class VNCCSChromaKey:
             output_mode,
         )
         return (rgba.unsqueeze(0), alpha.unsqueeze(0), debug.unsqueeze(0))
+
+    def _chroma_key_with_sam3_recovery(
+        self,
+        image,
+        tolerance,
+        softness,
+        despill_strength,
+        edge_width,
+        matte_cleanup,
+        foreground_recover,
+        edge_decontaminate,
+        edge_choke,
+        matte_method,
+        screen_mode,
+        output_mode,
+    ):
+        batch = _normalize_image_batch(image, stage="sam3 recovery chroma key input")
+        target_hw = (int(batch.shape[1]), int(batch.shape[2]))
+        recovery_masks = self._run_sam3_recovery_masks(batch, target_hw)
+
+        rgba_list = []
+        matte_list = []
+        debug_list = []
+        for index, frame in enumerate(batch):
+            rgba, alpha, debug = self._process_single(
+                frame,
+                tolerance,
+                softness,
+                despill_strength,
+                edge_width,
+                matte_cleanup,
+                foreground_recover,
+                edge_decontaminate,
+                edge_choke,
+                matte_method,
+                screen_mode,
+                output_mode,
+            )
+            rgba, alpha, debug = self._restore_recovery_details(
+                original=frame,
+                rgba=rgba,
+                alpha=alpha,
+                debug=debug,
+                recovery_mask=recovery_masks[index],
+                output_mode=output_mode,
+            )
+            rgba_list.append(rgba)
+            matte_list.append(alpha)
+            debug_list.append(debug)
+
+        return (torch.stack(rgba_list), torch.stack(matte_list), torch.stack(debug_list))
+
+    def _run_sam3_recovery_masks(self, image: torch.Tensor, target_hw):
+        sam3_model = _call_registered_node(
+            ["LoadSam3Model", "easy sam3ModelLoader"],
+            method_names=("load_model", "loadmodel", "load"),
+            model="sam3.pt",
+            segmentor="image",
+            device=_select_torch_device(),
+            precision="bf16",
+        )
+        result = _call_registered_node(
+            ["Sam3ImageSegmentation", "easy sam3ImageSegmentation"],
+            method_names=("segment", "segment_image", "process", "execute"),
+            sam3_model=sam3_model,
+            images=image,
+            prompt="face, clothes, accessories, hat, boots, eyes",
+            threshold=0.40,
+            keep_model_loaded=False,
+            add_background="none",
+            detection_limit=-1,
+            coordinates_positive=None,
+            coordinates_negative=None,
+            bboxes=None,
+            mask=None,
+        )
+        return _normalize_mask_batch(result, target_hw=target_hw, batch_size=int(image.shape[0]), stage="SAM3 recovery")
+
+    def _restore_recovery_details(
+        self,
+        original: torch.Tensor,
+        rgba: torch.Tensor,
+        alpha: torch.Tensor,
+        debug: torch.Tensor,
+        recovery_mask: torch.Tensor,
+        output_mode: str,
+    ):
+        shrunk = _morph(recovery_mask.clamp(0.0, 1.0), 4, "erode").clamp(0.0, 1.0)
+        if shrunk.max() <= 0:
+            return rgba, alpha, debug
+
+        original_rgb = _ensure_float01(original)[..., :3]
+        restored_alpha = torch.maximum(alpha, shrunk).clamp(0.0, 1.0)
+        restored_rgb = torch.lerp(rgba[..., :3], original_rgb, shrunk.unsqueeze(-1)).clamp(0.0, 1.0)
+        if output_mode == "premultiplied_rgba":
+            restored_rgb = restored_rgb * restored_alpha.unsqueeze(-1)
+        restored_rgba = torch.cat([restored_rgb, restored_alpha.unsqueeze(-1)], dim=-1)
+        restored_debug = torch.stack([debug[..., 0], restored_alpha, 1.0 - restored_alpha], dim=-1).clamp(0.0, 1.0)
+        return restored_rgba, restored_alpha, restored_debug
 
     def _process_single(
         self,
@@ -1531,7 +1786,6 @@ class VNCCSChromaKey:
             other_indices=other_indices,
             amount=float(edge_decontaminate),
         )
-
         if output_mode == "premultiplied_rgba":
             rgb_out = despilled * alpha.unsqueeze(-1)
         else:
@@ -1674,6 +1928,58 @@ class VNCCSChromaKey:
 
         matte = torch.from_numpy(np.asarray(matte_np)).to(device=image.device, dtype=image.dtype)
         return matte.clamp(0.0, 1.0)
+
+    def _suppress_connected_key_fringe(
+        self,
+        image: torch.Tensor,
+        alpha: torch.Tensor,
+        key_color: torch.Tensor,
+        tolerance: float,
+        softness: float,
+        amount: float,
+    ) -> torch.Tensor:
+        if amount <= 0.0:
+            return alpha
+
+        eps = 1e-6
+        chroma = image / (image.sum(dim=-1, keepdim=True) + eps)
+        key_chroma = key_color / (key_color.sum() + eps)
+        chroma_dist = torch.sqrt(((chroma - key_chroma) ** 2).sum(dim=-1))
+        rgb_dist = torch.sqrt(((image - key_color) ** 2).sum(dim=-1))
+
+        luma = image[..., 0] * 0.299 + image[..., 1] * 0.587 + image[..., 2] * 0.114
+        key_luma = key_color[0] * 0.299 + key_color[1] * 0.587 + key_color[2] * 0.114
+        luma_gate = luma >= (key_luma * 0.65).clamp(0.18, 0.72)
+
+        loose_chroma = tolerance + softness * 0.9
+        loose_rgb = tolerance * 1.5 + softness * 1.55
+        candidate = ((chroma_dist <= loose_chroma) | (rgb_dist <= loose_rgb)) & luma_gate
+
+        candidate_np = candidate.detach().cpu().numpy().astype(np.uint8)
+        if candidate_np.max() <= 0:
+            return alpha
+
+        try:
+            _, labels = cv2.connectedComponents(candidate_np, connectivity=4)
+        except Exception:
+            return alpha
+
+        border_labels = np.concatenate(
+            [
+                labels[0, :],
+                labels[-1, :],
+                labels[:, 0],
+                labels[:, -1],
+            ],
+            axis=0,
+        )
+        border_labels = np.unique(border_labels[border_labels > 0])
+        if border_labels.size == 0:
+            return alpha
+
+        connected_np = np.isin(labels, border_labels)
+        connected = torch.from_numpy(connected_np).to(device=alpha.device, dtype=alpha.dtype)
+        return torch.where(connected > 0.0, torch.zeros_like(alpha), alpha).clamp(0.0, 1.0)
 
     def _edge_band(self, alpha: torch.Tensor, edge_width: int) -> torch.Tensor:
         if edge_width <= 0:

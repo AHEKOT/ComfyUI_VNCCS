@@ -2655,7 +2655,7 @@ app.registerExtension({
 
                     const img = document.createElement("img");
                     img.className = "ems-emotion-img";
-                    img.src = `/vnccs/get_emotion_image?name=${encodeURIComponent(e.safe_name)}`;
+                    img.src = `/vnccs/get_emotion_image?name=${encodeURIComponent(e.safe_name)}&v=webp`;
                     img.onerror = () => {
                         const placeholder = document.createElement("div");
                         placeholder.className = "ems-emotion-img ems-emotion-img-placeholder";

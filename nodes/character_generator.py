@@ -52,12 +52,13 @@ from .vnccs_control_center import (
 )
 from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder
 from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, VNCCS_RMBG2
-from .model_path_utils import basename_agnostic
 from ..utils import (
+    basename_agnostic,
     base_output_dir,
     character_dir,
     ensure_safe_name,
     is_path_under,
+    load_character_info,
     normalize_filesystem_path,
 )
 
@@ -631,12 +632,14 @@ DEFAULT_WIDGET_DATA = {
         # TODO: Decide whether internal RMBG should return as a supported generator option.
         "use_internal_rmbg": False,
         "preset": "balanced",
+        "use_sam3_details_recovery": True,
     },
     "pose_generation": {
         "target_size": 1024,
     },
     "emotion_generation": {
         "face_denoise": 0.55,
+        "use_sam": True,
         "bbox_threshold": 0.1,
         "bbox_dilation": 10,
         "sam_dilation": 25,
@@ -649,6 +652,18 @@ DEFAULT_WIDGET_DATA = {
 }
 
 CHROMA_KEY_PRESETS = {
+    "ultra_light": {
+        "tolerance": 0.0,
+        "softness": 0.10,
+        "despill_strength": 0.35,
+        "edge_width": 2,
+        "matte_cleanup": 0.10,
+        "foreground_recover": 0.20,
+        "edge_decontaminate": 0.45,
+        "edge_choke": 0.08,
+        "matte_method": "chroma_soft",
+        "output_mode": "straight_rgba",
+    },
     "light": {
         "tolerance": 0.14,
         "softness": 0.10,
@@ -1666,7 +1681,8 @@ class VNCCS_CharacterGenerator:
         preset = self._chroma_preset(settings)
         batch = self._list_to_batch(images)
         total = int(batch.shape[0]) if torch.is_tensor(batch) and batch.ndim == 4 else 0
-        self._log_stage(unique_id, stage, f"Running chroma key preset '{str(settings.get('preset', 'balanced') or 'balanced')}' on {self._batch_shape_label(batch)}", current=0, total=total, cache_dir=cache_dir)
+        screen_mode = self._screen_mode_from_background(background)
+        self._log_stage(unique_id, stage, f"Running chroma key preset '{str(settings.get('preset', 'balanced') or 'balanced')}' with screen mode '{screen_mode}' on {self._batch_shape_label(batch)}", current=0, total=total, cache_dir=cache_dir)
         started_at = time.time()
         result = VNCCSChromaKey().chroma_key(
             batch,
@@ -1679,8 +1695,9 @@ class VNCCS_CharacterGenerator:
             float(preset["edge_decontaminate"]),
             float(preset["edge_choke"]),
             str(preset["matte_method"]),
-            self._screen_mode_from_background(background),
+            screen_mode,
             str(preset["output_mode"]),
+            _as_bool(settings.get("use_sam3_details_recovery", True), True),
         )[0]
         elapsed = time.time() - started_at
         self._log_stage(unique_id, stage, f"Chroma key finished in {elapsed:.1f}s; preparing final sprites", current=total, total=total, cache_dir=cache_dir)
@@ -2402,6 +2419,32 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 items.append({"emotion_prompt": text})
         return items
 
+    def _emotion_background_color(self, widget_payload, data_items):
+        for item in data_items or []:
+            if not isinstance(item, dict):
+                continue
+            value = item.get("background_color")
+            if value:
+                return str(value)
+            info = item.get("character_info")
+            if isinstance(info, dict) and info.get("background_color"):
+                return str(info.get("background_color"))
+
+        if isinstance(widget_payload, dict):
+            info = widget_payload.get("character_info")
+            if isinstance(info, dict) and info.get("background_color"):
+                return str(info.get("background_color"))
+            character = str(widget_payload.get("character_name", "") or "").strip()
+            if character:
+                try:
+                    info = load_character_info(character)
+                    if isinstance(info, dict) and info.get("background_color"):
+                        return str(info.get("background_color"))
+                except Exception as exc:
+                    print(f"[VNCCS Emotions Generator] Failed to load background_color for '{character}': {exc}")
+
+        return "Green"
+
     def _emotion_face_details(self, meta):
         if not isinstance(meta, dict):
             return ""
@@ -2593,7 +2636,9 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             rgb = rgb[0]
         rgb_arr = (rgb.numpy() * 255).astype(np.uint8)
 
-        if mask is None:
+        if mask is None and rgb_arr.shape[-1] >= 4:
+            alpha = rgb_arr[..., 3]
+        elif mask is None:
             alpha = np.full(rgb_arr.shape[:2], 255, dtype=np.uint8)
         else:
             m = mask.detach().cpu().clamp(0, 1)
@@ -2616,12 +2661,13 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         negative_prompt,
         seed,
         face_denoise=0.55,
-        bbox_crop_factor=1.0,
+        bbox_crop_factor=4.5,
         bbox_threshold=0.1,
         bbox_dilation=10,
         sam_dilation=25,
         sam_threshold=0.93,
         sam_bbox_expansion=0,
+        use_sam=True,
     ):
         pipe_values = self._extract_pipe(pipe)
         model_for_detailer = pipe_values["model"]
@@ -2644,15 +2690,18 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             model_name="bbox/face_yolov8m.pt",
         )[0]
 
-        sam_model = _call_comfy_node(
-            "SAMLoader",
-            model_name="sam_vit_b_01ec64.pth",
-            device_mode="AUTO",
-        )[0]
-        segm_detector = _call_comfy_node(
-            "UltralyticsDetectorProvider",
-            model_name="bbox/face_yolov8m.pt",
-        )[1]
+        sam_model = None
+        segm_detector = None
+        if _as_bool(use_sam, True):
+            sam_model = _call_comfy_node(
+                "SAMLoader",
+                model_name="sam_vit_b_01ec64.pth",
+                device_mode="AUTO",
+            )[0]
+            segm_detector = _call_comfy_node(
+                "UltralyticsDetectorProvider",
+                model_name="bbox/face_yolov8m.pt",
+            )[1]
 
         detailed = _call_comfy_node(
             "FaceDetailer",
@@ -2674,7 +2723,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             sampler_name=pipe_values["sampler"],
             scheduler=pipe_values["scheduler"],
             denoise=float(face_denoise),
-            feather=50,
+            feather=5,
             noise_mask=True,
             force_inpaint=True,
             bbox_threshold=float(bbox_threshold),
@@ -2720,11 +2769,25 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             return max(min_value, min(max_value, value))
 
         face_denoise = _clamp_float("face_denoise", 0.0, 1.0)
+        use_sam = _as_bool(
+            emotion_settings.get(
+                "use_sam",
+                emotion_settings.get("use_sam_model", emotion_defaults.get("use_sam", True)),
+            ),
+            True,
+        )
         bbox_threshold = _clamp_float("bbox_threshold", 0.0, 1.0)
         bbox_dilation = _clamp_int("bbox_dilation", 0, 128)
         sam_dilation = _clamp_int("sam_dilation", 0, 128)
         sam_threshold = _clamp_float("sam_threshold", 0.0, 1.0)
         sam_bbox_expansion = _clamp_int("sam_bbox_expansion", 0, 128)
+        bg_settings = widget_payload.get("bg_remove", {}) if isinstance(widget_payload, dict) else {}
+        if not isinstance(bg_settings, dict):
+            bg_settings = {}
+        bg_settings = {
+            **DEFAULT_WIDGET_DATA["bg_remove"],
+            **bg_settings,
+        }
         pipe = self._unwrap_scalar(pipe)
         unique_id = self._unwrap_scalar(unique_id)
         cache_dir = _character_cache_dir_from_sheets_path("", widget_payload.get("character_name", ""), unique_id)
@@ -2735,6 +2798,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             emotion_data = cached_inputs.get("emotion_data", emotion_data)
         image_items = self._image_list(images)
         data_items = self._parse_emotion_data(emotion_data)
+        background_color = self._emotion_background_color(widget_payload, data_items)
         source_items = []
         for index, meta in enumerate(data_items):
             source_image, source_mask = self._load_source_sprite_from_path(
@@ -2765,7 +2829,9 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 groups.append({"key": key, "indices": []})
             groups[-1]["indices"].append(index)
         stage_labels = self._emotion_pairs(widget_payload, emotion_items, len(groups))
-        order = [key for key, _label in stage_labels]
+        order = []
+        for key, _label in stage_labels:
+            order.extend([key, f"{key}_bg_remove"])
         if not regenerate_from:
             _rotate_preview_cache(cache_dir)
         _save_run_inputs(
@@ -2781,12 +2847,16 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         try:
             for group_index, group in enumerate(groups):
                 stage_key, stage_label = stage_labels[group_index]
+                bg_stage_key = f"{stage_key}_bg_remove"
+                cached_raw = None
                 if not self._should_regenerate_stage(order, regenerate_from, stage_key):
-                    cached = self._load_cached_stage(cache_dir, stage_key, unique_id, f"Using cached {stage_label}")
-                    if cached is not None:
-                        results.append(cached)
-                        faces.append(cached)
-                        continue
+                    cached_raw = self._load_cached_stage(cache_dir, stage_key, unique_id, f"Using cached {stage_label}")
+                    if cached_raw is not None and not self._should_regenerate_stage(order, regenerate_from, bg_stage_key):
+                        cached_final = self._load_cached_stage(cache_dir, bg_stage_key, unique_id, f"Using cached {stage_label} BG")
+                        if cached_final is not None:
+                            results.append(cached_final)
+                            faces.append(cached_final)
+                            continue
 
                 group_source = self._safe_image_batch(
                     [source_items[i][0] for i in group["indices"]],
@@ -2797,84 +2867,151 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 if regenerate_index is not None and regenerate_index < len(group["indices"]):
                     run_indices = [group["indices"][regenerate_index]]
                     group_source = source_items[run_indices[0]][0]
-                self._emit(unique_id, stage_key, "running", group_source, f"Generating {stage_label}", 0, len(run_indices), cache_dir=cache_dir)
                 group_results = []
-                for local_index, index in enumerate(run_indices, start=1):
-                    image, mask = source_items[index]
-                    meta = data_items[index] if index < len(data_items) else {}
-                    if mask is not None and (mask.shape[-2] != image.shape[1] or mask.shape[-1] != image.shape[2]):
-                        mask_img = Image.fromarray((mask[0].detach().cpu().numpy() * 255).astype(np.uint8))
-                        mask_img = mask_img.resize((image.shape[2], image.shape[1]), Image.Resampling.LANCZOS)
-                        mask = torch.from_numpy(np.array(mask_img).astype(np.float32) / 255.0).unsqueeze(0)
-                    seed = int(meta.get("seed", 0) or 0)
-                    result, face_crop = self._run_emotion_generation_one(
-                        image,
-                        mask,
-                        pipe,
-                        meta.get("emotion_prompt", emotion_items[index]),
-                        self._emotion_face_details(meta),
-                        meta.get("negative_prompt", ""),
-                        seed + index,
-                        face_denoise,
-                        bbox_threshold=bbox_threshold,
-                        bbox_dilation=bbox_dilation,
-                        sam_dilation=sam_dilation,
-                        sam_threshold=sam_threshold,
-                        sam_bbox_expansion=sam_bbox_expansion,
-                    )
-                    results.append(result)
-                    # FaceDetailer crops are intentionally variable-size. Save them
-                    # as files, but keep the IMAGE output batch shape-stable.
-                    faces.append(result)
-                    group_results.append(result)
-                    save_index = (regenerate_index + 1) if regenerate_index is not None else local_index
-                    if index < len(sprite_paths):
-                        self._save_rgba_image(
-                            result,
+                generated_items = []
+                if cached_raw is not None:
+                    raw_items = self._split_batch(cached_raw)
+                    raw_results = cached_raw
+                    if regenerate_index is not None and regenerate_index < len(raw_items):
+                        raw_results = self._safe_image_batch(
+                            [raw_items[regenerate_index]],
+                            target_hw=emotion_target_hw,
+                            stage=f"{stage_key} raw regenerate slice",
+                        )
+                    for local_index, index in enumerate(run_indices, start=1):
+                        source_item_index = regenerate_index if regenerate_index is not None else local_index - 1
+                        fallback = raw_items[source_item_index] if source_item_index < len(raw_items) else raw_results
+                        generated_items.append({
+                            "index": index,
+                            "local_index": local_index,
+                            "result": fallback,
+                            "face_crop": fallback,
+                        })
+                else:
+                    self._emit(unique_id, stage_key, "running", group_source, f"Generating {stage_label}", 0, len(run_indices), cache_dir=cache_dir)
+                    for local_index, index in enumerate(run_indices, start=1):
+                        image, mask = source_items[index]
+                        meta = data_items[index] if index < len(data_items) else {}
+                        if mask is not None and (mask.shape[-2] != image.shape[1] or mask.shape[-1] != image.shape[2]):
+                            mask_img = Image.fromarray((mask[0].detach().cpu().numpy() * 255).astype(np.uint8))
+                            mask_img = mask_img.resize((image.shape[2], image.shape[1]), Image.Resampling.LANCZOS)
+                            mask = torch.from_numpy(np.array(mask_img).astype(np.float32) / 255.0).unsqueeze(0)
+                        seed = int(meta.get("seed", 0) or 0)
+                        result, face_crop = self._run_emotion_generation_one(
+                            image,
                             mask,
-                            sprite_paths[index],
-                            save_index,
-                            widget_payload.get("character_name", ""),
+                            pipe,
+                            meta.get("emotion_prompt", emotion_items[index]),
+                            self._emotion_face_details(meta),
+                            meta.get("negative_prompt", ""),
+                            seed + index,
+                            face_denoise,
+                            bbox_threshold=bbox_threshold,
+                            bbox_dilation=bbox_dilation,
+                            sam_dilation=sam_dilation,
+                            sam_threshold=sam_threshold,
+                            sam_bbox_expansion=sam_bbox_expansion,
+                            use_sam=use_sam,
                         )
-                        face_prefix = self._face_prefix_from_sprite_prefix(sprite_paths[index])
-                        face_prefix = _safe_emotion_output_prefix(
-                            face_prefix,
-                            widget_payload.get("character_name", ""),
-                            root_name="Faces",
+                        raw_partial = self._safe_image_batch(
+                            [item["result"] for item in generated_items] + [result],
+                            target_hw=emotion_target_hw,
+                            stage=f"{stage_key} raw partial",
                         )
-                        if face_prefix:
-                            face_dir = os.path.dirname(face_prefix)
-                            face_dir_key = os.path.normcase(os.path.abspath(face_dir))
-                            if not regenerate_from and face_dir_key not in rotated_face_dirs:
-                                self._rotate_existing_images(face_dir)
-                                rotated_face_dirs.add(face_dir_key)
+                        stage_status = "running" if local_index < len(run_indices) else "done"
+                        self._emit(
+                            unique_id,
+                            stage_key,
+                            stage_status,
+                            raw_partial,
+                            f"Generated {local_index}/{len(run_indices)} {stage_label}",
+                            local_index,
+                            len(run_indices),
+                            cache_dir=cache_dir,
+                        )
+                        generated_items.append({
+                            "index": index,
+                            "local_index": local_index,
+                            "result": result,
+                            "face_crop": face_crop,
+                        })
+                    raw_results = self._safe_image_batch(
+                        [item["result"] for item in generated_items],
+                        target_hw=emotion_target_hw,
+                        stage=f"{stage_key} raw",
+                    )
+                    raw_cache = raw_results
+                    if regenerate_index is not None:
+                        raw_cache = self._replace_batch_item(_load_cached_tensor(cache_dir, stage_key), regenerate_index, raw_results)
+                    self._save_stage(cache_dir, stage_key, raw_cache)
+                if raw_results is not None:
+                    bg_total = raw_results.shape[0] if torch.is_tensor(raw_results) and raw_results.ndim == 4 else len(generated_items)
+                    bg_disabled = self._bg_remove_disabled(bg_settings)
+                    bg_action = "Skipping chroma key for" if bg_disabled else "Removing background for"
+                    self._emit(
+                        unique_id,
+                        bg_stage_key,
+                        "running",
+                        raw_results,
+                        f"{bg_action} {bg_total} {stage_label} image(s)",
+                        0,
+                        bg_total,
+                        cache_dir=cache_dir,
+                    )
+                    cleaned_results = self._run_bg_remove(
+                        raw_results,
+                        bg_settings,
+                        background=background_color,
+                        unique_id=unique_id,
+                        cache_dir=cache_dir,
+                        stage=bg_stage_key,
+                    )
+                    cleaned_items = self._split_batch(cleaned_results)
+                    for item_index, item in enumerate(generated_items):
+                        result = cleaned_items[item_index] if item_index < len(cleaned_items) else item["result"]
+                        index = item["index"]
+                        results.append(result)
+                        # FaceDetailer crops are intentionally variable-size. Save them
+                        # as files, but keep the IMAGE output batch shape-stable.
+                        faces.append(result)
+                        group_results.append(result)
+                        save_index = (regenerate_index + 1) if regenerate_index is not None else item["local_index"]
+                        if index < len(sprite_paths):
                             self._save_rgba_image(
-                                face_crop,
+                                result,
                                 None,
-                                face_prefix,
+                                sprite_paths[index],
                                 save_index,
+                                widget_payload.get("character_name", ""),
+                            )
+                            face_prefix = self._face_prefix_from_sprite_prefix(sprite_paths[index])
+                            face_prefix = _safe_emotion_output_prefix(
+                                face_prefix,
                                 widget_payload.get("character_name", ""),
                                 root_name="Faces",
                             )
-                    partial = self._safe_image_batch(group_results, target_hw=emotion_target_hw, stage=f"{stage_key} partial")
-                    self._emit(
-                        unique_id,
-                        stage_key,
-                        "running" if local_index < len(run_indices) else "done",
-                        partial,
-                        f"Done {stage_label}",
-                        local_index,
-                        len(run_indices),
-                        cache_dir=cache_dir,
-                    )
+                            if face_prefix:
+                                face_dir = os.path.dirname(face_prefix)
+                                face_dir_key = os.path.normcase(os.path.abspath(face_dir))
+                                if not regenerate_from and face_dir_key not in rotated_face_dirs:
+                                    self._rotate_existing_images(face_dir)
+                                    rotated_face_dirs.add(face_dir_key)
+                                self._save_rgba_image(
+                                    item["face_crop"],
+                                    None,
+                                    face_prefix,
+                                    save_index,
+                                    widget_payload.get("character_name", ""),
+                                    root_name="Faces",
+                                )
                 if group_results:
                     merged = self._safe_image_batch(group_results, target_hw=emotion_target_hw, stage=f"{stage_key} merge")
                     if regenerate_index is not None:
-                        merged = self._replace_batch_item(_load_cached_tensor(cache_dir, stage_key), regenerate_index, merged)
-                    self._save_stage(cache_dir, stage_key, merged)
-                    if regenerate_index is not None:
-                        done_total = merged.shape[0] if torch.is_tensor(merged) and merged.ndim == 4 else len(run_indices)
-                        self._emit(unique_id, stage_key, "done", merged, f"Done {stage_label}", done_total, done_total, cache_dir=cache_dir)
+                        merged = self._replace_batch_item(_load_cached_tensor(cache_dir, bg_stage_key), regenerate_index, merged)
+                    self._save_stage(cache_dir, bg_stage_key, merged)
+                    done_total = merged.shape[0] if torch.is_tensor(merged) and merged.ndim == 4 else len(run_indices)
+                    bg_done = "Chroma key skipped for" if self._bg_remove_disabled(bg_settings) else "Background removed from"
+                    self._emit(unique_id, bg_stage_key, "done", merged, f"{bg_done} {done_total} {stage_label} image(s)", done_total, done_total, cache_dir=cache_dir)
 
             if not results:
                 raise RuntimeError("No emotion images to generate. Select at least one costume and one emotion.")

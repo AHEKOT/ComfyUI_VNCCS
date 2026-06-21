@@ -93,7 +93,7 @@ def save_custom_emotion_image(image_data, safe_name):
     with Image.open(io.BytesIO(raw)) as img:
         img = ImageOps.exif_transpose(img).convert("RGBA")
         os.makedirs(emotion_images_dir(), exist_ok=True)
-        img.save(os.path.join(emotion_images_dir(), f"{safe_name}.png"), format="PNG")
+        img.save(os.path.join(emotion_images_dir(), f"{safe_name}.webp"), format="WEBP", quality=92, method=6)
 
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -262,6 +262,28 @@ def load_costume_sprite_images(character, costume):
     return []
 
 
+def costume_has_source_sprites(character, costume):
+    root = os.path.join(character_dir(character), "Sprites", costume)
+    if not os.path.isdir(root):
+        return False
+    search_roots = [
+        os.path.join(root, "Neutral"),
+        os.path.join(root, "neutral"),
+        root,
+    ]
+    seen = set()
+    for folder in search_roots:
+        folder_key = os.path.normcase(os.path.abspath(folder))
+        if folder_key in seen or not os.path.isdir(folder):
+            continue
+        seen.add(folder_key)
+        for name in os.listdir(folder):
+            path = os.path.join(folder, name)
+            if os.path.isfile(path) and os.path.splitext(name)[1].lower() in IMAGE_EXTS:
+                return True
+    return False
+
+
 def costume_face_details(character, costume):
     costume_info = load_costume_info(character, costume) or {}
     parts = []
@@ -344,7 +366,10 @@ if server:
         if not character:
             return web.json_response([])
         
-        costumes = list_costumes(character)
+        costumes = [
+            costume for costume in list_costumes(character)
+            if costume_has_source_sprites(character, costume)
+        ]
         return web.json_response(costumes)
 
     @server.PromptServer.instance.routes.get("/vnccs/get_character_sheet_preview")
@@ -379,14 +404,11 @@ if server:
         from urllib.parse import unquote
         name = unquote(name).strip() 
         
-        # Absolute path resolution logic
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        root_dir = os.path.dirname(current_dir)
-        image_path = os.path.join(root_dir, "emotions-config", "images", f"{name}.png")
-        
+        image_path = os.path.join(emotion_images_dir(), f"{name}.webp")
+
         if not os.path.exists(image_path):
             return web.Response(status=404)
-            
+
         return web.FileResponse(image_path)
 
 
@@ -454,6 +476,10 @@ class EmotionGeneratorV2:
             selected_costumes = json.loads(costumes_data)
         except:
             selected_costumes = []
+        selected_costumes = [
+            costume for costume in selected_costumes
+            if costume_has_source_sprites(character, costume)
+        ]
 
         try:
             selected_emotions = json.loads(emotions_data)
@@ -562,6 +588,7 @@ class EmotionGeneratorV2:
                         "sprite_output_path": sheet_output_path,
                         "source_path": _source_path,
                         "character": character,
+                        "background_color": background_color,
                         "costume": costume,
                         "costume_face": costume_face,
                         "costume_head": costume_head,

@@ -1,5 +1,6 @@
 """Security-focused tests for character generator path handling."""
 
+import json
 import os
 import sys
 
@@ -77,6 +78,132 @@ def test_bg_remove_disabled_skips_chroma_key(monkeypatch):
     )
 
     assert torch.equal(result, images)
+
+
+def test_bg_remove_uses_sam3_details_recovery_by_default(monkeypatch):
+    torch = pytest.importorskip("torch")
+    seen = {}
+
+    class CapturingChromaKey:
+        def chroma_key(self, *args, **kwargs):
+            seen["use_sam3_recovery_mask"] = args[12]
+            return (args[0], None, None)
+
+    monkeypatch.setattr(cg, "VNCCSChromaKey", CapturingChromaKey)
+    images = torch.rand(1, 4, 4, 3)
+
+    cg.VNCCS_CharacterGenerator()._run_bg_remove(
+        images,
+        {"preset": "balanced"},
+        background="Green",
+    )
+
+    assert seen["use_sam3_recovery_mask"] is True
+
+
+def test_bg_remove_can_disable_sam3_details_recovery(monkeypatch):
+    torch = pytest.importorskip("torch")
+    seen = {}
+
+    class CapturingChromaKey:
+        def chroma_key(self, *args, **kwargs):
+            seen["use_sam3_recovery_mask"] = args[12]
+            return (args[0], None, None)
+
+    monkeypatch.setattr(cg, "VNCCSChromaKey", CapturingChromaKey)
+    images = torch.rand(1, 4, 4, 3)
+
+    cg.VNCCS_CharacterGenerator()._run_bg_remove(
+        images,
+        {"preset": "balanced", "use_sam3_details_recovery": False},
+        background="Green",
+    )
+
+    assert seen["use_sam3_recovery_mask"] is False
+
+
+def test_emotions_generator_bg_remove_uses_character_background_color(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    seen = {}
+
+    monkeypatch.setattr(cg, "_character_cache_dir_from_sheets_path", lambda *args, **kwargs: str(tmp_path))
+    monkeypatch.setattr(cg, "_rotate_preview_cache", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cg, "_save_run_inputs", lambda *args, **kwargs: None)
+
+    node = cg.VNCCS_EmotionsGenerator()
+    monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(node, "_save_stage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(node, "_load_source_sprite_from_path", lambda *args, **kwargs: (None, None))
+    monkeypatch.setattr(node, "_pad_alpha_sources_to_uniform_canvas", lambda data, items: (items, (4, 4)))
+    monkeypatch.setattr(node, "_run_emotion_generation_one", lambda image, *args, **kwargs: (image, image))
+
+    def capture_bg_remove(images, settings, background="Green", **kwargs):
+        seen["background"] = background
+        return images
+
+    monkeypatch.setattr(node, "_run_bg_remove", capture_bg_remove)
+
+    images = torch.rand(1, 4, 4, 3)
+    emotion_data = json.dumps([{"emotion_prompt": "angry", "sprite_output_path": "", "background_color": "Green"}])
+    widget_data = json.dumps({
+        "character_name": "Alice",
+        "bg_remove": {"preset": "balanced", "use_sam3_details_recovery": True},
+    })
+
+    node.process(images, object(), emotion_data, widget_data=widget_data, unique_id="test-node")
+
+    assert seen["background"] == "Green"
+
+
+def test_emotions_generator_single_bg_regenerate_slices_cached_raw_batch(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    seen = {}
+
+    monkeypatch.setattr(cg, "_character_cache_dir_from_sheets_path", lambda *args, **kwargs: str(tmp_path))
+    monkeypatch.setattr(cg, "_save_run_inputs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cg, "_load_cached_tensor", lambda *args, **kwargs: torch.zeros(4, 4, 4, 3))
+
+    node = cg.VNCCS_EmotionsGenerator()
+    monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(node, "_save_stage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(node, "_load_source_sprite_from_path", lambda *args, **kwargs: (None, None))
+    monkeypatch.setattr(node, "_pad_alpha_sources_to_uniform_canvas", lambda data, items: (items, (4, 4)))
+    monkeypatch.setattr(node, "_run_emotion_generation_one", lambda image, *args, **kwargs: (image, image))
+
+    cached_raw = torch.stack([
+        torch.full((4, 4, 3), float(index) / 10.0)
+        for index in range(4)
+    ])
+
+    def load_cached_stage(cache_dir, stage, unique_id=None, message=""):
+        if stage == "emotion_0001":
+            return cached_raw
+        return None
+
+    def capture_bg_remove(images, settings, background="Green", **kwargs):
+        seen["shape"] = tuple(images.shape)
+        seen["value"] = float(images[0, 0, 0, 0].item())
+        return images
+
+    monkeypatch.setattr(node, "_load_cached_stage", load_cached_stage)
+    monkeypatch.setattr(node, "_run_bg_remove", capture_bg_remove)
+
+    images = torch.rand(4, 4, 4, 3)
+    emotion_data = [
+        json.dumps({"emotion_prompt": "angry", "sprite_output_path": "same", "background_color": "Green"})
+        for _ in range(4)
+    ]
+    widget_data = json.dumps({
+        "character_name": "Alice",
+        "regenerate_from": "emotion_0001_bg_remove",
+        "regenerate_index": 2,
+        "bg_remove": {"preset": "balanced", "use_sam3_details_recovery": True},
+    })
+
+    node.process(images, object(), emotion_data, widget_data=widget_data, unique_id="test-node")
+
+    assert seen["shape"] == (1, 4, 4, 3)
+    assert seen["value"] == pytest.approx(0.2)
 
 
 def test_list_to_batch_normalizes_mixed_image_sizes():

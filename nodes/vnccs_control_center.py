@@ -24,14 +24,21 @@ import traceback
 import struct
 
 try:
-    from ..utils import is_absolute_path_any_os, normalize_filesystem_path, validate_privileged_request
+    from ..utils import (
+        basename_agnostic,
+        get_full_path_agnostic,
+        is_absolute_path_any_os,
+        normalize_filesystem_path,
+        validate_privileged_request,
+    )
 except Exception:
-    from utils import is_absolute_path_any_os, normalize_filesystem_path, validate_privileged_request
-
-try:
-    from .model_path_utils import basename_agnostic, get_full_path_agnostic
-except Exception:
-    from model_path_utils import basename_agnostic, get_full_path_agnostic
+    from utils import (
+        basename_agnostic,
+        get_full_path_agnostic,
+        is_absolute_path_any_os,
+        normalize_filesystem_path,
+        validate_privileged_request,
+    )
 
 
 class AnyType(str):
