@@ -93,7 +93,7 @@ def save_custom_emotion_image(image_data, safe_name):
     with Image.open(io.BytesIO(raw)) as img:
         img = ImageOps.exif_transpose(img).convert("RGBA")
         os.makedirs(emotion_images_dir(), exist_ok=True)
-        img.save(os.path.join(emotion_images_dir(), f"{safe_name}.png"), format="PNG")
+        img.save(os.path.join(emotion_images_dir(), f"{safe_name}.webp"), format="WEBP", quality=92, method=6)
 
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -404,14 +404,11 @@ if server:
         from urllib.parse import unquote
         name = unquote(name).strip() 
         
-        # Absolute path resolution logic
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        root_dir = os.path.dirname(current_dir)
-        image_path = os.path.join(root_dir, "emotions-config", "images", f"{name}.png")
-        
+        image_path = os.path.join(emotion_images_dir(), f"{name}.webp")
+
         if not os.path.exists(image_path):
             return web.Response(status=404)
-            
+
         return web.FileResponse(image_path)
 
 
