@@ -58,6 +58,7 @@ from ..utils import (
     character_dir,
     ensure_safe_name,
     is_path_under,
+    load_character_info,
     normalize_filesystem_path,
 )
 
@@ -631,6 +632,7 @@ DEFAULT_WIDGET_DATA = {
         # TODO: Decide whether internal RMBG should return as a supported generator option.
         "use_internal_rmbg": False,
         "preset": "balanced",
+        "use_sam3_details_recovery": True,
     },
     "pose_generation": {
         "target_size": 1024,
@@ -1679,7 +1681,8 @@ class VNCCS_CharacterGenerator:
         preset = self._chroma_preset(settings)
         batch = self._list_to_batch(images)
         total = int(batch.shape[0]) if torch.is_tensor(batch) and batch.ndim == 4 else 0
-        self._log_stage(unique_id, stage, f"Running chroma key preset '{str(settings.get('preset', 'balanced') or 'balanced')}' on {self._batch_shape_label(batch)}", current=0, total=total, cache_dir=cache_dir)
+        screen_mode = self._screen_mode_from_background(background)
+        self._log_stage(unique_id, stage, f"Running chroma key preset '{str(settings.get('preset', 'balanced') or 'balanced')}' with screen mode '{screen_mode}' on {self._batch_shape_label(batch)}", current=0, total=total, cache_dir=cache_dir)
         started_at = time.time()
         result = VNCCSChromaKey().chroma_key(
             batch,
@@ -1692,8 +1695,9 @@ class VNCCS_CharacterGenerator:
             float(preset["edge_decontaminate"]),
             float(preset["edge_choke"]),
             str(preset["matte_method"]),
-            self._screen_mode_from_background(background),
+            screen_mode,
             str(preset["output_mode"]),
+            _as_bool(settings.get("use_sam3_details_recovery", True), True),
         )[0]
         elapsed = time.time() - started_at
         self._log_stage(unique_id, stage, f"Chroma key finished in {elapsed:.1f}s; preparing final sprites", current=total, total=total, cache_dir=cache_dir)
@@ -2415,6 +2419,32 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 items.append({"emotion_prompt": text})
         return items
 
+    def _emotion_background_color(self, widget_payload, data_items):
+        for item in data_items or []:
+            if not isinstance(item, dict):
+                continue
+            value = item.get("background_color")
+            if value:
+                return str(value)
+            info = item.get("character_info")
+            if isinstance(info, dict) and info.get("background_color"):
+                return str(info.get("background_color"))
+
+        if isinstance(widget_payload, dict):
+            info = widget_payload.get("character_info")
+            if isinstance(info, dict) and info.get("background_color"):
+                return str(info.get("background_color"))
+            character = str(widget_payload.get("character_name", "") or "").strip()
+            if character:
+                try:
+                    info = load_character_info(character)
+                    if isinstance(info, dict) and info.get("background_color"):
+                        return str(info.get("background_color"))
+                except Exception as exc:
+                    print(f"[VNCCS Emotions Generator] Failed to load background_color for '{character}': {exc}")
+
+        return "Green"
+
     def _emotion_face_details(self, meta):
         if not isinstance(meta, dict):
             return ""
@@ -2768,6 +2798,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             emotion_data = cached_inputs.get("emotion_data", emotion_data)
         image_items = self._image_list(images)
         data_items = self._parse_emotion_data(emotion_data)
+        background_color = self._emotion_background_color(widget_payload, data_items)
         source_items = []
         for index, meta in enumerate(data_items):
             source_image, source_mask = self._load_source_sprite_from_path(
@@ -2839,10 +2870,17 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 group_results = []
                 generated_items = []
                 if cached_raw is not None:
+                    raw_items = self._split_batch(cached_raw)
                     raw_results = cached_raw
-                    raw_items = self._split_batch(raw_results)
+                    if regenerate_index is not None and regenerate_index < len(raw_items):
+                        raw_results = self._safe_image_batch(
+                            [raw_items[regenerate_index]],
+                            target_hw=emotion_target_hw,
+                            stage=f"{stage_key} raw regenerate slice",
+                        )
                     for local_index, index in enumerate(run_indices, start=1):
-                        fallback = raw_items[local_index - 1] if local_index - 1 < len(raw_items) else raw_results
+                        source_item_index = regenerate_index if regenerate_index is not None else local_index - 1
+                        fallback = raw_items[source_item_index] if source_item_index < len(raw_items) else raw_results
                         generated_items.append({
                             "index": index,
                             "local_index": local_index,
@@ -2902,7 +2940,10 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                         target_hw=emotion_target_hw,
                         stage=f"{stage_key} raw",
                     )
-                    self._save_stage(cache_dir, stage_key, raw_results)
+                    raw_cache = raw_results
+                    if regenerate_index is not None:
+                        raw_cache = self._replace_batch_item(_load_cached_tensor(cache_dir, stage_key), regenerate_index, raw_results)
+                    self._save_stage(cache_dir, stage_key, raw_cache)
                 if raw_results is not None:
                     bg_total = raw_results.shape[0] if torch.is_tensor(raw_results) and raw_results.ndim == 4 else len(generated_items)
                     bg_disabled = self._bg_remove_disabled(bg_settings)
@@ -2920,7 +2961,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                     cleaned_results = self._run_bg_remove(
                         raw_results,
                         bg_settings,
-                        background="Blue",
+                        background=background_color,
                         unique_id=unique_id,
                         cache_dir=cache_dir,
                         stage=bg_stage_key,

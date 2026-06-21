@@ -591,6 +591,7 @@ class EmotionGeneratorV2:
                         "sprite_output_path": sheet_output_path,
                         "source_path": _source_path,
                         "character": character,
+                        "background_color": background_color,
                         "costume": costume,
                         "costume_face": costume_face,
                         "costume_head": costume_head,

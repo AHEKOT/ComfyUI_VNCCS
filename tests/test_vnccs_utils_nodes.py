@@ -13,11 +13,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from nodes.vnccs_utils import (
     tensor2pil, pil2tensor, _ensure_float01,
+    _unwrap_node_result,
     VNCCS_QuadSplitter as _QS,  # also tested in sheet_manager; skip here
     VNCCS_ClothesTemplates,
     VNCCS_VLAnalyzer,
     _build_vl_analyzer_prompt,
     VNCCS_ColorFix,
+    VNCCSChromaKey,
     VNCCS_Resize,
     VNCCS_MaskExtractor,
     VNCCS_RMBG2,
@@ -30,6 +32,107 @@ from nodes.vnccs_utils import (
 
 def test_rmbg2_return_type_tolerates_legacy_high_slot_validation():
     assert VNCCS_RMBG2.RETURN_TYPES[5] == "IMAGE"
+
+
+def test_registered_node_result_unwraps_comfy_node_output():
+    NodeOutput = type("NodeOutput", (), {})
+    output = NodeOutput()
+    output.result = ({"processor": object()},)
+    output.args = ()
+
+    assert _unwrap_node_result(output) is output.result[0]
+
+
+def test_chroma_key_exposes_sam3_recovery_checkbox():
+    required = VNCCSChromaKey.INPUT_TYPES()["required"]
+    assert required["use_sam3_recovery_mask"][0] == "BOOLEAN"
+    assert required["use_sam3_recovery_mask"][1]["default"] is False
+
+
+def test_chroma_key_disabled_sam3_recovery_does_not_call_recovery(monkeypatch):
+    node = VNCCSChromaKey()
+
+    def fail_recovery(*args, **kwargs):
+        raise AssertionError("SAM3 recovery path should not run when disabled")
+
+    monkeypatch.setattr(node, "_chroma_key_with_sam3_recovery", fail_recovery)
+    image = torch.zeros((1, 8, 8, 3), dtype=torch.float32)
+
+    rgba, matte, debug = node.chroma_key(
+        image,
+        0.2,
+        0.16,
+        0.5,
+        3,
+        0.2,
+        0.35,
+        0.7,
+        0.2,
+        "guided_edge",
+        "auto",
+        "straight_rgba",
+        False,
+    )
+
+    assert rgba.shape == (1, 8, 8, 4)
+    assert matte.shape == (1, 8, 8)
+    assert debug.shape == (1, 8, 8, 3)
+
+
+def test_sam3_recovery_restores_only_shrunk_mask_area():
+    node = VNCCSChromaKey()
+    original = torch.zeros((12, 12, 3), dtype=torch.float32)
+    original[..., 0] = 1.0
+    rgba = torch.zeros((12, 12, 4), dtype=torch.float32)
+    alpha = torch.zeros((12, 12), dtype=torch.float32)
+    debug = torch.zeros((12, 12, 3), dtype=torch.float32)
+    recovery_mask = torch.zeros((12, 12), dtype=torch.float32)
+    recovery_mask[1:11, 1:11] = 1.0
+
+    restored_rgba, restored_alpha, _ = node._restore_recovery_details(
+        original=original,
+        rgba=rgba,
+        alpha=alpha,
+        debug=debug,
+        recovery_mask=recovery_mask,
+        output_mode="straight_rgba",
+    )
+
+    assert restored_alpha[5, 5].item() == pytest.approx(1.0)
+    assert restored_rgba[5, 5, 0].item() == pytest.approx(1.0)
+    assert restored_alpha[2, 2].item() == pytest.approx(0.0)
+    assert restored_rgba[2, 2, 0].item() == pytest.approx(0.0)
+
+
+def test_connected_key_fringe_suppression_is_not_used_by_chroma_key(monkeypatch):
+    node = VNCCSChromaKey()
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("connected fringe suppression must not run in base chroma key")
+
+    monkeypatch.setattr(node, "_suppress_connected_key_fringe", fail_if_called)
+    image = torch.zeros((1, 8, 8, 3), dtype=torch.float32)
+    image[..., 1] = 1.0
+
+    rgba, matte, debug = node.chroma_key(
+        image,
+        0.2,
+        0.16,
+        0.5,
+        3,
+        0.2,
+        0.35,
+        0.7,
+        0.2,
+        "guided_edge",
+        "green",
+        "straight_rgba",
+        False,
+    )
+
+    assert rgba.shape == (1, 8, 8, 4)
+    assert matte.shape == (1, 8, 8)
+    assert debug.shape == (1, 8, 8, 3)
 
 
 class TestClothesTemplates:

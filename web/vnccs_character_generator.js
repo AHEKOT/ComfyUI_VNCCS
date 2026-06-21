@@ -59,6 +59,7 @@ const DEFAULT_DATA = {
         // TODO: Decide what to do with internal RMBG later.
         use_internal_rmbg: false,
         preset: "balanced",
+        use_sam3_details_recovery: true,
     },
     ui: {
         selected_preview: "pose_generation",
@@ -1472,6 +1473,7 @@ class CharacterGeneratorWidget {
             attention_mode: "Attention backend for SeedVR. Auto-detected from installed ComfyUI packages until changed manually.",
             use_internal_rmbg: "Uses the built-in background remover instead of relying only on chroma key.",
             preset: "Strength preset for chroma/background removal.",
+            use_sam3_details_recovery: "Uses Easy SAM3 to restore character details after background removal.",
             use_sam: "Passes SAM and the optional segmentation detector into FaceDetailer."
         }[key];
         setHelpText(wrap, help);
@@ -1725,6 +1727,7 @@ class CharacterGeneratorWidget {
             this.settingsEl.appendChild(this.block("Face Detailer", faceDetailerFields));
             this.settingsEl.appendChild(this.block("BG Remove", [
                 this.field("bg_remove", "preset", "chroma preset", "select", ["disabled", "ultra_light", "light", "balanced", "strong", "aggressive"]),
+                this.field("bg_remove", "use_sam3_details_recovery", "Use SAM3 Details Recovery", "checkbox"),
             ]));
             return;
         }
@@ -1760,6 +1763,7 @@ class CharacterGeneratorWidget {
         this.settingsEl.appendChild(this.block("BG Remove", [
             // TODO: Decide what to do with internal RMBG later.
             this.field("bg_remove", "preset", "chroma preset", "select", ["disabled", "ultra_light", "light", "balanced", "strong", "aggressive"]),
+            this.field("bg_remove", "use_sam3_details_recovery", "Use SAM3 Details Recovery", "checkbox"),
         ]));
     }
 
