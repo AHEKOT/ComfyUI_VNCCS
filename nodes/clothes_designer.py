@@ -27,7 +27,7 @@ WORKFLOW_ENCODER_INSTRUCTION = (
     "maintaining consistency with the original character where appropriate."
 )
 WORKFLOW_ENCODER_DEFAULTS = {
-    "target_size": 1344,
+    "target_size": 1024,
     "upscale_method": "lanczos",
     "crop_method": "disabled",
     "latent_image_index": 1,

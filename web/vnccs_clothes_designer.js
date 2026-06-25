@@ -733,6 +733,14 @@ app.registerExtension({
                     showInfo("Costume Required", "Create a new costume first, then select it before generating a preview.");
                 };
 
+                const syncCostumeEditControls = () => {
+                    const canEdit = hasSelectedEditableCostume();
+                    if (els.wizardBtn) els.wizardBtn.disabled = !canEdit;
+                    ["top", "bottom", "head", "face", "shoes"].forEach(k => {
+                        if (els[k]) els[k].disabled = !canEdit;
+                    });
+                };
+
                 const onValidationError = (event) => {
                     const targetId = String(event.detail?.node_id);
                     const myId = String(node.id);
@@ -833,6 +841,10 @@ app.registerExtension({
                 };
 
                 const openClothesWizard = () => {
+                    if (!hasSelectedEditableCostume()) {
+                        showCreateCostumeRequired();
+                        return;
+                    }
                     let input;
                     showModal("Clothes Wizzard", () => {
                         const wrap = document.createElement("div");
@@ -1298,6 +1310,8 @@ app.registerExtension({
                     wizardBtn.className = "vnccs-btn vnccs-btn-primary cd-wizard-btn";
                     wizardBtn.innerText = "CLOTHES WIZZARD";
                     wizardBtn.onclick = openClothesWizard;
+                    wizardBtn.disabled = !hasSelectedEditableCostume();
+                    els.wizardBtn = wizardBtn;
                     container.appendChild(wizardBtn);
                     container.appendChild(createField("top", "e.g. White t-shirt"));
                     container.appendChild(createField("bottom", "e.g. Blue jeans"));
@@ -1428,6 +1442,7 @@ app.registerExtension({
                 costSel.onchange = async (e) => {
                     state.costume = e.target.value;
                     await loadCostumeInfo();
+                    syncCostumeEditControls();
                     updatePreviewImage();
                     saveState();
                 };
@@ -1458,6 +1473,7 @@ app.registerExtension({
                                 state.costume = n;
                                 costSel.value = n;
                                 await loadCostumeInfo();
+                                syncCostumeEditControls();
                                 updatePreviewImage();
                                 saveState();
                                 return false;
@@ -1698,14 +1714,10 @@ app.registerExtension({
                         if (els.btnGen) els.btnGen.disabled = false;
                         if (els.btnDel) els.btnDel.disabled = true;
                         if (els.costSel) els.costSel.disabled = true;
-                        // Disable Inputs
-                        ["top", "bottom", "head", "face", "shoes"].forEach(k => { if (els[k]) els[k].disabled = true; });
                     } else {
                         if (els.btnGen) els.btnGen.disabled = false;
                         if (els.btnDel) els.btnDel.disabled = false;
                         if (els.costSel) els.costSel.disabled = false;
-                        // Enable Inputs
-                        ["top", "bottom", "head", "face", "shoes"].forEach(k => { if (els[k]) els[k].disabled = false; });
 
                         // Select default if current is Naked or invalid
                         if (state.costume === "Naked" || !displayList.includes(state.costume)) {
@@ -1718,6 +1730,7 @@ app.registerExtension({
                     }
 
                     await loadCostumeInfo();
+                    syncCostumeEditControls();
                 };
 
                 const loadCostumeInfo = async () => {

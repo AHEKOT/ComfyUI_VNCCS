@@ -23,6 +23,7 @@ const DEFAULT_SCHEDULERS = [
 ];
 const DEFAULT_MODEL_STEPS = 4;
 const DEFAULT_MODEL_CFG = 1.0;
+const DEFAULT_MODEL_SCHEDULER = "simple";
 
 // ─── CSS injection (once per page load) ──────────────────────────────────────
 
@@ -1303,6 +1304,60 @@ class VNCCSControlCenterWidget {
         return this._metaType(entry).toLowerCase() === "turbolora";
     }
 
+    _qwenFourStepCfgOne() {
+        const p = this.state.model_params ?? {};
+        const steps = Number(p.steps ?? DEFAULT_MODEL_STEPS);
+        const cfg = Number(p.cfg ?? DEFAULT_MODEL_CFG);
+        return this._isQwenFamily() && steps === 4 && Math.abs(cfg - 1) < 1e-6;
+    }
+
+    _compatibleTurboLoras() {
+        const selectedKind = this._selectedKind();
+        return (this.config?.lora || []).filter(entry =>
+            !entry.custom && this._isTurboLora(entry) && this._sameKind(entry, selectedKind)
+        );
+    }
+
+    _preferredTurboLora() {
+        const entries = this._compatibleTurboLoras();
+        return entries.find(entry => {
+            const identity = `${entry.name || ""} ${entry.local_path || ""}`.toLowerCase();
+            return identity.includes("lightning");
+        }) || entries[0] || null;
+    }
+
+    _ensureRequiredTurboLora({ persist = true } = {}) {
+        if (!this._qwenFourStepCfgOne()) return false;
+        const turboEntries = this._compatibleTurboLoras();
+        if (!turboEntries.length) return false;
+
+        const turboNames = new Set(turboEntries.map(entry => entry.name));
+        const alreadyActive = (this.state.loras ?? []).some(lora =>
+            turboNames.has(lora?.name) && lora.auto_apply === true
+        );
+        if (alreadyActive) return false;
+
+        const target = this._preferredTurboLora();
+        if (!target) return false;
+
+        if (!this.state.loras) this.state.loras = [];
+        for (const name of turboNames) {
+            const idx = this.state.loras.findIndex(lora => lora.name === name);
+            if (idx >= 0) {
+                this.state.loras[idx].auto_apply = name === target.name;
+                this.state.loras[idx].strength = 1.0;
+            } else {
+                this.state.loras.push({
+                    name,
+                    auto_apply: name === target.name,
+                    strength: 1.0,
+                });
+            }
+        }
+        if (persist) this._saveState();
+        return true;
+    }
+
     _isHelperLora(entry) {
         return this._metaType(entry).toLowerCase() === "helper";
     }
@@ -1929,6 +1984,7 @@ class VNCCSControlCenterWidget {
             this.config = window.VNCCS_CC_REGISTRY[repoId];
             this.statusText.textContent = this.config.name || "Control Center";
             if (!this.state.output_slot_names) this.state.output_slot_names = [];
+            this._ensureRequiredTurboLora();
             this._renderAll();
             this._dispatchLoraOptions();
         }
@@ -1940,6 +1996,7 @@ class VNCCSControlCenterWidget {
                 this.config = data;
                 this.statusText.textContent = data.name || "Control Center";
                 if (!this.state.output_slot_names) this.state.output_slot_names = [];
+                this._ensureRequiredTurboLora();
                 this._renderAll();
                 this._dispatchLoraOptions();
             } catch { /* already shown by the original caller */ }
@@ -1968,6 +2025,7 @@ class VNCCSControlCenterWidget {
             localStorage.setItem(cacheKey, JSON.stringify(data));
             this._syncCnetSlots(data);
             await this._refreshDependencyStatus(true);
+            this._ensureRequiredTurboLora();
             this._renderAll();
             this._dispatchLoraOptions();
             window.dispatchEvent(new CustomEvent("vnccs-cc-registry-updated", {
@@ -2012,6 +2070,7 @@ class VNCCSControlCenterWidget {
 
     _renderAll() {
         if (!this.config) return;
+        this._ensureRequiredTurboLora();
         this.scrollArea.innerHTML = "";
 
         // TECH DEBT: legacy Nunchaku error rendering disabled. Delete after
@@ -2730,6 +2789,7 @@ class VNCCSControlCenterWidget {
     _modelParamsSave(patch) {
         if (!this.state.model_params) this.state.model_params = {};
         Object.assign(this.state.model_params, patch);
+        this._ensureRequiredTurboLora({ persist: false });
         this._saveState();
     }
 
@@ -2763,7 +2823,7 @@ class VNCCSControlCenterWidget {
 
     _renderModelSamplerParams() {
         const p  = this.state.model_params ?? {};
-        const mp = { sampler: "euler", scheduler: "karras", ...p };
+        const mp = { sampler: "euler", scheduler: DEFAULT_MODEL_SCHEDULER, ...p };
 
         const panel = document.createElement("div");
         panel.className = "vnccs-cc-params vnccs-cc-params--right";

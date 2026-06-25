@@ -466,3 +466,94 @@ class TestControlCenterCustomModel:
         assert captured["model_entry"] == context_model
         assert pipe.sample_steps == 4
         assert pipe.cfg == 1.0
+        assert pipe.scheduler == "simple"
+
+
+class TestControlCenterRequiredTurboLora:
+    def test_qwen_four_step_cfg_one_forces_lightning_lora_for_process(self, monkeypatch):
+        model = object()
+        clip = object()
+        vae = object()
+        model_entry = {"name": "Qwen-Image-Edit-2511-GGUF-Q5", "type": "gguf", "kind": "QIE2511"}
+        lightning_entry = {
+            "name": "Qwen Image Edit 2511 Lightning",
+            "type": "TurboLora",
+            "kind": "QIE2511",
+            "local_path": "models/loras/qwen/Qwen-Image-Edit-2511-Lightning.safetensors",
+        }
+
+        monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
+            "models": [model_entry],
+            "clip": [{"name": "clip_a", "kind": "QIE2511"}],
+            "vae": [{"name": "vae_a", "kind": "QIE2511"}],
+            "lora": [lightning_entry],
+        })
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._load_model_block",
+            lambda *args, **kwargs: (model, clip, vae),
+        )
+        captured = {}
+
+        def fake_apply_loras(model_arg, clip_arg, lora_states, config, model_type, **kwargs):
+            captured["lora_states"] = lora_states
+            return model_arg, clip_arg
+
+        monkeypatch.setattr("nodes.vnccs_control_center._apply_loras", fake_apply_loras)
+
+        pipe = _build_control_center_pipe(
+            "demo/repo",
+            {
+                "selected_type": "gguf",
+                "selected_model": "Qwen-Image-Edit-2511-GGUF-Q5",
+                "loras": [],
+                "model_params": {"steps": 4, "cfg": 1},
+            },
+        )
+
+        assert pipe.model is model
+        assert captured["lora_states"] == [
+            {"name": "Qwen Image Edit 2511 Lightning", "auto_apply": True, "strength": 1.0}
+        ]
+        assert pipe.lora_states == captured["lora_states"]
+
+    def test_qwen_non_four_step_does_not_force_lightning_lora(self, monkeypatch):
+        model = object()
+        clip = object()
+        vae = object()
+        model_entry = {"name": "Qwen-Image-Edit-2511-GGUF-Q5", "type": "gguf", "kind": "QIE2511"}
+        lightning_entry = {
+            "name": "Qwen Image Edit 2511 Lightning",
+            "type": "TurboLora",
+            "kind": "QIE2511",
+            "local_path": "models/loras/qwen/Qwen-Image-Edit-2511-Lightning.safetensors",
+        }
+
+        monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
+            "models": [model_entry],
+            "clip": [{"name": "clip_a", "kind": "QIE2511"}],
+            "vae": [{"name": "vae_a", "kind": "QIE2511"}],
+            "lora": [lightning_entry],
+        })
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._load_model_block",
+            lambda *args, **kwargs: (model, clip, vae),
+        )
+        captured = {}
+
+        def fake_apply_loras(model_arg, clip_arg, lora_states, config, model_type, **kwargs):
+            captured["lora_states"] = lora_states
+            return model_arg, clip_arg
+
+        monkeypatch.setattr("nodes.vnccs_control_center._apply_loras", fake_apply_loras)
+
+        _build_control_center_pipe(
+            "demo/repo",
+            {
+                "selected_type": "gguf",
+                "selected_model": "Qwen-Image-Edit-2511-GGUF-Q5",
+                "loras": [],
+                "model_params": {"steps": 8, "cfg": 1},
+            },
+        )
+
+        assert captured["lora_states"] == []
