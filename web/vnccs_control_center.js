@@ -1571,7 +1571,9 @@ class VNCCSControlCenterWidget {
         const btns = document.createElement("div");
         btns.className = "vnccs-cc-header-btns";
         btns.appendChild(this._btn("↺", () => {
-            const r = this._getRepoId(); r ? this.fetchConfig(r, true) : alert("Enter repo_id first.");
+            const r = this._getRepoId();
+            if (r) this.fetchConfig(r, true);
+            else this.showMessage("Enter repo_id first.", true);
         }, "Refresh config"));
         btns.appendChild(this._btn("⚙", () => this._showSettings(), "Settings"));
 

@@ -781,10 +781,38 @@ app.registerExtension({
                 costumesScroll.removeEventListener("scroll", updateScrollButtons);
             });
 
+            const showSpriteMessage = (titleText, messageText) => {
+                const overlay = document.createElement("div");
+                overlay.className = "vnccs-sm-modal-overlay";
+
+                const modal = document.createElement("div");
+                modal.className = "vnccs-sm-modal";
+
+                const title = document.createElement("div");
+                title.className = "vnccs-sm-modal-title";
+                title.innerText = titleText;
+
+                const content = document.createElement("div");
+                content.className = "vnccs-sm-modal-content";
+                content.innerText = String(messageText ?? "");
+
+                const buttons = document.createElement("div");
+                buttons.className = "vnccs-sm-modal-buttons";
+                const btnClose = document.createElement("button");
+                btnClose.className = "vnccs-sm-modal-btn vnccs-sm-modal-btn-confirm";
+                btnClose.innerText = "OK";
+                btnClose.onclick = () => overlay.remove();
+
+                buttons.appendChild(btnClose);
+                modal.append(title, content, buttons);
+                overlay.appendChild(modal);
+                container.appendChild(overlay);
+            };
+
             // Cleanup button handler
             btnCleanup.onclick = async () => {
                 if (!state.character) {
-                    alert("Please select a character first");
+                    showSpriteMessage("No Character Selected", "Please select a character first");
                     return;
                 }
 
@@ -793,7 +821,7 @@ app.registerExtension({
                     const data = await res.json();
 
                     if (data.error) {
-                        alert("Error: " + data.error);
+                        showSpriteMessage("Error", data.error);
                         return;
                     }
 
