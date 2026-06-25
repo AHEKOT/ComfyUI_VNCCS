@@ -440,23 +440,6 @@ class ClothesDesigner:
         if model is None or clip is None or vae is None:
             raise ValueError("Incoming VNCCS pipe is missing model, clip, or vae.")
         
-        # 0. Cache Check
-        import hashlib
-        self.get_cache_paths(character_name, costume_name)
-
-        # Stable Hash Calculation
-        try:
-            if isinstance(widget_data, str):
-                msg_obj = json.loads(widget_data)
-            else:
-                msg_obj = widget_data
-            
-            # Canonical JSON representation
-            canonical_str = json.dumps(msg_obj, sort_keys=True, separators=(',', ':'))
-            input_hash = hashlib.sha256(canonical_str.encode('utf-8')).hexdigest()
-        except:
-             input_hash = "INVALID"
-
         # 0. Validation
         def has_base_body(c):
              return bool(
@@ -472,6 +455,50 @@ class ClothesDesigner:
         
         # 2. Paths
         sheet_path = sheets_dir(character_name, costume_name, "neutral") 
+
+        seed_int = int(getattr(pipe, "seed_int", getattr(pipe, "seed", 0)) or WORKFLOW_SAMPLER_DEFAULTS["seed"])
+        sample_steps = int(getattr(pipe, "sample_steps", getattr(pipe, "steps", 0)) or WORKFLOW_SAMPLER_DEFAULTS["steps"])
+        cfg = float(getattr(pipe, "cfg", 0.0) or WORKFLOW_SAMPLER_DEFAULTS["cfg"])
+        denoise = float(getattr(pipe, "denoise", 0.0) or WORKFLOW_SAMPLER_DEFAULTS["denoise"])
+        sampler_name = getattr(pipe, "sampler_name", None) or WORKFLOW_SAMPLER_DEFAULTS["sampler_name"]
+        scheduler = getattr(pipe, "scheduler", None) or WORKFLOW_SAMPLER_DEFAULTS["scheduler"]
+        clothes_core_lora = _resolve_pipe_clothes_core_lora(pipe)
+
+        # 3. Cache check
+        import hashlib
+        c_img_path, c_info_path = self.get_cache_paths(character_name, costume_name)
+        try:
+            cache_payload = {
+                "widget_data": data,
+                "sampler": {
+                    "seed": seed_int,
+                    "steps": sample_steps,
+                    "cfg": cfg,
+                    "denoise": denoise,
+                    "sampler_name": sampler_name,
+                    "scheduler": scheduler,
+                },
+                "clothes_core_lora": clothes_core_lora,
+            }
+            canonical_str = json.dumps(cache_payload, sort_keys=True, separators=(',', ':'))
+            input_hash = hashlib.sha256(canonical_str.encode('utf-8')).hexdigest()
+        except Exception:
+             input_hash = "INVALID"
+
+        if input_hash != "INVALID" and os.path.exists(c_img_path) and os.path.exists(c_info_path):
+            try:
+                with open(c_info_path, "r", encoding="utf-8") as f:
+                    cache_info = json.load(f)
+                if cache_info.get("hash") == input_hash:
+                    print(f"[ClothesDesigner] Cache hit for {character_name}/{costume_name}; reusing existing preview.")
+                    img = Image.open(c_img_path).convert("RGB")
+                    image_np = np.array(img).astype(np.float32) / 255.0
+                    image = torch.from_numpy(image_np).unsqueeze(0)
+                    server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": str(unique_id), "character": character_name})
+                    bg_color = gen_settings.get("background_color", "Green")
+                    return (image, sheet_path, bg_color)
+            except Exception as exc:
+                print(f"[ClothesDesigner] Cache read failed, regenerating preview: {exc}")
 
         ref_image = self.get_reference_sprite(character_name, data)
         if ref_image is None:
@@ -515,13 +542,6 @@ class ClothesDesigner:
             **WORKFLOW_ENCODER_DEFAULTS,
         )
         
-        seed_int = int(getattr(pipe, "seed_int", getattr(pipe, "seed", 0)) or WORKFLOW_SAMPLER_DEFAULTS["seed"])
-        sample_steps = int(getattr(pipe, "sample_steps", getattr(pipe, "steps", 0)) or WORKFLOW_SAMPLER_DEFAULTS["steps"])
-        cfg = float(getattr(pipe, "cfg", 0.0) or WORKFLOW_SAMPLER_DEFAULTS["cfg"])
-        denoise = float(getattr(pipe, "denoise", 0.0) or WORKFLOW_SAMPLER_DEFAULTS["denoise"])
-        sampler_name = getattr(pipe, "sampler_name", None) or WORKFLOW_SAMPLER_DEFAULTS["sampler_name"]
-        scheduler = getattr(pipe, "scheduler", None) or WORKFLOW_SAMPLER_DEFAULTS["scheduler"]
-
         out_pipe = PipeContext(
             source=pipe,
             model=model, clip=clip, vae=vae,
@@ -534,7 +554,6 @@ class ClothesDesigner:
             scheduler=scheduler,
         )
 
-        clothes_core_lora = _resolve_pipe_clothes_core_lora(pipe)
         print(f"[ClothesDesigner] Applying VNCCS Clothes Core LoRA from pipe: {clothes_core_lora} (strength=1)")
         sampler_model = _call_comfy_node(
             "LoraLoaderModelOnly",
@@ -582,7 +601,6 @@ class ClothesDesigner:
 
         # Cache for UI preview
         try:
-             c_img_path, c_info_path = self.get_cache_paths(character_name, costume_name)
              i_pil = Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
              i_pil.save(c_img_path)
              
