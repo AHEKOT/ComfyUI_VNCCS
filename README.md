@@ -1,7 +1,6 @@
 ![Header](images/README.png)
----
-# VNCCS - Visual Novel Character Creation Suite
 
+---
 <table>
 <tr>
 <td width="50%" align="center">
@@ -112,6 +111,8 @@ Did you generate the character with another model? Download it from the internet
 
 Try to make sure the picture is good quality and that the character is full body, otherwise the model will invent everything that is not visible in the picture!
 
+![Header](images/v3/ReadMe6.png)
+
 Now load it into **VNCCS Character Cloner**, write tags or press **ANALYZE CAPTIONS**, set up everything you need in **VNCCS Pose Studio**, and do not forget to choose whether you need separate undressed sprites with the **NSFW** button. They are not mandatory, but dressing these characters later will be MUCH easier!
 
 Also try to choose a background color that appears the least in the character. Look at the eyes and hair. If they are green, choose blue. Or the other way around.
@@ -127,6 +128,8 @@ Open the workflow:
 Now we move to the tastiest part! In this workflow, you will make clothes for the character. As many sets as you think you need.
 
 Choose a character in **VNCCS Clothes Designer** and press **New**. Give the outfit set a name and get ready to create!
+
+![Header](images/v3/ReadMe7.png)
 
 You have two options again:
 
@@ -151,6 +154,8 @@ Here we will create emotions for the character! Up to this moment, all sprites h
 
 In the **VNCCS Emotion Studio** widget, choose the character you are going to make emotions for. In **Selected costumes**, choose all costumes you want to work with.
 
+![Header](images/v3/ReadMe8.png)
+
 Now, in the huge list, click the emotions you need and add them to the selected ones. Also, if by some miracle you did not find what you need, you can add a **Custom** emotion and describe what you want yourself.
 
 After that, you again need to decide which model will do the generation.
@@ -158,6 +163,9 @@ After that, you again need to decide which model will do the generation.
 **Illustrious** is stable, but the variety of emotions depends very strongly on the exact character, style, and model. Not all emotions may come out equally well.
 
 **Anima** makes very cool emotions, but it is still too young, so it can be unstable. It can change character details too much, so try it yourself and decide what you like better.
+
+![Header](images/v3/ReadMe9.png)
+
 
 In **VNCCS Emotions Generator**, the most important setting is **Face Detailer Denoise**. It will suggest optimal values by itself, but remember one basic idea: the higher the denoise, the more the original image changes.
 
@@ -173,8 +181,7 @@ Press **Run**, and may luck be with you!
 
 At this point, the current VNCCS features end, but not for long! Planned features include animations, 3D environments and CG image creation inside them, character voice generation, and music track generation for your game or project.
 
-You will find all your sprites inside ComfyUI in:
-
-`output/vnccs`
+You will find all your sprites inside ComfyUI in:`ComfyUI\output\VNCCS\Characters\` folder
 
 Be careful with them, and do not delete them by accident while cleaning your disk!
+![Header](images/v3/footer.png)
