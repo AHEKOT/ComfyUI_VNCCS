@@ -23,6 +23,21 @@ import cv2
 import torch.nn.functional as F
 
 try:
+    import requests
+except Exception:
+    requests = None
+
+try:
+    from aiohttp import web
+except Exception:
+    web = None
+
+try:
+    import server
+except Exception:
+    server = None
+
+try:
     from ..utils import get_full_path_agnostic
 except Exception:
     from utils import get_full_path_agnostic
@@ -46,9 +61,10 @@ except ImportError:
     folder_paths = None
 
 try:
-    from huggingface_hub import hf_hub_download
+    from huggingface_hub import hf_hub_download, hf_hub_url
 except ImportError:
     hf_hub_download = None
+    hf_hub_url = None
 
 # Device selection used by RMBG/BiRefNet models
 def _select_torch_device():
@@ -77,6 +93,22 @@ QWEN_VL_MMPROJ_NAMES = [
     "mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf",
     "mmproj-Qwen2-VL-7B-Instruct-f16.gguf",
 ]
+QWEN_VL_MODEL_REPO_ID = "unsloth/Qwen2.5-VL-7B-Instruct-GGUF"
+QWEN_VL_MODEL_FILENAME = "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
+QWEN_VL_MMPROJ_FILENAME = "mmproj-F16.gguf"
+QWEN_VL_ENV_REPO = "VNCCS_QWEN_VL_REPO_ID"
+QWEN_VL_ENV_MODEL_FILENAME = "VNCCS_QWEN_VL_MODEL_FILENAME"
+QWEN_VL_ENV_MMPROJ_FILENAME = "VNCCS_QWEN_VL_MMPROJ_FILENAME"
+QWEN_VL_ENV_REVISION = "VNCCS_QWEN_VL_REVISION"
+_QWEN_VL_DOWNLOAD_LOCK = threading.Lock()
+_QWEN_VL_DOWNLOAD_STATUS = {
+    "status": "idle",
+    "progress": 0,
+    "current_file": "",
+    "total_size": 0,
+    "downloaded_size": 0,
+    "error": "",
+}
 
 # Ensure RMBG model folder paths are registered
 if folder_paths:
@@ -209,6 +241,216 @@ def _find_qwen_vl_mmproj(model_path):
     except OSError:
         return None
     return None
+
+
+def _qwen_vl_download_dir():
+    if not folder_paths or not getattr(folder_paths, "models_dir", None):
+        return os.path.join("models", "LLM")
+    return os.path.join(folder_paths.models_dir, "LLM")
+
+
+def _set_qwen_vl_download_status(**updates):
+    _QWEN_VL_DOWNLOAD_STATUS.update(updates)
+
+
+def _reset_qwen_vl_download_status(status="idle"):
+    _QWEN_VL_DOWNLOAD_STATUS.update({
+        "status": status,
+        "progress": 0,
+        "current_file": "",
+        "total_size": 0,
+        "downloaded_size": 0,
+        "error": "",
+    })
+
+
+def _download_qwen_vl_file(repo_id, filename, target_dir, revision=None):
+    if requests is None or hf_hub_url is None:
+        if hf_hub_download is None:
+            raise RuntimeError(
+                "huggingface_hub is not installed. Install it or place "
+                f"'{filename}' in '{target_dir}'."
+            )
+        _set_qwen_vl_download_status(
+            status="downloading",
+            current_file=filename,
+            progress=0,
+            total_size=0,
+            downloaded_size=0,
+            error="",
+        )
+        path = hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            revision=revision,
+            local_dir=target_dir,
+        )
+        _validate_gguf_file(path, filename)
+        _set_qwen_vl_download_status(status="downloading", current_file=filename, progress=100)
+        return path
+
+    if hf_hub_url is None:
+        raise RuntimeError(
+            "huggingface_hub is not installed. Install it or place "
+            f"'{filename}' in '{target_dir}'."
+        )
+    os.makedirs(target_dir, exist_ok=True)
+    dest_path = os.path.join(target_dir, filename)
+    tmp_path = dest_path + ".part"
+    print(f"[VNCCS QwenVL] Downloading '{filename}' from Hugging Face repo '{repo_id}'...")
+    _set_qwen_vl_download_status(
+        status="downloading",
+        current_file=filename,
+        progress=0,
+        total_size=0,
+        downloaded_size=0,
+        error="",
+    )
+    try:
+        headers = {}
+        token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        url = hf_hub_url(repo_id=repo_id, filename=filename, revision=revision)
+        with requests.get(url, stream=True, timeout=(30, 60), headers=headers) as response:
+            response.raise_for_status()
+            total_size = int(response.headers.get("content-length", 0) or 0)
+            downloaded_size = 0
+            _set_qwen_vl_download_status(total_size=total_size, downloaded_size=0)
+            with open(tmp_path, "wb") as file:
+                for chunk in response.iter_content(1024 * 1024):
+                    if not chunk:
+                        continue
+                    file.write(chunk)
+                    downloaded_size += len(chunk)
+                    progress = int((downloaded_size / total_size) * 100) if total_size > 0 else 0
+                    _set_qwen_vl_download_status(
+                        downloaded_size=downloaded_size,
+                        progress=max(0, min(99, progress)),
+                    )
+        if total_size > 0 and downloaded_size != total_size:
+            raise ValueError(f"Incomplete download for {filename}: {downloaded_size} of {total_size} bytes")
+        _validate_gguf_file(tmp_path, filename)
+        os.replace(tmp_path, dest_path)
+        _set_qwen_vl_download_status(
+            current_file=filename,
+            progress=100,
+            downloaded_size=downloaded_size,
+            total_size=total_size,
+        )
+        print(f"[VNCCS QwenVL] File ready: {dest_path}")
+        return dest_path
+    except Exception:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception as cleanup_exc:
+            print(f"[VNCCS QwenVL] Failed to remove partial download '{tmp_path}': {cleanup_exc}")
+        raise
+
+
+def _ensure_qwen_vl_assets():
+    model_path = _find_qwen_vl_model()
+    mmproj_path = _find_qwen_vl_mmproj(model_path) if model_path else None
+    if model_path and mmproj_path:
+        _validate_gguf_file(model_path, os.path.basename(model_path))
+        _validate_gguf_file(mmproj_path, os.path.basename(mmproj_path))
+        _set_qwen_vl_download_status(
+            status="completed",
+            progress=100,
+            current_file="QwenVL assets ready",
+            error="",
+        )
+        return model_path, mmproj_path
+
+    with _QWEN_VL_DOWNLOAD_LOCK:
+        model_path = _find_qwen_vl_model()
+        mmproj_path = _find_qwen_vl_mmproj(model_path) if model_path else None
+        if model_path and mmproj_path:
+            _validate_gguf_file(model_path, os.path.basename(model_path))
+            _validate_gguf_file(mmproj_path, os.path.basename(mmproj_path))
+            _set_qwen_vl_download_status(
+                status="completed",
+                progress=100,
+                current_file="QwenVL assets ready",
+                error="",
+            )
+            return model_path, mmproj_path
+
+        repo_id = os.environ.get(QWEN_VL_ENV_REPO, QWEN_VL_MODEL_REPO_ID)
+        model_filename = os.path.basename(
+            os.environ.get(QWEN_VL_ENV_MODEL_FILENAME, QWEN_VL_MODEL_FILENAME)
+            or QWEN_VL_MODEL_FILENAME
+        )
+        mmproj_filename = os.path.basename(
+            os.environ.get(QWEN_VL_ENV_MMPROJ_FILENAME, QWEN_VL_MMPROJ_FILENAME)
+            or QWEN_VL_MMPROJ_FILENAME
+        )
+        revision = os.environ.get(QWEN_VL_ENV_REVISION) or None
+        target_dir = os.path.dirname(model_path) if model_path else _qwen_vl_download_dir()
+
+        try:
+            if not model_path:
+                model_path = _download_qwen_vl_file(repo_id, model_filename, target_dir, revision=revision)
+            if not _find_qwen_vl_mmproj(model_path):
+                mmproj_path = _download_qwen_vl_file(repo_id, mmproj_filename, os.path.dirname(model_path), revision=revision)
+            else:
+                mmproj_path = _find_qwen_vl_mmproj(model_path)
+        except Exception as exc:
+            _set_qwen_vl_download_status(status="error", error=str(exc))
+            raise RuntimeError(
+                "Failed to download QwenVL GGUF assets. "
+                f"Place '{model_filename}' and '{mmproj_filename}' in '{target_dir}' manually "
+                f"or check access to Hugging Face repo '{repo_id}'. Original error: {exc}"
+            ) from exc
+
+        _validate_gguf_file(model_path, os.path.basename(model_path))
+        _validate_gguf_file(mmproj_path, os.path.basename(mmproj_path))
+        _set_qwen_vl_download_status(
+            status="completed",
+            progress=100,
+            current_file="QwenVL assets ready",
+            error="",
+        )
+        return model_path, mmproj_path
+
+
+def _qwen_vl_download_worker():
+    try:
+        _ensure_qwen_vl_assets()
+    except Exception as exc:
+        _set_qwen_vl_download_status(status="error", error=str(exc))
+
+
+if server is not None and web is not None:
+    @server.PromptServer.instance.routes.get("/vnccs/qwen_vl_download_status")
+    async def qwen_vl_download_status(request):
+        return web.json_response(dict(_QWEN_VL_DOWNLOAD_STATUS))
+
+    @server.PromptServer.instance.routes.post("/vnccs/qwen_vl_download_model")
+    async def qwen_vl_download_model(request):
+        if _QWEN_VL_DOWNLOAD_STATUS.get("status") == "downloading":
+            return web.json_response(dict(_QWEN_VL_DOWNLOAD_STATUS), status=409)
+        try:
+            model_path = _find_qwen_vl_model()
+            mmproj_path = _find_qwen_vl_mmproj(model_path) if model_path else None
+            if model_path and mmproj_path:
+                _validate_gguf_file(model_path, os.path.basename(model_path))
+                _validate_gguf_file(mmproj_path, os.path.basename(mmproj_path))
+                _set_qwen_vl_download_status(
+                    status="completed",
+                    progress=100,
+                    current_file="QwenVL assets ready",
+                    error="",
+                )
+                return web.json_response(dict(_QWEN_VL_DOWNLOAD_STATUS))
+        except Exception:
+            pass
+
+        _reset_qwen_vl_download_status("downloading")
+        thread = threading.Thread(target=_qwen_vl_download_worker, daemon=True)
+        thread.start()
+        return web.json_response({"status": "started"})
 
 
 def _get_qwen_vl_chat_handler(llama_cpp):
@@ -359,23 +601,10 @@ class VNCCS_VLAnalyzer:
         except Exception as exc:
             raise RuntimeError(f"llama-cpp-python is required for VNCCS VL analyzer: {exc}") from exc
 
-        model_path = _find_qwen_vl_model()
-        if not model_path:
-            raise RuntimeError("VNCCS VL analyzer: no QwenVL GGUF model found.")
-
         try:
-            _validate_gguf_file(model_path, os.path.basename(model_path))
+            model_path, mmproj_path = _ensure_qwen_vl_assets()
         except Exception as exc:
-            raise RuntimeError(f"VNCCS VL analyzer: QwenVL model file is invalid or incomplete: {exc}") from exc
-
-        mmproj_path = _find_qwen_vl_mmproj(model_path)
-        if not mmproj_path:
-            raise RuntimeError("VNCCS VL analyzer: no QwenVL vision projector (mmproj) GGUF found.")
-
-        try:
-            _validate_gguf_file(mmproj_path, os.path.basename(mmproj_path))
-        except Exception as exc:
-            raise RuntimeError(f"VNCCS VL analyzer: QwenVL vision projector file is invalid or incomplete: {exc}") from exc
+            raise RuntimeError(f"VNCCS VL analyzer: failed to prepare QwenVL assets: {exc}") from exc
 
         prompt = _build_vl_analyzer_prompt(clothing_tags)
         image_uri = _tensor_to_vl_data_uri(image)

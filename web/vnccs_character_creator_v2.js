@@ -1091,6 +1091,35 @@ const STYLE = `
     box-sizing: border-box;
     resize: vertical;
 }
+
+.vnccs-qwenvl-download-status {
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.vnccs-qwenvl-download-track {
+    width: 100%;
+    height: 8px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,143,163,0.16);
+}
+
+.vnccs-qwenvl-download-bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+    transition: width 0.2s ease;
+}
+
+.vnccs-qwenvl-download-pct {
+    color: var(--accent-hover);
+    font-size: 11px;
+    font-weight: 800;
+    text-align: right;
+}
 `;
 
 app.registerExtension({
@@ -2770,6 +2799,64 @@ app.registerExtension({
                     }, [{ text: "OK", class: "vnccs-btn-primary" }]);
                 };
 
+                const ensureQwenVLReady = async () => {
+                    const start = await api.fetchApi("/vnccs/qwen_vl_download_model", { method: "POST" });
+                    if (!start.ok && start.status !== 409) {
+                        let err;
+                        try { err = await start.json(); } catch (e) { err = { error: await start.text() }; }
+                        throw new Error(err?.error || err?.message || "Failed to start QwenVL download.");
+                    }
+
+                    const { overlay, modal } = showModal("Downloading QwenVL...", () => {
+                        const d = document.createElement("div");
+                        d.className = "vnccs-character-wizard-modal";
+                        d.innerHTML = `
+                            <div class="vnccs-qwenvl-download-status" id="vnccs-qwenvl-status">Preparing model files...</div>
+                            <div class="vnccs-qwenvl-download-track">
+                                <div class="vnccs-qwenvl-download-bar" id="vnccs-qwenvl-bar"></div>
+                            </div>
+                            <div class="vnccs-qwenvl-download-pct" id="vnccs-qwenvl-pct">0%</div>
+                        `;
+                        return d;
+                    }, []);
+
+                    const statusEl = modal.querySelector("#vnccs-qwenvl-status");
+                    const barEl = modal.querySelector("#vnccs-qwenvl-bar");
+                    const pctEl = modal.querySelector("#vnccs-qwenvl-pct");
+
+                    return await new Promise((resolve, reject) => {
+                        const poll = async () => {
+                            try {
+                                const r = await api.fetchApi("/vnccs/qwen_vl_download_status");
+                                if (!r.ok) throw new Error(await r.text());
+                                const d = await r.json();
+                                const progress = Math.max(0, Math.min(100, Number(d.progress) || 0));
+                                statusEl.innerText = d.current_file ? `Downloading ${d.current_file}...` : "Preparing model files...";
+                                barEl.style.width = `${progress}%`;
+                                pctEl.innerText = `${progress}%`;
+                                if (d.status === "completed") {
+                                    statusEl.innerText = "QwenVL ready.";
+                                    barEl.style.width = "100%";
+                                    pctEl.innerText = "100%";
+                                    setTimeout(() => overlay.remove(), 450);
+                                    resolve(true);
+                                    return;
+                                }
+                                if (d.status === "error") {
+                                    overlay.remove();
+                                    reject(new Error(d.error || "QwenVL download failed."));
+                                    return;
+                                }
+                                setTimeout(poll, 700);
+                            } catch (e) {
+                                overlay.remove();
+                                reject(e);
+                            }
+                        };
+                        poll();
+                    });
+                };
+
                 const openCharacterWizard = () => {
                     let input;
                     showModal("Character Wizzard", () => {
@@ -2796,8 +2883,10 @@ app.registerExtension({
                                     return true;
                                 }
                                 btn.disabled = true;
-                                btn.innerText = "THINKING...";
+                                btn.innerText = "CHECKING MODEL...";
                                 try {
+                                    await ensureQwenVLReady();
+                                    btn.innerText = "THINKING...";
                                     const r = await api.fetchApi("/vnccs/character_wizard", {
                                         method: "POST",
                                         headers: { "Content-Type": "application/json" },

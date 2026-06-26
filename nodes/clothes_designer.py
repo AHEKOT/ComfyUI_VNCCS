@@ -17,6 +17,7 @@ from ..utils import (
     ensure_safe_name, safe_join_under, safe_relative_path
 )
 from .character_generator import _call_comfy_node
+from .vnccs_utils import _ensure_qwen_vl_assets
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 WORKFLOW_ENCODER_CLASS = "VNCCS_QWEN_Encoder"
@@ -189,6 +190,11 @@ def _find_clothes_wizard_model():
             if os.path.exists(path):
                 return path
     return None
+
+
+def _ensure_clothes_wizard_model():
+    model_path, _mmproj_path = _ensure_qwen_vl_assets()
+    return model_path
 
 
 def _parse_clothes_wizard_json(content):
@@ -680,13 +686,14 @@ async def vnccs_clothes_wizard(request):
         if not user_description:
             return web.Response(status=400, text="No clothes description provided")
 
-        model_path = _find_clothes_wizard_model()
-        if not model_path:
+        try:
+            model_path = _ensure_clothes_wizard_model()
+        except Exception as e:
             return web.json_response({
-                "error": "MODEL_MISSING",
-                "message": "No Qwen GGUF model found.",
+                "error": "MODEL_DOWNLOAD_FAILED",
+                "message": str(e),
                 "model_name": "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
-            }, status=404)
+            }, status=500)
 
         try:
             _validate_clothes_wizard_gguf(model_path, os.path.basename(model_path))
