@@ -89,6 +89,7 @@ _DEFAULT_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024 * 1024
 _DOWNLOAD_TIMEOUT = (10, 60)
 DEFAULT_MODEL_STEPS = 4
 DEFAULT_MODEL_CFG = 1.0
+DEFAULT_MODEL_SCHEDULER = "simple"
 NUNCHAKU_DISABLED_MESSAGE = (
     "Nunchaku support is disabled in VNCCS. Use GGUF models instead."
 )
@@ -724,6 +725,62 @@ def _lora_matches_model_kind(lora_entry, model_entry):
     return not lora_kind or not model_kind or lora_kind == model_kind
 
 
+def _is_qwen_model_entry(model_entry):
+    identity = " ".join([
+        str(_entry_kind(model_entry)),
+        str((model_entry or {}).get("name", "")),
+        str((model_entry or {}).get("local_path", "")),
+    ]).lower()
+    return "qwen" in identity or "qie" in identity
+
+
+def _is_four_step_cfg_one(model_params):
+    try:
+        steps = int((model_params or {}).get("steps") or DEFAULT_MODEL_STEPS)
+        cfg = float((model_params or {}).get("cfg") if (model_params or {}).get("cfg") is not None else DEFAULT_MODEL_CFG)
+    except (TypeError, ValueError):
+        return False
+    return steps == 4 and abs(cfg - 1.0) < 1e-6
+
+
+def _ensure_required_turbo_lora_state(loras, config, model_entry, model_params):
+    loras = list(loras or [])
+    if not _is_qwen_model_entry(model_entry) or not _is_four_step_cfg_one(model_params):
+        return loras
+
+    turbo_entries = [
+        entry for entry in config.get("lora", [])
+        if _entry_type(entry) == "turbolora" and _lora_matches_model_kind(entry, model_entry)
+    ]
+    if not turbo_entries:
+        return loras
+
+    turbo_names = {entry.get("name") for entry in turbo_entries if entry.get("name")}
+    if any(item.get("name") in turbo_names and item.get("auto_apply", False) for item in loras):
+        return loras
+
+    target = next(
+        (
+            entry for entry in turbo_entries
+            if "lightning" in f"{entry.get('name', '')} {entry.get('local_path', '')}".lower()
+        ),
+        turbo_entries[0],
+    )
+    target_name = target.get("name")
+    if not target_name:
+        return loras
+
+    existing_by_name = {item.get("name"): item for item in loras if item.get("name")}
+    for name in turbo_names:
+        item = existing_by_name.get(name)
+        if item is not None:
+            item["auto_apply"] = name == target_name
+            item["strength"] = 1.0
+        else:
+            loras.append({"name": name, "auto_apply": name == target_name, "strength": 1.0})
+    return loras
+
+
 def _filter_entries_by_kind(entries, kind):
     normalized_kind = _normalize_meta_value(kind)
     entries = list(entries or [])
@@ -1147,6 +1204,7 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None):
         model_entry = _custom_context_model_entry(config, state)
     else:
         model_entry = _find_entry(config.get("models", []), selected_model)
+    loras = _ensure_required_turbo_lora_state(loras, config, model_entry, model_params)
     lora_entry_by_name = {
         entry.get("name"): entry
         for entry in config.get("lora", [])
@@ -1211,8 +1269,7 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None):
     pipe.cfg = float(model_params.get("cfg") if model_params.get("cfg") is not None else DEFAULT_MODEL_CFG)
     if model_params.get("sampler"):
         pipe.sampler_name = model_params["sampler"]
-    if model_params.get("scheduler"):
-        pipe.scheduler = model_params["scheduler"]
+    pipe.scheduler = model_params.get("scheduler") or DEFAULT_MODEL_SCHEDULER
 
     return pipe
 

@@ -22,6 +22,11 @@ from ..utils import (
     safe_join_under, safe_relative_path
 )
 
+try:
+    from .qwen_vl import get_qwen_vl_chat_handler
+except Exception:
+    from nodes.qwen_vl import get_qwen_vl_chat_handler
+
 SKIN_COLOR_OPTIONS = [
     "light skin",
     "fair skin",
@@ -370,37 +375,14 @@ if server:
         print(f"[VNCCS] Auto-Gen Debug: Ver={lib_ver}, Py={py_path}")
         
         try:
-            # 0. Dynamic Import Check
-            # Try to find ANY QwenVL handler
-            HandlerCls = None
-            
-            # 1. Try Qwen2.5 (Newest)
-            if hasattr(llama_cpp.llama_chat_format, "Qwen25VLChatHandler"):
-                HandlerCls = llama_cpp.llama_chat_format.Qwen25VLChatHandler
-            
-            # 2. Try Qwen2 (Standard)
-            elif hasattr(llama_cpp.llama_chat_format, "Qwen2VLChatHandler"):
-                HandlerCls = llama_cpp.llama_chat_format.Qwen2VLChatHandler
-                
-            # 3. Try Qwen (Old/Other)
-            elif hasattr(llama_cpp.llama_chat_format, "Qwen25VLChatHandler"):
-                 HandlerCls = llama_cpp.llama_chat_format.Qwen25VLChatHandler
-            
-            # If still nothing, inspect for partial matches?
-            if not HandlerCls:
-                # Fallback scan
-                for attr in available_handlers:
-                    if "Qwen" in attr and "VL" in attr and "Handler" in attr:
-                        HandlerCls = getattr(llama_cpp.llama_chat_format, attr)
-                        break
-            
-            if not HandlerCls:
-                 msg = f"No QwenVL handlers found. Lib Version: {lib_ver}. Available: { [h for h in available_handlers if 'Handler' in h] }"
-                 return web.json_response({
-                     "error": "DEPENDENCY_MISSING", 
-                     "message": msg,
-                     "model_name": f"llama-cpp-python {lib_ver}"
-                 }, status=500)
+            try:
+                HandlerCls = get_qwen_vl_chat_handler(llama_cpp)
+            except RuntimeError as exc:
+                return web.json_response({
+                    "error": "DEPENDENCY_MISSING",
+                    "message": f"{exc} Lib Version: {lib_ver}",
+                    "model_name": f"llama-cpp-python {lib_ver}",
+                }, status=500)
             
             # Proceed with HandlerCls...
 
@@ -540,31 +522,11 @@ if server:
 
              # 4. Initialize Llama
             try:
-                # Select Handler based on model name
-                HandlerCls = None
-                
-                # Check for Qwen2VL handler (newer llama-cpp-python)
-                try:
-                    from llama_cpp.llama_chat_format import Qwen2VLChatHandler
-                    if "Qwen" in model_path:
-                        HandlerCls = Qwen2VLChatHandler
-                        print("[VNCCS] Using Qwen2VLChatHandler")
-                except ImportError as e:
-                    print(f"[VNCCS] Qwen2VLChatHandler unavailable, trying Llava fallback: {e}")
-
-                # Fallback to Llava1.5
-                if not HandlerCls:
-                     from llama_cpp.llama_chat_format import Llava15ChatHandler
-                     HandlerCls = Llava15ChatHandler
-                     print("[VNCCS] Using Llava15ChatHandler (Fallback)")
+                print(f"[VNCCS] Using {HandlerCls.__name__}")
 
                 # Debug print
                 print(f"[VNCCS] Loading Model: {model_path}")
                 print(f"[VNCCS] Loading MMProj: {mmproj_path}")
-
-                # Ensure Handler
-                if not HandlerCls:
-                    raise ImportError("No suitable ChatHandler found for Qwen/Llava.")
 
                 chat_handler = HandlerCls(clip_model_path=mmproj_path, verbose=False)
                 

@@ -26,6 +26,11 @@ try:
 except Exception:
     from utils import get_full_path_agnostic
 
+try:
+    from .qwen_vl import get_qwen_vl_chat_handler
+except Exception:
+    from nodes.qwen_vl import get_qwen_vl_chat_handler
+
 
 class _CompatReturnTypes(tuple):
     def __getitem__(self, index):
@@ -194,26 +199,7 @@ def _find_qwen_vl_mmproj(model_path):
 
 
 def _get_qwen_vl_chat_handler(llama_cpp):
-    chat_format = getattr(llama_cpp, "llama_chat_format", None)
-    if chat_format is None:
-        try:
-            import llama_cpp.llama_chat_format as chat_format
-        except Exception:
-            chat_format = None
-
-    if chat_format is not None:
-        for name in ("Qwen25VLChatHandler", "Qwen2VLChatHandler"):
-            handler = getattr(chat_format, name, None)
-            if handler is not None:
-                return handler
-        for name in dir(chat_format):
-            if "Qwen" in name and "VL" in name and "Handler" in name:
-                return getattr(chat_format, name)
-        handler = getattr(chat_format, "Llava15ChatHandler", None)
-        if handler is not None:
-            return handler
-
-    raise RuntimeError("No QwenVL/Llava chat handler found in llama-cpp-python.")
+    return get_qwen_vl_chat_handler(llama_cpp)
 
 
 def _tensor_to_vl_data_uri(image, max_size=768):

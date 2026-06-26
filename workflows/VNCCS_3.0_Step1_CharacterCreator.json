@@ -167,7 +167,7 @@
       },
       "widgets_values": [
         "MIUProject/VNCCS_v3.0",
-        "{\"output_slot_names\":[],\"selected_models\":{\"gguf\":\"Qwen-Image-Edit-2511-GGUF-Q5\"},\"selected_model\":\"Qwen-Image-Edit-2511-GGUF-Q5\",\"selected_type\":\"gguf\",\"collapsed\":{\"controlnet\":true,\"clip_vae\":false},\"loras\":[{\"name\":\"Qwen Image Edit 2511 Lightning\",\"auto_apply\":true,\"strength\":1}],\"model_params\":{\"steps\":4,\"cfg\":1}}",
+        "{\"output_slot_names\":[],\"selected_models\":{\"gguf\":\"Qwen-Image-Edit-2511-GGUF-Q5\"},\"selected_model\":\"Qwen-Image-Edit-2511-GGUF-Q5\",\"selected_type\":\"gguf\",\"collapsed\":{\"controlnet\":true,\"clip_vae\":false},\"loras\":[{\"name\":\"Qwen Image Edit 2511 Lightning\",\"auto_apply\":true,\"strength\":1}],\"model_params\":{\"steps\":4,\"cfg\":1,\"scheduler\":\"simple\"}}",
         "{}"
       ],
       "color": "#1f1f1f",

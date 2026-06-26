@@ -260,7 +260,7 @@
       },
       "widgets_values": [
         "MIUProject/VNCCS_v3.0",
-        "{\"output_slot_names\":[],\"selected_models\":{\"gguf\":\"Qwen-Image-Edit-2511-GGUF-Q5\"},\"selected_model\":\"Qwen-Image-Edit-2511-GGUF-Q5\",\"loras\":[{\"name\":\"Qwen Image Edit 2511 Lightning\",\"auto_apply\":true,\"strength\":1}],\"selected_type\":\"gguf\"}",
+        "{\"output_slot_names\":[],\"selected_models\":{\"gguf\":\"Qwen-Image-Edit-2511-GGUF-Q5\"},\"selected_model\":\"Qwen-Image-Edit-2511-GGUF-Q5\",\"loras\":[{\"name\":\"Qwen Image Edit 2511 Lightning\",\"auto_apply\":true,\"strength\":1}],\"selected_type\":\"gguf\",\"model_params\":{\"scheduler\":\"simple\"}}",
         "{}"
       ],
       "color": "#222",

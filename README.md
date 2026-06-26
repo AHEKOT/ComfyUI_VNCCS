@@ -1,26 +1,6 @@
 ![Header](images/README.png)
----
-# VNCCS - Visual Novel Character Creation Suite
-
-VNCCS is NOT just another workflow for creating consistent characters, it is a complete pipeline for creating sprites for any purpose. It allows you to create unique characters with a consistent appearance across all images, organise them, manage emotions, clothing, poses, and conduct a full cycle of work with characters.
-
-## Description
-
-Many people want to use neural networks to create graphics, but making a unique character that looks the same in every image is much harder than generating a single picture. With VNCCS, it's as simple as pressing a button (just 4 times).
-
-## Character Creation Stages
-
-The character creation process is divided into 5 stages:
-
-1. **Create a base character**
-2. **Clone any existing character**
-3. **Create clothing sets**
-4. **Create emotion sets**
-5. **Generate finished sprites**
-6. **Create a dataset for LoRA training** (optional)
 
 ---
-
 <table>
 <tr>
 <td width="50%" align="center">
@@ -38,6 +18,11 @@ VNCCS is developed independently. Support helps keep the project moving.<br><br>
 
 ---
 
+VNCCS is NOT just another workflow for creating consistent characters, it is a complete pipeline for creating sprites for any purpose. It allows you to create unique characters with a consistent appearance across all images, organise them, manage emotions, clothing, poses, and conduct a full cycle of work with characters.
+
+## Description
+
+Many people want to use neural networks to create graphics, but making a unique character that looks the same in every image is much harder than generating a single picture. With VNCCS, it's as simple as pressing a button (just 4 times).
 
 ## Installation
 
@@ -48,276 +33,155 @@ Find `VNCCS - Visual Novel Character Creation Suite` in Custom Nodes Manager or 
 3. Click "Install missing custom nodes"
 4. Alternatively, in the console: go to `ComfyUI/custom_nodes/` and run `git clone https://github.com/AHEKOT/ComfyUI_VNCCS.git`
 
-## Required Models
+## VNCCS 3.0 Workflow
 
-**V-chan:** VNCCS 3.0 uses the new **VNCCS Control Center**. Open any 3.0 workflow, click **Download ALL**, and the node will put the main models into the correct ComfyUI folders. No restart needed for LoRAs. Very civilized.
+Hi! My name is V-chan, and I am going to show you how to use the new VNCCS!
 
-**Q-Chan:** The default path is **Qwen Image Edit 2511**. Q5 GGUF is the comfy middle ground, Q4 is lighter, and Q8 is hungrier.
+We got a BIIIIIIG update, and now everything is completely new, so listen carefully!
 
-Control Center currently shows:
-- **MODEL (3)** - GGUF Q4, Q5, Q8
-- **CLIP + VAE (2)** - QIE2511 text encoder and VAE
-- **TURBO MODEL (1)** - Qwen Image Edit 2511 Lightning
-- **LORA (3)** - Clothes Core, Emotion Core, Pose Studio
-- **CONTROLNET (0)** - no entries
-- **OTHER (1)** - 4x APISR upscaler
+## Step 1: Character Creator
 
-Control Center downloads come from:
-- `MIUProject/VNCCS_v3.0`
-- `unsloth/Qwen-Image-Edit-2511-GGUF`
-- `f5aiteam/CLIP`
-- `Comfy-Org/Qwen-Image_ComfyUI`
-- `MIUProject/VNCCS_PoseStudio`
+Open the workflow:
 
-### Main Generation Models
+`VNCCS_3.0_Step1_CharacterCreator.json`
 
-**V-chan:** Pick one GGUF model in Control Center. If you are not sure, use the workflow default: **Q5**.
+Let's start from the very beginning. The first thing you need to do, besides opening the workflow, silly, is figure out the **VNCCS Control Center**.
+![Header](images/v3/ReadMe1.png)
 
-- `Qwen-Image-Edit-2511-GGUF-Q4` -> `models/unet/qwen-image-edit-2511-Q4_0.gguf`
-- `Qwen-Image-Edit-2511-GGUF-Q5` -> `models/unet/qwen-image-edit-2511-Q5_0.gguf`
-- `Qwen-Image-Edit-2511-GGUF-Q8` -> `models/unet/qwen-image-edit-2511-Q8_0.gguf`
+Inside it, you will find all the models used in the workflow. Choose the one that fits your computer and press **Download**.
 
-There is also a **Custom** tab if you want to pass your own model into the Control Center manually.
+- **Q4** is light, but in some places the result may be a little less fancy.
+- **Q5** is a great balance between quality and performance.
+- **Q8** is the heaviest one, but it will make you the best characters.
 
-### Text Encoders and VAE
+Choose wisely, but in the end nobody is stopping you from trying them all and deciding later.
 
-- `QIE2511_Text_Encoder` -> `models/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors`
-- `QIE2511 VAE` -> `models/vae/qwen_image_vae.safetensors`
+And then, at the very bottom of the widget, you can click the big **Download** button and the magic will do everything by itself.
 
-### VNCCS LoRAs
+Next, go to **VNCCS Character Creator V2**.
 
-**V-chan:** These are the little helpers that keep the whole character factory from falling apart dramatically.
+![Header](images/v3/ReadMe2.png)
+The most important thing here is to create a new character and choose the model for generation.
 
-- `VNCCS Clothes Core` -> `models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.5.safetensors`
-- `VNCCS Emotion Core` -> `models/loras/qwen/VNCCS/VNCCS_QIE2511_EmotionCore-RC1.safetensors`
-- `VNCCS Pose Studio QIE2511` -> `models/loras/qwen/VNCCS/VNCCS_QIE2511_PoseStudio_ART_V5.9.5.safetensors`
-- `Qwen Image Edit 2511 Lightning` -> `models/loras/qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors`
+**Illustrious** may be considered old, but it makes excellent characters and has a huge selection of LoRAs for every style and occasion. Do not worry about quality, it will not disappoint you!
 
-### Utility Models
+**Anima** is a new and cool model. It can do almost everything, but it will need a bit more resources, and there are not as many LoRAs for it yet.
 
-- `4x_APISR_GRL_GAN_generator.pth` -> `models/upscale_models/4x_APISR_GRL_GAN_generator.pth`
+I recommend trying both and deciding for yourself.
 
-**Q-Chan:** ControlNet section is empty in the current Control Center. If you see old guides asking for ControlNet models, they are from the old workflow.
+Right now you do not have any characters yet, so press **NEW** and give him or her a name! The name is very important!!! Be creative and unique!
 
-**Q-Chan:** RMBG-2.0 background removal is handled by VNCCS when needed. The architecture files are downloaded from pinned HuggingFace revisions, and VNCCS does not use `trust_remote_code` fallback for those loaders.
+Done? Good job! Now you have two paths:
 
-### Qwen2.5-VL Helper Model
+1. Manually enter tags. The pencil icons above the fields are tag builders, and they will help you. Choose sex, age, and generation type. The **NSFW** switch controls whether the base character will have clothes or not :3
+2. Press **CHARACTER WIZZARD**, describe the character you want, and after a little magic the system will set all the needed options by itself. Do not forget to check them!
 
-Character Cloner and the clothing wizard can auto-describe images with Qwen2.5-VL. This is not a Control Center card; it has its own download button in the UI.
+A new little feature is the **GENERATE PREVIEW** button. It lets you see what the character will look like without restarting the whole generation. So press it already, and if you like everything, move on. If you want to make changes, edit the tags and press it again!
 
-- `Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf`
-- `mmproj-F16.gguf`
+## VNCCS Pose Studio
 
-**V-chan:** If these are missing, the UI has a download button. Press it, wait a bit, pretend you are patient.
+The next key node is **VNCCS Pose Studio**.
+![Header](images/v3/ReadMe3.png)
 
-# Usage
+It is downloaded from my second project, **VNCCS-Utils**, so do not forget to install that too!
 
+Here, the most important thing is to choose the poses you need and how many of them there should be. You can control the model however you want and make absolutely any poses. Also, using the **Import** button, you can load any picture with a character and get a pose just like the one in the picture!
 
-VNCCS 3.0 is no longer a long chain of old workflows. The new workflow is:
+It is also very important that the body proportions of the model fit your character. Age will be set automatically from the previous step, but nobody will stop you from setting it manually. Also choose height and body type, the result will be much better that way.
 
-1. **Create a character** or **clone a character**
-2. **Generate clothes**
-3. **Generate emotions**
-4. Use the saved sprites in your visual novel
+In **VNCCS Character Generator**, you do not really need to worry about the settings, but if you want, you can choose the upscaler model or even turn it off.
+![Header](images/v3/ReadMe4.png)
 
-Everything is saved in:
+In **BG Remove**, you can choose a chroma key preset. **Balanced** is a very good preset, but if it is not enough for you, or if it is too much and starts damaging the character, choose a lighter one.
 
-`ComfyUI/output/VNCCS/Characters/YOUR_CHARACTER_NAME`
+**SAM3 Details Recovery** makes background removal slower, but it lets you worry less about eye color and clothing elements that are the same color as the background. We will talk about clothes a little later.
 
----
+Ready? Then press **Run**! Now just wait, and the magic will do everything for you!
+![Header](images/v3/ReadMe5.png)
 
-## Step 0: Migration Assistant
+## Step 1.1: Character Cloner
 
-Open `VNCCS_MigrationAssistant.json` if you have characters from old VNCCS versions.
+Open the workflow:
 
-This node scans legacy folders and moves characters into the new 3.0 structure.
+`VNCCS_3.0_Step1_CharacterCloner.json`
 
-If you are starting fresh, skip this step. No need to migrate air.
+This workflow is basically a complete copy of Character Creator, but it is made for cloning existing character images.
 
----
+Did you generate the character with another model? Download it from the internet? Take a screenshot from your favorite anime? Draw it yourself, with your own hands? Good job!
 
-## Step 1: Create a Base Character
-Open `VNCCS_3.0_Step1_CharacterCreator.json`.
+Try to make sure the picture is good quality and that the character is full body, otherwise the model will invent everything that is not visible in the picture!
 
+![Header](images/v3/ReadMe6.png)
 
-### VNCCS Control Center
+Now load it into **VNCCS Character Cloner**, write tags or press **ANALYZE CAPTIONS**, set up everything you need in **VNCCS Pose Studio**, and do not forget to choose whether you need separate undressed sprites with the **NSFW** button. They are not mandatory, but dressing these characters later will be MUCH easier!
 
-**Q-Chan:** First, check Control Center. Select your Qwen model, click **Download ALL** if models are missing, and make sure the Lightning LoRA enabled.
-Default workflow settings:
-- Model type: `gguf`
-- Model: `Qwen-Image-Edit-2511-GGUF-Q5`
-- Steps: `4`
-- CFG: `1`
-- Sampler: `euler`
-- Scheduler: `karras`
+Also try to choose a background color that appears the least in the character. Look at the eyes and hair. If they are green, choose blue. Or the other way around.
 
-### VNCCS Pose Studio
+Now press **Run** and look at the result!
 
+## Step 2: Character Clothes
 
+Open the workflow:
 
-### Character Creator V2
+`VNCCS_3.0_Step2_CharacterClothes.json`
 
-**V-chan:** Write the character name, fill appearance fields, and click **Create New Character**.
+Now we move to the tastiest part! In this workflow, you will make clothes for the character. As many sets as you think you need.
 
-**Q-Chan:** Then click **Generate Preview** before running the workflow. Preview is cheaper than regret.
+Choose a character in **VNCCS Clothes Designer** and press **New**. Give the outfit set a name and get ready to create!
 
-The creator outputs:
-- `character`
-- `sheets_path`
-- `background`
+![Header](images/v3/ReadMe7.png)
 
-Those outputs go into `VNCCS Character Generator`, which creates:
-- character sheet
-- faces
-- pose generation preview
-- upscaled result
-- background-removed sprite sheet
+You have two options again:
 
-Useful settings:
-- **Target Size** - `1024` is the safe default.
-- **Background** - Green is default, Blue is better if character has green parts.
-- **Upscaler** - more resolution means more details and more VRAM.
-- **BG Remove** - tolerance removes leftovers, but too much can bite into the character.
+1. Describe all clothing elements in the needed fields. You do not have to follow them exactly, but the **head** and **face** sections will help you later not to lose details during emotion generation, so do not slack off! If the character has glasses, write them in **face**. A hat goes in **head**. Easy!
+2. Press **Clothes Wizzard** and simply describe the clothes you want!
 
+You also have an option to clone any clothes from any picture! Open the **CLONE CLOTHES** tab and upload an image of clothes, or a character wearing clothes.
 
----
+The **GENERATE PREVIEW** button will help you see what your character will look like before starting the big and heavy generation of all poses.
 
-## Step 1.1: Clone Any Character
+And that is all! Again, do not forget about **VNCCS Pose Studio**, and press **Run**!
 
-Open `VNCCS_3.0_Step1_CharacterCloner.json`.
+When you finish the first set, you can press **New** again and create as many outfits as you want!
 
+## Step 3: Character Emotions
 
-**V-chan:** Use this when you already have a character image and want VNCCS to build a usable character from it.
+Open the workflow:
 
-**Q-Chan:** Full body images work best. It can work with portraits too, but then the model will invent missing parts. Sometimes it is smart. Sometimes it is very confident and very wrong.
+`VNCCS_3.0_Step3_CharacterEmotions.json`
 
-How to use:
-- Add one or more source images.
-- Let Qwen2.5-VL auto-fill character tags, or edit them yourself.
-- Pick poses in Pose Studio.
-- Run the workflow.
+Here we will create emotions for the character! Up to this moment, all sprites had a calm facial expression. This will be our base.
 
-The clone workflow creates:
-- original-clothes sprites
-- cleaned/naked base sprites
-- faces
-- upscaled previews
+In the **VNCCS Emotion Studio** widget, choose the character you are going to make emotions for. In **Selected costumes**, choose all costumes you want to work with.
 
+![Header](images/v3/ReadMe8.png)
 
----
+Now, in the huge list, click the emotions you need and add them to the selected ones. Also, if by some miracle you did not find what you need, you can add a **Custom** emotion and describe what you want yourself.
 
-## Step 2: Create Clothing Sets
+After that, you again need to decide which model will do the generation.
 
-Open `VNCCS_3.0_Step2_CharacterClothes.json`.
+**Illustrious** is stable, but the variety of emotions depends very strongly on the exact character, style, and model. Not all emotions may come out equally well.
 
+**Anima** makes very cool emotions, but it is still too young, so it can be unstable. It can change character details too much, so try it yourself and decide what you like better.
 
-### Clothes Designer
+![Header](images/v3/ReadMe9.png)
 
-**V-chan:** Select your character, create a costume name, then describe the outfit.
 
-**Q-Chan:** There are two useful modes:
+In **VNCCS Emotions Generator**, the most important setting is **Face Detailer Denoise**. It will suggest optimal values by itself, but remember one basic idea: the higher the denoise, the more the original image changes.
 
-- **Generate Clothes** - write top, bottom, head, face, and shoes manually.
-- **Clone Clothes** - upload a reference image and transfer the outfit to your character.
+More denoise means a brighter emotion, but the character may stop looking like themselves.
 
-The workflow uses:
-- `VNCCS Clothes Core`
-- `Qwen Image Edit 2511 Lightning`
-- `VNCCS Pose Studio QIE2511`
+Less denoise means a more accurate character, but the emotion may be weaker.
 
-Tips:
-- Keep the background Green or Blue.
-- If clothes eat body parts, try another seed.
-- Complex multi-layer clothing can be unpredictable.
-- For difficult outfits, describe materials and shape clearly.
-- Create as many costumes as you need. VNCCS stores them in the character config.
+There is no ready-made recipe here. It all depends on the character and the selected model, so be creative and a tiny bit more patient.
 
-**V-chan:** Clothes helper LoRA is much better than before, but it is still not a mind reader. Be kind to it. Use words.
+For the first try, do not select all costumes and emotions at once. It will take a long time, and if the result does not satisfy you, it will be sad. Better find the optimal settings first, and then go all in!
 
----
+Press **Run**, and may luck be with you!
 
-## Step 3: Emotion Studio
+At this point, the current VNCCS features end, but not for long! Planned features include animations, 3D environments and CG image creation inside them, character voice generation, and music track generation for your game or project.
 
-Open `VNCCS_3.0_Step3_CharacterEmotions.json`.
+You will find all your sprites inside ComfyUI in:`ComfyUI\output\VNCCS\Characters\` folder
 
-
-### Emotion Generator V2
-
-**V-chan:** Select a character, select one or more costumes, then click the emotions you want.
-
-**Q-Chan:** Emotion Studio uses the selected character and costumes, then passes the chosen emotion pairs into `VNCCS Emotions Generator`.
-
-Emotion Studio supports:
-- visual emotion selection
-- multi-costume generation
-- batch emotion pairs
-- face denoise control
-
-The node outputs images, pipe, and emotion data into `VNCCS Emotions Generator`, which saves the final emotion sprites and faces.
-
-
-**V-chan:** Denoise controls emotion strength. Too low and the face barely changes. Too high and your character becomes a different person with suspicious confidence.
-
----
-
-## Output Structure
-
-VNCCS saves your work here:
-
-`ComfyUI/output/VNCCS/Characters/YOUR_CHARACTER_NAME`
-
-Inside you will find:
-- character config JSON
-- generated sheets
-- faces
-- costumes
-- emotion sprites
-- cache files used by previews and regeneration
-
-**Q-Chan:** Do not delete the config unless you really mean it. The config is the character's memory, and memory is cheaper than regenerating everything.
-
----
-
-## Regeneration and Preview
-
-The 3.0 generator nodes keep enough data to regenerate selected stages from the UI.
-
-- Character Creator V2 can preview before running the workflow.
-- Clothes Designer can preview outfits.
-- Emotion Studio can generate selected emotion/costume pairs.
-- Generator nodes can reuse cached inputs for stage regeneration.
-
-**V-chan:** This means you can fix one bad result without rebuilding the whole castle. Very good. Very merciful.
-
----
-
-## Old Workflows
-
-Old workflows are deprecated. The new 3.0 workflow replaces separate sprite-generation steps with integrated generator nodes:
-
-- `VNCCS Character Generator`
-- `VNCCS Character Clone Generator`
-- `VNCCS Clothes Generator`
-- `VNCCS Emotions Generator`
-
-**Q-Chan:** If you see an old guide mentioning `VN_Step4_SpritesGenerator`, `VN_Step5_DatasetCreator`, or separate ControlNet setup, that is old magic. 3.0 does not need it for the main character pipeline.
-
----
-
-## Conclusion
-
-**V-chan:** Congratulations! You created a character, dressed them up, gave them emotions, and now they are ready to stand in your visual novel and judge the player silently.
-
-**Q-Chan:** Back up your `ComfyUI/output/VNCCS/Characters` folder regularly. Characters are precious. Storage is cheap. Tears are not.
-
-Good luck creating your visual novels!
-
----
-
-Future plans:
-- consistent background generation
-- animated sprites
-- animation of transitions between poses
-- automatic translation of RenPy games into other languages
-- automatic voice generation for RenPy games
----
+Be careful with them, and do not delete them by accident while cleaning your disk!
+![Header](images/v3/footer.png)

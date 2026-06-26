@@ -1643,6 +1643,54 @@ app.registerExtension({
                     updateSpriteNav();
                 };
 
+                const getDefaultCharacterInfo = () => ({
+                    sex: "female", age: 18, race: "human", skin_color: "",
+                    hair: "black hair, long hair", eyes: "", face: "", body: "", additional_details: "",
+                    nsfw: false, aesthetics: "masterpiece, best quality",
+                    negative_prompt: "bad quality, worst quality",
+                    lora_prompt: "", background_color: "Green"
+                });
+
+                const syncCharacterFields = () => {
+                    Object.keys(state.character_info).forEach(k => {
+                        if (els[k]) {
+                            let val = state.character_info[k];
+                            if (k === "background_color" && typeof val === "string" && val) {
+                                val = val.charAt(0).toUpperCase() + val.slice(1).toLowerCase();
+                                state.character_info[k] = val;
+                            }
+                            if (els[k].range && els[k].num) {
+                                els[k].range.value = val;
+                                els[k].num.value = val;
+                            }
+                            else if (els[k].setValue) els[k].setValue(val);
+                            else if (els[k].type === "checkbox") els[k].checked = !!val;
+                            else els[k].value = val;
+                        }
+                    });
+                };
+
+                const clearCharacterSelection = () => {
+                    state.character = "";
+                    restoredWidgetInfoCharacter = null;
+                    Object.assign(state.character_info, getDefaultCharacterInfo(), { name: "" });
+                    state.preview_valid = false;
+                    state.preview_source = "gen";
+                    state.sprite_preview_cache_bust = "";
+                    clearPreviewHandlers();
+                    hideSpriteNav();
+                    setPreviewLoading(false);
+                    if (els.previewImg) {
+                        els.previewImg.removeAttribute("src");
+                        els.previewImg.style.display = "none";
+                    }
+                    if (els.placeholder) {
+                        els.placeholder.innerText = "Create a character to begin";
+                        els.placeholder.style.display = "block";
+                    }
+                    syncCharacterFields();
+                };
+
                 const tryCachePreview = (character) => {
                     console.log("[VNCCS] Trying to load cached preview...");
                     const cacheUrl = `/vnccs/get_cached_preview?character=${encodeURIComponent(character)}&t=${Date.now()}`;
@@ -2676,6 +2724,15 @@ app.registerExtension({
                     }));
                     return showCommonModal(container, title, contentFunc, mappedButtons);
                 };
+                const showAlertModal = (title, message) => {
+                    showModal(title, () => {
+                        const d = document.createElement("div");
+                        d.style.whiteSpace = "pre-wrap";
+                        d.style.lineHeight = "1.45";
+                        d.textContent = String(message ?? "");
+                        return d;
+                    }, [{ text: "OK", class: "vnccs-btn-primary" }]);
+                };
 
                 const applyCharacterWizardData = (data) => {
                     const textKeys = ["race", "skin_color", "body", "face", "hair", "eyes", "additional_details"];
@@ -2794,7 +2851,7 @@ app.registerExtension({
                                     saveState();
                                     return false; // Close
                                 } catch (e) {
-                                    alert("Create Failed: " + e);
+                                    showAlertModal("Create Failed", e);
                                     return true;
                                 }
                             }
@@ -2806,7 +2863,7 @@ app.registerExtension({
                 const doDelete = () => {
                     const charName = state.character;
                     if (!charName || charName === "None" || charName === "Unknown") {
-                        alert("Please select a character to delete.");
+                        showAlertModal("Delete Character", "Please select a character to delete.");
                         return;
                     }
 
@@ -2852,22 +2909,24 @@ app.registerExtension({
                                         const idx = opts.findIndex(o => o.value === charName);
                                         if (idx > -1) els.charSelect.remove(idx);
 
-                                        if (els.charSelect.options.length > 0) state.character = els.charSelect.options[0].value;
-                                        else state.character = "";
-
-                                        els.charSelect.value = state.character;
-                                        await loadChar(state.character);
+                                        if (els.charSelect.options.length > 0) {
+                                            state.character = els.charSelect.options[0].value;
+                                            els.charSelect.value = state.character;
+                                            await loadChar(state.character);
+                                        } else {
+                                            clearCharacterSelection();
+                                        }
                                         saveState();
                                         return false;
                                     } else {
                                         const err = await r.json();
-                                        alert("Delete Failed: " + (err.error || "Unknown Error"));
+                                        showAlertModal("Delete Failed", err.error || "Unknown Error");
                                         btn.innerText = "CONFIRM DELETE";
                                         btn.disabled = false;
                                         return true;
                                     }
                                 } catch (e) {
-                                    alert("Delete Failed: " + e);
+                                    showAlertModal("Delete Failed", e);
                                     return false; // Close on crash to avoid Stuck UI
                                 }
                             }
@@ -2883,7 +2942,7 @@ app.registerExtension({
                             if (r.ok) TAG_DATA = await r.json();
                             else throw new Error("Failed to load tags");
                         } catch (e) {
-                            alert("Error loading tag database: " + e);
+                            showAlertModal("Tag Database Error", "Error loading tag database: " + e);
                             return;
                         }
                     }
@@ -2924,7 +2983,7 @@ app.registerExtension({
                     });
 
                     if (!allTags.length) {
-                        alert("No tags found for this category.");
+                        showAlertModal("No Tags", "No tags found for this category.");
                         return;
                     }
 
@@ -3407,9 +3466,9 @@ app.registerExtension({
                             renderControlCenterCards();
                         });
 
+                        const characters = Array.isArray(d.characters) ? d.characters : [];
                         els.charSelect.innerHTML = "";
-                        if (!d.characters || !d.characters.length) els.charSelect.add(new Option("None", ""));
-                        else d.characters.forEach(c => els.charSelect.add(new Option(c, c)));
+                        characters.forEach(c => els.charSelect.add(new Option(c, c)));
 
                         // Restore values or defaults into independent per-mode profiles.
                         const g = state.gen_settings;
@@ -3447,17 +3506,17 @@ app.registerExtension({
                         syncGenerationControls();
                         refreshGenerationModeUI();
 
-                        if (state.character) {
-                            // Ensure it's in the list (handle potential race/latency)
-                            const exists = Array.from(els.charSelect.options).some(o => o.value === state.character);
-                            if (!exists) {
-                                els.charSelect.add(new Option(state.character, state.character));
+                        if (characters.length) {
+                            if (!characters.includes(state.character)) {
+                                if (state.character) {
+                                    console.warn("[VNCCS V2] Saved character is missing on disk, selecting first available:", state.character);
+                                }
+                                state.character = characters[0];
+                                restoredWidgetInfoCharacter = null;
                             }
                             els.charSelect.value = state.character;
-                        }
-                        else if (d.characters && d.characters.length) {
-                            state.character = d.characters[0];
-                            els.charSelect.value = state.character;
+                        } else {
+                            clearCharacterSelection();
                         }
 
                         // Only skip disk load when widget_data explicitly belongs to this character.
@@ -3477,18 +3536,11 @@ app.registerExtension({
                         // 1. Fetch Info (skip if restoring from widget_data)
                         if (!skipInfoLoad) {
                             const r = await api.fetchApi(`/vnccs/character_info?character=${encodeURIComponent(n)}`);
+                            if (!r.ok) throw new Error(`Character '${n}' is not available`);
                             const i = await r.json();
 
-                            const defaultInfo = {
-                                sex: "female", age: 18, race: "human", skin_color: "",
-                                hair: "black hair, long hair", eyes: "", face: "", body: "", additional_details: "",
-                                nsfw: false, aesthetics: "masterpiece, best quality",
-                                negative_prompt: "bad quality, worst quality",
-                                lora_prompt: "", background_color: "Green"
-                            };
-
                             // Reset & Assign
-                            Object.assign(state.character_info, defaultInfo);
+                            Object.assign(state.character_info, getDefaultCharacterInfo());
                             Object.assign(state.character_info, i);
                             state.prompt_modes = {
                                 illustrious: {
@@ -3505,24 +3557,7 @@ app.registerExtension({
                         }
 
                         // Update Fields from current state
-                        Object.keys(state.character_info).forEach(k => {
-                            if (els[k]) {
-                                let val = state.character_info[k];
-                                // Normalize background_color case to match dropdown options
-                                if (k === "background_color" && typeof val === "string" && val) {
-                                    val = val.charAt(0).toUpperCase() + val.slice(1).toLowerCase();
-                                    state.character_info[k] = val; // Update state too
-                                }
-                                if (els[k].range && els[k].num) {
-                                    // Slider Composite
-                                    els[k].range.value = val;
-                                    els[k].num.value = val;
-                                }
-                                else if (els[k].setValue) els[k].setValue(val);
-                                else if (els[k].type === "checkbox") els[k].checked = !!val;
-                                else els[k].value = val;
-                            }
-                        });
+                        syncCharacterFields();
 
                         // 2. Fetch Preview Image
                         try {
@@ -3549,30 +3584,34 @@ app.registerExtension({
                 };
 
                 const doGenerate = async () => {
+                    if (!state.character) {
+                        showAlertModal("No Character", "Create a character before generating a preview.");
+                        return;
+                    }
                     const mode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
                     if (mode === "anima") {
-                        if (!state.gen_settings.diffusion_model_name) { alert("Select Diffusion Model"); return; }
-                        if (!state.gen_settings.clip_name) { alert("Select CLIP"); return; }
-                        if (!state.gen_settings.vae_name) { alert("Select VAE"); return; }
+                        if (!state.gen_settings.diffusion_model_name) { showAlertModal("Missing Model", "Select Diffusion Model"); return; }
+                        if (!state.gen_settings.clip_name) { showAlertModal("Missing Model", "Select CLIP"); return; }
+                        if (!state.gen_settings.vae_name) { showAlertModal("Missing Model", "Select VAE"); return; }
                         if (!isSelectedCcAssetInstalled("models", "Anima", "diffusion_model_name", entry => ccType(entry) === "unet")) {
-                            alert("Download and select an installed Anima Diffusion Model");
+                            showAlertModal("Model Missing", "Download and select an installed Anima Diffusion Model");
                             return;
                         }
                         if (!isSelectedCcAssetInstalled("clip", "Anima", "clip_name")) {
-                            alert("Download and select an installed Anima CLIP");
+                            showAlertModal("Model Missing", "Download and select an installed Anima CLIP");
                             return;
                         }
                         if (!isSelectedCcAssetInstalled("vae", "Anima", "vae_name")) {
-                            alert("Download and select an installed Anima VAE");
+                            showAlertModal("Model Missing", "Download and select an installed Anima VAE");
                             return;
                         }
                     } else if (!state.gen_settings.ckpt_name) {
-                        alert("Select Checkpoint"); return;
+                        showAlertModal("Missing Checkpoint", "Select Checkpoint"); return;
                     } else if (!isSelectedCcAssetInstalled("models", null, "ckpt_name", entry => {
                         const kind = ccKind(entry);
                         return (kind === "illustrious" || kind === "sdxl") && ccType(entry) === "checkpoint";
                     })) {
-                        alert("Download and select an installed Illustrious checkpoint");
+                        showAlertModal("Model Missing", "Download and select an installed Illustrious checkpoint");
                         return;
                     }
                     if (els.btnGen.disabled) return;
