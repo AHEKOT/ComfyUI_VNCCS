@@ -13,6 +13,7 @@ import random
 import base64
 import io
 import inspect
+import threading
 import torch
 import numpy as np
 from typing import Tuple
@@ -41,9 +42,13 @@ class _CompatReturnTypes(tuple):
 
 try:
     import folder_paths
-    from huggingface_hub import hf_hub_download
 except ImportError:
     folder_paths = None
+
+try:
+    from huggingface_hub import hf_hub_download
+except ImportError:
+    hf_hub_download = None
 
 # Device selection used by RMBG/BiRefNet models
 def _select_torch_device():
@@ -77,6 +82,14 @@ QWEN_VL_MMPROJ_NAMES = [
 if folder_paths:
     folder_paths.add_model_folder_path("rmbg", os.path.join(folder_paths.models_dir, "RMBG"))
     folder_paths.add_model_folder_path("birefnet", os.path.join(folder_paths.models_dir, "RMBG", "BiRefNet"))
+    folder_paths.add_model_folder_path("sam3", os.path.join(folder_paths.models_dir, "sam3"))
+
+SAM3_MODEL_REPO_ID = "yolain/sam3-safetensors"
+SAM3_MODEL_FILENAME = "sam3-fp16.safetensors"
+SAM3_MODEL_ENV_REPO = "VNCCS_SAM3_REPO_ID"
+SAM3_MODEL_ENV_FILENAME = "VNCCS_SAM3_FILENAME"
+SAM3_MODEL_ENV_REVISION = "VNCCS_SAM3_REVISION"
+_SAM3_DOWNLOAD_LOCK = threading.Lock()
 
 # --- Shared helpers ---
 def tensor2pil(image):
@@ -522,6 +535,73 @@ def _call_registered_node(class_names, method_names=None, **kwargs):
         return _unwrap_node_result(result)
 
     raise RuntimeError(f"Node '{'/'.join(class_names)}' has no callable FUNCTION")
+
+
+def _sam3_model_dir():
+    if folder_paths is None or not getattr(folder_paths, "models_dir", None):
+        return os.path.join("models", "sam3")
+    try:
+        folders = folder_paths.get_folder_paths("sam3") or []
+        for folder in folders:
+            if folder:
+                return folder
+    except Exception:
+        pass
+    return os.path.join(folder_paths.models_dir, "sam3")
+
+
+def _find_sam3_model_file(filename):
+    if folder_paths is not None:
+        try:
+            path = get_full_path_agnostic(folder_paths, "sam3", filename, require_exists=True)
+            if path and os.path.exists(path):
+                return path
+        except Exception:
+            pass
+    target = os.path.join(_sam3_model_dir(), filename)
+    return target if os.path.exists(target) else None
+
+
+def _ensure_sam3_model_available():
+    filename = os.environ.get(SAM3_MODEL_ENV_FILENAME, SAM3_MODEL_FILENAME)
+    filename = os.path.basename(str(filename or SAM3_MODEL_FILENAME))
+    existing = _find_sam3_model_file(filename)
+    if existing:
+        return filename
+    if hf_hub_download is None:
+        raise RuntimeError(
+            "SAM3 model is missing and huggingface_hub is not installed. "
+            f"Install huggingface_hub or place '{filename}' in '{_sam3_model_dir()}'."
+        )
+
+    with _SAM3_DOWNLOAD_LOCK:
+        existing = _find_sam3_model_file(filename)
+        if existing:
+            return filename
+
+        repo_id = os.environ.get(SAM3_MODEL_ENV_REPO, SAM3_MODEL_REPO_ID)
+        revision = os.environ.get(SAM3_MODEL_ENV_REVISION) or None
+        target_dir = _sam3_model_dir()
+        os.makedirs(target_dir, exist_ok=True)
+        print(f"[VNCCS SAM3] '{filename}' not found. Downloading from Hugging Face repo '{repo_id}'...")
+        try:
+            path = hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                revision=revision,
+                local_dir=target_dir,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed to download SAM3 model. "
+                f"Place '{filename}' in '{target_dir}' manually or check access to Hugging Face repo '{repo_id}'. "
+                f"Original error: {exc}"
+            ) from exc
+
+        if not os.path.exists(path):
+            raise RuntimeError(f"SAM3 download completed but '{path}' was not created")
+        print(f"[VNCCS SAM3] Model ready: {path}")
+        return filename
 
 
 def _normalize_mask_batch(value, target_hw, batch_size, stage="mask"):
@@ -1652,10 +1732,11 @@ class VNCCSChromaKey:
         return (torch.stack(rgba_list), torch.stack(matte_list), torch.stack(debug_list))
 
     def _run_sam3_recovery_masks(self, image: torch.Tensor, target_hw):
+        sam3_model_name = _ensure_sam3_model_available()
         sam3_model = _call_registered_node(
             ["LoadSam3Model", "easy sam3ModelLoader"],
             method_names=("load_model", "loadmodel", "load"),
-            model="sam3.pt",
+            model=sam3_model_name,
             segmentor="image",
             device=_select_torch_device(),
             precision="bf16",
