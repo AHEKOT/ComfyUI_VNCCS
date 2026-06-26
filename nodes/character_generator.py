@@ -600,7 +600,7 @@ DEFAULT_WIDGET_DATA = {
         "mode": "seedvr",
         "model": "seedvr2_ema_3b-Q4_K_M.gguf",
         "vae": "ema_vae_fp16.safetensors",
-        "gan_model": "2x_APISR_RRDB_GAN_generator.pth",
+        "gan_model": "",
         "device": "cuda:0",
         "offload_device": "cpu",
         "seed": 42,
@@ -650,6 +650,23 @@ DEFAULT_WIDGET_DATA = {
         "prompt": "Dress character: White underwear",
     },
 }
+
+
+def _available_gan_upscale_models():
+    return _folder_list("upscale_models", [])
+
+
+def _normalize_gan_upscaler_settings(settings):
+    upscaler = settings.get("upscaler") if isinstance(settings, dict) else None
+    if not isinstance(upscaler, dict):
+        return settings
+    if str(upscaler.get("mode", "") or "").lower() != "gan":
+        return settings
+    available = _available_gan_upscale_models()
+    if available and upscaler.get("gan_model") not in available:
+        upscaler["gan_model"] = available[0]
+    return settings
+
 
 CHROMA_KEY_PRESETS = {
     "ultra_light": {
@@ -754,7 +771,7 @@ class VNCCS_CharacterGenerator:
         for section, values in (data or {}).items():
             if isinstance(values, dict) and section in merged:
                 merged[section].update(values)
-        return merged
+        return _normalize_gan_upscaler_settings(merged)
 
     def _widget_data(self, widget_data):
         widget_data = self._unwrap_scalar(widget_data)
@@ -1469,6 +1486,8 @@ class VNCCS_CharacterGenerator:
             torch.cuda.empty_cache()
 
     def _run_gan_upscaler_model(self, settings):
+        if not settings.get("gan_model"):
+            raise RuntimeError("No GAN upscale models found. Install an upscale model visible to ComfyUI UpscaleModelLoader.")
         return _call_comfy_node(
             "UpscaleModelLoader",
             model_name=settings["gan_model"],
@@ -3034,6 +3053,12 @@ if server is not None:
             "current": _detect_seedvr_attention_mode(),
             "available": available,
             "options": list(SEEDVR_ATTENTION_MODES),
+        })
+
+    @server.PromptServer.instance.routes.get("/vnccs/character_generator/gan_upscale_models")
+    async def vnccs_character_generator_gan_upscale_models(request):
+        return web.json_response({
+            "models": _available_gan_upscale_models(),
         })
 
     @server.PromptServer.instance.routes.post("/vnccs/character_generator/regenerate")

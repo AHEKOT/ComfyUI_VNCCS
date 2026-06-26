@@ -26,6 +26,7 @@ from ..utils import (
     sheets_dir, faces_dir, normalize_hair_tags, ensure_safe_name,
     get_full_path_agnostic,
 )
+from .vnccs_utils import _ensure_qwen_vl_assets
 
 # --------------------------------------------------------------------
 # Helper Functions
@@ -184,6 +185,11 @@ def _find_character_wizard_model():
             if os.path.exists(path):
                 return path
     return None
+
+
+def _ensure_character_wizard_model():
+    model_path, _mmproj_path = _ensure_qwen_vl_assets()
+    return model_path
 
 
 def _extract_character_tag_options(tags_data):
@@ -857,13 +863,14 @@ if server:
             if not user_description:
                 return web.Response(status=400, text="No character description provided")
 
-            model_path = _find_character_wizard_model()
-            if not model_path:
+            try:
+                model_path = _ensure_character_wizard_model()
+            except Exception as e:
                 return web.json_response({
-                    "error": "MODEL_MISSING",
-                    "message": "No Qwen GGUF model found.",
+                    "error": "MODEL_DOWNLOAD_FAILED",
+                    "message": str(e),
                     "model_name": "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
-                }, status=404)
+                }, status=500)
 
             try:
                 _validate_character_wizard_gguf(model_path, os.path.basename(model_path))

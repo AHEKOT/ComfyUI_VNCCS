@@ -24,8 +24,10 @@ from ..utils import (
 
 try:
     from .qwen_vl import get_qwen_vl_chat_handler
+    from .vnccs_utils import _ensure_qwen_vl_assets
 except Exception:
     from nodes.qwen_vl import get_qwen_vl_chat_handler
+    from nodes.vnccs_utils import _ensure_qwen_vl_assets
 
 SKIN_COLOR_OPTIONS = [
     "light skin",
@@ -420,85 +422,14 @@ if server:
             if not image_path or not os.path.exists(image_path):
                 return web.Response(status=404, text=f"Image {img_name} not found")
 
-            # 2. Locate Model
-            base_path = folder_paths.models_dir
-            model_path = None
-            
-            # Search for Qwen2.5 / Qwen2
-            possible_names = [
-                "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
-                "Qwen2-VL-7B-Instruct-Q4_K_M.gguf", 
-                "qwen2-vl-7b-instruct-q4_k_m.gguf"
-            ]
-            
-            search_dirs = [os.path.join(base_path, "LLM"), os.path.join(base_path, "llm"), base_path]
-            
-            for d in search_dirs:
-                if not os.path.exists(d): continue
-                for n in possible_names:
-                    p = os.path.join(d, n)
-                    if os.path.exists(p):
-                        model_path = p
-                        break
-                if model_path: break
-            
-            if not model_path:
-                 # Return specific JSON error for frontend to trigger download of Qwen2.5
-                 return web.json_response({
-                     "error": "MODEL_MISSING",
-                     "message": "No QwenVL GGUF model found.",
-                     "model_name": "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
-                 }, status=404)
-
             try:
-                validate_gguf_file(model_path, os.path.basename(model_path))
+                model_path, mmproj_path = _ensure_qwen_vl_assets()
             except Exception as e:
                 return web.json_response({
-                    "error": "MODEL_INVALID",
-                    "message": f"QwenVL model file is invalid or incomplete: {e}",
-                    "model_name": os.path.basename(model_path)
-                }, status=422)
-
-            # 3. Locate MMProj (Vision Adapter)
-            mmproj_path = None
-            if model_path:
-                model_dir = os.path.dirname(model_path)
-                # Check for 2.5/2 specific projectors
-                cands = [
-                    "mmproj-F16.gguf",
-                    "mmproj-BF16.gguf",
-                    "mmproj-F32.gguf",
-                    "mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf",
-                    "mmproj-Qwen2-VL-7B-Instruct-f16.gguf"
-                ]
-                for c in cands:
-                    cp = os.path.join(model_dir, c)
-                    if os.path.exists(cp):
-                        mmproj_path = cp
-                        break
-                
-                if not mmproj_path:
-                    # Flexible Search
-                    for f in os.listdir(model_dir):
-                        if "mmproj" in f.lower() and f.endswith(".gguf"):
-                            mmproj_path = os.path.join(model_dir, f)
-                            break
-
-            if not mmproj_path:
-                return web.json_response({
-                    "error": "MMPROJ_MISSING",
-                    "message": "No QwenVL vision projector (mmproj) GGUF found.",
-                    "model_name": "mmproj-F16.gguf"
-                }, status=404)
-
-            try:
-                validate_gguf_file(mmproj_path, os.path.basename(mmproj_path))
-            except Exception as e:
-                return web.json_response({
-                    "error": "MMPROJ_INVALID",
-                    "message": f"QwenVL vision projector file is invalid or incomplete: {e}",
-                    "model_name": os.path.basename(mmproj_path)
-                }, status=422)
+                    "error": "MODEL_DOWNLOAD_FAILED",
+                    "message": str(e),
+                    "model_name": "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
+                }, status=500)
             
             # 4. Inference
             system_prompt = "You are a character description assistant. Analyze the image and extract the character's physical attributes into a JSON format."

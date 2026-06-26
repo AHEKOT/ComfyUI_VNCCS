@@ -1964,6 +1964,9 @@ app.registerExtension({
                     }
 
                     try {
+                        autoGenBtn.innerText = "CHECKING MODEL...";
+                        await ensureQwenVLReady();
+                        autoGenBtn.innerText = "ANALYZING...";
                         const r = await api.fetchApi("/vnccs/cloner_auto_generate", {
                             method: "POST",
                             body: JSON.stringify({ image_name: imgName })
@@ -2034,15 +2037,15 @@ app.registerExtension({
                                         action: async (ol, btn) => {
                                             // Trigger Download
                                             try {
-                                                const dl = await api.fetchApi("/vnccs/cloner_download_model", { method: "POST" });
+                                                const dl = await api.fetchApi("/vnccs/qwen_vl_download_model", { method: "POST" });
                                                 if (dl.status === 409) {
                                                     // already downloading
-                                                    startProgressPolling();
+                                                    ensureQwenVLReady().catch(e => showModal("Error", () => { const d = document.createElement("div"); d.innerText = "" + e; return d; }, [{ text: "Close" }]));
                                                     return false;
                                                 }
                                                 if (dl.ok) {
                                                     ol.remove(); // Close prompt
-                                                    startProgressPolling(); // View Progress
+                                                    ensureQwenVLReady().catch(e => showModal("Error", () => { const d = document.createElement("div"); d.innerText = "" + e; return d; }, [{ text: "Close" }]));
                                                     return false;
                                                 }
                                             } catch (e) {
@@ -2077,7 +2080,14 @@ app.registerExtension({
                 };
 
                 // Helper: Progress Polling
-                const startProgressPolling = () => {
+                const ensureQwenVLReady = async () => {
+                    const start = await api.fetchApi("/vnccs/qwen_vl_download_model", { method: "POST" });
+                    if (!start.ok && start.status !== 409) {
+                        let err;
+                        try { err = await start.json(); } catch (e) { err = { error: await start.text() }; }
+                        throw new Error(err?.error || err?.message || "Failed to start QwenVL download.");
+                    }
+
                     const { overlay, modal } = showModal("Downloading Model...", (m) => {
                         const d = document.createElement("div");
                         d.className = "vnccs-cloner-download-modal";
@@ -2095,33 +2105,37 @@ app.registerExtension({
                     const barEl = modal.querySelector("#vnccs-dl-bar");
                     const pctEl = modal.querySelector("#vnccs-dl-pct");
 
-                    const interval = setInterval(async () => {
-                        try {
-                            const r = await api.fetchApi("/vnccs/cloner_download_status");
-                            if (r.ok) {
+                    return await new Promise((resolve, reject) => {
+                        const poll = async () => {
+                            try {
+                                const r = await api.fetchApi("/vnccs/qwen_vl_download_status");
+                                if (!r.ok) throw new Error(await r.text());
                                 const d = await r.json();
+                                const progress = Math.max(0, Math.min(100, Number(d.progress) || 0));
+                                statusEl.innerText = d.current_file ? `Downloading ${d.current_file}...` : "Preparing model files...";
+                                barEl.style.width = `${progress}%`;
+                                pctEl.innerText = `${progress}%`;
                                 if (d.status === "completed") {
-                                    clearInterval(interval);
                                     statusEl.innerText = "Download Complete!";
                                     barEl.style.width = "100%";
                                     pctEl.innerText = "100%";
-                                    setTimeout(() => overlay.remove(), 1000);
-                                    // Maybe retry generation automatically? No, user can click.
-                                } else if (d.status === "error") {
-                                    clearInterval(interval);
-                                    statusEl.innerText = "Error: " + d.error;
-                                    statusEl.classList.add("is-error");
-                                } else {
-                                    statusEl.innerText = `Downloading ${d.current_file}...`;
-                                    barEl.style.width = d.progress + "%";
-                                    pctEl.innerText = d.progress + "%";
+                                    setTimeout(() => overlay.remove(), 450);
+                                    resolve(true);
+                                    return;
                                 }
+                                if (d.status === "error") {
+                                    overlay.remove();
+                                    reject(new Error(d.error || "QwenVL download failed."));
+                                    return;
+                                }
+                                setTimeout(poll, 700);
+                            } catch (e) {
+                                overlay.remove();
+                                reject(e);
                             }
-                        } catch (e) {
-                            clearInterval(interval);
-                            overlay.remove();
-                        }
-                    }, 1000);
+                        };
+                        poll();
+                    });
                 };
 
                 // Add Header

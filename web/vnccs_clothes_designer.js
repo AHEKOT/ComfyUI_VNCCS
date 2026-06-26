@@ -751,7 +751,14 @@ app.registerExtension({
                 api.addEventListener("vnccs.clothes_designer.validation_error", onValidationError);
                 registerCleanup(node, () => api.removeEventListener("vnccs.clothes_designer.validation_error", onValidationError));
 
-                const startWizardDownloadPolling = () => {
+                const ensureQwenVLReady = async () => {
+                    const start = await api.fetchApi("/vnccs/qwen_vl_download_model", { method: "POST" });
+                    if (!start.ok && start.status !== 409) {
+                        let err;
+                        try { err = await start.json(); } catch (e) { err = { error: await start.text() }; }
+                        throw new Error(err?.error || err?.message || "Failed to start QwenVL download.");
+                    }
+
                     const { overlay, modal } = showModal("Downloading Model...", () => {
                         const d = document.createElement("div");
                         d.className = "cd-wizard-modal";
@@ -768,33 +775,39 @@ app.registerExtension({
                     const statusEl = modal.querySelector("#cd-dl-status");
                     const barEl = modal.querySelector("#cd-dl-bar");
                     const pctEl = modal.querySelector("#cd-dl-pct");
-                    const interval = setInterval(async () => {
-                        try {
-                            const r = await api.fetchApi("/vnccs/cloner_download_status");
-                            if (!r.ok) return;
-                            const d = await r.json();
-                            const progress = Math.max(0, Math.min(100, Number(d.progress) || 0));
-                            statusEl.innerText = d.current_file ? `Downloading ${d.current_file}...` : "Downloading...";
-                            barEl.style.width = `${progress}%`;
-                            pctEl.innerText = `${progress}%`;
 
-                            if (d.status === "completed") {
-                                clearInterval(interval);
-                                statusEl.innerText = "Download Complete!";
-                                barEl.style.width = "100%";
-                                pctEl.innerText = "100%";
-                                setTimeout(() => overlay.remove(), 900);
-                            } else if (d.status === "error") {
-                                clearInterval(interval);
-                                statusEl.innerText = `Download Error: ${d.error || "Unknown error"}`;
-                                statusEl.style.color = "var(--error)";
+                    return await new Promise((resolve, reject) => {
+                        const poll = async () => {
+                            try {
+                                const r = await api.fetchApi("/vnccs/qwen_vl_download_status");
+                                if (!r.ok) throw new Error(await r.text());
+                                const d = await r.json();
+                                const progress = Math.max(0, Math.min(100, Number(d.progress) || 0));
+                                statusEl.innerText = d.current_file ? `Downloading ${d.current_file}...` : "Preparing model files...";
+                                barEl.style.width = `${progress}%`;
+                                pctEl.innerText = `${progress}%`;
+
+                                if (d.status === "completed") {
+                                    statusEl.innerText = "Download Complete!";
+                                    barEl.style.width = "100%";
+                                    pctEl.innerText = "100%";
+                                    setTimeout(() => overlay.remove(), 450);
+                                    resolve(true);
+                                    return;
+                                }
+                                if (d.status === "error") {
+                                    overlay.remove();
+                                    reject(new Error(d.error || "QwenVL download failed."));
+                                    return;
+                                }
+                                setTimeout(poll, 700);
+                            } catch (e) {
+                                overlay.remove();
+                                reject(e);
                             }
-                        } catch (e) {
-                            clearInterval(interval);
-                            statusEl.innerText = `Download Status Error: ${e}`;
-                            statusEl.style.color = "var(--error)";
-                        }
-                    }, 800);
+                        };
+                        poll();
+                    });
                 };
 
                 const showWizardModelError = (err) => {
@@ -808,7 +821,7 @@ app.registerExtension({
                         return;
                     }
 
-                    if (["MODEL_MISSING", "MODEL_INVALID", "MMPROJ_MISSING", "MMPROJ_INVALID"].includes(err?.error)) {
+                    if (["MODEL_MISSING", "MODEL_INVALID", "MMPROJ_MISSING", "MMPROJ_INVALID", "MODEL_DOWNLOAD_FAILED"].includes(err?.error)) {
                         showModal("Model Missing", () => {
                             const d = document.createElement("div");
                             d.className = "cd-wizard-modal-text";
@@ -821,9 +834,9 @@ app.registerExtension({
                                 class: "vnccs-btn-primary",
                                 action: async () => {
                                     try {
-                                        const dl = await api.fetchApi("/vnccs/cloner_download_model", { method: "POST" });
+                                        const dl = await api.fetchApi("/vnccs/qwen_vl_download_model", { method: "POST" });
                                         if (dl.ok || dl.status === 409) {
-                                            startWizardDownloadPolling();
+                                            ensureQwenVLReady().catch(e => showInfo("Error", String(e)));
                                             return false;
                                         }
                                         showInfo("Error", await dl.text());
@@ -870,8 +883,10 @@ app.registerExtension({
                                     return true;
                                 }
                                 btn.disabled = true;
-                                btn.innerText = "THINKING...";
+                                btn.innerText = "CHECKING MODEL...";
                                 try {
+                                    await ensureQwenVLReady();
+                                    btn.innerText = "THINKING...";
                                     const r = await api.fetchApi("/vnccs/clothes_wizard", {
                                         method: "POST",
                                         headers: { "Content-Type": "application/json" },

@@ -27,7 +27,7 @@ const DEFAULT_DATA = {
         mode: "seedvr",
         model: "seedvr2_ema_3b-Q4_K_M.gguf",
         vae: "ema_vae_fp16.safetensors",
-        gan_model: "2x_APISR_RRDB_GAN_generator.pth",
+        gan_model: "",
         device: "cuda:0",
         offload_device: "cpu",
         seed: 42,
@@ -116,11 +116,6 @@ const WORKFLOW_UPSCALER_DIT_MODELS = [
 
 const WORKFLOW_UPSCALER_VAE_MODELS = [
     "ema_vae_fp16.safetensors",
-];
-
-const WORKFLOW_GAN_UPSCALER_MODELS = [
-    "2x_APISR_RRDB_GAN_generator.pth",
-    "4x_APISR_GRL_GAN_generator.pth",
 ];
 
 const SEEDVR_ATTENTION_MODES = ["sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3"];
@@ -718,6 +713,7 @@ class CharacterGeneratorWidget {
         this.title = options.title || "VNCCS Character Generator";
         this.data = readData(node);
         this.seedvrAttention = { current: null, available: SEEDVR_ATTENTION_MODES };
+        this.ganUpscaleModels = [];
         this.syncCharacterSourceData();
         this.stages = this.currentStages();
         this.stageState = Object.fromEntries(this.stages.map(([key]) => [key, { status: "waiting", images: null, message: "" }]));
@@ -1393,8 +1389,26 @@ class CharacterGeneratorWidget {
                 this.nodeDefs[name] = allNodeDefs[name];
             }
         }
-        await this.loadSeedvrAttentionInfo();
+        await Promise.all([
+            this.loadSeedvrAttentionInfo(),
+            this.loadGanUpscaleModels(),
+        ]);
         this.renderSettings();
+    }
+
+    async loadGanUpscaleModels() {
+        try {
+            const r = await api.fetchApi("/vnccs/character_generator/gan_upscale_models");
+            if (r.ok) {
+                const data = await r.json();
+                this.ganUpscaleModels = uniqueOptions(Array.isArray(data?.models) ? data.models : []);
+            }
+        } catch {
+            this.ganUpscaleModels = [];
+        }
+        if (!this.ganUpscaleModels.length) {
+            this.ganUpscaleModels = this.getLoaderModelOptions("UpscaleModelLoader", "model_name");
+        }
     }
 
     async loadSeedvrAttentionInfo() {
@@ -1433,6 +1447,21 @@ class CharacterGeneratorWidget {
         const spec = this.getInputSpec(nodeName, inputName);
         const nodeOptions = Array.isArray(spec?.[0]) ? spec[0] : [];
         return uniqueOptions([currentValue, ...workflowOptions, ...nodeOptions]);
+    }
+
+    getLoaderModelOptions(nodeName, inputName) {
+        const spec = this.getInputSpec(nodeName, inputName);
+        return uniqueOptions(Array.isArray(spec?.[0]) ? spec[0] : []);
+    }
+
+    syncSelectToOptions(section, key, options) {
+        const values = options || [];
+        if (!values.length) return values;
+        if (!values.includes(this.data[section][key])) {
+            this.data[section][key] = values[0];
+            writeData(this.node, this.data);
+        }
+        return values;
     }
 
     protectNativeControl(input) {
@@ -1485,7 +1514,15 @@ class CharacterGeneratorWidget {
             input = document.createElement("select");
             input.className = "vnccs-pipe-select";
             this.protectNativeControl(input);
-            for (const opt of options || []) {
+            const optionValues = options || [];
+            if (!optionValues.length) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = "No models found";
+                option.disabled = true;
+                input.appendChild(option);
+            }
+            for (const opt of optionValues) {
                 const option = document.createElement("option");
                 option.value = opt;
                 option.textContent = opt;
@@ -1749,8 +1786,13 @@ class CharacterGeneratorWidget {
             this.modeTabs("upscaler", "mode", [["seedvr", "SeedVR"], ["gan", "GAN"], ["off", "OFF"]]),
         ];
         if (this.data.upscaler.mode === "gan") {
+            const ganOptions = this.syncSelectToOptions(
+                "upscaler",
+                "gan_model",
+                this.ganUpscaleModels,
+            );
             upscalerFields.push(
-                this.field("upscaler", "gan_model", "model", "select", this.getWorkflowModelOptions("UpscaleModelLoader", "model_name", WORKFLOW_GAN_UPSCALER_MODELS, this.data.upscaler.gan_model)),
+                this.field("upscaler", "gan_model", "model", "select", ganOptions),
             );
         } else if (this.data.upscaler.mode !== "off") {
             upscalerFields.push(
