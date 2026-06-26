@@ -1595,14 +1595,21 @@ async def vnccs_module_status(request):
                 {"class_names": ["UnetLoaderGGUF"]},
             ],
         },
-        "impact": {
-            "label": "Impact",
+        "impact_pack": {
+            "label": "Impact Pack",
             "github_url": "https://github.com/ltdrdata/ComfyUI-Impact-Pack",
-            "folders": ["ComfyUI-Impact-Pack", "ComfyUI-Impact-Subpack"],
+            "folders": ["ComfyUI-Impact-Pack"],
             "nodes": [
-                {"class_names": ["UltralyticsDetectorProvider"]},
                 {"class_names": ["SAMLoader"]},
                 {"class_names": ["FaceDetailer"]},
+            ],
+        },
+        "impact_subpack": {
+            "label": "Impact Subpack",
+            "github_url": "https://github.com/ltdrdata/ComfyUI-Impact-Subpack",
+            "folders": ["ComfyUI-Impact-Subpack"],
+            "nodes": [
+                {"class_names": ["UltralyticsDetectorProvider"]},
             ],
         },
         "easy_sam3": {

@@ -3055,6 +3055,12 @@ if server is not None:
             "options": list(SEEDVR_ATTENTION_MODES),
         })
 
+    @server.PromptServer.instance.routes.get("/vnccs/character_generator/gan_upscale_models")
+    async def vnccs_character_generator_gan_upscale_models(request):
+        return web.json_response({
+            "models": _available_gan_upscale_models(),
+        })
+
     @server.PromptServer.instance.routes.post("/vnccs/character_generator/regenerate")
     async def vnccs_character_generator_regenerate(request):
         try:

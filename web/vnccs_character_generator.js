@@ -713,6 +713,7 @@ class CharacterGeneratorWidget {
         this.title = options.title || "VNCCS Character Generator";
         this.data = readData(node);
         this.seedvrAttention = { current: null, available: SEEDVR_ATTENTION_MODES };
+        this.ganUpscaleModels = [];
         this.syncCharacterSourceData();
         this.stages = this.currentStages();
         this.stageState = Object.fromEntries(this.stages.map(([key]) => [key, { status: "waiting", images: null, message: "" }]));
@@ -1388,8 +1389,26 @@ class CharacterGeneratorWidget {
                 this.nodeDefs[name] = allNodeDefs[name];
             }
         }
-        await this.loadSeedvrAttentionInfo();
+        await Promise.all([
+            this.loadSeedvrAttentionInfo(),
+            this.loadGanUpscaleModels(),
+        ]);
         this.renderSettings();
+    }
+
+    async loadGanUpscaleModels() {
+        try {
+            const r = await api.fetchApi("/vnccs/character_generator/gan_upscale_models");
+            if (r.ok) {
+                const data = await r.json();
+                this.ganUpscaleModels = uniqueOptions(Array.isArray(data?.models) ? data.models : []);
+            }
+        } catch {
+            this.ganUpscaleModels = [];
+        }
+        if (!this.ganUpscaleModels.length) {
+            this.ganUpscaleModels = this.getLoaderModelOptions("UpscaleModelLoader", "model_name");
+        }
     }
 
     async loadSeedvrAttentionInfo() {
@@ -1495,7 +1514,15 @@ class CharacterGeneratorWidget {
             input = document.createElement("select");
             input.className = "vnccs-pipe-select";
             this.protectNativeControl(input);
-            for (const opt of options || []) {
+            const optionValues = options || [];
+            if (!optionValues.length) {
+                const option = document.createElement("option");
+                option.value = "";
+                option.textContent = "No models found";
+                option.disabled = true;
+                input.appendChild(option);
+            }
+            for (const opt of optionValues) {
                 const option = document.createElement("option");
                 option.value = opt;
                 option.textContent = opt;
@@ -1762,7 +1789,7 @@ class CharacterGeneratorWidget {
             const ganOptions = this.syncSelectToOptions(
                 "upscaler",
                 "gan_model",
-                this.getLoaderModelOptions("UpscaleModelLoader", "model_name"),
+                this.ganUpscaleModels,
             );
             upscalerFields.push(
                 this.field("upscaler", "gan_model", "model", "select", ganOptions),
