@@ -26,18 +26,34 @@ Many people want to use neural networks to create graphics, but making a unique 
 
 ## Installation
 
-Find `VNCCS - Visual Novel Character Creation Suite` in Custom Nodes Manager or install it manually:
+For new ComfyUI users: 
+Use [VNCCS Easy Install](https://github.com/AHEKOT/VNCCS_Easy-Install). It installs ComfyUI with a preconfigured setup and working VNCCS nodes.
 
+For experienced users:
+Find `VNCCS - Visual Novel Character Creation Suite` in Custom Nodes Manager and click install latest version
+
+Manual install:
 1. Place the downloaded folder into `ComfyUI/custom_nodes/`
-2. Launch ComfyUI and open Comfy Manager
-3. Click "Install missing custom nodes"
-4. Alternatively, in the console: go to `ComfyUI/custom_nodes/` and run `git clone https://github.com/AHEKOT/ComfyUI_VNCCS.git`
+2. Alternatively, in the console: go to `ComfyUI/custom_nodes/` and run `git clone https://github.com/AHEKOT/ComfyUI_VNCCS.git`
+3. cd ComfyUI_VNCCS_Utils
+4. pip install -r requirements.txt
+
+Post install steps:
+Launch ComfyUI and open Comfy Manager
+Click "Install missing custom nodes"
 
 ## VNCCS 3.0 Workflow
 
 Hi! My name is V-chan, and I am going to show you how to use the new VNCCS!
 
 We got a BIIIIIIG update, and now everything is completely new, so listen carefully!
+
+## Step 0: Migration assistant
+
+If you used VNCCS before - you characters are safe. But you need to do one extra step:
+Open **VNCCS_MigrationAssistant.json**, select your characters and click **migrate**. It will transfer you characters in new VNCCS format.
+
+!!!MAKE SURE THAT THEY WORK CORRECTLY BEFORE DELETING OLD FOLDER!!!
 
 ## Step 1: Character Creator
 
