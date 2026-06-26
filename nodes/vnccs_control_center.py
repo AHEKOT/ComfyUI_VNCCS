@@ -1370,9 +1370,8 @@ async def cc_check(request):
 
     installed = get_installed_version_info()
 
-    # TECH DEBT: Nunchaku entries remain in older control_center.json files, but
-    # VNCCS no longer exposes or uses them. Delete this filter after the catalog
-    # is cleaned up.
+    # Legacy remote catalogs may still contain Nunchaku entries, but VNCCS no
+    # longer exposes or uses them.
     visible_models = [
         entry for entry in config.get("models", [])
         if entry.get("type") != "nunchaku"
@@ -1602,6 +1601,7 @@ async def vnccs_module_status(request):
             "folders": ["ComfyUI-Impact-Pack", "ComfyUI-Impact-Subpack"],
             "nodes": [
                 {"class_names": ["UltralyticsDetectorProvider"]},
+                {"class_names": ["SAMLoader"]},
                 {"class_names": ["FaceDetailer"]},
             ],
         },
