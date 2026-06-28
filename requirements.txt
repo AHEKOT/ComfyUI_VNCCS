@@ -2,4 +2,16 @@ torch
 numpy
 Pillow
 opencv-python
-huggingface_hub
+llama-cpp-python>=0.3.16
+einops
+safetensors
+huggingface-hub[torch]>=0.22
+json_repair
+aiohttp
+requests
+timm
+torchvision
+transformers
+kornia
+pymatting
+transparent-background

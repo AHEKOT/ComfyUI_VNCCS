@@ -110,3 +110,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "CharacterSheetCropper": "VNCCS Character Sheet Cropper"
 }
+
+NODE_CATEGORY_MAPPINGS = {
+    "CharacterSheetCropper": "VNCCS/Util",
+}

@@ -1,10 +1,28 @@
 [project]
 name = "vnccs"
 description = "VNCCS - Visual Novel Character Creation Suite"
-version = "2.1.0"
+version = "3.0.0"
 license = {file = "LICENSE"} 
 
-dependencies = ["torch", "numpy", "Pillow", "opencv-python", "huggingface_hub", "timm"]
+dependencies = [
+    "torch",
+    "numpy",
+    "Pillow",
+    "opencv-python",
+    "llama-cpp-python>=0.3.16",
+    "einops",
+    "safetensors",
+    "huggingface-hub[torch]>=0.22",
+    "json_repair",
+    "aiohttp",
+    "requests",
+    "timm",
+    "torchvision",
+    "transformers",
+    "kornia",
+    "pymatting",
+    "transparent-background",
+]
 
 [project.urls]
 Repository = "https://github.com/AHEKOT/ComfyUI_VNCCS"
@@ -16,4 +34,3 @@ Documentation = "https://github.com/AHEKOT/ComfyUI_VNCCS/wiki"
 PublisherId = "vnccs"
 DisplayName = "VNCCS - Visual Novel Character Creation Suite"
 Icon = "https://raw.githubusercontent.com/AHEKOT/ComfyUI_VNCCS/refs/heads/main/images/VNCCS_LOGO.png"
-

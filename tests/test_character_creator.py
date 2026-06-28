@@ -1,0 +1,392 @@
+"""Tests for nodes/character_creator_v2.py — construct_prompt and config logic."""
+
+import json
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+pytest.importorskip("torch")
+
+from nodes.character_creator_v2 import (
+    CharacterCreatorV2,
+    decode_generation_samples,
+    normalize_gen_settings,
+    postprocess_character_wizard_result,
+)
+from utils import normalize_hair_tags
+
+
+def _base_info(**overrides):
+    info = {
+        "sex": "female",
+        "age": 18,
+        "race": "human",
+        "skin_color": "fair",
+        "hair": "black hair, long hair",
+        "eyes": "blue",
+        "face": "oval",
+        "body": "slim",
+        "additional_details": "",
+        "nsfw": False,
+        "aesthetics": "masterpiece, best quality",
+        "negative_prompt": "bad quality",
+        "lora_prompt": "",
+        "background_color": "Green",
+    }
+    info.update(overrides)
+    return info
+
+
+# ── construct_prompt ──────────────────────────────────────────────────────────
+
+class TestConstructPrompt:
+    def test_returns_tuple_of_two_strings(self):
+        pos, neg = CharacterCreatorV2.construct_prompt(_base_info())
+        assert isinstance(pos, str)
+        assert isinstance(neg, str)
+
+    def test_positive_contains_aesthetics(self):
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(aesthetics="cinematic"))
+        assert "cinematic" in pos
+
+    def test_positive_contains_age(self):
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(age=25))
+        assert "25yo" in pos
+
+    def test_positive_female_adds_1girl(self):
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(sex="female"))
+        assert "1girl" in pos
+
+    def test_positive_male_adds_1boy(self):
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(sex="male"))
+        assert "1boy" in pos
+
+    def test_positive_includes_race(self):
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(race="elf"))
+        assert "elf" in pos
+
+    def test_positive_includes_hair(self):
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(hair="silver short"))
+        assert "silver short hair" in pos
+
+    def test_hair_without_hair_word_is_normalized(self):
+        assert normalize_hair_tags("black long") == "black long hair"
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(hair="black long"))
+        assert "black long hair" in pos
+
+    def test_hair_word_added_when_no_hair_tag_exists(self):
+        assert normalize_hair_tags("side ponytail") == "side ponytail hair"
+
+    def test_positive_includes_eyes(self):
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(eyes="red"))
+        assert "red" in pos
+
+    def test_positive_includes_background_color_background(self):
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(background_color="Green"))
+        assert "Green background" in pos
+
+    def test_positive_includes_lora_prompt(self):
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(lora_prompt="trigger_word"))
+        assert "trigger_word" in pos
+
+    def test_nsfw_false_female_includes_underwear(self):
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(sex="female", nsfw=False))
+        assert "bra" in pos or "panties" in pos
+
+    def test_nsfw_true_female_includes_nude(self):
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(sex="female", nsfw=True))
+        assert "nude" in pos or "naked" in pos
+
+    def test_nsfw_true_male_includes_nude(self):
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(sex="male", nsfw=True))
+        assert "nude" in pos or "naked" in pos
+
+    def test_nsfw_string_true_treated_as_nsfw(self):
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(nsfw="true"))
+        assert "nude" in pos or "naked" in pos
+
+    def test_negative_contains_user_negative_prompt(self):
+        _, neg = CharacterCreatorV2.construct_prompt(_base_info(negative_prompt="blurry, ugly"))
+        assert "blurry" in neg
+
+    def test_no_lora_prompt_not_in_positive(self):
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(lora_prompt=""))
+        # empty lora_prompt should not add a trailing comma artifact
+        assert not pos.endswith(", ")
+
+    def test_positive_contains_cowboy_shot(self):
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info())
+        assert "cowboy_shot" in pos
+
+    def test_empty_additional_details_not_appended(self):
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(additional_details=""))
+        # Should not produce double commas from empty field
+        assert ",," not in pos
+
+    def test_additional_details_included(self):
+        pos, _ = CharacterCreatorV2.construct_prompt(_base_info(additional_details="freckles"))
+        assert "freckles" in pos
+
+
+# ── config save/load via process() inputs ─────────────────────────────────────
+
+class TestProcessConfigSave:
+    """Test the config-building logic in process() without model loading."""
+
+    def test_info_fields_saved_to_config(self, tmp_path, monkeypatch):
+        import utils as U
+        monkeypatch.setattr(U, "base_output_dir", lambda: str(tmp_path))
+
+        # We import inside to pick up the monkeypatch via the module reference used by character_creator_v2
+        from nodes import character_creator_v2 as cc_mod
+        monkeypatch.setattr(cc_mod, "base_output_dir", lambda: str(tmp_path), raising=False)
+
+        import utils
+        monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path))
+
+        info = _base_info(hair="pink curly", eyes="green")
+        widget_data = json.dumps({
+            "character": "TestChar",
+            "character_info": info,
+            "gen_settings": {
+                "ckpt_name": "fake.safetensors",
+                "sampler": "euler",
+                "scheduler": "normal",
+                "steps": 20,
+                "cfg": 7.0,
+                "seed": 12345,
+            },
+            "preview_valid": False,
+            "preview_source": "gen",
+        })
+
+        # process() will fail when it tries to load a checkpoint — we only test up to config save.
+        # Patch the model loading to raise before it's called by checking config was already written.
+        original_load = cc_mod.comfy.sd.load_checkpoint_guess_config if hasattr(cc_mod, 'comfy') else None
+
+        node = CharacterCreatorV2()
+
+        # We expect a ValueError/AttributeError when checkpoint loading is attempted.
+        # The config should already be written before that point.
+        try:
+            node.process(widget_data=widget_data)
+        except Exception:
+            pass
+
+        config = utils.load_config("TestChar")
+        assert config is not None, "Config was not saved before model loading"
+        assert config["character_info"]["hair"] == "pink curly"
+        assert config["character_info"]["eyes"] == "green"
+        assert config["character_info"]["name"] == "TestChar"
+        assert config["character_info"]["seed"] == 12345
+        assert "costumes" in config
+
+
+class TestGenerationModes:
+    def test_normalize_gen_settings_uses_anima_defaults(self):
+        settings = normalize_gen_settings({"generation_mode": "anima"})
+
+        assert settings["generation_mode"] == "anima"
+        assert settings["steps"] == 30
+        assert settings["cfg"] == 4.0
+        assert settings["sampler"] == "er_sde"
+        assert settings["scheduler"] == "simple"
+        assert settings["clip_name"] == "qwen_3_06b_base.safetensors"
+        assert settings["vae_name"] == "qwen_image_vae.safetensors"
+        assert settings["clip_type"] == "stable_diffusion"
+        assert settings["dmd_lora_name"] == "anima\\anima-turbo-lora-v0.1.safetensors"
+        assert settings["turbo_enabled"] is False
+
+    def test_normalize_gen_settings_prefers_active_mode_profile(self):
+        settings = normalize_gen_settings({
+            "generation_mode": "illustrious",
+            "ckpt_name": "stale-anima-field",
+            "steps": 30,
+            "cfg": 4.0,
+            "sampler": "er_sde",
+            "scheduler": "simple",
+            "diffusion_model_name": "anima.safetensors",
+            "clip_name": "anima_clip.safetensors",
+            "vae_name": "anima_vae.safetensors",
+            "mode_settings": {
+                "illustrious": {
+                    "ckpt_name": "illustrious.safetensors",
+                    "steps": 20,
+                    "cfg": 8.0,
+                    "sampler": "euler",
+                    "scheduler": "normal",
+                }
+            },
+        })
+
+        assert settings["ckpt_name"] == "illustrious.safetensors"
+        assert settings["steps"] == 20
+        assert settings["cfg"] == 8.0
+        assert settings["sampler"] == "euler"
+        assert settings["scheduler"] == "normal"
+
+    def test_normalize_gen_settings_prefers_anima_mode_profile(self):
+        settings = normalize_gen_settings({
+            "generation_mode": "anima",
+            "steps": 20,
+            "cfg": 8.0,
+            "sampler": "euler",
+            "scheduler": "normal",
+            "mode_settings": {
+                "anima": {
+                    "diffusion_model_name": "anima.safetensors",
+                    "clip_name": "anima_clip.safetensors",
+                    "vae_name": "anima_vae.safetensors",
+                    "steps": 12,
+                    "cfg": 1.0,
+                    "sampler": "er_sde",
+                    "scheduler": "simple",
+                    "turbo_enabled": True,
+                    "dmd_lora_name": "anima\\anima-turbo-lora-v0.1.safetensors",
+                    "lora_stack": [{"name": "extra.safetensors", "strength": 0.5}],
+                }
+            },
+        })
+
+        assert settings["diffusion_model_name"] == "anima.safetensors"
+        assert settings["steps"] == 12
+        assert settings["cfg"] == 1.0
+        assert settings["turbo_enabled"] is True
+        assert settings["lora_stack"] == [{"name": "extra.safetensors", "strength": 0.5}]
+
+    def test_character_wizard_postprocess_afro_student(self):
+        parsed = {
+            "sex": "male",
+            "age": 20,
+            "race": "afro_student",
+            "skin_color": "",
+            "body": "",
+            "face": "",
+            "hair": "black_hair, medium_hair",
+            "eyes": "brown_eyes",
+            "additional_details": "",
+        }
+
+        result = postprocess_character_wizard_result(parsed, "young afro student")
+
+        assert result["race"] == "human"
+        assert result["skin_color"] == "dark skin"
+        assert "average build" in result["body"]
+
+    def test_character_wizard_postprocess_russian_afro_student(self):
+        parsed = {
+            "sex": "male",
+            "age": 20,
+            "race": "afro_student",
+            "skin_color": "",
+            "body": "",
+        }
+
+        result = postprocess_character_wizard_result(parsed, "молодой афро студент")
+
+        assert result["race"] == "human"
+        assert result["skin_color"] == "dark skin"
+        assert "average build" in result["body"]
+
+    def test_decode_generation_samples_unwraps_common_ksampler_dict(self):
+        class DummyVAE:
+            def __init__(self):
+                self.received = None
+
+            def decode_tiled(self, samples, tile_x, tile_y):
+                self.received = samples
+                return "decoded"
+
+        vae = DummyVAE()
+        latent_samples = object()
+
+        result = decode_generation_samples(
+            vae,
+            {"samples": latent_samples},
+            {"generation_mode": "illustrious"},
+        )
+
+        assert result == "decoded"
+        assert vae.received is latent_samples
+
+    def test_decode_generation_samples_unwraps_nested_latent_dict(self):
+        class DummyVAE:
+            def __init__(self):
+                self.received = None
+
+            def decode_tiled(self, samples, tile_x, tile_y):
+                self.received = samples
+                return "decoded"
+
+        vae = DummyVAE()
+        latent_samples = object()
+
+        result = decode_generation_samples(
+            vae,
+            {"samples": {"samples": latent_samples}},
+            {"generation_mode": "illustrious"},
+        )
+
+        assert result == "decoded"
+        assert vae.received is latent_samples
+
+    def test_process_uses_anima_loader(self, tmp_path, monkeypatch):
+        import utils as U
+        monkeypatch.setattr(U, "base_output_dir", lambda: str(tmp_path))
+
+        from nodes import character_creator_v2 as cc_mod
+        monkeypatch.setattr(cc_mod, "base_output_dir", lambda: str(tmp_path), raising=False)
+
+        import utils
+        monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path))
+
+        class DummyClip:
+            def tokenize(self, text):
+                return text
+
+            def encode_from_tokens(self, tokens, return_pooled=True):
+                return object(), object()
+
+        class DummyModel:
+            load_device = "cpu"
+
+        class DummyVAE:
+            pass
+
+        captured = {}
+
+        def fake_load_generation_assets(gen_settings):
+            captured.update(gen_settings)
+            return ("anima", "diffusion.safetensors", "clip.safetensors", "vae.safetensors"), DummyModel(), DummyClip(), DummyVAE()
+
+        monkeypatch.setattr(cc_mod, "load_generation_assets", fake_load_generation_assets)
+
+        node = CharacterCreatorV2()
+        widget_data = json.dumps({
+            "character": "AnimaChar",
+            "character_info": _base_info(),
+            "gen_settings": {
+                "generation_mode": "anima",
+                "diffusion_model_name": "diffusion.safetensors",
+                "clip_name": "clip.safetensors",
+                "vae_name": "vae.safetensors",
+                "seed": 123,
+            },
+            "preview_valid": True,
+            "preview_source": "gen",
+        })
+
+        with pytest.raises(Exception):
+            node.process(widget_data=widget_data)
+
+        assert captured["generation_mode"] == "anima"
+        assert captured["diffusion_model_name"] == "diffusion.safetensors"
+        assert captured["clip_name"] == "clip.safetensors"
+        assert captured["vae_name"] == "vae.safetensors"
+        assert captured["steps"] == 30
+        assert captured["cfg"] == 4.0
+        assert captured["sampler"] == "er_sde"
+        assert captured["scheduler"] == "simple"

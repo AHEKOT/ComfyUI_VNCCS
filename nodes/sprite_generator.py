@@ -1,21 +1,12 @@
 import os
 import torch
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image
 
-try:
-    from ..utils import (
-        base_output_dir, character_dir, list_characters,
-        load_character_info, load_character_sheet
-    )
-except ImportError:
-    import sys
-    import os
-    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from ..utils import (
-        base_output_dir, character_dir, list_characters,
-        load_character_info, load_character_sheet
-    )
+from ..utils import (
+    base_output_dir, character_dir, list_characters,
+    load_character_info
+)
 
 
 class SpriteGenerator:
@@ -43,50 +34,29 @@ class SpriteGenerator:
 
     def generate_sprites(self, character):
         character_path = character_dir(character)
-        sheets_dir = os.path.join(character_path, "Sheets")
-        if not os.path.exists(sheets_dir):
-            print(f"Sprites folder not found: {sheets_dir}")
+        sprites_root = os.path.join(character_path, "Sprites")
+        if not os.path.exists(sprites_root):
+            print(f"Sprites folder not found: {sprites_root}. Run migration or generate sprites first.")
             return [], [], []
 
         images_out = []
         file_paths_out = []
         masks_out = []
-        processed_emotions = set()
+        image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
-        costumes = [d for d in os.listdir(sheets_dir) if os.path.isdir(os.path.join(sheets_dir, d))]
-        print(f"Found costumes: {len(costumes)}")
-
-        for costume in costumes:
-            costume_dir = os.path.join(sheets_dir, costume)
-            emotions = [d for d in os.listdir(costume_dir) if os.path.isdir(os.path.join(costume_dir, d))]
-            print(f"For costume {costume} found emotions: {len(emotions)}")
-            for emotion in emotions:
-                emotion_key = f"{costume}_{emotion}"
-                if emotion_key in processed_emotions:
+        for root, _dirs, filenames in os.walk(sprites_root):
+            for filename in sorted(filenames):
+                if os.path.splitext(filename)[1].lower() not in image_exts:
                     continue
-                processed_emotions.add(emotion_key)
-                emotion_dir = os.path.join(costume_dir, emotion)
-                # Use the existing load_character_sheet function
-                result = load_character_sheet(character, costume, emotion, with_mask=True)
-                if result is not None and result[0] is not None:
-                    img_tensor, mask_tensor = result
-                    images_out.append(img_tensor)
-                    masks_out.append(mask_tensor)
-
-                    sprite_dir = os.path.join(self.base_path, character, "Sprites", costume, emotion)
-                    os.makedirs(sprite_dir, exist_ok=True)
-
-                    # Generate base sprite filename without number suffix
-                    sprite_filename = f"sprite_{emotion}_"
-                    sprite_path = os.path.join(sprite_dir, sprite_filename)
-
-                    for _ in range(12):
-                        file_paths_out.append(sprite_path)
-
-                    print(f"Processed emotion: {emotion} for costume: {costume}")
-                    print(f"Save path: {sprite_path}")
-                else:
-                    print(f"Failed to load sheet for {character}/{costume}/{emotion}")
+                sprite_path = os.path.join(root, filename)
+                try:
+                    img = Image.open(sprite_path).convert("RGBA")
+                    arr = torch.from_numpy(np.array(img).astype("float32") / 255.0).unsqueeze(0)
+                    images_out.append(arr)
+                    file_paths_out.append(sprite_path)
+                    masks_out.append(1.0 - arr[..., 3])
+                except Exception as exc:
+                    print(f"Failed to load sprite {sprite_path}: {exc}")
 
         print(f"Total processed images: {len(images_out)}")
         if not images_out:

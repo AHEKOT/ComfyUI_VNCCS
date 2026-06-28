@@ -12,23 +12,36 @@ Sampler / scheduler:
 """
 
 
-"""Prepare enumeration lists once so both inputs and outputs share identical types."""
+"""Prepare enumeration lists once for input validation."""
+import os
+import folder_paths
 from .sampler_scheduler_picker import (
     fetch_sampler_scheduler_lists,
     DEFAULT_SAMPLERS,
     DEFAULT_SCHEDULERS,
+    SAMPLER_OUTPUT_TYPE,
+    SCHEDULER_OUTPUT_TYPE,
 )
+from .vnccs_control_center import (
+    _apply_lora_standard,
+)
+try:
+    from ..utils import get_full_path_agnostic
+except Exception:
+    from utils import get_full_path_agnostic
 
 
 SAMPLER_ENUM, SCHEDULER_ENUM = fetch_sampler_scheduler_lists()
 
+# Sentinel value shown in the widget to mean "inherit this value from the incoming pipe"
+PIPE_INHERIT = "(← pipe)"
+
 
 class VNCCS_Pipe:
     CATEGORY = "VNCCS"
-    # NOTE: Outputs must declare type names, not enumeration lists.
-    # Using the enumeration lists directly caused UI duplication (width/height twice)
-    # because ComfyUI iterated over list elements as separate types. We return STRING
-    # while still constraining the input via enumerations so connections remain valid.
+    # NOTE: KSampler-like inputs declare sampler/scheduler as enum lists. Plain
+    # STRING outputs fail validation, while list outputs can be mis-indexed by
+    # older workflows. Flexible str output types compare compatible with both.
     RETURN_TYPES = (
         "MODEL", "CLIP", "VAE", "CONDITIONING", "CONDITIONING",
         "INT",
@@ -36,8 +49,8 @@ class VNCCS_Pipe:
         "FLOAT",
         "FLOAT",
         "VNCCS_PIPE",
-        SAMPLER_ENUM,
-        SCHEDULER_ENUM,
+        SAMPLER_OUTPUT_TYPE,
+        SCHEDULER_OUTPUT_TYPE,
     )
     RETURN_NAMES = (
         "model", "clip", "vae", "pos", "neg",
@@ -46,22 +59,19 @@ class VNCCS_Pipe:
     )
     FUNCTION = "process_pipe"
 
-    def __init__(self):
-        self.model = None
-        self.clip = None
-        self.vae = None
-        self.pos = None
-        self.neg = None
-        self.seed_int = None
-        self.sample_steps = None
-        self.cfg = None
-        self.denoise = None
-        self.sampler_name = None
-        self.scheduler = None
+    @staticmethod
+    def _inherit(value, pipe, attr_name, zero_is_empty=True):
+        """Inherit value from pipe if current value is the sentinel (None or 0)."""
+        if value is None or (zero_is_empty and value == 0):
+            return getattr(pipe, attr_name, value) if pipe else value
+        return value
 
     @classmethod
     def INPUT_TYPES(cls):
         sampler_enum, scheduler_enum = fetch_sampler_scheduler_lists()
+        # Prepend the inherit sentinel so the widget defaults to "pass through"
+        sampler_input = [PIPE_INHERIT] + list(sampler_enum)
+        scheduler_input = [PIPE_INHERIT] + list(scheduler_enum)
 
         return {
             "optional": {
@@ -70,49 +80,83 @@ class VNCCS_Pipe:
                 "vae": ("VAE",),
                 "pos": ("CONDITIONING",),
                 "neg": ("CONDITIONING",),
+                # 0 = inherit from pipe; any non-zero value overrides
                 "seed_int": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
-                "sample_steps": ("INT", {"default": None}),
-                "cfg": ("FLOAT", {"default": None}),
-                "denoise": ("FLOAT", {"default": None}),
-                "pipe": ("VNCCS_PIPE",),
-                "sampler_name": (sampler_enum, {"default": sampler_enum[0] if sampler_enum else DEFAULT_SAMPLERS[0]}),
-                "scheduler": (scheduler_enum, {"default": scheduler_enum[0] if scheduler_enum else DEFAULT_SCHEDULERS[0]}),
+                "sample_steps": ("INT", {"default": 0, "min": 0, "max": 10000}),
+                "cfg": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 100.0, "step": 0.1}),
+                "denoise": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+                # Wildcard keeps old saved workflows from failing validation if
+                # this optional passthrough was accidentally linked to a string.
+                "pipe": ("*",),
+                # PIPE_INHERIT sentinel = pass the pipe value through unchanged
+                "sampler_name": (sampler_input, {"default": PIPE_INHERIT}),
+                "scheduler": (scheduler_input, {"default": PIPE_INHERIT}),
+                "lora_name": (["none"] + folder_paths.get_filename_list("loras"),),
+                "lora_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
+                "lora_options_json": ("STRING", {"default": '["none"]'}),
             }
         }
 
-    def process_pipe(self, model=None, clip=None, vae=None, pos=None, neg=None, seed_int=0,
-                     sample_steps=None, cfg=None, denoise=None, pipe=None,
-                     sampler_name=None, scheduler=None):
-        # 3. Otherwise remain 0 (caller downstream may randomize later).
-        if pipe is not None:
-            if model is None: model = getattr(pipe, "model", None)
-            if clip is None: clip = getattr(pipe, "clip", None)
-            if vae is None: vae = getattr(pipe, "vae", None)
-            if pos is None: pos = getattr(pipe, "pos", None)
-            if neg is None: neg = getattr(pipe, "neg", None)
-            if sample_steps is None or sample_steps == 0: sample_steps = getattr(pipe, "sample_steps", None)
-            if cfg is None or cfg == 0: cfg = getattr(pipe, "cfg", None)
-            if denoise is None or denoise == 0: denoise = getattr(pipe, "denoise", None)
-            default_sampler_name = SAMPLER_ENUM[0] if SAMPLER_ENUM else None
-            default_scheduler_name = SCHEDULER_ENUM[0] if SCHEDULER_ENUM else None
-            if (sampler_name in (None, "", default_sampler_name)):
-                sampler_name = getattr(pipe, "sampler_name", sampler_name)
-            if (scheduler in (None, "", default_scheduler_name)):
-                scheduler = getattr(pipe, "scheduler", scheduler)
-            if seed_int in (None, 0):
-                upstream_val = getattr(pipe, "seed_int", getattr(pipe, "seed", 0))
-                if upstream_val not in (None, 0):
-                    seed_int = upstream_val
-            else:
-                # Propagate override downstream pipe immediately so deeper chains see it
-                try:
-                    pipe.seed_int = seed_int
-                except Exception:
-                    try:
-                        pipe.seed = seed_int
-                    except Exception:
-                        pass
+    @classmethod
+    def VALIDATE_INPUTS(cls, sampler_name=PIPE_INHERIT, scheduler=PIPE_INHERIT, **kwargs):
+        valid_samplers = [PIPE_INHERIT] + list(SAMPLER_ENUM)
+        valid_schedulers = [PIPE_INHERIT] + list(SCHEDULER_ENUM)
+        if sampler_name not in valid_samplers:
+            return f"sampler_name '{sampler_name}' is not valid"
+        if scheduler not in valid_schedulers:
+            return f"scheduler '{scheduler}' is not valid"
+        return True
 
+    def process_pipe(self, model=None, clip=None, vae=None, pos=None, neg=None, seed_int=0,
+                     sample_steps=0, cfg=0.0, denoise=0.0, pipe=None,
+                     sampler_name=PIPE_INHERIT, scheduler=PIPE_INHERIT,
+                     lora_name="none", lora_strength=1.0, lora_options_json='["none"]', **_):
+        """Aggregate pipe values, inheriting from upstream pipe if not provided."""
+        if pipe is not None and not any(hasattr(pipe, attr) for attr in ("model", "clip", "vae", "pos", "neg")):
+            pipe = None
+
+        # Inherit object references when not connected
+        model = self._inherit(model, pipe, "model", zero_is_empty=False)
+        clip = self._inherit(clip, pipe, "clip", zero_is_empty=False)
+        vae = self._inherit(vae, pipe, "vae", zero_is_empty=False)
+        pos = self._inherit(pos, pipe, "pos", zero_is_empty=False)
+        neg = self._inherit(neg, pipe, "neg", zero_is_empty=False)
+
+        # Numeric fields: 0 / 0.0 means "inherit from pipe"
+        sample_steps = self._inherit(sample_steps, pipe, "sample_steps")
+        cfg = self._inherit(cfg, pipe, "cfg")
+        denoise = self._inherit(denoise, pipe, "denoise")
+
+        # seed: 0 means inherit
+        if seed_int in (None, 0) and pipe is not None:
+            seed_int = getattr(pipe, "seed_int", getattr(pipe, "seed", 0)) or 0
+
+        # sampler/scheduler: PIPE_INHERIT sentinel means pass the pipe value through
+        if sampler_name in (None, "", PIPE_INHERIT):
+            sampler_name = getattr(pipe, "sampler_name", None) if pipe else None
+        if scheduler in (None, "", PIPE_INHERIT):
+            scheduler = getattr(pipe, "scheduler", None) if pipe else None
+
+        # Final fallback to first valid value if pipe had nothing
+        if not sampler_name or sampler_name == PIPE_INHERIT:
+            sampler_name = SAMPLER_ENUM[0] if SAMPLER_ENUM else DEFAULT_SAMPLERS[0]
+        if not scheduler or scheduler == PIPE_INHERIT:
+            scheduler = SCHEDULER_ENUM[0] if SCHEDULER_ENUM else DEFAULT_SCHEDULERS[0]
+
+        if lora_name and lora_name != "none" and model is not None:
+            loader_type = getattr(pipe, "loader_type", "standard") if pipe else "standard"
+            if loader_type == "nunchaku":
+                # TECH DEBT: legacy Nunchaku LoRA passthrough disabled. Delete
+                # this guard after old workflow JSON no longer stores it.
+                loader_type = "standard"
+            full_path = get_full_path_agnostic(folder_paths, "loras", lora_name, require_exists=True)
+            if full_path and os.path.exists(full_path):
+                print(f"[VNCCS Pipe] Applying LoRA: {lora_name} (strength={lora_strength}, loader={loader_type})")
+                model, clip = _apply_lora_standard(model, clip, full_path, lora_strength)
+            else:
+                print(f"[VNCCS Pipe] LoRA not found on disk: '{lora_name}', skipping.")
+
+        # Store on self for return
         self.model = model
         self.clip = clip
         self.vae = vae
@@ -124,18 +168,15 @@ class VNCCS_Pipe:
         self.denoise = denoise
         self.sampler_name = sampler_name
         self.scheduler = scheduler
-
-        if pipe is not None:
-            pipe.model = self.model
-            pipe.clip = self.clip
-            pipe.vae = self.vae
-            pipe.pos = self.pos
-            pipe.neg = self.neg
-            pipe.sample_steps = self.sample_steps
-            pipe.cfg = self.cfg
-            pipe.denoise = self.denoise
-            pipe.sampler_name = self.sampler_name
-            pipe.scheduler = self.scheduler
+        self.loader_type = "standard" if getattr(pipe, "loader_type", None) == "nunchaku" else getattr(pipe, "loader_type", None)
+        # TECH DEBT: deprecated Nunchaku fields kept as None for compatibility.
+        # Delete after old workflow JSON is migrated.
+        self.nunchaku_kind = None
+        self.nunchaku_settings = None
+        self.model_entry = getattr(pipe, "model_entry", None)
+        self.repo_id = getattr(pipe, "repo_id", None)
+        self.lora_entries = getattr(pipe, "lora_entries", [])
+        self.lora_states = getattr(pipe, "lora_states", [])
 
         return (
             self.model,
@@ -160,4 +201,8 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_Pipe": "VNCCS Pipe",
+}
+
+NODE_CATEGORY_MAPPINGS = {
+    "VNCCS_Pipe": "VNCCS",
 }

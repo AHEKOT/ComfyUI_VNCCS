@@ -1,0 +1,148 @@
+{
+  "version": "1.0",
+  "generated_at": "2026-01-17T00:00:00Z",
+  "source": "danbooru",
+  "tags": {
+    "hair_color": [
+      {"tag": "black_hair", "label": "Black", "synonyms": ["black"], "count": 354},
+      {"tag": "brown_hair", "label": "Brown", "synonyms": ["brunette"], "count": 270},
+      {"tag": "blonde_hair", "label": "Blonde", "synonyms": ["blond_hair"], "count": 269},
+      {"tag": "grey_hair", "label": "Grey", "synonyms": ["gray_hair", "silver_hair"], "count": 261},
+      {"tag": "white_hair", "label": "White", "synonyms": ["silver_hair"], "count": 202},
+      {"tag": "pink_hair", "label": "Pink", "synonyms": ["rose_hair"], "count": 201},
+      {"tag": "purple_hair", "label": "Purple", "synonyms": [], "count": 166},
+      {"tag": "blue_hair", "label": "Blue", "synonyms": [], "count": 159},
+      {"tag": "green_hair", "label": "Green", "synonyms": [], "count": 126},
+      {"tag": "red_hair", "label": "Red", "synonyms": [], "count": 109},
+      {"tag": "orange_hair", "label": "Orange", "synonyms": [], "count": 59},
+      {"tag": "multicolored_hair", "label": "Multicolored", "synonyms": ["two-tone_hair","gradient_hair","streaked_hair"], "count": 324},
+      {"tag": "two-tone_hair", "label": "Two-tone", "synonyms": ["two_tone_hair"], "count": 90},
+      {"tag": "streaked_hair", "label": "Streaked", "synonyms": ["streaked"], "count": 105},
+      {"tag": "gradient_hair", "label": "Gradient", "synonyms": [], "count": 77},
+      {"tag": "colored_inner_hair", "label": "Colored Inner Hair", "synonyms": [], "count": 58},
+      {"tag": "dyed_hair", "label": "Dyed", "synonyms": [], "count": 0}
+    ],
+
+    "hairstyles": [
+      {"tag": "long_hair", "label": "Long Hair", "count": 1171},
+      {"tag": "short_hair", "label": "Short Hair", "count": 376},
+      {"tag": "very_long_hair", "label": "Very Long Hair", "count": 308},
+      {"tag": "medium_hair", "label": "Medium Hair", "count": 121},
+      {"tag": "ponytail", "label": "Ponytail", "count": 115},
+      {"tag": "twintails", "label": "Twintails", "count": 200},
+      {"tag": "braid", "label": "Braid", "count": 189},
+      {"tag": "side_ponytail", "label": "Side Ponytail", "count": 24},
+      {"tag": "twin_braids", "label": "Twin Braids", "count": 59},
+      {"tag": "drill_hair", "label": "Drill Hair", "count": 28},
+      {"tag": "ahoge", "label": "Ahoge", "count": 164},
+      {"tag": "sidelocks", "label": "Sidelocks", "count": 171},
+      {"tag": "blunt_bangs", "label": "Blunt Bangs", "count": 168},
+      {"tag": "parted_bangs", "label": "Parted Bangs", "count": 44},
+      {"tag": "bangs", "label": "Bangs", "count": 0},
+      {"tag": "hair_bun", "label": "Hair Bun", "count": 52},
+      {"tag": "side_swept_bangs", "label": "Side-swept Bangs", "count": 0},
+      {"tag": "two_side_up", "label": "Two Side Up", "count": 33},
+      {"tag": "messy_hair", "label": "Messy Hair", "count": 69},
+      {"tag": "floating_hair", "label": "Floating Hair", "count": 38},
+      {"tag": "hair_over_one_eye", "label": "Hair Over One Eye", "count": 79},
+      {"tag": "streaked_hair", "label": "Streaked Hair", "count": 105},
+      {"tag": "gradient_hair", "label": "Gradient Hair", "count": 77},
+      {"tag": "two-tone_hair", "label": "Two-tone Hair", "count": 90},
+      {"tag": "drills", "label": "Drills", "count": 0}
+    ],
+
+    "races": [
+      {"tag": "animal_ears", "label": "Animal Ears", "count": 367},
+      {"tag": "cat_girl", "label": "Cat Girl", "count": 48},
+      {"tag": "fox_girl", "label": "Fox Girl", "count": 32},
+      {"tag": "rabbit_girl", "label": "Rabbit Girl", "count": 24},
+      {"tag": "horse_girl", "label": "Horse Girl", "count": 79},
+      {"tag": "kemonomimi", "label": "Kemonomimi", "count": 0},
+      {"tag": "furry", "label": "Furry", "count": 40},
+      {"tag": "furry_female", "label": "Furry Female", "count": 29},
+      {"tag": "demon_girl", "label": "Demon Girl", "count": 29},
+      {"tag": "demon_horns", "label": "Demon Horns", "count": 28},
+      {"tag": "dragon_girl", "label": "Dragon Girl", "count": 24},
+      {"tag": "dragon_horns", "label": "Dragon Horns", "count": 25},
+      {"tag": "wings", "label": "Wings (angelic/avian)", "count": 79},
+      {"tag": "feathered_wings", "label": "Feathered Wings", "count": 31},
+      {"tag": "pointy_ears", "label": "Pointy Ears (elf-like)", "count": 82},
+      {"tag": "vampire", "label": "Vampire", "count": 0},
+      {"tag": "mermaid", "label": "Mermaid", "count": 0},
+      {"tag": "naga", "label": "Naga", "count": 0},
+      {"tag": "rabbit_ears", "label": "Rabbit Ears", "count": 52},
+      {"tag": "horse_tail", "label": "Horse Tail", "count": 57},
+      {"tag": "tail", "label": "Tail", "count": 236}
+    ],
+
+    "breast_size": [
+      {"tag": "breasts", "label": "Breasts (general)", "count": 1023},
+      {"tag": "large_breasts", "label": "Large Breasts", "count": 484},
+      {"tag": "huge_breasts", "label": "Huge Breasts", "count": 82},
+      {"tag": "medium_breasts", "label": "Medium Breasts", "count": 209},
+      {"tag": "small_breasts", "label": "Small Breasts", "count": 140},
+      {"tag": "flat_chest", "label": "Flat Chest", "count": 119},
+      {"tag": "alternate_breast_size_(larger)", "label": "Alternate Breast Size (larger)", "count": 32},
+      {"tag": "mole_on_breast", "label": "Mole On Breast", "count": 25}
+    ],
+
+    "eyes": {
+      "colors": [
+        {"tag": "blue_eyes", "label": "Blue Eyes", "count": 361},
+        {"tag": "purple_eyes", "label": "Purple Eyes", "count": 290},
+        {"tag": "red_eyes", "label": "Red Eyes", "count": 269},
+        {"tag": "green_eyes", "label": "Green Eyes", "count": 227},
+        {"tag": "yellow_eyes", "label": "Yellow Eyes", "count": 155},
+        {"tag": "brown_eyes", "label": "Brown Eyes", "count": 130},
+        {"tag": "pink_eyes", "label": "Pink Eyes", "count": 52},
+        {"tag": "aqua_eyes", "label": "Aqua Eyes", "count": 31},
+        {"tag": "grey_eyes", "label": "Grey Eyes", "count": 54},
+        {"tag": "orange_eyes", "label": "Orange Eyes", "count": 36},
+        {"tag": "black_eyes", "label": "Black Eyes", "count": 35}
+      ],
+
+      "features": [
+        {"tag": "heterochromia", "label": "Heterochromia", "count": 27},
+        {"tag": "symbol-shaped_pupils", "label": "Symbol-shaped Pupils", "count": 64},
+        {"tag": "heart-shaped_pupils", "label": "Heart-shaped Pupils", "count": 27},
+        {"tag": "bright_pupils", "label": "Bright Pupils", "count": 26},
+        {"tag": "glowing", "label": "Glowing Eyes (effect)", "count": 24},
+        {"tag": "sparkle", "label": "Sparkle (eye catchlight)", "count": 31},
+        {"tag": "eyelashes", "label": "Eyelashes", "count": 40},
+        {"tag": "eyeliner", "label": "Eyeliner", "count": 27},
+        {"tag": "bright_pupils", "label": "Bright Pupils", "count": 26}
+      ],
+
+      "face_characteristics": [
+        {"tag": "mole", "label": "Mole / Beauty Mark", "count": 98},
+        {"tag": "mole_under_eye", "label": "Mole Under Eye", "count": 51},
+        {"tag": "bags_under_eyes", "label": "Bags Under Eyes", "count": 29},
+        {"tag": "facial_mark", "label": "Facial Mark (ink/paint/blemish)", "count": 27},
+        {"tag": "spot_color", "label": "Spot Color", "count": 27},
+        {"tag": "dot_nose", "label": "Dot Nose", "count": 76},
+        {"tag": "scar_on_face", "label": "Scar On Face", "count": 0},
+        {"tag": "freckles", "label": "Freckles", "count": 0},
+        {"tag": "birthmark", "label": "Birthmark", "count": 0},
+        {"tag": "wrinkles", "label": "Wrinkles", "count": 0},
+        {"tag": "acne", "label": "Acne / Pimples", "count": 0},
+        {"tag": "blemishes", "label": "Blemishes", "count": 0}
+      ]
+    },
+    
+    "details": [
+      {"tag": "tattoo", "label": "Tattoo", "synonyms": [], "count": 27},
+      {"tag": "piercing", "label": "Piercing", "synonyms": ["piercings"], "count": 34},
+      {"tag": "scar_on_body", "label": "Body Scar", "synonyms": ["scar"], "count": 0},
+      {"tag": "scar_on_face", "label": "Scar On Face", "synonyms": ["facial_scar"], "count": 0},
+      {"tag": "veins", "label": "Visible Veins", "synonyms": [], "count": 0},
+      {"tag": "nail_polish", "label": "Nail Polish", "synonyms": ["nail_paint"], "count": 53},
+      {"tag": "black_nails", "label": "Black Nails", "synonyms": [], "count": 25},
+      {"tag": "tan_lines", "label": "Tan Lines", "synonyms": [], "count": 0},
+      {"tag": "mole", "label": "Mole / Beauty Mark", "synonyms": [], "count": 99},
+      {"tag": "birthmark", "label": "Birthmark", "synonyms": [], "count": 0},
+      {"tag": "freckles", "label": "Freckles", "synonyms": [], "count": 0},
+      {"tag": "body_paint", "label": "Body Paint / Paint Markings", "synonyms": ["body_painted"], "count": 0},
+      {"tag": "smudged_makeup", "label": "Smudged Makeup", "synonyms": [], "count": 0}
+    ]
+  }
+}

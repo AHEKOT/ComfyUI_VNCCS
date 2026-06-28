@@ -1,25 +1,13 @@
 import os
 import torch
 
-try:
-    from ..utils import (
-        base_output_dir, character_dir, list_characters,
-        load_character_info, load_config, generate_seed,
-        apply_sex, build_face_details, dedupe_tokens, ensure_costume_structure,
-        faces_dir, sheets_dir, load_character_sheet, load_costume_info, save_costume_info, list_costumes,
-        append_age
-    )
-except ImportError:
-    import sys
-    import os
-    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from ..utils import (
-        base_output_dir, character_dir, list_characters,
-        load_character_info, load_config, generate_seed,
-        apply_sex, build_face_details, dedupe_tokens, ensure_costume_structure,
-        faces_dir, sheets_dir, load_character_sheet, load_costume_info, save_costume_info, list_costumes,
-        append_age
-    )
+from ..utils import (
+    base_output_dir, character_dir, list_characters,
+    load_character_info, load_config, generate_seed,
+    apply_sex, build_face_details, dedupe_tokens, ensure_costume_structure,
+    faces_dir, sheets_dir, load_character_sheet, load_costume_info, save_costume_info, list_costumes,
+    append_age
+)
 
 
 class CharacterAssetSelector:

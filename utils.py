@@ -1,9 +1,11 @@
 """VNCCS utilities - common functions for character management."""
 
 import os
+import ntpath
 import json
 import random
 import re
+from urllib.parse import urlparse
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -12,6 +14,9 @@ if TYPE_CHECKING:
 
 EMOTIONS = ["neutral"]
 MAIN_DIRS = ["Sprites", "Faces", "Sheets"]
+SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,120}$")
+PRIVILEGED_REQUEST_HEADER = "X-VNCCS-CSRF"
+PRIVILEGED_REQUEST_VALUE = "1"
 AGE_CONTROL_POINTS = [
     (0, -5.0),
     (3, -4.0),
@@ -35,37 +40,371 @@ def base_output_dir() -> str:
     """Get base output directory path."""
     try:
         from folder_paths import get_output_directory
-        return os.path.join(get_output_directory(), "VN_CharacterCreatorSuit")
+        return os.path.join(get_output_directory(), "VNCCS", "Characters")
     except ImportError:
         # Fallback for local usage
+        current_dir = os.path.dirname(__file__)
+        return os.path.abspath(os.path.join(current_dir, "..", "..", "output", "VNCCS", "Characters"))
+
+
+def ensure_safe_name(value: str, field: str = "name") -> str:
+    """Validate a user-controlled path segment used by VNCCS."""
+    if value is None:
+        raise ValueError(f"{field} is required")
+    value = str(value).strip()
+    if not value:
+        raise ValueError(f"{field} is required")
+    if value in {".", ".."} or ".." in value:
+        raise ValueError(f"{field} contains invalid path traversal")
+    if not SAFE_NAME_RE.match(value):
+        raise ValueError(f"{field} may only contain letters, numbers, spaces, underscores and hyphens")
+    return value
+
+
+def normalize_filesystem_path(value: str) -> str:
+    """Normalize slash direction for paths persisted by any OS."""
+    return str(value or "").strip().replace("\\", os.sep).replace("/", os.sep)
+
+
+def _model_path_variants(name: str) -> List[str]:
+    raw = str(name or "").strip()
+    if not raw:
+        return []
+
+    variants = []
+    for candidate in (raw, raw.replace("\\", "/"), raw.replace("/", "\\")):
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+    return variants
+
+
+def _safe_get_model_folder_paths(folder_paths, category: str) -> List[str]:
+    try:
+        return folder_paths.get_folder_paths(category) or []
+    except Exception:
+        return []
+
+
+def _is_under_any_model_folder(path: str, folders: List[str]) -> bool:
+    try:
+        path_abs = os.path.abspath(normalize_filesystem_path(path))
+        for folder in folders:
+            folder_abs = os.path.abspath(normalize_filesystem_path(folder))
+            if os.path.commonpath([folder_abs, path_abs]) == folder_abs:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def get_full_path_agnostic(folder_paths, category: str, name: str, require_exists: bool = False):
+    """Find a ComfyUI model path regardless of slash style or host OS."""
+    folders = _safe_get_model_folder_paths(folder_paths, category)
+    first_match = None
+
+    for candidate in _model_path_variants(name):
+        try:
+            found = folder_paths.get_full_path(category, candidate)
+        except Exception:
+            found = None
+        if found:
+            if os.path.exists(found):
+                return found
+            if first_match is None:
+                first_match = found
+
+        for folder in folders:
+            joined = os.path.join(folder, normalize_filesystem_path(candidate))
+            if os.path.exists(joined):
+                return joined
+            if first_match is None:
+                first_match = joined
+
+        if is_absolute_path_any_os(candidate) and _is_under_any_model_folder(candidate, folders):
+            normalized_candidate = normalize_filesystem_path(candidate)
+            if os.path.exists(normalized_candidate):
+                return normalized_candidate
+            if first_match is None:
+                first_match = normalized_candidate
+
+    return None if require_exists else first_match
+
+
+def basename_agnostic(path: str) -> str:
+    """Return a basename for either POSIX or Windows-style paths."""
+    normalized = str(path or "").rstrip("\\/")
+    if not normalized:
+        return ""
+    return normalized.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _portable_parts(value: str) -> List[str]:
+    normalized = str(value or "").strip().replace("\\", "/")
+    return [part for part in normalized.split("/") if part]
+
+
+def is_absolute_path_any_os(value: str) -> bool:
+    """Return True for POSIX, Windows drive, UNC, or home-rooted paths."""
+    raw = str(value or "").strip()
+    normalized = raw.replace("\\", "/")
+    return (
+        os.path.isabs(raw)
+        or ntpath.isabs(raw)
+        or bool(ntpath.splitdrive(raw)[0])
+        or normalized.startswith("/")
+        or normalized.startswith("~")
+    )
+
+
+def is_path_under(base: str, path: str) -> bool:
+    """Compare filesystem containment after normalizing slash style."""
+    try:
+        base_abs = os.path.abspath(normalize_filesystem_path(base))
+        path_abs = os.path.abspath(normalize_filesystem_path(path))
+        return os.path.commonpath([base_abs, path_abs]) == base_abs
+    except Exception:
+        return False
+
+
+def safe_join_under(base: str, *parts: str) -> str:
+    """Join path parts and ensure the result remains under base."""
+    base_abs = os.path.abspath(normalize_filesystem_path(base))
+    normalized_parts = []
+    for part in parts:
+        raw = str(part)
+        if is_absolute_path_any_os(raw):
+            raise ValueError("path escapes allowed directory")
+        part_items = _portable_parts(raw)
+        if any(item in {".", ".."} or "\0" in item for item in part_items):
+            raise ValueError("path escapes allowed directory")
+        normalized_parts.extend(part_items)
+    target = os.path.abspath(os.path.join(base_abs, *normalized_parts))
+    if not is_path_under(base_abs, target):
+        raise ValueError("path escapes allowed directory")
+    return target
+
+
+def safe_relative_path(value: str, field: str = "path") -> str:
+    """Validate a relative path sent by UI for resources below a known root."""
+    if value is None:
+        raise ValueError(f"{field} is required")
+    normalized = str(value).strip().replace("\\", "/")
+    if not normalized:
+        raise ValueError(f"{field} is required")
+    if is_absolute_path_any_os(normalized):
+        raise ValueError(f"{field} must be relative")
+    parts = [part for part in normalized.split("/") if part]
+    if not parts or any(part in {".", ".."} for part in parts):
+        raise ValueError(f"{field} contains invalid path traversal")
+    if any("\0" in part for part in parts):
+        raise ValueError(f"{field} contains invalid characters")
+    return "/".join(parts)
+
+
+def validate_privileged_request(request) -> None:
+    """Validate state-changing VNCCS API calls from the same ComfyUI origin."""
+    host = (request.headers.get("Host") or "").lower()
+    same_origin = False
+    for header_name in ("Origin", "Referer"):
+        raw = request.headers.get(header_name)
+        if not raw:
+            continue
+        parsed = urlparse(raw)
+        if parsed.netloc and host and parsed.netloc.lower() == host:
+            same_origin = True
+        elif parsed.netloc and host:
+            raise ValueError("cross-origin privileged request rejected")
+
+    sec_fetch_site = (request.headers.get("Sec-Fetch-Site") or "").lower()
+    if sec_fetch_site == "cross-site":
+        raise ValueError("cross-site privileged request rejected")
+
+    if request.headers.get(PRIVILEGED_REQUEST_HEADER) == PRIVILEGED_REQUEST_VALUE:
+        return
+
+    if same_origin and sec_fetch_site in {"", "same-origin", "same-site", "none"}:
+        return
+
+    raise ValueError(f"missing {PRIVILEGED_REQUEST_HEADER} header")
+
+
+def get_legacy_output_dir() -> str:
+    """Get legacy output directory path for migration."""
+    try:
+        from folder_paths import get_output_directory
+        return os.path.join(get_output_directory(), "VN_CharacterCreatorSuit")
+    except ImportError:
         current_dir = os.path.dirname(__file__)
         return os.path.abspath(os.path.join(current_dir, "..", "..", "output", "VN_CharacterCreatorSuit"))
 
 
+import shutil
+import traceback
+
+def _migration_archive_path(path: str) -> str:
+    """Return a unique archive path for a migrated legacy directory."""
+    base = f"{path}_migrated_safe_to_delete"
+    if not os.path.exists(base):
+        return base
+    index = 2
+    while True:
+        candidate = f"{base}_{index}"
+        if not os.path.exists(candidate):
+            return candidate
+        index += 1
+
+
+def migrate_legacy_data() -> dict:
+    """Check for legacy data and migrate to new location.
+    
+    Returns:
+        dict: with keys 'migrated' (bool), 'count' (int), 'details' (list of names)
+    """
+    try:
+        print("[VNCCS Migration] Starting migration check...")
+        old_dir = get_legacy_output_dir()
+        new_dir = base_output_dir()
+        
+        print(f"[VNCCS Migration] Old Dir: {old_dir}")
+        print(f"[VNCCS Migration] New Dir: {new_dir}")
+        
+        if not os.path.exists(old_dir):
+            print("[VNCCS Migration] Legacy folder not found.")
+            return {"migrated": False, "count": 0, "message": "No legacy folder found"}
+        
+        # Check if old folder has content
+        try:
+            items = os.listdir(old_dir)
+        except OSError as e:
+            print(f"[VNCCS Migration] Error reading legacy folder: {e}")
+            return {"migrated": False, "count": 0, "message": f"Error reading legacy folder: {e}"}
+            
+        chars_to_move = [i for i in items if os.path.isdir(os.path.join(old_dir, i))]
+        print(f"[VNCCS Migration] Found candidates: {chars_to_move}")
+        
+        if not chars_to_move:
+            print("[VNCCS Migration] Legacy folder empty (no subdirs).")
+            return {"migrated": False, "count": 0, "message": "Legacy folder empty"}
+
+        # Ensure new dir exists
+        if not os.path.exists(new_dir):
+            try:
+                os.makedirs(new_dir, exist_ok=True)
+                print(f"[VNCCS Migration] Created new dir: {new_dir}")
+            except Exception as e:
+                 print(f"[VNCCS Migration] Failed to create new dir: {e}")
+                 return {"migrated": False, "count": 0, "message": f"Failed to create new dir: {e}"}
+        
+        migrated_count = 0
+        migrated_names = []
+        errors = []
+        
+        for char_name in chars_to_move:
+            src = os.path.join(old_dir, char_name)
+            dst = os.path.join(new_dir, char_name)
+
+            if os.path.exists(dst):
+                # Destination exists: keep legacy data intact and archive old_dir after success.
+                dst_config = os.path.join(dst, f"{char_name}_config.json")
+                if os.path.exists(dst_config):
+                    print(f"[VNCCS Migration] {char_name}: already in new location, keeping legacy copy for archive")
+                    migrated_count += 1
+                    migrated_names.append(char_name)
+                else:
+                    # dst exists but is empty/broken: replace dst with a copy, then archive old_dir.
+                    print(f"[VNCCS Migration] {char_name}: dst exists but incomplete, replacing from legacy copy")
+                    try:
+                        shutil.rmtree(dst)
+                        shutil.copytree(src, dst)
+                        migrated_count += 1
+                        migrated_names.append(char_name)
+                    except Exception as e:
+                        errors.append(f"Failed to replace {char_name}: {e}")
+                continue
+
+            try:
+                print(f"[VNCCS Migration] Copying {src} -> {dst}")
+                shutil.copytree(src, dst)
+                migrated_count += 1
+                migrated_names.append(char_name)
+            except Exception as e:
+                msg = f"Failed to copy {char_name}: {str(e)}"
+                print(f"[VNCCS Migration] {msg}")
+                errors.append(msg)
+
+        archive_path = ""
+        if migrated_count > 0 and not errors:
+            try:
+                archive_path = _migration_archive_path(old_dir)
+                print(f"[VNCCS Migration] Archiving legacy dir: {old_dir} -> {archive_path}")
+                os.rename(old_dir, archive_path)
+            except Exception as e:
+                msg = f"Failed to archive legacy dir: {e}"
+                print(f"[VNCCS Migration] {msg}")
+                errors.append(msg)
+                
+        return {
+            "migrated": migrated_count > 0 and not errors,
+            "count": migrated_count,
+            "details": migrated_names,
+            "errors": errors,
+            "archive_path": archive_path,
+            "all_characters": list_characters()
+        }
+    except Exception as e:
+        trace = traceback.format_exc()
+        print(f"[VNCCS Migration] CRITICAL ERROR: {e}\n{trace}")
+        return {
+            "migrated": False, 
+            "error": str(e), 
+            "trace": trace
+        }
+
+
 def character_dir(name: str) -> str:
     """Get character directory path."""
-    return os.path.join(base_output_dir(), name)
+    return safe_join_under(base_output_dir(), ensure_safe_name(name, "character"))
 
 
 def faces_dir(name: str, costume: str = "Naked", emotion: str = "neutral") -> str:
     """Get faces directory path."""
-    return os.path.join(character_dir(name), "Faces", costume, emotion, "face_neutral")
+    return safe_join_under(
+        character_dir(name),
+        "Faces",
+        ensure_safe_name(costume, "costume"),
+        ensure_safe_name(emotion, "emotion"),
+        "face_neutral",
+    )
 
 
 def sheets_dir(name: str, costume: str = "Naked", emotion: str = "neutral") -> str:
     """Get sheets directory path."""
-    return os.path.join(character_dir(name), "Sheets", costume, emotion, "sheet_neutral")
+    return safe_join_under(
+        character_dir(name),
+        "Sheets",
+        ensure_safe_name(costume, "costume"),
+        ensure_safe_name(emotion, "emotion"),
+        "sheet_neutral",
+    )
 
 
 def sprites_dir(name: str, costume: str = "Naked", emotion: str = "neutral") -> str:
     """Get sprites directory path."""
-    return os.path.join(character_dir(name), "Sprites", costume, emotion, "sprite_neutral")
+    return safe_join_under(
+        character_dir(name),
+        "Sprites",
+        ensure_safe_name(costume, "costume"),
+        ensure_safe_name(emotion, "emotion"),
+        "sprite_neutral",
+    )
 
 
 def ensure_character_structure(name: str, emotions: List[str] = None, main_dirs: List[str] = None) -> None:
-    """Create basic character directory structure."""
-    if emotions is None:
-        emotions = EMOTIONS
+    """Create basic character directory structure.
+    
+    Note: Emotion folders are NOT created here. They are created on-demand
+    when images are actually saved.
+    """
     if main_dirs is None:
         main_dirs = MAIN_DIRS
     
@@ -86,18 +425,15 @@ def ensure_character_structure(name: str, emotions: List[str] = None, main_dirs:
         naked_path = os.path.join(main_dir_path, "Naked")
         if not os.path.exists(naked_path):
             os.makedirs(naked_path)
-        
-        for emotion in emotions:
-            emotion_path = os.path.join(naked_path, emotion)
-            if not os.path.exists(emotion_path):
-                os.makedirs(emotion_path)
+
 
 
 def ensure_costume_structure(name: str, costume: str, emotions: List[str] = None) -> None:
-    """Create costume directory structure."""
-    if emotions is None:
-        emotions = EMOTIONS
+    """Create costume directory structure.
     
+    Note: Emotion folders are NOT created here. They are created on-demand
+    when images are actually saved.
+    """
     char_path = character_dir(name)
     
     for main_dir in MAIN_DIRS:
@@ -105,22 +441,19 @@ def ensure_costume_structure(name: str, costume: str, emotions: List[str] = None
         if not os.path.exists(main_dir_path):
             os.makedirs(main_dir_path)
         
-        costume_path = os.path.join(main_dir_path, costume)
+        costume_path = safe_join_under(main_dir_path, ensure_safe_name(costume, "costume"))
         if not os.path.exists(costume_path):
             os.makedirs(costume_path)
-        
-        for emotion in emotions:
-            emotion_path = os.path.join(costume_path, emotion)
-            if not os.path.exists(emotion_path):
-                os.makedirs(emotion_path)
+
 
 
 def list_characters() -> List[str]:
-    """Get list of existing characters."""
+    """Get list of existing characters from the current VNCCS character root."""
     base_path = base_output_dir()
     try:
         return sorted([d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))])
-    except Exception:
+    except Exception as exc:
+        print(f"[VNCCS] list_characters: failed to list new character path '{base_path}': {exc}")
         return []
 
 
@@ -318,6 +651,19 @@ def load_character_info(character_name: str) -> Optional[Dict[str, Any]]:
     return char_info
 
 
+def normalize_hair_tags(hair: str) -> str:
+    """Ensure free-form hair input mentions hair."""
+    if not hair:
+        return ""
+
+    normalized = str(hair).strip()
+    if not normalized:
+        return ""
+    if "hair" not in normalized.lower():
+        normalized = f"{normalized} hair"
+    return normalized
+
+
 def build_face_details(char_info: Dict[str, Any]) -> str:
     """Build face_details string from character info."""
     details_parts = []
@@ -334,8 +680,9 @@ def build_face_details(char_info: Dict[str, Any]) -> str:
     if char_info.get("eyes"):
         details_parts.append(f"{char_info['eyes']} eyes")
     
-    if char_info.get("hair"):
-        details_parts.append(f"{char_info['hair']} hair")
+    hair = normalize_hair_tags(char_info.get("hair", ""))
+    if hair:
+        details_parts.append(hair)
     
     if char_info.get("face"):
         details_parts.append(f"{char_info['face']} face")
@@ -390,7 +737,7 @@ def save_costume_info(character_name: str, costume_name: str, costume_data: Dict
 
 
 def load_character_sheet(character: str, costume: str = "Naked", emotion: str = "neutral", with_mask: bool = False) -> Optional["torch.Tensor"]:
-    """Load character sheet image.
+    """Deprecated runtime loader: load a current sprite image, never a sheet.
     
     Args:
         character (str): Character name
@@ -400,7 +747,7 @@ def load_character_sheet(character: str, costume: str = "Naked", emotion: str = 
         
     Returns:
         torch.Tensor or Tuple[torch.Tensor, torch.Tensor] or None: 
-        - If with_mask=False: RGBA image tensor [1, H, W, 4] or None on error
+        - If with_mask=False: RGBA sprite tensor [1, H, W, 4] or None on error
         - If with_mask=True: (RGB image [1, H, W, 3], alpha mask [1, H, W]) or (None, None) on error
     """
     try:
@@ -412,31 +759,57 @@ def load_character_sheet(character: str, costume: str = "Naked", emotion: str = 
         return None
     
     try:
-        sheet_dir = os.path.join(character_dir(character), "Sheets", costume, emotion)
-        
-        if not os.path.isdir(sheet_dir):
-            print(f"[VNCCS Utils] Directory not found: {sheet_dir}")
-            return None
-        
-        candidates = []
-        pattern = f"sheet_{emotion}_*(\\d+)_*\\.png"
-        
-        for fname in os.listdir(sheet_dir):
-            m = re.match(pattern, fname)
-            if m:
-                idx = int(m.group(1))
-                candidates.append((idx, fname))
-        
-        if not candidates:
-            print(f"[VNCCS Utils] Files sheet_{emotion}_*number.png not found in {sheet_dir}")
+        costume_candidates = [costume]
+        if costume == "Naked":
+            costume_candidates.append("Original")
+
+        best_path = None
+        image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+        for candidate_costume in costume_candidates:
+            sprite_root = os.path.join(character_dir(character), "Sprites", candidate_costume)
+            if not os.path.isdir(sprite_root):
+                continue
+            neutral_files = []
+            for neutral_name in ("Neutral", "neutral"):
+                neutral_root = os.path.join(sprite_root, neutral_name)
+                if not os.path.isdir(neutral_root):
+                    continue
+                for root, _dirs, filenames in os.walk(neutral_root):
+                    neutral_files.extend(
+                        os.path.join(root, filename)
+                        for filename in filenames
+                        if os.path.splitext(filename)[1].lower() in image_exts
+                    )
+            if neutral_files:
+                best_path = max(neutral_files, key=lambda path: (os.path.getmtime(path), path))
+                print(f"[VNCCS Utils] Using neutral sprite for deprecated sheet load: {best_path}")
+                break
+
+            sprite_files = []
+            for root, _dirs, filenames in os.walk(sprite_root):
+                parts = set(os.path.normpath(root).split(os.sep))
+                if "Neutral" in parts or "neutral" in parts:
+                    continue
+                sprite_files.extend(
+                    os.path.join(root, filename)
+                    for filename in filenames
+                    if os.path.splitext(filename)[1].lower() in image_exts
+                )
+            if sprite_files:
+                best_path = max(sprite_files, key=lambda path: (os.path.getmtime(path), path))
+                print(f"[VNCCS Utils] Using sprite for deprecated sheet load: {best_path}")
+                break
+
+        if not best_path:
+            checked = [
+                os.path.join(character_dir(character), "Sprites", candidate_costume)
+                for candidate_costume in costume_candidates
+            ]
+            print(f"[VNCCS Utils] No sprite found for {character}/{costume}/{emotion}: {checked}. Run migration or generate sprites first.")
             if with_mask:
                 return None, None
             else:
                 return None
-        
-        candidates.sort(key=lambda x: x[0])
-        _, best_name = candidates[-1]
-        best_path = os.path.join(sheet_dir, best_name)
         
         img_pil = Image.open(best_path)
         img_pil = ImageOps.exif_transpose(img_pil)
@@ -451,31 +824,33 @@ def load_character_sheet(character: str, costume: str = "Naked", emotion: str = 
         if with_mask:
             if has_alpha:
                 img_tensor = torch.from_numpy(image_np[..., :3])[None,]
-                mask_alpha_channel = image_np[..., 3]
+                # ComfyUI mask convention: 1.0 = inpaint area, 0.0 = keep.
+                # PNG alpha: 1.0 = opaque (keep), 0.0 = transparent (inpaint). Invert.
+                mask_alpha_channel = 1.0 - image_np[..., 3]
                 mask_tensor = torch.from_numpy(mask_alpha_channel).unsqueeze(0)
-                print(f"[VNCCS Utils] Loaded sheet with mask: {best_path}")
+                print(f"[VNCCS Utils] Loaded sprite with mask: {best_path}")
                 return img_tensor, mask_tensor
             else:
                 img_tensor = torch.from_numpy(image_np[..., :3])[None,]
-                print(f"[VNCCS Utils] Loaded sheet without mask: {best_path}")
+                print(f"[VNCCS Utils] Loaded sprite without mask: {best_path}")
                 return img_tensor, None
         else:
             # Return RGBA image for ComfyUI compatibility
             if has_alpha:
                 # Keep alpha channel for proper transparency handling
                 sheet_image_tensor = torch.from_numpy(image_np)[None,]  # [1, H, W, 4]
-                print(f"[VNCCS Utils] Loaded RGBA sheet: {best_path}")
+                print(f"[VNCCS Utils] Loaded RGBA sprite: {best_path}")
             else:
                 # Convert RGB to RGBA by adding opaque alpha channel
                 rgb_image = image_np[..., :3]
                 alpha_channel = np.ones((image_np.shape[0], image_np.shape[1], 1), dtype=np.float32)
                 rgba_image = np.concatenate([rgb_image, alpha_channel], axis=2)
                 sheet_image_tensor = torch.from_numpy(rgba_image)[None,]  # [1, H, W, 4]
-                print(f"[VNCCS Utils] Loaded RGB sheet (converted to RGBA): {best_path}")
+                print(f"[VNCCS Utils] Loaded RGB sprite (converted to RGBA): {best_path}")
             return sheet_image_tensor
         
     except Exception as e:
-        print(f"[VNCCS Utils] Error loading sheet image: {e}")
+        print(f"[VNCCS Utils] Error loading sprite image: {e}")
         if with_mask:
             return None, None
         else:
@@ -494,15 +869,15 @@ def list_costumes(character_name: str) -> List[str]:
                 costumes.append(c)
     
     char_dir = character_dir(character_name)
-    sheets_dir_path = os.path.join(char_dir, "Sheets")
-    if os.path.exists(sheets_dir_path):
+    sprites_dir_path = os.path.join(char_dir, "Sprites")
+    if os.path.exists(sprites_dir_path):
         try:
-            for item in os.listdir(sheets_dir_path):
-                item_path = os.path.join(sheets_dir_path, item)
+            for item in os.listdir(sprites_dir_path):
+                item_path = os.path.join(sprites_dir_path, item)
                 if os.path.isdir(item_path) and item not in costumes:
                     costumes.append(item)
-        except OSError:
-            pass
+        except OSError as exc:
+            print(f"[VNCCS Utils] Failed to scan Sprites costumes for '{character_name}': {exc}")
     
     return costumes
 

@@ -278,3 +278,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_PoseGenerator": "VNCCS Pose Generator",
 }
+
+NODE_CATEGORY_MAPPINGS = {
+    "VNCCS_PoseGenerator": "VNCCS/pose",
+}

@@ -1,16 +1,18 @@
 """VNCCS - Visual Novel Character Creator Suite for ComfyUI."""
 
+import os, json, inspect
+import traceback
+
+print("[VNCCS] Automatic legacy migration is disabled. Use the VNCCS Migration Assistent node to migrate legacy sheets.")
+
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
 
 
-__all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
 
 WEB_DIRECTORY = "web"
 
-import os, json, inspect
-import traceback
 def _vnccs_register_endpoint():  # lazy registration to avoid import errors in analysis tools
     try:
         from server import PromptServer
@@ -23,14 +25,17 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         name = request.rel_url.query.get("name")
         if not name:
             return web.json_response({"error": "name required"}, status=400)
+
         try:
-            from .nodes.character_creator import CharacterCreator
-            base = CharacterCreator().base_path
-        except Exception:
-            base = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "output", "VN_CharacterCreatorSuit"))
-        cfg_path = os.path.join(base, name, f"{name}_config.json")
+            from .utils import config_path, ensure_safe_name
+            name = ensure_safe_name(name, "character")
+            cfg_path = config_path(name)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+
         if not os.path.exists(cfg_path):
-            return web.json_response({"error": "not found", "path": cfg_path}, status=404)
+            return web.json_response({"error": "not found"}, status=404)
+
         try:
             with open(cfg_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -38,14 +43,64 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         except Exception as e:
             return web.json_response({"error": "read failed", "detail": str(e)}, status=500)
 
+
+
+    @PromptServer.instance.routes.post("/vnccs/migrate")
+    async def vnccs_migrate(request):
+        """Legacy endpoint disabled; use the widget-based Migration Assistent."""
+        return web.json_response({
+            "migrated": False,
+            "disabled": True,
+            "message": "Automatic migration is disabled. Use the VNCCS Migration Assistent node.",
+        }, status=410)
+
+    @PromptServer.instance.routes.post("/vnccs/delete")
+    async def vnccs_delete_character(request):
+        try:
+            from .utils import validate_privileged_request
+            validate_privileged_request(request)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=403)
+
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        name = str(data.get("name") or request.rel_url.query.get("name", "")).strip()
+        if not name:
+            return web.json_response({"error": "name required"}, status=400)
+        
+        try:
+            from .utils import character_dir, safe_join_under, base_output_dir, ensure_safe_name
+            import shutil
+            name = ensure_safe_name(name, "character")
+            char_path = character_dir(name)
+            safe_join_under(base_output_dir(), os.path.relpath(char_path, base_output_dir()))
+            if not os.path.exists(char_path):
+                return web.json_response({"error": f"Character '{name}' not found"}, status=404)
+                
+            # Permanent Delete as requested
+            shutil.rmtree(char_path)
+            
+            return web.json_response({"ok": True, "name": name, "deleted": True})
+            
+        except Exception as e:
+            traceback.print_exc()
+            return web.json_response({
+                "error": "delete failed",
+                "detail": str(e),
+            }, status=500)
+
     @PromptServer.instance.routes.get("/vnccs/create")
     async def vnccs_create_character(request):
         name = request.rel_url.query.get("name", "").strip()
         if not name:
             return web.json_response({"error": "name required"}, status=400)
-        forbidden = set('/\\:')
-        if any(c in forbidden for c in name):
-            return web.json_response({"error": "invalid characters"}, status=400)
+        try:
+            from .utils import ensure_safe_name
+            name = ensure_safe_name(name, "character")
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
         defaults = dict(
             existing_character=name,
             background_color="green",
@@ -67,9 +122,11 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         )
         try:
             from .nodes.character_creator import CharacterCreator
+            from .utils import base_output_dir, safe_join_under
             cc = CharacterCreator()
-            os.makedirs(cc.base_path, exist_ok=True)
-            base_char_dir = os.path.join(cc.base_path, name)
+            base_path = base_output_dir()
+            os.makedirs(base_path, exist_ok=True)
+            base_char_dir = safe_join_under(base_path, name)
             config_path = os.path.join(base_char_dir, f"{name}_config.json")
             if os.path.exists(config_path):
                 try:
@@ -81,7 +138,6 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
                     "ok": True,
                     "name": name,
                     "existing": True,
-                    "config_path": config_path,
                     "data": existing_data,
                 })
             # Backward compatibility: drop force_new if method doesn't accept it
@@ -91,25 +147,22 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
                     defaults.pop('force_new')
             except Exception:
                 defaults.pop('force_new', None)
-            positive_prompt, seed, negative_prompt, age_lora_strength, sheets_path, faces_path, face_details = cc.create_character(**defaults)
+            positive_prompt, seed, negative_prompt, age_lora_strength, _sheets_path, _faces_path, face_details = cc.create_character(**defaults)
             return web.json_response({
                 "ok": True,
                 "name": name,
                 "seed": seed,
-                "sheets_path": sheets_path,
-                "faces_path": faces_path,
                 "positive_prompt": positive_prompt,
                 "negative_prompt": negative_prompt,
                 "age_lora_strength": age_lora_strength,
                 "face_details": face_details,
-                "config_path": os.path.join(base_char_dir, f"{name}_config.json"),
             })
         except Exception as e:
+            traceback.print_exc()
             return web.json_response({
                 "error": "create failed",
                 "detail": str(e),
                 "type": type(e).__name__,
-                "trace": traceback.format_exc(),
             }, status=500)
 
     @PromptServer.instance.routes.get("/vnccs/create_costume")
@@ -118,9 +171,12 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         costume_name = request.rel_url.query.get("costume", "").strip()
         if not character_name or not costume_name:
             return web.json_response({"error": "character and costume required"}, status=400)
-        forbidden = set('/\\:')
-        if any(c in forbidden for c in character_name) or any(c in forbidden for c in costume_name):
-            return web.json_response({"error": "invalid characters"}, status=400)
+        try:
+            from .utils import ensure_safe_name
+            character_name = ensure_safe_name(character_name, "character")
+            costume_name = ensure_safe_name(costume_name, "costume")
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
         try:
             from .utils import load_config, save_config, ensure_costume_structure
             config = load_config(character_name)
@@ -158,7 +214,7 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         file_path = os.path.join(models_dir, filename)
         
         # Security check - ensure file is within models directory
-        if not os.path.abspath(file_path).startswith(os.path.abspath(models_dir)):
+        if os.path.commonpath([os.path.abspath(models_dir), os.path.abspath(file_path)]) != os.path.abspath(models_dir):
             return web.Response(text="Invalid path", status=400)
         
         if not os.path.exists(file_path):
@@ -212,7 +268,7 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             file_path = os.path.join(presets_dir, filename)
             
             # Security check
-            if not os.path.abspath(file_path).startswith(os.path.abspath(presets_dir)):
+            if os.path.commonpath([os.path.abspath(presets_dir), os.path.abspath(file_path)]) != os.path.abspath(presets_dir):
                 return web.Response(text="Invalid path", status=400)
             
             if not os.path.exists(file_path):
@@ -225,6 +281,6 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
-_vnccs_register_endpoint()
+
 
 _vnccs_register_endpoint()
