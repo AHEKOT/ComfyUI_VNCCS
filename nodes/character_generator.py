@@ -12,9 +12,11 @@ import inspect
 import io
 import json
 import os
+import random
 import shutil
 import traceback
 import time
+from types import SimpleNamespace
 from urllib.parse import urlencode
 
 import numpy as np
@@ -65,6 +67,8 @@ from ..utils import (
 
 _LIVE_GENERATOR_CONTEXTS = {}
 SEEDVR_ATTENTION_MODES = ("sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3")
+MAX_SEED = 0xFFFFFFFFFFFFFFFF
+REGENERATE_SEED_SHIFT_MAX = 1_000_000
 
 
 def _can_import_attr(module_name, attr_name):
@@ -258,6 +262,7 @@ def _as_bool(value, default=False):
 
 
 def _call_comfy_node(class_name, **kwargs):
+    vnccs_node_id = kwargs.pop("_vnccs_node_id", None)
     mappings = getattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {}) if comfy_nodes else {}
     cls = mappings.get(class_name)
     if cls is None:
@@ -284,7 +289,21 @@ def _call_comfy_node(class_name, **kwargs):
     signature = inspect.signature(method)
     accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values())
     accepted = kwargs if accepts_kwargs else {k: v for k, v in kwargs.items() if k in signature.parameters}
-    return method(**accepted)
+    try:
+        return method(**accepted)
+    except AttributeError as exc:
+        if vnccs_node_id is None or "'NoneType' object has no attribute 'node_id'" not in str(exc):
+            raise
+        module = inspect.getmodule(cls) or inspect.getmodule(method)
+        context_getter = getattr(module, "get_executing_context", None) if module is not None else None
+        if context_getter is None:
+            raise
+        context = SimpleNamespace(node_id=str(vnccs_node_id))
+        setattr(module, "get_executing_context", lambda: context)
+        try:
+            return method(**accepted)
+        finally:
+            setattr(module, "get_executing_context", context_getter)
 
 
 def _tensor_to_png_data_url(image, max_items=12):
@@ -590,6 +609,67 @@ def _remember_generator_context(unique_id, generator_type, cache_dir, pipe):
         "pipe": pipe,
         "updated_at": time.time(),
     }
+
+
+def _shift_seed_value(seed, shift):
+    try:
+        base = int(seed or 0)
+    except Exception:
+        base = 0
+    shifted = (base + int(shift or 0)) & MAX_SEED
+    return shifted or int(shift or 1)
+
+
+def _temporarily_shift_pipe_seed(pipe, shift):
+    if pipe is None:
+        return lambda: None
+
+    attrs = {}
+    for attr in ("seed_int", "seed"):
+        if hasattr(pipe, attr):
+            attrs[attr] = getattr(pipe, attr)
+
+    shifted = _shift_seed_value(attrs.get("seed_int", attrs.get("seed", 0)), shift)
+    setattr(pipe, "seed_int", shifted)
+    if "seed" in attrs:
+        setattr(pipe, "seed", shifted)
+
+    def restore():
+        for attr in ("seed_int", "seed"):
+            if attr in attrs:
+                setattr(pipe, attr, attrs[attr])
+            elif hasattr(pipe, attr):
+                try:
+                    delattr(pipe, attr)
+                except Exception:
+                    pass
+
+    return restore
+
+
+def _shift_emotion_data_seeds(emotion_data, shift):
+    items = emotion_data if isinstance(emotion_data, list) else [emotion_data]
+    shifted_items = []
+    for item in items:
+        if isinstance(item, dict):
+            copied = dict(item)
+            copied["seed"] = _shift_seed_value(copied.get("seed", 0), shift)
+            shifted_items.append(copied)
+            continue
+
+        try:
+            parsed = json.loads(str(item or ""))
+        except Exception:
+            shifted_items.append(item)
+            continue
+
+        if isinstance(parsed, dict):
+            parsed = dict(parsed)
+            parsed["seed"] = _shift_seed_value(parsed.get("seed", 0), shift)
+            shifted_items.append(parsed)
+        else:
+            shifted_items.append(item)
+    return shifted_items
 
 
 DEFAULT_WIDGET_DATA = {
@@ -1433,7 +1513,7 @@ class VNCCS_CharacterGenerator:
             temporal_overlap=8,
         )[0]
 
-    def _run_upscaler_models(self, settings):
+    def _run_upscaler_models(self, settings, node_id=None):
         defaults = DEFAULT_WIDGET_DATA["upscaler"]
         self._clean_vram_for_seedvr()
         cache_dit = bool(settings.get("cache_dit", defaults["cache_dit"]))
@@ -1450,6 +1530,7 @@ class VNCCS_CharacterGenerator:
             offload_device=settings.get("offload_device", defaults["offload_device"]),
             cache_model=cache_dit,
             attention_mode=self._resolve_seedvr_attention_mode(settings),
+            _vnccs_node_id=node_id,
         )[0]
         vae = _call_comfy_node(
             "SeedVR2LoadVAEModel",
@@ -1464,6 +1545,7 @@ class VNCCS_CharacterGenerator:
             tile_debug=settings.get("tile_debug", defaults["tile_debug"]),
             offload_device=settings.get("offload_device", defaults["offload_device"]),
             cache_model=bool(settings.get("cache_vae", defaults["cache_vae"])),
+            _vnccs_node_id=node_id,
         )[0]
         return dit, vae
 
@@ -1509,14 +1591,14 @@ class VNCCS_CharacterGenerator:
             background=str(background or "Green"),
         )[0]
 
-    def _run_seedvr_upscale_batch(self, images, dit, vae, settings, seed, stage="upscaler"):
+    def _run_seedvr_upscale_batch(self, images, dit, vae, settings, seed, stage="upscaler", node_id=None):
         batch = self._safe_image_batch(images, stage=f"{stage} SeedVR input")
         if not torch.is_tensor(batch) or batch.ndim != 4 or batch.shape[0] == 0:
             return []
-        upscaled = self._run_seedvr_upscale_one(batch, dit, vae, settings, seed)
+        upscaled = self._run_seedvr_upscale_one(batch, dit, vae, settings, seed, node_id=node_id)
         return self._split_batch(upscaled)
 
-    def _run_seedvr_upscale_one(self, image, dit, vae, settings, seed):
+    def _run_seedvr_upscale_one(self, image, dit, vae, settings, seed, node_id=None):
         defaults = DEFAULT_WIDGET_DATA["upscaler"]
         return _call_comfy_node(
             "SeedVR2VideoUpscaler",
@@ -1535,6 +1617,7 @@ class VNCCS_CharacterGenerator:
             latent_noise_scale=float(settings.get("latent_noise_scale", defaults["latent_noise_scale"])),
             offload_device=settings.get("offload_device", defaults["offload_device"]),
             enable_debug=bool(settings.get("enable_debug", defaults["enable_debug"])),
+            _vnccs_node_id=node_id,
         )[0]
 
     def _run_gan_upscale_one(self, image, upscale_model):
@@ -1582,10 +1665,10 @@ class VNCCS_CharacterGenerator:
             return self._safe_image_batch(results, stage=stage) if results else image
 
         self._log_stage(unique_id, stage, f"Loading SeedVR models for {total} image(s)", current=0, total=total, cache_dir=cache_dir)
-        dit, vae = self._run_upscaler_models(settings)
+        dit, vae = self._run_upscaler_models(settings, node_id=unique_id)
         self._log_stage(unique_id, stage, f"Running SeedVR batch: {self._batch_shape_label(images)}", current=0, total=total, cache_dir=cache_dir)
         started_at = time.time()
-        results = self._run_seedvr_upscale_batch(images, dit, vae, settings, seed, stage=stage)
+        results = self._run_seedvr_upscale_batch(images, dit, vae, settings, seed, stage=stage, node_id=unique_id)
         elapsed = time.time() - started_at
         self._log_stage(unique_id, stage, f"SeedVR finished in {elapsed:.1f}s; normalizing output batch", current=total, total=total, cache_dir=cache_dir)
         result_batch = self._safe_image_batch(results, stage=stage) if results else self._list_to_batch(image)
@@ -1658,10 +1741,10 @@ class VNCCS_CharacterGenerator:
             return self._safe_image_batch(results, stage=stage) if results else image
 
         self._log_stage(unique_id, stage, f"Loading SeedVR models for {total} source image(s)", current=0, total=total, cache_dir=cache_dir)
-        dit, vae = self._run_upscaler_models(settings)
+        dit, vae = self._run_upscaler_models(settings, node_id=unique_id)
         self._log_stage(unique_id, stage, f"Running SeedVR source batch: {self._batch_shape_label(images)}", current=0, total=total, cache_dir=cache_dir)
         started_at = time.time()
-        results = self._run_seedvr_upscale_batch(images, dit, vae, settings, seed, stage=stage)
+        results = self._run_seedvr_upscale_batch(images, dit, vae, settings, seed, stage=stage, node_id=unique_id)
         elapsed = time.time() - started_at
         self._log_stage(unique_id, stage, f"SeedVR source batch finished in {elapsed:.1f}s; normalizing output batch", current=total, total=total, cache_dir=cache_dir)
         result_batch = self._safe_image_batch(results, stage=stage) if results else self._list_to_batch(image)
@@ -3100,26 +3183,31 @@ if server is not None:
             if generator_cls is None:
                 return web.json_response({"error": f"Unsupported generator type: {generator_type}"}, status=400)
 
-            with torch.inference_mode():
-                if generator_type == "VNCCS_EmotionsGenerator":
-                    generator_cls().process(
-                        cached_inputs.get("images"),
-                        pipe,
-                        cached_inputs.get("emotion_data", []),
-                        widget_data=widget_data,
-                        unique_id=unique_id,
-                    )
-                else:
-                    generator_cls().process(
-                        cached_inputs.get("poses"),
-                        cached_inputs.get("character"),
-                        pipe,
-                        cached_inputs.get("prompt", ""),
-                        background=cached_inputs.get("background", "Green"),
-                        widget_data=widget_data,
-                        sheets_path=cached_inputs.get("sheets_path", ""),
-                        unique_id=unique_id,
-                    )
+            seed_shift = random.randint(1, REGENERATE_SEED_SHIFT_MAX)
+            restore_pipe_seed = _temporarily_shift_pipe_seed(pipe, seed_shift)
+            try:
+                with torch.inference_mode():
+                    if generator_type == "VNCCS_EmotionsGenerator":
+                        generator_cls().process(
+                            cached_inputs.get("images"),
+                            pipe,
+                            _shift_emotion_data_seeds(cached_inputs.get("emotion_data", []), seed_shift),
+                            widget_data=widget_data,
+                            unique_id=unique_id,
+                        )
+                    else:
+                        generator_cls().process(
+                            cached_inputs.get("poses"),
+                            cached_inputs.get("character"),
+                            pipe,
+                            cached_inputs.get("prompt", ""),
+                            background=cached_inputs.get("background", "Green"),
+                            widget_data=widget_data,
+                            sheets_path=cached_inputs.get("sheets_path", ""),
+                            unique_id=unique_id,
+                        )
+            finally:
+                restore_pipe_seed()
             return web.json_response({"ok": True})
         except Exception as exc:
             traceback.print_exc()

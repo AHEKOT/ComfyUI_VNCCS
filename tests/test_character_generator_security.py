@@ -122,6 +122,18 @@ def test_bg_remove_can_disable_sam3_details_recovery(monkeypatch):
     assert seen["use_sam3_recovery_mask"] is False
 
 
+def test_regenerate_seed_shift_restores_pipe_seed():
+    class Pipe:
+        seed_int = 42
+
+    pipe = Pipe()
+    restore = cg._temporarily_shift_pipe_seed(pipe, 17)
+
+    assert pipe.seed_int == 59
+    restore()
+    assert pipe.seed_int == 42
+
+
 def test_emotions_generator_bg_remove_uses_character_background_color(tmp_path, monkeypatch):
     torch = pytest.importorskip("torch")
     seen = {}
