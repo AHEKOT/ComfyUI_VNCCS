@@ -1083,6 +1083,7 @@ app.registerExtension({
                 const ANIMA_TURBO_LORA_NAME = "anima\\anima-turbo-lora-v0.1.safetensors";
                 const ANIMA_CLIP_NAME = "qwen_3_06b_base.safetensors";
                 const ANIMA_VAE_NAME = "qwen_image_vae.safetensors";
+                const promptStyleForMode = (mode) => String(mode || "anima").toLowerCase() === "anima" ? "Anima" : "SDXL Style";
                 const GENERATION_DEFAULTS = {
                     generation_mode: "anima",
                     ckpt_name: "",
@@ -1249,7 +1250,7 @@ app.registerExtension({
 
                 function persistAllState() {
                     commitWidget(charWidget, state.character, false);
-                    if (styleWidget) commitWidget(styleWidget, styleSelect.value, false);
+                    if (styleWidget) commitWidget(styleWidget, promptStyleForMode(state.gen.generation_mode), false);
                     if (costumesDataWidget) commitWidget(costumesDataWidget, JSON.stringify(Array.from(state.selectedCostumes)), false);
                     if (emotionsDataWidget) commitWidget(emotionsDataWidget, JSON.stringify(Array.from(state.selectedEmotions)), false);
                     saveGenerationSettings(false);
@@ -1264,6 +1265,7 @@ app.registerExtension({
 
                     commitWidget(generationSettingsWidget, JSON.stringify(state.gen), callCallback);
                     commitWidget(modelWidget, mode === "anima" ? "Anima" : "Illustrious", callCallback);
+                    if (styleWidget) commitWidget(styleWidget, promptStyleForMode(mode), callCallback);
                     window.dispatchEvent(new CustomEvent("vnccs-emotion-studio-generation-mode-changed"));
                 }
 
@@ -1522,7 +1524,7 @@ app.registerExtension({
                     scheduler: "Noise schedule used together with the sampler.",
                     seed: "Numeric seed for reproducible emotion generations.",
                     seed_mode: "Toggles fixed seed versus a fresh random seed for each generation.",
-                    lora_stack: "Additional Anima LoRAs mixed into emotion generation.",
+                    lora_stack: "Additional LoRAs mixed into emotion generation for the selected model mode.",
                     lora_strength: "Strength of the LoRA in this row."
                 };
                 const helpFor = (key, fallback = "") => FIELD_HELP[key] || fallback;
@@ -1834,7 +1836,9 @@ app.registerExtension({
                     if (generationEls.scheduler) generationEls.scheduler.value = state.gen.scheduler || "normal";
                     if (generationEls.seed) generationEls.seed.value = state.gen.seed ?? 0;
                     if (generationEls.seedMode) generationEls.seedMode.classList.toggle("active", (state.gen.seed_mode || "fixed") === "randomize");
-                    if (generationEls.loraSection) generationEls.loraSection.style.display = mode === "anima" ? "flex" : "none";
+                    if (generationEls.loraHeader) generationEls.loraHeader.innerText = mode === "anima" ? "Anima LoRA Stack" : "Illustrious LoRA Stack";
+                    if (generationEls.loraSection) generationEls.loraSection.style.display = "flex";
+                    if (generationEls.animaLoraCards) renderModeLoraCards(generationEls.animaLoraCards, mode);
                     if (generationEls.loraRows) {
                         generationEls.loraRows.forEach((row, index) => {
                             const item = (state.gen.lora_stack || [])[index] || { name: "", strength: 1.0 };
@@ -2091,6 +2095,7 @@ app.registerExtension({
                 const loraHeader = document.createElement("div");
                 loraHeader.className = "ems-costumes-header";
                 loraHeader.innerText = "Anima LoRA Stack";
+                generationEls.loraHeader = loraHeader;
                 loraSection.appendChild(loraHeader);
                 const animaLoraCards = document.createElement("div");
                 animaLoraCards.className = "ems-lora-stack";
@@ -2210,44 +2215,11 @@ app.registerExtension({
                     window.removeEventListener("vnccs.migration.complete", onCharactersUpdated);
                 });
 
-                // Add Prompt Style Select (Top)
                 const styleWidget = node.widgets.find(w => w.name === "prompt_style");
-                const normalizePromptStyle = (value) => value === "QWEN Style" ? "Anima" : value;
-
-                const styleContainer = document.createElement("div");
-                styleContainer.className = "ems-section";
-                styleContainer.style.marginBottom = "10px";
-                styleContainer.style.padding = "5px 10px";
-
-                const styleSelect = document.createElement("select");
-                styleSelect.className = "em-select";
-
-                if (styleWidget && styleWidget.options.values) {
-                    const seenStyles = new Set();
-                    styleWidget.options.values.forEach(v => {
-                        const normalized = normalizePromptStyle(v);
-                        if (seenStyles.has(normalized)) return;
-                        seenStyles.add(normalized);
-                        const opt = document.createElement("option");
-                        opt.value = normalized;
-                        opt.innerText = normalized;
-                        if (normalized === normalizePromptStyle(styleWidget.value)) opt.selected = true;
-                        styleSelect.appendChild(opt);
-                    });
-                    if (styleWidget.value !== normalizePromptStyle(styleWidget.value)) {
-                        commitWidget(styleWidget, normalizePromptStyle(styleWidget.value), false);
-                    }
-                    // Sync
-                    styleSelect.onchange = () => {
-                        commitWidget(styleWidget, normalizePromptStyle(styleSelect.value));
-                    };
+                if (styleWidget) {
                     styleWidget.hidden = true;
+                    commitWidget(styleWidget, promptStyleForMode(state.gen.generation_mode), false);
                 }
-                styleContainer.appendChild(styleSelect);
-
-                // Insert Style Container at the TOP of Left Col
-                // Currently Left Col has charSection. We can prepend.
-                leftCol.prepend(styleContainer);
 
 
                 enableMiddleMouseCanvasPan(container);
@@ -2511,24 +2483,13 @@ app.registerExtension({
                         fetchCharacterData(state.character);
                     }
 
-                    // 2. Style
-                    if (styleWidget && styleWidget.value) {
-                        const normalizedStyle = normalizePromptStyle(styleWidget.value);
-                        if (![...styleSelect.options].some(opt => opt.value === normalizedStyle)) {
-                            const opt = document.createElement("option");
-                            opt.value = normalizedStyle;
-                            opt.innerText = normalizedStyle;
-                            styleSelect.appendChild(opt);
-                        }
-                        styleSelect.value = normalizedStyle;
-                        if (styleWidget.value !== normalizedStyle) commitWidget(styleWidget, normalizedStyle, false);
-                    }
                     if (modelWidget && modelWidget.value) {
                         state.gen.generation_mode = String(modelWidget.value).toLowerCase();
                     }
                     if (generationSettingsWidget && generationSettingsWidget.value) {
                         state.gen = parseGenerationSettings();
                     }
+                    if (styleWidget) commitWidget(styleWidget, promptStyleForMode(state.gen.generation_mode), false);
                     syncGenerationControls();
 
                     // 3. Costumes & Emotions (from hidden text strings)
@@ -2786,8 +2747,6 @@ app.registerExtension({
                         if (token !== characterFetchToken || charName !== state.character) return;
                         state.costumes = validCostumes || [];
 
-                        // FIX: Only reset to "all" if no saved selection exists
-                        // Otherwise, filter saved selection to only include valid costumes
                         if (costumesDataWidget && costumesDataWidget.value) {
                             try {
                                 const saved = JSON.parse(costumesDataWidget.value);

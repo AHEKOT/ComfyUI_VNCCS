@@ -471,6 +471,8 @@ class EmotionGeneratorV2:
 
     def generate_emotions_v2(self, generation_model="Anima", generation_settings="{}", prompt_style="Anima", character="Character Name", costumes_data="[]", emotions_data="[]"):
         pipe, pipe_seed = build_emotion_pipe(generation_model, generation_settings)
+        mode = str(generation_model or "Anima").lower()
+        effective_prompt_style = "Anima" if mode == "anima" else "SDXL Style"
         
         try:
             selected_costumes = json.loads(costumes_data)
@@ -570,7 +572,7 @@ class EmotionGeneratorV2:
                 if costume_details:
                     face_details = f"{face_details}, {costume_details}" if face_details else costume_details
                 
-                if prompt_style in ("Anima", "QWEN Style"):
+                if effective_prompt_style == "Anima":
                     if face_details:
                         positive_prompt += f", Character face details: {face_details}"
                     emotion_text = build_anima_emotion_prompt(natural_prompt, emotion_description, emotion_key)

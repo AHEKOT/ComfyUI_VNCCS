@@ -332,6 +332,7 @@ def test_seedvr_loader_cleans_vram_and_uses_settings(monkeypatch):
             "cache_vae": False,
             "resolution": 4096,
             "max_resolution": 3840,
+            "color_correction": "adain",
         }
     )
 
@@ -349,6 +350,7 @@ def test_seedvr_loader_cleans_vram_and_uses_settings(monkeypatch):
     assert calls[2][0] == "SeedVR2VideoUpscaler"
     assert calls[2][1]["resolution"] == 4096
     assert calls[2][1]["max_resolution"] == 3840
+    assert calls[2][1]["color_correction"] == "adain"
     assert calls[2][1]["offload_device"] == "cpu"
 
 
