@@ -2189,8 +2189,12 @@ app.registerExtension({
                         });
                     }
                     charSelect.onchange = () => {
+                        const previousCharacter = state.character;
                         state.character = charSelect.value;
                         commitWidget(charWidget, charSelect.value, false);
+                        if (charSelect.value !== previousCharacter) {
+                            resetSelectedEmotionsForCharacterChange();
+                        }
                         fetchCharacterData(charSelect.value);
                     };
                     charWidget.hidden = true;
@@ -2647,6 +2651,12 @@ app.registerExtension({
                     updateButtonState();
                 }
 
+                function resetSelectedEmotionsForCharacterChange() {
+                    state.selectedEmotions = new Set();
+                    updateEmotionsData();
+                    renderEmotions();
+                }
+
                 function createEmotionCard(e, compact = false) {
                     const div = document.createElement("div");
                     const selected = state.selectedEmotions.has(e.safe_name);
@@ -2827,8 +2837,12 @@ app.registerExtension({
                 if (charWidget) {
                     const originalCb = charWidget.callback;
                     charWidget.callback = function (v) {
+                        const previousCharacter = state.character;
                         state.character = v;
                         if (charSelect.value !== v) charSelect.value = v;
+                        if (v !== previousCharacter) {
+                            resetSelectedEmotionsForCharacterChange();
+                        }
                         fetchCharacterData(v);
                         if (originalCb) originalCb(v);
                     };

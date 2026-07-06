@@ -24,6 +24,8 @@ from nodes.vnccs_control_center import (
     _enrich_config_entries,
     _merge_custom_loras,
     _remove_custom_lora,
+    _describe_gguf_loader,
+    _load_gguf,
     VNCCSPipeProxy,
 )
 
@@ -606,3 +608,56 @@ class TestControlCenterRequiredTurboLora:
         )
 
         assert captured["lora_states"] == []
+
+
+class TestGGUFLoaderDiagnostics:
+    def test_describes_classic_loader_without_warning(self, monkeypatch):
+        class OfficialLoader:
+            pass
+
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center.inspect.getfile",
+            lambda cls: "/tmp/ComfyUI/custom_nodes/ComfyUI-GGUF/nodes.py",
+        )
+
+        info = _describe_gguf_loader(OfficialLoader)
+
+        assert info["available"] is True
+        assert info["is_classic"] is True
+        assert info["folder"] == "ComfyUI-GGUF"
+        assert info["warning"] is None
+
+    def test_describes_forked_loader_with_warning(self, monkeypatch):
+        class ForkedLoader:
+            pass
+
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center.inspect.getfile",
+            lambda cls: "/tmp/ComfyUI/custom_nodes/ComfyUI-GGUF_Forked/nodes.py",
+        )
+
+        info = _describe_gguf_loader(ForkedLoader)
+
+        assert info["available"] is True
+        assert info["is_classic"] is False
+        assert info["folder"] == "ComfyUI-GGUF_Forked"
+        assert "non-standard GGUF loader" in info["warning"]
+
+    def test_load_gguf_rewrites_qwen_image_architecture_error(self, monkeypatch):
+        import nodes as comfy_nodes
+
+        class ForkedLoader:
+            def load_unet(self, _name):
+                raise ValueError(
+                    "Unexpected architecture type in GGUF file, expected one of flux, sd1, sdxl, t5encoder "
+                    "but got 'qwen_image'"
+                )
+
+        monkeypatch.setattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {"UnetLoaderGGUF": ForkedLoader}, raising=False)
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center.inspect.getfile",
+            lambda cls: "/tmp/ComfyUI/custom_nodes/ComfyUI-GGUF_Forked/nodes.py",
+        )
+
+        with pytest.raises(RuntimeError, match="does not support Qwen Image GGUF"):
+            _load_gguf("/tmp/Qwen-Image.gguf")

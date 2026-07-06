@@ -1028,6 +1028,11 @@ function _injectVNCCSControlCenterStyles() {
     border-color: rgba(255,170,0,0.25);
     color: #ffaa00;
 }
+.vnccs-cc-pill--warning {
+    background: rgba(255,170,0,0.08);
+    border-color: rgba(255,170,0,0.25);
+    color: #ffaa00;
+}
 .vnccs-cc-update-banner {
     display: flex;
     align-items: center;
@@ -1704,19 +1709,20 @@ class VNCCSControlCenterWidget {
     _makePill(name, version, state, extra = "") {
         const p = document.createElement("span");
         p.className = `vnccs-cc-pill vnccs-cc-pill--${state}`;
-        const icons = { ok: "●", update: "↑", error: "✕", loading: "…", dup: "⚠", partial: "⚠" };
+        const icons = { ok: "●", update: "↑", error: "✕", loading: "…", dup: "⚠", partial: "⚠", warning: "⚠" };
         p.textContent = version
             ? `${name} v${version} ${icons[state] ?? ""}${extra ? " " + extra : ""}`
             : `${name} ${icons[state] ?? ""}${extra ? " " + extra : ""}`;
         if (state === "update") p.title = `Update available: ${extra}`;
         if (state === "dup")   p.title = `Duplicate install detected: ${extra}`;
         if (state === "partial") p.title = extra || "Installed but node classes are not loaded";
+        if (state === "warning") p.title = extra || "Installed with warnings";
         if (state === "error") p.title = extra || "Module not found";
         return p;
     }
 
     _updatePill(pillEl, name, version, state, extra = "") {
-        const icons = { ok: "●", update: "↑", error: "✕", loading: "…", dup: "⚠", partial: "⚠" };
+        const icons = { ok: "●", update: "↑", error: "✕", loading: "…", dup: "⚠", partial: "⚠", warning: "⚠" };
         pillEl.className = `vnccs-cc-pill vnccs-cc-pill--${state}`;
         pillEl.textContent = version
             ? `${name} v${version} ${icons[state] ?? ""}${extra ? " " + extra : ""}`
@@ -1724,6 +1730,7 @@ class VNCCSControlCenterWidget {
         if (state === "update") pillEl.title = `Update available: v${extra}`;
         if (state === "dup")   pillEl.title = `Duplicate install: ${extra}`;
         if (state === "partial") pillEl.title = extra || "Installed but node classes are not loaded";
+        if (state === "warning") pillEl.title = extra || "Installed with warnings";
         if (state === "error") pillEl.title = extra || "Module not found";
     }
 
@@ -1909,10 +1916,16 @@ class VNCCSControlCenterWidget {
             const label = info.label || key;
             const pill = this._ensureDependencyPill(key, label);
             const missing = Array.isArray(info.missing_nodes) ? info.missing_nodes : [];
-            const detail = missing.length ? `missing: ${missing.join(", ")}` : (info.folder ? `folder: ${info.folder}` : "");
+            const loader = info.loader || {};
+            const loaderDetail = loader.folder || loader.module || loader.file || "";
+            const detail = missing.length ? `missing: ${missing.join(", ")}` : (info.warning || (loaderDetail ? `loader: ${loaderDetail}` : (info.folder ? `folder: ${info.folder}` : "")));
             if (info.status === "ok") {
                 this._updatePill(pill, label, null, "ok");
                 pill.title = detail || "Installed";
+            } else if (info.status === "warning") {
+                this._updatePill(pill, label, null, "warning", detail);
+                pill.title = detail || "Installed with warnings";
+                updateNeeded.push(`${label}: ${info.warning || "installed with warnings"}`);
             } else if (info.status === "partial") {
                 this._updatePill(pill, label, null, "partial");
                 pill.title = detail || "installed but not loaded";
@@ -1920,7 +1933,7 @@ class VNCCSControlCenterWidget {
                 this._updatePill(pill, label, null, "error");
                 pill.title = detail || "not installed";
             }
-            if (info.status !== "ok") {
+            if (info.status !== "ok" && info.status !== "warning") {
                 missingDependencies.push({ key, ...info });
             }
         }
