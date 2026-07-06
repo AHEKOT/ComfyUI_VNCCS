@@ -111,6 +111,13 @@ def default_generation_settings():
     return settings
 
 
+def resolve_generation_seed(gen_settings):
+    seed = int(gen_settings.get("seed", 0) or 0)
+    if str(gen_settings.get("seed_mode", "fixed") or "fixed").lower() == "randomize":
+        return generate_seed(0)
+    return seed
+
+
 def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
     try:
         parsed = json.loads(generation_settings) if generation_settings else {}
@@ -165,7 +172,7 @@ def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
             if isinstance(item, dict):
                 model, clip = apply_lora_safe(model, clip, item.get("name"), item.get("strength", 1.0))
 
-    seed = generate_seed(int(gen_settings.get("seed", 0) or 0))
+    seed = resolve_generation_seed(gen_settings)
     pipe_node = VNCCS_Pipe()
     pipe_result = pipe_node.process_pipe(
         model=model,
@@ -515,12 +522,11 @@ class EmotionGeneratorV2:
             negative_prompt = info.get("negative_prompt", "") 
             negative_prompt = negative_prompt + ", (facial droplet), (water drop), (water), (water droplets), (water drops)"
             
-            config_seed = info.get("seed", 0)
-            seed = pipe_seed or generate_seed(config_seed)
+            seed = pipe_seed
             base_negative_prompt = negative_prompt
             positive_prompt = aesthetics
         else:
-             seed = pipe_seed or 0
+             seed = pipe_seed
              base_negative_prompt = ""
              positive_prompt = ""
              print(f"Character info not found for {character}")

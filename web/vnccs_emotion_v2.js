@@ -1046,6 +1046,7 @@ app.registerExtension({
         app.queuePrompt = async function(...args) {
             const nodes = app.graph?._nodes?.filter(n => n.type === "EmotionGeneratorV2") || [];
             for (const node of nodes) {
+                node._randomizeSeedIfNeeded?.();
                 if (node._validateBeforeQueue && !node._validateBeforeQueue()) {
                     return; // block queue, modal already shown inside _validateBeforeQueue
                 }
@@ -1084,7 +1085,7 @@ app.registerExtension({
                 const ANIMA_CLIP_NAME = "qwen_3_06b_base.safetensors";
                 const ANIMA_VAE_NAME = "qwen_image_vae.safetensors";
                 const promptStyleForMode = (mode) => String(mode || "anima").toLowerCase() === "anima" ? "Anima" : "SDXL Style";
-                const initialSharedSeed = generateRandomSeed();
+                const initialSharedSeed = 0;
                 const GENERATION_DEFAULTS = {
                     generation_mode: "anima",
                     ckpt_name: "",
@@ -1176,6 +1177,14 @@ app.registerExtension({
                     loras: [],
                 };
                 const modelPickerOpen = { illustrious: false, anima: false };
+
+                node._randomizeSeedIfNeeded = () => {
+                    if ((state.gen.seed_mode || "fixed") === "randomize") {
+                        state.gen.seed = generateRandomSeed();
+                        if (generationEls.seed) generationEls.seed.value = state.gen.seed;
+                        saveGenerationSettings(false);
+                    }
+                };
 
                 const ccNormalize = (value) => String(value || "").trim().toLowerCase();
                 const ccKind = (entry) => ccNormalize(entry?.kind ?? entry?.Kind);
@@ -1876,7 +1885,12 @@ app.registerExtension({
                     if (generationEls.sampler) generationEls.sampler.value = state.gen.sampler || "euler";
                     if (generationEls.scheduler) generationEls.scheduler.value = state.gen.scheduler || "normal";
                     if (generationEls.seed) generationEls.seed.value = state.gen.seed ?? 0;
-                    if (generationEls.seedMode) generationEls.seedMode.classList.toggle("active", (state.gen.seed_mode || "fixed") === "randomize");
+                    if (generationEls.seedMode) {
+                        const randomize = (state.gen.seed_mode || "fixed") === "randomize";
+                        generationEls.seedMode.classList.toggle("active", randomize);
+                        generationEls.seedMode.title = randomize ? "Random seed on queue" : "Fixed seed";
+                        generationEls.seedMode.setAttribute("aria-pressed", randomize ? "true" : "false");
+                    }
                     if (generationEls.loraHeader) generationEls.loraHeader.innerText = mode === "anima" ? "Anima LoRA Stack" : "Illustrious LoRA Stack";
                     if (generationEls.loraSection) generationEls.loraSection.style.display = "flex";
                     if (generationEls.animaLoraCards) renderModeLoraCards(generationEls.animaLoraCards, mode);
@@ -2117,7 +2131,6 @@ app.registerExtension({
                 </svg>`;
                 seedDice.onclick = () => {
                     state.gen.seed_mode = (state.gen.seed_mode || "fixed") === "randomize" ? "fixed" : "randomize";
-                    if (state.gen.seed_mode === "randomize") state.gen.seed = generateRandomSeed();
                     syncGenerationControls();
                     saveGenerationSettings();
                 };
