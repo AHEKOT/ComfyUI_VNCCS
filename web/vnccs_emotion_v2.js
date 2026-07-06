@@ -1084,6 +1084,7 @@ app.registerExtension({
                 const ANIMA_CLIP_NAME = "qwen_3_06b_base.safetensors";
                 const ANIMA_VAE_NAME = "qwen_image_vae.safetensors";
                 const promptStyleForMode = (mode) => String(mode || "anima").toLowerCase() === "anima" ? "Anima" : "SDXL Style";
+                const initialSharedSeed = generateRandomSeed();
                 const GENERATION_DEFAULTS = {
                     generation_mode: "anima",
                     ckpt_name: "",
@@ -1095,7 +1096,7 @@ app.registerExtension({
                     scheduler: "simple",
                     steps: 30,
                     cfg: 4.0,
-                    seed: generateRandomSeed(),
+                    seed: initialSharedSeed,
                     seed_mode: "fixed",
                     turbo_enabled: false,
                     turbo_previous_settings: null,
@@ -1111,7 +1112,8 @@ app.registerExtension({
                     mode_settings: {
                         illustrious: {
                             ckpt_name: "", sampler: "euler", scheduler: "normal",
-                            steps: 20, cfg: 8.0, seed: generateRandomSeed(), seed_mode: "fixed",
+                            steps: 20, cfg: 8.0, seed: initialSharedSeed, seed_mode: "fixed",
+                            turbo_previous_settings: null,
                             dmd_lora_name: "", dmd_lora_strength: 1.0,
                             lora_stack: [
                                 { name: "", strength: 1.0 },
@@ -1124,7 +1126,7 @@ app.registerExtension({
                         anima: {
                             diffusion_model_name: "", clip_name: ANIMA_CLIP_NAME, vae_name: ANIMA_VAE_NAME,
                             clip_type: "stable_diffusion", sampler: "er_sde", scheduler: "simple",
-                            steps: 30, cfg: 4.0, seed: generateRandomSeed(), seed_mode: "fixed",
+                            steps: 30, cfg: 4.0, seed: initialSharedSeed, seed_mode: "fixed",
                             turbo_enabled: false, turbo_previous_settings: null,
                             dmd_lora_name: ANIMA_TURBO_LORA_NAME, dmd_lora_strength: 1.0,
                             lora_stack: [
@@ -1259,9 +1261,21 @@ app.registerExtension({
                 function saveGenerationSettings() {
                     const callCallback = arguments.length > 0 ? arguments[0] : true;
                     const mode = (state.gen.generation_mode || "anima").toLowerCase();
+                    const sharedSeed = state.gen.seed ?? initialSharedSeed;
+                    const sharedSeedMode = state.gen.seed_mode || "fixed";
                     state.gen.mode_settings = state.gen.mode_settings || {};
+                    state.gen.seed = sharedSeed;
+                    state.gen.seed_mode = sharedSeedMode;
                     state.gen.mode_settings[mode] = { ...state.gen };
                     delete state.gen.mode_settings[mode].mode_settings;
+                    for (const profileMode of ["illustrious", "anima"]) {
+                        const profile = state.gen.mode_settings[profileMode] || { ...GENERATION_DEFAULTS.mode_settings[profileMode] };
+                        state.gen.mode_settings[profileMode] = {
+                            ...profile,
+                            seed: sharedSeed,
+                            seed_mode: sharedSeedMode,
+                        };
+                    }
 
                     commitWidget(generationSettingsWidget, JSON.stringify(state.gen), callCallback);
                     commitWidget(modelWidget, mode === "anima" ? "Anima" : "Illustrious", callCallback);
@@ -1272,12 +1286,21 @@ app.registerExtension({
                 function setGenerationMode(mode) {
                     mode = mode === "illustrious" ? "illustrious" : "anima";
                     const current = (state.gen.generation_mode || "anima").toLowerCase();
+                    const sharedSeed = state.gen.seed ?? initialSharedSeed;
+                    const sharedSeedMode = state.gen.seed_mode || "fixed";
                     state.gen.mode_settings = state.gen.mode_settings || {};
                     state.gen.mode_settings[current] = { ...state.gen };
                     delete state.gen.mode_settings[current].mode_settings;
 
                     const profile = state.gen.mode_settings[mode] || GENERATION_DEFAULTS.mode_settings[mode] || {};
-                    state.gen = { ...GENERATION_DEFAULTS, ...profile, mode_settings: state.gen.mode_settings, generation_mode: mode };
+                    state.gen = {
+                        ...GENERATION_DEFAULTS,
+                        ...profile,
+                        mode_settings: state.gen.mode_settings,
+                        generation_mode: mode,
+                        seed: sharedSeed,
+                        seed_mode: sharedSeedMode,
+                    };
                     syncGenerationControls();
                     saveGenerationSettings();
                 }
@@ -1441,8 +1464,26 @@ app.registerExtension({
                         state.gen.dmd_lora_name = rel || state.gen.dmd_lora_name || "";
                         setAnimaTurboMode(enabled, rel || state.gen.dmd_lora_name || ANIMA_TURBO_LORA_NAME);
                     } else {
-                        state.gen.dmd_lora_name = enabled ? rel : "";
-                        state.gen.dmd_lora_strength = enabled ? 1.0 : 0.0;
+                        if (enabled) {
+                            if ((state.gen.dmd_lora_strength || 0) <= 0) {
+                                state.gen.turbo_previous_settings = {
+                                    steps: state.gen.steps,
+                                    cfg: state.gen.cfg,
+                                };
+                            }
+                            state.gen.dmd_lora_name = rel || state.gen.dmd_lora_name || "";
+                            state.gen.dmd_lora_strength = 1.0;
+                            state.gen.steps = 4;
+                            state.gen.cfg = 1.0;
+                        } else {
+                            state.gen.dmd_lora_name = "";
+                            state.gen.dmd_lora_strength = 0.0;
+                            const previous = state.gen.turbo_previous_settings || {};
+                            if (previous.steps !== undefined) state.gen.steps = previous.steps;
+                            if (previous.cfg !== undefined) state.gen.cfg = previous.cfg;
+                            state.gen.turbo_previous_settings = null;
+                        }
+                        syncGenerationControls();
                         saveGenerationSettings();
                     }
                     renderControlCenterCards();
