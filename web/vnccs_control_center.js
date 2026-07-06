@@ -1160,22 +1160,37 @@ class VNCCSControlCenterWidget {
         return (this.node.inputs ?? []).findIndex(input => input?.name === "model");
     }
 
+    _getCustomClipInputIndex() {
+        return (this.node.inputs ?? []).findIndex(input => input?.name === "clip");
+    }
+
+    _getCustomVaeInputIndex() {
+        return (this.node.inputs ?? []).findIndex(input => input?.name === "vae");
+    }
+
     _syncCustomModelInput() {
         const selectedType = this.state.selected_type || this._getSelectedType();
-        const inputIndex = this._getCustomModelInputIndex();
+        const isCustom = selectedType === "custom";
 
-        if (selectedType === "custom") {
-            if (inputIndex === -1) {
-                this.node.addInput("model", "MODEL");
-                this.node.setDirtyCanvas(true, true);
+        const sync = (name, type, getIndex, shouldShow) => {
+            const inputIndex = getIndex.call(this);
+            if (shouldShow) {
+                if (inputIndex === -1) {
+                    this.node.addInput(name, type);
+                    this.node.setDirtyCanvas(true, true);
+                }
+                return;
             }
-            return;
-        }
-
-        if (inputIndex !== -1) {
+            if (inputIndex === -1) {
+                return;
+            }
             this.node.removeInput(inputIndex);
             this.node.setDirtyCanvas(true, true);
-        }
+        };
+
+        sync("model", "MODEL", this._getCustomModelInputIndex, isCustom);
+        sync("clip", "CLIP", this._getCustomClipInputIndex, isCustom);
+        sync("vae", "VAE", this._getCustomVaeInputIndex, isCustom);
     }
 
     _setSelectedType(nextType) {
@@ -2113,8 +2128,8 @@ class VNCCSControlCenterWidget {
             isCustom
         );
 
-        // CLIP + VAE — horizontal cards
-        if (!isCP) {
+        // CLIP + VAE — custom mode gets these from external sockets instead.
+        if (!isCP && !isCustom) {
             this._renderClipVaeBlock();
         }
 
@@ -2718,7 +2733,7 @@ class VNCCSControlCenterWidget {
 
         const text = document.createElement("div");
         text.className = "vnccs-cc-model-card-placeholder-text";
-        text.textContent = "Pass-through mode is enabled. Connect the desired model to the node input.";
+        text.textContent = "Pass-through mode is enabled. Connect MODEL, CLIP, and VAE to the node inputs.";
         card.appendChild(text);
 
         return card;

@@ -413,7 +413,7 @@ class TestVNCCSPipeProxy:
 
 
 class TestControlCenterCustomModel:
-    def test_custom_type_uses_model_input_and_standard_loader(self, monkeypatch):
+    def test_custom_type_uses_external_model_clip_and_vae_inputs(self, monkeypatch):
         custom_model = object()
         custom_clip = object()
         custom_vae = object()
@@ -426,12 +426,24 @@ class TestControlCenterCustomModel:
             "lora": [],
         })
 
-        def fake_load_model_block(model_entry, selected_type, type_settings, config, selected_clips, selected_vae, custom_model=None):
+        def fake_load_model_block(
+            model_entry,
+            selected_type,
+            type_settings,
+            config,
+            selected_clips,
+            selected_vae,
+            custom_model=None,
+            custom_clip=None,
+            custom_vae=None,
+        ):
             assert selected_type == "custom"
             assert model_entry == context_model
             assert custom_model is not None
-            assert selected_clips == ["clip_a"]
-            assert selected_vae == "vae_a"
+            assert custom_clip is not None
+            assert custom_vae is not None
+            assert selected_clips == []
+            assert selected_vae == ""
             return custom_model, custom_clip, custom_vae
 
         monkeypatch.setattr("nodes.vnccs_control_center._load_model_block", fake_load_model_block)
@@ -454,6 +466,8 @@ class TestControlCenterCustomModel:
                 "model_params": {},
             },
             custom_model=custom_model,
+            custom_clip=custom_clip,
+            custom_vae=custom_vae,
         )
 
         assert pipe.model is custom_model
@@ -467,6 +481,41 @@ class TestControlCenterCustomModel:
         assert pipe.sample_steps == 4
         assert pipe.cfg == 1.0
         assert pipe.scheduler == "simple"
+
+    def test_custom_type_requires_external_clip_and_vae_inputs(self, monkeypatch):
+        custom_model = object()
+        custom_clip = object()
+        context_model = {"name": "Qwen GGUF", "type": "gguf", "kind": "QIE2511"}
+
+        monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
+            "models": [context_model],
+            "clip": [{"name": "clip_a", "kind": "QIE2511"}],
+            "vae": [{"name": "vae_a", "kind": "QIE2511"}],
+            "lora": [],
+        })
+
+        base_state = {
+            "selected_type": "custom",
+            "selected_models": {"gguf": "Qwen GGUF"},
+            "loras": [],
+            "type_settings": {},
+            "model_params": {},
+        }
+
+        with pytest.raises(RuntimeError, match="Custom CLIP input is not connected"):
+            _build_control_center_pipe(
+                "demo/repo",
+                base_state,
+                custom_model=custom_model,
+            )
+
+        with pytest.raises(RuntimeError, match="Custom VAE input is not connected"):
+            _build_control_center_pipe(
+                "demo/repo",
+                base_state,
+                custom_model=custom_model,
+                custom_clip=custom_clip,
+            )
 
 
 class TestControlCenterRequiredTurboLora:
