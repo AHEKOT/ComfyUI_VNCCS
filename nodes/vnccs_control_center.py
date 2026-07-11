@@ -1674,16 +1674,6 @@ async def vnccs_module_status(request):
         "utils": ["vnccs-utils", "ComfyUI_VNCCS_Utils"],
     }
     dependency_modules = {
-        "seedvr": {
-            "label": "SeedVR",
-            "github_url": "https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler",
-            "folders": ["seedvr2_videoupscaler", "ComfyUI-SeedVR2_VideoUpscaler", "comfyui-seedvr2-videoupscaler", "ComfyUI-SeedVR"],
-            "nodes": [
-                {"class_names": ["SeedVR2LoadDiTModel"]},
-                {"class_names": ["SeedVR2LoadVAEModel"]},
-                {"class_names": ["SeedVR2VideoUpscaler"]},
-            ],
-        },
         "gguf": {
             "label": "GGUF",
             "github_url": "https://github.com/city96/ComfyUI-GGUF",
