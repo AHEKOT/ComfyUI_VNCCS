@@ -1046,6 +1046,7 @@ app.registerExtension({
         app.queuePrompt = async function(...args) {
             const nodes = app.graph?._nodes?.filter(n => n.type === "EmotionGeneratorV2") || [];
             for (const node of nodes) {
+                node._randomizeSeedIfNeeded?.();
                 if (node._validateBeforeQueue && !node._validateBeforeQueue()) {
                     return; // block queue, modal already shown inside _validateBeforeQueue
                 }
@@ -1083,6 +1084,8 @@ app.registerExtension({
                 const ANIMA_TURBO_LORA_NAME = "anima\\anima-turbo-lora-v0.1.safetensors";
                 const ANIMA_CLIP_NAME = "qwen_3_06b_base.safetensors";
                 const ANIMA_VAE_NAME = "qwen_image_vae.safetensors";
+                const promptStyleForMode = (mode) => String(mode || "anima").toLowerCase() === "anima" ? "Anima" : "SDXL Style";
+                const initialSharedSeed = 0;
                 const GENERATION_DEFAULTS = {
                     generation_mode: "anima",
                     ckpt_name: "",
@@ -1094,7 +1097,7 @@ app.registerExtension({
                     scheduler: "simple",
                     steps: 30,
                     cfg: 4.0,
-                    seed: generateRandomSeed(),
+                    seed: initialSharedSeed,
                     seed_mode: "fixed",
                     turbo_enabled: false,
                     turbo_previous_settings: null,
@@ -1110,7 +1113,8 @@ app.registerExtension({
                     mode_settings: {
                         illustrious: {
                             ckpt_name: "", sampler: "euler", scheduler: "normal",
-                            steps: 20, cfg: 8.0, seed: generateRandomSeed(), seed_mode: "fixed",
+                            steps: 20, cfg: 8.0, seed: initialSharedSeed, seed_mode: "fixed",
+                            turbo_previous_settings: null,
                             dmd_lora_name: "", dmd_lora_strength: 1.0,
                             lora_stack: [
                                 { name: "", strength: 1.0 },
@@ -1123,7 +1127,7 @@ app.registerExtension({
                         anima: {
                             diffusion_model_name: "", clip_name: ANIMA_CLIP_NAME, vae_name: ANIMA_VAE_NAME,
                             clip_type: "stable_diffusion", sampler: "er_sde", scheduler: "simple",
-                            steps: 30, cfg: 4.0, seed: generateRandomSeed(), seed_mode: "fixed",
+                            steps: 30, cfg: 4.0, seed: initialSharedSeed, seed_mode: "fixed",
                             turbo_enabled: false, turbo_previous_settings: null,
                             dmd_lora_name: ANIMA_TURBO_LORA_NAME, dmd_lora_strength: 1.0,
                             lora_stack: [
@@ -1173,6 +1177,14 @@ app.registerExtension({
                     loras: [],
                 };
                 const modelPickerOpen = { illustrious: false, anima: false };
+
+                node._randomizeSeedIfNeeded = () => {
+                    if ((state.gen.seed_mode || "fixed") === "randomize") {
+                        state.gen.seed = generateRandomSeed();
+                        if (generationEls.seed) generationEls.seed.value = state.gen.seed;
+                        saveGenerationSettings(false);
+                    }
+                };
 
                 const ccNormalize = (value) => String(value || "").trim().toLowerCase();
                 const ccKind = (entry) => ccNormalize(entry?.kind ?? entry?.Kind);
@@ -1249,7 +1261,7 @@ app.registerExtension({
 
                 function persistAllState() {
                     commitWidget(charWidget, state.character, false);
-                    if (styleWidget) commitWidget(styleWidget, styleSelect.value, false);
+                    if (styleWidget) commitWidget(styleWidget, promptStyleForMode(state.gen.generation_mode), false);
                     if (costumesDataWidget) commitWidget(costumesDataWidget, JSON.stringify(Array.from(state.selectedCostumes)), false);
                     if (emotionsDataWidget) commitWidget(emotionsDataWidget, JSON.stringify(Array.from(state.selectedEmotions)), false);
                     saveGenerationSettings(false);
@@ -1258,24 +1270,46 @@ app.registerExtension({
                 function saveGenerationSettings() {
                     const callCallback = arguments.length > 0 ? arguments[0] : true;
                     const mode = (state.gen.generation_mode || "anima").toLowerCase();
+                    const sharedSeed = state.gen.seed ?? initialSharedSeed;
+                    const sharedSeedMode = state.gen.seed_mode || "fixed";
                     state.gen.mode_settings = state.gen.mode_settings || {};
+                    state.gen.seed = sharedSeed;
+                    state.gen.seed_mode = sharedSeedMode;
                     state.gen.mode_settings[mode] = { ...state.gen };
                     delete state.gen.mode_settings[mode].mode_settings;
+                    for (const profileMode of ["illustrious", "anima"]) {
+                        const profile = state.gen.mode_settings[profileMode] || { ...GENERATION_DEFAULTS.mode_settings[profileMode] };
+                        state.gen.mode_settings[profileMode] = {
+                            ...profile,
+                            seed: sharedSeed,
+                            seed_mode: sharedSeedMode,
+                        };
+                    }
 
                     commitWidget(generationSettingsWidget, JSON.stringify(state.gen), callCallback);
                     commitWidget(modelWidget, mode === "anima" ? "Anima" : "Illustrious", callCallback);
+                    if (styleWidget) commitWidget(styleWidget, promptStyleForMode(mode), callCallback);
                     window.dispatchEvent(new CustomEvent("vnccs-emotion-studio-generation-mode-changed"));
                 }
 
                 function setGenerationMode(mode) {
                     mode = mode === "illustrious" ? "illustrious" : "anima";
                     const current = (state.gen.generation_mode || "anima").toLowerCase();
+                    const sharedSeed = state.gen.seed ?? initialSharedSeed;
+                    const sharedSeedMode = state.gen.seed_mode || "fixed";
                     state.gen.mode_settings = state.gen.mode_settings || {};
                     state.gen.mode_settings[current] = { ...state.gen };
                     delete state.gen.mode_settings[current].mode_settings;
 
                     const profile = state.gen.mode_settings[mode] || GENERATION_DEFAULTS.mode_settings[mode] || {};
-                    state.gen = { ...GENERATION_DEFAULTS, ...profile, mode_settings: state.gen.mode_settings, generation_mode: mode };
+                    state.gen = {
+                        ...GENERATION_DEFAULTS,
+                        ...profile,
+                        mode_settings: state.gen.mode_settings,
+                        generation_mode: mode,
+                        seed: sharedSeed,
+                        seed_mode: sharedSeedMode,
+                    };
                     syncGenerationControls();
                     saveGenerationSettings();
                 }
@@ -1439,8 +1473,26 @@ app.registerExtension({
                         state.gen.dmd_lora_name = rel || state.gen.dmd_lora_name || "";
                         setAnimaTurboMode(enabled, rel || state.gen.dmd_lora_name || ANIMA_TURBO_LORA_NAME);
                     } else {
-                        state.gen.dmd_lora_name = enabled ? rel : "";
-                        state.gen.dmd_lora_strength = enabled ? 1.0 : 0.0;
+                        if (enabled) {
+                            if ((state.gen.dmd_lora_strength || 0) <= 0) {
+                                state.gen.turbo_previous_settings = {
+                                    steps: state.gen.steps,
+                                    cfg: state.gen.cfg,
+                                };
+                            }
+                            state.gen.dmd_lora_name = rel || state.gen.dmd_lora_name || "";
+                            state.gen.dmd_lora_strength = 1.0;
+                            state.gen.steps = 4;
+                            state.gen.cfg = 1.0;
+                        } else {
+                            state.gen.dmd_lora_name = "";
+                            state.gen.dmd_lora_strength = 0.0;
+                            const previous = state.gen.turbo_previous_settings || {};
+                            if (previous.steps !== undefined) state.gen.steps = previous.steps;
+                            if (previous.cfg !== undefined) state.gen.cfg = previous.cfg;
+                            state.gen.turbo_previous_settings = null;
+                        }
+                        syncGenerationControls();
                         saveGenerationSettings();
                     }
                     renderControlCenterCards();
@@ -1522,7 +1574,7 @@ app.registerExtension({
                     scheduler: "Noise schedule used together with the sampler.",
                     seed: "Numeric seed for reproducible emotion generations.",
                     seed_mode: "Toggles fixed seed versus a fresh random seed for each generation.",
-                    lora_stack: "Additional Anima LoRAs mixed into emotion generation.",
+                    lora_stack: "Additional LoRAs mixed into emotion generation for the selected model mode.",
                     lora_strength: "Strength of the LoRA in this row."
                 };
                 const helpFor = (key, fallback = "") => FIELD_HELP[key] || fallback;
@@ -1833,8 +1885,15 @@ app.registerExtension({
                     if (generationEls.sampler) generationEls.sampler.value = state.gen.sampler || "euler";
                     if (generationEls.scheduler) generationEls.scheduler.value = state.gen.scheduler || "normal";
                     if (generationEls.seed) generationEls.seed.value = state.gen.seed ?? 0;
-                    if (generationEls.seedMode) generationEls.seedMode.classList.toggle("active", (state.gen.seed_mode || "fixed") === "randomize");
-                    if (generationEls.loraSection) generationEls.loraSection.style.display = mode === "anima" ? "flex" : "none";
+                    if (generationEls.seedMode) {
+                        const randomize = (state.gen.seed_mode || "fixed") === "randomize";
+                        generationEls.seedMode.classList.toggle("active", randomize);
+                        generationEls.seedMode.title = randomize ? "Random seed on queue" : "Fixed seed";
+                        generationEls.seedMode.setAttribute("aria-pressed", randomize ? "true" : "false");
+                    }
+                    if (generationEls.loraHeader) generationEls.loraHeader.innerText = mode === "anima" ? "Anima LoRA Stack" : "Illustrious LoRA Stack";
+                    if (generationEls.loraSection) generationEls.loraSection.style.display = "flex";
+                    if (generationEls.animaLoraCards) renderModeLoraCards(generationEls.animaLoraCards, mode);
                     if (generationEls.loraRows) {
                         generationEls.loraRows.forEach((row, index) => {
                             const item = (state.gen.lora_stack || [])[index] || { name: "", strength: 1.0 };
@@ -2072,7 +2131,6 @@ app.registerExtension({
                 </svg>`;
                 seedDice.onclick = () => {
                     state.gen.seed_mode = (state.gen.seed_mode || "fixed") === "randomize" ? "fixed" : "randomize";
-                    if (state.gen.seed_mode === "randomize") state.gen.seed = generateRandomSeed();
                     syncGenerationControls();
                     saveGenerationSettings();
                 };
@@ -2091,6 +2149,7 @@ app.registerExtension({
                 const loraHeader = document.createElement("div");
                 loraHeader.className = "ems-costumes-header";
                 loraHeader.innerText = "Anima LoRA Stack";
+                generationEls.loraHeader = loraHeader;
                 loraSection.appendChild(loraHeader);
                 const animaLoraCards = document.createElement("div");
                 animaLoraCards.className = "ems-lora-stack";
@@ -2189,8 +2248,12 @@ app.registerExtension({
                         });
                     }
                     charSelect.onchange = () => {
+                        const previousCharacter = state.character;
                         state.character = charSelect.value;
                         commitWidget(charWidget, charSelect.value, false);
+                        if (charSelect.value !== previousCharacter) {
+                            resetSelectedEmotionsForCharacterChange();
+                        }
                         fetchCharacterData(charSelect.value);
                     };
                     charWidget.hidden = true;
@@ -2206,44 +2269,11 @@ app.registerExtension({
                     window.removeEventListener("vnccs.migration.complete", onCharactersUpdated);
                 });
 
-                // Add Prompt Style Select (Top)
                 const styleWidget = node.widgets.find(w => w.name === "prompt_style");
-                const normalizePromptStyle = (value) => value === "QWEN Style" ? "Anima" : value;
-
-                const styleContainer = document.createElement("div");
-                styleContainer.className = "ems-section";
-                styleContainer.style.marginBottom = "10px";
-                styleContainer.style.padding = "5px 10px";
-
-                const styleSelect = document.createElement("select");
-                styleSelect.className = "em-select";
-
-                if (styleWidget && styleWidget.options.values) {
-                    const seenStyles = new Set();
-                    styleWidget.options.values.forEach(v => {
-                        const normalized = normalizePromptStyle(v);
-                        if (seenStyles.has(normalized)) return;
-                        seenStyles.add(normalized);
-                        const opt = document.createElement("option");
-                        opt.value = normalized;
-                        opt.innerText = normalized;
-                        if (normalized === normalizePromptStyle(styleWidget.value)) opt.selected = true;
-                        styleSelect.appendChild(opt);
-                    });
-                    if (styleWidget.value !== normalizePromptStyle(styleWidget.value)) {
-                        commitWidget(styleWidget, normalizePromptStyle(styleWidget.value), false);
-                    }
-                    // Sync
-                    styleSelect.onchange = () => {
-                        commitWidget(styleWidget, normalizePromptStyle(styleSelect.value));
-                    };
+                if (styleWidget) {
                     styleWidget.hidden = true;
+                    commitWidget(styleWidget, promptStyleForMode(state.gen.generation_mode), false);
                 }
-                styleContainer.appendChild(styleSelect);
-
-                // Insert Style Container at the TOP of Left Col
-                // Currently Left Col has charSection. We can prepend.
-                leftCol.prepend(styleContainer);
 
 
                 enableMiddleMouseCanvasPan(container);
@@ -2507,24 +2537,13 @@ app.registerExtension({
                         fetchCharacterData(state.character);
                     }
 
-                    // 2. Style
-                    if (styleWidget && styleWidget.value) {
-                        const normalizedStyle = normalizePromptStyle(styleWidget.value);
-                        if (![...styleSelect.options].some(opt => opt.value === normalizedStyle)) {
-                            const opt = document.createElement("option");
-                            opt.value = normalizedStyle;
-                            opt.innerText = normalizedStyle;
-                            styleSelect.appendChild(opt);
-                        }
-                        styleSelect.value = normalizedStyle;
-                        if (styleWidget.value !== normalizedStyle) commitWidget(styleWidget, normalizedStyle, false);
-                    }
                     if (modelWidget && modelWidget.value) {
                         state.gen.generation_mode = String(modelWidget.value).toLowerCase();
                     }
                     if (generationSettingsWidget && generationSettingsWidget.value) {
                         state.gen = parseGenerationSettings();
                     }
+                    if (styleWidget) commitWidget(styleWidget, promptStyleForMode(state.gen.generation_mode), false);
                     syncGenerationControls();
 
                     // 3. Costumes & Emotions (from hidden text strings)
@@ -2645,6 +2664,12 @@ app.registerExtension({
                     const list = Array.from(state.selectedEmotions);
                     commitWidget(emotionsDataWidget, JSON.stringify(list));
                     updateButtonState();
+                }
+
+                function resetSelectedEmotionsForCharacterChange() {
+                    state.selectedEmotions = new Set();
+                    updateEmotionsData();
+                    renderEmotions();
                 }
 
                 function createEmotionCard(e, compact = false) {
@@ -2776,8 +2801,6 @@ app.registerExtension({
                         if (token !== characterFetchToken || charName !== state.character) return;
                         state.costumes = validCostumes || [];
 
-                        // FIX: Only reset to "all" if no saved selection exists
-                        // Otherwise, filter saved selection to only include valid costumes
                         if (costumesDataWidget && costumesDataWidget.value) {
                             try {
                                 const saved = JSON.parse(costumesDataWidget.value);
@@ -2827,8 +2850,12 @@ app.registerExtension({
                 if (charWidget) {
                     const originalCb = charWidget.callback;
                     charWidget.callback = function (v) {
+                        const previousCharacter = state.character;
                         state.character = v;
                         if (charSelect.value !== v) charSelect.value = v;
+                        if (v !== previousCharacter) {
+                            resetSelectedEmotionsForCharacterChange();
+                        }
                         fetchCharacterData(v);
                         if (originalCb) originalCb(v);
                     };

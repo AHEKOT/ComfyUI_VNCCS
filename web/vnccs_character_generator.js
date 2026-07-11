@@ -119,6 +119,7 @@ const WORKFLOW_UPSCALER_VAE_MODELS = [
 ];
 
 const SEEDVR_ATTENTION_MODES = ["sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3"];
+const SEEDVR_COLOR_CORRECTION_MODES = ["lab", "wavelet", "wavelet_adaptive", "hsv", "adain", "none"];
 
 const POSE_GENERATION_LORA_LABEL = "VNCCS Pose Studio QIE2511";
 const CLOTHES_CORE_LORA_LABEL = "VNCCS Clothes Core";
@@ -1499,6 +1500,7 @@ class CharacterGeneratorWidget {
             gan_model: "Upscale model used when GAN upscaling is selected.",
             model: "SeedVR diffusion model used for the upscaler stage.",
             resolution: "Output resolution target for SeedVR upscaling.",
+            color_correction: "SeedVR color correction mode. Try adain, wavelet, or none if lab causes color shifts on your GPU.",
             attention_mode: "Attention backend for SeedVR. Auto-detected from installed ComfyUI packages until changed manually.",
             use_internal_rmbg: "Uses the built-in background remover instead of relying only on chroma key.",
             preset: "Strength preset for chroma/background removal.",
@@ -1798,6 +1800,7 @@ class CharacterGeneratorWidget {
             upscalerFields.push(
                 this.field("upscaler", "model", "dit model", "select", this.getWorkflowModelOptions("SeedVR2LoadDiTModel", "model", WORKFLOW_UPSCALER_DIT_MODELS, this.data.upscaler.model)),
                 this.field("upscaler", "resolution", "resolution", "number"),
+                this.field("upscaler", "color_correction", "color correction", "select", this.getOptions("SeedVR2VideoUpscaler", "color_correction", SEEDVR_COLOR_CORRECTION_MODES, this.data.upscaler.color_correction)),
                 this.field("upscaler", "attention_mode", "attention mode", "select", this.getOptions("SeedVR2LoadDiTModel", "attention_mode", this.seedvrAttention.available, this.data.upscaler.attention_mode)),
             );
         }

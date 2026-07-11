@@ -93,11 +93,64 @@ DEFAULT_MODEL_SCHEDULER = "simple"
 NUNCHAKU_DISABLED_MESSAGE = (
     "Nunchaku support is disabled in VNCCS. Use GGUF models instead."
 )
+CLASSIC_GGUF_FOLDER = "ComfyUI-GGUF"
+GGUF_FORK_WARNING = (
+    "A non-standard GGUF loader is active. Stable VNCCS operation is only tested "
+    "with github.com/city96/ComfyUI-GGUF."
+)
 
 def _get_node_class_mappings():
     import nodes as comfy_nodes
 
     return getattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {})
+
+
+def _get_gguf_loader_class():
+    return _get_node_class_mappings().get("UnetLoaderGGUF")
+
+
+def _describe_gguf_loader(loader_cls=None):
+    loader_cls = loader_cls or _get_gguf_loader_class()
+    if loader_cls is None:
+        return {
+            "available": False,
+            "class_name": None,
+            "module": None,
+            "file": None,
+            "folder": None,
+            "is_classic": False,
+            "warning": None,
+        }
+
+    module_name = getattr(loader_cls, "__module__", "") or ""
+    class_name = getattr(loader_cls, "__name__", "UnetLoaderGGUF")
+    try:
+        loader_file = inspect.getfile(loader_cls)
+    except Exception:
+        loader_file = None
+
+    raw_parts = [part for part in os.path.normpath(loader_file).split(os.sep) if part] if loader_file else []
+    parts = [part.lower() for part in raw_parts]
+    classic_folder = CLASSIC_GGUF_FOLDER.lower()
+    folder = None
+    for index, part in enumerate(parts):
+        if part == "custom_nodes" and index + 1 < len(parts):
+            folder = raw_parts[index + 1]
+            break
+
+    module_tokens = {token for token in re.split(r"[^a-z0-9]+", module_name.lower()) if token}
+    is_classic = classic_folder in parts or module_name.lower() == "comfyui_gguf" or module_tokens == {"comfyui", "gguf"}
+    warning = None if is_classic else GGUF_FORK_WARNING
+
+    return {
+        "available": True,
+        "class_name": class_name,
+        "module": module_name,
+        "file": loader_file,
+        "folder": folder,
+        "is_classic": is_classic,
+        "warning": warning,
+    }
 
 
 def _detect_nunchaku_model_kind(model_entry=None, full_path=""):
@@ -826,15 +879,33 @@ def _load_unet(full_path, settings=None):
 
 
 def _load_gguf(full_path):
-    import nodes as comfy_nodes
-
-    if "UnetLoaderGGUF" not in comfy_nodes.NODE_CLASS_MAPPINGS:
+    loader_cls = _get_gguf_loader_class()
+    if loader_cls is None:
         raise RuntimeError(
             "[VNCCS Control Center] ComfyUI-GGUF not found. Install github.com/city96/ComfyUI-GGUF"
         )
 
-    loader = comfy_nodes.NODE_CLASS_MAPPINGS["UnetLoaderGGUF"]()
-    model, = loader.load_unet(basename_agnostic(full_path))
+    loader_info = _describe_gguf_loader(loader_cls)
+    if loader_info.get("warning"):
+        print(
+            "[VNCCS Control Center] Warning: "
+            f"{loader_info['warning']} Active loader: "
+            f"{loader_info.get('folder') or loader_info.get('module') or loader_info.get('file') or 'unknown'}"
+        )
+
+    loader = loader_cls()
+    try:
+        model, = loader.load_unet(basename_agnostic(full_path))
+    except ValueError as exc:
+        message = str(exc)
+        if "Unexpected architecture type" in message and "qwen_image" in message:
+            active_loader = loader_info.get("folder") or loader_info.get("module") or loader_info.get("file") or "unknown"
+            raise RuntimeError(
+                "[VNCCS Control Center] Installed GGUF loader does not support Qwen Image GGUF files. "
+                "Update github.com/city96/ComfyUI-GGUF and remove or disable older GGUF forks. "
+                f"Active loader: {active_loader}."
+            ) from exc
+        raise
     return model
 
 
@@ -932,13 +1003,25 @@ def _load_vae(vae_entries, selected_name):
     return comfy.sd.VAE(sd=sd, metadata=metadata)
 
 
-def _load_model_block(model_entry, selected_type, type_settings, config, selected_clips, selected_vae, custom_model=None):
+def _load_model_block(
+    model_entry,
+    selected_type,
+    type_settings,
+    config,
+    selected_clips,
+    selected_vae,
+    custom_model=None,
+    custom_clip=None,
+    custom_vae=None,
+):
     if selected_type == "custom":
         if custom_model is None:
             raise RuntimeError("[VNCCS Control Center] Custom model input is not connected.")
-        clip = _load_clips(config.get("clip", []), selected_clips)
-        vae = _load_vae(config.get("vae", []), selected_vae)
-        return custom_model, clip, vae
+        if custom_clip is None:
+            raise RuntimeError("[VNCCS Control Center] Custom CLIP input is not connected.")
+        if custom_vae is None:
+            raise RuntimeError("[VNCCS Control Center] Custom VAE input is not connected.")
+        return custom_model, custom_clip, custom_vae
 
     if not model_entry:
         raise RuntimeError("[VNCCS Control Center] No model selected.")
@@ -1170,6 +1253,8 @@ class VNCCS_ControlCenter:
             },
             "optional": {
                 "model": ("MODEL",),
+                "clip": ("CLIP",),
+                "vae": ("VAE",),
             }
         }
 
@@ -1182,12 +1267,18 @@ class VNCCS_ControlCenter:
     FUNCTION = "execute"
     CATEGORY = "VNCCS/manager"
 
-    def execute(self, repo_id, node_state="{}", model=None):
-        pipe = _build_control_center_pipe(repo_id, node_state, custom_model=model)
+    def execute(self, repo_id, node_state="{}", model=None, clip=None, vae=None):
+        pipe = _build_control_center_pipe(
+            repo_id,
+            node_state,
+            custom_model=model,
+            custom_clip=clip,
+            custom_vae=vae,
+        )
         return (pipe,)
 
 
-def _build_control_center_pipe(repo_id, node_state, custom_model=None):
+def _build_control_center_pipe(repo_id, node_state, custom_model=None, custom_clip=None, custom_vae=None):
     try:
         state = json.loads(node_state) if isinstance(node_state, str) and node_state and node_state != "{}" else (node_state or {})
     except Exception:
@@ -1230,10 +1321,14 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None):
         raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
 
     model_kind = _entry_kind(model_entry)
-    compatible_clips = _filter_entries_by_kind(config.get("clip", []), model_kind)
-    compatible_vaes = _filter_entries_by_kind(config.get("vae", []), model_kind)
-    all_clip_names = [entry["name"] for entry in compatible_clips]
-    first_vae_name = compatible_vaes[0]["name"] if compatible_vaes else ""
+    if selected_type == "custom":
+        all_clip_names = []
+        first_vae_name = ""
+    else:
+        compatible_clips = _filter_entries_by_kind(config.get("clip", []), model_kind)
+        compatible_vaes = _filter_entries_by_kind(config.get("vae", []), model_kind)
+        all_clip_names = [entry["name"] for entry in compatible_clips]
+        first_vae_name = compatible_vaes[0]["name"] if compatible_vaes else ""
     model, clip, vae = _load_model_block(
         model_entry,
         selected_type,
@@ -1242,6 +1337,8 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None):
         all_clip_names,
         first_vae_name,
         custom_model=custom_model,
+        custom_clip=custom_clip,
+        custom_vae=custom_vae,
     )
     model, clip = _apply_loras(
         model,
@@ -1591,6 +1688,7 @@ async def vnccs_module_status(request):
             "label": "GGUF",
             "github_url": "https://github.com/city96/ComfyUI-GGUF",
             "folders": ["ComfyUI-GGUF"],
+            "loader_check": "gguf",
             "nodes": [
                 {"class_names": ["UnetLoaderGGUF"]},
             ],
@@ -1680,12 +1778,27 @@ async def vnccs_module_status(request):
                 missing_nodes.append(node_spec.get("node_id") or "/".join(node_spec.get("class_names", [])))
 
         if not missing_nodes:
+            extra = {}
+            if spec.get("loader_check") == "gguf":
+                loader_info = _describe_gguf_loader()
+                extra["loader"] = loader_info
+                if loader_info.get("warning"):
+                    return {
+                        "label": spec["label"],
+                        "github_url": spec.get("github_url"),
+                        "status": "warning",
+                        "folder": folders[0] if folders else loader_info.get("folder"),
+                        "missing_nodes": [],
+                        "warning": loader_info["warning"],
+                        **extra,
+                    }
             return {
                 "label": spec["label"],
                 "github_url": spec.get("github_url"),
                 "status": "ok",
                 "folder": folders[0] if folders else None,
                 "missing_nodes": [],
+                **extra,
             }
         return {
             "label": spec["label"],

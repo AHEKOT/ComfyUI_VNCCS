@@ -1237,12 +1237,13 @@ app.registerExtension({
                     gen_settings: {
                         generation_mode: "illustrious",
                         ckpt_name: "", sampler: "euler", scheduler: "normal",
-                        steps: 20, cfg: 8.0, seed: generateRandomSeed(), seed_mode: "fixed",
+                        steps: 20, cfg: 8.0, seed: 0, seed_mode: "fixed",
                         diffusion_model_name: "", clip_name: "", vae_name: "",
                         mode_settings: {
                             illustrious: {
                                 ckpt_name: "", sampler: "euler", scheduler: "normal",
-                                steps: 20, cfg: 8.0, seed: generateRandomSeed(), seed_mode: "fixed",
+                                steps: 20, cfg: 8.0, seed: 0, seed_mode: "fixed",
+                                turbo_previous_settings: null,
                                 dmd_lora_name: "", dmd_lora_strength: 1.0,
                                 age_lora_name: "",
                                 lora_stack: [
@@ -1256,7 +1257,7 @@ app.registerExtension({
                             anima: {
                                 diffusion_model_name: "", clip_name: "qwen_3_06b_base.safetensors", vae_name: "qwen_image_vae.safetensors",
                                 sampler: "er_sde", scheduler: "simple",
-                                steps: 30, cfg: 4.0, seed: generateRandomSeed(), seed_mode: "fixed",
+                                steps: 30, cfg: 4.0, seed: 0, seed_mode: "fixed",
                                 turbo_enabled: false,
                                 dmd_lora_name: "anima\\anima-turbo-lora-v0.1.safetensors",
                                 dmd_lora_strength: 1.0,
@@ -1290,7 +1291,8 @@ app.registerExtension({
                 const ANIMA_VAE_NAME = "qwen_image_vae.safetensors";
                 const ILLUSTRIOUS_DEFAULTS = {
                     ckpt_name: "", sampler: "euler", scheduler: "normal",
-                    steps: 20, cfg: 8.0, seed: generateRandomSeed(), seed_mode: "fixed",
+                    steps: 20, cfg: 8.0, seed: 0, seed_mode: "fixed",
+                    turbo_previous_settings: null,
                     dmd_lora_name: "", dmd_lora_strength: 1.0,
                     age_lora_name: "",
                     lora_stack: [
@@ -1304,7 +1306,7 @@ app.registerExtension({
                 const ANIMA_DEFAULTS = {
                     diffusion_model_name: "", clip_name: ANIMA_CLIP_NAME, vae_name: ANIMA_VAE_NAME,
                     sampler: "er_sde", scheduler: "simple",
-                    steps: 30, cfg: 4.0, seed: generateRandomSeed(), seed_mode: "fixed",
+                    steps: 30, cfg: 4.0, seed: 0, seed_mode: "fixed",
                     turbo_enabled: false,
                     dmd_lora_name: ANIMA_TURBO_LORA_NAME,
                     dmd_lora_strength: 1.0,
@@ -1320,7 +1322,7 @@ app.registerExtension({
                 const GENERATION_DEFAULTS_VERSION = 3;
                 const PROMPT_DEFAULTS_VERSION = 1;
                 const MODE_SETTING_KEYS = {
-                    illustrious: ["ckpt_name", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "dmd_lora_name", "dmd_lora_strength", "age_lora_name", "lora_stack"],
+                    illustrious: ["ckpt_name", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "dmd_lora_name", "dmd_lora_strength", "turbo_previous_settings", "age_lora_name", "lora_stack"],
                     anima: ["diffusion_model_name", "clip_name", "vae_name", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "turbo_enabled", "dmd_lora_name", "dmd_lora_strength", "turbo_previous_settings", "lora_stack"],
                 };
                 const MODE_PROMPT_DEFAULTS = {
@@ -1512,7 +1514,7 @@ app.registerExtension({
 
                 const getGenerationDefaults = (mode) => ({
                     ...(mode === "anima" ? ANIMA_DEFAULTS : ILLUSTRIOUS_DEFAULTS),
-                    seed: generateRandomSeed(),
+                    seed: 0,
                 });
 
                 const ensureLoraStack = (profile) => {
@@ -2443,8 +2445,26 @@ app.registerExtension({
                         state.gen_settings.dmd_lora_name = rel || state.gen_settings.dmd_lora_name || "";
                         setAnimaTurboMode(enabled);
                     } else {
-                        state.gen_settings.dmd_lora_name = enabled ? rel : "";
-                        state.gen_settings.dmd_lora_strength = enabled ? 1.0 : 0.0;
+                        if (enabled) {
+                            if ((state.gen_settings.dmd_lora_strength || 0) <= 0) {
+                                state.gen_settings.turbo_previous_settings = {
+                                    steps: state.gen_settings.steps,
+                                    cfg: state.gen_settings.cfg,
+                                };
+                            }
+                            state.gen_settings.dmd_lora_name = rel || state.gen_settings.dmd_lora_name || "";
+                            state.gen_settings.dmd_lora_strength = 1.0;
+                            state.gen_settings.steps = 4;
+                            state.gen_settings.cfg = 1.0;
+                        } else {
+                            state.gen_settings.dmd_lora_name = "";
+                            state.gen_settings.dmd_lora_strength = 0.0;
+                            const previous = state.gen_settings.turbo_previous_settings || {};
+                            if (previous.steps !== undefined) state.gen_settings.steps = previous.steps;
+                            if (previous.cfg !== undefined) state.gen_settings.cfg = previous.cfg;
+                            state.gen_settings.turbo_previous_settings = null;
+                        }
+                        syncGenerationControls();
                         saveState();
                     }
                     renderControlCenterCards();
@@ -3376,7 +3396,24 @@ app.registerExtension({
                     if (mode === "anima") {
                         setAnimaTurboMode(e.target.checked);
                     } else {
-                        state.gen_settings.dmd_lora_strength = e.target.checked ? 1.0 : 0.0;
+                        if (e.target.checked) {
+                            if ((state.gen_settings.dmd_lora_strength || 0) <= 0) {
+                                state.gen_settings.turbo_previous_settings = {
+                                    steps: state.gen_settings.steps,
+                                    cfg: state.gen_settings.cfg,
+                                };
+                            }
+                            state.gen_settings.dmd_lora_strength = 1.0;
+                            state.gen_settings.steps = 4;
+                            state.gen_settings.cfg = 1.0;
+                        } else {
+                            state.gen_settings.dmd_lora_strength = 0.0;
+                            const previous = state.gen_settings.turbo_previous_settings || {};
+                            if (previous.steps !== undefined) state.gen_settings.steps = previous.steps;
+                            if (previous.cfg !== undefined) state.gen_settings.cfg = previous.cfg;
+                            state.gen_settings.turbo_previous_settings = null;
+                        }
+                        syncGenerationControls();
                         saveState();
                     }
                 };
@@ -3587,10 +3624,6 @@ app.registerExtension({
                         applyGenerationProfile(g.generation_mode);
                         migratePromptModes();
 
-                        // Auto-generate seed if still 0 (first use or unset)
-                        if ((!g.seed || g.seed === 0) && g.seed_mode !== "randomize") {
-                            g.seed = generateRandomSeed();
-                        }
                         saveCurrentGenerationModeValues();
                         syncGenerationControls();
                         refreshGenerationModeUI();

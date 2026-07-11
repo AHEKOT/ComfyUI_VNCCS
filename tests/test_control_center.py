@@ -24,6 +24,8 @@ from nodes.vnccs_control_center import (
     _enrich_config_entries,
     _merge_custom_loras,
     _remove_custom_lora,
+    _describe_gguf_loader,
+    _load_gguf,
     VNCCSPipeProxy,
 )
 
@@ -413,7 +415,7 @@ class TestVNCCSPipeProxy:
 
 
 class TestControlCenterCustomModel:
-    def test_custom_type_uses_model_input_and_standard_loader(self, monkeypatch):
+    def test_custom_type_uses_external_model_clip_and_vae_inputs(self, monkeypatch):
         custom_model = object()
         custom_clip = object()
         custom_vae = object()
@@ -426,12 +428,24 @@ class TestControlCenterCustomModel:
             "lora": [],
         })
 
-        def fake_load_model_block(model_entry, selected_type, type_settings, config, selected_clips, selected_vae, custom_model=None):
+        def fake_load_model_block(
+            model_entry,
+            selected_type,
+            type_settings,
+            config,
+            selected_clips,
+            selected_vae,
+            custom_model=None,
+            custom_clip=None,
+            custom_vae=None,
+        ):
             assert selected_type == "custom"
             assert model_entry == context_model
             assert custom_model is not None
-            assert selected_clips == ["clip_a"]
-            assert selected_vae == "vae_a"
+            assert custom_clip is not None
+            assert custom_vae is not None
+            assert selected_clips == []
+            assert selected_vae == ""
             return custom_model, custom_clip, custom_vae
 
         monkeypatch.setattr("nodes.vnccs_control_center._load_model_block", fake_load_model_block)
@@ -454,6 +468,8 @@ class TestControlCenterCustomModel:
                 "model_params": {},
             },
             custom_model=custom_model,
+            custom_clip=custom_clip,
+            custom_vae=custom_vae,
         )
 
         assert pipe.model is custom_model
@@ -467,6 +483,41 @@ class TestControlCenterCustomModel:
         assert pipe.sample_steps == 4
         assert pipe.cfg == 1.0
         assert pipe.scheduler == "simple"
+
+    def test_custom_type_requires_external_clip_and_vae_inputs(self, monkeypatch):
+        custom_model = object()
+        custom_clip = object()
+        context_model = {"name": "Qwen GGUF", "type": "gguf", "kind": "QIE2511"}
+
+        monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
+            "models": [context_model],
+            "clip": [{"name": "clip_a", "kind": "QIE2511"}],
+            "vae": [{"name": "vae_a", "kind": "QIE2511"}],
+            "lora": [],
+        })
+
+        base_state = {
+            "selected_type": "custom",
+            "selected_models": {"gguf": "Qwen GGUF"},
+            "loras": [],
+            "type_settings": {},
+            "model_params": {},
+        }
+
+        with pytest.raises(RuntimeError, match="Custom CLIP input is not connected"):
+            _build_control_center_pipe(
+                "demo/repo",
+                base_state,
+                custom_model=custom_model,
+            )
+
+        with pytest.raises(RuntimeError, match="Custom VAE input is not connected"):
+            _build_control_center_pipe(
+                "demo/repo",
+                base_state,
+                custom_model=custom_model,
+                custom_clip=custom_clip,
+            )
 
 
 class TestControlCenterRequiredTurboLora:
@@ -557,3 +608,56 @@ class TestControlCenterRequiredTurboLora:
         )
 
         assert captured["lora_states"] == []
+
+
+class TestGGUFLoaderDiagnostics:
+    def test_describes_classic_loader_without_warning(self, monkeypatch):
+        class OfficialLoader:
+            pass
+
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center.inspect.getfile",
+            lambda cls: "/tmp/ComfyUI/custom_nodes/ComfyUI-GGUF/nodes.py",
+        )
+
+        info = _describe_gguf_loader(OfficialLoader)
+
+        assert info["available"] is True
+        assert info["is_classic"] is True
+        assert info["folder"] == "ComfyUI-GGUF"
+        assert info["warning"] is None
+
+    def test_describes_forked_loader_with_warning(self, monkeypatch):
+        class ForkedLoader:
+            pass
+
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center.inspect.getfile",
+            lambda cls: "/tmp/ComfyUI/custom_nodes/ComfyUI-GGUF_Forked/nodes.py",
+        )
+
+        info = _describe_gguf_loader(ForkedLoader)
+
+        assert info["available"] is True
+        assert info["is_classic"] is False
+        assert info["folder"] == "ComfyUI-GGUF_Forked"
+        assert "non-standard GGUF loader" in info["warning"]
+
+    def test_load_gguf_rewrites_qwen_image_architecture_error(self, monkeypatch):
+        import nodes as comfy_nodes
+
+        class ForkedLoader:
+            def load_unet(self, _name):
+                raise ValueError(
+                    "Unexpected architecture type in GGUF file, expected one of flux, sd1, sdxl, t5encoder "
+                    "but got 'qwen_image'"
+                )
+
+        monkeypatch.setattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {"UnetLoaderGGUF": ForkedLoader}, raising=False)
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center.inspect.getfile",
+            lambda cls: "/tmp/ComfyUI/custom_nodes/ComfyUI-GGUF_Forked/nodes.py",
+        )
+
+        with pytest.raises(RuntimeError, match="does not support Qwen Image GGUF"):
+            _load_gguf("/tmp/Qwen-Image.gguf")
