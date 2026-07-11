@@ -139,6 +139,13 @@ ANIMA_DEFAULTS = {
     "lora_stack": [],
 }
 
+
+def resolve_generation_seed(gen_settings):
+    seed = int(gen_settings.get("seed", 0) or 0)
+    if str(gen_settings.get("seed_mode", "fixed") or "fixed").lower() == "randomize":
+        return generate_seed(0)
+    return seed
+
 DEFAULT_PREVIEW_WIDTH = 640
 DEFAULT_PREVIEW_HEIGHT = 1536
 
@@ -997,7 +1004,7 @@ Example:
             cfg = float(gen_settings.get("cfg", 8.0))
             sampler_name = gen_settings.get("sampler", "euler")
             scheduler = gen_settings.get("scheduler", "normal")
-            seed = generate_seed(int(gen_settings.get("seed", 0)))
+            seed = resolve_generation_seed(gen_settings)
             generation_mode = gen_settings.get("generation_mode", "illustrious")
 
             # Resolution
@@ -1310,7 +1317,7 @@ class CharacterCreatorV2:
             vae=vae,
             pos=conditioning_pos,
             neg=conditioning_neg,
-            seed_int=generate_seed(int(gen_settings.get("seed", 0))),
+            seed_int=resolve_generation_seed(gen_settings),
             sample_steps=int(gen_settings.get("steps", ILLUSTRIOUS_DEFAULTS["steps"])),
             cfg=float(gen_settings.get("cfg", ILLUSTRIOUS_DEFAULTS["cfg"])),
             denoise=1.0,
@@ -1404,7 +1411,7 @@ class CharacterCreatorV2:
             try:
                 sampled = sample_generation_latent(
                     model=model,
-                    seed=generate_seed(int(gen_settings.get("seed", 0))),
+                    seed=resolve_generation_seed(gen_settings),
                     steps=int(gen_settings.get("steps", ILLUSTRIOUS_DEFAULTS["steps"])),
                     cfg=float(gen_settings.get("cfg", ILLUSTRIOUS_DEFAULTS["cfg"])),
                     sampler_name=gen_settings.get("sampler", ILLUSTRIOUS_DEFAULTS["sampler"]),

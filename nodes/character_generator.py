@@ -14,6 +14,7 @@ import json
 import os
 import random
 import shutil
+import threading
 import traceback
 import time
 from types import SimpleNamespace
@@ -67,6 +68,19 @@ from ..utils import (
 
 _LIVE_GENERATOR_CONTEXTS = {}
 SEEDVR_ATTENTION_MODES = ("sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3")
+SEEDVR_HF_REPO = "Comfy-Org/SeedVR2"
+SEEDVR_HF_REVISION = "a457bf495efbd40ea92f699f7d2b5d2febeca176"
+SEEDVR_MODEL_FILES = (
+    "seedvr2_3b_fp16.safetensors",
+    "seedvr2_3b_fp8_e4m3fn.safetensors",
+    "seedvr2_7b_fp16.safetensors",
+    "seedvr2_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors",
+    "seedvr2_7b_sharp_fp16.safetensors",
+    "seedvr2_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors",
+)
+SEEDVR_VAE_FILES = ("ema_vae_fp16.safetensors",)
+_SEEDVR_DOWNLOAD_STATUS = {}
+_SEEDVR_DOWNLOAD_LOCK = threading.Lock()
 MAX_SEED = 0xFFFFFFFFFFFFFFFF
 REGENERATE_SEED_SHIFT_MAX = 1_000_000
 
@@ -678,7 +692,7 @@ DEFAULT_WIDGET_DATA = {
     },
     "upscaler": {
         "mode": "seedvr",
-        "model": "seedvr2_ema_3b-Q4_K_M.gguf",
+        "model": "seedvr2_3b_fp8_e4m3fn.safetensors",
         "vae": "ema_vae_fp16.safetensors",
         "gan_model": "",
         "device": "cuda:0",
@@ -851,6 +865,11 @@ class VNCCS_CharacterGenerator:
         for section, values in (data or {}).items():
             if isinstance(values, dict) and section in merged:
                 merged[section].update(values)
+        legacy_seedvr_model = str(merged["upscaler"].get("model", ""))
+        if legacy_seedvr_model.startswith("seedvr2_ema_") or legacy_seedvr_model.endswith(".gguf"):
+            merged["upscaler"]["model"] = "seedvr2_3b_fp8_e4m3fn.safetensors"
+        if merged["upscaler"].get("color_correction") not in {"lab", "wavelet", "adain", "none"}:
+            merged["upscaler"]["color_correction"] = "lab"
         return _normalize_gan_upscaler_settings(merged)
 
     def _widget_data(self, widget_data):
@@ -1515,36 +1534,29 @@ class VNCCS_CharacterGenerator:
 
     def _run_upscaler_models(self, settings, node_id=None):
         defaults = DEFAULT_WIDGET_DATA["upscaler"]
+        mappings = getattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {}) if comfy_nodes else {}
+        missing = [
+            name for name in ("SeedVR2Preprocess", "SeedVR2Conditioning", "SeedVR2PostProcessing")
+            if name not in mappings
+        ]
+        if missing:
+            raise RuntimeError(
+                "Native SeedVR2 requires a newer ComfyUI release. Update ComfyUI and restart it. "
+                f"Missing nodes: {', '.join(missing)}"
+            )
         self._clean_vram_for_seedvr()
-        cache_dit = bool(settings.get("cache_dit", defaults["cache_dit"]))
-        if defaults["cache_dit"] and not cache_dit:
-            # Legacy VNCCS widget_data stored this hidden SeedVR option as false.
-            # The working standalone SeedVR graph keeps the DiT model cached.
-            cache_dit = True
         dit = _call_comfy_node(
-            "SeedVR2LoadDiTModel",
-            model=settings["model"],
-            device=settings.get("device", defaults["device"]),
-            blocks_to_swap=int(settings.get("blocks_to_swap", defaults["blocks_to_swap"])),
-            swap_io_components=bool(settings.get("swap_io_components", defaults["swap_io_components"])),
-            offload_device=settings.get("offload_device", defaults["offload_device"]),
-            cache_model=cache_dit,
-            attention_mode=self._resolve_seedvr_attention_mode(settings),
+            "UNETLoader",
+            unet_name=settings["model"],
+            weight_dtype="default",
             _vnccs_node_id=node_id,
         )[0]
+        vae_name = settings.get("vae", defaults["vae"])
+        if vae_name in SEEDVR_VAE_FILES:
+            _ensure_seedvr_vae_model(vae_name)
         vae = _call_comfy_node(
-            "SeedVR2LoadVAEModel",
-            model=settings.get("vae", defaults["vae"]),
-            device=settings.get("device", defaults["device"]),
-            encode_tiled=bool(settings.get("encode_tiled", defaults["encode_tiled"])),
-            encode_tile_size=int(settings.get("encode_tile_size", defaults["encode_tile_size"])),
-            encode_tile_overlap=int(settings.get("encode_tile_overlap", defaults["encode_tile_overlap"])),
-            decode_tiled=bool(settings.get("decode_tiled", defaults["decode_tiled"])),
-            decode_tile_size=int(settings.get("decode_tile_size", defaults["decode_tile_size"])),
-            decode_tile_overlap=int(settings.get("decode_tile_overlap", defaults["decode_tile_overlap"])),
-            tile_debug=settings.get("tile_debug", defaults["tile_debug"]),
-            offload_device=settings.get("offload_device", defaults["offload_device"]),
-            cache_model=bool(settings.get("cache_vae", defaults["cache_vae"])),
+            "VAELoader",
+            vae_name=vae_name,
             _vnccs_node_id=node_id,
         )[0]
         return dit, vae
@@ -1595,28 +1607,49 @@ class VNCCS_CharacterGenerator:
         batch = self._safe_image_batch(images, stage=f"{stage} SeedVR input")
         if not torch.is_tensor(batch) or batch.ndim != 4 or batch.shape[0] == 0:
             return []
-        upscaled = self._run_seedvr_upscale_one(batch, dit, vae, settings, seed, node_id=node_id)
-        return self._split_batch(upscaled)
+        results = []
+        for index in range(batch.shape[0]):
+            # Native SeedVR2 interprets a 4-D IMAGE tensor as video frames, not
+            # an image batch. Run every generator image independently.
+            upscaled = self._run_seedvr_upscale_one(
+                batch[index:index + 1], dit, vae, settings, seed, node_id=node_id,
+            )
+            results.extend(self._split_batch(upscaled))
+        return results
 
     def _run_seedvr_upscale_one(self, image, dit, vae, settings, seed, node_id=None):
         defaults = DEFAULT_WIDGET_DATA["upscaler"]
-        return _call_comfy_node(
-            "SeedVR2VideoUpscaler",
-            image=image,
-            dit=dit,
-            vae=vae,
+        resized = _call_comfy_node(
+            "ImageScaleBy", image=image, upscale_method="bicubic", scale_by=4.0,
+            _vnccs_node_id=node_id,
+        )[0]
+        preprocessed = _call_comfy_node(
+            "SeedVR2Preprocess", resized_images=resized, _vnccs_node_id=node_id,
+        )[0]
+        latent = _call_comfy_node(
+            "VAEEncodeTiled", pixels=preprocessed, vae=vae,
+            tile_size=512, overlap=128, temporal_size=64, temporal_overlap=8,
+            _vnccs_node_id=node_id,
+        )[0]
+        positive, negative = _call_comfy_node(
+            "SeedVR2Conditioning", model=dit, vae_conditioning=latent,
+            _vnccs_node_id=node_id,
+        )[:2]
+        sampled = _call_comfy_node(
+            "KSampler", model=dit, positive=positive, negative=negative,
+            latent_image=latent,
             seed=int(seed),
-            resolution=int(settings["resolution"]),
-            max_resolution=int(settings.get("max_resolution", defaults["max_resolution"])),
-            batch_size=int(settings.get("batch_size", defaults["batch_size"])),
-            uniform_batch_size=bool(settings.get("uniform_batch_size", defaults["uniform_batch_size"])),
-            color_correction=settings.get("color_correction", defaults["color_correction"]),
-            temporal_overlap=int(settings.get("temporal_overlap", defaults["temporal_overlap"])),
-            prepend_frames=int(settings.get("prepend_frames", defaults["prepend_frames"])),
-            input_noise_scale=float(settings.get("input_noise_scale", defaults["input_noise_scale"])),
-            latent_noise_scale=float(settings.get("latent_noise_scale", defaults["latent_noise_scale"])),
-            offload_device=settings.get("offload_device", defaults["offload_device"]),
-            enable_debug=bool(settings.get("enable_debug", defaults["enable_debug"])),
+            steps=1, cfg=1.0, sampler_name="euler", scheduler="simple", denoise=1.0,
+            _vnccs_node_id=node_id,
+        )[0]
+        decoded = _call_comfy_node(
+            "VAEDecodeTiled", samples=sampled, vae=vae,
+            tile_size=512, overlap=128, temporal_size=64, temporal_overlap=8,
+            _vnccs_node_id=node_id,
+        )[0]
+        return _call_comfy_node(
+            "SeedVR2PostProcessing", images=decoded, original_resized_images=resized,
+            color_correction_method=settings.get("color_correction", defaults["color_correction"]),
             _vnccs_node_id=node_id,
         )[0]
 
@@ -3128,7 +3161,117 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             raise
 
 
+def _seedvr_models_root():
+    root = getattr(folder_paths, "models_dir", None) if folder_paths is not None else None
+    if not root:
+        base = getattr(folder_paths, "base_path", os.getcwd()) if folder_paths is not None else os.getcwd()
+        root = os.path.join(base, "models")
+    return os.path.abspath(root)
+
+
+def _seedvr_catalog():
+    root = _seedvr_models_root()
+    descriptions = {
+        "seedvr2_3b_fp8_e4m3fn.safetensors": "Recommended native SeedVR2 3B model with reduced VRAM usage.",
+        "seedvr2_3b_fp16.safetensors": "Native SeedVR2 3B model in full FP16 precision.",
+        "seedvr2_7b_fp8_e4m3fn_mixed_block35_fp16.safetensors": "Native SeedVR2 7B mixed FP8/FP16 model.",
+        "seedvr2_7b_fp16.safetensors": "Native SeedVR2 7B model in full FP16 precision.",
+        "seedvr2_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors": "Sharper SeedVR2 7B mixed FP8/FP16 model.",
+        "seedvr2_7b_sharp_fp16.safetensors": "Sharper SeedVR2 7B model in full FP16 precision.",
+        "ema_vae_fp16.safetensors": "Native SeedVR2 VAE used by every SeedVR2 diffusion model.",
+    }
+
+    def entries(category, files, folder):
+        return [{
+            "name": name,
+            "local_path": f"models/{folder}/{name}",
+            "description": descriptions[name],
+            "status": "installed" if os.path.isfile(os.path.join(root, folder, name)) else "missing",
+            "category": category,
+        } for name in files]
+
+    return {
+        "models": entries("models", SEEDVR_MODEL_FILES, "diffusion_models"),
+        "vae": entries("vae", SEEDVR_VAE_FILES, "vae"),
+    }
+
+
+def _download_seedvr_file(category, name):
+    from huggingface_hub import hf_hub_download
+
+    folder = "diffusion_models" if category == "models" else "vae"
+    models_root = _seedvr_models_root()
+    target_dir = os.path.join(models_root, folder)
+    os.makedirs(target_dir, exist_ok=True)
+    downloaded = hf_hub_download(
+        repo_id=SEEDVR_HF_REPO,
+        filename=f"{folder}/{name}",
+        revision=SEEDVR_HF_REVISION,
+        local_dir=models_root,
+    )
+    final_path = os.path.join(target_dir, name)
+    if os.path.abspath(downloaded) != os.path.abspath(final_path):
+        os.replace(downloaded, final_path)
+    if not os.path.isfile(final_path):
+        raise RuntimeError(f"SeedVR2 download completed but model file is missing: {final_path}")
+    return final_path
+
+
+def _ensure_seedvr_vae_model(name="ema_vae_fp16.safetensors"):
+    target = os.path.join(_seedvr_models_root(), "vae", name)
+    if os.path.isfile(target):
+        return target
+    key = f"vae:{name}"
+    _SEEDVR_DOWNLOAD_STATUS[key] = {"status": "downloading", "message": "Downloading required SeedVR2 VAE…"}
+    try:
+        target = _download_seedvr_file("vae", name)
+        _SEEDVR_DOWNLOAD_STATUS[key] = {"status": "installed", "message": "Installed"}
+    except Exception as exc:
+        _SEEDVR_DOWNLOAD_STATUS[key] = {"status": "error", "message": str(exc)}
+        raise RuntimeError(f"Failed to download required SeedVR2 VAE '{name}': {exc}") from exc
+    return target
+
+
+def _seedvr_download_worker(category, name):
+    key = f"{category}:{name}"
+    try:
+        _SEEDVR_DOWNLOAD_STATUS[key] = {"status": "downloading", "message": "Downloading from Hugging Face…"}
+        _download_seedvr_file(category, name)
+        _SEEDVR_DOWNLOAD_STATUS[key] = {"status": "installed", "message": "Installed"}
+    except Exception as exc:
+        _SEEDVR_DOWNLOAD_STATUS[key] = {"status": "error", "message": str(exc)}
+
+
 if server is not None:
+    @server.PromptServer.instance.routes.get("/vnccs/character_generator/seedvr_models")
+    async def vnccs_character_generator_seedvr_models(request):
+        return web.json_response(_seedvr_catalog())
+
+    @server.PromptServer.instance.routes.get("/vnccs/character_generator/seedvr_download_status")
+    async def vnccs_character_generator_seedvr_download_status(request):
+        return web.json_response(_SEEDVR_DOWNLOAD_STATUS)
+
+    @server.PromptServer.instance.routes.post("/vnccs/character_generator/seedvr_download")
+    async def vnccs_character_generator_seedvr_download(request):
+        if request.headers.get("X-VNCCS-CSRF") != "1":
+            return web.json_response({"error": "Missing VNCCS request token"}, status=403)
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        category = str(data.get("category") or "")
+        name = str(data.get("name") or "")
+        allowed = SEEDVR_MODEL_FILES if category == "models" else SEEDVR_VAE_FILES if category == "vae" else ()
+        if name not in allowed:
+            return web.json_response({"error": "Unknown SeedVR2 model"}, status=400)
+        key = f"{category}:{name}"
+        with _SEEDVR_DOWNLOAD_LOCK:
+            if _SEEDVR_DOWNLOAD_STATUS.get(key, {}).get("status") in {"queued", "downloading"}:
+                return web.json_response({"status": "downloading"})
+            _SEEDVR_DOWNLOAD_STATUS[key] = {"status": "queued", "message": "Queued"}
+            threading.Thread(target=_seedvr_download_worker, args=(category, name), daemon=True).start()
+        return web.json_response({"status": "queued"})
+
     @server.PromptServer.instance.routes.get("/vnccs/character_generator/seedvr_attention")
     async def vnccs_character_generator_seedvr_attention(request):
         available = _available_seedvr_attention_modes()

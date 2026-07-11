@@ -318,6 +318,8 @@ def test_seedvr_loader_cleans_vram_and_uses_settings(monkeypatch):
 
     def fake_call(class_name, **kwargs):
         calls.append((class_name, kwargs))
+        if class_name == "SeedVR2Conditioning":
+            return ("positive", "negative")
         return (f"{class_name}_out",)
 
     monkeypatch.setattr(cg, "_call_comfy_node", fake_call)
@@ -325,13 +327,14 @@ def test_seedvr_loader_cleans_vram_and_uses_settings(monkeypatch):
     settings = cg.VNCCS_CharacterGenerator()._settings("{}")["upscaler"]
     settings.update(
         {
-            "model": "custom_dit.gguf",
+            "model": "custom_dit.safetensors",
             "vae": "custom_vae.safetensors",
             "offload_device": "cpu",
             "cache_dit": True,
             "cache_vae": False,
             "resolution": 4096,
             "max_resolution": 3840,
+            "color_correction": "adain",
         }
     )
 
@@ -341,27 +344,40 @@ def test_seedvr_loader_cleans_vram_and_uses_settings(monkeypatch):
 
     assert fake_mm.unloaded == 1
     assert fake_mm.emptied == 1
-    assert calls[0][0] == "SeedVR2LoadDiTModel"
-    assert calls[0][1]["model"] == "custom_dit.gguf"
-    assert calls[0][1]["cache_model"] is True
-    assert calls[1][0] == "SeedVR2LoadVAEModel"
-    assert calls[1][1]["model"] == "custom_vae.safetensors"
-    assert calls[2][0] == "SeedVR2VideoUpscaler"
-    assert calls[2][1]["resolution"] == 4096
-    assert calls[2][1]["max_resolution"] == 3840
-    assert calls[2][1]["offload_device"] == "cpu"
+    assert calls[0][0] == "UNETLoader"
+    assert calls[0][1]["unet_name"] == "custom_dit.safetensors"
+    assert calls[1][0] == "VAELoader"
+    assert calls[1][1]["vae_name"] == "custom_vae.safetensors"
+    assert [name for name, _ in calls[2:]] == [
+        "ImageScaleBy", "SeedVR2Preprocess", "VAEEncodeTiled", "SeedVR2Conditioning",
+        "KSampler", "VAEDecodeTiled", "SeedVR2PostProcessing",
+    ]
+    assert calls[2][1]["scale_by"] == 4.0
+    assert calls[-1][1]["color_correction_method"] == "adain"
 
 
-def test_seedvr_upscaler_runs_whole_batch_once(monkeypatch):
+def test_seedvr_loader_ensures_required_vae_on_process(monkeypatch):
+    ensured = []
+    monkeypatch.setattr(cg, "_ensure_seedvr_vae_model", lambda name: ensured.append(name))
+    monkeypatch.setattr(cg, "_call_comfy_node", lambda class_name, **kwargs: (object(),))
+    monkeypatch.setattr(cg.VNCCS_CharacterGenerator, "_clean_vram_for_seedvr", lambda self: None)
+
+    settings = cg.VNCCS_CharacterGenerator()._settings("{}")['upscaler']
+    cg.VNCCS_CharacterGenerator()._run_upscaler_models(settings)
+
+    assert ensured == ["ema_vae_fp16.safetensors"]
+
+
+def test_seedvr_upscaler_runs_each_image_independently(monkeypatch):
     torch = pytest.importorskip("torch")
     generator = cg.VNCCS_CharacterGenerator()
     calls = []
 
     monkeypatch.setattr(generator, "_run_upscaler_models", lambda settings: ("dit", "vae"))
 
-    def fake_seedvr(image, dit, vae, settings, seed):
+    def fake_seedvr(image, dit, vae, settings, seed, node_id=None):
         calls.append(image)
-        assert image.shape == (4, 1584, 664, 3)
+        assert image.shape == (1, 1584, 664, 3)
         return image
 
     monkeypatch.setattr(generator, "_run_seedvr_upscale_one", fake_seedvr)
@@ -375,7 +391,7 @@ def test_seedvr_upscaler_runs_whole_batch_once(monkeypatch):
         use_internal_rmbg=False,
     )
 
-    assert len(calls) == 1
+    assert len(calls) == 4
     assert result.shape == images.shape
 
 

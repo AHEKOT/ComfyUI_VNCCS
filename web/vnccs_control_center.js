@@ -456,6 +456,107 @@ function _injectVNCCSControlCenterStyles() {
     gap: 6px;
     margin-top: 2px;
 }
+.vnccs-cc-model-inline-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px 10px;
+    border-top: 1px solid rgba(255,255,255,0.04);
+    background: rgba(8,8,12,0.42);
+}
+.vnccs-cc-model-inline-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #ff8fa3;
+    padding: 0 2px;
+}
+.vnccs-cc-turbo-strip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 42px;
+    padding: 0 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(18,18,26,0.8);
+    transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+    position: relative;
+}
+.vnccs-cc-turbo-strip.is-installed { cursor: pointer; }
+.vnccs-cc-turbo-strip.is-installed:hover {
+    border-color: rgba(255,143,163,0.28);
+}
+.vnccs-cc-turbo-strip.is-active {
+    border-color: rgba(255,143,163,0.46);
+    background: linear-gradient(135deg, rgba(255,143,163,0.14) 0%, rgba(0,214,143,0.08) 100%);
+    box-shadow: inset 0 0 0 1px rgba(255,143,163,0.12);
+}
+.vnccs-cc-turbo-strip-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #e8e8f0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.vnccs-cc-turbo-strip-status {
+    font-size: 8.5px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.vnccs-cc-turbo-strip-status--ok { color: #00d68f; }
+.vnccs-cc-turbo-strip-status--active { color: #ff8fa3; }
+.vnccs-cc-turbo-strip-status--missing { color: #ff4757; }
+.vnccs-cc-turbo-strip-status--progress { color: #b8a9e8; }
+.vnccs-cc-toggle {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 20px;
+    flex-shrink: 0;
+}
+.vnccs-cc-toggle input {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    margin: 0;
+}
+.vnccs-cc-toggle-track {
+    position: absolute;
+    inset: 0;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.08);
+    transition: border-color 0.16s ease, background 0.16s ease;
+}
+.vnccs-cc-toggle-thumb {
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    border-radius: 999px;
+    left: 3px;
+    top: 3px;
+    background: #cfcfe6;
+    transition: transform 0.16s ease, background 0.16s ease;
+}
+.vnccs-cc-toggle input:checked ~ .vnccs-cc-toggle-track {
+    border-color: rgba(255,143,163,0.42);
+    background: rgba(255,143,163,0.16);
+}
+.vnccs-cc-toggle input:checked ~ .vnccs-cc-toggle-thumb {
+    transform: translateX(14px);
+    background: #ff8fa3;
+}
 .vnccs-cc-model-card-footer--stack {
     flex-direction: column;
     align-items: stretch;
@@ -1028,6 +1129,11 @@ function _injectVNCCSControlCenterStyles() {
     border-color: rgba(255,170,0,0.25);
     color: #ffaa00;
 }
+.vnccs-cc-pill--warning {
+    background: rgba(255,170,0,0.08);
+    border-color: rgba(255,170,0,0.25);
+    color: #ffaa00;
+}
 .vnccs-cc-update-banner {
     display: flex;
     align-items: center;
@@ -1160,22 +1266,37 @@ class VNCCSControlCenterWidget {
         return (this.node.inputs ?? []).findIndex(input => input?.name === "model");
     }
 
+    _getCustomClipInputIndex() {
+        return (this.node.inputs ?? []).findIndex(input => input?.name === "clip");
+    }
+
+    _getCustomVaeInputIndex() {
+        return (this.node.inputs ?? []).findIndex(input => input?.name === "vae");
+    }
+
     _syncCustomModelInput() {
         const selectedType = this.state.selected_type || this._getSelectedType();
-        const inputIndex = this._getCustomModelInputIndex();
+        const isCustom = selectedType === "custom";
 
-        if (selectedType === "custom") {
-            if (inputIndex === -1) {
-                this.node.addInput("model", "MODEL");
-                this.node.setDirtyCanvas(true, true);
+        const sync = (name, type, getIndex, shouldShow) => {
+            const inputIndex = getIndex.call(this);
+            if (shouldShow) {
+                if (inputIndex === -1) {
+                    this.node.addInput(name, type);
+                    this.node.setDirtyCanvas(true, true);
+                }
+                return;
             }
-            return;
-        }
-
-        if (inputIndex !== -1) {
+            if (inputIndex === -1) {
+                return;
+            }
             this.node.removeInput(inputIndex);
             this.node.setDirtyCanvas(true, true);
-        }
+        };
+
+        sync("model", "MODEL", this._getCustomModelInputIndex, isCustom);
+        sync("clip", "CLIP", this._getCustomClipInputIndex, isCustom);
+        sync("vae", "VAE", this._getCustomVaeInputIndex, isCustom);
     }
 
     _setSelectedType(nextType) {
@@ -1304,13 +1425,6 @@ class VNCCSControlCenterWidget {
         return this._metaType(entry).toLowerCase() === "turbolora";
     }
 
-    _qwenFourStepCfgOne() {
-        const p = this.state.model_params ?? {};
-        const steps = Number(p.steps ?? DEFAULT_MODEL_STEPS);
-        const cfg = Number(p.cfg ?? DEFAULT_MODEL_CFG);
-        return this._isQwenFamily() && steps === 4 && Math.abs(cfg - 1) < 1e-6;
-    }
-
     _compatibleTurboLoras() {
         const selectedKind = this._selectedKind();
         return (this.config?.lora || []).filter(entry =>
@@ -1326,36 +1440,24 @@ class VNCCSControlCenterWidget {
         }) || entries[0] || null;
     }
 
-    _ensureRequiredTurboLora({ persist = true } = {}) {
-        if (!this._qwenFourStepCfgOne()) return false;
-        const turboEntries = this._compatibleTurboLoras();
-        if (!turboEntries.length) return false;
+    _setTurboPreset(enabled) {
+        if (!this.state.model_params) this.state.model_params = {};
+        const params = this.state.model_params;
 
-        const turboNames = new Set(turboEntries.map(entry => entry.name));
-        const alreadyActive = (this.state.loras ?? []).some(lora =>
-            turboNames.has(lora?.name) && lora.auto_apply === true
-        );
-        if (alreadyActive) return false;
-
-        const target = this._preferredTurboLora();
-        if (!target) return false;
-
-        if (!this.state.loras) this.state.loras = [];
-        for (const name of turboNames) {
-            const idx = this.state.loras.findIndex(lora => lora.name === name);
-            if (idx >= 0) {
-                this.state.loras[idx].auto_apply = name === target.name;
-                this.state.loras[idx].strength = 1.0;
-            } else {
-                this.state.loras.push({
-                    name,
-                    auto_apply: name === target.name,
-                    strength: 1.0,
-                });
-            }
+        if (enabled) {
+            params.turbo_previous_settings = {
+                steps: params.steps ?? DEFAULT_MODEL_STEPS,
+                cfg: params.cfg ?? DEFAULT_MODEL_CFG,
+            };
+            params.steps = 4;
+            params.cfg = 1.0;
+            return;
         }
-        if (persist) this._saveState();
-        return true;
+
+        const previous = params.turbo_previous_settings || {};
+        if (previous.steps !== undefined) params.steps = previous.steps;
+        if (previous.cfg !== undefined) params.cfg = previous.cfg;
+        params.turbo_previous_settings = null;
     }
 
     _isHelperLora(entry) {
@@ -1689,19 +1791,20 @@ class VNCCSControlCenterWidget {
     _makePill(name, version, state, extra = "") {
         const p = document.createElement("span");
         p.className = `vnccs-cc-pill vnccs-cc-pill--${state}`;
-        const icons = { ok: "●", update: "↑", error: "✕", loading: "…", dup: "⚠", partial: "⚠" };
+        const icons = { ok: "●", update: "↑", error: "✕", loading: "…", dup: "⚠", partial: "⚠", warning: "⚠" };
         p.textContent = version
             ? `${name} v${version} ${icons[state] ?? ""}${extra ? " " + extra : ""}`
             : `${name} ${icons[state] ?? ""}${extra ? " " + extra : ""}`;
         if (state === "update") p.title = `Update available: ${extra}`;
         if (state === "dup")   p.title = `Duplicate install detected: ${extra}`;
         if (state === "partial") p.title = extra || "Installed but node classes are not loaded";
+        if (state === "warning") p.title = extra || "Installed with warnings";
         if (state === "error") p.title = extra || "Module not found";
         return p;
     }
 
     _updatePill(pillEl, name, version, state, extra = "") {
-        const icons = { ok: "●", update: "↑", error: "✕", loading: "…", dup: "⚠", partial: "⚠" };
+        const icons = { ok: "●", update: "↑", error: "✕", loading: "…", dup: "⚠", partial: "⚠", warning: "⚠" };
         pillEl.className = `vnccs-cc-pill vnccs-cc-pill--${state}`;
         pillEl.textContent = version
             ? `${name} v${version} ${icons[state] ?? ""}${extra ? " " + extra : ""}`
@@ -1709,6 +1812,7 @@ class VNCCSControlCenterWidget {
         if (state === "update") pillEl.title = `Update available: v${extra}`;
         if (state === "dup")   pillEl.title = `Duplicate install: ${extra}`;
         if (state === "partial") pillEl.title = extra || "Installed but node classes are not loaded";
+        if (state === "warning") pillEl.title = extra || "Installed with warnings";
         if (state === "error") pillEl.title = extra || "Module not found";
     }
 
@@ -1894,10 +1998,16 @@ class VNCCSControlCenterWidget {
             const label = info.label || key;
             const pill = this._ensureDependencyPill(key, label);
             const missing = Array.isArray(info.missing_nodes) ? info.missing_nodes : [];
-            const detail = missing.length ? `missing: ${missing.join(", ")}` : (info.folder ? `folder: ${info.folder}` : "");
+            const loader = info.loader || {};
+            const loaderDetail = loader.folder || loader.module || loader.file || "";
+            const detail = missing.length ? `missing: ${missing.join(", ")}` : (info.warning || (loaderDetail ? `loader: ${loaderDetail}` : (info.folder ? `folder: ${info.folder}` : "")));
             if (info.status === "ok") {
                 this._updatePill(pill, label, null, "ok");
                 pill.title = detail || "Installed";
+            } else if (info.status === "warning") {
+                this._updatePill(pill, label, null, "warning", detail);
+                pill.title = detail || "Installed with warnings";
+                updateNeeded.push(`${label}: ${info.warning || "installed with warnings"}`);
             } else if (info.status === "partial") {
                 this._updatePill(pill, label, null, "partial");
                 pill.title = detail || "installed but not loaded";
@@ -1905,7 +2015,7 @@ class VNCCSControlCenterWidget {
                 this._updatePill(pill, label, null, "error");
                 pill.title = detail || "not installed";
             }
-            if (info.status !== "ok") {
+            if (info.status !== "ok" && info.status !== "warning") {
                 missingDependencies.push({ key, ...info });
             }
         }
@@ -1984,7 +2094,6 @@ class VNCCSControlCenterWidget {
             this.config = window.VNCCS_CC_REGISTRY[repoId];
             this.statusText.textContent = this.config.name || "Control Center";
             if (!this.state.output_slot_names) this.state.output_slot_names = [];
-            this._ensureRequiredTurboLora();
             this._renderAll();
             this._dispatchLoraOptions();
         }
@@ -1996,7 +2105,6 @@ class VNCCSControlCenterWidget {
                 this.config = data;
                 this.statusText.textContent = data.name || "Control Center";
                 if (!this.state.output_slot_names) this.state.output_slot_names = [];
-                this._ensureRequiredTurboLora();
                 this._renderAll();
                 this._dispatchLoraOptions();
             } catch { /* already shown by the original caller */ }
@@ -2025,7 +2133,6 @@ class VNCCSControlCenterWidget {
             localStorage.setItem(cacheKey, JSON.stringify(data));
             this._syncCnetSlots(data);
             await this._refreshDependencyStatus(true);
-            this._ensureRequiredTurboLora();
             this._renderAll();
             this._dispatchLoraOptions();
             window.dispatchEvent(new CustomEvent("vnccs-cc-registry-updated", {
@@ -2070,7 +2177,6 @@ class VNCCSControlCenterWidget {
 
     _renderAll() {
         if (!this.config) return;
-        this._ensureRequiredTurboLora();
         this.scrollArea.innerHTML = "";
 
         // TECH DEBT: legacy Nunchaku error rendering disabled. Delete after
@@ -2113,17 +2219,19 @@ class VNCCSControlCenterWidget {
             isCustom
         );
 
-        // CLIP + VAE — horizontal cards
-        if (!isCP) {
+        // CLIP + VAE — custom mode gets these from external sockets instead.
+        if (!isCP && !isCustom) {
             this._renderClipVaeBlock();
         }
 
         // LORA
-        if (this._isQwenFamily()) {
-            this._renderTurboModelBlock();
-        }
         this._renderLoraBlock();
         this._renderCustomLoraBlock();
+
+        const turboInline = this._buildModelTurboInlineSection();
+        if (turboInline) {
+            this.scrollArea?.querySelector(`.vnccs-cc-block[data-block-key="models"]`)?.appendChild(turboInline);
+        }
 
         // CONTROLNET / OTHER
         this._renderBlock("CONTROLNET", this.config.controlnet, "controlnet",
@@ -2350,11 +2458,7 @@ class VNCCSControlCenterWidget {
     _refreshLoraBlock() {
         if (!this.config) return;
         this._replaceBlock("lora", this._buildLoraBlock());
-        if (this._isQwenFamily()) {
-            this._replaceBlock("turbo_model", this._buildTurboModelBlock());
-        } else {
-            this.scrollArea?.querySelector(`.vnccs-cc-block[data-block-key="turbo_model"]`)?.remove();
-        }
+        this.scrollArea?.querySelector(`.vnccs-cc-block[data-block-key="turbo_model"]`)?.remove();
         this._replaceBlock("custom_lora", this._buildCustomLoraBlock());
     }
 
@@ -2718,7 +2822,7 @@ class VNCCSControlCenterWidget {
 
         const text = document.createElement("div");
         text.className = "vnccs-cc-model-card-placeholder-text";
-        text.textContent = "Pass-through mode is enabled. Connect the desired model to the node input.";
+        text.textContent = "Pass-through mode is enabled. Connect MODEL, CLIP, and VAE to the node inputs.";
         card.appendChild(text);
 
         return card;
@@ -2789,8 +2893,99 @@ class VNCCSControlCenterWidget {
     _modelParamsSave(patch) {
         if (!this.state.model_params) this.state.model_params = {};
         Object.assign(this.state.model_params, patch);
-        this._ensureRequiredTurboLora({ persist: false });
         this._saveState();
+        if (this._isQwenFamily()) this._renderAll();
+    }
+
+    _buildModelTurboInlineSection() {
+        const entries = this._compatibleTurboLoras();
+        if (!entries.length) return null;
+
+        const section = document.createElement("div");
+        section.className = "vnccs-cc-model-inline-section";
+
+        const label = document.createElement("div");
+        label.className = "vnccs-cc-model-inline-label";
+        label.textContent = "Turbo LoRA";
+        section.appendChild(label);
+
+        entries.forEach(entry => section.appendChild(this._renderTurboInlineStrip(entry)));
+        return section;
+    }
+
+    _renderTurboInlineStrip(entry) {
+        const ls = (this.state.loras ?? []).find(l => l.name === entry.name)
+            ?? { name: entry.name, auto_apply: false, strength: 1.0 };
+        const dls = this.dlStatus[`cc_lora_${entry.name}`] ?? {};
+        const status = this._resolveStatus(dls.status, entry.status);
+        const installed = status === "installed";
+        const active = installed && ls.auto_apply === true;
+
+        const row = document.createElement("div");
+        row.className = "vnccs-cc-turbo-strip";
+        row.classList.toggle("is-installed", installed);
+        row.classList.toggle("is-active", active);
+        if (installed) {
+            row.onclick = () => this._selectTurboLora(entry.name, !active);
+        }
+
+        row.appendChild(this._badge(status));
+
+        const name = document.createElement("div");
+        name.className = "vnccs-cc-turbo-strip-name";
+        name.textContent = entry.name;
+        row.appendChild(name);
+
+        const statusLbl = document.createElement("div");
+        statusLbl.className = "vnccs-cc-turbo-strip-status";
+        if (installed) {
+            statusLbl.textContent = active ? "Active" : "Installed";
+            statusLbl.classList.add(active ? "vnccs-cc-turbo-strip-status--active" : "vnccs-cc-turbo-strip-status--ok");
+        } else if (status === "downloading" || status === "queued") {
+            statusLbl.textContent = this._statusLabel(status, dls);
+            statusLbl.classList.add("vnccs-cc-turbo-strip-status--progress");
+        } else {
+            statusLbl.textContent = this._statusLabel(status, dls);
+            statusLbl.classList.add("vnccs-cc-turbo-strip-status--missing");
+        }
+        row.appendChild(statusLbl);
+
+        if (installed) {
+            const toggle = document.createElement("label");
+            toggle.className = "vnccs-cc-toggle";
+            toggle.onclick = event => event.stopPropagation();
+            const input = document.createElement("input");
+            input.type = "checkbox";
+            input.checked = active;
+            input.onchange = event => {
+                event.stopPropagation();
+                this._selectTurboLora(entry.name, event.target.checked);
+            };
+            const track = document.createElement("div");
+            track.className = "vnccs-cc-toggle-track";
+            const thumb = document.createElement("div");
+            thumb.className = "vnccs-cc-toggle-thumb";
+            toggle.append(input, track, thumb);
+            row.appendChild(toggle);
+        } else if (status === "auth_required") {
+            const btn = this._btn("⚠ Enter Key", () => this.showApiKeyDialog("lora", entry));
+            btn.style.color = "#ffaa00";
+            btn.style.borderColor = "rgba(255,170,0,0.4)";
+            btn.onclick = event => {
+                event.stopPropagation();
+                this.showApiKeyDialog("lora", entry);
+            };
+            row.appendChild(btn);
+        } else if (this._isDownloadableStatus(status)) {
+            const btn = this._btn(this._downloadLabel(status), () => this._downloadEntry("lora", entry));
+            btn.onclick = event => {
+                event.stopPropagation();
+                this._downloadEntry("lora", entry);
+            };
+            row.appendChild(btn);
+        }
+
+        return row;
     }
 
     _renderModelParams() {
@@ -3098,6 +3293,10 @@ class VNCCSControlCenterWidget {
             .filter(entry => !entry.custom && this._isTurboLora(entry) && this._sameKind(entry, selectedKind))
             .map(entry => entry.name));
 
+        const wasEnabled = (this.state.loras ?? []).some(lora =>
+            turboNames.has(lora?.name) && lora.auto_apply === true
+        );
+
         if (!this.state.loras) this.state.loras = [];
         for (const turboName of turboNames) {
             const idx = this.state.loras.findIndex(lora => lora.name === turboName);
@@ -3112,8 +3311,15 @@ class VNCCSControlCenterWidget {
                 });
             }
         }
+
+        if (enabled && !wasEnabled) {
+            this._setTurboPreset(true);
+        } else if (!enabled && wasEnabled) {
+            this._setTurboPreset(false);
+        }
+
         this._saveState();
-        this._refreshLoraBlock();
+        this._renderAll();
         this._scheduleDependencyRefresh(true, 120, false);
     }
 

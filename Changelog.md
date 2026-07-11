@@ -1,3 +1,47 @@
+# VNCCS 3.0.1 Changelog
+
+This changelog describes the user-visible changes in version `3.0.1` compared with `3.0.0`.
+It focuses on workflow behavior and UI changes, not internal refactors.
+
+## Headline Changes
+
+- SeedVR upscaling now exposes a color-correction selector in the generator UI.
+- Emotion Studio and Character Creator V2 now use the same seed behavior as Clothes Designer: `seed = 0` can stay fixed, and randomization happens on queue only when random mode is enabled.
+- Illustrious turbo mode now works consistently across Emotion Studio, Character Creator V2, and Control Center: enabling turbo sets `steps = 4` and `cfg = 1`, disabling it restores the previous values.
+- Emotion Studio no longer uses a separate prompt-style selector in the widget header; prompt style is now derived automatically from the selected generation model.
+- Control Center now shows Turbo LoRA as an inline selector in the `MODEL` section instead of a separate `Turbo Model` card.
+
+## Character Generator
+
+- Added a SeedVR color-correction selector with multiple modes such as `lab`, `adain`, `wavelet`, and `none`.
+- Added help text so users can more easily switch away from `lab` when a GPU produces unwanted color shifts.
+
+## Emotion Studio
+
+- Removed the old top-left prompt-style selector from the widget.
+- Prompt style is now chosen automatically from the selected generation mode: `Anima` mode uses the Anima prompt path, while `Illustrious` mode uses the SDXL-style prompt path.
+- The seed field is now shared between Anima and Illustrious profiles so both modes show and use the same seed.
+- Random seed mode now generates a new seed only when the workflow is queued, instead of rewriting the seed immediately in the UI.
+- The Illustrious turbo toggle now stores the previous `steps/cfg`, switches to `4 / 1` while enabled, and restores the saved values when disabled.
+- The LoRA section now stays available for both generation modes and updates its header and card set to match the active mode.
+
+## Character Creator V2
+
+- Seed handling now matches Clothes Designer semantics more closely.
+- Default generation seed values are now initialized to `0` in fixed mode instead of being auto-randomized.
+- Backend seed resolution now respects `seed_mode`, which keeps preview generation, pipe generation, and sampler execution consistent.
+- The Illustrious turbo toggle now behaves like the other updated widgets: it saves previous `steps/cfg`, applies `4 / 1` while active, and restores the earlier values when turned off.
+
+## Control Center
+
+- `CUSTOM` pass-through mode now expects external `MODEL`, `CLIP`, and `VAE` inputs together, instead of showing the normal internal CLIP/VAE asset cards.
+- Turbo LoRA has been moved into the `MODEL` block as a flat inline selector under the model and parameter area.
+- The old standalone `Turbo Model` section has been removed.
+- Turbo is no longer force-enabled just because `steps/cfg` happen to be `4 / 1`.
+- Toggling Turbo LoRA on now saves the current `steps/cfg` and applies `4 / 1`; toggling it off restores the saved values.
+- Hovering the Turbo LoRA selector no longer makes the toggle visually jump.
+- Dependency/setup status can now show warning states more clearly instead of treating every non-OK condition as a hard failure.
+
 # VNCCS 3.0.0 Changelog
 
 This changelog describes the user-visible changes in the current branch compared with `main`.
