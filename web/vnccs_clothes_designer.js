@@ -960,8 +960,61 @@ app.registerExtension({
                         : JSON.stringify(stateWidget?.value ?? {});
 
                     if (!repo_id || !node_state) return null;
-                    return { repo_id, node_state };
+                    let selected_type = "";
+                    try {
+                        selected_type = String(JSON.parse(node_state)?.selected_type || "").toLowerCase();
+                    } catch {
+                        selected_type = "";
+                    }
+                    return { repo_id, node_state, selected_type };
                 };
+
+                const queueConnectedPreview = () => new Promise((resolve, reject) => {
+                    const targetId = String(node.id);
+                    let settled = false;
+                    const cleanup = () => {
+                        clearTimeout(timeout);
+                        api.removeEventListener("vnccs.preview.updated", onPreview);
+                        api.removeEventListener("execution_cached", onCached);
+                        api.removeEventListener("execution_error", onError);
+                        api.removeEventListener("execution_interrupted", onInterrupted);
+                    };
+                    const finish = (callback, value) => {
+                        if (settled) return;
+                        settled = true;
+                        cleanup();
+                        callback(value);
+                    };
+                    const onPreview = (event) => {
+                        if (String(event.detail?.node_id) === targetId) {
+                            finish(resolve, { cached: false });
+                        }
+                    };
+                    const onCached = (event) => {
+                        const cachedNodes = Array.isArray(event.detail?.nodes) ? event.detail.nodes : [];
+                        if (cachedNodes.some(nodeId => String(nodeId) === targetId)) {
+                            finish(resolve, { cached: true });
+                        }
+                    };
+                    const onError = (event) => {
+                        const detail = event.detail || {};
+                        const message = detail.exception_message || detail.error || detail.message || "Preview execution failed.";
+                        finish(reject, new Error(String(message)));
+                    };
+                    const onInterrupted = () => {
+                        finish(reject, new Error("Preview execution was interrupted."));
+                    };
+                    const timeout = setTimeout(
+                        () => finish(reject, new Error("Preview execution timed out.")),
+                        15 * 60 * 1000,
+                    );
+
+                    api.addEventListener("vnccs.preview.updated", onPreview);
+                    api.addEventListener("execution_cached", onCached);
+                    api.addEventListener("execution_error", onError);
+                    api.addEventListener("execution_interrupted", onInterrupted);
+                    Promise.resolve(app.queuePrompt(0, 1, [targetId])).catch(error => finish(reject, error));
+                });
 
                 const getConnectedControlCenterWidget = () => {
                     const input = node?.inputs?.find((item) => item.name === "pipe") ?? node?.inputs?.[0];
@@ -1545,26 +1598,35 @@ app.registerExtension({
                     `;
                     container.appendChild(loadingOverlay);
 
-                    saveCostumeToBackend();
+                    await saveCostumeToBackend();
                     saveState();
                     btnGen.innerText = "GENERATING..."; btnGen.disabled = true;
                     try {
-                        const r = await api.fetchApi("/vnccs/control_center/clothes_preview", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                                ...controlCenter,
-                                clothes_state: state,
-                            })
-                        });
-                        if (r.ok) {
-                            const d = await r.json();
-                            if (d.image) {
-                                els.previewImg.src = "data:image/png;base64," + d.image;
-                                els.previewImg.style.display = "block";
-                                els.placeholder.style.display = "none";
+                        if (controlCenter.selected_type === "custom") {
+                            const previewResult = await queueConnectedPreview();
+                            if (previewResult?.cached) {
+                                await updatePreviewImage(true);
                             }
-                        } else showInfo("Error", await r.text() || "Failed");
+                        } else {
+                            const r = await api.fetchApi("/vnccs/control_center/clothes_preview", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                    ...controlCenter,
+                                    clothes_state: state,
+                                })
+                            });
+                            if (r.ok) {
+                                const d = await r.json();
+                                if (d.image) {
+                                    els.previewImg.src = "data:image/png;base64," + d.image;
+                                    els.previewImg.style.display = "block";
+                                    els.placeholder.style.display = "none";
+                                }
+                            } else {
+                                showInfo("Error", await r.text() || "Failed");
+                            }
+                        }
                     } catch (e) { showInfo("Error", e.toString()); }
                     finally {
                         loadingOverlay.remove();
@@ -1616,7 +1678,12 @@ app.registerExtension({
                     prevButton: spritePrevBtn,
                     nextButton: spriteNextBtn,
                     countLabel: spriteCount,
-                    onLoaded: (_url, previewState) => {
+                    onLoaded: (url, previewState) => {
+                        // A generated preview is only a visual fallback. Keep the
+                        // source sprite selection that was used to produce it so
+                        // the following full workflow has the same widget_data
+                        // signature and can reuse the preview cache.
+                        if (url.includes("force_cache=true")) return;
                         if (previewState.count > 0) {
                             state.selected_preview_sprite = {
                                 character: previewState.character,
@@ -1795,8 +1862,6 @@ app.registerExtension({
                     } catch (e) { console.warn("[VNCCS] ClothesDesigner: Error in preview update", e); }
 
                     if (forceCache) {
-                        state.selected_preview_sprite = null;
-                        saveState();
                         spritePreviewNavigator?.showFallback(url);
                     } else {
                         await spritePreviewNavigator?.load(state.character, {

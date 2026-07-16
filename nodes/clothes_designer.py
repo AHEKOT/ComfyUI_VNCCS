@@ -307,6 +307,7 @@ class ClothesDesigner:
 
     RETURN_TYPES = ("IMAGE", "STRING", "*")
     RETURN_NAMES = ("character", "sheets_path", "background")
+    OUTPUT_NODE = True
     FUNCTION = "process"
     CATEGORY = "VNCCS"
 

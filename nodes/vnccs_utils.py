@@ -1970,22 +1970,35 @@ class VNCCSChromaKey:
             device=_select_torch_device(),
             precision="bf16",
         )
-        result = _call_registered_node(
-            ["Sam3ImageSegmentation", "easy sam3ImageSegmentation"],
-            method_names=("segment", "segment_image", "process", "execute"),
-            sam3_model=sam3_model,
-            images=image,
-            prompt="face, clothes, accessories, hat, boots, eyes",
-            threshold=0.40,
-            keep_model_loaded=False,
-            add_background="none",
-            detection_limit=-1,
-            coordinates_positive=None,
-            coordinates_negative=None,
-            bboxes=None,
-            mask=None,
-        )
-        return _normalize_mask_batch(result, target_hw=target_hw, batch_size=int(image.shape[0]), stage="SAM3 recovery")
+        batch_size = int(image.shape[0])
+        recovery_masks = []
+        # Older Easy-SAM3 releases stack variable-length detection boxes across
+        # a batch. Segment frames individually while keeping the model loaded.
+        for index in range(batch_size):
+            result = _call_registered_node(
+                ["Sam3ImageSegmentation", "easy sam3ImageSegmentation"],
+                method_names=("segment", "segment_image", "process", "execute"),
+                sam3_model=sam3_model,
+                images=image[index:index + 1],
+                prompt="face, clothes, accessories, hat, boots, eyes",
+                threshold=0.40,
+                keep_model_loaded=index < batch_size - 1,
+                add_background="none",
+                detection_limit=-1,
+                coordinates_positive=None,
+                coordinates_negative=None,
+                bboxes=None,
+                mask=None,
+            )
+            recovery_masks.append(
+                _normalize_mask_batch(
+                    result,
+                    target_hw=target_hw,
+                    batch_size=1,
+                    stage=f"SAM3 recovery image {index + 1}/{batch_size}",
+                )
+            )
+        return torch.cat(recovery_masks, dim=0)
 
     def _restore_recovery_details(
         self,

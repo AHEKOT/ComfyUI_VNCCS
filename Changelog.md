@@ -1,3 +1,56 @@
+# VNCCS 3.0.2 Changelog
+
+This changelog describes the changes in version `3.0.2` compared with `3.0.1`.
+The release focuses on Clothes Designer preview execution, Control Center catalog freshness, and SAM3 batch stability.
+
+## Headline Changes
+
+- Clothes Designer previews now work with the `CUSTOM` Control Center configuration by executing the connected workflow branch, so externally supplied `MODEL`, `CLIP`, and `VAE` inputs are used correctly.
+- Clothes Designer is now a valid ComfyUI partial-execution target, fixing the `Prompt has no outputs` error when generating a custom preview.
+- SAM3 detail recovery now processes image batches one image at a time, fixing tensor-stack failures when different images produce different numbers of detections.
+- The bundled Control Center catalog has been updated to the current model list and is automatically refreshed after a newer catalog is loaded from Hugging Face.
+
+## Clothes Designer
+
+- `Generate Preview` in `CUSTOM` mode now queues only the graph required to execute the connected Clothes Designer node instead of calling the standalone preview endpoint.
+- Custom previews now use the model stack and settings supplied through the connected Control Center pipe.
+- Preview generation waits for the `vnccs.preview.updated` event before refreshing the displayed image.
+- Execution errors, interruptions, and preview timeouts are now reported by the Clothes Designer UI.
+- Costume state is saved before preview execution begins, preventing the queued workflow from using stale widget data.
+- Clothes Designer is now marked as an output node so ComfyUI accepts it as the destination of partial graph execution.
+- A generated custom preview now preserves its source-sprite input signature, allowing the following full workflow run to reuse the preview cache instead of generating the same image again.
+- Repeating a cached custom preview now completes immediately instead of leaving the `Generating preview` overlay active while ComfyUI reports a `0.00 seconds` execution.
+
+## Control Center and Model Catalog
+
+- Updated the packaged `control_center.json` to match the current remote catalog.
+- Added six Qwen Image Edit 2511 Nunchaku model variants:
+  - Balance FP4 and INT4.
+  - Best Quality FP4 and INT4.
+  - Ultimate Speed FP4 and INT4.
+- Updated the active `VNCCS Clothes Core` catalog entry to `RC3.7` (`0.3.7`).
+- Removed the obsolete `VNCCS Emotion Core` entry from the current catalog.
+- A successfully downloaded Control Center catalog is now written back to the packaged fallback file, preventing an older bundled catalog from reappearing after model updates or remote access failures.
+- Packaged catalog updates use a lock and atomic file replacement so concurrent reads cannot observe a partially written JSON file.
+- The packaged file is left untouched when the downloaded catalog has not changed, and synchronization failures no longer prevent Control Center from using the downloaded data.
+
+## Chroma Key and SAM3 Recovery
+
+- SAM3 recovery segmentation now runs separately for every image in a batch.
+- This avoids `torch.stack` failures in Easy SAM3 when detection-box counts or shapes differ between batch items.
+- The SAM3 model is loaded once, retained between images, and released after the final image in the batch.
+- Recovered masks are normalized per image and concatenated back into the original batch order.
+
+## Reliability and Maintenance
+
+- Added regression coverage for atomic packaged-catalog synchronization and remote catalog refresh.
+- Added checks that the bundled catalog selects Clothes Core `0.3.7` and no longer exposes the obsolete Emotion Core entry.
+- Added frontend contract coverage for custom partial preview execution.
+- Added a regression check that Clothes Designer remains a valid output target.
+- Added batch recovery coverage that reproduces the variable-detection SAM3 failure.
+- Updated test environment model-path stubs for the current Control Center behavior.
+- Updated package version metadata from `3.0.1` to `3.0.2`.
+
 # VNCCS 3.0.1 Changelog
 
 This changelog describes the user-visible changes in version `3.0.1` compared with `3.0.0`.
@@ -167,4 +220,3 @@ It focuses on workflow and system behavior, not on internal code changes.
 - Old character sheets can be converted into the new sprite-based format.
 - Migration can also repair sprite canvas mismatches so old assets behave better in the new workflow.
 - Users are expected to verify migrated characters before deleting old folders.
-

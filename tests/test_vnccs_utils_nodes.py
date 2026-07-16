@@ -11,10 +11,10 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+import nodes.vnccs_utils as vnccs_utils
 from nodes.vnccs_utils import (
     tensor2pil, pil2tensor, _ensure_float01,
     _unwrap_node_result,
-    VNCCS_QuadSplitter as _QS,  # also tested in sheet_manager; skip here
     VNCCS_ClothesTemplates,
     VNCCS_VLAnalyzer,
     _build_vl_analyzer_prompt,
@@ -102,6 +102,41 @@ def test_sam3_recovery_restores_only_shrunk_mask_area():
     assert restored_rgba[5, 5, 0].item() == pytest.approx(1.0)
     assert restored_alpha[2, 2].item() == pytest.approx(0.0)
     assert restored_rgba[2, 2, 0].item() == pytest.approx(0.0)
+
+
+def test_sam3_recovery_segments_batch_one_image_at_a_time(monkeypatch):
+    node = VNCCSChromaKey()
+    image = torch.zeros((3, 6, 8, 3), dtype=torch.float32)
+    model = object()
+    loader_calls = []
+    segment_calls = []
+
+    monkeypatch.setattr(vnccs_utils, "_ensure_sam3_model_available", lambda: "sam3.safetensors")
+
+    def fake_call(class_names, method_names=None, **kwargs):
+        if class_names[0] == "LoadSam3Model":
+            loader_calls.append(kwargs["model"])
+            return model
+
+        assert kwargs["sam3_model"] is model
+        if kwargs["images"].shape[0] != 1:
+            raise RuntimeError(
+                "stack expects each tensor to be equal size, "
+                "but got [3, 4] at entry 0 and [6, 4] at entry 2"
+            )
+        assert kwargs["images"].shape == (1, 6, 8, 3)
+        segment_calls.append(kwargs["keep_model_loaded"])
+        mask_value = len(segment_calls) / 10.0
+        return torch.full((1, 6, 8), mask_value, dtype=torch.float32)
+
+    monkeypatch.setattr(vnccs_utils, "_call_registered_node", fake_call)
+
+    masks = node._run_sam3_recovery_masks(image, target_hw=(6, 8))
+
+    assert masks.shape == (3, 6, 8)
+    assert [masks[index, 0, 0].item() for index in range(3)] == pytest.approx([0.1, 0.2, 0.3])
+    assert loader_calls == ["sam3.safetensors"]
+    assert segment_calls == [True, True, False]
 
 
 def test_connected_key_fringe_suppression_is_not_used_by_chroma_key(monkeypatch):

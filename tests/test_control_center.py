@@ -1,5 +1,6 @@
 """Tests for nodes/vnccs_control_center.py — pure helper functions."""
 
+import json
 import os
 import sys
 
@@ -24,6 +25,9 @@ from nodes.vnccs_control_center import (
     _enrich_config_entries,
     _merge_custom_loras,
     _remove_custom_lora,
+    _sync_packaged_cc_config,
+    _get_cc_config,
+    _CC_CONFIG_CACHE,
     _describe_gguf_loader,
     _load_gguf,
     VNCCSPipeProxy,
@@ -323,6 +327,142 @@ class TestEnrichConfigEntries:
 
         assert result[0]["status"] == "installed"
         assert result[0]["active_version"] == "0.3.5"
+
+
+class TestPackagedConfigSync:
+    def test_updates_packaged_catalog_atomically(self, tmp_path, monkeypatch):
+        target = tmp_path / "control_center.json"
+        target.write_text('{"name": "old"}\n', encoding="utf-8")
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._get_packaged_cc_path",
+            lambda: str(target),
+        )
+
+        updated = {
+            "name": "current",
+            "lora": [
+                {
+                    "name": "VNCCS Clothes Core",
+                    "version": "0.3.7",
+                    "local_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.7.safetensors",
+                }
+            ],
+        }
+
+        assert _sync_packaged_cc_config("MIUProject/VNCCS_v3.0", updated) is True
+        assert target.read_text(encoding="utf-8").endswith("\n")
+        assert json.loads(target.read_text(encoding="utf-8")) == updated
+        assert list(tmp_path.glob("control_center.json.tmp.*")) == []
+        assert _sync_packaged_cc_config("MIUProject/VNCCS_v3.0", updated) is False
+
+    def test_ignores_unrelated_repositories(self, tmp_path, monkeypatch):
+        target = tmp_path / "control_center.json"
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._get_packaged_cc_path",
+            lambda: str(target),
+        )
+
+        assert _sync_packaged_cc_config("someone/else", {"name": "remote"}) is False
+        assert not target.exists()
+
+    def test_remote_config_refreshes_packaged_fallback(self, tmp_path, monkeypatch):
+        target = tmp_path / "control_center.json"
+        remote = tmp_path / "remote_control_center.json"
+        target.write_text('{"name": "old"}\n', encoding="utf-8")
+        remote_data = {
+            "name": "current",
+            "models": [],
+            "clip": [],
+            "vae": [],
+            "lora": [],
+            "controlnet": [],
+            "other": [],
+        }
+        remote.write_text(json.dumps(remote_data), encoding="utf-8")
+
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._get_packaged_cc_path",
+            lambda: str(target),
+        )
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center.hf_hub_download",
+            lambda **kwargs: str(remote),
+        )
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._load_custom_loras",
+            lambda: [],
+        )
+        _CC_CONFIG_CACHE.clear()
+
+        try:
+            loaded = _get_cc_config("MIUProject/VNCCS_v3.0", prefer_remote=True)
+        finally:
+            _CC_CONFIG_CACHE.clear()
+
+        assert loaded["name"] == "current"
+        assert json.loads(target.read_text(encoding="utf-8")) == remote_data
+
+    def test_packaged_catalog_uses_current_clothes_core(self):
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "control_center.json")
+        with open(path, "r", encoding="utf-8") as handle:
+            config = _dedupe_config_by_name(json.load(handle))
+
+        clothes_core = next(
+            entry for entry in config["lora"]
+            if entry["name"] == "VNCCS Clothes Core"
+        )
+
+        assert clothes_core["version"] == "0.3.7"
+        assert clothes_core["local_path"].endswith("VNCCS_QIE2511_ClothesCore-RC3.7.safetensors")
+        assert all(entry["name"] != "VNCCS Emotion Core" for entry in config["lora"])
+
+
+class TestClothesPreviewFrontendContract:
+    def test_custom_preview_uses_partial_graph_execution(self):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "web",
+            "vnccs_clothes_designer.js",
+        )
+        with open(path, "r", encoding="utf-8") as handle:
+            source = handle.read()
+
+        assert 'controlCenter.selected_type === "custom"' in source
+        assert "app.queuePrompt(0, 1, [targetId])" in source
+        assert 'api.addEventListener("vnccs.preview.updated", onPreview)' in source
+        assert 'api.addEventListener("execution_cached", onCached)' in source
+        assert "cachedNodes.some(nodeId => String(nodeId) === targetId)" in source
+
+    def test_clothes_designer_is_partial_execution_output(self):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "nodes",
+            "clothes_designer.py",
+        )
+        with open(path, "r", encoding="utf-8") as handle:
+            source = handle.read()
+
+        class_source = source.split("class ClothesDesigner:", 1)[1]
+        assert "OUTPUT_NODE = True" in class_source
+
+    def test_generated_preview_preserves_cache_input_signature(self):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "web",
+            "vnccs_clothes_designer.js",
+        )
+        with open(path, "r", encoding="utf-8") as handle:
+            source = handle.read()
+
+        assert 'if (url.includes("force_cache=true")) return;' in source
+        force_cache_branch = source.split("if (forceCache) {", 1)[1].split("} else {", 1)[0]
+        assert "selected_preview_sprite = null" not in force_cache_branch
+        custom_preview_branch = source.split(
+            'if (controlCenter.selected_type === "custom") {',
+            1,
+        )[1].split("} else {", 1)[0]
+        assert "if (previewResult?.cached)" in custom_preview_branch
+        assert custom_preview_branch.count("updatePreviewImage(true)") == 1
 
 
 # ── custom LoRA helpers ──────────────────────────────────────────────────────

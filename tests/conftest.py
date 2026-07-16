@@ -30,6 +30,7 @@ comfy_samplers.KSampler = _KSamplerStub
 # ── folder_paths ──────────────────────────────────────────────────────────────
 folder_paths = _make_stub("folder_paths")
 folder_paths.base_path = "/tmp/comfyui"
+folder_paths.models_dir = "/tmp/comfyui/models"
 folder_paths.get_output_directory = lambda: "/tmp/comfyui/output"
 folder_paths.get_filename_list = lambda _: []
 folder_paths.get_full_path = lambda *_: None
