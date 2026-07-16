@@ -16,20 +16,11 @@ The release focuses on Clothes Designer preview execution, Control Center catalo
 - Custom previews now use the model stack and settings supplied through the connected Control Center pipe.
 - Preview generation waits for the `vnccs.preview.updated` event before refreshing the displayed image.
 - Execution errors, interruptions, and preview timeouts are now reported by the Clothes Designer UI.
-- Costume state is saved before preview execution begins, preventing the queued workflow from using stale widget data.
 - Clothes Designer is now marked as an output node so ComfyUI accepts it as the destination of partial graph execution.
-- A generated custom preview now preserves its source-sprite input signature, allowing the following full workflow run to reuse the preview cache instead of generating the same image again.
-- Repeating a cached custom preview now completes immediately instead of leaving the `Generating preview` overlay active while ComfyUI reports a `0.00 seconds` execution.
 
 ## Control Center and Model Catalog
 
 - Updated the packaged `control_center.json` to match the current remote catalog.
-- Added six Qwen Image Edit 2511 Nunchaku model variants:
-  - Balance FP4 and INT4.
-  - Best Quality FP4 and INT4.
-  - Ultimate Speed FP4 and INT4.
-- Updated the active `VNCCS Clothes Core` catalog entry to `RC3.7` (`0.3.7`).
-- Removed the obsolete `VNCCS Emotion Core` entry from the current catalog.
 - A successfully downloaded Control Center catalog is now written back to the packaged fallback file, preventing an older bundled catalog from reappearing after model updates or remote access failures.
 - Packaged catalog updates use a lock and atomic file replacement so concurrent reads cannot observe a partially written JSON file.
 - The packaged file is left untouched when the downloaded catalog has not changed, and synchronization failures no longer prevent Control Center from using the downloaded data.
