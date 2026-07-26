@@ -1803,6 +1803,9 @@ class VNCCS_RMBG2:
 class VNCCSChromaKey:
     """VNCCS Chroma Key - soft chroma key with edge decontamination."""
 
+    SAM3_RECOVERY_ERODE_RADIUS = 4
+    SAM3_RECOVERY_MIN_FOREGROUND_OVERLAP = 0.55
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -1851,6 +1854,7 @@ class VNCCSChromaKey:
         screen_mode,
         output_mode,
         use_sam3_recovery_mask=False,
+        sam3_settings=None,
     ):
         image = _normalize_image_batch(image, stage="chroma key input")
         if _as_bool(use_sam3_recovery_mask, False):
@@ -1867,6 +1871,7 @@ class VNCCSChromaKey:
                 matte_method=matte_method,
                 screen_mode=screen_mode,
                 output_mode=output_mode,
+                sam3_settings=sam3_settings,
             )
 
         if len(image.shape) == 4:
@@ -1923,10 +1928,12 @@ class VNCCSChromaKey:
         matte_method,
         screen_mode,
         output_mode,
+        sam3_settings=None,
     ):
+        sam3_settings = sam3_settings if isinstance(sam3_settings, dict) else {}
         batch = _normalize_image_batch(image, stage="sam3 recovery chroma key input")
         target_hw = (int(batch.shape[1]), int(batch.shape[2]))
-        recovery_masks = self._run_sam3_recovery_masks(batch, target_hw)
+        recovery_candidates = self._run_sam3_recovery_masks(batch, target_hw, sam3_settings)
 
         rgba_list = []
         matte_list = []
@@ -1946,13 +1953,19 @@ class VNCCSChromaKey:
                 screen_mode,
                 output_mode,
             )
+            recovery_mask = self._select_sam3_recovery_mask(
+                recovery_candidates[index],
+                alpha,
+                sam3_settings,
+            )
             rgba, alpha, debug = self._restore_recovery_details(
                 original=frame,
                 rgba=rgba,
                 alpha=alpha,
                 debug=debug,
-                recovery_mask=recovery_masks[index],
+                recovery_mask=recovery_mask,
                 output_mode=output_mode,
+                erode_radius=int(sam3_settings.get("sam3_erode_radius", self.SAM3_RECOVERY_ERODE_RADIUS)),
             )
             rgba_list.append(rgba)
             matte_list.append(alpha)
@@ -1960,18 +1973,21 @@ class VNCCSChromaKey:
 
         return (torch.stack(rgba_list), torch.stack(matte_list), torch.stack(debug_list))
 
-    def _run_sam3_recovery_masks(self, image: torch.Tensor, target_hw):
-        sam3_model_name = _ensure_sam3_model_available()
+    def _run_sam3_recovery_masks(self, image: torch.Tensor, target_hw, settings=None):
+        settings = settings if isinstance(settings, dict) else {}
+        sam3_model_name = str(settings.get("sam3_model", "") or "").strip() or _ensure_sam3_model_available()
+        requested_device = str(settings.get("sam3_device", "auto") or "auto").strip()
+        device = _select_torch_device() if requested_device.lower() == "auto" else requested_device
         sam3_model = _call_registered_node(
             ["LoadSam3Model", "easy sam3ModelLoader"],
             method_names=("load_model", "loadmodel", "load"),
             model=sam3_model_name,
-            segmentor="image",
-            device=_select_torch_device(),
-            precision="bf16",
+            segmentor=str(settings.get("sam3_segmentor", "image") or "image"),
+            device=device,
+            precision=str(settings.get("sam3_precision", "bf16") or "bf16"),
         )
         batch_size = int(image.shape[0])
-        recovery_masks = []
+        recovery_candidates = []
         # Older Easy-SAM3 releases stack variable-length detection boxes across
         # a batch. Segment frames individually while keeping the model loaded.
         for index in range(batch_size):
@@ -1980,25 +1996,94 @@ class VNCCSChromaKey:
                 method_names=("segment", "segment_image", "process", "execute"),
                 sam3_model=sam3_model,
                 images=image[index:index + 1],
-                prompt="face, clothes, accessories, hat, boots, eyes",
-                threshold=0.40,
+                prompt=str(settings.get("sam3_prompt", "face, clothes, accessories, hat, boots, eyes")),
+                threshold=float(settings.get("sam3_threshold", 0.40)),
                 keep_model_loaded=index < batch_size - 1,
-                add_background="none",
-                detection_limit=-1,
+                add_background=str(settings.get("sam3_add_background", "none") or "none"),
+                detection_limit=int(settings.get("sam3_detection_limit", -1)),
                 coordinates_positive=None,
                 coordinates_negative=None,
                 bboxes=None,
                 mask=None,
             )
-            recovery_masks.append(
-                _normalize_mask_batch(
+            recovery_candidates.append(
+                self._sam3_recovery_candidates_from_result(
                     result,
                     target_hw=target_hw,
-                    batch_size=1,
                     stage=f"SAM3 recovery image {index + 1}/{batch_size}",
                 )
             )
-        return torch.cat(recovery_masks, dim=0)
+        return recovery_candidates
+
+    def _sam3_recovery_candidates_from_result(self, result, target_hw, stage="SAM3 recovery"):
+        raw_masks = None
+        if isinstance(result, (tuple, list)) and len(result) > 2 and torch.is_tensor(result[2]):
+            raw_masks = result[2]
+        if raw_masks is None:
+            combined = _normalize_mask_batch(
+                result,
+                target_hw=target_hw,
+                batch_size=1,
+                stage=stage,
+            )
+            return combined[:1]
+
+        masks = _ensure_float01(raw_masks.detach() if raw_masks.requires_grad else raw_masks)
+        if masks.ndim == 2:
+            masks = masks.unsqueeze(0)
+        elif masks.ndim == 4:
+            if masks.shape[1] == 1:
+                masks = masks[:, 0]
+            elif masks.shape[-1] == 1:
+                masks = masks[..., 0]
+            elif masks.shape[0] == 1:
+                masks = masks[0]
+        if masks.ndim != 3:
+            raise RuntimeError(f"VNCCS Chroma Key: {stage} individual mask shape is unsupported")
+        if tuple(masks.shape[-2:]) != tuple(target_hw):
+            masks = F.interpolate(
+                masks.unsqueeze(1),
+                size=target_hw,
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(1)
+        return masks.clamp(0.0, 1.0)
+
+    def _select_sam3_recovery_mask(
+        self,
+        candidates: torch.Tensor,
+        alpha: torch.Tensor,
+        settings=None,
+    ) -> torch.Tensor:
+        settings = settings if isinstance(settings, dict) else {}
+        min_overlap = max(
+            0.0,
+            min(
+                1.0,
+                float(settings.get("sam3_min_foreground_overlap", self.SAM3_RECOVERY_MIN_FOREGROUND_OVERLAP)),
+            ),
+        )
+        candidates = candidates.to(device=alpha.device, dtype=alpha.dtype).clamp(0.0, 1.0)
+        confident_foreground = (alpha >= 0.5).to(dtype=alpha.dtype)
+        kept = []
+        for candidate in candidates:
+            # Accept or reject each SAM3 object as a whole. Do not clip it to
+            # the chroma matte: that would manufacture a visible contour.
+            hard_candidate = (candidate >= 0.5).to(dtype=alpha.dtype)
+            candidate_area = hard_candidate.sum()
+            if float(candidate_area.item()) <= 0:
+                continue
+            foreground_overlap = (hard_candidate * confident_foreground).sum() / candidate_area
+            if float(foreground_overlap.item()) >= min_overlap:
+                kept.append(candidate)
+        print(
+            f"[VNCCS Chroma Key] SAM3 recovery kept {len(kept)}/{int(candidates.shape[0])} "
+            "object mask(s) after foreground-overlap filtering",
+            flush=True,
+        )
+        if not kept:
+            return torch.zeros_like(alpha)
+        return torch.stack(kept, dim=0).amax(dim=0).clamp(0.0, 1.0)
 
     def _restore_recovery_details(
         self,
@@ -2008,14 +2093,24 @@ class VNCCSChromaKey:
         debug: torch.Tensor,
         recovery_mask: torch.Tensor,
         output_mode: str,
+        erode_radius=None,
     ):
-        shrunk = _morph(recovery_mask.clamp(0.0, 1.0), 4, "erode").clamp(0.0, 1.0)
+        erode_radius = self.SAM3_RECOVERY_ERODE_RADIUS if erode_radius is None else max(0, int(erode_radius))
+        shrunk = _morph(
+            recovery_mask.clamp(0.0, 1.0),
+            erode_radius,
+            "erode",
+        ).clamp(0.0, 1.0)
         if shrunk.max() <= 0:
             return rgba, alpha, debug
 
         original_rgb = _ensure_float01(original)[..., :3]
         restored_alpha = torch.maximum(alpha, shrunk).clamp(0.0, 1.0)
-        restored_rgb = torch.lerp(rgba[..., :3], original_rgb, shrunk.unsqueeze(-1)).clamp(0.0, 1.0)
+        restored_rgb = torch.lerp(
+            rgba[..., :3],
+            original_rgb,
+            shrunk.unsqueeze(-1),
+        ).clamp(0.0, 1.0)
         if output_mode == "premultiplied_rgba":
             restored_rgb = restored_rgb * restored_alpha.unsqueeze(-1)
         restored_rgba = torch.cat([restored_rgb, restored_alpha.unsqueeze(-1)], dim=-1)
