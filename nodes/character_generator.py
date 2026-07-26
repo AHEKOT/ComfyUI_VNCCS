@@ -780,6 +780,7 @@ DEFAULT_WIDGET_DATA = {
         "temporal_overlap": 8,
     },
     "emotion_generation": {
+        "face_denoise": 0.55,
         "use_sam": True,
         "bbox_model": "bbox/face_yolov8m.pt",
         "segm_model": "bbox/face_yolov8m.pt",
@@ -3258,7 +3259,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         pipe_values = self._extract_pipe(pipe)
         configured = detailer_settings if isinstance(detailer_settings, dict) else {}
         if isinstance(detailer_settings, dict):
-            face_denoise = pipe_values.get("denoise", face_denoise)
+            face_denoise = configured.get("face_denoise", face_denoise)
         face_denoise = max(0.0, min(1.0, float(face_denoise)))
         bbox_crop_factor = max(1.0, float(configured.get("bbox_crop_factor", bbox_crop_factor)))
         bbox_threshold = max(0.0, min(1.0, float(configured.get("bbox_threshold", bbox_threshold))))

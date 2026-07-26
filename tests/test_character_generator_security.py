@@ -349,7 +349,7 @@ def test_generator_internal_node_settings_are_forwarded(monkeypatch):
     assert calls["VAEDecodeTiled"]["temporal_overlap"] == 4
 
 
-def test_emotion_detailer_uses_pipe_values_and_forwards_local_controls(monkeypatch):
+def test_emotion_detailer_uses_local_denoise_and_forwards_other_controls(monkeypatch):
     torch = pytest.importorskip("torch")
     image = torch.rand(1, 16, 16, 3)
     mask = torch.ones((1, 16, 16), dtype=torch.float32)
@@ -439,7 +439,7 @@ def test_emotion_detailer_uses_pipe_values_and_forwards_local_controls(monkeypat
     assert detailer["cfg"] == pytest.approx(1.0)
     assert detailer["sampler_name"] == "dpmpp_2m"
     assert detailer["scheduler"] == "karras"
-    assert detailer["denoise"] == pytest.approx(0.42)
+    assert detailer["denoise"] == pytest.approx(0.67)
     assert detailer["feather"] == 9
     assert detailer["noise_mask"] is False
     assert detailer["force_inpaint"] is False
@@ -458,6 +458,7 @@ def test_emotion_detailer_uses_pipe_values_and_forwards_local_controls(monkeypat
 def test_emotion_detailer_defaults_match_face_detailer_and_step3_workflow():
     defaults = cg.DEFAULT_WIDGET_DATA["emotion_generation"]
     expected = {
+        "face_denoise": 0.55,
         "guide_size": 1536,
         "guide_size_for": True,
         "max_size": 1536,
@@ -478,7 +479,6 @@ def test_emotion_detailer_defaults_match_face_detailer_and_step3_workflow():
         "inpaint_model": False,
     }
     assert {key: defaults[key] for key in expected} == expected
-    assert "face_denoise" not in defaults
     assert "steps" not in defaults
     assert "cfg" not in defaults
 
@@ -492,7 +492,6 @@ def test_emotion_detailer_defaults_match_face_detailer_and_step3_workflow():
     node = next(item for item in workflow["nodes"] if item["type"] == "VNCCS_EmotionsGenerator")
     workflow_settings = json.loads(node["widgets_values"][0])["emotion_generation"]
     assert {key: workflow_settings[key] for key in expected} == expected
-    assert "face_denoise" not in workflow_settings
     assert "steps" not in workflow_settings
     assert "cfg" not in workflow_settings
 

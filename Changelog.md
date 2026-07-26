@@ -1,3 +1,21 @@
+# VNCCS 3.0.4 Changelog
+
+This changelog describes the changes in version `3.0.4` compared with `3.0.3`.
+This release restores the missing Face Detailer denoise control in VNCCS Emotions Generator.
+
+## Headline Changes
+
+- The `Face Detailer Denoise` slider is visible in the Emotions Generator interface again.
+- Denoise is stored as a local emotion-generation setting and is passed directly to FaceDetailer.
+- The slider once again shows weak, optimal, and excessive strength zones for the active generation model.
+- New Emotions Generator nodes and the bundled Step 3 workflow use a default denoise value of `0.55`.
+
+## Emotions Generator
+
+- Restored the dedicated `Emotion Strength` panel that was accidentally removed in `3.0.3`.
+- Changing the slider now updates the serialized `face_denoise` setting instead of relying on the connected pipe value.
+- Existing workflows without `face_denoise` remain compatible and receive the default value automatically.
+
 # VNCCS 3.0.3 Changelog
 
 This changelog describes the changes in version `3.0.3` compared with `3.0.2`.
