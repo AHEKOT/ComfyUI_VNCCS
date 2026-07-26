@@ -1,3 +1,16 @@
+# VNCCS 3.0.3 Changelog
+
+This changelog describes the changes in version `3.0.3` compared with `3.0.2`.
+The release focuses on complete generator configuration, safer emotion background cleanup, and more precise SAM3 detail recovery.
+
+## Headline Changes
+
+- Character Creator, Character Cloner, Clothes Generator, and Emotions Generator now provide a dedicated `Generator Settings` modal for their internal processing controls.
+- Generator settings can be restored with `Load Defaults` and are written only after the user confirms them with `Apply`.
+- Emotion generation now preserves the original sprite outside the FaceDetailer region instead of chroma-keying the complete image.
+- SAM3 detail recovery now evaluates individual detected objects and rejects background objects before restoring image details.
+- The bundled Step 3 Character Emotions workflow now uses the updated FaceDetailer defaults.
+
 # VNCCS 3.0.2 Changelog
 
 This changelog describes the changes in version `3.0.2` compared with `3.0.1`.
