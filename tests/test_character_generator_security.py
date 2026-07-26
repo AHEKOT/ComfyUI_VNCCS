@@ -349,7 +349,7 @@ def test_generator_internal_node_settings_are_forwarded(monkeypatch):
     assert calls["VAEDecodeTiled"]["temporal_overlap"] == 4
 
 
-def test_emotion_detailer_settings_are_forwarded(monkeypatch):
+def test_emotion_detailer_uses_pipe_values_and_forwards_local_controls(monkeypatch):
     torch = pytest.importorskip("torch")
     image = torch.rand(1, 16, 16, 3)
     mask = torch.ones((1, 16, 16), dtype=torch.float32)
@@ -367,6 +367,7 @@ def test_emotion_detailer_settings_are_forwarded(monkeypatch):
                 "seed": 1,
                 "steps": 12,
                 "cfg": 1.0,
+                "denoise": 0.42,
                 "sampler": "euler",
                 "scheduler": "simple",
             }
@@ -434,11 +435,11 @@ def test_emotion_detailer_settings_are_forwarded(monkeypatch):
     assert detailer["guide_size"] == 1024
     assert detailer["guide_size_for"] is False
     assert detailer["max_size"] == 2048
-    assert detailer["steps"] == 31
-    assert detailer["cfg"] == pytest.approx(3.5)
+    assert detailer["steps"] == 12
+    assert detailer["cfg"] == pytest.approx(1.0)
     assert detailer["sampler_name"] == "dpmpp_2m"
     assert detailer["scheduler"] == "karras"
-    assert detailer["denoise"] == pytest.approx(0.67)
+    assert detailer["denoise"] == pytest.approx(0.42)
     assert detailer["feather"] == 9
     assert detailer["noise_mask"] is False
     assert detailer["force_inpaint"] is False
@@ -452,6 +453,48 @@ def test_emotion_detailer_settings_are_forwarded(monkeypatch):
     assert detailer["noise_mask_feather"] == 24
     assert detailer["tiled_encode"] is False
     assert detailer["tiled_decode"] is False
+
+
+def test_emotion_detailer_defaults_match_face_detailer_and_step3_workflow():
+    defaults = cg.DEFAULT_WIDGET_DATA["emotion_generation"]
+    expected = {
+        "guide_size": 1536,
+        "guide_size_for": True,
+        "max_size": 1536,
+        "feather": 5,
+        "noise_mask": True,
+        "force_inpaint": True,
+        "bbox_threshold": 0.5,
+        "bbox_dilation": 10,
+        "bbox_crop_factor": 3.0,
+        "sam_detection_hint": "center-1",
+        "sam_dilation": 0,
+        "sam_threshold": 0.93,
+        "sam_bbox_expansion": 0,
+        "sam_mask_hint_threshold": 0.7,
+        "sam_mask_hint_use_negative": "False",
+        "drop_size": 10,
+        "cycle": 1,
+        "inpaint_model": False,
+    }
+    assert {key: defaults[key] for key in expected} == expected
+    assert "face_denoise" not in defaults
+    assert "steps" not in defaults
+    assert "cfg" not in defaults
+
+    workflow_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "workflows",
+        "VNCCS_3.0_Step3_CharacterEmotions.json",
+    )
+    with open(workflow_path, "r", encoding="utf-8") as handle:
+        workflow = json.load(handle)
+    node = next(item for item in workflow["nodes"] if item["type"] == "VNCCS_EmotionsGenerator")
+    workflow_settings = json.loads(node["widgets_values"][0])["emotion_generation"]
+    assert {key: workflow_settings[key] for key in expected} == expected
+    assert "face_denoise" not in workflow_settings
+    assert "steps" not in workflow_settings
+    assert "cfg" not in workflow_settings
 
 
 def test_regenerate_seed_shift_restores_pipe_seed():

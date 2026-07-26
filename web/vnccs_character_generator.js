@@ -42,7 +42,6 @@ const DEFAULT_DATA = {
         temporal_overlap: 8,
     },
     emotion_generation: {
-        face_denoise: 0.55,
         use_sam: true,
         bbox_model: "bbox/face_yolov8m.pt",
         segm_model: "bbox/face_yolov8m.pt",
@@ -52,18 +51,16 @@ const DEFAULT_DATA = {
         guide_size_for: true,
         max_size: 1536,
         inherit_pipe_sampler: true,
-        steps: 20,
-        cfg: 1,
         sampler_name: "euler",
         scheduler: "simple",
         feather: 5,
         noise_mask: true,
         force_inpaint: true,
-        bbox_threshold: 0.1,
+        bbox_threshold: 0.5,
         bbox_dilation: 10,
-        bbox_crop_factor: 4.5,
+        bbox_crop_factor: 3,
         sam_detection_hint: "center-1",
-        sam_dilation: 25,
+        sam_dilation: 0,
         sam_threshold: 0.93,
         sam_bbox_expansion: 0,
         sam_mask_hint_threshold: 0.7,
@@ -253,6 +250,10 @@ const CSS = `
     left: 12px;
     bottom: 12px;
     z-index: 12;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
     width: 266px;
     min-height: 38px;
     border: 1px solid rgba(255,143,163,0.46);
@@ -266,6 +267,12 @@ const CSS = `
     letter-spacing: 0.08em;
     text-transform: uppercase;
     cursor: pointer;
+}
+.vnccs-pipe-settings-open-icon {
+    flex: 0 0 auto;
+    font-size: 18px;
+    line-height: 1;
+    letter-spacing: 0;
 }
 .vnccs-pipe-settings-open:hover {
     border-color: rgba(255,143,163,0.82);
@@ -331,78 +338,6 @@ const CSS = `
     font-size: 11px;
     padding: 6px 8px;
     color-scheme: dark;
-}
-.vnccs-pipe-slider-field {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 7px;
-}
-.vnccs-pipe-slider-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-}
-.vnccs-pipe-slider-value {
-    color: #e8e8f0;
-    font-size: 11px;
-    font-weight: 800;
-    font-variant-numeric: tabular-nums;
-}
-.vnccs-pipe-slider {
-    width: 100%;
-    height: 18px;
-    margin: 0;
-    appearance: none;
-    background: transparent;
-    cursor: pointer;
-}
-.vnccs-pipe-slider::-webkit-slider-runnable-track {
-    height: 8px;
-    border-radius: 999px;
-    border: 1px solid rgba(255,255,255,0.1);
-    background: linear-gradient(90deg, var(--zone-color) 0 var(--fill), rgba(255,255,255,0.08) var(--fill) 100%);
-}
-.vnccs-pipe-slider::-webkit-slider-thumb {
-    appearance: none;
-    width: 18px;
-    height: 18px;
-    margin-top: -6px;
-    border-radius: 50%;
-    border: 2px solid #f6f0f4;
-    background: var(--zone-color);
-    box-shadow: 0 0 14px var(--zone-glow);
-}
-.vnccs-pipe-slider::-moz-range-track {
-    height: 8px;
-    border-radius: 999px;
-    border: 1px solid rgba(255,255,255,0.1);
-    background: rgba(255,255,255,0.08);
-}
-.vnccs-pipe-slider::-moz-range-progress {
-    height: 8px;
-    border-radius: 999px;
-    background: var(--zone-color);
-}
-.vnccs-pipe-slider::-moz-range-thumb {
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    border: 2px solid #f6f0f4;
-    background: var(--zone-color);
-    box-shadow: 0 0 14px var(--zone-glow);
-}
-.vnccs-pipe-slider-status {
-    border: 1px solid var(--zone-border);
-    border-radius: 7px;
-    background: var(--zone-bg);
-    color: var(--zone-color);
-    padding: 6px 8px;
-    font-size: 10px;
-    font-weight: 900;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    text-align: center;
 }
 .vnccs-pipe-textarea {
     min-height: 72px;
@@ -637,6 +572,9 @@ const CSS = `
     border-color: rgba(255,255,255,0.14);
     background: rgba(255,255,255,0.055);
     color: #cfcfda;
+}
+.vnccs-pipe-modal-btn.is-reset {
+    margin-right: auto;
 }
 @media (max-width: 760px) {
     .vnccs-pipe-settings-groups {
@@ -992,7 +930,13 @@ class CharacterGeneratorWidget {
         this.settingsButton = document.createElement("button");
         this.settingsButton.type = "button";
         this.settingsButton.className = "vnccs-pipe-settings-open";
-        this.settingsButton.textContent = "⚙ Generator Settings";
+        const settingsIcon = document.createElement("span");
+        settingsIcon.className = "vnccs-pipe-settings-open-icon";
+        settingsIcon.setAttribute("aria-hidden", "true");
+        settingsIcon.textContent = "⚙";
+        const settingsLabel = document.createElement("span");
+        settingsLabel.textContent = "Generator Settings";
+        this.settingsButton.append(settingsIcon, settingsLabel);
         this.settingsButton.onclick = () => this.openGeneratorSettings();
         this.protectNativeControl(this.settingsButton);
         root.append(this.settingsEl, main, this.settingsButton);
@@ -1363,12 +1307,9 @@ class CharacterGeneratorWidget {
                     number("emotion_generation", "guide_size", "guide_size", 64, 16384, 8),
                     check("emotion_generation", "guide_size_for", "guide_size_for"),
                     number("emotion_generation", "max_size", "max_size", 64, 16384, 8),
-                    check("emotion_generation", "inherit_pipe_sampler", "Use sampler settings from connected pipe"),
-                    number("emotion_generation", "steps", "steps", 1, 10000, 1),
-                    number("emotion_generation", "cfg", "cfg", 0, 100, 0.01),
+                    check("emotion_generation", "inherit_pipe_sampler", "Use sampler and scheduler from connected pipe"),
                     select("emotion_generation", "sampler_name", "sampler_name", [], { nodeName: "FaceDetailer", inputName: "sampler_name" }),
                     select("emotion_generation", "scheduler", "scheduler", [], { nodeName: "FaceDetailer", inputName: "scheduler" }),
-                    number("emotion_generation", "face_denoise", "denoise", 0, 1, 0.01),
                     number("emotion_generation", "feather", "feather", 0, 1024, 1),
                     check("emotion_generation", "noise_mask", "noise_mask"),
                     check("emotion_generation", "force_inpaint", "force_inpaint"),
@@ -1388,7 +1329,7 @@ class CharacterGeneratorWidget {
                     check("emotion_generation", "tiled_encode", "tiled_encode"),
                     check("emotion_generation", "tiled_decode", "tiled_decode"),
                 ],
-                note: "Steps, CFG, sampler and scheduler are used only when pipe inheritance is disabled. Seed remains per emotion item.",
+                note: "Steps, CFG and denoise always come from the connected pipe. Sampler and scheduler can optionally be overridden here. Seed remains per emotion item.",
             });
             groups.push({
                 title: "VNCCS Emotion Matte Merge",
@@ -1533,30 +1474,51 @@ class CharacterGeneratorWidget {
         intro.textContent = "All processing controls are grouped by the internal node that receives them. Connected MODEL, CLIP, VAE, image and conditioning inputs remain managed by the generator.";
         const groupsEl = document.createElement("div");
         groupsEl.className = "vnccs-pipe-settings-groups";
-        for (const group of this.generatorSettingsGroups()) {
-            const groupEl = document.createElement("section");
-            groupEl.className = "vnccs-pipe-settings-group";
-            const title = document.createElement("div");
-            title.className = "vnccs-pipe-settings-group-title";
-            title.textContent = group.title;
-            const fields = document.createElement("div");
-            fields.className = "vnccs-pipe-settings-group-fields";
-            for (const field of group.fields) {
-                fields.appendChild(this.createGeneratorSettingsField(field, draft));
+        const groups = this.generatorSettingsGroups();
+        const renderGroups = () => {
+            groupsEl.replaceChildren();
+            for (const group of groups) {
+                const groupEl = document.createElement("section");
+                groupEl.className = "vnccs-pipe-settings-group";
+                const title = document.createElement("div");
+                title.className = "vnccs-pipe-settings-group-title";
+                title.textContent = group.title;
+                const fields = document.createElement("div");
+                fields.className = "vnccs-pipe-settings-group-fields";
+                for (const field of group.fields) {
+                    fields.appendChild(this.createGeneratorSettingsField(field, draft));
+                }
+                if (group.note) {
+                    const note = document.createElement("div");
+                    note.className = "vnccs-pipe-settings-note";
+                    note.textContent = group.note;
+                    fields.appendChild(note);
+                }
+                groupEl.append(title, fields);
+                groupsEl.appendChild(groupEl);
             }
-            if (group.note) {
-                const note = document.createElement("div");
-                note.className = "vnccs-pipe-settings-note";
-                note.textContent = group.note;
-                fields.appendChild(note);
-            }
-            groupEl.append(title, fields);
-            groupsEl.appendChild(groupEl);
-        }
+        };
+        renderGroups();
         body.append(intro, groupsEl);
 
         const actions = document.createElement("div");
         actions.className = "vnccs-pipe-modal-actions is-settings";
+        const reset = document.createElement("button");
+        reset.type = "button";
+        reset.className = "vnccs-pipe-modal-btn is-secondary is-reset";
+        reset.textContent = "Load Defaults";
+        reset.title = "Restore defaults in this dialog. They are saved only after Apply.";
+        reset.onclick = () => {
+            for (const group of groups) {
+                for (const field of group.fields) {
+                    const sectionDefaults = DEFAULT_DATA[field.section];
+                    if (!sectionDefaults || !(field.key in sectionDefaults)) continue;
+                    draft[field.section] = draft[field.section] || {};
+                    draft[field.section][field.key] = sectionDefaults[field.key];
+                }
+            }
+            renderGroups();
+        };
         const cancel = document.createElement("button");
         cancel.type = "button";
         cancel.className = "vnccs-pipe-modal-btn is-secondary";
@@ -1574,9 +1536,10 @@ class CharacterGeneratorWidget {
             this.renderSettings();
             this.closeModal();
         };
+        this.protectNativeControl(reset);
         this.protectNativeControl(cancel);
         this.protectNativeControl(apply);
-        actions.append(cancel, apply);
+        actions.append(reset, cancel, apply);
         modal.append(heading, body, actions);
         backdrop.appendChild(modal);
         backdrop.onclick = event => {
@@ -2247,65 +2210,6 @@ class CharacterGeneratorWidget {
         return block;
     }
 
-    faceDenoiseSlider() {
-        const value = Math.max(0, Math.min(1, Number(this.data.emotion_generation?.face_denoise ?? 0.55)));
-        const isAnima = this.connectedEmotionStudioIsAnima();
-        const weakLimit = isAnima ? 0.6 : 0.5;
-        const optimalLimit = isAnima ? 0.75 : 0.65;
-        const denoiseZone = (next) => next < weakLimit
-            ? { status: "weak", color: "#64a8ff", border: "rgba(100,168,255,0.5)", bg: "rgba(100,168,255,0.1)", glow: "rgba(100,168,255,0.3)" }
-            : (next <= optimalLimit
-                ? { status: "optimal", color: "#00d68f", border: "rgba(0,214,143,0.5)", bg: "rgba(0,214,143,0.1)", glow: "rgba(0,214,143,0.28)" }
-                : { status: "excessive", color: "#ff5f78", border: "rgba(255,95,120,0.58)", bg: "rgba(255,95,120,0.12)", glow: "rgba(255,95,120,0.32)" });
-
-        const wrap = document.createElement("label");
-        wrap.className = "vnccs-pipe-slider-field";
-        setHelpText(wrap, "Controls how strongly the face detailer redraws each emotion face. Low preserves more, high changes more.");
-
-        const head = document.createElement("div");
-        head.className = "vnccs-pipe-slider-head";
-        const caption = document.createElement("div");
-        caption.className = "vnccs-pipe-label";
-        caption.textContent = "face detailer denoise";
-        const valueEl = document.createElement("div");
-        valueEl.className = "vnccs-pipe-slider-value";
-        valueEl.textContent = value.toFixed(2);
-        head.append(caption, valueEl);
-
-        const slider = document.createElement("input");
-        slider.className = "vnccs-pipe-slider";
-        slider.type = "range";
-        slider.min = "0";
-        slider.max = "1";
-        slider.step = "0.01";
-        slider.value = String(value);
-        this.protectNativeControl(slider);
-
-        const status = document.createElement("div");
-        status.className = "vnccs-pipe-slider-status";
-        const paint = (nextValue) => {
-            const next = Math.max(0, Math.min(1, Number(nextValue)));
-            const nextZone = denoiseZone(next);
-            slider.style.setProperty("--fill", `${next * 100}%`);
-            slider.style.setProperty("--zone-color", nextZone.color);
-            slider.style.setProperty("--zone-glow", nextZone.glow);
-            status.style.setProperty("--zone-color", nextZone.color);
-            status.style.setProperty("--zone-border", nextZone.border);
-            status.style.setProperty("--zone-bg", nextZone.bg);
-            valueEl.textContent = next.toFixed(2);
-            status.textContent = nextZone.status;
-        };
-        paint(value);
-        slider.oninput = () => {
-            const next = Math.max(0, Math.min(1, Number(slider.value)));
-            paint(next);
-            this.set("emotion_generation", "face_denoise", next);
-        };
-
-        wrap.append(head, slider, status);
-        return wrap;
-    }
-
     faceDetailerNumberField(key, label, { min = 0, max = 1, step = 0.01 } = {}) {
         const draftKey = `emotion_generation.${key}`;
         const wrap = document.createElement("label");
@@ -2373,27 +2277,6 @@ class CharacterGeneratorWidget {
         return wrap;
     }
 
-    connectedEmotionStudioIsAnima() {
-        if (!this.isEmotions) return false;
-        const pipeInput = (this.node.inputs || []).find(input => input.name === "pipe");
-        if (!pipeInput?.link) return false;
-        const link = app.graph?.links?.[pipeInput.link];
-        const sourceNode = app.graph?.getNodeById?.(link?.origin_id);
-        if (!sourceNode || sourceNode.type !== "EmotionGeneratorV2") return false;
-
-        const settingsWidget = sourceNode.widgets?.find(widget => widget.name === "generation_settings");
-        try {
-            const settings = settingsWidget?.value ? JSON.parse(settingsWidget.value) : {};
-            const settingsMode = String(settings?.generation_mode || "").toLowerCase();
-            if (settingsMode === "anima") return true;
-            if (settingsMode === "illustrious") return false;
-        } catch (_) {
-            // Fall back to the hidden mode widget below.
-        }
-        const modeWidget = sourceNode.widgets?.find(widget => widget.name === "generation_model");
-        return String(modeWidget?.value || "").toLowerCase() === "anima";
-    }
-
     renderSettings() {
         this.syncCharacterSourceData();
         this.syncStagesFromData();
@@ -2415,9 +2298,6 @@ class CharacterGeneratorWidget {
                     <div class="vnccs-pipe-empty" style="min-height:auto;padding:8px;">${count} costume / emotion pair(s)</div>
                 </div>`;
             this.settingsEl.appendChild(info);
-            this.settingsEl.appendChild(this.block("Emotion Strenght", [
-                this.faceDenoiseSlider(),
-            ]));
             const faceDetailerFields = [
                 this.field("emotion_generation", "use_sam", "Use SAM", "checkbox"),
                 this.faceDetailerNumberField("bbox_threshold", "bbox_threshold", { min: 0, max: 1, step: 0.01 }),

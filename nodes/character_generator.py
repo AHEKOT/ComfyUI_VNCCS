@@ -780,7 +780,6 @@ DEFAULT_WIDGET_DATA = {
         "temporal_overlap": 8,
     },
     "emotion_generation": {
-        "face_denoise": 0.55,
         "use_sam": True,
         "bbox_model": "bbox/face_yolov8m.pt",
         "segm_model": "bbox/face_yolov8m.pt",
@@ -790,18 +789,16 @@ DEFAULT_WIDGET_DATA = {
         "guide_size_for": True,
         "max_size": 1536,
         "inherit_pipe_sampler": True,
-        "steps": 20,
-        "cfg": 1.0,
         "sampler_name": "euler",
         "scheduler": "simple",
         "feather": 5,
         "noise_mask": True,
         "force_inpaint": True,
-        "bbox_threshold": 0.1,
+        "bbox_threshold": 0.5,
         "bbox_dilation": 10,
-        "bbox_crop_factor": 4.5,
+        "bbox_crop_factor": 3.0,
         "sam_detection_hint": "center-1",
-        "sam_dilation": 25,
+        "sam_dilation": 0,
         "sam_threshold": 0.93,
         "sam_bbox_expansion": 0,
         "sam_mask_hint_threshold": 0.7,
@@ -1131,6 +1128,7 @@ class VNCCS_CharacterGenerator:
             "seed": int(out[5] or 0),
             "steps": int(out[6] or 1),
             "cfg": float(out[7] or 1.0),
+            "denoise": max(0.0, min(1.0, float(out[8] if out[8] is not None else 0.0))),
             "sampler": out[10] or "euler",
             "scheduler": out[11] or "simple",
             "model_entry": getattr(pipe, "model_entry", None),
@@ -1186,7 +1184,7 @@ class VNCCS_CharacterGenerator:
         bbox_crop_factor,
         drop_size=10,
         sam_model=None,
-        sam_dilation=25,
+        sam_dilation=0,
         sam_threshold=0.93,
         sam_bbox_expansion=0,
     ):
@@ -3248,10 +3246,10 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         negative_prompt,
         seed,
         face_denoise=0.55,
-        bbox_crop_factor=4.5,
-        bbox_threshold=0.1,
+        bbox_crop_factor=3.0,
+        bbox_threshold=0.5,
         bbox_dilation=10,
-        sam_dilation=25,
+        sam_dilation=0,
         sam_threshold=0.93,
         sam_bbox_expansion=0,
         use_sam=True,
@@ -3259,7 +3257,9 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
     ):
         pipe_values = self._extract_pipe(pipe)
         configured = detailer_settings if isinstance(detailer_settings, dict) else {}
-        face_denoise = max(0.0, min(1.0, float(configured.get("face_denoise", face_denoise))))
+        if isinstance(detailer_settings, dict):
+            face_denoise = pipe_values.get("denoise", face_denoise)
+        face_denoise = max(0.0, min(1.0, float(face_denoise)))
         bbox_crop_factor = max(1.0, float(configured.get("bbox_crop_factor", bbox_crop_factor)))
         bbox_threshold = max(0.0, min(1.0, float(configured.get("bbox_threshold", bbox_threshold))))
         bbox_dilation = max(0, int(configured.get("bbox_dilation", bbox_dilation)))
@@ -3267,20 +3267,15 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         sam_threshold = max(0.0, min(1.0, float(configured.get("sam_threshold", sam_threshold))))
         sam_bbox_expansion = max(0, int(configured.get("sam_bbox_expansion", sam_bbox_expansion)))
         use_sam = _as_bool(configured.get("use_sam", use_sam), True)
-        if _as_bool(configured.get("inherit_pipe_sampler", True), True):
-            sampler = {
-                "steps": pipe_values["steps"],
-                "cfg": pipe_values["cfg"],
-                "sampler_name": pipe_values["sampler"],
-                "scheduler": pipe_values["scheduler"],
-            }
-        else:
-            sampler = {
-                "steps": max(1, int(configured.get("steps", pipe_values["steps"]))),
-                "cfg": float(configured.get("cfg", pipe_values["cfg"])),
-                "sampler_name": str(configured.get("sampler_name", pipe_values["sampler"])),
-                "scheduler": str(configured.get("scheduler", pipe_values["scheduler"])),
-            }
+        sampler = {
+            "steps": pipe_values["steps"],
+            "cfg": pipe_values["cfg"],
+            "sampler_name": pipe_values["sampler"],
+            "scheduler": pipe_values["scheduler"],
+        }
+        if not _as_bool(configured.get("inherit_pipe_sampler", True), True):
+            sampler["sampler_name"] = str(configured.get("sampler_name", pipe_values["sampler"]))
+            sampler["scheduler"] = str(configured.get("scheduler", pipe_values["scheduler"]))
         model_for_detailer = pipe_values["model"]
 
         detailer_positive_text = self._detailer_positive_prompt(emotion_prompt, face_details)
@@ -3377,7 +3372,6 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 value = int(emotion_defaults[key])
             return max(min_value, min(max_value, value))
 
-        face_denoise = _clamp_float("face_denoise", 0.0, 1.0)
         use_sam = _as_bool(
             emotion_settings.get(
                 "use_sam",
@@ -3549,7 +3543,6 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                             self._emotion_face_details(meta),
                             meta.get("negative_prompt", ""),
                             seed + index,
-                            face_denoise,
                             bbox_threshold=bbox_threshold,
                             bbox_dilation=bbox_dilation,
                             sam_dilation=sam_dilation,
