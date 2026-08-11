@@ -2528,9 +2528,8 @@ class CharacterGeneratorWidget {
             };
         } else if (installed) {
             card.onclick = () => {
-                this.data.upscaler.model = rel;
+                this.set("upscaler", "model", rel);
                 this.seedvrModelPickerOpen = false;
-                writeData(this.node, this.data);
                 this.renderSettings();
             };
         } else {
