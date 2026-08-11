@@ -340,6 +340,11 @@ const CSS = `
     grid-template-columns: 1fr;
     gap: 4px;
 }
+.vnccs-pipe-field-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+}
 .vnccs-pipe-label {
     color: #9898a8;
     font-size: 10px;
@@ -1347,6 +1352,8 @@ class CharacterGeneratorWidget {
                 fields: [
                     select("upscaler", "model", "diffusion model", WORKFLOW_UPSCALER_DIT_MODELS, { nodeName: "UNETLoader", inputName: "unet_name" }),
                     select("upscaler", "vae", "VAE", WORKFLOW_UPSCALER_VAE_MODELS, { nodeName: "VAELoader", inputName: "vae_name" }),
+                    number("upscaler", "resolution", "target short edge", 16, 16384, 2),
+                    number("upscaler", "max_resolution", "maximum edge (0 = unlimited)", 0, 16384, 2),
                     select("upscaler", "color_correction", "color correction", SEEDVR_COLOR_CORRECTION_MODES, { nodeName: "SeedVR2PostProcessing", inputName: "color_correction_method" }),
                 ],
             });
@@ -2220,7 +2227,8 @@ class CharacterGeneratorWidget {
             prompt: "Prompt text used for the remove-clothes/preparation stage.",
             gan_model: "Upscale model used when GAN upscaling is selected.",
             model: "SeedVR diffusion model used for the upscaler stage.",
-            resolution: "Output resolution target for SeedVR upscaling.",
+            resolution: "Target size of the shortest output edge in pixels.",
+            max_resolution: "Maximum size of either output edge in pixels. Set to 0 to disable the limit.",
             color_correction: "SeedVR color correction mode. Try adain, wavelet, or none if lab causes color shifts on your GPU.",
             attention_mode: "Attention backend for SeedVR. Auto-detected from installed ComfyUI packages until changed manually.",
             preset: "Strength preset for chroma/background removal.",
@@ -2277,6 +2285,11 @@ class CharacterGeneratorWidget {
             input = document.createElement("input");
             input.className = "vnccs-pipe-input";
             input.type = type;
+            if (type === "number" && options && !Array.isArray(options)) {
+                for (const attribute of ["min", "max", "step"]) {
+                    if (options[attribute] !== undefined) input[attribute] = options[attribute];
+                }
+            }
             this.protectNativeControl(input);
         }
         input.value = this.data[section][key];
@@ -2621,8 +2634,15 @@ class CharacterGeneratorWidget {
                 this.field("upscaler", "gan_model", "model", "select", ganOptions),
             );
         } else if (this.data.upscaler.mode !== "off") {
+            const resolutionFields = document.createElement("div");
+            resolutionFields.className = "vnccs-pipe-field-row";
+            resolutionFields.append(
+                this.field("upscaler", "resolution", "target short edge", "number", { min: 16, max: 16384, step: 2 }),
+                this.field("upscaler", "max_resolution", "maximum edge", "number", { min: 0, max: 16384, step: 2 }),
+            );
             upscalerFields.push(
                 this.seedvrModelCards(),
+                resolutionFields,
                 this.field("upscaler", "color_correction", "color correction", "select", this.getOptions("SeedVR2PostProcessing", "color_correction_method", SEEDVR_COLOR_CORRECTION_MODES, this.data.upscaler.color_correction)),
             );
         }
