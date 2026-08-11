@@ -1,3 +1,78 @@
+# VNCCS 3.0.4 Changelog
+
+This changelog describes the changes in version `3.0.4` compared with `3.0.3`.
+This release restores the missing Face Detailer denoise control in VNCCS Emotions Generator.
+
+## Headline Changes
+
+- The `Face Detailer Denoise` slider is visible in the Emotions Generator interface again.
+- Denoise is stored as a local emotion-generation setting and is passed directly to FaceDetailer.
+- The slider once again shows weak, optimal, and excessive strength zones for the active generation model.
+- New Emotions Generator nodes and the bundled Step 3 workflow use a default denoise value of `0.55`.
+
+## Emotions Generator
+
+- Restored the dedicated `Emotion Strength` panel that was accidentally removed in `3.0.3`.
+- Changing the slider now updates the serialized `face_denoise` setting instead of relying on the connected pipe value.
+- Existing workflows without `face_denoise` remain compatible and receive the default value automatically.
+
+# VNCCS 3.0.3 Changelog
+
+This changelog describes the changes in version `3.0.3` compared with `3.0.2`.
+The release focuses on complete generator configuration, safer emotion background cleanup, and more precise SAM3 detail recovery.
+
+## Headline Changes
+
+- Character Creator, Character Cloner, Clothes Generator, and Emotions Generator now provide a dedicated `Generator Settings` modal for their internal processing controls.
+- Generator settings can be restored with `Load Defaults` and are written only after the user confirms them with `Apply`.
+- Emotion generation now preserves the original sprite outside the FaceDetailer region instead of chroma-keying the complete image.
+- SAM3 detail recovery now evaluates individual detected objects and rejects background objects before restoring image details.
+- The bundled Step 3 Character Emotions workflow now uses the updated FaceDetailer defaults.
+
+# VNCCS 3.0.2 Changelog
+
+This changelog describes the changes in version `3.0.2` compared with `3.0.1`.
+The release focuses on Clothes Designer preview execution, Control Center catalog freshness, and SAM3 batch stability.
+
+## Headline Changes
+
+- Clothes Designer previews now work with the `CUSTOM` Control Center configuration by executing the connected workflow branch, so externally supplied `MODEL`, `CLIP`, and `VAE` inputs are used correctly.
+- Clothes Designer is now a valid ComfyUI partial-execution target, fixing the `Prompt has no outputs` error when generating a custom preview.
+- SAM3 detail recovery now processes image batches one image at a time, fixing tensor-stack failures when different images produce different numbers of detections.
+- The bundled Control Center catalog has been updated to the current model list and is automatically refreshed after a newer catalog is loaded from Hugging Face.
+
+## Clothes Designer
+
+- `Generate Preview` in `CUSTOM` mode now queues only the graph required to execute the connected Clothes Designer node instead of calling the standalone preview endpoint.
+- Custom previews now use the model stack and settings supplied through the connected Control Center pipe.
+- Preview generation waits for the `vnccs.preview.updated` event before refreshing the displayed image.
+- Execution errors, interruptions, and preview timeouts are now reported by the Clothes Designer UI.
+- Clothes Designer is now marked as an output node so ComfyUI accepts it as the destination of partial graph execution.
+
+## Control Center and Model Catalog
+
+- Updated the packaged `control_center.json` to match the current remote catalog.
+- A successfully downloaded Control Center catalog is now written back to the packaged fallback file, preventing an older bundled catalog from reappearing after model updates or remote access failures.
+- Packaged catalog updates use a lock and atomic file replacement so concurrent reads cannot observe a partially written JSON file.
+- The packaged file is left untouched when the downloaded catalog has not changed, and synchronization failures no longer prevent Control Center from using the downloaded data.
+
+## Chroma Key and SAM3 Recovery
+
+- SAM3 recovery segmentation now runs separately for every image in a batch.
+- This avoids `torch.stack` failures in Easy SAM3 when detection-box counts or shapes differ between batch items.
+- The SAM3 model is loaded once, retained between images, and released after the final image in the batch.
+- Recovered masks are normalized per image and concatenated back into the original batch order.
+
+## Reliability and Maintenance
+
+- Added regression coverage for atomic packaged-catalog synchronization and remote catalog refresh.
+- Added checks that the bundled catalog selects Clothes Core `0.3.7` and no longer exposes the obsolete Emotion Core entry.
+- Added frontend contract coverage for custom partial preview execution.
+- Added a regression check that Clothes Designer remains a valid output target.
+- Added batch recovery coverage that reproduces the variable-detection SAM3 failure.
+- Updated test environment model-path stubs for the current Control Center behavior.
+- Updated package version metadata from `3.0.1` to `3.0.2`.
+
 # VNCCS 3.0.1 Changelog
 
 This changelog describes the user-visible changes in version `3.0.1` compared with `3.0.0`.
@@ -167,4 +242,3 @@ It focuses on workflow and system behavior, not on internal code changes.
 - Old character sheets can be converted into the new sprite-based format.
 - Migration can also repair sprite canvas mismatches so old assets behave better in the new workflow.
 - Users are expected to verify migrated characters before deleting old folders.
-

@@ -157,7 +157,11 @@ def test_service_generate_saves_named_emotion_files_to_output(tmp_path, monkeypa
     monkeypatch.setattr(
         node,
         "_run_emotion_generation_one",
-        lambda *args, **kwargs: (torch.zeros((1, 4, 4, 3)), torch.ones((1, 4, 4, 3))),
+        lambda *args, **kwargs: (
+            torch.zeros((1, 4, 4, 3)),
+            torch.ones((1, 4, 4, 3)),
+            torch.ones((1, 4, 4)),
+        ),
     )
 
     result = node.generate(torch.zeros((1, 4, 4, 3)), character_prompt="green hair")
@@ -186,7 +190,11 @@ def test_service_generate_uses_emotion_detailer_defaults(tmp_path, monkeypatch):
 
     def fake_run(*args, **kwargs):
         calls.append({"args": args, "kwargs": kwargs})
-        return torch.zeros((1, 4, 4, 3)), torch.ones((1, 4, 4, 3))
+        return (
+            torch.zeros((1, 4, 4, 3)),
+            torch.ones((1, 4, 4, 3)),
+            torch.ones((1, 4, 4)),
+        )
 
     node = service_nodes.VNCCS_Service_Emotions_Generator()
     monkeypatch.setattr(node, "_default_pipe", lambda: {"seed": 10})

@@ -65,6 +65,7 @@ class _ByPassTypeTuple(tuple):
 
 
 _CC_CONFIG_CACHE = {}
+_CC_CONFIG_SYNC_LOCK = threading.Lock()
 _DOWNLOAD_STATUS = {}
 _DOWNLOAD_QUEUE = queue.Queue()
 _CUSTOM_LORAS_FILE = "vnccs_custom_loras.json"
@@ -471,6 +472,43 @@ def _uses_packaged_cc_config(repo_id):
     return repo_id in _PACKAGED_CC_REPO_IDS and os.path.exists(_get_packaged_cc_path())
 
 
+def _sync_packaged_cc_config(repo_id, data):
+    if repo_id not in _PACKAGED_CC_REPO_IDS or not isinstance(data, dict):
+        return False
+
+    target = _get_packaged_cc_path()
+    tmp_path = None
+    try:
+        with _CC_CONFIG_SYNC_LOCK:
+            current = None
+            if os.path.exists(target):
+                try:
+                    with open(target, "r", encoding="utf-8") as handle:
+                        current = json.load(handle)
+                except Exception:
+                    current = None
+            if current == data:
+                return False
+
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            tmp_path = f"{target}.tmp.{os.getpid()}.{threading.get_ident()}"
+            with open(tmp_path, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, indent=2, ensure_ascii=False)
+                handle.write("\n")
+            os.replace(tmp_path, target)
+            print(f"[VNCCS Control Center] Updated packaged catalog from '{repo_id}'.")
+            return True
+    except Exception as exc:
+        print(f"[VNCCS Control Center] Failed to update packaged catalog: {exc}")
+        if tmp_path:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+        return False
+
+
 def _get_cc_config(repo_id, prefer_remote=False):
     cached = _CC_CONFIG_CACHE.get(repo_id)
     now = time.time()
@@ -499,6 +537,8 @@ def _get_cc_config(repo_id, prefer_remote=False):
             source = "packaged"
     with open(path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
+    if source == "huggingface":
+        _sync_packaged_cc_config(repo_id, data)
     _CC_CONFIG_CACHE[repo_id] = {"ts": now, "data": data, "source": source}
     return _dedupe_config_by_name(_merge_custom_loras(data))
 

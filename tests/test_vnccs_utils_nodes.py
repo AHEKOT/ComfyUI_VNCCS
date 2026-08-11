@@ -11,10 +11,10 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+import nodes.vnccs_utils as vnccs_utils
 from nodes.vnccs_utils import (
     tensor2pil, pil2tensor, _ensure_float01,
     _unwrap_node_result,
-    VNCCS_QuadSplitter as _QS,  # also tested in sheet_manager; skip here
     VNCCS_ClothesTemplates,
     VNCCS_VLAnalyzer,
     _build_vl_analyzer_prompt,
@@ -102,6 +102,190 @@ def test_sam3_recovery_restores_only_shrunk_mask_area():
     assert restored_rgba[5, 5, 0].item() == pytest.approx(1.0)
     assert restored_alpha[2, 2].item() == pytest.approx(0.0)
     assert restored_rgba[2, 2, 0].item() == pytest.approx(0.0)
+
+
+def test_sam3_recovery_rejects_background_objects_without_clipping_kept_masks():
+    node = VNCCSChromaKey()
+    alpha = torch.zeros((40, 40), dtype=torch.float32)
+    alpha[10:30, 10:30] = 1.0
+
+    foreground_object = torch.zeros((40, 40), dtype=torch.float32)
+    foreground_object[8:32, 8:32] = 1.0
+    background_object = torch.zeros((40, 40), dtype=torch.float32)
+    background_object[0:8, :] = 1.0
+    whole_image_false_positive = torch.ones((40, 40), dtype=torch.float32)
+
+    selected = node._select_sam3_recovery_mask(
+        torch.stack(
+            [
+                foreground_object,
+                background_object,
+                whole_image_false_positive,
+            ]
+        ),
+        alpha,
+    )
+
+    assert selected[20, 20].item() == pytest.approx(1.0)
+    assert selected[8, 20].item() == pytest.approx(1.0)
+    assert selected[2, 20].item() == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    "raw_masks",
+    [
+        torch.ones((2, 1, 6, 8), dtype=torch.float32),
+        torch.ones((2, 6, 8, 1), dtype=torch.float32),
+        torch.ones((1, 2, 6, 8), dtype=torch.float32),
+    ],
+)
+def test_sam3_recovery_normalizes_individual_object_mask_layouts(raw_masks):
+    node = VNCCSChromaKey()
+    combined = torch.ones((1, 6, 8), dtype=torch.float32)
+
+    candidates = node._sam3_recovery_candidates_from_result(
+        (combined, None, raw_masks, [], []),
+        target_hw=(6, 8),
+    )
+
+    assert candidates.shape == (2, 6, 8)
+
+
+def test_sam3_recovery_supports_legacy_combined_mask_output():
+    node = VNCCSChromaKey()
+    combined = torch.ones((1, 6, 8), dtype=torch.float32)
+
+    candidates = node._sam3_recovery_candidates_from_result(
+        combined,
+        target_hw=(6, 8),
+    )
+
+    assert candidates.shape == (1, 6, 8)
+
+
+def test_sam3_recovery_segments_batch_one_image_at_a_time(monkeypatch):
+    node = VNCCSChromaKey()
+    image = torch.zeros((3, 6, 8, 3), dtype=torch.float32)
+    model = object()
+    loader_calls = []
+    segment_calls = []
+
+    monkeypatch.setattr(vnccs_utils, "_ensure_sam3_model_available", lambda: "sam3.safetensors")
+
+    def fake_call(class_names, method_names=None, **kwargs):
+        if class_names[0] == "LoadSam3Model":
+            loader_calls.append(kwargs["model"])
+            return model
+
+        assert kwargs["sam3_model"] is model
+        if kwargs["images"].shape[0] != 1:
+            raise RuntimeError(
+                "stack expects each tensor to be equal size, "
+                "but got [3, 4] at entry 0 and [6, 4] at entry 2"
+            )
+        assert kwargs["images"].shape == (1, 6, 8, 3)
+        segment_calls.append(kwargs["keep_model_loaded"])
+        mask_value = len(segment_calls) / 10.0
+        combined = torch.full((1, 6, 8), mask_value, dtype=torch.float32)
+        segmented_image = torch.zeros((1, 6, 8, 4), dtype=torch.float32)
+        object_masks = torch.stack(
+            [
+                torch.full((6, 8), mask_value, dtype=torch.float32),
+                torch.full((6, 8), mask_value + 0.05, dtype=torch.float32),
+            ]
+        )
+        return combined, segmented_image, object_masks, [], []
+
+    monkeypatch.setattr(vnccs_utils, "_call_registered_node", fake_call)
+
+    candidates = node._run_sam3_recovery_masks(image, target_hw=(6, 8))
+
+    assert len(candidates) == 3
+    assert all(mask.shape == (2, 6, 8) for mask in candidates)
+    assert [candidates[index][0, 0, 0].item() for index in range(3)] == pytest.approx([0.1, 0.2, 0.3])
+    assert loader_calls == ["sam3.safetensors"]
+    assert segment_calls == [True, True, False]
+
+
+def test_sam3_recovery_forwards_generator_settings(monkeypatch):
+    node = VNCCSChromaKey()
+    image = torch.zeros((1, 6, 8, 3), dtype=torch.float32)
+    model = object()
+    seen = {}
+
+    def fake_call(class_names, method_names=None, **kwargs):
+        if class_names[0] == "LoadSam3Model":
+            seen["loader"] = kwargs
+            return model
+        seen["segment"] = kwargs
+        combined = torch.ones((1, 6, 8), dtype=torch.float32)
+        return combined, None, combined, [], []
+
+    monkeypatch.setattr(vnccs_utils, "_call_registered_node", fake_call)
+    candidates = node._run_sam3_recovery_masks(
+        image,
+        target_hw=(6, 8),
+        settings={
+            "sam3_model": "custom-sam3.safetensors",
+            "sam3_segmentor": "image",
+            "sam3_device": "cpu",
+            "sam3_precision": "fp32",
+            "sam3_prompt": "face, hair",
+            "sam3_threshold": 0.62,
+            "sam3_add_background": "black",
+            "sam3_detection_limit": 7,
+        },
+    )
+
+    assert candidates[0].shape == (1, 6, 8)
+    assert seen["loader"] == {
+        "model": "custom-sam3.safetensors",
+        "segmentor": "image",
+        "device": "cpu",
+        "precision": "fp32",
+    }
+    assert seen["segment"]["prompt"] == "face, hair"
+    assert seen["segment"]["threshold"] == pytest.approx(0.62)
+    assert seen["segment"]["add_background"] == "black"
+    assert seen["segment"]["detection_limit"] == 7
+
+
+def test_sam3_recovery_filter_and_erode_are_configurable():
+    node = VNCCSChromaKey()
+    alpha = torch.zeros((12, 12), dtype=torch.float32)
+    alpha[4:8, 4:8] = 1.0
+    candidate = torch.zeros((12, 12), dtype=torch.float32)
+    candidate[3:9, 3:9] = 1.0
+
+    rejected = node._select_sam3_recovery_mask(
+        candidate.unsqueeze(0),
+        alpha,
+        {"sam3_min_foreground_overlap": 0.9},
+    )
+    accepted = node._select_sam3_recovery_mask(
+        candidate.unsqueeze(0),
+        alpha,
+        {"sam3_min_foreground_overlap": 0.4},
+    )
+
+    assert rejected.max().item() == pytest.approx(0.0)
+    assert accepted.max().item() == pytest.approx(1.0)
+
+    original = torch.ones((12, 12, 3), dtype=torch.float32)
+    rgba = torch.zeros((12, 12, 4), dtype=torch.float32)
+    debug = torch.zeros((12, 12, 3), dtype=torch.float32)
+    no_erode_rgba, no_erode_alpha, _ = node._restore_recovery_details(
+        original,
+        rgba,
+        torch.zeros_like(alpha),
+        debug,
+        accepted,
+        "straight_rgba",
+        erode_radius=0,
+    )
+
+    assert no_erode_alpha[3, 3].item() == pytest.approx(1.0)
+    assert no_erode_rgba[3, 3, 0].item() == pytest.approx(1.0)
 
 
 def test_connected_key_fringe_suppression_is_not_used_by_chroma_key(monkeypatch):

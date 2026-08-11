@@ -184,7 +184,7 @@ class VNCCS_Service_Emotions_Generator(VNCCS_EmotionsGenerator):
         for index, item in enumerate(emotion_items):
             filename = _safe_emotion_filename(item["safe_name"])
             out_path = os.path.join(output_dir, filename)
-            _full, face_crop = self._run_emotion_generation_one(
+            _full, face_crop, _detailer_mask = self._run_emotion_generation_one(
                 source,
                 None,
                 pipe,

@@ -2,6 +2,8 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
 
+const GENERATOR_QWEN_INSTRUCTION = "Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.";
+
 const DEFAULT_DATA = {
     nsfw_enabled: true,
     emotion_pairs: [],
@@ -10,18 +12,95 @@ const DEFAULT_DATA = {
     },
     pose_generation: {
         target_size: 1024,
+        upscale_method: "lanczos",
+        crop_method: "disabled",
+        image1_name: "image 1",
+        image2_name: "image 2",
+        image3_name: "image 3",
+        weight1: 1,
+        weight2: 1,
+        weight3: 1,
+        vl_size: 384,
+        background_color: "from_generator",
+        latent_image_index: 1,
+        instruction: GENERATOR_QWEN_INSTRUCTION,
+        qwen_2511: true,
+    },
+    pose_sampler: {
+        inherit_pipe: true,
+        seed: 0,
+        steps: 20,
+        cfg: 1,
+        sampler_name: "euler",
+        scheduler: "simple",
+        denoise: 1,
+    },
+    vae_decode: {
+        tile_size: 512,
+        overlap: 64,
+        temporal_size: 64,
+        temporal_overlap: 8,
     },
     emotion_generation: {
         face_denoise: 0.55,
         use_sam: true,
-        bbox_threshold: 0.1,
+        bbox_model: "bbox/face_yolov8m.pt",
+        segm_model: "bbox/face_yolov8m.pt",
+        sam_model: "sam_vit_b_01ec64.pth",
+        sam_device_mode: "AUTO",
+        guide_size: 1536,
+        guide_size_for: true,
+        max_size: 1536,
+        inherit_pipe_sampler: true,
+        sampler_name: "euler",
+        scheduler: "simple",
+        feather: 5,
+        noise_mask: true,
+        force_inpaint: true,
+        bbox_threshold: 0.5,
         bbox_dilation: 10,
-        sam_dilation: 25,
+        bbox_crop_factor: 3,
+        sam_detection_hint: "center-1",
+        sam_dilation: 0,
         sam_threshold: 0.93,
         sam_bbox_expansion: 0,
+        sam_mask_hint_threshold: 0.7,
+        sam_mask_hint_use_negative: "False",
+        drop_size: 10,
+        cycle: 1,
+        inpaint_model: false,
+        noise_mask_feather: 20,
+        tiled_encode: true,
+        tiled_decode: true,
+        matte_expand_radius: 8,
+        matte_feather_radius: 4,
+        chroma_context: 16,
     },
     remove_clothes: {
         prompt: "Dress character: White underwear",
+        target_size: 1024,
+        upscale_method: "lanczos",
+        crop_method: "disabled",
+        image1_name: "image 1",
+        image2_name: "image 2",
+        image3_name: "image 3",
+        weight1: 1,
+        weight2: 1,
+        weight3: 1,
+        vl_size: 384,
+        background_color: "White",
+        latent_image_index: 1,
+        instruction: GENERATOR_QWEN_INSTRUCTION,
+        qwen_2511: true,
+    },
+    remove_clothes_sampler: {
+        inherit_pipe: true,
+        seed: 0,
+        steps: 20,
+        cfg: 1,
+        sampler_name: "euler",
+        scheduler: "simple",
+        denoise: 1,
     },
     upscaler: {
         mode: "seedvr",
@@ -31,6 +110,7 @@ const DEFAULT_DATA = {
         device: "cuda:0",
         offload_device: "cpu",
         seed: 42,
+        inherit_pipe_seed: true,
         resolution: 2048,
         max_resolution: 3840,
         batch_size: 1,
@@ -60,6 +140,28 @@ const DEFAULT_DATA = {
         use_internal_rmbg: false,
         preset: "balanced",
         use_sam3_details_recovery: true,
+        use_preset_values: true,
+        tolerance: 0.20,
+        softness: 0.16,
+        despill_strength: 0.50,
+        edge_width: 3,
+        matte_cleanup: 0.20,
+        foreground_recover: 0.35,
+        edge_decontaminate: 0.70,
+        edge_choke: 0.20,
+        matte_method: "guided_edge",
+        screen_mode: "from_background",
+        output_mode: "straight_rgba",
+        sam3_model: "",
+        sam3_segmentor: "image",
+        sam3_device: "auto",
+        sam3_precision: "bf16",
+        sam3_prompt: "face, clothes, accessories, hat, boots, eyes",
+        sam3_threshold: 0.40,
+        sam3_add_background: "none",
+        sam3_detection_limit: -1,
+        sam3_erode_radius: 4,
+        sam3_min_foreground_overlap: 0.55,
     },
     ui: {
         selected_preview: "pose_generation",
@@ -138,7 +240,7 @@ const CSS = `
 .vnccs-pipe-settings {
     border-right: 1px solid rgba(255,143,163,0.16);
     background: #101018;
-    padding: 10px;
+    padding: 10px 10px 64px;
     overflow-y: auto;
 }
 .vnccs-seedvr-cards { display:flex; flex-direction:column; gap:7px; }
@@ -161,6 +263,39 @@ const CSS = `
 .vnccs-seedvr-download { margin-top:2px; width:100%; padding:7px 9px; border:1px solid rgba(255,143,163,.32); border-radius:7px; background:rgba(255,143,163,.08); color:#ffb4c1; font-family:inherit; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; cursor:pointer; }
 .vnccs-seedvr-download:hover { background:rgba(255,143,163,.14); }
 .vnccs-seedvr-download:disabled { opacity:.45; cursor:wait; }
+.vnccs-pipe-settings-open {
+    position: absolute;
+    left: 12px;
+    bottom: 12px;
+    z-index: 12;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    width: 266px;
+    min-height: 38px;
+    border: 1px solid rgba(255,143,163,0.46);
+    border-radius: 8px;
+    background: rgba(25,22,34,0.96);
+    color: #ffb6c8;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.38);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+.vnccs-pipe-settings-open-icon {
+    flex: 0 0 auto;
+    font-size: 18px;
+    line-height: 1;
+    letter-spacing: 0;
+}
+.vnccs-pipe-settings-open:hover {
+    border-color: rgba(255,143,163,0.82);
+    background: rgba(255,143,163,0.14);
+}
 .vnccs-pipe-main {
     min-width: 0;
     display: grid;
@@ -429,6 +564,112 @@ const CSS = `
     background: rgba(24,24,34,0.98);
     box-shadow: 0 18px 48px rgba(0,0,0,0.45);
     overflow: hidden;
+}
+.vnccs-pipe-modal.is-settings {
+    width: min(940px, 100%);
+    max-height: calc(100% - 12px);
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+}
+.vnccs-pipe-modal.is-settings .vnccs-pipe-modal-body {
+    overflow-y: auto;
+    white-space: normal;
+}
+.vnccs-pipe-settings-intro {
+    margin: 0 0 12px;
+    color: #9898a8;
+    line-height: 1.45;
+}
+.vnccs-pipe-settings-groups {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    align-items: start;
+}
+.vnccs-pipe-settings-group {
+    min-width: 0;
+    border: 1px solid rgba(255,143,163,0.16);
+    border-radius: 8px;
+    background: rgba(10,10,15,0.48);
+    overflow: hidden;
+}
+.vnccs-pipe-settings-group-title {
+    padding: 9px 10px;
+    color: #ffb6c8;
+    background: rgba(31,29,42,0.96);
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+.vnccs-pipe-settings-group-fields {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    padding: 10px;
+}
+.vnccs-pipe-settings-field {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 4px;
+}
+.vnccs-pipe-settings-field.is-wide {
+    grid-column: 1 / -1;
+}
+.vnccs-pipe-settings-field.is-check {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    min-height: 28px;
+}
+.vnccs-pipe-settings-field-label {
+    color: #a6a6b6;
+    font-size: 10px;
+    font-weight: 700;
+}
+.vnccs-pipe-settings-field input:not([type="checkbox"]),
+.vnccs-pipe-settings-field select,
+.vnccs-pipe-settings-field textarea {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 7px;
+    background: rgba(255,255,255,0.045);
+    color: #e8e8f0;
+    color-scheme: dark;
+    font-family: inherit;
+    font-size: 11px;
+    padding: 7px 8px;
+}
+.vnccs-pipe-settings-field textarea {
+    min-height: 82px;
+    resize: vertical;
+}
+.vnccs-pipe-settings-note {
+    grid-column: 1 / -1;
+    color: #77778a;
+    font-size: 10px;
+    line-height: 1.4;
+}
+.vnccs-pipe-modal-actions.is-settings {
+    gap: 8px;
+    padding-top: 12px;
+    background: rgba(24,24,34,0.98);
+}
+.vnccs-pipe-modal-btn.is-secondary {
+    border-color: rgba(255,255,255,0.14);
+    background: rgba(255,255,255,0.055);
+    color: #cfcfda;
+}
+.vnccs-pipe-modal-btn.is-reset {
+    margin-right: auto;
+}
+@media (max-width: 760px) {
+    .vnccs-pipe-settings-groups {
+        grid-template-columns: 1fr;
+    }
 }
 .vnccs-pipe-modal-title {
     padding: 14px 16px;
@@ -790,7 +1031,19 @@ class CharacterGeneratorWidget {
         const main = document.createElement("div");
         main.className = "vnccs-pipe-main";
         main.append(this.previewEl, this.chainEl);
-        root.append(this.settingsEl, main);
+        this.settingsButton = document.createElement("button");
+        this.settingsButton.type = "button";
+        this.settingsButton.className = "vnccs-pipe-settings-open";
+        const settingsIcon = document.createElement("span");
+        settingsIcon.className = "vnccs-pipe-settings-open-icon";
+        settingsIcon.setAttribute("aria-hidden", "true");
+        settingsIcon.textContent = "⚙";
+        const settingsLabel = document.createElement("span");
+        settingsLabel.textContent = "Generator Settings";
+        this.settingsButton.append(settingsIcon, settingsLabel);
+        this.settingsButton.onclick = () => this.openGeneratorSettings();
+        this.protectNativeControl(this.settingsButton);
+        root.append(this.settingsEl, main, this.settingsButton);
 
         this.node.addDOMWidget("character_generator_ui", "ui", root, {
             serialize: false,
@@ -977,8 +1230,401 @@ class CharacterGeneratorWidget {
         this.syncCharacterSourceData();
         if (!this.data[section] || typeof this.data[section] !== "object") this.data[section] = {};
         this.data[section][key] = value;
+        if (section === "bg_remove" && key === "preset") {
+            this.data.bg_remove.use_preset_values = true;
+        }
+        if (this.isClone && section === "common" && key === "target_size") {
+            this.data.pose_generation.target_size = value;
+            this.data.remove_clothes.target_size = value;
+        }
         writeData(this.node, this.data, { notify: false });
         this.saveBrowserState();
+    }
+
+    generatorSettingsGroups() {
+        const number = (section, key, label, min, max, step = 1, extra = {}) => ({
+            section, key, label, type: "number", min, max, step, ...extra,
+        });
+        const text = (section, key, label, extra = {}) => ({ section, key, label, type: "text", ...extra });
+        const check = (section, key, label, extra = {}) => ({ section, key, label, type: "checkbox", wide: true, ...extra });
+        const select = (section, key, label, options, extra = {}) => ({
+            section, key, label, type: "select", options, ...extra,
+        });
+        const textarea = (section, key, label, extra = {}) => ({
+            section, key, label, type: "textarea", wide: true, ...extra,
+        });
+        const groups = [];
+
+        if (!this.isEmotions) {
+            const poseTargetSection = this.isClone ? "common" : "pose_generation";
+            groups.push({
+                title: "VNCCS QWEN Encoder · Pose Generation",
+                fields: [
+                    number(poseTargetSection, "target_size", "target_size", 512, 4096, 8),
+                    select("pose_generation", "upscale_method", "upscale_method", ["lanczos", "bicubic", "area"]),
+                    select("pose_generation", "crop_method", "crop_method", ["disabled", "pad", "center"]),
+                    number("pose_generation", "latent_image_index", "latent_image_index", 1, 3, 1),
+                    number("pose_generation", "vl_size", "vl_size", 256, 1024, 8),
+                    select("pose_generation", "background_color", "background_color", ["from_generator", "White", "Green", "Blue"]),
+                    number("pose_generation", "weight1", "weight1", 0, 2, 0.01),
+                    number("pose_generation", "weight2", "weight2", 0, 2, 0.01),
+                    number("pose_generation", "weight3", "weight3", 0, 2, 0.01),
+                    text("pose_generation", "image1_name", "image1_name"),
+                    text("pose_generation", "image2_name", "image2_name"),
+                    text("pose_generation", "image3_name", "image3_name"),
+                    check("pose_generation", "qwen_2511", "qwen_2511"),
+                    textarea("pose_generation", "instruction", "instruction"),
+                ],
+            });
+            groups.push({
+                title: "KSampler · Pose Generation",
+                fields: [
+                    check("pose_sampler", "inherit_pipe", "Use sampler settings from connected pipe"),
+                    number("pose_sampler", "seed", "seed", 0, Number.MAX_SAFE_INTEGER, 1),
+                    number("pose_sampler", "steps", "steps", 1, 10000, 1),
+                    number("pose_sampler", "cfg", "cfg", 0, 100, 0.01),
+                    select("pose_sampler", "sampler_name", "sampler_name", [], { nodeName: "KSampler", inputName: "sampler_name" }),
+                    select("pose_sampler", "scheduler", "scheduler", [], { nodeName: "KSampler", inputName: "scheduler" }),
+                    number("pose_sampler", "denoise", "denoise", 0, 1, 0.01),
+                ],
+                note: "Seed, steps, CFG, sampler and scheduler are used only when pipe inheritance is disabled. Denoise is always local.",
+            });
+            groups.push({
+                title: "VAEDecodeTiled",
+                fields: [
+                    number("vae_decode", "tile_size", "tile_size", 64, 4096, 8),
+                    number("vae_decode", "overlap", "overlap", 0, 4096, 8),
+                    number("vae_decode", "temporal_size", "temporal_size", 1, 4096, 1),
+                    number("vae_decode", "temporal_overlap", "temporal_overlap", 0, 4096, 1),
+                ],
+            });
+            if (this.isClone) {
+                groups.push({
+                    title: "VNCCS QWEN Encoder · Remove Clothes",
+                    fields: [
+                        textarea("remove_clothes", "prompt", "prompt"),
+                        select("remove_clothes", "upscale_method", "upscale_method", ["lanczos", "bicubic", "area"]),
+                        select("remove_clothes", "crop_method", "crop_method", ["disabled", "pad", "center"]),
+                        number("remove_clothes", "latent_image_index", "latent_image_index", 1, 3, 1),
+                        number("remove_clothes", "vl_size", "vl_size", 256, 1024, 8),
+                        select("remove_clothes", "background_color", "background_color", ["White", "Green", "Blue"]),
+                        number("remove_clothes", "weight1", "weight1", 0, 2, 0.01),
+                        number("remove_clothes", "weight2", "weight2", 0, 2, 0.01),
+                        number("remove_clothes", "weight3", "weight3", 0, 2, 0.01),
+                        text("remove_clothes", "image1_name", "image1_name"),
+                        text("remove_clothes", "image2_name", "image2_name"),
+                        text("remove_clothes", "image3_name", "image3_name"),
+                        check("remove_clothes", "qwen_2511", "qwen_2511"),
+                        textarea("remove_clothes", "instruction", "instruction"),
+                    ],
+                    note: "target_size is shared with the clone pose-generation encoder.",
+                });
+                groups.push({
+                    title: "KSampler · Remove Clothes",
+                    fields: [
+                        check("remove_clothes_sampler", "inherit_pipe", "Use sampler settings from connected pipe"),
+                        number("remove_clothes_sampler", "seed", "seed", 0, Number.MAX_SAFE_INTEGER, 1),
+                        number("remove_clothes_sampler", "steps", "steps", 1, 10000, 1),
+                        number("remove_clothes_sampler", "cfg", "cfg", 0, 100, 0.01),
+                        select("remove_clothes_sampler", "sampler_name", "sampler_name", [], { nodeName: "KSampler", inputName: "sampler_name" }),
+                        select("remove_clothes_sampler", "scheduler", "scheduler", [], { nodeName: "KSampler", inputName: "scheduler" }),
+                        number("remove_clothes_sampler", "denoise", "denoise", 0, 1, 0.01),
+                    ],
+                    note: "Seed, steps, CFG, sampler and scheduler are used only when pipe inheritance is disabled. Denoise is always local.",
+                });
+            }
+
+            groups.push({
+                title: "Generator Upscaler",
+                fields: [
+                    select("upscaler", "mode", "mode", ["seedvr", "gan", "off"]),
+                    check("upscaler", "inherit_pipe_seed", "Use seed from connected pipe"),
+                    number("upscaler", "seed", "seed", 0, Number.MAX_SAFE_INTEGER, 1),
+                ],
+            });
+            groups.push({
+                title: "Native SeedVR2",
+                fields: [
+                    select("upscaler", "model", "diffusion model", WORKFLOW_UPSCALER_DIT_MODELS, { nodeName: "UNETLoader", inputName: "unet_name" }),
+                    select("upscaler", "vae", "VAE", WORKFLOW_UPSCALER_VAE_MODELS, { nodeName: "VAELoader", inputName: "vae_name" }),
+                    select("upscaler", "color_correction", "color correction", SEEDVR_COLOR_CORRECTION_MODES, { nodeName: "SeedVR2PostProcessing", inputName: "color_correction_method" }),
+                ],
+            });
+            groups.push({
+                title: "UpscaleModelLoader · GAN",
+                fields: [
+                    select("upscaler", "gan_model", "model_name", this.ganUpscaleModels, { nodeName: "UpscaleModelLoader", inputName: "model_name", wide: true }),
+                ],
+            });
+        } else {
+            groups.push({
+                title: "UltralyticsDetectorProvider",
+                fields: [
+                    select("emotion_generation", "bbox_model", "bbox detector model", [], { nodeName: "UltralyticsDetectorProvider", inputName: "model_name", wide: true }),
+                    select("emotion_generation", "segm_model", "segmentation detector model", [], { nodeName: "UltralyticsDetectorProvider", inputName: "model_name", wide: true }),
+                ],
+            });
+            groups.push({
+                title: "SAMLoader",
+                fields: [
+                    check("emotion_generation", "use_sam", "Connect SAM and segmentation detector to FaceDetailer"),
+                    select("emotion_generation", "sam_model", "model_name", [], { nodeName: "SAMLoader", inputName: "model_name", wide: true }),
+                    select("emotion_generation", "sam_device_mode", "device_mode", ["AUTO", "Prefer GPU", "CPU"], { nodeName: "SAMLoader", inputName: "device_mode" }),
+                ],
+            });
+            groups.push({
+                title: "FaceDetailer",
+                fields: [
+                    number("emotion_generation", "guide_size", "guide_size", 64, 16384, 8),
+                    check("emotion_generation", "guide_size_for", "guide_size_for"),
+                    number("emotion_generation", "max_size", "max_size", 64, 16384, 8),
+                    check("emotion_generation", "inherit_pipe_sampler", "Use sampler and scheduler from connected pipe"),
+                    select("emotion_generation", "sampler_name", "sampler_name", [], { nodeName: "FaceDetailer", inputName: "sampler_name" }),
+                    select("emotion_generation", "scheduler", "scheduler", [], { nodeName: "FaceDetailer", inputName: "scheduler" }),
+                    number("emotion_generation", "feather", "feather", 0, 1024, 1),
+                    check("emotion_generation", "noise_mask", "noise_mask"),
+                    check("emotion_generation", "force_inpaint", "force_inpaint"),
+                    number("emotion_generation", "bbox_threshold", "bbox_threshold", 0, 1, 0.01),
+                    number("emotion_generation", "bbox_dilation", "bbox_dilation", 0, 1024, 1),
+                    number("emotion_generation", "bbox_crop_factor", "bbox_crop_factor", 1, 100, 0.01),
+                    select("emotion_generation", "sam_detection_hint", "sam_detection_hint", ["center-1", "horizontal-2", "vertical-2", "rect-4", "diamond-4", "mask-area", "mask-points", "mask-point-bbox", "none"], { nodeName: "FaceDetailer", inputName: "sam_detection_hint" }),
+                    number("emotion_generation", "sam_dilation", "sam_dilation", 0, 1024, 1),
+                    number("emotion_generation", "sam_threshold", "sam_threshold", 0, 1, 0.01),
+                    number("emotion_generation", "sam_bbox_expansion", "sam_bbox_expansion", 0, 1024, 1),
+                    number("emotion_generation", "sam_mask_hint_threshold", "sam_mask_hint_threshold", 0, 1, 0.01),
+                    select("emotion_generation", "sam_mask_hint_use_negative", "sam_mask_hint_use_negative", ["False", "True"], { nodeName: "FaceDetailer", inputName: "sam_mask_hint_use_negative" }),
+                    number("emotion_generation", "drop_size", "drop_size", 0, 4096, 1),
+                    number("emotion_generation", "cycle", "cycle", 1, 100, 1),
+                    check("emotion_generation", "inpaint_model", "inpaint_model"),
+                    number("emotion_generation", "noise_mask_feather", "noise_mask_feather", 0, 1024, 1),
+                    check("emotion_generation", "tiled_encode", "tiled_encode"),
+                    check("emotion_generation", "tiled_decode", "tiled_decode"),
+                ],
+                note: "Steps and CFG come from the connected pipe. Face Detailer denoise is controlled in the main panel. Sampler and scheduler can optionally be overridden here. Seed remains per emotion item.",
+            });
+            groups.push({
+                title: "VNCCS Emotion Matte Merge",
+                fields: [
+                    number("emotion_generation", "matte_expand_radius", "matte_expand_radius", 0, 256, 1),
+                    number("emotion_generation", "matte_feather_radius", "matte_feather_radius", 0, 256, 1),
+                    number("emotion_generation", "chroma_context", "chroma_context", 0, 1024, 1),
+                ],
+                note: "These parameters affect only the FaceDetailer region. The original sprite alpha remains untouched elsewhere.",
+            });
+        }
+
+        groups.push({
+            title: "VNCCS Chroma Key",
+            fields: [
+                select("bg_remove", "preset", "preset", ["disabled", "ultra_light", "light", "balanced", "strong", "aggressive"]),
+                check("bg_remove", "use_preset_values", "Use values from selected preset"),
+                number("bg_remove", "tolerance", "tolerance", 0, 1, 0.01),
+                number("bg_remove", "softness", "softness", 0.001, 1, 0.01),
+                number("bg_remove", "despill_strength", "despill_strength", 0, 1, 0.01),
+                number("bg_remove", "edge_width", "edge_width", 0, 32, 1),
+                number("bg_remove", "matte_cleanup", "matte_cleanup", 0, 1, 0.01),
+                number("bg_remove", "foreground_recover", "foreground_recover", 0, 1, 0.01),
+                number("bg_remove", "edge_decontaminate", "edge_decontaminate", 0, 1, 0.01),
+                number("bg_remove", "edge_choke", "edge_choke", 0, 1, 0.01),
+                select("bg_remove", "matte_method", "matte_method", ["chroma_soft", "guided_edge", "pymatting_if_available"]),
+                select("bg_remove", "screen_mode", "screen_mode", ["from_background", "auto", "green", "blue", "red"]),
+                select("bg_remove", "output_mode", "output_mode", ["straight_rgba", "premultiplied_rgba"]),
+                check("bg_remove", "use_sam3_details_recovery", "Use SAM3 recovery mask"),
+            ],
+            note: "When preset values are enabled, the individual chroma parameters are retained but the preset controls processing.",
+        });
+        groups.push({
+            title: "Easy SAM3 · Model Loader",
+            fields: [
+                text("bg_remove", "sam3_model", "model (blank = managed VNCCS model)", { wide: true }),
+                select("bg_remove", "sam3_segmentor", "segmentor", ["image"], { nodeName: "LoadSam3Model", inputName: "segmentor" }),
+                select("bg_remove", "sam3_device", "device", ["auto", "cuda", "cpu", "mps"], { nodeName: "LoadSam3Model", inputName: "device" }),
+                select("bg_remove", "sam3_precision", "precision", ["bf16", "fp16", "fp32"], { nodeName: "LoadSam3Model", inputName: "precision" }),
+            ],
+        });
+        groups.push({
+            title: "Easy SAM3 · Image Segmentation / Recovery",
+            fields: [
+                textarea("bg_remove", "sam3_prompt", "prompt"),
+                number("bg_remove", "sam3_threshold", "threshold", 0, 1, 0.01),
+                select("bg_remove", "sam3_add_background", "add_background", ["none", "black", "white", "green", "blue"], { nodeName: "Sam3ImageSegmentation", inputName: "add_background" }),
+                number("bg_remove", "sam3_detection_limit", "detection_limit", -1, 10000, 1),
+                number("bg_remove", "sam3_erode_radius", "recovery erode radius", 0, 256, 1),
+                number("bg_remove", "sam3_min_foreground_overlap", "minimum foreground overlap", 0, 1, 0.01),
+            ],
+        });
+        return groups;
+    }
+
+    settingsFieldOptions(field, currentValue) {
+        const spec = field.nodeName && field.inputName ? this.getInputSpec(field.nodeName, field.inputName) : null;
+        const nodeOptions = Array.isArray(spec?.[0]) ? spec[0] : [];
+        return uniqueOptions([currentValue, ...(field.options || []), ...nodeOptions]);
+    }
+
+    createGeneratorSettingsField(field, draft) {
+        if (!draft[field.section] || typeof draft[field.section] !== "object") draft[field.section] = {};
+        const wrap = document.createElement("label");
+        wrap.className = "vnccs-pipe-settings-field"
+            + (field.wide ? " is-wide" : "")
+            + (field.type === "checkbox" ? " is-check" : "");
+        const caption = document.createElement("span");
+        caption.className = "vnccs-pipe-settings-field-label";
+        caption.textContent = field.label;
+        let input;
+        const current = draft[field.section][field.key];
+        if (field.type === "checkbox") {
+            input = document.createElement("input");
+            input.type = "checkbox";
+            input.checked = booleanValue(current, false);
+            input.onchange = () => {
+                draft[field.section][field.key] = input.checked;
+            };
+            wrap.append(input, caption);
+        } else if (field.type === "select") {
+            input = document.createElement("select");
+            for (const value of this.settingsFieldOptions(field, current)) {
+                const option = document.createElement("option");
+                option.value = String(value);
+                option.textContent = String(value);
+                input.appendChild(option);
+            }
+            input.value = String(current ?? "");
+            input.onchange = () => {
+                draft[field.section][field.key] = input.value;
+                if (field.section === "upscaler" && field.key === "attention_mode") {
+                    draft.upscaler.attention_mode_manual = true;
+                }
+            };
+            wrap.append(caption, input);
+        } else if (field.type === "textarea") {
+            input = document.createElement("textarea");
+            input.value = String(current ?? "");
+            input.oninput = () => {
+                draft[field.section][field.key] = input.value;
+            };
+            wrap.append(caption, input);
+        } else {
+            input = document.createElement("input");
+            input.type = field.type || "text";
+            if (field.type === "number") {
+                input.min = String(field.min);
+                input.max = String(field.max);
+                input.step = String(field.step);
+            }
+            input.value = String(current ?? "");
+            input.oninput = () => {
+                if (field.type !== "number") {
+                    draft[field.section][field.key] = input.value;
+                    return;
+                }
+                const value = Number(String(input.value).replace(",", "."));
+                if (!Number.isFinite(value)) return;
+                draft[field.section][field.key] = Math.max(field.min, Math.min(field.max, value));
+            };
+            wrap.append(caption, input);
+        }
+        this.protectNativeControl(input);
+        return wrap;
+    }
+
+    openGeneratorSettings() {
+        this.closeModal();
+        const draft = JSON.parse(JSON.stringify(this.data));
+        const backdrop = document.createElement("div");
+        backdrop.className = "vnccs-pipe-modal-backdrop";
+        const modal = document.createElement("div");
+        modal.className = "vnccs-pipe-modal is-settings";
+        const heading = document.createElement("div");
+        heading.className = "vnccs-pipe-modal-title";
+        heading.textContent = `${this.title} · Settings`;
+        const body = document.createElement("div");
+        body.className = "vnccs-pipe-modal-body";
+        const intro = document.createElement("p");
+        intro.className = "vnccs-pipe-settings-intro";
+        intro.textContent = "All processing controls are grouped by the internal node that receives them. Connected MODEL, CLIP, VAE, image and conditioning inputs remain managed by the generator.";
+        const groupsEl = document.createElement("div");
+        groupsEl.className = "vnccs-pipe-settings-groups";
+        const groups = this.generatorSettingsGroups();
+        const renderGroups = () => {
+            groupsEl.replaceChildren();
+            for (const group of groups) {
+                const groupEl = document.createElement("section");
+                groupEl.className = "vnccs-pipe-settings-group";
+                const title = document.createElement("div");
+                title.className = "vnccs-pipe-settings-group-title";
+                title.textContent = group.title;
+                const fields = document.createElement("div");
+                fields.className = "vnccs-pipe-settings-group-fields";
+                for (const field of group.fields) {
+                    fields.appendChild(this.createGeneratorSettingsField(field, draft));
+                }
+                if (group.note) {
+                    const note = document.createElement("div");
+                    note.className = "vnccs-pipe-settings-note";
+                    note.textContent = group.note;
+                    fields.appendChild(note);
+                }
+                groupEl.append(title, fields);
+                groupsEl.appendChild(groupEl);
+            }
+        };
+        renderGroups();
+        body.append(intro, groupsEl);
+
+        const actions = document.createElement("div");
+        actions.className = "vnccs-pipe-modal-actions is-settings";
+        const reset = document.createElement("button");
+        reset.type = "button";
+        reset.className = "vnccs-pipe-modal-btn is-secondary is-reset";
+        reset.textContent = "Load Defaults";
+        reset.title = "Restore defaults in this dialog. They are saved only after Apply.";
+        reset.onclick = () => {
+            for (const group of groups) {
+                for (const field of group.fields) {
+                    const sectionDefaults = DEFAULT_DATA[field.section];
+                    if (!sectionDefaults || !(field.key in sectionDefaults)) continue;
+                    draft[field.section] = draft[field.section] || {};
+                    draft[field.section][field.key] = sectionDefaults[field.key];
+                }
+            }
+            renderGroups();
+        };
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "vnccs-pipe-modal-btn is-secondary";
+        cancel.textContent = "Cancel";
+        cancel.onclick = () => this.closeModal();
+        const apply = document.createElement("button");
+        apply.type = "button";
+        apply.className = "vnccs-pipe-modal-btn";
+        apply.textContent = "Apply";
+        apply.onclick = () => {
+            this.data = deepMerge(DEFAULT_DATA, draft);
+            this.data.bg_remove.use_internal_rmbg = false;
+            writeData(this.node, this.data);
+            this.saveBrowserState();
+            this.renderSettings();
+            this.closeModal();
+        };
+        this.protectNativeControl(reset);
+        this.protectNativeControl(cancel);
+        this.protectNativeControl(apply);
+        actions.append(reset, cancel, apply);
+        modal.append(heading, body, actions);
+        backdrop.appendChild(modal);
+        backdrop.onclick = event => {
+            if (event.target === backdrop) this.closeModal();
+        };
+        modal.onkeydown = event => {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                this.closeModal();
+            }
+        };
+        this.root.appendChild(backdrop);
+        this.modalEl = backdrop;
+        requestAnimationFrame(() => modal.querySelector("input, select, textarea")?.focus({ preventScroll: true }));
     }
 
     snapshotStageState() {
@@ -1411,9 +2057,25 @@ class CharacterGeneratorWidget {
     }
 
     async loadNodeDefs() {
-        const names = ["UNETLoader", "VAELoader", ...NATIVE_SEEDVR_NODE_NAMES, "UpscaleModelLoader"];
+        const names = [
+            "VNCCS_QWEN_Encoder",
+            "KSampler",
+            "VAEDecodeTiled",
+            "UNETLoader",
+            "VAELoader",
+            ...NATIVE_SEEDVR_NODE_NAMES,
+            "UpscaleModelLoader",
+            "VNCCSChromaKey",
+            "UltralyticsDetectorProvider",
+            "SAMLoader",
+            "FaceDetailer",
+            "LoadSam3Model",
+            "easy sam3ModelLoader",
+            "Sam3ImageSegmentation",
+            "easy sam3ImageSegmentation",
+        ];
         let allNodeDefs = null;
-        for (const name of names) {
+        await Promise.all(names.map(async name => {
             try {
                 const r = await api.fetchApi(`/object_info/${encodeURIComponent(name)}`);
                 if (r.ok) {
@@ -1421,9 +2083,9 @@ class CharacterGeneratorWidget {
                     this.nodeDefs[name] = data?.[name];
                 }
             } catch {
-                // Keep defaults if optional upscaler nodes are unavailable.
+                // Keep static defaults when an optional internal node is unavailable.
             }
-        }
+        }));
         if (names.some(name => !this.nodeDefs[name])) {
             try {
                 const r = await api.fetchApi("/object_info");
@@ -1524,9 +2186,12 @@ class CharacterGeneratorWidget {
     protectNativeControl(input) {
         if (!input || input._vnccsNativeControlProtected) return input;
         input._vnccsNativeControlProtected = true;
-        for (const eventName of ["pointerdown", "mousedown", "mouseup", "click", "dblclick", "touchstart", "touchend", "keydown"]) {
+        for (const eventName of ["pointerdown", "mousedown", "mouseup", "dblclick", "touchstart", "touchend", "keydown"]) {
             input.addEventListener(eventName, event => event.stopPropagation(), true);
         }
+        // Keep the click inside the DOM widget without cancelling the control's
+        // own target-phase handler (for example the settings modal opener).
+        input.addEventListener("click", event => event.stopPropagation());
         return input;
     }
 
@@ -1558,7 +2223,6 @@ class CharacterGeneratorWidget {
             resolution: "Output resolution target for SeedVR upscaling.",
             color_correction: "SeedVR color correction mode. Try adain, wavelet, or none if lab causes color shifts on your GPU.",
             attention_mode: "Attention backend for SeedVR. Auto-detected from installed ComfyUI packages until changed manually.",
-            use_internal_rmbg: "Uses the built-in background remover instead of relying only on chroma key.",
             preset: "Strength preset for chroma/background removal.",
             use_sam3_details_recovery: "Uses Easy SAM3 to restore character details after background removal.",
             use_sam: "Passes SAM and the optional segmentation detector into FaceDetailer."
@@ -1912,7 +2576,7 @@ class CharacterGeneratorWidget {
                     <div class="vnccs-pipe-empty" style="min-height:auto;padding:8px;">${count} costume / emotion pair(s)</div>
                 </div>`;
             this.settingsEl.appendChild(info);
-            this.settingsEl.appendChild(this.block("Emotion Strenght", [
+            this.settingsEl.appendChild(this.block("Emotion Strength", [
                 this.faceDenoiseSlider(),
             ]));
             const faceDetailerFields = [
