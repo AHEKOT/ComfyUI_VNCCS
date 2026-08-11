@@ -24,6 +24,7 @@ from nodes.vnccs_control_center import (
     _dedupe_config_by_name,
     _enrich_config_entries,
     _merge_custom_loras,
+    _merge_packaged_kind_extensions,
     _remove_custom_lora,
     _sync_packaged_cc_config,
     _get_cc_config,
@@ -330,6 +331,24 @@ class TestEnrichConfigEntries:
 
 
 class TestPackagedConfigSync:
+    def test_remote_catalog_keeps_packaged_klein_extensions(self, tmp_path, monkeypatch):
+        target = tmp_path / "control_center.json"
+        target.write_text(json.dumps({
+            "models": [{"name": "Flux Klein", "kind": "Klein9b", "version": "1.0"}],
+            "clip": [], "vae": [], "lora": [], "controlnet": [], "other": [],
+        }), encoding="utf-8")
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._get_packaged_cc_path",
+            lambda: str(target),
+        )
+
+        merged = _merge_packaged_kind_extensions({
+            "models": [{"name": "Qwen", "kind": "QIE2511"}],
+            "clip": [], "vae": [], "lora": [], "controlnet": [], "other": [],
+        })
+
+        assert [entry["name"] for entry in merged["models"]] == ["Qwen", "Flux Klein"]
+
     def test_updates_packaged_catalog_atomically(self, tmp_path, monkeypatch):
         target = tmp_path / "control_center.json"
         target.write_text('{"name": "old"}\n', encoding="utf-8")
@@ -415,6 +434,93 @@ class TestPackagedConfigSync:
         assert clothes_core["version"] == "0.3.7"
         assert clothes_core["local_path"].endswith("VNCCS_QIE2511_ClothesCore-RC3.7.safetensors")
         assert all(entry["name"] != "VNCCS Emotion Core" for entry in config["lora"])
+
+    def test_packaged_catalog_contains_complete_klein_family(self):
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "control_center.json")
+        with open(path, "r", encoding="utf-8") as handle:
+            config = _dedupe_config_by_name(json.load(handle))
+
+        klein_models = [entry for entry in config["models"] if entry.get("kind") == "Klein9b"]
+        klein_clips = [entry for entry in config["clip"] if entry.get("kind") == "Klein9b"]
+        klein_vaes = [entry for entry in config["vae"] if entry.get("kind") == "Klein9b"]
+        klein_loras = [entry for entry in config["lora"] if entry.get("kind") == "Klein9b"]
+
+        assert [entry["hf_path"] for entry in klein_models] == ["flux-2-klein-9b-fp8.safetensors"]
+        assert [entry["hf_repo"] for entry in klein_models] == ["black-forest-labs/FLUX.2-klein-9b-fp8"]
+        assert [entry["clip_type"] for entry in klein_clips] == ["flux2"]
+        assert [entry["hf_repo"] for entry in klein_clips] == [
+            "Comfy-Org/vae-text-encorder-for-flux-klein-9b"
+        ]
+        assert [entry["hf_path"] for entry in klein_clips] == [
+            "split_files/text_encoders/qwen_3_8b_fp8mixed.safetensors"
+        ]
+        assert [entry["hf_repo"] for entry in klein_vaes] == [
+            "Comfy-Org/vae-text-encorder-for-flux-klein-9b"
+        ]
+        assert [entry["hf_path"] for entry in klein_vaes] == [
+            "split_files/vae/flux2-vae.safetensors"
+        ]
+        assert [entry["local_path"] for entry in klein_vaes] == ["models/vae/flux2-vae.safetensors"]
+        assert {entry["type"] for entry in klein_loras} == {"Helper"}
+        assert {entry["name"] for entry in klein_loras} == {
+            "VNCCS Clothes Core Klein9b",
+            "VNCCS Pose Studio Klein9b",
+        }
+
+
+class TestControlCenterFamilyState:
+    def test_builds_klein_pipe_from_family_scoped_state(self, monkeypatch):
+        model = object()
+        clip = object()
+        vae = object()
+        model_entry = {"name": "Flux Klein 9B FP8", "type": "unet", "kind": "Klein9b"}
+        monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
+            "models": [model_entry],
+            "clip": [{"name": "klein_clip", "kind": "Klein9b"}],
+            "vae": [{"name": "klein_vae", "kind": "Klein9b"}],
+            "lora": [],
+        })
+        captured = {}
+
+        def fake_load_model_block(entry, selected_type, settings, config, clips, vae_name, **kwargs):
+            captured.update(entry=entry, selected_type=selected_type, clips=clips, vae_name=vae_name)
+            return model, clip, vae
+
+        monkeypatch.setattr("nodes.vnccs_control_center._load_model_block", fake_load_model_block)
+        monkeypatch.setattr("nodes.vnccs_control_center._apply_loras", lambda model, clip, *args, **kwargs: (model, clip))
+
+        pipe = _build_control_center_pipe("demo/repo", {
+            "active_kind": "Klein9b",
+            "selected_types_by_kind": {"QIE2511": "gguf", "Klein9b": "unet"},
+            "selected_models": {"Klein9b:unet": "Flux Klein 9B FP8"},
+            "model_params_by_kind": {
+                "QIE2511": {"steps": 8, "cfg": 2},
+                "Klein9b": {"steps": 4, "cfg": 1, "sampler": "euler", "scheduler": "simple"},
+            },
+        })
+
+        assert captured == {
+            "entry": model_entry,
+            "selected_type": "unet",
+            "clips": ["klein_clip"],
+            "vae_name": "klein_vae",
+        }
+        assert pipe.model_entry == model_entry
+        assert pipe.sample_steps == 4
+        assert pipe.cfg == 1.0
+        assert pipe.sampler_name == "euler"
+
+
+class TestControlCenterFrontendFamilies:
+    def test_frontend_has_family_tabs_and_kind_filters(self):
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web", "vnccs_control_center.js")
+        with open(path, "r", encoding="utf-8") as handle:
+            source = handle.read()
+
+        assert '{ kind: "QIE2511", label: "QIE2511", defaultType: "gguf" }' in source
+        assert '{ kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet" }' in source
+        assert 'this.scrollArea.appendChild(this._renderFamilyTabs())' in source
+        assert 'if (!this._sameKind(entry, selectedKind)) continue;' in source
 
 
 class TestClothesPreviewFrontendContract:

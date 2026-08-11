@@ -70,7 +70,13 @@ _DOWNLOAD_STATUS = {}
 _DOWNLOAD_QUEUE = queue.Queue()
 _CUSTOM_LORAS_FILE = "vnccs_custom_loras.json"
 _PACKAGED_CC_REPO_IDS = {"MIUProject/VNCCS_v3.0"}
-_PIPELINE_LOCAL_LORAS = {"vnccs clothes core", "vnccs pose studio qie2511"}
+_PIPELINE_LOCAL_LORAS = {
+    "vnccs clothes core",
+    "vnccs pose studio qie2511",
+    "vnccs clothes core klein9b",
+    "vnccs pose studio klein9b",
+}
+_PACKAGED_EXTENSION_KINDS = {"klein9b"}
 _FOLDER_MAP = {
     "unet": ["unet", "diffusion_models"],
     "checkpoints": ["checkpoints"],
@@ -472,6 +478,29 @@ def _uses_packaged_cc_config(repo_id):
     return repo_id in _PACKAGED_CC_REPO_IDS and os.path.exists(_get_packaged_cc_path())
 
 
+def _merge_packaged_kind_extensions(data):
+    """Keep bundled model-family additions available until the remote catalog catches up."""
+    if not isinstance(data, dict) or not os.path.exists(_get_packaged_cc_path()):
+        return data
+    try:
+        with open(_get_packaged_cc_path(), "r", encoding="utf-8") as handle:
+            packaged = json.load(handle)
+    except Exception:
+        return data
+
+    merged = dict(data)
+    for category in ("models", "clip", "vae", "lora", "controlnet", "other"):
+        entries = list(data.get(category, []) or [])
+        extensions = [
+            entry for entry in packaged.get(category, []) or []
+            if _entry_kind(entry) in _PACKAGED_EXTENSION_KINDS
+        ]
+        if extensions:
+            entries.extend(extensions)
+            merged[category] = _dedupe_entries_by_name(entries)
+    return merged
+
+
 def _sync_packaged_cc_config(repo_id, data):
     if repo_id not in _PACKAGED_CC_REPO_IDS or not isinstance(data, dict):
         return False
@@ -538,6 +567,7 @@ def _get_cc_config(repo_id, prefer_remote=False):
     with open(path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
     if source == "huggingface":
+        data = _merge_packaged_kind_extensions(data)
         _sync_packaged_cc_config(repo_id, data)
     _CC_CONFIG_CACHE[repo_id] = {"ts": now, "data": data, "source": source}
     return _dedupe_config_by_name(_merge_custom_loras(data))
@@ -1324,11 +1354,21 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None, custom_cl
     except Exception:
         state = {}
 
+    active_kind = str(state.get("active_kind", "") or "").strip()
     selected_type = state.get("selected_type", "")
+    selected_types_by_kind = state.get("selected_types_by_kind", {})
+    if active_kind and isinstance(selected_types_by_kind, dict):
+        selected_type = selected_types_by_kind.get(active_kind, selected_type)
     selected_model = state.get("selected_model", "")
+    selected_models = state.get("selected_models", {})
+    if active_kind and isinstance(selected_models, dict):
+        selected_model = selected_models.get(f"{active_kind}:{selected_type}", selected_model)
     loras = state.get("loras", [])
     type_settings = state.get("type_settings", {})
     model_params = state.get("model_params", {})
+    model_params_by_kind = state.get("model_params_by_kind", {})
+    if active_kind and isinstance(model_params_by_kind, dict):
+        model_params = model_params_by_kind.get(active_kind, model_params)
 
     config = _apply_active_installed_paths(_get_cc_config(repo_id))
     if selected_type == "custom":

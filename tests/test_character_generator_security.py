@@ -13,6 +13,33 @@ pytest.importorskip("torch")
 from nodes import character_generator as cg
 
 
+def test_klein_pipe_selects_klein_encoder_and_helper_loras(monkeypatch):
+    generator = cg.VNCCS_CharacterGenerator()
+    pipe_values = {
+        "clip": object(),
+        "vae": object(),
+        "model_entry": {"name": "Flux Klein 9B FP8", "kind": "Klein9b"},
+    }
+    pipe = type("Pipe", (), {
+        "model_entry": pipe_values["model_entry"],
+        "lora_entries": [
+            {"name": "VNCCS Pose Studio QIE2511", "kind": "QIE2511"},
+            {"name": "VNCCS Pose Studio Klein9b", "kind": "Klein9b"},
+            {"name": "VNCCS Clothes Core", "kind": "QIE2511"},
+            {"name": "VNCCS Clothes Core Klein9b", "kind": "Klein9b"},
+        ],
+        "lora_states": [],
+    })()
+    calls = []
+    monkeypatch.setattr(cg, "_call_comfy_node", lambda class_name, **kwargs: calls.append((class_name, kwargs)) or (1, 2, 3))
+
+    assert generator._encoder_call(pipe_values, "prompt", image1=object()) == (1, 2, 3)
+    assert calls[0][0] == "VNCCS_Flux_Klein_Encoder"
+    assert calls[0][1]["megapixels"] == 1.0
+    assert generator._find_pose_lora(pipe)["name"] == "VNCCS Pose Studio Klein9b"
+    assert generator._find_clothes_lora(pipe)["name"] == "VNCCS Clothes Core Klein9b"
+
+
 def test_character_root_ignores_external_sheets_path(tmp_path, monkeypatch):
     base = tmp_path / "output" / "VNCCS" / "Characters"
     char_root = base / "Alice"

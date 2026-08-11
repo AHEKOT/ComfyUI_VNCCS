@@ -54,6 +54,7 @@ from .vnccs_control_center import (
     _entry_kind,
 )
 from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder
+from .vnccs_flux_klein_encoder import VNCCS_Flux_Klein_Encoder
 from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, VNCCS_RMBG2
 from ..utils import (
     basename_agnostic,
@@ -285,6 +286,7 @@ def _call_comfy_node(class_name, **kwargs):
     if cls is None:
         local_mappings = {
             "VNCCS_QWEN_Encoder": VNCCS_QWEN_Encoder,
+            "VNCCS_Flux_Klein_Encoder": VNCCS_Flux_Klein_Encoder,
             "VNCCS_RMBG2": VNCCS_RMBG2,
             "VNCCSChromaKey": VNCCSChromaKey,
         }
@@ -938,6 +940,8 @@ CHROMA_KEY_PRESETS = {
 
 POSE_GENERATION_LORA_NAME = "VNCCS Pose Studio QIE2511"
 CLOTHES_CORE_LORA_NAME = "VNCCS Clothes Core"
+KLEIN_POSE_GENERATION_LORA_NAME = "VNCCS Pose Studio Klein9b"
+KLEIN_CLOTHES_CORE_LORA_NAME = "VNCCS Clothes Core Klein9b"
 
 
 class VNCCS_CharacterGenerator:
@@ -1166,6 +1170,40 @@ class VNCCS_CharacterGenerator:
         if "anima" in identity:
             return 2048
         return None
+
+    def _is_klein_pipe(self, pipe_values):
+        model_entry = pipe_values.get("model_entry") or {}
+        identity = " ".join([
+            str(model_entry.get("name", "")),
+            str(model_entry.get("local_path", "")),
+            str(_entry_kind(model_entry)),
+        ]).lower()
+        return "klein" in identity
+
+    def _encoder_call(self, pipe_values, prompt, image1=None, image2=None, image3=None, qwen_settings=None):
+        if self._is_klein_pipe(pipe_values):
+            return _call_comfy_node(
+                "VNCCS_Flux_Klein_Encoder",
+                clip=pipe_values["clip"],
+                vae=pipe_values["vae"],
+                prompt=prompt,
+                image1=image1,
+                image2=image2,
+                image3=image3,
+                upscale_method="lanczos",
+                megapixels=1.0,
+                resolution_steps=1,
+            )
+        return _call_comfy_node(
+            "VNCCS_QWEN_Encoder",
+            clip=pipe_values["clip"],
+            vae=pipe_values["vae"],
+            prompt=prompt,
+            image1=image1,
+            image2=image2,
+            image3=image3,
+            **(qwen_settings or {}),
+        )
 
     def _is_anima_pipe(self, pipe_values):
         model_entry = pipe_values.get("model_entry") or {}
@@ -1439,8 +1477,12 @@ class VNCCS_CharacterGenerator:
         states = getattr(pipe, "lora_states", []) or []
         entry = None
         target = str(lora_name or "").strip().lower()
+        model_kind = _entry_kind(getattr(pipe, "model_entry", None))
         for candidate in entries:
             candidate_name = str(candidate.get("name", "")).strip().lower()
+            candidate_kind = _entry_kind(candidate)
+            if candidate_kind and model_kind and candidate_kind != model_kind:
+                continue
             if candidate_name == target or target in candidate_name:
                 entry = candidate
                 break
@@ -1477,10 +1519,14 @@ class VNCCS_CharacterGenerator:
         }
 
     def _find_pose_lora(self, pipe):
-        return self._find_lora(pipe, POSE_GENERATION_LORA_NAME)
+        model_kind = _entry_kind(getattr(pipe, "model_entry", None))
+        name = KLEIN_POSE_GENERATION_LORA_NAME if model_kind == "klein9b" else POSE_GENERATION_LORA_NAME
+        return self._find_lora(pipe, name)
 
     def _find_clothes_lora(self, pipe):
-        return self._find_lora(pipe, CLOTHES_CORE_LORA_NAME)
+        model_kind = _entry_kind(getattr(pipe, "model_entry", None))
+        name = KLEIN_CLOTHES_CORE_LORA_NAME if model_kind == "klein9b" else CLOTHES_CORE_LORA_NAME
+        return self._find_lora(pipe, name)
 
     def _prompt_with_solid_background(self, prompt, background):
         text = str(prompt or "").strip()
@@ -1587,14 +1633,21 @@ class VNCCS_CharacterGenerator:
         character_rgb = VNCCS_MaskExtractor().fill_alpha_with_color(character)[0]
         prompt = self._prompt_with_solid_background(prompt, background)
 
+        encoder_class = "VNCCS_Flux_Klein_Encoder" if self._is_klein_pipe(pipe_values) else "VNCCS_QWEN_Encoder"
+        encoder_kwargs = {
+            "clip": pipe_values["clip"],
+            "vae": pipe_values["vae"],
+            "prompt": prompt,
+            "image2": character_rgb,
+        }
+        if self._is_klein_pipe(pipe_values):
+            encoder_kwargs.update(upscale_method="lanczos", megapixels=1.0, resolution_steps=1)
+        else:
+            encoder_kwargs.update(qwen_settings)
         positive_list, negative_list, latent_list = self._run_list_mapped(
-            "VNCCS_QWEN_Encoder",
+            encoder_class,
             {"image1": pose_parts},
-            clip=pipe_values["clip"],
-            vae=pipe_values["vae"],
-            prompt=prompt,
-            image2=character_rgb,
-            **qwen_settings,
+            **encoder_kwargs,
         )
 
         sampler_model = self._apply_pose_lora_to_model(pipe_values["model"], pipe_values["clip"], pipe, lora_info)
@@ -1634,13 +1687,11 @@ class VNCCS_CharacterGenerator:
         vae_decode = self._vae_decode_settings(vae_decode_settings)
         character_rgb = VNCCS_MaskExtractor().fill_alpha_with_color(character)[0]
 
-        positive, negative, latent = _call_comfy_node(
-            "VNCCS_QWEN_Encoder",
-            clip=pipe_values["clip"],
-            vae=pipe_values["vae"],
-            prompt=settings.get("prompt", DEFAULT_WIDGET_DATA["remove_clothes"]["prompt"]),
+        positive, negative, latent = self._encoder_call(
+            pipe_values,
+            settings.get("prompt", DEFAULT_WIDGET_DATA["remove_clothes"]["prompt"]),
             image1=character_rgb,
-            **qwen_settings,
+            qwen_settings=qwen_settings,
         )
 
         sampler_model = self._apply_lora_to_model(

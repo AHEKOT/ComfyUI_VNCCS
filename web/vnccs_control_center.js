@@ -24,6 +24,10 @@ const DEFAULT_SCHEDULERS = [
 const DEFAULT_MODEL_STEPS = 4;
 const DEFAULT_MODEL_CFG = 1.0;
 const DEFAULT_MODEL_SCHEDULER = "simple";
+const MODEL_FAMILIES = [
+    { kind: "QIE2511", label: "QIE2511", defaultType: "gguf" },
+    { kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet" },
+];
 
 // ─── CSS injection (once per page load) ──────────────────────────────────────
 
@@ -370,6 +374,36 @@ function _injectVNCCSControlCenterStyles() {
     line-height: 1.45;
     color: #9da3b8;
     text-align: center;
+}
+.vnccs-cc-family-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 5px;
+    padding: 6px;
+    margin-bottom: 6px;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 8px;
+    background: #111119;
+}
+.vnccs-cc-family-tab {
+    min-width: 0;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 6px;
+    background: #0d0d13;
+    color: #8e93a8;
+    padding: 8px 6px;
+    font: 700 10px/1.2 inherit;
+    letter-spacing: 0;
+    cursor: pointer;
+}
+.vnccs-cc-family-tab:hover {
+    border-color: rgba(255,143,163,0.3);
+    color: #f4c2ce;
+}
+.vnccs-cc-family-tab--active {
+    border-color: rgba(255,143,163,0.52);
+    background: rgba(255,143,163,0.16);
+    color: #fff3f6;
 }
 .vnccs-cc-model-tabs {
     display: grid;
@@ -1255,9 +1289,13 @@ class VNCCSControlCenterWidget {
         // TECH DEBT: Nunchaku/NVFP entries can remain in old catalogs/state, but
         // are intentionally hidden from the Control Center UI. Delete this after
         // catalogs are cleaned and old workflow JSON is migrated.
-        const preferred = ["gguf", "custom"];
-        const available = new Set(this.config?.available_types ?? []);
-        available.add("custom");
+        const activeKind = this._activeKind();
+        const preferred = activeKind === "Klein9b" ? ["unet"] : ["gguf", "custom"];
+        const available = new Set((this.config?.models ?? [])
+            .filter(entry => this._metaKind(entry).toLowerCase() === activeKind.toLowerCase())
+            .map(entry => entry.type)
+            .filter(Boolean));
+        if (activeKind === "QIE2511") available.add("custom");
         const preferredTabs = preferred.filter(type => available.has(type));
         return preferredTabs.length ? preferredTabs : Array.from(available);
     }
@@ -1275,7 +1313,7 @@ class VNCCSControlCenterWidget {
     }
 
     _syncCustomModelInput() {
-        const selectedType = this.state.selected_type || this._getSelectedType();
+        const selectedType = this._getSelectedType();
         const isCustom = selectedType === "custom";
 
         const sync = (name, type, getIndex, shouldShow) => {
@@ -1301,6 +1339,8 @@ class VNCCSControlCenterWidget {
 
     _setSelectedType(nextType) {
         if (!nextType || this._getSelectedType() === nextType) return;
+        if (!this.state.selected_types_by_kind) this.state.selected_types_by_kind = {};
+        this.state.selected_types_by_kind[this._activeKind()] = nextType;
         this.state.selected_type = nextType;
 
         const variants = this._visibleModelsByType(nextType);
@@ -1350,22 +1390,37 @@ class VNCCSControlCenterWidget {
 
     _getRepoId()     { return (this.node.widgets?.find(w => w.name === "repo_id")?.value ?? "").trim(); }
     _getStateWidget(){ return this.node.widgets?.find(w => w.name === "node_state"); }
+    _activeKind() {
+        const kind = String(this.state.active_kind || "QIE2511");
+        return MODEL_FAMILIES.some(entry => entry.kind === kind) ? kind : "QIE2511";
+    }
+
+    _familyDefinition(kind = this._activeKind()) {
+        return MODEL_FAMILIES.find(entry => entry.kind === kind) || MODEL_FAMILIES[0];
+    }
+
     _getSelectedType(){
         const visibleTabs = this._getModelTypeTabs();
-        const selected = this.state.selected_type;
+        const selected = this.state.selected_types_by_kind?.[this._activeKind()]
+            ?? (this._activeKind() === "QIE2511" ? this.state.selected_type : "");
         if (selected && visibleTabs.includes(selected)) return selected;
-        return visibleTabs[0] || (this.config?.available_types?.[0] ?? "");
+        const preferred = this._familyDefinition().defaultType;
+        return visibleTabs.includes(preferred) ? preferred : (visibleTabs[0] || "");
     }
 
     _getSelectedModelName(type = this._getSelectedType()) {
         const selectedByType = this.state.selected_models ?? {};
-        return selectedByType[type] ?? this.state.selected_model ?? "";
+        const familyKey = `${this._activeKind()}:${type}`;
+        if (selectedByType[familyKey]) return selectedByType[familyKey];
+        if (this._activeKind() === "QIE2511") return selectedByType[type] ?? this.state.selected_model ?? "";
+        return "";
     }
 
     _setSelectedModelName(type, modelName) {
         if (!type || !modelName) return;
         if (!this.state.selected_models) this.state.selected_models = {};
-        this.state.selected_models[type] = modelName;
+        this.state.selected_models[`${this._activeKind()}:${type}`] = modelName;
+        if (this._activeKind() === "QIE2511") this.state.selected_models[type] = modelName;
         if (type === this._getSelectedType()) {
             this.state.selected_model = modelName;
         }
@@ -1391,8 +1446,10 @@ class VNCCSControlCenterWidget {
         // TECH DEBT: Nunchaku and NVFP/UNet entries are still present in
         // control_center.json for future use, but hidden from the UI for now.
         if (type === "custom") return [];
-        if (type !== "gguf") return [];
-        return (this.config?.models || []).filter(m => (!m.type || m.type === "gguf"));
+        const activeKind = this._activeKind().toLowerCase();
+        return (this.config?.models || []).filter(m =>
+            (!m.type || m.type === type) && this._metaKind(m).toLowerCase() === activeKind
+        );
     }
 
     _metaKind(entry) {
@@ -1404,7 +1461,7 @@ class VNCCSControlCenterWidget {
     }
 
     _selectedKind() {
-        return this._metaKind(this._getSelectedModelEntry());
+        return this._metaKind(this._getSelectedModelEntry()) || this._activeKind();
     }
 
     _isQwenFamily(entry = this._getSelectedModelEntry()) {
@@ -1419,6 +1476,50 @@ class VNCCSControlCenterWidget {
     _sameKind(entry, kind = this._selectedKind()) {
         const entryKind = this._metaKind(entry);
         return !entryKind || !kind || entryKind.toLowerCase() === kind.toLowerCase();
+    }
+
+    _currentModelParams() {
+        if (!this.state.model_params_by_kind) this.state.model_params_by_kind = {};
+        const kind = this._activeKind();
+        if (!this.state.model_params_by_kind[kind]) {
+            const legacy = kind === "QIE2511" && this.state.model_params
+                ? this.state.model_params
+                : {};
+            this.state.model_params_by_kind[kind] = {
+                steps: DEFAULT_MODEL_STEPS,
+                cfg: DEFAULT_MODEL_CFG,
+                sampler: "euler",
+                scheduler: DEFAULT_MODEL_SCHEDULER,
+                ...legacy,
+            };
+        }
+        return this.state.model_params_by_kind[kind];
+    }
+
+    _syncActiveFamilyState() {
+        const kind = this._activeKind();
+        const type = this._getSelectedType();
+        if (!this.state.selected_types_by_kind) this.state.selected_types_by_kind = {};
+        this.state.active_kind = kind;
+        this.state.selected_types_by_kind[kind] = type;
+        this.state.selected_type = type;
+        this.state.selected_model = this._getSelectedModelName(type);
+        this.state.model_params = { ...this._currentModelParams() };
+    }
+
+    _setActiveKind(kind) {
+        if (!MODEL_FAMILIES.some(entry => entry.kind === kind) || kind === this._activeKind()) return;
+        this._syncActiveFamilyState();
+        this.state.active_kind = kind;
+        const type = this._getSelectedType();
+        const variants = this._visibleModelsByType(type);
+        if (variants.length && !variants.some(entry => entry.name === this._getSelectedModelName(type))) {
+            this._setSelectedModelName(type, variants[0].name);
+        }
+        this._syncCustomModelInput();
+        this._saveState();
+        this._renderAll();
+        this._scheduleDependencyRefresh(true);
     }
 
     _isTurboLora(entry) {
@@ -1441,8 +1542,7 @@ class VNCCSControlCenterWidget {
     }
 
     _setTurboPreset(enabled) {
-        if (!this.state.model_params) this.state.model_params = {};
-        const params = this.state.model_params;
+        const params = this._currentModelParams();
 
         if (enabled) {
             params.turbo_previous_settings = {
@@ -1478,6 +1578,7 @@ class VNCCSControlCenterWidget {
     }
 
     _saveState() {
+        this._syncActiveFamilyState();
         const w = this._getStateWidget();
         if (w) w.value = JSON.stringify(this.state);
         this.node.setDirtyCanvas(true, true);
@@ -1490,6 +1591,7 @@ class VNCCSControlCenterWidget {
         const options = [];
         for (const entry of this.config.lora) {
             if (entry.custom || this._isTurboLora(entry) || !this._isHelperLora(entry)) continue;
+            if (!this._sameKind(entry, selectedKind)) continue;
             const norm = (entry.local_path || "").replace(/\\/g, "/");
             const rel = norm.startsWith("models/loras/") ? norm.slice("models/loras/".length) : norm.split("/").pop();
             options.push(rel);
@@ -1513,6 +1615,11 @@ class VNCCSControlCenterWidget {
         if (this.state.selected_model && !this.state.selected_models) {
             const selectedType = this.state.selected_type;
             this.state.selected_models = selectedType ? { [selectedType]: this.state.selected_model } : {};
+        }
+        this.state.active_kind = this._activeKind();
+        if (!this.state.selected_types_by_kind) this.state.selected_types_by_kind = {};
+        if (!this.state.selected_types_by_kind.QIE2511 && this.state.selected_type) {
+            this.state.selected_types_by_kind.QIE2511 = this.state.selected_type;
         }
         // Control Center now exposes a single pipe output.
         this.state.output_slot_names = [];
@@ -2208,6 +2315,8 @@ class VNCCSControlCenterWidget {
             }
         }
 
+        this.scrollArea.appendChild(this._renderFamilyTabs());
+
         // MODEL — 2-column block: one big card for the selected type's variants
         this._renderTwoColBlockSingle(
             "MODEL", variants.length, "models",
@@ -2238,6 +2347,25 @@ class VNCCSControlCenterWidget {
             e => this._renderCnetEntry("controlnet", e));
         this._renderBlock("OTHER", this.config.other, "other",
             e => this._renderCnetEntry("other", e));
+    }
+
+    _renderFamilyTabs() {
+        const tabs = document.createElement("div");
+        tabs.className = "vnccs-cc-family-tabs";
+        tabs.setAttribute("role", "tablist");
+        const activeKind = this._activeKind();
+        MODEL_FAMILIES.forEach(family => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "vnccs-cc-family-tab";
+            button.textContent = family.label;
+            button.setAttribute("role", "tab");
+            button.setAttribute("aria-selected", String(family.kind === activeKind));
+            if (family.kind === activeKind) button.classList.add("vnccs-cc-family-tab--active");
+            button.onclick = () => this._setActiveKind(family.kind);
+            tabs.appendChild(button);
+        });
+        return tabs;
     }
 
     _divider() {
@@ -2340,7 +2468,7 @@ class VNCCSControlCenterWidget {
     _buildLoraBlock() {
         const selectedKind = this._selectedKind();
         const entries = (this.config.lora || []).filter(entry =>
-            !entry.custom && !this._isTurboLora(entry) && (this._isHelperLora(entry) || this._sameKind(entry, selectedKind))
+            !entry.custom && !this._isTurboLora(entry) && this._sameKind(entry, selectedKind)
         );
         const collapsed = this.state.collapsed?.lora ?? false;
         const block = this._blockShell("LORA", entries.length, "lora", collapsed);
@@ -2795,6 +2923,8 @@ class VNCCSControlCenterWidget {
                 const chosen = variants.find(v => v.name === sel.value);
                 if (chosen) {
                     this._setSelectedModelName(type, chosen.name);
+                    if (!this.state.selected_types_by_kind) this.state.selected_types_by_kind = {};
+                    this.state.selected_types_by_kind[this._activeKind()] = chosen.type || type;
                     this.state.selected_type  = chosen.type || type;
                     this._saveState();
                     this._renderAll();
@@ -2891,8 +3021,7 @@ class VNCCSControlCenterWidget {
     // ── MODEL right column: sampler params ────────────────────────────────────
 
     _modelParamsSave(patch) {
-        if (!this.state.model_params) this.state.model_params = {};
-        Object.assign(this.state.model_params, patch);
+        Object.assign(this._currentModelParams(), patch);
         this._saveState();
         if (this._isQwenFamily()) this._renderAll();
     }
@@ -2989,7 +3118,7 @@ class VNCCSControlCenterWidget {
     }
 
     _renderModelParams() {
-        const p  = this.state.model_params ?? {};
+        const p  = this._currentModelParams();
         const mp = { steps: DEFAULT_MODEL_STEPS, cfg: DEFAULT_MODEL_CFG, ...p };
 
         const panel = document.createElement("div");
@@ -3017,7 +3146,7 @@ class VNCCSControlCenterWidget {
     }
 
     _renderModelSamplerParams() {
-        const p  = this.state.model_params ?? {};
+        const p  = this._currentModelParams();
         const mp = { sampler: "euler", scheduler: DEFAULT_MODEL_SCHEDULER, ...p };
 
         const panel = document.createElement("div");
@@ -3657,9 +3786,12 @@ class VNCCSControlCenterWidget {
             tasks.push({ cat: "models", e: modelEntry });
         }
 
-        // Everything else: all missing, errored, or outdated
+        // Family assets follow the active top-level tab. Utility assets remain global.
+        const selectedKind = this._selectedKind();
         for (const cat of ["clip", "vae", "lora", "controlnet", "other"]) {
             for (const e of (this.config[cat] ?? [])) {
+                if (["clip", "vae"].includes(cat) && !this._sameKind(e, selectedKind)) continue;
+                if (cat === "lora" && !e.custom && !this._sameKind(e, selectedKind)) continue;
                 if (this._isDownloadableStatus(e.status)) tasks.push({ cat, e });
             }
         }

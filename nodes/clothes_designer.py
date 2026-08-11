@@ -17,10 +17,12 @@ from ..utils import (
     ensure_safe_name, safe_join_under, safe_relative_path
 )
 from .character_generator import _call_comfy_node
+from .vnccs_control_center import _entry_kind
 from .vnccs_utils import _ensure_qwen_vl_assets
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 WORKFLOW_ENCODER_CLASS = "VNCCS_QWEN_Encoder"
+KLEIN_ENCODER_CLASS = "VNCCS_Flux_Klein_Encoder"
 WORKFLOW_ENCODER_INSTRUCTION = (
     "Describe the character and their key features (body shape, physical characteristics, "
     "clothing, items, accessories). Then explain how the user's text instruction should alter "
@@ -253,8 +255,12 @@ def _normalize_lora_rel_path(value):
 
 
 def _resolve_pipe_clothes_core_lora(pipe):
+    model_kind = _entry_kind(getattr(pipe, "model_entry", None))
     for entry in getattr(pipe, "lora_entries", []) or []:
         if not isinstance(entry, dict):
+            continue
+        entry_kind = _entry_kind(entry)
+        if entry_kind and model_kind and entry_kind != model_kind:
             continue
         name = entry.get("name", "")
         rel_path = _normalize_lora_rel_path(entry.get("local_path") or entry.get("path"))
@@ -535,18 +541,28 @@ class ClothesDesigner:
             f"mode={active_tab}, image1=reference sprite, "
             f"image2={'clone reference' if image2 is not None else 'none'}, prompt={positive_prompt!r}"
         )
+        is_klein = _entry_kind(getattr(pipe, "model_entry", None)) == "klein9b"
+        encoder_class = KLEIN_ENCODER_CLASS if is_klein else WORKFLOW_ENCODER_CLASS
+        encoder_kwargs = {
+            "clip": clip,
+            "prompt": positive_prompt,
+            "vae": vae,
+            "image1": ref_image,
+            "image2": image2,
+            "image3": None,
+        }
+        if is_klein:
+            encoder_kwargs.update(upscale_method="lanczos", megapixels=1.0, resolution_steps=1)
+        else:
+            encoder_kwargs.update(
+                image1_name="Picture 1",
+                image2_name="Picture 2",
+                image3_name="Picture 3",
+                **WORKFLOW_ENCODER_DEFAULTS,
+            )
         pos_cond, neg_cond, empty_latent = _call_comfy_node(
-            WORKFLOW_ENCODER_CLASS,
-            clip=clip,
-            prompt=positive_prompt,
-            vae=vae,
-            image1=ref_image,
-            image2=image2,
-            image3=None,
-            image1_name="Picture 1",
-            image2_name="Picture 2",
-            image3_name="Picture 3",
-            **WORKFLOW_ENCODER_DEFAULTS,
+            encoder_class,
+            **encoder_kwargs,
         )
         
         out_pipe = PipeContext(
