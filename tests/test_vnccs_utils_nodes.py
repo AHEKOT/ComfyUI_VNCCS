@@ -137,6 +137,12 @@ def test_sam3_recovery_rejects_background_objects_without_clipping_kept_masks():
         torch.ones((2, 1, 6, 8), dtype=torch.float32),
         torch.ones((2, 6, 8, 1), dtype=torch.float32),
         torch.ones((1, 2, 6, 8), dtype=torch.float32),
+        torch.ones((1, 2, 1, 6, 8), dtype=torch.float32),
+        torch.ones((1, 1, 2, 1, 6, 8, 1), dtype=torch.float32),
+        torch.ones((6, 8, 2), dtype=torch.float32),
+        torch.ones((2, 8, 6), dtype=torch.float32),
+        torch.ones((1, 2, 1, 3, 4), dtype=torch.float32),
+        torch.ones((2, 3, 4, 1), dtype=torch.float32),
     ],
 )
 def test_sam3_recovery_normalizes_individual_object_mask_layouts(raw_masks):
@@ -149,6 +155,37 @@ def test_sam3_recovery_normalizes_individual_object_mask_layouts(raw_masks):
     )
 
     assert candidates.shape == (2, 6, 8)
+
+
+def test_sam3_recovery_preserves_candidates_across_arbitrary_wrapper_axes():
+    node = VNCCSChromaKey()
+    first = torch.full((6, 8), 0.25, dtype=torch.float32)
+    second = torch.full((6, 8), 0.75, dtype=torch.float32)
+    raw_masks = torch.stack((first, second), dim=0).reshape(1, 2, 1, 6, 8, 1)
+
+    candidates = node._sam3_recovery_candidates_from_result(
+        (torch.ones((1, 6, 8)), None, raw_masks, [], []),
+        target_hw=(6, 8),
+    )
+
+    assert candidates.shape == (2, 6, 8)
+    assert candidates[:, 0, 0].tolist() == pytest.approx([0.25, 0.75])
+
+
+def test_sam3_recovery_falls_back_to_combined_mask_for_uninterpretable_candidates(capsys):
+    node = VNCCSChromaKey()
+    combined = torch.full((1, 6, 8), 0.6, dtype=torch.float32)
+    invalid_candidates = torch.ones((7,), dtype=torch.float32)
+
+    candidates = node._sam3_recovery_candidates_from_result(
+        (combined, None, invalid_candidates, [], []),
+        target_hw=(6, 8),
+        stage="SAM3 fallback test",
+    )
+
+    assert candidates.shape == (1, 6, 8)
+    assert candidates[0, 0, 0].item() == pytest.approx(0.6)
+    assert "individual mask shape (7,)" in capsys.readouterr().out
 
 
 def test_sam3_recovery_supports_legacy_combined_mask_output():
