@@ -666,10 +666,11 @@ def _find_first_entry_by_type(entries, entry_type):
     return None
 
 
-def _selected_model_name_for_type(state, entry_type):
+def _selected_model_name_for_type(state, entry_type, kind=""):
     selected_models = state.get("selected_models", {}) if isinstance(state, dict) else {}
     if isinstance(selected_models, dict):
-        name = selected_models.get(entry_type)
+        name = selected_models.get(f"{kind}:{entry_type}") if kind else None
+        name = name or selected_models.get(entry_type)
         if name:
             return name
     return ""
@@ -677,8 +678,21 @@ def _selected_model_name_for_type(state, entry_type):
 
 def _custom_context_model_entry(config, state):
     models = config.get("models", []) if isinstance(config, dict) else []
-    name = _selected_model_name_for_type(state, "gguf") or state.get("selected_model", "")
-    return _find_entry(models, name) or _find_first_entry_by_type(models, "gguf")
+    active_kind = str(state.get("active_kind", "") or "").strip()
+    normalized_kind = _normalize_meta_value(active_kind)
+    context_type = "unet" if normalized_kind == "klein9b" else "gguf"
+    name = _selected_model_name_for_type(state, context_type, active_kind) or state.get("selected_model", "")
+    selected = _find_entry(models, name)
+    if selected and (not normalized_kind or _entry_kind(selected) == normalized_kind):
+        return selected
+    return next(
+        (
+            entry for entry in models
+            if _entry_type(entry) == context_type
+            and (not normalized_kind or _entry_kind(entry) == normalized_kind)
+        ),
+        _find_first_entry_by_type(models, context_type),
+    )
 
 
 def _rel_within_folder(local_path):

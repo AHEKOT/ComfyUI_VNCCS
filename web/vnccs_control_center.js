@@ -256,6 +256,10 @@ function _injectVNCCSControlCenterStyles() {
     border-right: 1px solid rgba(255,255,255,0.04);
     min-width: 0;
 }
+.vnccs-cc-twocol-left > .vnccs-cc-model-card {
+    flex: 1;
+    box-sizing: border-box;
+}
 .vnccs-cc-twocol-right,
 .vnccs-cc-twocol-right2 {
     width: 130px;
@@ -1290,12 +1294,12 @@ class VNCCSControlCenterWidget {
         // are intentionally hidden from the Control Center UI. Delete this after
         // catalogs are cleaned and old workflow JSON is migrated.
         const activeKind = this._activeKind();
-        const preferred = activeKind === "Klein9b" ? ["unet"] : ["gguf", "custom"];
+        const preferred = activeKind === "Klein9b" ? ["unet", "custom"] : ["gguf", "custom"];
         const available = new Set((this.config?.models ?? [])
             .filter(entry => this._metaKind(entry).toLowerCase() === activeKind.toLowerCase())
             .map(entry => entry.type)
             .filter(Boolean));
-        if (activeKind === "QIE2511") available.add("custom");
+        available.add("custom");
         const preferredTabs = preferred.filter(type => available.has(type));
         return preferredTabs.length ? preferredTabs : Array.from(available);
     }
@@ -1436,7 +1440,7 @@ class VNCCSControlCenterWidget {
     }
 
     _getCustomContextModelEntry() {
-        const contextType = "gguf";
+        const contextType = this._familyDefinition().defaultType;
         const variants = this._visibleModelsByType(contextType);
         const selectedModel = this._getSelectedModelName(contextType);
         return variants.find(m => m.name === selectedModel) ?? variants[0] ?? null;
@@ -1476,6 +1480,11 @@ class VNCCSControlCenterWidget {
     _sameKind(entry, kind = this._selectedKind()) {
         const entryKind = this._metaKind(entry);
         return !entryKind || !kind || entryKind.toLowerCase() === kind.toLowerCase();
+    }
+
+    _exactKind(entry, kind = this._selectedKind()) {
+        const entryKind = this._metaKind(entry);
+        return Boolean(entryKind && kind && entryKind.toLowerCase() === kind.toLowerCase());
     }
 
     _currentModelParams() {
@@ -1529,7 +1538,7 @@ class VNCCSControlCenterWidget {
     _compatibleTurboLoras() {
         const selectedKind = this._selectedKind();
         return (this.config?.lora || []).filter(entry =>
-            !entry.custom && this._isTurboLora(entry) && this._sameKind(entry, selectedKind)
+            !entry.custom && this._isTurboLora(entry) && this._exactKind(entry, selectedKind)
         );
     }
 
@@ -1571,7 +1580,7 @@ class VNCCSControlCenterWidget {
             if (!l?.name || l.auto_apply !== true) return false;
             const entry = entryByName[l.name];
             if (!entry) return false;
-            if (this._isTurboLora(entry)) return this._sameKind(entry, selectedKind);
+            if (this._isTurboLora(entry)) return this._exactKind(entry, selectedKind);
             if (Math.abs(Number(l.strength ?? 1)) <= 1e-6) return false;
             return entry.custom;
         });
@@ -1591,7 +1600,7 @@ class VNCCSControlCenterWidget {
         const options = [];
         for (const entry of this.config.lora) {
             if (entry.custom || this._isTurboLora(entry) || !this._isHelperLora(entry)) continue;
-            if (!this._sameKind(entry, selectedKind)) continue;
+            if (!this._exactKind(entry, selectedKind)) continue;
             const norm = (entry.local_path || "").replace(/\\/g, "/");
             const rel = norm.startsWith("models/loras/") ? norm.slice("models/loras/".length) : norm.split("/").pop();
             options.push(rel);
@@ -2428,7 +2437,7 @@ class VNCCSControlCenterWidget {
     _buildTurboModelBlock() {
         const selectedKind = this._selectedKind();
         const entries = (this.config.lora || []).filter(entry =>
-            !entry.custom && this._isTurboLora(entry) && this._sameKind(entry, selectedKind)
+            !entry.custom && this._isTurboLora(entry) && this._exactKind(entry, selectedKind)
         );
         const collapsed = this.state.collapsed?.turbo_model ?? false;
         const block = this._blockShell("TURBO MODEL", entries.length, "turbo_model", collapsed);
@@ -2468,7 +2477,7 @@ class VNCCSControlCenterWidget {
     _buildLoraBlock() {
         const selectedKind = this._selectedKind();
         const entries = (this.config.lora || []).filter(entry =>
-            !entry.custom && !this._isTurboLora(entry) && this._sameKind(entry, selectedKind)
+            !entry.custom && !this._isTurboLora(entry) && this._exactKind(entry, selectedKind)
         );
         const collapsed = this.state.collapsed?.lora ?? false;
         const block = this._blockShell("LORA", entries.length, "lora", collapsed);
@@ -3419,7 +3428,7 @@ class VNCCSControlCenterWidget {
     _selectTurboLora(name, enabled) {
         const selectedKind = this._selectedKind();
         const turboNames = new Set((this.config?.lora || [])
-            .filter(entry => !entry.custom && this._isTurboLora(entry) && this._sameKind(entry, selectedKind))
+            .filter(entry => !entry.custom && this._isTurboLora(entry) && this._exactKind(entry, selectedKind))
             .map(entry => entry.name));
 
         const wasEnabled = (this.state.loras ?? []).some(lora =>
@@ -3791,7 +3800,7 @@ class VNCCSControlCenterWidget {
         for (const cat of ["clip", "vae", "lora", "controlnet", "other"]) {
             for (const e of (this.config[cat] ?? [])) {
                 if (["clip", "vae"].includes(cat) && !this._sameKind(e, selectedKind)) continue;
-                if (cat === "lora" && !e.custom && !this._sameKind(e, selectedKind)) continue;
+                if (cat === "lora" && !e.custom && !this._exactKind(e, selectedKind)) continue;
                 if (this._isDownloadableStatus(e.status)) tasks.push({ cat, e });
             }
         }

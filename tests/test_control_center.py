@@ -510,6 +510,43 @@ class TestControlCenterFamilyState:
         assert pipe.cfg == 1.0
         assert pipe.sampler_name == "euler"
 
+    def test_custom_klein_pipe_keeps_klein_model_context(self, monkeypatch):
+        custom_model = object()
+        custom_clip = object()
+        custom_vae = object()
+        qie_entry = {"name": "Qwen GGUF", "type": "gguf", "kind": "QIE2511"}
+        klein_entry = {"name": "Flux Klein 9B FP8", "type": "unet", "kind": "Klein9b"}
+        monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
+            "models": [qie_entry, klein_entry],
+            "clip": [],
+            "vae": [],
+            "lora": [],
+        })
+        captured = {}
+
+        def fake_load_model_block(entry, selected_type, *args, **kwargs):
+            captured.update(entry=entry, selected_type=selected_type)
+            return kwargs["custom_model"], kwargs["custom_clip"], kwargs["custom_vae"]
+
+        monkeypatch.setattr("nodes.vnccs_control_center._load_model_block", fake_load_model_block)
+        monkeypatch.setattr("nodes.vnccs_control_center._apply_loras", lambda model, clip, *args, **kwargs: (model, clip))
+
+        pipe = _build_control_center_pipe(
+            "demo/repo",
+            {
+                "active_kind": "Klein9b",
+                "selected_types_by_kind": {"Klein9b": "custom"},
+                "selected_models": {"Klein9b:unet": "Flux Klein 9B FP8"},
+                "model_params_by_kind": {"Klein9b": {"steps": 4, "cfg": 1}},
+            },
+            custom_model=custom_model,
+            custom_clip=custom_clip,
+            custom_vae=custom_vae,
+        )
+
+        assert captured == {"entry": klein_entry, "selected_type": "custom"}
+        assert pipe.model_entry == klein_entry
+
 
 class TestControlCenterFrontendFamilies:
     def test_frontend_has_family_tabs_and_kind_filters(self):
@@ -519,8 +556,15 @@ class TestControlCenterFrontendFamilies:
 
         assert '{ kind: "QIE2511", label: "QIE2511", defaultType: "gguf" }' in source
         assert '{ kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet" }' in source
+        assert 'activeKind === "Klein9b" ? ["unet", "custom"]' in source
+        assert 'const contextType = this._familyDefinition().defaultType;' in source
+        assert '.vnccs-cc-twocol-left > .vnccs-cc-model-card' in source
         assert 'this.scrollArea.appendChild(this._renderFamilyTabs())' in source
-        assert 'if (!this._sameKind(entry, selectedKind)) continue;' in source
+        assert "_exactKind(entry, kind = this._selectedKind())" in source
+        assert "entryKind && kind && entryKind.toLowerCase() === kind.toLowerCase()" in source
+        assert "!entry.custom && !this._isTurboLora(entry) && this._exactKind(entry, selectedKind)" in source
+        assert "if (!this._exactKind(entry, selectedKind)) continue;" in source
+        assert "(this._isHelperLora(entry) || this._sameKind(entry, selectedKind))" not in source
 
 
 class TestClothesPreviewFrontendContract:
