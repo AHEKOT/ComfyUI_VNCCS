@@ -446,7 +446,7 @@ class TestPackagedConfigSync:
         klein_loras = [entry for entry in config["lora"] if entry.get("kind") == "Klein9b"]
 
         assert [entry["hf_path"] for entry in klein_models] == ["flux-2-klein-9b-fp8.safetensors"]
-        assert [entry["hf_repo"] for entry in klein_models] == ["black-forest-labs/FLUX.2-klein-9b-fp8"]
+        assert [entry["hf_repo"] for entry in klein_models] == ["MIUProject/FLUX.2-klein-9b-fp8"]
         assert [entry["clip_type"] for entry in klein_clips] == ["flux2"]
         assert [entry["hf_repo"] for entry in klein_clips] == [
             "Comfy-Org/vae-text-encorder-for-flux-klein-9b"

@@ -104,7 +104,7 @@
     {
       "name": "Flux Klein 9B FP8",
       "type": "unet",
-      "hf_repo": "black-forest-labs/FLUX.2-klein-9b-fp8",
+      "hf_repo": "MIUProject/FLUX.2-klein-9b-fp8",
       "hf_path": "flux-2-klein-9b-fp8.safetensors",
       "local_path": "models/diffusion_models/flux-2-klein-9b-fp8.safetensors",
       "version": "1.0",
