@@ -13,6 +13,7 @@ import random
 import base64
 import io
 import inspect
+import math
 import threading
 import torch
 import numpy as np
@@ -2019,31 +2020,92 @@ class VNCCSChromaKey:
         raw_masks = None
         if isinstance(result, (tuple, list)) and len(result) > 2 and torch.is_tensor(result[2]):
             raw_masks = result[2]
-        if raw_masks is None:
-            combined = _normalize_mask_batch(
-                result,
-                target_hw=target_hw,
-                batch_size=1,
-                stage=stage,
-            )
-            return combined[:1]
+        if raw_masks is not None:
+            candidates = self._canonicalize_sam3_mask_candidates(raw_masks, target_hw)
+            if candidates is not None:
+                return candidates
 
-        masks = _ensure_float01(raw_masks.detach() if raw_masks.requires_grad else raw_masks)
-        if masks.ndim == 2:
-            masks = masks.unsqueeze(0)
-        elif masks.ndim == 4:
-            if masks.shape[1] == 1:
-                masks = masks[:, 0]
-            elif masks.shape[-1] == 1:
-                masks = masks[..., 0]
-            elif masks.shape[0] == 1:
-                masks = masks[0]
-        if masks.ndim != 3:
-            raise RuntimeError(f"VNCCS Chroma Key: {stage} individual mask shape is unsupported")
-        if tuple(masks.shape[-2:]) != tuple(target_hw):
+            print(
+                f"[VNCCS Chroma Key] {stage} could not interpret individual mask shape "
+                f"{tuple(raw_masks.shape)}; using the combined SAM3 mask",
+                flush=True,
+            )
+
+        combined_source = result[0] if isinstance(result, (tuple, list)) and result else result
+        combined = _normalize_mask_batch(
+            combined_source,
+            target_hw=target_hw,
+            batch_size=1,
+            stage=stage,
+        )
+        return combined[:1]
+
+    def _canonicalize_sam3_mask_candidates(self, raw_masks, target_hw):
+        """Convert tensor masks of arbitrary rank to canonical [objects, H, W]."""
+        masks = raw_masks.detach() if raw_masks.requires_grad else raw_masks
+        if masks.ndim < 2 or masks.numel() == 0:
+            return None
+
+        target_h, target_w = (int(target_hw[0]), int(target_hw[1]))
+        if target_h <= 0 or target_w <= 0:
+            return None
+        shape = tuple(int(size) for size in masks.shape)
+
+        # Locate the spatial plane by meaning rather than by a fixed tensor
+        # layout. Every other axis may represent a batch, object, channel, or
+        # a singleton wrapper added by a third-party node version; all of them
+        # can safely become the candidate-mask axis because SAM3 is invoked for
+        # one source image at a time.
+        spatial_planes = []
+        for axis in range(masks.ndim - 1):
+            first = shape[axis]
+            second = shape[axis + 1]
+            if first <= 0 or second <= 0:
+                continue
+            direct_cost = abs(math.log(first / target_h)) + abs(math.log(second / target_w))
+            transposed_cost = abs(math.log(second / target_h)) + abs(math.log(first / target_w))
+            if direct_cost <= transposed_cost:
+                cost = direct_cost
+                transpose = False
+            else:
+                cost = transposed_cost
+                transpose = True
+            # Resolution similarity identifies the spatial plane even when a
+            # model emits masks at its native size. Area and later placement
+            # only break ties; they do not encode a particular layout.
+            spatial_planes.append((cost, -(first * second), -axis, axis, axis + 1, transpose))
+
+        if not spatial_planes:
+            return None
+        _, _, _, spatial_y, spatial_x, transpose_spatial = min(spatial_planes)
+
+        source_h = shape[spatial_y]
+        source_w = shape[spatial_x]
+        if source_h <= 0 or source_w <= 0:
+            return None
+
+        non_spatial_axes = [
+            axis for axis in range(masks.ndim)
+            if axis not in (spatial_y, spatial_x)
+        ]
+        candidate_count = 1
+        for axis in non_spatial_axes:
+            candidate_count *= shape[axis]
+        if candidate_count <= 0:
+            return None
+
+        axis_order = non_spatial_axes + [spatial_y, spatial_x]
+        if axis_order != list(range(masks.ndim)):
+            masks = masks.permute(axis_order)
+        masks = masks.reshape(candidate_count, source_h, source_w)
+        if transpose_spatial:
+            masks = masks.transpose(-2, -1)
+
+        masks = _ensure_float01(masks)
+        if tuple(masks.shape[-2:]) != (target_h, target_w):
             masks = F.interpolate(
                 masks.unsqueeze(1),
-                size=target_hw,
+                size=(target_h, target_w),
                 mode="bilinear",
                 align_corners=False,
             ).squeeze(1)
