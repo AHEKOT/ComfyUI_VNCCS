@@ -896,11 +896,30 @@ def test_seedvr_loader_cleans_vram_and_uses_settings(monkeypatch):
     assert calls[1][0] == "VAELoader"
     assert calls[1][1]["vae_name"] == "custom_vae.safetensors"
     assert [name for name, _ in calls[2:]] == [
-        "ImageScaleBy", "SeedVR2Preprocess", "VAEEncodeTiled", "SeedVR2Conditioning",
+        "ImageScale", "SeedVR2Preprocess", "VAEEncodeTiled", "SeedVR2Conditioning",
         "KSampler", "VAEDecodeTiled", "SeedVR2PostProcessing",
     ]
-    assert calls[2][1]["scale_by"] == 4.0
+    assert calls[2][1]["width"] == 1610
+    assert calls[2][1]["height"] == 3840
+    assert calls[4][1]["tile_size"] == 1024
+    assert calls[4][1]["overlap"] == 128
+    assert calls[7][1]["tile_size"] == 1024
+    assert calls[7][1]["overlap"] == 128
     assert calls[-1][1]["color_correction_method"] == "adain"
+
+
+def test_seedvr_target_dimensions_use_short_edge_and_max_edge():
+    torch = pytest.importorskip("torch")
+    generator = cg.VNCCS_CharacterGenerator()
+
+    assert generator._seedvr_target_dimensions(
+        torch.rand(1, 1024, 1024, 3),
+        {"resolution": 2048, "max_resolution": 3840},
+    ) == (2048, 2048)
+    assert generator._seedvr_target_dimensions(
+        torch.rand(1, 1584, 664, 3),
+        {"resolution": 2048, "max_resolution": 3840},
+    ) == (1610, 3840)
 
 
 def test_seedvr_loader_ensures_required_vae_on_process(monkeypatch):

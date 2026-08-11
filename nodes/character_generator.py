@@ -1789,24 +1789,77 @@ class VNCCS_CharacterGenerator:
             background=str(background or "Green"),
         )[0]
 
-    def _run_seedvr_upscale_batch(self, images, dit, vae, settings, seed, stage="upscaler", node_id=None):
+    def _run_seedvr_upscale_batch(
+        self,
+        images,
+        dit,
+        vae,
+        settings,
+        seed,
+        stage="upscaler",
+        node_id=None,
+        cache_dir=None,
+    ):
         batch = self._safe_image_batch(images, stage=f"{stage} SeedVR input")
         if not torch.is_tensor(batch) or batch.ndim != 4 or batch.shape[0] == 0:
             return []
         results = []
-        for index in range(batch.shape[0]):
+        total = int(batch.shape[0])
+        for index in range(total):
             # Native SeedVR2 interprets a 4-D IMAGE tensor as video frames, not
             # an image batch. Run every generator image independently.
             upscaled = self._run_seedvr_upscale_one(
                 batch[index:index + 1], dit, vae, settings, seed, node_id=node_id,
             )
             results.extend(self._split_batch(upscaled))
+            self._emit(
+                node_id,
+                stage,
+                "running",
+                images=None,
+                message=f"SeedVR upscaled image {index + 1} of {total}",
+                current=index + 1,
+                total=total,
+                cache_dir=cache_dir,
+            )
         return results
+
+    def _seedvr_target_dimensions(self, image, settings):
+        if not torch.is_tensor(image) or image.ndim != 4:
+            raise ValueError(f"SeedVR input must be a 4-D IMAGE tensor, got {type(image).__name__}")
+        height, width = int(image.shape[1]), int(image.shape[2])
+        if height < 2 or width < 2:
+            raise ValueError(f"SeedVR input dimensions must be at least 2x2, got {width}x{height}")
+
+        defaults = DEFAULT_WIDGET_DATA["upscaler"]
+        resolution = max(2, int(settings.get("resolution", defaults["resolution"])))
+        max_resolution = max(0, int(settings.get("max_resolution", defaults["max_resolution"])))
+
+        if width <= height:
+            target_width = resolution
+            target_height = int(resolution * height / width)
+        else:
+            target_height = resolution
+            target_width = int(resolution * width / height)
+
+        longest_edge = max(target_width, target_height)
+        if max_resolution > 0 and longest_edge > max_resolution:
+            scale = max_resolution / longest_edge
+            target_width = round(target_width * scale)
+            target_height = round(target_height * scale)
+
+        return max(2, target_width), max(2, target_height)
 
     def _run_seedvr_upscale_one(self, image, dit, vae, settings, seed, node_id=None):
         defaults = DEFAULT_WIDGET_DATA["upscaler"]
+        target_width, target_height = self._seedvr_target_dimensions(image, settings)
         resized = _call_comfy_node(
-            "ImageScaleBy", image=image, upscale_method="bicubic", scale_by=4.0,
+            "ImageScale",
+            image=image,
+            upscale_method="bicubic",
+            width=target_width,
+            height=target_height,
+            crop="disabled",
             _vnccs_node_id=node_id,
         )[0]
         preprocessed = _call_comfy_node(
@@ -1814,7 +1867,10 @@ class VNCCS_CharacterGenerator:
         )[0]
         latent = _call_comfy_node(
             "VAEEncodeTiled", pixels=preprocessed, vae=vae,
-            tile_size=512, overlap=128, temporal_size=64, temporal_overlap=8,
+            tile_size=int(settings.get("encode_tile_size", defaults["encode_tile_size"])),
+            overlap=int(settings.get("encode_tile_overlap", defaults["encode_tile_overlap"])),
+            temporal_size=64,
+            temporal_overlap=8,
             _vnccs_node_id=node_id,
         )[0]
         positive, negative = _call_comfy_node(
@@ -1830,7 +1886,10 @@ class VNCCS_CharacterGenerator:
         )[0]
         decoded = _call_comfy_node(
             "VAEDecodeTiled", samples=sampled, vae=vae,
-            tile_size=512, overlap=128, temporal_size=64, temporal_overlap=8,
+            tile_size=int(settings.get("decode_tile_size", defaults["decode_tile_size"])),
+            overlap=int(settings.get("decode_tile_overlap", defaults["decode_tile_overlap"])),
+            temporal_size=64,
+            temporal_overlap=8,
             _vnccs_node_id=node_id,
         )[0]
         return _call_comfy_node(
@@ -1893,7 +1952,16 @@ class VNCCS_CharacterGenerator:
         dit, vae = self._run_upscaler_models(settings, node_id=unique_id)
         self._log_stage(unique_id, stage, f"Running SeedVR batch: {self._batch_shape_label(images)}", current=0, total=total, cache_dir=cache_dir)
         started_at = time.time()
-        results = self._run_seedvr_upscale_batch(images, dit, vae, settings, seed, stage=stage, node_id=unique_id)
+        results = self._run_seedvr_upscale_batch(
+            images,
+            dit,
+            vae,
+            settings,
+            seed,
+            stage=stage,
+            node_id=unique_id,
+            cache_dir=cache_dir,
+        )
         elapsed = time.time() - started_at
         self._log_stage(unique_id, stage, f"SeedVR finished in {elapsed:.1f}s; normalizing output batch", current=total, total=total, cache_dir=cache_dir)
         result_batch = self._safe_image_batch(results, stage=stage) if results else self._list_to_batch(image)
@@ -1970,7 +2038,16 @@ class VNCCS_CharacterGenerator:
         dit, vae = self._run_upscaler_models(settings, node_id=unique_id)
         self._log_stage(unique_id, stage, f"Running SeedVR source batch: {self._batch_shape_label(images)}", current=0, total=total, cache_dir=cache_dir)
         started_at = time.time()
-        results = self._run_seedvr_upscale_batch(images, dit, vae, settings, seed, stage=stage, node_id=unique_id)
+        results = self._run_seedvr_upscale_batch(
+            images,
+            dit,
+            vae,
+            settings,
+            seed,
+            stage=stage,
+            node_id=unique_id,
+            cache_dir=cache_dir,
+        )
         elapsed = time.time() - started_at
         self._log_stage(unique_id, stage, f"SeedVR source batch finished in {elapsed:.1f}s; normalizing output batch", current=total, total=total, cache_dir=cache_dir)
         result_batch = self._safe_image_batch(results, stage=stage) if results else self._list_to_batch(image)
