@@ -14,7 +14,7 @@ import torch
 from nodes.clothes_designer import (
     ClothesDesigner,
     PipeContext,
-    _resolve_clothes_core_lora,
+    _resolve_pipe_clothes_core_lora,
 )
 
 
@@ -179,29 +179,34 @@ class TestCloneReferencePreparation:
 class TestClothesCoreLoraResolution:
     def test_prefers_pipe_lora_entry(self):
         pipe = types.SimpleNamespace(
+            model_entry={"kind": "QIE2511"},
             lora_entries=[
                 {
                     "name": "VNCCS Clothes Core",
+                    "kind": "QIE2511",
                     "local_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.5.safetensors",
                 }
             ],
-            lora_states=[{"name": "VNCCS Clothes Core", "strength": 0.75}],
         )
-        rel, strength = _resolve_clothes_core_lora(pipe, {"lora_name": "none"})
-        assert rel == "qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.5.safetensors"
-        assert strength == 0.75
+        assert _resolve_pipe_clothes_core_lora(pipe) == "qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.5.safetensors"
 
-    def test_uses_widget_lora_when_pipe_has_none(self):
-        pipe = types.SimpleNamespace(lora_entries=[], lora_states=[])
-        rel, strength = _resolve_clothes_core_lora(
-            pipe,
-            {
-                "lora_name": "qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.safetensors",
-                "lora_strength": 0.5,
-            },
+    def test_selects_only_lora_matching_klein_model_kind(self):
+        pipe = types.SimpleNamespace(
+            model_entry={"kind": "Klein9b"},
+            lora_entries=[
+                {
+                    "name": "VNCCS Clothes Core",
+                    "kind": "QIE2511",
+                    "local_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.7.safetensors",
+                },
+                {
+                    "name": "VNCCS Clothes Core Klein9b",
+                    "kind": "Klein9b",
+                    "local_path": "models/loras/Klein9b/VNCCS_ClothesCoreKlein9b_V1.safetensors",
+                },
+            ],
         )
-        assert rel == "qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.safetensors"
-        assert strength == 0.5
+        assert _resolve_pipe_clothes_core_lora(pipe) == "Klein9b/VNCCS_ClothesCoreKlein9b_V1.safetensors"
 
 
 # ── Costume validation ───────────────────────────────────────────────────────

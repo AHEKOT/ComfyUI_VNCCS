@@ -1017,20 +1017,37 @@ app.registerExtension({
                 });
 
                 const getConnectedControlCenterWidget = () => {
-                    const input = node?.inputs?.find((item) => item.name === "pipe") ?? node?.inputs?.[0];
-                    const linkId = input?.link;
-                    const link = linkId != null ? app.graph?.links?.[linkId] : null;
-                    const originId = link?.origin_id ?? link?.originId;
-                    const upstream = originId != null
-                        ? (app.graph?.getNodeById?.(originId) ?? app.graph?._nodes_by_id?.[originId] ?? null)
-                        : null;
-                    return upstream?._cc_widget || null;
+                    let currentNode = node;
+                    let currentInputName = "pipe";
+                    for (let depth = 0; depth < 20; depth++) {
+                        const input = currentNode?.inputs?.find((item) => item.name === currentInputName)
+                            ?? currentNode?.inputs?.[0];
+                        const linkId = input?.link;
+                        if (linkId == null) return null;
+                        const link = app.graph?.links?.[linkId];
+                        const originId = link?.origin_id ?? link?.originId;
+                        if (originId == null) return null;
+                        const upstream = app.graph?.getNodeById?.(originId) ?? app.graph?._nodes_by_id?.[originId] ?? null;
+                        if (!upstream) return null;
+                        if ((upstream.comfyClass || upstream.type || "") === "VNCCS_ControlCenter") {
+                            return upstream._cc_widget || null;
+                        }
+                        currentNode = upstream;
+                        currentInputName = "pipe";
+                    }
+                    return null;
                 };
 
                 const normalizeLoraPath = (entry) => {
                     const raw = String(entry?.local_path || entry || "").replace(/\\/g, "/");
                     if (!raw) return "";
-                    return raw.startsWith("models/loras/") ? raw.slice("models/loras/".length) : raw.split("/").pop();
+                    const lower = raw.toLowerCase();
+                    const absoluteMarker = "/models/loras/";
+                    const absoluteIndex = lower.lastIndexOf(absoluteMarker);
+                    if (absoluteIndex >= 0) return raw.slice(absoluteIndex + absoluteMarker.length);
+                    if (lower.startsWith("models/loras/")) return raw.slice("models/loras/".length);
+                    if (lower.startsWith("loras/")) return raw.slice("loras/".length);
+                    return raw;
                 };
 
                 const isClothesCoreLora = (value) => {
@@ -1038,8 +1055,45 @@ app.registerExtension({
                     return normalized.includes("vnccs") && normalized.includes("clothes") && normalized.includes("core");
                 };
 
-                const setClothesCoreLora = (entryOrPath = null) => {
+                const getConnectedModelKind = () => {
                     const ccWidget = getConnectedControlCenterWidget();
+                    try {
+                        const widgetKind = ccWidget?._selectedKind?.() || ccWidget?._activeKind?.() || ccWidget?.state?.active_kind;
+                        if (widgetKind) return String(widgetKind).trim();
+                    } catch {
+                        // Fall through to the serialized Control Center state.
+                    }
+                    try {
+                        const connected = getConnectedControlCenterState();
+                        const parsed = JSON.parse(connected?.node_state || "{}");
+                        return String(parsed?.active_kind || "").trim();
+                    } catch {
+                        return "";
+                    }
+                };
+
+                const loraMatchesConnectedKind = (entry) => {
+                    const selectedKind = getConnectedModelKind().toLowerCase();
+                    if (!selectedKind) return true;
+                    const entryKind = String(entry?.kind ?? entry?.Kind ?? "").trim().toLowerCase();
+                    return entryKind === selectedKind;
+                };
+
+                const findConnectedClothesCoreLora = (preferredPath = "") => {
+                    const entries = getConnectedControlCenterWidget()?.config?.lora || [];
+                    const preferred = normalizeLoraPath(preferredPath).toLowerCase();
+                    const compatible = entries.filter(entry =>
+                        loraMatchesConnectedKind(entry)
+                        && (isClothesCoreLora(entry?.name) || isClothesCoreLora(entry?.local_path))
+                    );
+                    if (preferred) {
+                        const exact = compatible.find(entry => normalizeLoraPath(entry).toLowerCase() === preferred);
+                        if (exact) return exact;
+                    }
+                    return compatible[0] || null;
+                };
+
+                const setClothesCoreLora = (entryOrPath = null) => {
                     let entry = entryOrPath && typeof entryOrPath === "object" ? entryOrPath : null;
                     let rel = entry ? normalizeLoraPath(entry) : normalizeLoraPath(entryOrPath);
                     if (rel && !isClothesCoreLora(rel) && !isClothesCoreLora(entry?.name)) {
@@ -1047,10 +1101,12 @@ app.registerExtension({
                         rel = "";
                     }
 
-                    if (!entry && ccWidget?.config?.lora) {
-                        entry = ccWidget.config.lora.find(item =>
-                            isClothesCoreLora(item.name) || isClothesCoreLora(item.local_path) || isClothesCoreLora(normalizeLoraPath(item))
-                        ) || null;
+                    if (entry && !loraMatchesConnectedKind(entry)) {
+                        entry = null;
+                        rel = "";
+                    }
+                    if (!entry) {
+                        entry = findConnectedClothesCoreLora(rel || state.gen_settings.lora_name);
                         rel = normalizeLoraPath(entry);
                     }
 
@@ -1058,7 +1114,7 @@ app.registerExtension({
                         state.gen_settings.lora_name = rel;
                         const strength = Number(state.gen_settings.lora_strength ?? 1.0) || 1.0;
                         state.gen_settings.lora_strength = Math.max(0, Math.min(1, strength));
-                    } else if (!isClothesCoreLora(state.gen_settings.lora_name)) {
+                    } else {
                         state.gen_settings.lora_name = "none";
                     }
                     renderClothesCoreLoraCard(entry || rel || null);
@@ -1284,11 +1340,13 @@ app.registerExtension({
                 const renderClothesCoreLoraCard = (entryOrPath = null) => {
                     const card = els.clothesCoreLoraCard;
                     if (!card) return;
-                    const rel = normalizeLoraPath(entryOrPath) || state.gen_settings.lora_name || "";
-                    const ccWidget = getConnectedControlCenterWidget();
-                    const entry = entryOrPath && typeof entryOrPath === "object"
+                    let rel = normalizeLoraPath(entryOrPath) || state.gen_settings.lora_name || "";
+                    let entry = entryOrPath && typeof entryOrPath === "object"
                         ? entryOrPath
-                        : ccWidget?.config?.lora?.find(item => normalizeLoraPath(item) === rel || isClothesCoreLora(item.name) || isClothesCoreLora(item.local_path));
+                        : findConnectedClothesCoreLora(rel);
+                    if (entry && !loraMatchesConnectedKind(entry)) entry = null;
+                    if (!entry) entry = findConnectedClothesCoreLora(rel);
+                    if (entry) rel = normalizeLoraPath(entry);
                     const name = entry?.name || (rel ? rel.split(/[\\/]/).pop().replace(/\.safetensors$/i, "") : "VNCCS Clothes Core");
                     const hasLora = !!rel && rel !== "none";
                     card.classList.toggle("is-missing", !hasLora);
@@ -1770,9 +1828,7 @@ app.registerExtension({
                 const _onLoraOptions = (e) => {
                     const options = e.detail?.options;
                     if (!Array.isArray(options)) return;
-                    const clothesCore = options.find(isClothesCoreLora);
-                    if (clothesCore) setClothesCoreLora(clothesCore);
-                    else renderClothesCoreLoraCard();
+                    setClothesCoreLora();
                 };
                 window.addEventListener("vnccs-lora-options-updated", _onLoraOptions);
                 registerCleanup(node, () => window.removeEventListener("vnccs-lora-options-updated", _onLoraOptions));
