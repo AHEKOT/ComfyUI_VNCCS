@@ -18,6 +18,15 @@ from nodes.vnccs_flux_klein_encoder import (
 def _install_fake_nodes(monkeypatch):
     calls = []
 
+    class FakeScaledImage:
+        shape = (1, 1152, 768, 3)
+
+        def __init__(self, source):
+            self.source = source
+
+        def __str__(self):
+            return f"scaled-{self.source}"
+
     def node(name, function, callback):
         return type(
             name,
@@ -55,7 +64,7 @@ def _install_fake_nodes(monkeypatch):
         "ImageScaleToTotalPixels": node(
             "FakeImageScaleToTotalPixels",
             "upscale",
-            record("ImageScaleToTotalPixels", lambda kwargs: (f"scaled-{kwargs['image']}",)),
+            record("ImageScaleToTotalPixels", lambda kwargs: (FakeScaledImage(kwargs["image"]),)),
         ),
         "VAEEncode": node(
             "FakeVAEEncode",
@@ -66,11 +75,6 @@ def _install_fake_nodes(monkeypatch):
             "FakeReferenceLatent",
             "append",
             record("ReferenceLatent", reference_result),
-        ),
-        "GetImageSize": node(
-            "FakeGetImageSize",
-            "get_size",
-            record("GetImageSize", (768, 1152, 1)),
         ),
         "EmptyFlux2LatentImage": node(
             "FakeEmptyFlux2LatentImage",
@@ -175,5 +179,6 @@ def test_three_images_chain_reference_conditioning_in_input_order(monkeypatch):
     ]
     zero_call = next(kwargs for name, kwargs in calls if name == "ConditioningZeroOut")
     assert zero_call["conditioning"] == "base-positive"
-    size_call = next(kwargs for name, kwargs in calls if name == "GetImageSize")
-    assert size_call["image"] == "scaled-image-1"
+    assert "GetImageSize" not in [name for name, _ in calls]
+    latent_call = next(kwargs for name, kwargs in calls if name == "EmptyFlux2LatentImage")
+    assert (latent_call["width"], latent_call["height"]) == (768, 1152)

@@ -48,6 +48,17 @@ def _call_comfy_node(class_name, **kwargs):
     raise RuntimeError(f"Node '{class_name}' has no callable FUNCTION")
 
 
+def _image_dimensions(image):
+    shape = getattr(image, "shape", None)
+    if shape is None or len(shape) < 3:
+        raise RuntimeError("Scaled reference image has no valid B,H,W,C shape.")
+    height = int(shape[-3])
+    width = int(shape[-2])
+    if width <= 0 or height <= 0:
+        raise RuntimeError(f"Scaled reference image has invalid dimensions: {width}x{height}.")
+    return width, height
+
+
 class VNCCS_Flux_Klein_Encoder:
     UPSCALE_METHODS = ["lanczos", "bicubic", "area", "bilinear", "nearest-exact"]
 
@@ -174,8 +185,7 @@ class VNCCS_Flux_Klein_Encoder:
         width = int(empty_width)
         height = int(empty_height)
         if first_scaled_image is not None:
-            size = _call_comfy_node("GetImageSize", image=first_scaled_image)
-            width, height = int(size[0]), int(size[1])
+            width, height = _image_dimensions(first_scaled_image)
 
         latent = _call_comfy_node(
             "EmptyFlux2LatentImage",
