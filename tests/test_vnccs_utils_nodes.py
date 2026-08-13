@@ -363,7 +363,7 @@ class TestClothesTemplates:
 
     def test_aesthetic_choices_include_all_and_json_values(self):
         choices = VNCCS_ClothesTemplates.INPUT_TYPES()["required"]["aesthetic"][0]
-        assert choices[0] == "ВСЕ"
+        assert choices[0] == "ALL"
         assert "Techwear" in choices
 
     def test_random_template_filters_by_aesthetic_and_explicit(self, monkeypatch):

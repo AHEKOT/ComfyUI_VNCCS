@@ -213,7 +213,7 @@ class CharacterCloner:
             final_image = pil2tensor(grid)
 
         else:
-            message = "Сначала загрузите изображение персонажа в Character Cloner."
+            message = "Upload a character image in Character Cloner first."
             _emit_cloner_validation_error(unique_id, message)
             raise ValueError(message)
 

@@ -1468,10 +1468,10 @@ app.registerExtension({
                     return showCommonModal(container, title, contentFunc, mappedButtons);
                 };
                 const showSourceImageRequiredModal = (message) => {
-                    showModal("Нужно изображение", () => {
+                    showModal("Source Image Required", () => {
                         const d = document.createElement("div");
                         d.style.lineHeight = "1.45";
-                        d.innerText = message || "Сначала загрузите изображение персонажа.";
+                        d.innerText = message || "Upload a character image first.";
                         return d;
                     }, [{ text: "OK", class: "vnccs-btn-primary" }]);
                 };

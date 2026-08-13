@@ -508,7 +508,7 @@ Rules:
 class VNCCS_ClothesTemplates:
     """Return a random clothes tag template from character_template/outfits.json."""
 
-    ALL_AESTHETICS = "ВСЕ"
+    ALL_AESTHETICS = "ALL"
     OUTFITS_PATH = OUTFITS_JSON_PATH
 
     @classmethod
