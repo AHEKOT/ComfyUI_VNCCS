@@ -1812,14 +1812,14 @@ class VNCCSChromaKey:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "tolerance": ("FLOAT", {"default": 0.2, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "softness": ("FLOAT", {"default": 0.16, "min": 0.001, "max": 1.0, "step": 0.01}),
-                "despill_strength": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "tolerance": ("FLOAT", {"default": 0.15, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "softness": ("FLOAT", {"default": 0.12, "min": 0.001, "max": 1.0, "step": 0.01}),
+                "despill_strength": ("FLOAT", {"default": 0.65, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "edge_width": ("INT", {"default": 3, "min": 0, "max": 32, "step": 1}),
-                "matte_cleanup": ("FLOAT", {"default": 0.2, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "matte_cleanup": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "foreground_recover": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "edge_decontaminate": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "edge_choke": ("FLOAT", {"default": 0.2, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "edge_decontaminate": ("FLOAT", {"default": 0.75, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "edge_choke": ("FLOAT", {"default": 0.08, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "matte_method": (["chroma_soft", "guided_edge", "pymatting_if_available"], {"default": "guided_edge"}),
                 "screen_mode": (["auto", "green", "blue", "red"], {"default": "auto"}),
                 "output_mode": (["straight_rgba", "premultiplied_rgba"], {"default": "straight_rgba"}),
@@ -2249,14 +2249,19 @@ class VNCCSChromaKey:
             key_color=key_color,
             amount=float(foreground_recover),
         )
+        despill_strength = max(0.0, min(1.0, float(despill_strength)))
         despilled = self._edge_despill(
             image=recovered,
             alpha=alpha,
             edge=edge,
             dominant_idx=dominant_idx,
             other_indices=other_indices,
-            strength=float(despill_strength),
+            strength=despill_strength,
         )
+        # Despill is the master control for edge color correction. Previously,
+        # decontamination and color bleeding stayed active even at despill=0,
+        # which made the despill slider appear to have almost no effect.
+        decontaminate_amount = float(edge_decontaminate) * despill_strength
         despilled = self._edge_decontaminate(
             image=despilled,
             alpha=alpha,
@@ -2264,7 +2269,7 @@ class VNCCSChromaKey:
             key_color=key_color,
             dominant_idx=dominant_idx,
             other_indices=other_indices,
-            amount=float(edge_decontaminate),
+            amount=decontaminate_amount,
         )
         despilled = self._bleed_clean_edge_colors(
             image=despilled,
@@ -2274,7 +2279,7 @@ class VNCCSChromaKey:
             dominant_idx=dominant_idx,
             other_indices=other_indices,
             radius=max(2, int(edge_width) + 2),
-            amount=float(edge_decontaminate),
+            amount=despill_strength,
         )
         if output_mode == "premultiplied_rgba":
             rgb_out = despilled * alpha.unsqueeze(-1)
@@ -2303,7 +2308,7 @@ class VNCCSChromaKey:
         stable_colors = []
         for patch in patches:
             pixels = patch.reshape(-1, 3)
-            if pixels.std(dim=0).mean() < 0.02:
+            if pixels.std(dim=0, unbiased=False).mean() < 0.02:
                 stable_colors.append(pixels.median(dim=0)[0])
 
         if stable_colors:
@@ -2453,7 +2458,17 @@ class VNCCSChromaKey:
         # Keep this hue-only extension deliberately narrow and use it only as
         # part of component analysis below.
         same_hue_limit = max(0.035, min(0.12, tolerance * 0.5 + softness * 0.1))
-        candidate = strict_candidate | (chroma_dist <= same_hue_limit)
+        # Hue alone is useful for following a shifted screen through a border
+        # artifact, but it must never override a confident foreground matte.
+        # Dark blue/cyan clothing can share the screen hue while being far from
+        # the sampled key in RGB space; the old unconditional hue extension
+        # connected those details to the border and erased entire line regions.
+        hue_extension = chroma_dist <= same_hue_limit
+        # Component cleanup is a residual-background pass, not a second keyer.
+        # Trust confident foreground from the soft matte even when its color is
+        # close to the screen; otherwise a one-pixel connection can erase a
+        # complete dark garment or a long anti-aliased outline.
+        candidate = (strict_candidate | hue_extension) & (alpha <= 0.55)
 
         candidate_np = candidate.detach().cpu().numpy().astype(np.uint8)
         if candidate_np.max() <= 0:
@@ -2604,9 +2619,8 @@ class VNCCSChromaKey:
 
         key_strength = torch.clamp(key_color[dominant_idx], min=0.1)
         subtract_amount = (screen_excess / key_strength).clamp(0.0, 1.0)
-        subtract_amount = subtract_amount * edge * amount
 
-        decontaminated = image - key_color * subtract_amount.unsqueeze(-1)
+        decontaminated = image - key_color * (subtract_amount * edge).unsqueeze(-1)
         decontaminated = decontaminated.clamp(0.0, 1.0)
 
         src_luma = image[..., 0] * 0.299 + image[..., 1] * 0.587 + image[..., 2] * 0.114
@@ -2631,19 +2645,39 @@ class VNCCSChromaKey:
         if amount <= 0.0 or radius <= 0:
             return image
 
-        opaque_np = (alpha >= 0.98).detach().cpu().numpy()
+        # A 0.98 matte pixel is still visibly blended with the screen. Treating
+        # it as clean foreground makes the nearest-color lookup point back to
+        # the contaminated pixel itself, leaving a dotted halo untouched.
+        # Prefer genuinely opaque color anchors and retain the old threshold
+        # only as a fallback for mattes that never reach full opacity.
+        opaque_np = (alpha >= 0.995).detach().cpu().numpy()
+        if not opaque_np.any():
+            opaque_np = (alpha >= 0.98).detach().cpu().numpy()
         if not opaque_np.any():
             return image
 
+        # Pull reference colors from just inside the silhouette. Boundary
+        # pixels can reach alpha=1 while their RGB still contains screen color,
+        # especially after image scaling. Using them as distance-transform
+        # seeds merely copies the halo along the contour.
+        erosion_iterations = max(1, min(2, int(radius) // 2))
+        trusted_opaque_np = cv2.erode(
+            opaque_np.astype(np.uint8),
+            np.ones((3, 3), dtype=np.uint8),
+            iterations=erosion_iterations,
+        ).astype(bool)
+        if not trusted_opaque_np.any():
+            trusted_opaque_np = opaque_np
+
         distance_np, labels = cv2.distanceTransformWithLabels(
-            (~opaque_np).astype(np.uint8),
+            (~trusted_opaque_np).astype(np.uint8),
             cv2.DIST_L2,
             5,
             labelType=cv2.DIST_LABEL_PIXEL,
         )
         image_np = image.detach().cpu().numpy()
         nearest_lookup = np.zeros((int(labels.max()) + 1, 3), dtype=image_np.dtype)
-        opaque_y, opaque_x = np.nonzero(opaque_np)
+        opaque_y, opaque_x = np.nonzero(trusted_opaque_np)
         nearest_lookup[labels[opaque_y, opaque_x]] = image_np[opaque_y, opaque_x]
         nearest = torch.from_numpy(nearest_lookup[labels]).to(device=image.device, dtype=image.dtype)
 
@@ -2660,9 +2694,35 @@ class VNCCSChromaKey:
         key_other_max = torch.maximum(key_other1, key_other2)
         key_other_avg = (key_other1 + key_other2) * 0.5
         key_excess = torch.clamp(key_dom - (key_other_max * 0.7 + key_other_avg * 0.3), min=0.05)
-        spill_affinity = self._smoothstep(key_excess * 0.08, key_excess * 0.55 + 1e-6, screen_excess)
+        dominant_affinity = self._smoothstep(key_excess * 0.08, key_excess * 0.55 + 1e-6, screen_excess)
 
-        partial_weight = edge * spill_affinity * max(0.0, min(1.0, float(amount)))
+        # Dominant-channel despill misses a teal screen mixed into blue
+        # foreground because the contaminated blue channel can remain higher
+        # than green. Detect that case from the full RGB trajectory between the
+        # nearest opaque foreground color and the sampled screen color.
+        key_direction = key_color.reshape(1, 1, 3) - nearest
+        direction_norm_sq = (key_direction * key_direction).sum(dim=-1).clamp(min=1e-5)
+        projection = (((image - nearest) * key_direction).sum(dim=-1) / direction_norm_sq).clamp(0.0, 1.0)
+        projected_color = nearest + projection.unsqueeze(-1) * key_direction
+        orthogonal_error = torch.sqrt(((image - projected_color) ** 2).sum(dim=-1))
+        relative_error = orthogonal_error / torch.sqrt(direction_norm_sq)
+        # Resampling and compression bend a real spill trajectory away from an
+        # ideal RGB line. A narrow 0.30 cutoff left alternating cyan/green
+        # pixels behind on otherwise clean blue outlines.
+        trajectory_affinity = 1.0 - self._smoothstep(0.06, 0.60, relative_error)
+        # Even a 5-10% screen contribution is visible as a saturated one-pixel
+        # halo after compositing. Reach full correction early; trajectory
+        # affinity, rather than contribution size, guards unrelated edge color.
+        projected_affinity = self._smoothstep(0.005, 0.08, projection) * trajectory_affinity
+        spill_affinity = torch.maximum(dominant_affinity, projected_affinity)
+
+        # Guided refinement can leave screen-contaminated pixels at 0.98-0.99
+        # alpha slightly inside the hard 0.5 matte contour. Include those
+        # uncertain colors in despill without changing their alpha or widening
+        # the geometric edge band used by matte cleanup.
+        uncertain_color = ((alpha > 0.001) & (alpha < 0.995)).to(dtype=alpha.dtype)
+        color_edge = torch.maximum(edge, uncertain_color)
+        partial_weight = color_edge * spill_affinity * max(0.0, min(1.0, float(amount)))
         distance = torch.from_numpy(distance_np).to(device=alpha.device, dtype=alpha.dtype)
         transparent_near_edge = ((alpha <= 0.001) & (distance <= float(radius))).to(dtype=alpha.dtype)
         weight = torch.maximum(partial_weight, transparent_near_edge).unsqueeze(-1)
