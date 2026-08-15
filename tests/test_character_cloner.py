@@ -201,7 +201,7 @@ class TestClonerConfigSave:
         })
 
         node = CharacterCloner()
-        with pytest.raises(ValueError, match="загрузите изображение персонажа"):
+        with pytest.raises(ValueError, match="Upload a character image"):
             node.process(widget_data=widget_data)
 
         assert utils.load_config("CloneMissing") is None
@@ -215,7 +215,7 @@ class TestClonerConfigSave:
 
         widget_data = json.dumps({"character": "Unknown", "character_info": {}, "source_images": []})
         node = CharacterCloner()
-        with pytest.raises(ValueError, match="загрузите изображение персонажа"):
+        with pytest.raises(ValueError, match="Upload a character image"):
             node.process(widget_data=widget_data)
 
         # "Unknown" should not create a config

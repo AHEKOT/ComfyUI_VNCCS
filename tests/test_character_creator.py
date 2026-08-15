@@ -276,7 +276,7 @@ class TestGenerationModes:
         assert result["skin_color"] == "dark skin"
         assert "average build" in result["body"]
 
-    def test_character_wizard_postprocess_russian_afro_student(self):
+    def test_character_wizard_postprocess_african_student(self):
         parsed = {
             "sex": "male",
             "age": 20,
@@ -285,7 +285,7 @@ class TestGenerationModes:
             "body": "",
         }
 
-        result = postprocess_character_wizard_result(parsed, "молодой афро студент")
+        result = postprocess_character_wizard_result(parsed, "young African student")
 
         assert result["race"] == "human"
         assert result["skin_color"] == "dark skin"

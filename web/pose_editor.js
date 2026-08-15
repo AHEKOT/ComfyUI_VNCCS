@@ -1780,8 +1780,8 @@ class PoseEditorDialog {
     mirrorPose() {
         const mirrored = {};
 
-        // ПРОСТО зеркалим координаты, имена НЕ меняем!
-        // Тогда правая рука (оранжевая) окажется слева визуально
+        // Mirror coordinates only; keep every joint name unchanged.
+        // The right arm (orange) will therefore appear on the visual left.
         for (const [name, pos] of Object.entries(this.joints)) {
             if (!Array.isArray(pos) || pos.length < 2) {
                 continue;
@@ -1790,7 +1790,7 @@ class PoseEditorDialog {
             const [x, y] = pos;
             const mirroredX = CANVAS_WIDTH - x;
 
-            // Сохраняем под ТЕМ ЖЕ именем с зеркальной координатой
+            // Store the mirrored coordinate under the same joint name.
             mirrored[name] = [mirroredX, y];
         }
 

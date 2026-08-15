@@ -238,8 +238,7 @@ SKIN_COLOR_OPTIONS = [
 SKIN_COLOR_HINT_RE = re.compile(
     r"\b(skin|complexion|pale|fair|light[- ]skinned|tan|tanned|dark[- ]skinned|"
     r"brown[- ]skinned|black|black[- ]skinned|afro|african|african[- ]american|"
-    r"olive|blue[- ]skinned|green[- ]skinned|grey[- ]skinned|gray[- ]skinned)\b|"
-    r"(афро|африкан|темн[а-яё]+(?:\\s+кож[а-яё]+)?|смугл[а-яё]+)",
+    r"olive|blue[- ]skinned|green[- ]skinned|grey[- ]skinned|gray[- ]skinned)\b",
     re.IGNORECASE,
 )
 
@@ -251,23 +250,19 @@ RACE_OPTION_TAGS = {
 }
 HUMAN_HINT_RE = re.compile(
     r"\b(human|person|student|schoolboy|schoolgirl|man|woman|boy|girl|guy|"
-    r"afro|african|african[- ]american|black)\b|"
-    r"(человек|студент|студентка|парень|девушка|мужчина|женщина|афро|африкан)",
+    r"afro|african|african[- ]american|black)\b",
     re.IGNORECASE,
 )
 YOUNG_BODY_HINT_RE = re.compile(
-    r"\b(young|student|teen|teenage|schoolboy|schoolgirl|college)\b|"
-    r"(молод|юноша|юная|студент|студентка|подрост)",
+    r"\b(young|student|teen|teenage|schoolboy|schoolgirl|college)\b",
     re.IGNORECASE,
 )
 SLIM_BODY_HINT_RE = re.compile(
-    r"\b(slim|slender|thin|skinny|lean|petite)\b|"
-    r"(стройн|худ|тонк)",
+    r"\b(slim|slender|thin|skinny|lean|petite)\b",
     re.IGNORECASE,
 )
 ATHLETIC_BODY_HINT_RE = re.compile(
-    r"\b(athletic|fit|sporty|muscular)\b|"
-    r"(атлет|спорт|мускул|подтянут)",
+    r"\b(athletic|fit|sporty|muscular)\b",
     re.IGNORECASE,
 )
 
@@ -340,17 +335,17 @@ def _join_prompt_tokens(tokens):
 
 def _infer_skin_color_from_description(description):
     text = str(description or "").lower()
-    if re.search(r"\b(afro|african|african[- ]american|black|black[- ]skinned)\b|афро|африкан|темн|смугл", text):
+    if re.search(r"\b(afro|african|african[- ]american|black|black[- ]skinned)\b", text):
         return "dark skin"
-    if re.search(r"\b(brown[- ]skinned|brown skin)\b|коричнев", text):
+    if re.search(r"\b(brown[- ]skinned|brown skin)\b", text):
         return "brown skin"
-    if re.search(r"\b(tan|tanned)\b|загорел", text):
+    if re.search(r"\b(tan|tanned)\b", text):
         return "tan skin"
-    if re.search(r"\b(olive)\b|оливков", text):
+    if re.search(r"\bolive\b", text):
         return "olive skin"
-    if re.search(r"\b(pale)\b|бледн", text):
+    if re.search(r"\bpale\b", text):
         return "pale skin"
-    if re.search(r"\b(fair|light[- ]skinned|light skin)\b|светл", text):
+    if re.search(r"\b(fair|light[- ]skinned|light skin)\b", text):
         return "fair skin"
     return ""
 
