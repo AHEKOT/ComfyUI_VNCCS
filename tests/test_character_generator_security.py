@@ -13,6 +13,34 @@ pytest.importorskip("torch")
 from nodes import character_generator as cg
 
 
+def test_chroma_key_presets_use_edge_safe_tolerance_scale():
+    tolerances = {
+        name: values["tolerance"]
+        for name, values in cg.CHROMA_KEY_PRESETS.items()
+    }
+
+    assert tolerances == {
+        "ultra_light": 0.00,
+        "light": 0.10,
+        "balanced": 0.15,
+        "strong": 0.18,
+        "aggressive": 0.22,
+    }
+    assert cg.DEFAULT_WIDGET_DATA["bg_remove"]["tolerance"] == 0.15
+    assert cg.CHROMA_KEY_PRESETS["balanced"] == {
+        "tolerance": 0.15,
+        "softness": 0.12,
+        "despill_strength": 0.65,
+        "edge_width": 3,
+        "matte_cleanup": 0.10,
+        "foreground_recover": 0.35,
+        "edge_decontaminate": 0.75,
+        "edge_choke": 0.08,
+        "matte_method": "guided_edge",
+        "output_mode": "straight_rgba",
+    }
+
+
 def test_klein_pipe_selects_klein_encoder_and_helper_loras(monkeypatch):
     generator = cg.VNCCS_CharacterGenerator()
     pipe_values = {
@@ -213,6 +241,7 @@ def test_bg_remove_uses_sam3_details_recovery_by_default(monkeypatch):
 
     class CapturingChromaKey:
         def chroma_key(self, *args, **kwargs):
+            seen["tolerance"] = args[1]
             seen["use_sam3_recovery_mask"] = args[12]
             return (args[0], None, None)
 
@@ -225,7 +254,10 @@ def test_bg_remove_uses_sam3_details_recovery_by_default(monkeypatch):
         background="Green",
     )
 
-    assert seen["use_sam3_recovery_mask"] is True
+    assert seen == {
+        "tolerance": 0.15,
+        "use_sam3_recovery_mask": True,
+    }
 
 
 def test_bg_remove_can_disable_sam3_details_recovery(monkeypatch):
