@@ -2226,6 +2226,20 @@ class VNCCSChromaKey:
             other_indices=other_indices,
             amount=float(edge_choke),
         )
+
+        # Upscalers and image codecs can shift broad areas of an otherwise
+        # continuous screen far enough from the sampled key color that the
+        # per-pixel matte leaves visible background patches. Run component
+        # cleanup after edge choke so enclosed background is classified from
+        # the final matte confidence rather than from the softer initial matte.
+        alpha = self._suppress_connected_key_fringe(
+            image=image,
+            alpha=alpha,
+            key_color=key_color,
+            tolerance=float(tolerance),
+            softness=float(softness),
+            amount=1.0,
+        )
         edge = self._edge_band(alpha, int(edge_width))
 
         recovered = self._recover_foreground(
@@ -2250,6 +2264,16 @@ class VNCCSChromaKey:
             key_color=key_color,
             dominant_idx=dominant_idx,
             other_indices=other_indices,
+            amount=float(edge_decontaminate),
+        )
+        despilled = self._bleed_clean_edge_colors(
+            image=despilled,
+            alpha=alpha,
+            edge=edge,
+            key_color=key_color,
+            dominant_idx=dominant_idx,
+            other_indices=other_indices,
+            radius=max(2, int(edge_width) + 2),
             amount=float(edge_decontaminate),
         )
         if output_mode == "premultiplied_rgba":
@@ -2417,9 +2441,19 @@ class VNCCSChromaKey:
         key_luma = key_color[0] * 0.299 + key_color[1] * 0.587 + key_color[2] * 0.114
         luma_gate = luma >= (key_luma * 0.65).clamp(0.18, 0.72)
 
-        loose_chroma = tolerance + softness * 0.9
-        loose_rgb = tolerance * 1.5 + softness * 1.55
-        candidate = ((chroma_dist <= loose_chroma) | (rgb_dist <= loose_rgb)) & luma_gate
+        # Both distances must agree. Using either distance independently makes
+        # pale skin and other low-saturation foreground colors look similar to
+        # a bright screen and can connect them to the border component.
+        connected_chroma = tolerance + softness * 0.25
+        connected_rgb = tolerance * 1.5 + softness * 0.25
+        strict_candidate = (chroma_dist <= connected_chroma) & (rgb_dist <= connected_rgb) & luma_gate
+
+        # A one-pixel frame artifact or a lighting gradient can preserve the
+        # screen hue while changing brightness enough to fail RGB distance.
+        # Keep this hue-only extension deliberately narrow and use it only as
+        # part of component analysis below.
+        same_hue_limit = max(0.035, min(0.12, tolerance * 0.5 + softness * 0.1))
+        candidate = strict_candidate | (chroma_dist <= same_hue_limit)
 
         candidate_np = candidate.detach().cpu().numpy().astype(np.uint8)
         if candidate_np.max() <= 0:
@@ -2440,12 +2474,35 @@ class VNCCSChromaKey:
             axis=0,
         )
         border_labels = np.unique(border_labels[border_labels > 0])
-        if border_labels.size == 0:
+
+        # Background may also be fully enclosed by an arm, hair, or clothing.
+        # Remove such components only when the preliminary matte itself says
+        # that nearly all of the component is background. This keeps similarly
+        # colored opaque foreground details intact.
+        alpha_np = alpha.detach().cpu().numpy()
+        flat_labels = labels.reshape(-1)
+        component_count = int(labels.max()) + 1
+        pixel_counts = np.bincount(flat_labels, minlength=component_count)
+        alpha_sums = np.bincount(flat_labels, weights=alpha_np.reshape(-1), minlength=component_count)
+        foreground_counts = np.bincount(
+            flat_labels,
+            weights=(alpha_np.reshape(-1) >= 0.5).astype(np.float32),
+            minlength=component_count,
+        )
+        safe_counts = np.maximum(pixel_counts, 1)
+        mean_alpha = alpha_sums / safe_counts
+        foreground_fraction = foreground_counts / safe_counts
+        enclosed_background = np.flatnonzero((mean_alpha <= 0.25) & (foreground_fraction <= 0.10))
+
+        removable_labels = np.unique(np.concatenate([border_labels, enclosed_background]))
+        removable_labels = removable_labels[removable_labels > 0]
+        if removable_labels.size == 0:
             return alpha
 
-        connected_np = np.isin(labels, border_labels)
+        connected_np = np.isin(labels, removable_labels)
         connected = torch.from_numpy(connected_np).to(device=alpha.device, dtype=alpha.dtype)
-        return torch.where(connected > 0.0, torch.zeros_like(alpha), alpha).clamp(0.0, 1.0)
+        suppression = connected * max(0.0, min(1.0, float(amount)))
+        return (alpha * (1.0 - suppression)).clamp(0.0, 1.0)
 
     def _edge_band(self, alpha: torch.Tensor, edge_width: int) -> torch.Tensor:
         if edge_width <= 0:
@@ -2558,6 +2615,58 @@ class VNCCSChromaKey:
         decontaminated = (decontaminated * luma_gain).clamp(0.0, 1.0)
 
         return torch.lerp(image, decontaminated, edge.unsqueeze(-1) * amount).clamp(0.0, 1.0)
+
+    def _bleed_clean_edge_colors(
+        self,
+        image: torch.Tensor,
+        alpha: torch.Tensor,
+        edge: torch.Tensor,
+        key_color: torch.Tensor,
+        dominant_idx: int,
+        other_indices: list[int],
+        radius: int,
+        amount: float,
+    ) -> torch.Tensor:
+        """Replace key-contaminated edge RGB with nearby opaque foreground RGB."""
+        if amount <= 0.0 or radius <= 0:
+            return image
+
+        opaque_np = (alpha >= 0.98).detach().cpu().numpy()
+        if not opaque_np.any():
+            return image
+
+        distance_np, labels = cv2.distanceTransformWithLabels(
+            (~opaque_np).astype(np.uint8),
+            cv2.DIST_L2,
+            5,
+            labelType=cv2.DIST_LABEL_PIXEL,
+        )
+        image_np = image.detach().cpu().numpy()
+        nearest_lookup = np.zeros((int(labels.max()) + 1, 3), dtype=image_np.dtype)
+        opaque_y, opaque_x = np.nonzero(opaque_np)
+        nearest_lookup[labels[opaque_y, opaque_x]] = image_np[opaque_y, opaque_x]
+        nearest = torch.from_numpy(nearest_lookup[labels]).to(device=image.device, dtype=image.dtype)
+
+        dom = image[..., dominant_idx]
+        other1 = image[..., other_indices[0]]
+        other2 = image[..., other_indices[1]]
+        other_max = torch.maximum(other1, other2)
+        other_avg = (other1 + other2) * 0.5
+        screen_excess = (dom - (other_max * 0.7 + other_avg * 0.3)).clamp(0.0, 1.0)
+
+        key_dom = key_color[dominant_idx]
+        key_other1 = key_color[other_indices[0]]
+        key_other2 = key_color[other_indices[1]]
+        key_other_max = torch.maximum(key_other1, key_other2)
+        key_other_avg = (key_other1 + key_other2) * 0.5
+        key_excess = torch.clamp(key_dom - (key_other_max * 0.7 + key_other_avg * 0.3), min=0.05)
+        spill_affinity = self._smoothstep(key_excess * 0.08, key_excess * 0.55 + 1e-6, screen_excess)
+
+        partial_weight = edge * spill_affinity * max(0.0, min(1.0, float(amount)))
+        distance = torch.from_numpy(distance_np).to(device=alpha.device, dtype=alpha.dtype)
+        transparent_near_edge = ((alpha <= 0.001) & (distance <= float(radius))).to(dtype=alpha.dtype)
+        weight = torch.maximum(partial_weight, transparent_near_edge).unsqueeze(-1)
+        return torch.lerp(image, nearest, weight).clamp(0.0, 1.0)
 
 
 # --- Node Registration ---
