@@ -1171,7 +1171,7 @@ class CharacterCreatorV2:
         age = int(info.get("age", 18))
         
         # Base Prompt
-        positive_prompt = f"{aesthetics}, simple background, expressionless, solo, full body"
+        positive_prompt = f"{aesthetics}, simple background, expressionless, solo, cowboy shot"
         positive_prompt, gender_negative = apply_sex(sex, positive_prompt, "")
         
         # NSFW / Clothing
