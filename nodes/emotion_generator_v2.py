@@ -480,6 +480,22 @@ class EmotionGeneratorV2:
         pipe, pipe_seed = build_emotion_pipe(generation_model, generation_settings)
         mode = str(generation_model or "Anima").lower()
         effective_prompt_style = "Anima" if mode == "anima" else "SDXL Style"
+
+        try:
+            generation_settings_data = json.loads(generation_settings) if generation_settings else {}
+        except (TypeError, json.JSONDecodeError):
+            generation_settings_data = {}
+        raw_pose_indices = generation_settings_data.get("selected_pose_indices")
+        selected_pose_indices = None
+        if isinstance(raw_pose_indices, list):
+            selected_pose_indices = set()
+            for value in raw_pose_indices:
+                try:
+                    index = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if index > 0:
+                    selected_pose_indices.add(index)
         
         try:
             selected_costumes = json.loads(costumes_data)
@@ -587,6 +603,8 @@ class EmotionGeneratorV2:
                     emotion_text = f"({emotion_key}, {emotion_description}), {face_details}"
                 
                 for sprite_index, (img_tensor, mask_tensor, _source_path) in enumerate(sprite_items, start=1):
+                    if selected_pose_indices is not None and sprite_index not in selected_pose_indices:
+                        continue
                     images.append(img_tensor)
                     emotion_data.append(json.dumps({
                         "emotion_prompt": emotion_text,

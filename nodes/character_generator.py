@@ -3402,6 +3402,13 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             emotion_data = cached_inputs.get("emotion_data", emotion_data)
         image_items = self._image_list(images)
         data_items = self._parse_emotion_data(emotion_data)
+        previous_run_inputs = _load_run_inputs(cache_dir) if not regenerate_from else {}
+        emotion_inputs_changed = previous_run_inputs.get("emotion_data") != data_items
+        if emotion_inputs_changed:
+            print(
+                "[VNCCS Emotions Generator] Pose/emotion input list changed; "
+                "ignoring prior stage cache for this run."
+            )
         background_color = self._emotion_background_color(widget_payload, data_items)
         source_items = []
         for index, meta in enumerate(data_items):
@@ -3461,7 +3468,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 detailer_mask_cache_key = f"{stage_key}_detailer_mask"
                 cached_raw = None
                 cached_detailer_masks = None
-                if not self._should_regenerate_stage(order, regenerate_from, stage_key):
+                if not emotion_inputs_changed and not self._should_regenerate_stage(order, regenerate_from, stage_key):
                     cached_raw = self._load_cached_stage(cache_dir, stage_key, unique_id, f"Using cached {stage_label}")
                     if cached_raw is not None and not self._should_regenerate_stage(order, regenerate_from, bg_stage_key):
                         cached_final = self._load_cached_stage(cache_dir, bg_stage_key, unique_id, f"Using cached {stage_label} BG")
