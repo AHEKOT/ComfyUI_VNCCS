@@ -3,6 +3,8 @@ import pytest
 from conftest import _preload_node
 
 
+pytest.importorskip("torch")
+
 character_creator_v2 = _preload_node("character_creator_v2")
 get_generation_resolution = character_creator_v2.get_generation_resolution
 normalize_gen_settings = character_creator_v2.normalize_gen_settings
