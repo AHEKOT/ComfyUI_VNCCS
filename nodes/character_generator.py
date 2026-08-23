@@ -558,18 +558,6 @@ def _load_cached_tensor(cache_dir, key):
         return None
 
 
-def _remove_cached_tensor(cache_dir, key):
-    path = _cache_tensor_path(cache_dir, key)
-    if not path or not os.path.isfile(path):
-        return False
-    try:
-        os.remove(path)
-        return True
-    except Exception as exc:
-        print(f"[VNCCS Character Generator] Failed to remove cached tensor '{key}': {exc}")
-        return False
-
-
 def _save_run_inputs(cache_dir, **items):
     cache_dir = _safe_cache_dir(cache_dir)
     if not cache_dir:
@@ -2742,30 +2730,6 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
 
         return connected, known
 
-    def _cleanup_emotion_tensor_cache(self, cache_dir, remove_per_item=False):
-        """Remove legacy combined caches and obsolete per-item caches."""
-        removed = int(_remove_cached_tensor(cache_dir, "input_images"))
-        cache_dir = _safe_cache_dir(cache_dir)
-        stage_dir = os.path.join(cache_dir, "_stage_cache") if cache_dir else ""
-        if not stage_dir or not os.path.isdir(stage_dir):
-            return removed
-        try:
-            for filename in os.listdir(stage_dir):
-                if not filename.startswith("emotion_") or not filename.endswith(".pt"):
-                    continue
-                is_per_item = "__item_" in filename
-                if is_per_item and not remove_per_item:
-                    continue
-                path = os.path.join(stage_dir, filename)
-                if os.path.isfile(path):
-                    os.remove(path)
-                    removed += 1
-        except Exception as exc:
-            print(f"[VNCCS Emotions Generator] Failed to clean obsolete tensor cache: {exc}")
-        if removed:
-            print(f"[VNCCS Emotions Generator] Removed {removed} obsolete cached tensor file(s).")
-        return removed
-
     def _mask_from_source_path(self, path, character_name=""):
         path = _safe_existing_character_image_path(path, character_name)
         if not path or not os.path.exists(path):
@@ -3696,7 +3660,6 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 "[VNCCS Emotions Generator] Pose/emotion input list changed; "
                 "ignoring prior stage cache for this run."
             )
-        self._cleanup_emotion_tensor_cache(cache_dir, remove_per_item=not regenerate_from)
         background_color = self._emotion_background_color(widget_payload, data_items)
         emotion_items = [str(item.get("emotion_prompt", "")) for item in data_items]
         sprite_paths = [str(item.get("sprite_output_path", "")) for item in data_items]
