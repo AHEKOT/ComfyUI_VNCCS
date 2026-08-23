@@ -76,7 +76,6 @@ _PIPELINE_LOCAL_LORAS = {
     "vnccs clothes core klein9b",
     "vnccs pose studio klein9b",
 }
-_PACKAGED_EXTENSION_KINDS = {"klein9b"}
 _FOLDER_MAP = {
     "unet": ["unet", "diffusion_models"],
     "checkpoints": ["checkpoints"],
@@ -478,29 +477,6 @@ def _uses_packaged_cc_config(repo_id):
     return repo_id in _PACKAGED_CC_REPO_IDS and os.path.exists(_get_packaged_cc_path())
 
 
-def _merge_packaged_kind_extensions(data):
-    """Keep bundled model-family additions available until the remote catalog catches up."""
-    if not isinstance(data, dict) or not os.path.exists(_get_packaged_cc_path()):
-        return data
-    try:
-        with open(_get_packaged_cc_path(), "r", encoding="utf-8") as handle:
-            packaged = json.load(handle)
-    except Exception:
-        return data
-
-    merged = dict(data)
-    for category in ("models", "clip", "vae", "lora", "controlnet", "other"):
-        entries = list(data.get(category, []) or [])
-        extensions = [
-            entry for entry in packaged.get(category, []) or []
-            if _entry_kind(entry) in _PACKAGED_EXTENSION_KINDS
-        ]
-        if extensions:
-            entries.extend(extensions)
-            merged[category] = _dedupe_entries_by_name(entries)
-    return merged
-
-
 def _sync_packaged_cc_config(repo_id, data):
     if repo_id not in _PACKAGED_CC_REPO_IDS or not isinstance(data, dict):
         return False
@@ -525,7 +501,7 @@ def _sync_packaged_cc_config(repo_id, data):
                 json.dump(data, handle, indent=2, ensure_ascii=False)
                 handle.write("\n")
             os.replace(tmp_path, target)
-            print(f"[VNCCS Control Center] Updated packaged catalog from '{repo_id}'.")
+            print(f"[VNCCS Control Center] Replaced local catalog from '{repo_id}'.")
             return True
     except Exception as exc:
         print(f"[VNCCS Control Center] Failed to update packaged catalog: {exc}")
@@ -550,24 +526,17 @@ def _get_cc_config(repo_id, prefer_remote=False):
     else:
         user_config = get_vnccs_config()
         hf_token = user_config.get("hf_token")
-        try:
-            path = hf_hub_download(
-                repo_id=repo_id,
-                filename="control_center.json",
-                local_files_only=False,
-                force_download=bool(prefer_remote),
-                token=hf_token,
-            )
-            source = "huggingface"
-        except Exception:
-            if not _uses_packaged_cc_config(repo_id):
-                raise
-            path = _get_packaged_cc_path()
-            source = "packaged"
+        path = hf_hub_download(
+            repo_id=repo_id,
+            filename="control_center.json",
+            local_files_only=False,
+            force_download=bool(prefer_remote),
+            token=hf_token,
+        )
+        source = "huggingface"
     with open(path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
     if source == "huggingface":
-        data = _merge_packaged_kind_extensions(data)
         _sync_packaged_cc_config(repo_id, data)
     _CC_CONFIG_CACHE[repo_id] = {"ts": now, "data": data, "source": source}
     return _dedupe_config_by_name(_merge_custom_loras(data))
