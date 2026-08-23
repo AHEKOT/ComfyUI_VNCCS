@@ -42,6 +42,7 @@ const DEFAULT_DATA = {
         temporal_overlap: 8,
     },
     emotion_generation: {
+        task_batch_size: 0,
         face_denoise: 0.55,
         use_sam: true,
         bbox_model: "bbox/face_yolov8m.pt",
@@ -1075,7 +1076,8 @@ class CharacterGeneratorWidget {
             } else {
                 const status = detail.status || "waiting";
                 if (status === "running") {
-                    this.resetStagesFrom(stage);
+                    const continuingBatch = Boolean(detail.append_images) && this.stageState[stage]?.status === "running";
+                    if (!continuingBatch) this.resetStagesFrom(stage);
                     if (stage === "pose_generation" || stage === "original_pose_generation" || stage === "source_upscaler") {
                         this.userSelectedPreview = false;
                         if (!this.data.ui) this.data.ui = {};
@@ -1084,9 +1086,12 @@ class CharacterGeneratorWidget {
                 }
                 const previousStageState = this.stageState[stage] || {};
                 const hasImages = Object.prototype.hasOwnProperty.call(detail, "images");
+                const nextImages = hasImages && detail.append_images
+                    ? [...(previousStageState.images || []), ...(detail.images || [])]
+                    : (hasImages ? detail.images : (previousStageState.images || null));
                 this.stageState[stage] = {
                     status,
-                    images: hasImages ? detail.images : (previousStageState.images || null),
+                    images: nextImages,
                     message: detail.message || "",
                     current: detail.current,
                     total: detail.total,
@@ -2455,6 +2460,7 @@ class CharacterGeneratorWidget {
                 this.faceDenoiseSlider(),
             ]));
             const faceDetailerFields = [
+                this.faceDetailerNumberField("task_batch_size", "task_batch_size (0 = auto)", { min: 0, max: 32, step: 1 }),
                 this.field("emotion_generation", "use_sam", "Use SAM", "checkbox"),
                 this.faceDetailerNumberField("bbox_threshold", "bbox_threshold", { min: 0, max: 1, step: 0.01 }),
                 this.faceDetailerNumberField("bbox_dilation", "bbox_dilation", { min: 0, max: 128, step: 1 }),
