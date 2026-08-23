@@ -201,6 +201,74 @@ const STYLE = `
     font-size: 10px;
     color: var(--text-secondary);
 }
+.ems-pose-selection {
+    margin-top: 7px;
+    padding: 7px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: rgba(10, 8, 16, 0.55);
+}
+.ems-pose-selection-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+.ems-pose-selection-title {
+    color: var(--accent);
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+.ems-pose-selection-summary {
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 9px;
+}
+.ems-pose-grid {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 4px;
+}
+.ems-pose-chip {
+    min-width: 0;
+    height: 24px;
+    padding: 0;
+    border: 1px solid var(--border-hover);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.035);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    cursor: pointer;
+}
+.ems-pose-chip.selected {
+    border-color: var(--accent-border);
+    background: rgba(255, 143, 163, 0.16);
+    color: var(--accent-hover);
+}
+.ems-pose-chip.current {
+    outline: 1px solid var(--accent-lavender);
+    outline-offset: 1px;
+}
+.ems-pose-selection-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 5px;
+    margin-top: 6px;
+}
+.ems-pose-selection-action {
+    height: 24px;
+    border: 1px solid var(--accent-border);
+    border-radius: 6px;
+    background: rgba(255, 143, 163, 0.08);
+    color: var(--text-secondary);
+    font-size: 9px;
+    font-weight: 700;
+    cursor: pointer;
+}
 @keyframes ems-spin { to { transform: rotate(360deg); } }
 
 /* ── Costumes ── */
@@ -1159,11 +1227,22 @@ app.registerExtension({
                     selectedEmotions: new Set(),
                     searchTerm: "",
                     selectedPreviewSprite: null,
+                    selectedPoseIndices: null,
+                    poseCount: 0,
                     gen: parseGenerationSettings()
                 };
+                if (Array.isArray(state.gen.selected_pose_indices)) {
+                    state.selectedPoseIndices = new Set(
+                        state.gen.selected_pose_indices
+                            .map(value => Number.parseInt(value, 10))
+                            .filter(value => Number.isInteger(value) && value > 0)
+                    );
+                }
                 let receivedSerializedConfig = false;
                 let characterFetchToken = 0;
                 let spritePreviewNavigator = null;
+                let poseSelectionSummary = null;
+                let poseSelectionGrid = null;
                 const CC_REPO_ID = "MIUProject/VNCCS_v3.0";
                 const CC_CACHE_KEY = `vnccs_cc_cache_${CC_REPO_ID}`;
                 let ccConfig = null;
@@ -1259,6 +1338,74 @@ app.registerExtension({
                     markNodeDirty();
                 }
 
+                function selectedPoseIndexList() {
+                    if (state.selectedPoseIndices === null) return null;
+                    return Array.from(state.selectedPoseIndices)
+                        .filter(index => Number.isInteger(index) && index > 0 && (!state.poseCount || index <= state.poseCount))
+                        .sort((a, b) => a - b);
+                }
+
+                function syncSelectedPoseIndicesToGenerationSettings() {
+                    const indices = selectedPoseIndexList();
+                    if (indices === null) delete state.gen.selected_pose_indices;
+                    else state.gen.selected_pose_indices = indices;
+                }
+
+                function restorePoseSelectionFromGenerationSettings() {
+                    const stored = state.gen?.selected_pose_indices;
+                    state.selectedPoseIndices = Array.isArray(stored)
+                        ? new Set(
+                            stored
+                                .map(value => Number.parseInt(value, 10))
+                                .filter(value => Number.isInteger(value) && value > 0)
+                        )
+                        : null;
+                }
+
+                function isPoseSelected(index) {
+                    return state.selectedPoseIndices === null || state.selectedPoseIndices.has(index);
+                }
+
+                function selectedPoseCount() {
+                    if (state.poseCount <= 0) return 0;
+                    return state.selectedPoseIndices === null
+                        ? state.poseCount
+                        : selectedPoseIndexList().length;
+                }
+
+                function renderPoseSelection() {
+                    if (!poseSelectionSummary || !poseSelectionGrid) return;
+                    const count = state.poseCount;
+                    const selectedCount = selectedPoseCount();
+                    poseSelectionSummary.textContent = count > 0
+                        ? `${selectedCount}/${count} selected`
+                        : "No poses";
+                    poseSelectionGrid.innerHTML = "";
+                    const currentIndex = Number(state.selectedPreviewSprite?.index ?? -1) + 1;
+                    for (let index = 1; index <= count; index++) {
+                        const chip = document.createElement("button");
+                        chip.type = "button";
+                        chip.className = "ems-pose-chip";
+                        chip.classList.toggle("selected", isPoseSelected(index));
+                        chip.classList.toggle("current", currentIndex === index);
+                        chip.textContent = String(index);
+                        chip.title = `Pose ${index}: click to ${isPoseSelected(index) ? "exclude" : "include"}`;
+                        chip.onclick = () => {
+                            if (state.selectedPoseIndices === null) {
+                                state.selectedPoseIndices = new Set(
+                                    Array.from({ length: state.poseCount }, (_, itemIndex) => itemIndex + 1)
+                                );
+                            }
+                            if (state.selectedPoseIndices.has(index)) state.selectedPoseIndices.delete(index);
+                            else state.selectedPoseIndices.add(index);
+                            spritePreviewNavigator?.show(index - 1);
+                            saveGenerationSettings();
+                            renderPoseSelection();
+                        };
+                        poseSelectionGrid.appendChild(chip);
+                    }
+                }
+
                 function persistAllState() {
                     commitWidget(charWidget, state.character, false);
                     if (styleWidget) commitWidget(styleWidget, promptStyleForMode(state.gen.generation_mode), false);
@@ -1269,6 +1416,7 @@ app.registerExtension({
 
                 function saveGenerationSettings() {
                     const callCallback = arguments.length > 0 ? arguments[0] : true;
+                    syncSelectedPoseIndicesToGenerationSettings();
                     const mode = (state.gen.generation_mode || "anima").toLowerCase();
                     const sharedSeed = state.gen.seed ?? initialSharedSeed;
                     const sharedSeedMode = state.gen.seed_mode || "fixed";
@@ -1971,6 +2119,44 @@ app.registerExtension({
                 spriteNextBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
                 spriteNav.append(spritePrevBtn, spriteCount, spriteNextBtn);
                 charSection.appendChild(spriteNav);
+
+                const poseSelection = document.createElement("div");
+                poseSelection.className = "ems-pose-selection";
+                const poseSelectionHeader = document.createElement("div");
+                poseSelectionHeader.className = "ems-pose-selection-header";
+                const poseSelectionTitle = document.createElement("div");
+                poseSelectionTitle.className = "ems-pose-selection-title";
+                poseSelectionTitle.textContent = "Generate poses";
+                poseSelectionSummary = document.createElement("div");
+                poseSelectionSummary.className = "ems-pose-selection-summary";
+                poseSelectionSummary.textContent = "Loading...";
+                poseSelectionHeader.append(poseSelectionTitle, poseSelectionSummary);
+                poseSelectionGrid = document.createElement("div");
+                poseSelectionGrid.className = "ems-pose-grid";
+                const poseSelectionActions = document.createElement("div");
+                poseSelectionActions.className = "ems-pose-selection-actions";
+                const selectAllPoses = document.createElement("button");
+                selectAllPoses.type = "button";
+                selectAllPoses.className = "ems-pose-selection-action";
+                selectAllPoses.textContent = "SELECT ALL";
+                selectAllPoses.onclick = () => {
+                    state.selectedPoseIndices = null;
+                    saveGenerationSettings();
+                    renderPoseSelection();
+                };
+                const clearAllPoses = document.createElement("button");
+                clearAllPoses.type = "button";
+                clearAllPoses.className = "ems-pose-selection-action";
+                clearAllPoses.textContent = "CLEAR ALL";
+                clearAllPoses.onclick = () => {
+                    state.selectedPoseIndices = new Set();
+                    saveGenerationSettings();
+                    renderPoseSelection();
+                };
+                poseSelectionActions.append(selectAllPoses, clearAllPoses);
+                poseSelection.append(poseSelectionHeader, poseSelectionGrid, poseSelectionActions);
+                charSection.appendChild(poseSelection);
+
                 spritePreviewNavigator = createSpritePreviewNavigator({
                     image: charImg,
                     placeholder: charPlaceholder,
@@ -1980,6 +2166,12 @@ app.registerExtension({
                     nextButton: spriteNextBtn,
                     countLabel: spriteCount,
                     onLoaded: (_url, previewState) => {
+                        state.poseCount = Math.max(0, Number(previewState.count || 0));
+                        if (state.selectedPoseIndices !== null) {
+                            state.selectedPoseIndices = new Set(
+                                selectedPoseIndexList().filter(index => index <= state.poseCount)
+                            );
+                        }
                         state.selectedPreviewSprite = previewState.count > 0
                             ? {
                                 character: previewState.character,
@@ -1990,11 +2182,14 @@ app.registerExtension({
                             : null;
                         state.gen.selected_preview_sprite = state.selectedPreviewSprite;
                         saveGenerationSettings(false);
+                        renderPoseSelection();
                     },
                     onMissing: () => {
+                        state.poseCount = 0;
                         state.selectedPreviewSprite = null;
                         delete state.gen.selected_preview_sprite;
                         saveGenerationSettings(false);
+                        renderPoseSelection();
                     },
                 });
                 leftCol.appendChild(charSection);
@@ -2518,6 +2713,10 @@ app.registerExtension({
                         showModalText("No emotions selected", "Please select at least one emotion.");
                         return false;
                     }
+                    if (state.selectedPoseIndices !== null && selectedPoseIndexList().length === 0) {
+                        showModalText("No poses selected", "Select at least one pose in Generate poses.");
+                        return false;
+                    }
                     return true;
                 };
 
@@ -2542,9 +2741,11 @@ app.registerExtension({
                     }
                     if (generationSettingsWidget && generationSettingsWidget.value) {
                         state.gen = parseGenerationSettings();
+                        restorePoseSelectionFromGenerationSettings();
                     }
                     if (styleWidget) commitWidget(styleWidget, promptStyleForMode(state.gen.generation_mode), false);
                     syncGenerationControls();
+                    renderPoseSelection();
 
                     // 3. Costumes & Emotions (from hidden text strings)
                     if (costumesDataWidget && costumesDataWidget.value) {
@@ -2644,9 +2845,10 @@ app.registerExtension({
                         // Select All Visible
                         const numEmotions = filtered.length;
                         const numCostumes = state.selectedCostumes.size;
-                        const total = numEmotions * numCostumes;
+                        const numPoses = selectedPoseCount();
+                        const total = numEmotions * numCostumes * numPoses;
 
-                        showConfirm("Select visible emotions", `Emotions: ${numEmotions}\nCostumes: ${numCostumes}\nTotal: ${total} images.`, () => {
+                        showConfirm("Select visible emotions", `Emotions: ${numEmotions}\nCostumes: ${numCostumes}\nPoses: ${numPoses}\nTotal: ${total} images.`, () => {
                             filtered.forEach(e => state.selectedEmotions.add(e.safe_name));
                             renderEmotions();
                             updateEmotionsData();
@@ -2668,8 +2870,13 @@ app.registerExtension({
 
                 function resetSelectedEmotionsForCharacterChange() {
                     state.selectedEmotions = new Set();
+                    state.selectedPoseIndices = null;
+                    state.poseCount = 0;
+                    delete state.gen.selected_pose_indices;
                     updateEmotionsData();
                     renderEmotions();
+                    saveGenerationSettings(false);
+                    renderPoseSelection();
                 }
 
                 function createEmotionCard(e, compact = false) {

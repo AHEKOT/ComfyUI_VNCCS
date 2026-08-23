@@ -209,18 +209,22 @@ def build_anima_emotion_prompt(natural_prompt, emotion_description, fallback_emo
 
 
 def _load_sprite_tensor(path):
-    img = Image.open(path)
-    img = ImageOps.exif_transpose(img)
-    has_alpha = img.mode == "RGBA" or img.mode == "LA" or (img.mode == "P" and "transparency" in img.info)
-    img = img.convert("RGBA")
-    arr = np.array(img).astype(np.float32) / 255.0
-    image = torch.from_numpy(arr[..., :3]).unsqueeze(0)
-    mask = torch.from_numpy(1.0 - arr[..., 3]).unsqueeze(0) if has_alpha else None
+    with Image.open(path) as opened:
+        img = ImageOps.exif_transpose(opened)
+        has_alpha = img.mode == "RGBA" or img.mode == "LA" or (img.mode == "P" and "transparency" in img.info)
+        rgb_arr = np.asarray(img.convert("RGB"), dtype=np.uint8).copy()
+        alpha_arr = np.asarray(img.convert("RGBA").getchannel("A"), dtype=np.uint8).copy() if has_alpha else None
+    image = torch.from_numpy(rgb_arr).to(dtype=torch.float32).div_(255.0).unsqueeze(0)
+    mask = (
+        1.0 - torch.from_numpy(alpha_arr).to(dtype=torch.float32).div_(255.0).unsqueeze(0)
+        if alpha_arr is not None
+        else None
+    )
     return image, mask
 
 
-def load_costume_sprite_images(character, costume):
-    """Return all current neutral/source sprites for a costume."""
+def list_costume_sprite_paths(character, costume):
+    """Return sorted current neutral/source sprite paths without decoding them."""
     root = os.path.join(character_dir(character), "Sprites", costume)
     paths = []
     if os.path.isdir(root):
@@ -253,9 +257,18 @@ def load_costume_sprite_images(character, costume):
                 continue
             seen_paths.add(path_key)
             paths.append(path)
+    return paths
+
+
+def load_costume_sprite_images(character, costume, selected_pose_indices=None):
+    """Decode only the requested current neutral/source sprites for a costume."""
+    paths = list_costume_sprite_paths(character, costume)
+    selected = set(selected_pose_indices) if selected_pose_indices is not None else None
 
     loaded = []
-    for path in paths:
+    for pose_index, path in enumerate(paths, start=1):
+        if selected is not None and pose_index not in selected:
+            continue
         try:
             image, mask = _load_sprite_tensor(path)
             loaded.append((image, mask, path))
@@ -480,6 +493,22 @@ class EmotionGeneratorV2:
         pipe, pipe_seed = build_emotion_pipe(generation_model, generation_settings)
         mode = str(generation_model or "Anima").lower()
         effective_prompt_style = "Anima" if mode == "anima" else "SDXL Style"
+
+        try:
+            generation_settings_data = json.loads(generation_settings) if generation_settings else {}
+        except (TypeError, json.JSONDecodeError):
+            generation_settings_data = {}
+        raw_pose_indices = generation_settings_data.get("selected_pose_indices")
+        selected_pose_indices = None
+        if isinstance(raw_pose_indices, list):
+            selected_pose_indices = set()
+            for value in raw_pose_indices:
+                try:
+                    index = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if index > 0:
+                    selected_pose_indices.add(index)
         
         try:
             selected_costumes = json.loads(costumes_data)
@@ -537,9 +566,17 @@ class EmotionGeneratorV2:
             # Note: selected_costumes comes from frontend which lists them via API
             costume_details, costume_face, costume_head = costume_face_details(character, costume)
             
-            sprite_items = load_costume_sprite_images(character, costume)
-            if not sprite_items:
+            sprite_paths = list_costume_sprite_paths(character, costume)
+            if not sprite_paths:
                 print(f"Failed to load sprites for costume {costume}")
+                continue
+            selected_sprite_paths = [
+                (sprite_index, source_path)
+                for sprite_index, source_path in enumerate(sprite_paths, start=1)
+                if selected_pose_indices is None or sprite_index in selected_pose_indices
+            ]
+            if not selected_sprite_paths:
+                print(f"No selected source poses remain for costume {costume}")
                 continue
 
             for emotion_key in selected_emotions:
@@ -586,8 +623,7 @@ class EmotionGeneratorV2:
                     # SDXL Style (Original logic)
                     emotion_text = f"({emotion_key}, {emotion_description}), {face_details}"
                 
-                for sprite_index, (img_tensor, mask_tensor, _source_path) in enumerate(sprite_items, start=1):
-                    images.append(img_tensor)
+                for sprite_index, _source_path in selected_sprite_paths:
                     emotion_data.append(json.dumps({
                         "emotion_prompt": emotion_text,
                         "positive_prompt": positive_prompt,
@@ -605,13 +641,10 @@ class EmotionGeneratorV2:
                         "sprite_index": sprite_index,
                     }, ensure_ascii=False))
 
-        # Return results even if no images (user may not have connected image input)
-        # But still return valid emotion data
-        if not images:
-            # Return empty lists for images/masks but keep emotion/prompt data valid
-            return [], pipe, emotion_data
-
-        return images, pipe, emotion_data
+        # Source sprites are loaded lazily by VNCCS_EmotionsGenerator. Returning
+        # full-resolution tensors here used to decode every pose before the pose
+        # selection was applied and duplicated them once per selected emotion.
+        return [], pipe, emotion_data
 
 NODE_CLASS_MAPPINGS = {
     "EmotionGeneratorV2": EmotionGeneratorV2
