@@ -125,6 +125,7 @@ ILLUSTRIOUS_DEFAULTS = {
 
 ANIMA_DEFAULTS = {
     "generation_mode": "anima",
+    "resolution_preset": "normal",
     "diffusion_model_name": "",
     "clip_name": "qwen_3_06b_base.safetensors",
     "vae_name": "qwen_image_vae.safetensors",
@@ -148,6 +149,11 @@ def resolve_generation_seed(gen_settings):
 
 DEFAULT_PREVIEW_WIDTH = 640
 DEFAULT_PREVIEW_HEIGHT = 1536
+ANIMA_RESOLUTION_PRESETS = {
+    "normal": (DEFAULT_PREVIEW_WIDTH, DEFAULT_PREVIEW_HEIGHT),
+    "high": (856, 2048),
+    "maximum": (1024, 2456),
+}
 
 
 def safe_filename_list(category):
@@ -424,6 +430,11 @@ def normalize_gen_settings(gen_settings):
     if isinstance(mode_profile, dict):
         merged.update(mode_profile)
     merged["generation_mode"] = generation_mode
+    if generation_mode == "anima":
+        resolution_preset = str(merged.get("resolution_preset", "normal") or "normal").lower()
+        merged["resolution_preset"] = (
+            resolution_preset if resolution_preset in ANIMA_RESOLUTION_PRESETS else "normal"
+        )
     return merged
 
 
@@ -586,7 +597,11 @@ def load_generation_assets(gen_settings):
 
 
 def get_generation_resolution(gen_settings):
-    return DEFAULT_PREVIEW_WIDTH, DEFAULT_PREVIEW_HEIGHT
+    if str(gen_settings.get("generation_mode", "illustrious")).lower() != "anima":
+        return DEFAULT_PREVIEW_WIDTH, DEFAULT_PREVIEW_HEIGHT
+
+    preset = str(gen_settings.get("resolution_preset", "normal") or "normal").lower()
+    return ANIMA_RESOLUTION_PRESETS.get(preset, ANIMA_RESOLUTION_PRESETS["normal"])
 
 
 def create_generation_latent(model, width, height, gen_settings, batch_size=1):

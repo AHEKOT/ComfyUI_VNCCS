@@ -1256,6 +1256,7 @@ app.registerExtension({
                             },
                             anima: {
                                 diffusion_model_name: "", clip_name: "qwen_3_06b_base.safetensors", vae_name: "qwen_image_vae.safetensors",
+                                resolution_preset: "normal",
                                 sampler: "er_sde", scheduler: "simple",
                                 steps: 30, cfg: 4.0, seed: 0, seed_mode: "fixed",
                                 turbo_enabled: false,
@@ -1305,6 +1306,7 @@ app.registerExtension({
                 };
                 const ANIMA_DEFAULTS = {
                     diffusion_model_name: "", clip_name: ANIMA_CLIP_NAME, vae_name: ANIMA_VAE_NAME,
+                    resolution_preset: "normal",
                     sampler: "er_sde", scheduler: "simple",
                     steps: 30, cfg: 4.0, seed: 0, seed_mode: "fixed",
                     turbo_enabled: false,
@@ -1319,11 +1321,11 @@ app.registerExtension({
                         { name: "", strength: 1.0 }
                     ]
                 };
-                const GENERATION_DEFAULTS_VERSION = 3;
+                const GENERATION_DEFAULTS_VERSION = 4;
                 const PROMPT_DEFAULTS_VERSION = 1;
                 const MODE_SETTING_KEYS = {
                     illustrious: ["ckpt_name", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "dmd_lora_name", "dmd_lora_strength", "turbo_previous_settings", "age_lora_name", "lora_stack"],
-                    anima: ["diffusion_model_name", "clip_name", "vae_name", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "turbo_enabled", "dmd_lora_name", "dmd_lora_strength", "turbo_previous_settings", "lora_stack"],
+                    anima: ["diffusion_model_name", "clip_name", "vae_name", "resolution_preset", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "turbo_enabled", "dmd_lora_name", "dmd_lora_strength", "turbo_previous_settings", "lora_stack"],
                 };
                 const MODE_PROMPT_DEFAULTS = {
                     illustrious: {
@@ -1517,6 +1519,12 @@ app.registerExtension({
                     seed: 0,
                 });
 
+                const normalizeAnimaResolutionPreset = (value) => (
+                    ["normal", "high", "maximum"].includes(String(value || "").toLowerCase())
+                        ? String(value).toLowerCase()
+                        : "normal"
+                );
+
                 const ensureLoraStack = (profile) => {
                     if (!Array.isArray(profile.lora_stack)) profile.lora_stack = [];
                     while (profile.lora_stack.length < 5) {
@@ -1534,6 +1542,9 @@ app.registerExtension({
                     const defaults = getGenerationDefaults(normalizedMode);
                     const existing = state.gen_settings.mode_settings[normalizedMode] || {};
                     const profile = { ...defaults, ...existing };
+                    if (normalizedMode === "anima") {
+                        profile.resolution_preset = normalizeAnimaResolutionPreset(profile.resolution_preset);
+                    }
                     if (normalizedMode === "illustrious" || normalizedMode === "anima") ensureLoraStack(profile);
                     state.gen_settings.mode_settings[normalizedMode] = profile;
                     return profile;
@@ -1574,6 +1585,9 @@ app.registerExtension({
                     ensureOption(els.scheduler, g.scheduler);
                     if (els.sampler) els.sampler.value = g.sampler || "";
                     if (els.scheduler) els.scheduler.value = g.scheduler || "";
+                    if (els.resolution_preset) {
+                        els.resolution_preset.value = normalizeAnimaResolutionPreset(g.resolution_preset);
+                    }
                     syncSliderValue(els.steps, g.steps);
                     syncSliderValue(els.cfg, g.cfg);
                     if (els.seed) els.seed.value = g.seed ?? "";
@@ -1964,6 +1978,7 @@ app.registerExtension({
                     }
                     if (els.illustriousModels) els.illustriousModels.style.display = isAnima ? "none" : "flex";
                     if (els.animaModels) els.animaModels.style.display = isAnima ? "flex" : "none";
+                    if (els.animaResolutionWrap) els.animaResolutionWrap.style.display = isAnima ? "flex" : "none";
                     if (els.loraSection) els.loraSection.style.display = "flex";
                     if (els.dmdWrap) els.dmdWrap.style.display = "none";
                     if (els.dmdLabel) els.dmdLabel.innerText = isAnima ? "Turbo LoRA" : "DMD2 LoRA Model";
@@ -2031,6 +2046,7 @@ app.registerExtension({
                     additional_details: "Extra persistent character traits that should appear across outfits and emotions.",
                     aesthetics: "Visual style notes for the character, such as mood, fashion direction, or rendering flavor.",
                     generation_mode: "Chooses the generation backend profile. Illustrious uses checkpoint-style generation; Anima uses the Qwen/Anima stack.",
+                    resolution_preset: "Sets the portrait generation resolution for Anima. Higher presets use more VRAM and take longer to generate.",
                     ckpt_name: "Checkpoint used for Illustrious generation.",
                     diffusion_model_name: "Diffusion model used for Anima generation.",
                     clip_name: "CLIP/text encoder used by the Anima pipeline.",
@@ -3306,6 +3322,18 @@ app.registerExtension({
                 hiddenAnimaSelects.appendChild(makeFallbackSelect("VAE", "vae_name"));
                 animaModels.appendChild(hiddenAnimaSelects);
                 colRight.appendChild(animaModels);
+
+                const animaResolutionWrap = createCompactSelectField("Resolution", "resolution_preset", state.gen_settings);
+                animaResolutionWrap.classList.add("vnccs-anima-resolution");
+                animaResolutionWrap.style.display = "none";
+                els.animaResolutionWrap = animaResolutionWrap;
+                [
+                    ["normal", "Normal · 640 × 1536"],
+                    ["high", "High · 856 × 2048"],
+                    ["maximum", "Maximum · 1024 × 2456"],
+                ].forEach(([value, label]) => els.resolution_preset.add(new Option(label, value)));
+                els.resolution_preset.setAttribute("aria-label", "Anima resolution");
+                colRight.appendChild(animaResolutionWrap);
 
                 const genParamGrid = document.createElement("div");
                 genParamGrid.className = "vnccs-gen-param-grid";

@@ -24,7 +24,6 @@ from nodes.vnccs_control_center import (
     _dedupe_config_by_name,
     _enrich_config_entries,
     _merge_custom_loras,
-    _merge_packaged_kind_extensions,
     _remove_custom_lora,
     _sync_packaged_cc_config,
     _get_cc_config,
@@ -331,24 +330,6 @@ class TestEnrichConfigEntries:
 
 
 class TestPackagedConfigSync:
-    def test_remote_catalog_keeps_packaged_klein_extensions(self, tmp_path, monkeypatch):
-        target = tmp_path / "control_center.json"
-        target.write_text(json.dumps({
-            "models": [{"name": "Flux Klein", "kind": "Klein9b", "version": "1.0"}],
-            "clip": [], "vae": [], "lora": [], "controlnet": [], "other": [],
-        }), encoding="utf-8")
-        monkeypatch.setattr(
-            "nodes.vnccs_control_center._get_packaged_cc_path",
-            lambda: str(target),
-        )
-
-        merged = _merge_packaged_kind_extensions({
-            "models": [{"name": "Qwen", "kind": "QIE2511"}],
-            "clip": [], "vae": [], "lora": [], "controlnet": [], "other": [],
-        })
-
-        assert [entry["name"] for entry in merged["models"]] == ["Qwen", "Flux Klein"]
-
     def test_updates_packaged_catalog_atomically(self, tmp_path, monkeypatch):
         target = tmp_path / "control_center.json"
         target.write_text('{"name": "old"}\n', encoding="utf-8")
@@ -384,16 +365,27 @@ class TestPackagedConfigSync:
         assert _sync_packaged_cc_config("someone/else", {"name": "remote"}) is False
         assert not target.exists()
 
-    def test_remote_config_refreshes_packaged_fallback(self, tmp_path, monkeypatch):
+    def test_remote_config_refresh_replaces_local_copy(self, tmp_path, monkeypatch):
         target = tmp_path / "control_center.json"
         remote = tmp_path / "remote_control_center.json"
-        target.write_text('{"name": "old"}\n', encoding="utf-8")
+        target.write_text(json.dumps({
+            "name": "old",
+            "lora": [{
+                "name": "VNCCS Pose Studio Klein9b",
+                "version": "3.0",
+                "kind": "Klein9b",
+            }],
+        }), encoding="utf-8")
         remote_data = {
             "name": "current",
             "models": [],
             "clip": [],
             "vae": [],
-            "lora": [],
+            "lora": [{
+                "name": "VNCCS Pose Studio Klein9b",
+                "version": "2.2",
+                "kind": "Klein9b",
+            }],
             "controlnet": [],
             "other": [],
         }
@@ -403,10 +395,13 @@ class TestPackagedConfigSync:
             "nodes.vnccs_control_center._get_packaged_cc_path",
             lambda: str(target),
         )
-        monkeypatch.setattr(
-            "nodes.vnccs_control_center.hf_hub_download",
-            lambda **kwargs: str(remote),
-        )
+        download_args = {}
+
+        def fake_hf_download(**kwargs):
+            download_args.update(kwargs)
+            return str(remote)
+
+        monkeypatch.setattr("nodes.vnccs_control_center.hf_hub_download", fake_hf_download)
         monkeypatch.setattr(
             "nodes.vnccs_control_center._load_custom_loras",
             lambda: [],
@@ -419,7 +414,32 @@ class TestPackagedConfigSync:
             _CC_CONFIG_CACHE.clear()
 
         assert loaded["name"] == "current"
+        assert loaded["lora"][0]["version"] == "2.2"
         assert json.loads(target.read_text(encoding="utf-8")) == remote_data
+        assert download_args["force_download"] is True
+
+    def test_remote_refresh_failure_does_not_return_stale_local_config(self, tmp_path, monkeypatch):
+        target = tmp_path / "control_center.json"
+        local_data = {"name": "stale", "lora": [{"name": "Removed LoRA", "version": "3.0"}]}
+        target.write_text(json.dumps(local_data), encoding="utf-8")
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._get_packaged_cc_path",
+            lambda: str(target),
+        )
+
+        def fail_hf_download(**kwargs):
+            raise RuntimeError("HF unavailable")
+
+        monkeypatch.setattr("nodes.vnccs_control_center.hf_hub_download", fail_hf_download)
+        _CC_CONFIG_CACHE.clear()
+
+        try:
+            with pytest.raises(RuntimeError, match="HF unavailable"):
+                _get_cc_config("MIUProject/VNCCS_v3.0", prefer_remote=True)
+        finally:
+            _CC_CONFIG_CACHE.clear()
+
+        assert json.loads(target.read_text(encoding="utf-8")) == local_data
 
     def test_packaged_catalog_uses_current_clothes_core(self):
         path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "control_center.json")
