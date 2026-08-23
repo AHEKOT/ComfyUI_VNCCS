@@ -558,6 +558,18 @@ def _load_cached_tensor(cache_dir, key):
         return None
 
 
+def _remove_cached_tensor(cache_dir, key):
+    path = _cache_tensor_path(cache_dir, key)
+    if not path or not os.path.isfile(path):
+        return False
+    try:
+        os.remove(path)
+        return True
+    except Exception as exc:
+        print(f"[VNCCS Character Generator] Failed to remove cached tensor '{key}': {exc}")
+        return False
+
+
 def _save_run_inputs(cache_dir, **items):
     cache_dir = _safe_cache_dir(cache_dir)
     if not cache_dir:
@@ -2665,6 +2677,8 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO",
             },
         }
 
@@ -2681,6 +2695,76 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         if isinstance(value, list):
             return value
         return [value]
+
+    def _emotion_output_connections(self, prompt, extra_pnginfo, unique_id):
+        """Return connected state for sprites/faces without retaining unused outputs."""
+        node_id = str(unique_id or "").strip()
+        connected = [False, False]
+        known = False
+
+        workflow = extra_pnginfo.get("workflow") if isinstance(extra_pnginfo, dict) else None
+        if isinstance(workflow, dict):
+            for node in workflow.get("nodes") or []:
+                if not isinstance(node, dict) or str(node.get("id")) != node_id:
+                    continue
+                known = True
+                outputs = node.get("outputs") or []
+                for output_index in range(min(2, len(outputs))):
+                    output = outputs[output_index]
+                    if isinstance(output, dict) and output.get("links"):
+                        connected[output_index] = True
+                break
+
+        if isinstance(prompt, dict):
+            known = True
+
+            def inspect_link(value):
+                if isinstance(value, dict):
+                    for nested in value.values():
+                        inspect_link(nested)
+                    return
+                if not isinstance(value, (list, tuple)):
+                    return
+                if len(value) == 2 and str(value[0]) == node_id:
+                    try:
+                        output_index = int(value[1])
+                    except (TypeError, ValueError):
+                        output_index = -1
+                    if output_index in (0, 1):
+                        connected[output_index] = True
+                        return
+                for nested in value:
+                    inspect_link(nested)
+
+            for node in prompt.values():
+                if isinstance(node, dict):
+                    inspect_link(node.get("inputs") or {})
+
+        return connected, known
+
+    def _cleanup_emotion_tensor_cache(self, cache_dir, remove_per_item=False):
+        """Remove legacy combined caches and obsolete per-item caches."""
+        removed = int(_remove_cached_tensor(cache_dir, "input_images"))
+        cache_dir = _safe_cache_dir(cache_dir)
+        stage_dir = os.path.join(cache_dir, "_stage_cache") if cache_dir else ""
+        if not stage_dir or not os.path.isdir(stage_dir):
+            return removed
+        try:
+            for filename in os.listdir(stage_dir):
+                if not filename.startswith("emotion_") or not filename.endswith(".pt"):
+                    continue
+                is_per_item = "__item_" in filename
+                if is_per_item and not remove_per_item:
+                    continue
+                path = os.path.join(stage_dir, filename)
+                if os.path.isfile(path):
+                    os.remove(path)
+                    removed += 1
+        except Exception as exc:
+            print(f"[VNCCS Emotions Generator] Failed to clean obsolete tensor cache: {exc}")
+        if removed:
+            print(f"[VNCCS Emotions Generator] Removed {removed} obsolete cached tensor file(s).")
+        return removed
 
     def _mask_from_source_path(self, path, character_name=""):
         path = _safe_existing_character_image_path(path, character_name)
@@ -2725,7 +2809,8 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         if not path or not os.path.exists(path):
             return None
         try:
-            with Image.open(path) as image:
+            with Image.open(path) as opened:
+                image = ImageOps.exif_transpose(opened)
                 width, height = image.size
             return int(height), int(width)
         except Exception as exc:
@@ -2783,7 +2868,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             per_task_ram = max(1 * gib, pixels * 4 * 16)
             ram_limit = max(1, int(max(0, available_ram - reserve_ram) // per_task_ram))
         except Exception:
-            ram_limit = 2
+            ram_limit = 1
 
         safe_limit = max(1, min(gpu_limit, ram_limit, 4, max(1, int(task_count))))
         batch_size = min(requested, safe_limit) if requested > 0 else safe_limit
@@ -3393,20 +3478,22 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         filename = f"{os.path.basename(prefix)}{index:04d}.png"
         path = os.path.join(directory, filename)
 
-        rgb = image.detach().cpu().clamp(0, 1)
+        rgb = image.detach().to(device="cpu", dtype=torch.float32, copy=True)
         if rgb.ndim == 4:
             rgb = rgb[0]
-        rgb_arr = (rgb.numpy() * 255).astype(np.uint8)
+        rgb.clamp_(0.0, 1.0).mul_(255.0).round_()
+        rgb_arr = rgb.to(dtype=torch.uint8).numpy()
 
         if mask is None and rgb_arr.shape[-1] >= 4:
             alpha = rgb_arr[..., 3]
         elif mask is None:
             alpha = np.full(rgb_arr.shape[:2], 255, dtype=np.uint8)
         else:
-            m = mask.detach().cpu().clamp(0, 1)
+            m = mask.detach().to(device="cpu", dtype=torch.float32, copy=True)
             if m.ndim == 3:
                 m = m[0]
-            alpha = ((1.0 - m.numpy()) * 255).astype(np.uint8)
+            m.clamp_(0.0, 1.0).mul_(-255.0).add_(255.0).round_()
+            alpha = m.to(dtype=torch.uint8).numpy()
             if alpha.shape != rgb_arr.shape[:2]:
                 alpha = np.array(Image.fromarray(alpha).resize((rgb_arr.shape[1], rgb_arr.shape[0]), Image.Resampling.LANCZOS))
 
@@ -3528,7 +3615,16 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         detailer_mask = self._detailer_mask_from_result(detailed, image, full_image)
         return full_image, face_crop, detailer_mask
 
-    def process(self, images, pipe, emotion_data, widget_data="{}", unique_id=None):
+    def process(
+        self,
+        images,
+        pipe,
+        emotion_data,
+        widget_data="{}",
+        unique_id=None,
+        prompt=None,
+        extra_pnginfo=None,
+    ):
         widget_payload = self._widget_data(widget_data)
         regenerate_from = self._regenerate_from(widget_payload)
         regenerate_index = self._regenerate_index(widget_payload)
@@ -3570,8 +3666,24 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         }
         pipe = self._unwrap_scalar(pipe)
         unique_id = self._unwrap_scalar(unique_id)
+        prompt = self._unwrap_scalar(prompt)
+        extra_pnginfo = self._unwrap_scalar(extra_pnginfo)
         cache_dir = _character_cache_dir_from_sheets_path("", widget_payload.get("character_name", ""), unique_id)
+        output_connections, connections_known = self._emotion_output_connections(
+            prompt,
+            extra_pnginfo,
+            unique_id,
+        )
+        previous_context = _LIVE_GENERATOR_CONTEXTS.get(str(unique_id or "").strip()) or {}
+        if not connections_known:
+            previous_connections = previous_context.get("emotion_output_connections")
+            if isinstance(previous_connections, (list, tuple)) and len(previous_connections) >= 2:
+                output_connections = [bool(previous_connections[0]), bool(previous_connections[1])]
         _remember_generator_context(unique_id, "VNCCS_EmotionsGenerator", cache_dir, pipe)
+        live_context = _LIVE_GENERATOR_CONTEXTS.get(str(unique_id or "").strip())
+        if isinstance(live_context, dict):
+            live_context["emotion_output_connections"] = list(output_connections)
+        collect_sprites, collect_faces = output_connections
         if regenerate_from:
             cached_inputs = _load_run_inputs(cache_dir, keys={"emotion_data"})
             emotion_data = cached_inputs.get("emotion_data", emotion_data)
@@ -3584,6 +3696,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 "[VNCCS Emotions Generator] Pose/emotion input list changed; "
                 "ignoring prior stage cache for this run."
             )
+        self._cleanup_emotion_tensor_cache(cache_dir, remove_per_item=not regenerate_from)
         background_color = self._emotion_background_color(widget_payload, data_items)
         emotion_items = [str(item.get("emotion_prompt", "")) for item in data_items]
         sprite_paths = [str(item.get("sprite_output_path", "")) for item in data_items]
@@ -3660,11 +3773,13 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             )
         if batch_plan["requested"] > batch_size:
             plan_message += f"; requested {batch_plan['requested']} was capped for safety"
+        if collect_sprites or collect_faces:
+            plan_message += "; connected IMAGE outputs will retain full-resolution tensors"
         print(f"[VNCCS Emotions Generator] {plan_message}", flush=True)
 
         results = []
         faces = []
-        rotated_face_dirs = set()
+        face_version_dirs = {}
         completed_tasks = 0
         try:
             for group_index, group in enumerate(groups):
@@ -3869,9 +3984,17 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                             if face_prefix:
                                 face_dir = os.path.dirname(face_prefix)
                                 face_dir_key = os.path.normcase(os.path.abspath(face_dir))
-                                if not regenerate_from and face_dir_key not in rotated_face_dirs:
-                                    self._rotate_existing_images(face_dir)
-                                    rotated_face_dirs.add(face_dir_key)
+                                face_filename = (
+                                    f"{os.path.basename(face_prefix)}{int(record['save_index']):04d}.png"
+                                )
+                                existing_face = os.path.join(face_dir, face_filename)
+                                if not regenerate_from and os.path.isfile(existing_face):
+                                    version_dir = face_version_dirs.get(face_dir_key)
+                                    if not version_dir:
+                                        version_dir = self._version_dir(face_dir)
+                                        os.makedirs(version_dir, exist_ok=True)
+                                        face_version_dirs[face_dir_key] = version_dir
+                                    os.replace(existing_face, os.path.join(version_dir, face_filename))
                                 self._save_rgba_image(
                                     record["face_crop"],
                                     None,
@@ -3883,7 +4006,12 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                         preview = self._emotion_preview_tensor(final_result)
                         if preview is not None:
                             final_previews.append(preview)
-                            results.append(preview)
+                        if collect_sprites or collect_faces:
+                            retained_output = final_result.detach().cpu()
+                            if collect_sprites:
+                                results.append(retained_output)
+                            if collect_faces:
+                                faces.append(retained_output)
 
                     completed_tasks += len(records)
                     final_preview_batch = self._safe_image_batch(
@@ -3926,6 +4054,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                     detailer_input = None
                     final_result = None
                     preview = None
+                    retained_output = None
                     record = None
                     self._release_emotion_batch()
 
@@ -3949,12 +4078,13 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                     cache_dir=cache_dir,
                 )
 
-            if not results:
+            if completed_tasks <= 0:
                 raise RuntimeError("No emotion images to generate. Select at least one costume and one emotion.")
-            # Full-resolution sprites and variable-size face crops are saved as
-            # individual PNG files during each batch. Return independent display
-            # previews so ComfyUI does not retain every 2656x6336 float tensor.
-            return (results, results)
+            # Full-resolution sprites are always saved during each task. Only
+            # retain IMAGE tensors when a downstream node actually consumes the
+            # corresponding output; the stock Step 3 workflow leaves both ports
+            # disconnected and therefore stays bounded by the task window.
+            return (results, faces)
         except Exception as exc:
             print("[VNCCS Emotions Generator] Failed:", exc)
             traceback.print_exc()
@@ -3994,7 +4124,11 @@ if server is not None:
                 }, status=409)
 
             cache_dir = ctx.get("cache_dir")
-            cached_inputs = _load_run_inputs(cache_dir)
+            generator_type = ctx.get("generator_type") or data.get("generator_type")
+            cached_inputs = _load_run_inputs(
+                cache_dir,
+                keys={"emotion_data"} if generator_type == "VNCCS_EmotionsGenerator" else None,
+            )
             if not cached_inputs:
                 return web.json_response({
                     "error": "Stage input cache is empty. Run this generator once normally before using Regenerate.",
@@ -4005,7 +4139,6 @@ if server is not None:
             if "image_index" in data:
                 widget_payload["regenerate_index"] = data.get("image_index")
             widget_data = json.dumps(widget_payload, ensure_ascii=False)
-            generator_type = ctx.get("generator_type") or data.get("generator_type")
             pipe = ctx["pipe"]
 
             generator_cls = {

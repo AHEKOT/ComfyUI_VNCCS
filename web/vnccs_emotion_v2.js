@@ -2713,7 +2713,7 @@ app.registerExtension({
                         showModalText("No emotions selected", "Please select at least one emotion.");
                         return false;
                     }
-                    if (state.poseCount > 0 && selectedPoseCount() === 0) {
+                    if (state.selectedPoseIndices !== null && selectedPoseIndexList().length === 0) {
                         showModalText("No poses selected", "Select at least one pose in Generate poses.");
                         return false;
                     }
@@ -2845,7 +2845,7 @@ app.registerExtension({
                         // Select All Visible
                         const numEmotions = filtered.length;
                         const numCostumes = state.selectedCostumes.size;
-                        const numPoses = selectedPoseCount() || state.poseCount || 0;
+                        const numPoses = selectedPoseCount();
                         const total = numEmotions * numCostumes * numPoses;
 
                         showConfirm("Select visible emotions", `Emotions: ${numEmotions}\nCostumes: ${numCostumes}\nPoses: ${numPoses}\nTotal: ${total} images.`, () => {

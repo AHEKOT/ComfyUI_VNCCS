@@ -1075,8 +1075,11 @@ class CharacterGeneratorWidget {
                 this.finishRegenerate();
             } else {
                 const status = detail.status || "waiting";
+                const previousStageState = this.stageState[stage] || {};
+                const hasImages = Object.prototype.hasOwnProperty.call(detail, "images");
                 if (status === "running") {
-                    const continuingBatch = Boolean(detail.append_images) && this.stageState[stage]?.status === "running";
+                    const continuingBatch = previousStageState.status === "running"
+                        && (Boolean(detail.append_images) || !hasImages);
                     if (!continuingBatch) this.resetStagesFrom(stage);
                     if (stage === "pose_generation" || stage === "original_pose_generation" || stage === "source_upscaler") {
                         this.userSelectedPreview = false;
@@ -1084,8 +1087,6 @@ class CharacterGeneratorWidget {
                         this.data.ui.user_selected_preview = false;
                     }
                 }
-                const previousStageState = this.stageState[stage] || {};
-                const hasImages = Object.prototype.hasOwnProperty.call(detail, "images");
                 const nextImages = hasImages && detail.append_images
                     ? [...(previousStageState.images || []), ...(detail.images || [])]
                     : (hasImages ? detail.images : (previousStageState.images || null));
