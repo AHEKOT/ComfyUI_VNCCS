@@ -37,6 +37,8 @@ from nodes.vnccs_control_center import (
     VNCCSPipeProxy,
 )
 
+_CONTROL_CENTER_MODULE = sys.modules[_sync_packaged_cc_config.__module__]
+
 
 # ── _find_entry ───────────────────────────────────────────────────────────────
 
@@ -421,10 +423,7 @@ class TestPackagedConfigSync:
     def test_updates_packaged_catalog_atomically(self, tmp_path, monkeypatch):
         target = tmp_path / "control_center.json"
         target.write_text('{"name": "old"}\n', encoding="utf-8")
-        monkeypatch.setattr(
-            "nodes.vnccs_control_center._get_packaged_cc_path",
-            lambda: str(target),
-        )
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_get_packaged_cc_path", lambda: str(target))
 
         updated = {
             "name": "current",
@@ -445,10 +444,7 @@ class TestPackagedConfigSync:
 
     def test_ignores_unrelated_repositories(self, tmp_path, monkeypatch):
         target = tmp_path / "control_center.json"
-        monkeypatch.setattr(
-            "nodes.vnccs_control_center._get_packaged_cc_path",
-            lambda: str(target),
-        )
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_get_packaged_cc_path", lambda: str(target))
 
         assert _sync_packaged_cc_config("someone/else", {"name": "remote"}) is False
         assert not target.exists()
@@ -479,21 +475,15 @@ class TestPackagedConfigSync:
         }
         remote.write_text(json.dumps(remote_data), encoding="utf-8")
 
-        monkeypatch.setattr(
-            "nodes.vnccs_control_center._get_packaged_cc_path",
-            lambda: str(target),
-        )
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_get_packaged_cc_path", lambda: str(target))
         download_args = {}
 
         def fake_hf_download(**kwargs):
             download_args.update(kwargs)
             return str(remote)
 
-        monkeypatch.setattr("nodes.vnccs_control_center.hf_hub_download", fake_hf_download)
-        monkeypatch.setattr(
-            "nodes.vnccs_control_center._load_custom_loras",
-            lambda: [],
-        )
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "hf_hub_download", fake_hf_download)
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_load_custom_loras", lambda: [])
         _CC_CONFIG_CACHE.clear()
 
         try:
@@ -510,15 +500,12 @@ class TestPackagedConfigSync:
         target = tmp_path / "control_center.json"
         local_data = {"name": "stale", "lora": [{"name": "Removed LoRA", "version": "3.0"}]}
         target.write_text(json.dumps(local_data), encoding="utf-8")
-        monkeypatch.setattr(
-            "nodes.vnccs_control_center._get_packaged_cc_path",
-            lambda: str(target),
-        )
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_get_packaged_cc_path", lambda: str(target))
 
         def fail_hf_download(**kwargs):
             raise RuntimeError("HF unavailable")
 
-        monkeypatch.setattr("nodes.vnccs_control_center.hf_hub_download", fail_hf_download)
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "hf_hub_download", fail_hf_download)
         _CC_CONFIG_CACHE.clear()
 
         try:
