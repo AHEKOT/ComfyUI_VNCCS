@@ -1077,6 +1077,11 @@ function _injectVNCCSControlCenterStyles() {
     color: #ffaa00;
     word-break: break-word;
 }
+.vnccs-cc-deps-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
 .vnccs-cc-link-btn {
     border: 1px solid rgba(0,214,143,0.28);
     background: rgba(0,214,143,0.1);
@@ -1230,6 +1235,8 @@ app.registerExtension({
                 window.removeEventListener("pointerup", this._cc_widget._onGlobalPointerUp);
             if (this._cc_widget?._onRegistryUpdate)
                 window.removeEventListener("vnccs-cc-registry-updated", this._cc_widget._onRegistryUpdate);
+            if (this._cc_widget?._onManagerTaskCompleted)
+                api.removeEventListener("cm-task-completed", this._cc_widget._onManagerTaskCompleted);
         };
     },
 });
@@ -1252,6 +1259,11 @@ class VNCCSControlCenterWidget {
         this._samplers   = DEFAULT_SAMPLERS;
         this._schedulers = DEFAULT_SCHEDULERS;
         this.pollingInterval = null;
+        this._dependencyInstallTasks = new Map();
+        this._dependencyRestartRequired = false;
+        this._restartRequiredOverlay = null;
+        this._onManagerTaskCompleted = event => this._handleManagerTaskCompleted(event);
+        api.addEventListener("cm-task-completed", this._onManagerTaskCompleted);
 
         _injectVNCCSControlCenterStyles();
         this._buildUI();
@@ -1278,6 +1290,7 @@ class VNCCSControlCenterWidget {
             const myRepo = this._getRepoId();
             if (repoId && repoId === myRepo && window.VNCCS_CC_REGISTRY[repoId]) {
                 this.config = window.VNCCS_CC_REGISTRY[repoId];
+                this._syncCustomModelInput();
                 if (!this._isUserInteracting()) this._renderAll();
             }
         };
@@ -1316,8 +1329,19 @@ class VNCCSControlCenterWidget {
         return (this.node.inputs ?? []).findIndex(input => input?.name === "vae");
     }
 
+    _getStoredSelectedType() {
+        const kind = this._activeKind();
+        const selectedForKind = this.state.selected_types_by_kind?.[kind];
+        if (selectedForKind) return selectedForKind;
+        return kind === "QIE2511" ? (this.state.selected_type || "") : "";
+    }
+
     _syncCustomModelInput() {
-        const selectedType = this._getSelectedType();
+        // Before the registry config arrives, _getModelTypeTabs() contains only
+        // the synthetic CUSTOM tab. That must not make a brand-new node expose
+        // external model sockets. Existing custom workflows still retain their
+        // sockets because their stored state is restored before this sync.
+        const selectedType = this.config ? this._getSelectedType() : this._getStoredSelectedType();
         const isCustom = selectedType === "custom";
 
         const sync = (name, type, getIndex, shouldShow) => {
@@ -1946,6 +1970,208 @@ class VNCCSControlCenterWidget {
         window.open(url, "_blank", "noopener,noreferrer");
     }
 
+    async _readManagerError(response, fallback) {
+        try {
+            const text = await response.text();
+            if (!text) return fallback;
+            try {
+                const data = JSON.parse(text);
+                return data.error || data.message || text;
+            } catch {
+                return text;
+            }
+        } catch {
+            return fallback;
+        }
+    }
+
+    async _queueLegacyDependencyInstall(item, uiId) {
+        const install = {
+            id: item.manager_id,
+            version: item.manager_version || "latest",
+            ui_id: uiId,
+            title: item.label || item.key,
+            files: item.github_url ? [item.github_url] : [],
+            repository: item.github_url || null,
+            selected_version: "latest",
+            channel: "default",
+            mode: "remote",
+            skip_post_install: false,
+        };
+        const response = await api.fetchApi("/v2/manager/queue/batch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ install: [install], batch_id: `vnccs-${Date.now()}` }),
+        });
+        if (!response.ok) {
+            throw new Error(await this._readManagerError(response, "ComfyUI-Manager rejected the installation."));
+        }
+        const data = await response.json().catch(() => ({}));
+        const failed = Array.isArray(data) ? data : (data.failed || []);
+        if (failed.includes(item.manager_id)) {
+            throw new Error("ComfyUI-Manager rejected the package. Check its security policy and terminal log.");
+        }
+        return "legacy";
+    }
+
+    async _queueDependencyInstall(item, button) {
+        if (!item?.manager_id) {
+            throw new Error("This package is not registered in Comfy Registry. Install it manually after reviewing its source.");
+        }
+
+        const uiId = `vnccs-dependency-${item.key}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const clientId = api.clientId || "vnccs-control-center";
+        const task = {
+            ui_id: uiId,
+            client_id: clientId,
+            kind: "install",
+            params: {
+                id: item.manager_id,
+                version: item.manager_version || "latest",
+                ui_id: uiId,
+                selected_version: "latest",
+                repository: item.github_url || null,
+                mode: "remote",
+                channel: "default",
+                skip_post_install: false,
+            },
+        };
+
+        let mode = "modern";
+        const response = await api.fetchApi("/v2/manager/queue/task", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(task),
+        });
+        if (response.status === 404 || response.status === 405) {
+            mode = await this._queueLegacyDependencyInstall(item, uiId);
+        } else if (!response.ok) {
+            throw new Error(await this._readManagerError(response, "ComfyUI-Manager rejected the installation."));
+        } else {
+            const startResponse = await api.fetchApi("/v2/manager/queue/start", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: "{}",
+            });
+            if (!startResponse.ok && startResponse.status !== 201) {
+                throw new Error(await this._readManagerError(startResponse, "The Manager queue could not be started."));
+            }
+        }
+
+        if (mode === "modern") {
+            this._dependencyInstallTasks.set(uiId, { item, button });
+            button.textContent = "Installing…";
+        } else {
+            button.textContent = "Queued";
+            this.showMessage(`${item.label || item.key} was queued in ComfyUI-Manager. Restart ComfyUI after installation finishes.`);
+        }
+        return mode;
+    }
+
+    async _installDependency(item, button) {
+        const originalLabel = button.textContent;
+        button.disabled = true;
+        button.textContent = "Queueing…";
+        try {
+            await this._queueDependencyInstall(item, button);
+            return true;
+        } catch (error) {
+            button.disabled = false;
+            button.textContent = originalLabel;
+            this.showMessage(`Could not install ${item.label || item.key}:\n${String(error?.message || error)}`, true);
+            return false;
+        }
+    }
+
+    async _installAllDependencies(items, button, installButtons) {
+        const installable = items.filter(item => item.manager_id && item.status !== "unsupported");
+        if (!installable.length) return;
+        button.disabled = true;
+        button.textContent = "Queueing…";
+        let queued = 0;
+        for (const item of installable) {
+            const itemButton = installButtons.get(item.key);
+            if (itemButton && await this._installDependency(item, itemButton)) queued += 1;
+        }
+        button.textContent = queued ? `Installing ${queued}…` : "Install all";
+        if (!queued) button.disabled = false;
+    }
+
+    async _restartComfyUIServer(button) {
+        button.disabled = true;
+        button.textContent = "Restarting…";
+        try {
+            const response = await api.fetchApi("/v2/manager/reboot", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: "{}",
+            });
+            if (!response.ok) {
+                throw new Error(await this._readManagerError(response, "ComfyUI-Manager rejected the restart."));
+            }
+        } catch (error) {
+            // A successful reboot can close the connection before fetch resolves.
+            if (String(error?.message || error).toLowerCase().includes("fetch")) return;
+            button.disabled = false;
+            button.textContent = "Restart server";
+            this.showMessage(`Could not restart ComfyUI:\n${String(error?.message || error)}`, true);
+        }
+    }
+
+    _showRestartRequiredModal() {
+        if (this._restartRequiredOverlay?.isConnected) return;
+        const ov = document.createElement("div");
+        ov.className = "vnccs-cc-settings-overlay";
+        this._restartRequiredOverlay = ov;
+
+        const panel = document.createElement("div");
+        panel.className = "vnccs-cc-settings-panel";
+        panel.style.maxWidth = "420px";
+
+        const title = document.createElement("div");
+        title.className = "vnccs-cc-deps-modal-title";
+        title.textContent = "Restart required";
+
+        const text = document.createElement("div");
+        text.className = "vnccs-cc-deps-modal-text";
+        text.textContent = "The modules were installed, but their nodes are not loaded yet. Restart the ComfyUI server before using VNCCS. Unsaved workflow changes may be lost.";
+
+        const buttons = document.createElement("div");
+        buttons.className = "vnccs-cc-settings-btns";
+        const laterBtn = this._btn("Later", () => ov.remove());
+        const restartBtn = this._btn("Restart server", () => this._restartComfyUIServer(restartBtn));
+        restartBtn.classList.add("vnccs-cc-btn--save");
+        buttons.append(laterBtn, restartBtn);
+        panel.append(title, text, buttons);
+        ov.appendChild(panel);
+        ov.onclick = event => { if (event.target === ov) ov.remove(); };
+        this.container.appendChild(ov);
+    }
+
+    _handleManagerTaskCompleted(event) {
+        const detail = event?.detail || {};
+        const tracked = this._dependencyInstallTasks.get(detail.ui_id);
+        if (!tracked) return;
+        this._dependencyInstallTasks.delete(detail.ui_id);
+
+        const status = detail.status?.status_str || "";
+        const success = status === "success" || detail.result === "success";
+        tracked.button.textContent = success ? "Restart required" : "Retry";
+        tracked.button.disabled = success;
+        if (!success) tracked.button.disabled = false;
+
+        if (success) {
+            this._dependencyRestartRequired = true;
+        } else {
+            const message = detail.status?.messages?.join("\n") || detail.result || "Installation failed.";
+            const compatibility = tracked.item.compatibility_note ? `\n\n${tracked.item.compatibility_note}` : "";
+            this.showMessage(`Could not install ${tracked.item.label || tracked.item.key}:\n${message}${compatibility}`, true);
+        }
+        if (this._dependencyRestartRequired && this._dependencyInstallTasks.size === 0) {
+            setTimeout(() => this._showRestartRequiredModal(), 100);
+        }
+    }
+
     _showMissingDependenciesModal(items) {
         if (!items?.length) return;
         const signature = items
@@ -1968,10 +2194,11 @@ class VNCCSControlCenterWidget {
 
         const text = document.createElement("div");
         text.className = "vnccs-cc-deps-modal-text";
-        text.textContent = "VNCCS uses these custom nodes internally. Install them, then restart ComfyUI.";
+        text.textContent = "VNCCS uses these custom nodes internally. Install uses the latest Comfy Registry release through ComfyUI-Manager and keeps its security policy in control. Restart ComfyUI afterward.";
 
         const list = document.createElement("div");
         list.className = "vnccs-cc-deps-list";
+        const installButtons = new Map();
 
         for (const item of items) {
             const row = document.createElement("div");
@@ -1990,21 +2217,49 @@ class VNCCSControlCenterWidget {
                 missingEl.textContent = `missing: ${missing.join(", ")}`;
                 meta.appendChild(missingEl);
             }
+            if (item.compatibility_note) {
+                const compatibilityEl = document.createElement("div");
+                compatibilityEl.className = "vnccs-cc-deps-missing";
+                compatibilityEl.textContent = item.compatibility_note;
+                meta.appendChild(compatibilityEl);
+            }
 
             row.appendChild(meta);
+            const actions = document.createElement("div");
+            actions.className = "vnccs-cc-deps-actions";
+            if (item.manager_id) {
+                const installBtn = document.createElement("button");
+                installBtn.type = "button";
+                installBtn.className = "vnccs-cc-link-btn";
+                installBtn.textContent = "Install";
+                installBtn.title = item.compatibility_note || "Install the latest registry release through ComfyUI-Manager";
+                installBtn.onclick = () => this._installDependency(item, installBtn);
+                actions.appendChild(installBtn);
+                installButtons.set(item.key, installBtn);
+            }
             if (item.github_url) {
                 const btn = document.createElement("button");
                 btn.type = "button";
                 btn.className = "vnccs-cc-link-btn";
                 btn.textContent = "GitHub";
                 btn.onclick = () => this._openDependencyUrl(item.github_url);
-                row.appendChild(btn);
+                actions.appendChild(btn);
             }
+            row.appendChild(actions);
             list.appendChild(row);
         }
 
         const btns = document.createElement("div");
         btns.className = "vnccs-cc-settings-btns";
+        if (this._dependencyRestartRequired) {
+            const restartBtn = this._btn("Restart server", () => this._restartComfyUIServer(restartBtn));
+            restartBtn.classList.add("vnccs-cc-btn--save");
+            btns.appendChild(restartBtn);
+        } else if (items.some(item => item.manager_id && item.status !== "unsupported")) {
+            const installAllBtn = this._btn("Install all", () => this._installAllDependencies(items, installAllBtn, installButtons));
+            installAllBtn.classList.add("vnccs-cc-btn--save");
+            btns.appendChild(installAllBtn);
+        }
         const closeBtn = this._btn("Close", () => ov.remove());
         btns.appendChild(closeBtn);
 
@@ -2127,11 +2382,15 @@ class VNCCSControlCenterWidget {
             } else if (info.status === "partial") {
                 this._updatePill(pill, label, null, "partial");
                 pill.title = detail || "installed but not loaded";
+            } else if (info.status === "unsupported") {
+                this._updatePill(pill, label, null, "warning", "unsupported");
+                pill.title = info.compatibility_note || "Unsupported on this platform";
+                updateNeeded.push(`${label}: unsupported on this platform`);
             } else {
                 this._updatePill(pill, label, null, "error");
                 pill.title = detail || "not installed";
             }
-            if (info.status !== "ok" && info.status !== "warning") {
+            if (info.status !== "ok" && info.status !== "warning" && info.status !== "unsupported") {
                 missingDependencies.push({ key, ...info });
             }
         }
@@ -2210,6 +2469,7 @@ class VNCCSControlCenterWidget {
             this.config = window.VNCCS_CC_REGISTRY[repoId];
             this.statusText.textContent = this.config.name || "Control Center";
             if (!this.state.output_slot_names) this.state.output_slot_names = [];
+            this._syncCustomModelInput();
             this._renderAll();
             this._dispatchLoraOptions();
         }
@@ -2221,6 +2481,7 @@ class VNCCSControlCenterWidget {
                 this.config = data;
                 this.statusText.textContent = data.name || "Control Center";
                 if (!this.state.output_slot_names) this.state.output_slot_names = [];
+                this._syncCustomModelInput();
                 this._renderAll();
                 this._dispatchLoraOptions();
             } catch { /* already shown by the original caller */ }
@@ -2248,6 +2509,7 @@ class VNCCSControlCenterWidget {
             this.statusText.textContent = data.name || "Control Center";
             localStorage.setItem(cacheKey, JSON.stringify(data));
             this._syncCnetSlots(data);
+            this._syncCustomModelInput();
             await this._refreshDependencyStatus(true);
             this._renderAll();
             this._dispatchLoraOptions();
@@ -3770,16 +4032,24 @@ class VNCCSControlCenterWidget {
                 headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
                 body: JSON.stringify({ repo_id: repoId, category: cat, name: entry.name }),
             });
-            const d = await r.json();
-            if (d.error) {
-                this.dlStatus[key] = { status: "error", message: d.error };
+            const responseText = await r.text();
+            let d = {};
+            try { d = responseText ? JSON.parse(responseText) : {}; } catch { d = {}; }
+            if (!r.ok || d.error) {
+                const message = d.error || responseText || `Download request failed (${r.status})`;
+                this.dlStatus[key] = { status: "error", message };
                 this._renderAll();
+                this.showMessage(message, true);
             } else {
-                window.dispatchEvent(new CustomEvent("vnccs-cc-registry-updated"));
+                window.dispatchEvent(new CustomEvent("vnccs-cc-registry-updated", {
+                    detail: { repo_id: repoId },
+                }));
             }
         } catch (e) {
-            this.dlStatus[key] = { status: "error", message: String(e) };
+            const message = String(e?.message || e);
+            this.dlStatus[key] = { status: "error", message };
             this._renderAll();
+            this.showMessage(message, true);
         }
     }
 

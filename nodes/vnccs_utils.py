@@ -14,6 +14,7 @@ import base64
 import io
 import inspect
 import math
+import platform
 import threading
 import torch
 import numpy as np
@@ -123,6 +124,11 @@ SAM3_MODEL_ENV_REPO = "VNCCS_SAM3_REPO_ID"
 SAM3_MODEL_ENV_FILENAME = "VNCCS_SAM3_FILENAME"
 SAM3_MODEL_ENV_REVISION = "VNCCS_SAM3_REVISION"
 _SAM3_DOWNLOAD_LOCK = threading.Lock()
+
+
+def _sam3_recovery_runtime_supported():
+    """Easy SAM3 currently requires Triton/decord and cannot run on macOS/MPS."""
+    return platform.system().lower() != "darwin"
 
 # --- Shared helpers ---
 def tensor2pil(image):
@@ -1859,21 +1865,30 @@ class VNCCSChromaKey:
     ):
         image = _normalize_image_batch(image, stage="chroma key input")
         if _as_bool(use_sam3_recovery_mask, False):
-            return self._chroma_key_with_sam3_recovery(
-                image=image,
-                tolerance=tolerance,
-                softness=softness,
-                despill_strength=despill_strength,
-                edge_width=edge_width,
-                matte_cleanup=matte_cleanup,
-                foreground_recover=foreground_recover,
-                edge_decontaminate=edge_decontaminate,
-                edge_choke=edge_choke,
-                matte_method=matte_method,
-                screen_mode=screen_mode,
-                output_mode=output_mode,
-                sam3_settings=sam3_settings,
-            )
+            if not _sam3_recovery_runtime_supported():
+                print("[VNCCS] SAM3 recovery is unsupported on macOS; using chroma key without recovery")
+            else:
+                try:
+                    return self._chroma_key_with_sam3_recovery(
+                        image=image,
+                        tolerance=tolerance,
+                        softness=softness,
+                        despill_strength=despill_strength,
+                        edge_width=edge_width,
+                        matte_cleanup=matte_cleanup,
+                        foreground_recover=foreground_recover,
+                        edge_decontaminate=edge_decontaminate,
+                        edge_choke=edge_choke,
+                        matte_method=matte_method,
+                        screen_mode=screen_mode,
+                        output_mode=output_mode,
+                        sam3_settings=sam3_settings,
+                    )
+                except Exception as exc:
+                    print(
+                        "[VNCCS] SAM3 recovery failed; using chroma key without recovery: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
 
         if len(image.shape) == 4:
             rgba_list = []

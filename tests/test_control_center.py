@@ -14,6 +14,10 @@ from nodes.vnccs_control_center import (
     _rel_within_folder,
     _find_model_on_disk,
     _resolve_model_download_path,
+    _control_center_data_path,
+    _create_download_staging_file,
+    _custom_nodes_roots,
+    _registered_node_class,
     _validate_downloaded_model_file,
     _validate_download_response,
     _validate_https_url,
@@ -172,9 +176,93 @@ class TestDownloadSafety:
     def test_resolve_model_download_path_accepts_models_relative_path(self, tmp_path, monkeypatch):
         import folder_paths as fp
         monkeypatch.setattr(fp, "models_dir", str(tmp_path), raising=False)
+        monkeypatch.setattr(fp, "get_folder_paths", lambda key: [])
         path = _resolve_model_download_path("models/checkpoints/model.safetensors")
         assert path == os.path.join(str(tmp_path), "checkpoints", "model.safetensors")
 
+    def test_resolve_model_download_path_uses_configured_desktop_model_folder(self, tmp_path, monkeypatch):
+        import folder_paths as fp
+        shared_checkpoints = tmp_path / "shared-models" / "checkpoints"
+        monkeypatch.setattr(
+            fp,
+            "get_folder_paths",
+            lambda key: [str(shared_checkpoints)] if key == "checkpoints" else [],
+        )
+
+        path = _resolve_model_download_path("models/checkpoints/packs/model.safetensors")
+
+        assert path == os.path.join(str(shared_checkpoints), "packs", "model.safetensors")
+
+    def test_download_staging_file_is_hidden_and_beside_target(self, tmp_path):
+        target = tmp_path / "models" / "checkpoints" / "model.safetensors"
+        fd, staging_path = _create_download_staging_file(str(target), "cc_models_Test Model")
+        os.close(fd)
+        try:
+            assert os.path.dirname(staging_path) == str(target.parent)
+            assert os.path.basename(staging_path).startswith(".vnccs_ccmodelsTestModel_")
+            assert staging_path.endswith(".part")
+        finally:
+            os.unlink(staging_path)
+
+    def test_control_center_state_writes_to_user_directory(self, tmp_path, monkeypatch):
+        import folder_paths as fp
+        monkeypatch.setattr(fp, "get_user_directory", lambda: str(tmp_path), raising=False)
+
+        path = _control_center_data_path("vnccs_user_config.json", for_write=True)
+
+        assert path == os.path.join(str(tmp_path), "VNCCS", "vnccs_user_config.json")
+
+
+class TestModuleStatusHelpers:
+    def test_custom_node_roots_use_all_registered_paths(self, tmp_path, monkeypatch):
+        import folder_paths as fp
+        first = tmp_path / "desktop-custom-nodes"
+        second = tmp_path / "extra-custom-nodes"
+        monkeypatch.setattr(fp, "get_folder_paths", lambda key: [str(first), str(second), str(first)])
+
+        assert _custom_nodes_roots() == [str(first), str(second)]
+
+    def test_registered_node_class_ignores_unregistered_python_classes(self):
+        class FaceDetailer:
+            pass
+
+        spec = {"class_names": ["FaceDetailer"]}
+
+        assert _registered_node_class(spec, mappings={}) is None
+        assert _registered_node_class(spec, mappings={"FaceDetailer": FaceDetailer}) is FaceDetailer
+
+    def test_registered_node_class_supports_v3_node_id(self):
+        class EasySam3Loader:
+            pass
+
+        spec = {
+            "node_id": "easy sam3ModelLoader",
+            "class_names": ["LoadSam3Model"],
+        }
+
+        assert _registered_node_class(
+            spec,
+            mappings={"easy sam3ModelLoader": EasySam3Loader},
+        ) is EasySam3Loader
+
+    def test_dependency_status_exposes_registry_ids_for_manager_installation(self):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "nodes",
+            "vnccs_control_center.py",
+        )
+        with open(path, "r", encoding="utf-8") as handle:
+            source = handle.read()
+
+        assert '"manager_id": "ComfyUI-GGUF"' in source
+        assert '"manager_id": "comfyui-impact-pack"' in source
+        assert '"manager_id": "comfyui-impact-subpack"' in source
+        assert '"manager_id": "comfyui-easy-sam3"' in source
+        assert '"manager_version": "latest"' in source
+        assert '"darwin_compatibility_warning"' in source
+
+
+class TestDownloadedModelValidation:
     def test_validate_downloaded_model_rejects_html(self, tmp_path):
         f = tmp_path / "fake.safetensors"
         f.write_bytes(b"<html>" + b"x" * 2048)
@@ -586,6 +674,52 @@ class TestControlCenterFrontendFamilies:
         assert "if (!this._exactKind(entry, selectedKind)) continue;" in source
         assert "(this._isHelperLora(entry) || this._sameKind(entry, selectedKind))" not in source
 
+    def test_download_errors_are_visible_to_desktop_users(self):
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web", "vnccs_control_center.js")
+        with open(path, "r", encoding="utf-8") as handle:
+            source = handle.read()
+
+        download_source = source.split("async _downloadEntry(cat, entry)", 1)[1].split(
+            "async _downloadAllMissing()", 1
+        )[0]
+        assert "if (!r.ok || d.error)" in download_source
+        assert "this.showMessage(message, true);" in download_source
+        assert "detail: { repo_id: repoId }" in download_source
+
+    def test_missing_dependencies_install_through_comfyui_manager(self):
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web", "vnccs_control_center.js")
+        with open(path, "r", encoding="utf-8") as handle:
+            source = handle.read()
+
+        assert 'api.fetchApi("/v2/manager/queue/task"' in source
+        assert 'api.fetchApi("/v2/manager/queue/start"' in source
+        assert 'api.fetchApi("/v2/manager/queue/batch"' in source
+        assert 'api.addEventListener("cm-task-completed"' in source
+        assert 'api.fetchApi("/v2/manager/reboot"' in source
+        assert 'selected_version: "latest"' in source
+        assert 'kind: "install"' in source
+        assert "skip_post_install: false" in source
+        assert 'this._btn("Install all"' in source
+        assert 'this._btn("Restart server"' in source
+        assert "this._dependencyRestartRequired && this._dependencyInstallTasks.size === 0" in source
+        assert 'info.status === "unsupported"' in source
+        assert 'info.status !== "unsupported"' in source
+        assert "git clone" not in source.split("async _queueDependencyInstall", 1)[1].split(
+            "_handleManagerTaskCompleted", 1
+        )[0]
+
+    def test_custom_model_inputs_follow_the_active_custom_tab(self):
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web", "vnccs_control_center.js")
+        with open(path, "r", encoding="utf-8") as handle:
+            source = handle.read()
+
+        sync_source = source.split("_syncCustomModelInput()", 1)[1].split("_setSelectedType", 1)[0]
+        assert "this.config ? this._getSelectedType() : this._getStoredSelectedType()" in sync_source
+        assert 'const isCustom = selectedType === "custom"' in sync_source
+        assert 'sync("model", "MODEL"' in sync_source
+        assert 'sync("clip", "CLIP"' in sync_source
+        assert 'sync("vae", "VAE"' in sync_source
+        assert source.count("this._syncCustomModelInput();") >= 7
 
 class TestClothesPreviewFrontendContract:
     def test_custom_preview_uses_partial_graph_execution(self):
@@ -677,7 +811,7 @@ class TestCustomLoraHelpers:
         saved = {}
 
         monkeypatch.setattr("nodes.vnccs_control_center._load_custom_loras", lambda: stored)
-        monkeypatch.setattr("nodes.vnccs_control_center._get_custom_loras_path", lambda: "/tmp/vnccs_custom_loras.json")
+        monkeypatch.setattr("nodes.vnccs_control_center._get_custom_loras_path", lambda *args, **kwargs: "/tmp/vnccs_custom_loras.json")
         monkeypatch.setattr("nodes.vnccs_control_center.os.makedirs", lambda *args, **kwargs: None)
 
         class _FakeFile:
