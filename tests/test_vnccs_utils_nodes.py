@@ -603,6 +603,119 @@ def test_edge_color_bleed_does_not_trust_high_alpha_fringe_as_foreground():
     assert torch.allclose(cleaned[14, 6], foreground, atol=1e-4)
 
 
+def test_chroma_key_falls_back_when_sam3_nodes_are_unavailable(monkeypatch):
+    node = VNCCSChromaKey()
+    image = torch.zeros((1, 4, 4, 3), dtype=torch.float32)
+    expected = (
+        torch.zeros((4, 4, 4), dtype=torch.float32),
+        torch.zeros((4, 4), dtype=torch.float32),
+        torch.zeros((4, 4, 3), dtype=torch.float32),
+    )
+
+    monkeypatch.setattr(
+        node,
+        "_chroma_key_with_sam3_recovery",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("Required node 'easy sam3ModelLoader' is not available")),
+    )
+    monkeypatch.setattr(vnccs_utils.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(node, "_process_single", lambda *_args, **_kwargs: expected)
+
+    rgba, matte, debug = node.chroma_key(
+        image=image,
+        tolerance=0.15,
+        softness=0.12,
+        despill_strength=0.65,
+        edge_width=3,
+        matte_cleanup=0.1,
+        foreground_recover=0.35,
+        edge_decontaminate=0.75,
+        edge_choke=0.08,
+        matte_method="guided_edge",
+        screen_mode="auto",
+        output_mode="straight_rgba",
+        use_sam3_recovery_mask=True,
+    )
+
+    assert rgba.shape == (1, 4, 4, 4)
+    assert matte.shape == (1, 4, 4)
+    assert debug.shape == (1, 4, 4, 3)
+
+
+def test_chroma_key_never_calls_sam3_recovery_on_macos(monkeypatch):
+    node = VNCCSChromaKey()
+    image = torch.zeros((1, 4, 4, 3), dtype=torch.float32)
+    expected = (
+        torch.zeros((4, 4, 4), dtype=torch.float32),
+        torch.zeros((4, 4), dtype=torch.float32),
+        torch.zeros((4, 4, 3), dtype=torch.float32),
+    )
+
+    monkeypatch.setattr(vnccs_utils.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        node,
+        "_chroma_key_with_sam3_recovery",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("SAM3 must be skipped on macOS")),
+    )
+    monkeypatch.setattr(node, "_process_single", lambda *_args, **_kwargs: expected)
+
+    rgba, matte, debug = node.chroma_key(
+        image=image,
+        tolerance=0.15,
+        softness=0.12,
+        despill_strength=0.65,
+        edge_width=3,
+        matte_cleanup=0.1,
+        foreground_recover=0.35,
+        edge_decontaminate=0.75,
+        edge_choke=0.08,
+        matte_method="guided_edge",
+        screen_mode="auto",
+        output_mode="straight_rgba",
+        use_sam3_recovery_mask=True,
+    )
+
+    assert rgba.shape == (1, 4, 4, 4)
+    assert matte.shape == (1, 4, 4)
+    assert debug.shape == (1, 4, 4, 3)
+
+
+@pytest.mark.parametrize("error", [ImportError("triton unavailable"), ValueError("unsupported device")])
+def test_chroma_key_falls_back_for_any_optional_sam3_failure(monkeypatch, error):
+    node = VNCCSChromaKey()
+    image = torch.zeros((1, 4, 4, 3), dtype=torch.float32)
+    expected = (
+        torch.zeros((4, 4, 4), dtype=torch.float32),
+        torch.zeros((4, 4), dtype=torch.float32),
+        torch.zeros((4, 4, 3), dtype=torch.float32),
+    )
+
+    monkeypatch.setattr(vnccs_utils.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        node,
+        "_chroma_key_with_sam3_recovery",
+        lambda **_kwargs: (_ for _ in ()).throw(error),
+    )
+    monkeypatch.setattr(node, "_process_single", lambda *_args, **_kwargs: expected)
+
+    result = node.chroma_key(
+        image=image,
+        tolerance=0.15,
+        softness=0.12,
+        despill_strength=0.65,
+        edge_width=3,
+        matte_cleanup=0.1,
+        foreground_recover=0.35,
+        edge_decontaminate=0.75,
+        edge_choke=0.08,
+        matte_method="guided_edge",
+        screen_mode="auto",
+        output_mode="straight_rgba",
+        use_sam3_recovery_mask=True,
+    )
+
+    assert tuple(tensor.shape for tensor in result) == ((1, 4, 4, 4), (1, 4, 4), (1, 4, 4, 3))
+
+
 def test_edge_color_bleed_uses_interior_anchor_for_opaque_boundary_spill():
     node = VNCCSChromaKey()
     key_color = torch.tensor([0.10, 0.70, 0.35], dtype=torch.float32)
