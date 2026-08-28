@@ -1,3 +1,103 @@
+# VNCCS 3.1.0 Changelog
+
+This changelog describes the changes in version `3.1.0` compared with `3.0.4`.
+The release adds FLUX.2 Klein 9B support, moves SeedVR2 upscaling to native ComfyUI nodes, makes Step 3 emotion generation memory-bounded, and substantially improves chroma-key cleanup and Control Center setup.
+
+## Headline Changes
+
+- Added FLUX.2 Klein 9B as a complete generation family with its own model, text encoder, VAE, helper LoRAs, conditioning encoder, and Control Center profile.
+- Replaced the external SeedVR2 custom-node path with ComfyUI's native SeedVR2 nodes and added guided model downloads directly to Generator Settings.
+- Step 3 now lets users choose which character poses receive emotions and processes large emotion jobs in memory-bounded task batches.
+- Chroma Key now removes connected and enclosed screen remnants more reliably, produces cleaner edge colors, and can optionally recover foreground details with SAM3.
+- Character Creator now offers three persistent Anima resolution presets up to `1024 × 2456`.
+- Control Center can install missing custom-node dependencies through ComfyUI-Manager and guide the user through the required restart.
+
+## FLUX.2 Klein 9B
+
+- Added a `Flux Klein9b` family tab to Control Center alongside `QIE2511`.
+- Added catalog entries for the FLUX.2 Klein 9B FP8 diffusion model, Qwen 3 8B text encoder, Flux 2 VAE, VNCCS Pose Studio Klein9b LoRA, and VNCCS Clothes Core Klein9b LoRA.
+- Added the `VNCCS Flux Klein Encoder` node, built from native ComfyUI conditioning nodes.
+- The Klein encoder accepts text plus up to three optional reference images, scales and encodes each connected reference, validates image dimensions, and creates a correctly sized Flux 2 latent.
+- Character Generator and Clothes Designer now select the Klein encoder automatically when the connected pipe uses the Klein family.
+- Pose generation and clothing generation now select helper LoRAs that match the active model family instead of reusing an incompatible QIE2511 LoRA.
+- Clothes Designer can trace the connected Control Center through intermediate pipe nodes and keeps its Clothes Core LoRA synchronized when the active family changes.
+- Control Center stores model type, selected model, sampling parameters, and helper assets separately for each family, so switching families no longer overwrites the other family's setup.
+- `CUSTOM` mode now resolves its context model from the active family: GGUF for QIE2511 and UNET for Klein9b.
+
+## Native SeedVR2 Upscaling
+
+- SeedVR2 now runs through the native `SeedVR2Preprocess`, `SeedVR2Conditioning`, and `SeedVR2PostProcessing` nodes included in current ComfyUI releases.
+- The old custom SeedVR loader and video-upscaler nodes are no longer required by VNCCS.
+- Generator Settings now shows native SeedVR2 model cards with installed, missing, downloading, and error states.
+- Added one-click downloads for the official 3B, 7B, and 7B Sharp FP16 or mixed FP8/FP16 models from the pinned SeedVR2 repository revision.
+- The required SeedVR2 VAE is downloaded automatically when it is not installed.
+- Existing settings that reference legacy `seedvr2_ema_*` or GGUF models automatically migrate to the recommended `seedvr2_3b_fp8_e4m3fn.safetensors` model.
+- SeedVR output sizing is now explicit: `target short edge` controls the shorter dimension, while `maximum edge` caps the longer dimension without changing the aspect ratio. A maximum edge of `0` disables the cap.
+- Each source image is upscaled independently instead of being interpreted as a video-frame batch.
+- Progress now advances per image, and previews can be appended incrementally during long runs.
+- Native node availability is checked before queueing. When ComfyUI is too old, the UI identifies the missing nodes and asks the user to update and restart ComfyUI.
+
+## Emotion Studio and Step 3
+
+- Added a `Generate poses` selector to Emotion Studio with individual pose toggles, `SELECT ALL`, and `CLEAR ALL` actions.
+- Pose selection is serialized in the workflow and restored when the workflow is reopened.
+- The confirmation dialog now reports the selected emotion, costume, and pose counts together with the resulting image total.
+- Only selected source poses are loaded and expanded into emotion tasks; clearing every pose blocks the queue with a clear validation message.
+- Emotion tasks are now processed in small batches selected from available VRAM, system RAM, source resolution, and task count.
+- Added an advanced `task_batch_size` setting. `0` chooses a safe size automatically, while manual values are capped when they exceed the detected memory budget.
+- Full-resolution source sprites are loaded lazily per task instead of being decoded and duplicated for every selected emotion in advance.
+- Raw results and masks are cached per item, completed output files are reused when possible, and successful cache files are preserved during later batches or regeneration.
+- Generator previews are reduced in size and emitted incrementally, while full-resolution sprites continue to be saved to the character directory.
+- Full-resolution output tensors are retained only when the corresponding `IMAGE` output is connected. The bundled Step 3 workflow therefore stays within the active task window instead of accumulating the entire run in memory.
+- CPU and GPU caches are released between task batches, substantially reducing out-of-memory failures on large costume, pose, and emotion combinations.
+- Changing the pose or emotion task list invalidates incompatible stage cache data without discarding unrelated saved character output.
+
+## Chroma Key and SAM3 Detail Recovery
+
+- Retuned the `soft`, `balanced`, `strong`, `aggressive`, and `maximum` cleanup presets for a safer tolerance scale and cleaner silhouettes.
+- Added connected-component cleanup for screen-colored fringes and broad residual background patches connected to the image border.
+- Enclosed regions that are confidently classified as background can now be removed without erasing similarly colored opaque foreground details.
+- Edge decontamination now replaces screen-contaminated RGB with nearby trusted foreground colors, reducing green, blue, or red halos around hair, clothing, and outlines.
+- `Despill Strength` now controls all edge color correction consistently; setting it to zero no longer leaves hidden decontamination active.
+- Improved matte cleanup, foreground recovery, edge choke, and color-bleed behavior while preserving the original image dimensions and output modes.
+- Added an optional `Use SAM3 Recovery Mask` input to `VNCCS Chroma Key`.
+- SAM3 recovery now evaluates individual detected objects, keeps only masks with sufficient overlap with the existing foreground, and restores their interior details without manufacturing a new contour.
+- SAM3 mask outputs with varying ranks, wrapper axes, object counts, or spatial resolutions are normalized automatically.
+- Batch recovery runs one image at a time while keeping the model loaded, avoiding third-party tensor-stack failures when images have different detection counts.
+- If SAM3 is missing, incompatible, or fails during recovery, VNCCS falls back to normal chroma keying instead of failing the generation.
+- Easy SAM3 recovery is marked unsupported on macOS because its current dependencies require decord and Triton; normal chroma keying remains available there.
+
+## Character Creator
+
+- Added Anima resolution presets to Generator Settings:
+  - `Normal`: `640 × 1536`.
+  - `High`: `856 × 2048`.
+  - `Maximum`: `1024 × 2456`.
+- The selected Anima resolution is saved in the mode profile and restored when switching between Anima and Illustrious.
+- Missing or invalid legacy resolution values safely fall back to `Normal`.
+- The higher presets clearly warn that they require more VRAM and generation time.
+- Automatic race, body, and skin-color hint detection now follows the documented English input vocabulary consistently.
+
+## Control Center and Setup
+
+- Missing dependencies can now be installed individually or with `Install all` through ComfyUI-Manager and Comfy Registry.
+- Control Center supports both current and legacy ComfyUI-Manager queue APIs and reports Manager rejection or installation errors in the UI.
+- Successful installations are tracked until completion, after which Control Center shows a restart-required dialog with `Later` and `Restart server` actions.
+- Dependency detection now checks ComfyUI's active node registry and all configured custom-node roots instead of assuming a single installation directory.
+- Platform compatibility warnings are displayed separately from missing or partially loaded dependencies.
+- Model downloads now respect ComfyUI's configured folder paths for diffusion models, text encoders, VAEs, and LoRAs.
+- Downloads are staged beside their final destination, validated, and installed with an atomic replacement to avoid cross-volume moves and partially visible model files.
+- Download request and worker errors are surfaced in both the Control Center interface and server log.
+- Mutable Control Center data such as user configuration, custom LoRA records, and installed-version records is now stored under the ComfyUI user directory when available. Existing portable-install files remain readable for compatibility.
+- Family-specific assets are filtered by the active QIE2511 or Klein9b tab, while global utility assets remain shared.
+
+## Compatibility and Maintenance
+
+- Package metadata has been updated from `3.0.4` to `3.1.0`.
+- Existing QIE2511 workflows remain the default and legacy Control Center model selections are migrated into the QIE2511 family state.
+- Character Cloner's missing-source-image validation is now consistently shown in English in both the backend and UI.
+- Added regression coverage for Klein conditioning, model-family state, native SeedVR sizing and downloads, Step 3 batching and pose filtering, Anima resolutions, dependency installation, and the new chroma-key recovery paths.
+
 # VNCCS 3.0.4 Changelog
 
 This changelog describes the changes in version `3.0.4` compared with `3.0.3`.
