@@ -8,7 +8,6 @@ safetensors
 huggingface-hub[torch]>=0.22
 json_repair
 aiohttp
-requests
 timm
 torchvision
 transformers

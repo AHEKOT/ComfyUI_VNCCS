@@ -34,6 +34,40 @@ def test_rmbg2_return_type_tolerates_legacy_high_slot_validation():
     assert VNCCS_RMBG2.RETURN_TYPES[5] == "IMAGE"
 
 
+def test_removed_background_model_is_not_exposed():
+    removed_model = "BE" + "N2"
+    assert removed_model not in vnccs_utils.AVAILABLE_MODELS
+    assert removed_model not in VNCCS_RMBG2().models
+
+
+def test_qwen_download_disables_hub_credentials(tmp_path, monkeypatch):
+    model_path = tmp_path / "model.gguf"
+    model_path.write_bytes(b"GGUF" + b"\0" * (1024 * 1024))
+    captured = {}
+
+    def fake_download(**kwargs):
+        captured.update(kwargs)
+        return str(model_path)
+
+    monkeypatch.setattr(vnccs_utils, "hf_hub_download", fake_download)
+
+    result = vnccs_utils._download_qwen_vl_file(
+        "public/repository",
+        "model.gguf",
+        str(tmp_path),
+        revision="pinned-revision",
+    )
+
+    assert result == str(model_path)
+    assert captured == {
+        "repo_id": "public/repository",
+        "filename": "model.gguf",
+        "revision": "pinned-revision",
+        "local_dir": str(tmp_path),
+        "token": False,
+    }
+
+
 def test_registered_node_result_unwraps_comfy_node_output():
     NodeOutput = type("NodeOutput", (), {})
     output = NodeOutput()

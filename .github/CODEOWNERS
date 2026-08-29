@@ -1,0 +1,3 @@
+/scripts/security_scan.py @AHEKOT
+/tests/test_security_scan.py @AHEKOT
+/.github/workflows/tests.yml @AHEKOT

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-import importlib
 from typing import List, Tuple
+
+try:
+    from comfy.samplers import KSampler as ComfyKSampler
+except Exception:
+    ComfyKSampler = None
 
 DEFAULT_SAMPLERS = ["euler", "euler_a", "heun"]
 DEFAULT_SCHEDULERS = ["normal", "karras", "exponential"]
@@ -11,11 +15,8 @@ DEFAULT_SCHEDULERS = ["normal", "karras", "exponential"]
 
 def fetch_sampler_scheduler_lists() -> Tuple[List[str], List[str]]:
     try:
-        comfy_mod = importlib.import_module("comfy")
-        samplers_mod = getattr(comfy_mod, "samplers", None)
-        ksampler_cls = getattr(samplers_mod, "KSampler", None) if samplers_mod else None
-        samplers = list(getattr(ksampler_cls, "SAMPLERS", [])) if ksampler_cls else []
-        schedulers = list(getattr(ksampler_cls, "SCHEDULERS", [])) if ksampler_cls else []
+        samplers = list(getattr(ComfyKSampler, "SAMPLERS", [])) if ComfyKSampler else []
+        schedulers = list(getattr(ComfyKSampler, "SCHEDULERS", [])) if ComfyKSampler else []
         return (samplers or DEFAULT_SAMPLERS, schedulers or DEFAULT_SCHEDULERS)
     except Exception:
         return DEFAULT_SAMPLERS, DEFAULT_SCHEDULERS

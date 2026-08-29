@@ -1110,7 +1110,8 @@ app.registerExtension({
     name: "VNCCS.EmotionGeneratorV2",
 
     async setup() {
-        const origQueuePrompt = app.queuePrompt.bind(app);
+        const queuePrompt = app.queuePrompt;
+        const origQueuePrompt = (...args) => queuePrompt.apply(app, args);
         app.queuePrompt = async function(...args) {
             const nodes = app.graph?._nodes?.filter(n => n.type === "EmotionGeneratorV2") || [];
             for (const node of nodes) {

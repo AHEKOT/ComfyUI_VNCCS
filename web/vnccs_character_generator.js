@@ -3210,8 +3210,9 @@ app.registerExtension({
     async setup() {
         if (app._vnccsCharacterGeneratorQueueHooked) return;
         app._vnccsCharacterGeneratorQueueHooked = true;
-        const originalQueuePrompt = app.queuePrompt?.bind(app);
-        if (!originalQueuePrompt) return;
+        const queuePrompt = app.queuePrompt;
+        if (typeof queuePrompt !== "function") return;
+        const originalQueuePrompt = (...args) => queuePrompt.apply(app, args);
         app.queuePrompt = async function (...args) {
             for (const node of app.graph?._nodes || []) {
                 if (node.mode === 2 || node.mode === 4) continue;

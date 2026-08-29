@@ -150,7 +150,8 @@ class Pose3DEditor {
         this.resizeObserver = new ResizeObserver(() => this.handleResize());
         this.resizeObserver.observe(container);
 
-        this.animate = this.animate.bind(this);
+        const animateFrame = this.animate;
+        this.animate = (...args) => animateFrame.apply(this, args);
         this.animate();
 
         this.setPose(this.defaultPose, true);

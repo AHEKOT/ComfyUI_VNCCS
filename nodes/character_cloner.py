@@ -1,11 +1,5 @@
 import os
 import json
-import shutil
-import urllib.request
-import subprocess
-import platform
-import sys
-import importlib.util
 import torch
 import folder_paths
 import comfy.sd
@@ -245,8 +239,6 @@ class CharacterCloner:
 # API: Download Model Logic
 # --------------------------------------------------------------------------------
 import threading
-import time
-import requests
 
 DOWNLOAD_STATUS = {
     "status": "idle", # idle, downloading, completed, error
@@ -257,70 +249,27 @@ DOWNLOAD_STATUS = {
     "error": ""
 }
 
-def validate_gguf_file(path, file_label="File"):
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"{file_label} was not written: {path}")
-
-    size = os.path.getsize(path)
-    if size < 1024 * 1024:
-        raise ValueError(f"{file_label} is too small to be a valid GGUF file ({size} bytes)")
-
-    with open(path, "rb") as file:
-        magic = file.read(4)
-    if magic != b"GGUF":
-        raise ValueError(f"{file_label} is not a valid GGUF file (magic={magic!r})")
-
-def download_file(url, dest_path, file_label="File", mark_completed=True):
+def download_cloner_models():
     global DOWNLOAD_STATUS
-    tmp_path = dest_path + ".part"
     try:
         DOWNLOAD_STATUS["status"] = "downloading"
-        DOWNLOAD_STATUS["current_file"] = file_label
+        DOWNLOAD_STATUS["current_file"] = "QwenVL assets"
         DOWNLOAD_STATUS["progress"] = 0
-        DOWNLOAD_STATUS["error"] = ""
-        
-        # Ensure dir exists
-        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        
-        response = requests.get(url, stream=True, timeout=(30, 60))
-        response.raise_for_status()
-        total_size = int(response.headers.get('content-length', 0))
-        DOWNLOAD_STATUS["total_size"] = total_size
+        DOWNLOAD_STATUS["total_size"] = 0
         DOWNLOAD_STATUS["downloaded_size"] = 0
-        
-        block_size = 1024 * 1024 # 1MB
-        with open(tmp_path, 'wb') as file:
-            for data in response.iter_content(block_size):
-                if not data:
-                    continue
-                file.write(data)
-                DOWNLOAD_STATUS["downloaded_size"] += len(data)
-                if total_size > 0:
-                    DOWNLOAD_STATUS["progress"] = int((DOWNLOAD_STATUS["downloaded_size"] / total_size) * 100)
-
-        if total_size > 0 and DOWNLOAD_STATUS["downloaded_size"] != total_size:
-            raise ValueError(
-                f"Incomplete download for {file_label}: "
-                f"{DOWNLOAD_STATUS['downloaded_size']} of {total_size} bytes"
-            )
-
-        validate_gguf_file(tmp_path, file_label)
-        os.replace(tmp_path, dest_path)
-                    
+        DOWNLOAD_STATUS["error"] = ""
+        model_path, mmproj_path = _ensure_qwen_vl_assets()
+        downloaded_size = os.path.getsize(model_path) + os.path.getsize(mmproj_path)
+        DOWNLOAD_STATUS["current_file"] = "QwenVL assets"
+        DOWNLOAD_STATUS["total_size"] = downloaded_size
+        DOWNLOAD_STATUS["downloaded_size"] = downloaded_size
         DOWNLOAD_STATUS["progress"] = 100
-        if mark_completed:
-            DOWNLOAD_STATUS["status"] = "completed"
-        print(f"[{file_label}] Download completed: {dest_path}")
-        
+        DOWNLOAD_STATUS["status"] = "completed"
+        print(f"[VNCCS Cloner] QwenVL assets ready: {model_path}, {mmproj_path}")
     except Exception as e:
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except Exception as cleanup_exc:
-            print(f"[{file_label}] Failed to remove partial download '{tmp_path}': {cleanup_exc}")
         DOWNLOAD_STATUS["status"] = "error"
         DOWNLOAD_STATUS["error"] = str(e)
-        print(f"[{file_label}] Download error: {e}")
+        print(f"[VNCCS Cloner] QwenVL download error: {e}")
 
 if server:
     @server.PromptServer.instance.routes.get("/vnccs/cloner_download_status")
@@ -333,31 +282,7 @@ if server:
         if DOWNLOAD_STATUS["status"] == "downloading":
              return web.Response(status=409, text="Download already in progress")
         
-        # User requested Revert to Qwen2-VL (We use Qwen2.5-VL as the best "Qwen2" variant available GGUF)
-        # Use unsloth's maintained GGUF repository.
-        
-        base_path = folder_paths.models_dir
-        llm_dir = os.path.join(base_path, "LLM")
-        
-        # Target: Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf
-        # Repo: unsloth/Qwen2.5-VL-7B-Instruct-GGUF
-        
-        url_model = "https://huggingface.co/unsloth/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
-        dest_model = os.path.join(llm_dir, "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf")
-        
-        # Target: mmproj
-        url_proj = "https://huggingface.co/unsloth/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/mmproj-F16.gguf"
-        dest_proj = os.path.join(llm_dir, "mmproj-F16.gguf")
-
-        def run_sequences():
-            # 1. Download Model
-            download_file(url_model, dest_model, "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf", mark_completed=False)
-            
-            # 2. Download Vision Projector
-            if DOWNLOAD_STATUS["status"] == "downloading":
-                download_file(url_proj, dest_proj, "mmproj-F16.gguf")
-
-        t = threading.Thread(target=run_sequences)
+        t = threading.Thread(target=download_cloner_models)
         t.start()
         
         return web.json_response({"status": "started"})

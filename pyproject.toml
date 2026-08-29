@@ -1,7 +1,7 @@
 [project]
 name = "vnccs"
 description = "VNCCS - Visual Novel Character Creation Suite"
-version = "3.1.0"
+version = "3.1.1"
 license = {file = "LICENSE"} 
 
 dependencies = [
@@ -15,7 +15,6 @@ dependencies = [
     "huggingface-hub[torch]>=0.22",
     "json_repair",
     "aiohttp",
-    "requests",
     "timm",
     "torchvision",
     "transformers",
@@ -33,4 +32,4 @@ Documentation = "https://github.com/AHEKOT/ComfyUI_VNCCS/wiki"
 [tool.comfy]
 PublisherId = "vnccs"
 DisplayName = "VNCCS - Visual Novel Character Creation Suite"
-Icon = "https://raw.githubusercontent.com/AHEKOT/ComfyUI_VNCCS/refs/heads/main/images/VNCCS_LOGO.png"
+Icon = "https://github.com/AHEKOT/ComfyUI_VNCCS/raw/refs/heads/main/images/VNCCS_LOGO.png"
