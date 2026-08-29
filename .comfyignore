@@ -1,0 +1,4 @@
+# Development-only files. They stay in Git and CI, but are not published to
+# the Comfy Registry runtime archive.
+tests/
+scripts/
