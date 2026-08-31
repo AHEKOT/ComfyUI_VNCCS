@@ -1391,7 +1391,7 @@ from torchvision.models import vgg16, vgg16_bn, VGG16_Weights, VGG16_BN_Weights,
 
 config = Config()
 
-def build_backbone(bb_name, pretrained=True, params_settings=''):
+def build_backbone(bb_name, pretrained=True, params_settings=None):
     if bb_name == 'vgg16':
         bb_net = list(vgg16(pretrained=VGG16_Weights.DEFAULT if pretrained else None).children())[0]
         bb = nn.Sequential(OrderedDict({'conv1': bb_net[:4], 'conv2': bb_net[4:9], 'conv3': bb_net[9:16], 'conv4': bb_net[16:23]}))
@@ -1402,7 +1402,20 @@ def build_backbone(bb_name, pretrained=True, params_settings=''):
         bb_net = list(resnet50(pretrained=ResNet50_Weights.DEFAULT if pretrained else None).children())
         bb = nn.Sequential(OrderedDict({'conv1': nn.Sequential(*bb_net[0:3]), 'conv2': bb_net[4], 'conv3': bb_net[5], 'conv4': bb_net[6]}))
     else:
-        bb = eval('{}({})'.format(bb_name, params_settings))
+        builders = {
+            'swin_v1_t': swin_v1_t,
+            'swin_v1_s': swin_v1_s,
+            'swin_v1_b': swin_v1_b,
+            'swin_v1_l': swin_v1_l,
+            'pvt_v2_b0': pvt_v2_b0,
+            'pvt_v2_b1': pvt_v2_b1,
+            'pvt_v2_b2': pvt_v2_b2,
+            'pvt_v2_b5': pvt_v2_b5,
+        }
+        builder = builders.get(bb_name)
+        if builder is None:
+            raise ValueError(f"Unsupported BiRefNet backbone: {bb_name}")
+        bb = builder(**(params_settings or {}))
         if pretrained:
             bb = load_weights(bb, bb_name)
     return bb
@@ -1672,7 +1685,7 @@ class RefinerPVTInChannels4(nn.Module):
         super(RefinerPVTInChannels4, self).__init__()
         self.config = Config()
         self.epoch = 1
-        self.bb = build_backbone(self.config.bb, params_settings='in_channels=4')
+        self.bb = build_backbone(self.config.bb, params_settings={'in_channels': 4})
 
         lateral_channels_in_collection = {
             'vgg16': [512, 256, 128, 64], 'vgg16bn': [512, 256, 128, 64], 'resnet50': [1024, 512, 256, 64],
@@ -1761,8 +1774,8 @@ class Decoder(nn.Module):
     def __init__(self, channels):
         super(Decoder, self).__init__()
         self.config = Config()
-        DecoderBlock = eval('BasicDecBlk')
-        LateralBlock = eval('BasicLatBlk')
+        DecoderBlock = BasicDecBlk
+        LateralBlock = BasicLatBlk
 
         self.decoder_block4 = DecoderBlock(channels[0], channels[1])
         self.decoder_block3 = DecoderBlock(channels[1], channels[2])
@@ -1994,9 +2007,22 @@ class BiRefNet(
             )
 
         if self.config.squeeze_block:
+            block_name, repeat_text = self.config.squeeze_block.rsplit('_x', 1)
+            block_types = {
+                'BasicDecBlk': BasicDecBlk,
+                'ResBlk': ResBlk,
+                'ASPP': ASPP,
+                'ASPPDeformable': ASPPDeformable,
+            }
+            block_type = block_types.get(block_name)
+            if block_type is None:
+                raise ValueError(f"Unsupported BiRefNet squeeze block: {block_name}")
+            repeat_count = int(repeat_text)
+            if repeat_count < 1:
+                raise ValueError("BiRefNet squeeze block repeat count must be positive")
             self.squeeze_module = nn.Sequential(*[
-                eval(self.config.squeeze_block.split('_x')[0])(channels[0]+sum(self.config.cxt), channels[0])
-                for _ in range(eval(self.config.squeeze_block.split('_x')[1]))
+                block_type(channels[0]+sum(self.config.cxt), channels[0])
+                for _ in range(repeat_count)
             ])
 
         self.decoder = Decoder(channels)
@@ -2013,7 +2039,15 @@ class BiRefNet(
             if self.config.refine == 'itself':
                 self.stem_layer = StemLayer(in_channels=3+1, inter_channels=48, out_channels=3, norm_layer='BN' if self.config.batch_size > 1 else 'LN')
             else:
-                self.refiner = eval('{}({})'.format(self.config.refine, 'in_channels=3+1'))
+                refiner_types = {
+                    'RefUNet': RefUNet,
+                    'Refiner': Refiner,
+                    'RefinerPVTInChannels4': RefinerPVTInChannels4,
+                }
+                refiner_type = refiner_types.get(self.config.refine)
+                if refiner_type is None:
+                    raise ValueError(f"Unsupported BiRefNet refiner: {self.config.refine}")
+                self.refiner = refiner_type(in_channels=4)
 
         if self.config.freeze_bb:
             # Freeze the backbone...
@@ -2078,8 +2112,18 @@ class Decoder(nn.Module):
     def __init__(self, channels):
         super(Decoder, self).__init__()
         self.config = Config()
-        DecoderBlock = eval(self.config.dec_blk)
-        LateralBlock = eval(self.config.lat_blk)
+        decoder_types = {
+            'BasicDecBlk': BasicDecBlk,
+            'ResBlk': ResBlk,
+            'HierarAttDecBlk': HierarAttDecBlk,
+        }
+        lateral_types = {'BasicLatBlk': BasicLatBlk}
+        DecoderBlock = decoder_types.get(self.config.dec_blk)
+        LateralBlock = lateral_types.get(self.config.lat_blk)
+        if DecoderBlock is None or LateralBlock is None:
+            raise ValueError(
+                f"Unsupported BiRefNet decoder configuration: {self.config.dec_blk}/{self.config.lat_blk}"
+            )
 
         if self.config.dec_ipt:
             self.split = self.config.dec_ipt_split

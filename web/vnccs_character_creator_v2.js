@@ -1126,7 +1126,8 @@ app.registerExtension({
     name: "VNCCS.CharacterCreatorV2",
 
     async setup() {
-        const origQueuePrompt = app.queuePrompt.bind(app);
+        const queuePrompt = app.queuePrompt;
+        const origQueuePrompt = (...args) => queuePrompt.apply(app, args);
         app.queuePrompt = async function(...args) {
             const nodes = app.graph?._nodes?.filter(n => n.type === "CharacterCreatorV2") || [];
             for (const node of nodes) {

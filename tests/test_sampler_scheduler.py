@@ -45,8 +45,8 @@ class TestFetchSamplerSchedulerLists:
         assert "karras" in schedulers
 
     def test_falls_back_to_defaults_on_comfy_failure(self, monkeypatch):
-        import importlib
-        monkeypatch.setattr(importlib, "import_module", lambda *a, **kw: (_ for _ in ()).throw(ImportError()))
+        import nodes.sampler_scheduler_picker as picker_module
+        monkeypatch.setattr(picker_module, "ComfyKSampler", None)
         samplers, schedulers = fetch_sampler_scheduler_lists()
         assert samplers == DEFAULT_SAMPLERS
         assert schedulers == DEFAULT_SCHEDULERS

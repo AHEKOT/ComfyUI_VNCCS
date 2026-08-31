@@ -1,3 +1,62 @@
+# VNCCS 3.1.1 Changelog
+
+This changelog describes the final user-visible and release-level changes in version `3.1.1` compared with `main` (`3.1.0`).
+The release focuses on secure model delivery, Comfy Registry compliance, and safer Control Center dependency installation.
+
+## Headline Changes
+
+- Hardened VNCCS for Comfy Registry security requirements and added a mandatory security gate to the release workflow.
+- Model downloads are now limited to public Hugging Face repository assets and no longer accept or store access tokens.
+- Control Center now respects ComfyUI-Manager installation policy, including remote-server restrictions, restart handling, and automatic installation resume.
+- Removed BEN2 background-removal support and its bundled implementation.
+- Updated package metadata to version `3.1.1`.
+
+## Secure Model Downloads
+
+- Control Center, Character Cloner, SeedVR2, QwenVL, SAM3, and background-removal model downloads now use the reviewed Hugging Face download path.
+- QwenVL, SAM3, SeedVR2, and bundled background-removal assets use fixed repositories and pinned revisions where defined by VNCCS.
+- Downloads explicitly disable implicit Hugging Face credential discovery.
+- Removed Hugging Face and Civitai token fields, token-saving endpoints, and authentication dialogs from Control Center.
+- Obsolete VNCCS token-storage files are removed automatically from both current and legacy locations.
+- Direct URL and Civitai downloads are no longer supported. Control Center catalog entries must provide public `hf_repo` and `hf_path` values.
+- Authentication-required assets are reported as unavailable instead of asking the user to enter a key.
+- Character Cloner now uses the shared validated QwenVL asset downloader instead of maintaining a separate network download implementation.
+- Removed the direct `requests` dependency from the package.
+
+## Control Center and ComfyUI-Manager
+
+- Dependency installation now uses ComfyUI-Manager's registered package queue and supports both current and legacy Manager APIs.
+- Control Center checks Manager's active `security_level`, `network_mode`, and ComfyUI listener address before requesting an installation.
+- VNCCS never lowers ComfyUI-Manager's security level automatically.
+- When a non-local ComfyUI server requires `network_mode = personal_cloud`, Control Center explains the security impact and requires explicit confirmation.
+- If confirmed, only the Manager `network_mode` setting is changed, the previous configuration is backed up, and the file is replaced atomically.
+- Pending dependency installations survive the required restart and resume automatically when Control Center reconnects.
+- Restart handling works with both current and legacy Manager endpoints and reloads the page after ComfyUI becomes available again.
+- Installation progress and completion are tracked through both current task events and legacy queue-status events.
+- Module status now relies on the local ComfyUI backend instead of fetching version metadata directly from GitHub.
+
+## Runtime Hardening
+
+- Removed dynamic code execution from the bundled BiRefNet implementation and replaced it with explicit supported backbone, decoder, and refiner mappings.
+- Sampler, scheduler, and SeedVR attention discovery now use direct guarded imports instead of dynamic module loading.
+- Removed environment-variable overrides for QwenVL, SAM3, and background-removal download sources and revisions.
+- Replaced frontend callback binding patterns with explicit receiver-preserving wrappers without changing queue hooks or widget behavior.
+- Removed BEN2 from the available RMBG model list; `RMBG-2.0`, `INSPYRENET`, and `BEN` remain available.
+
+## Release Security Gate
+
+- Added a fail-closed source scanner covering credential handling, raw network clients, external command execution, dynamic execution/imports, unsafe URLs, privilege escalation markers, and removed BEN2 code.
+- The security scan runs before the test suite in CI and CI now runs on every push, including `main`.
+- Added regression tests that verify every mandatory scanner rule and detect attempts to weaken or bypass the gate.
+- Security scanner files, their tests, and the CI workflow now require project-owner review through `CODEOWNERS`.
+
+## Compatibility Notes
+
+- Existing public Hugging Face model downloads continue to work without configuration changes.
+- Private, gated, token-authenticated, direct-URL, and Civitai catalog downloads are intentionally unsupported in `3.1.1`.
+- Workflows that explicitly selected `BEN2` must switch to `RMBG-2.0`, `INSPYRENET`, or `BEN`.
+- Existing Control Center dependency installation remains available, but remote or shared ComfyUI servers may require the new explicit Manager policy confirmation and restart flow.
+
 # VNCCS 3.1.0 Changelog
 
 This changelog describes the changes in version `3.1.0` compared with `3.0.4`.

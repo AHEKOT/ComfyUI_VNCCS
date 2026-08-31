@@ -7,7 +7,6 @@ DOM widget for stage previews/settings.
 
 import base64
 import gc
-import importlib
 import inspect
 import io
 import json
@@ -89,28 +88,34 @@ REGENERATE_SEED_SHIFT_MAX = 1_000_000
 INTERNAL_RMBG_PROCESSING_ENABLED = False
 
 
-def _can_import_attr(module_name, attr_name):
-    try:
-        module = importlib.import_module(module_name)
-        return getattr(module, attr_name, None) is not None
-    except (ImportError, AttributeError, OSError, RuntimeError, ValueError):
-        return False
-
-
 def _available_seedvr_attention_modes():
     modes = ["sdpa"]
-    if _can_import_attr("flash_attn", "flash_attn_varlen_func"):
-        try:
-            importlib.import_module("flash_attn_2_cuda")
+    try:
+        from flash_attn import flash_attn_varlen_func as _flash_attn_v2
+        import flash_attn_2_cuda as _flash_attn_v2_cuda
+        if _flash_attn_v2 and _flash_attn_v2_cuda:
             modes.append("flash_attn_2")
+    except (ImportError, OSError, RuntimeError, ValueError):
+        pass
+    try:
+        from flash_attn_interface import flash_attn_varlen_func as _flash_attn_v3
+        modes.append("flash_attn_3")
+    except (ImportError, OSError, RuntimeError, ValueError):
+        pass
+    try:
+        from sageattention import sageattn_varlen as _sageattn_v2
+        modes.append("sageattn_2")
+    except (ImportError, OSError, RuntimeError, ValueError):
+        pass
+    try:
+        from sageattn3 import sageattn3_blackwell as _sageattn_v3
+        modes.append("sageattn_3")
+    except (ImportError, OSError, RuntimeError, ValueError):
+        try:
+            from sageattention import sageattn_blackwell as _sageattn_v3
+            modes.append("sageattn_3")
         except (ImportError, OSError, RuntimeError, ValueError):
             pass
-    if _can_import_attr("flash_attn_interface", "flash_attn_varlen_func"):
-        modes.append("flash_attn_3")
-    if _can_import_attr("sageattention", "sageattn_varlen"):
-        modes.append("sageattn_2")
-    if _can_import_attr("sageattn3", "sageattn3_blackwell") or _can_import_attr("sageattention", "sageattn_blackwell"):
-        modes.append("sageattn_3")
     return modes
 
 
@@ -4267,6 +4272,7 @@ def _download_seedvr_file(category, name):
         filename=f"{folder}/{name}",
         revision=SEEDVR_HF_REVISION,
         local_dir=models_root,
+        token=False,
     )
     final_path = os.path.join(target_dir, name)
     if os.path.abspath(downloaded) != os.path.abspath(final_path):
