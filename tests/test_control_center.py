@@ -15,12 +15,12 @@ from nodes.vnccs_control_center import (
     _find_model_on_disk,
     _resolve_model_download_path,
     _control_center_data_path,
+    _purge_legacy_download_credentials,
     _create_download_staging_file,
     _custom_nodes_roots,
     _registered_node_class,
     _validate_downloaded_model_file,
-    _validate_download_response,
-    _validate_https_url,
+    _max_download_bytes,
     _apply_lora_standard,
     _filter_entries_by_kind,
     _build_dynamic_paths,
@@ -34,10 +34,124 @@ from nodes.vnccs_control_center import (
     _CC_CONFIG_CACHE,
     _describe_gguf_loader,
     _load_gguf,
+    _enable_manager_personal_cloud,
+    _get_manager_install_policy,
+    _manager_config_path,
     VNCCSPipeProxy,
 )
 
 _CONTROL_CENTER_MODULE = sys.modules[_sync_packaged_cc_config.__module__]
+
+
+class TestManagerInstallPolicy:
+    def test_uses_comfyui_system_manager_directory(self, monkeypatch, tmp_path):
+        manager_dir = tmp_path / "manager"
+        monkeypatch.setattr(
+            _CONTROL_CENTER_MODULE.folder_paths,
+            "get_system_user_directory",
+            lambda name: str(manager_dir) if name == "manager" else None,
+            raising=False,
+        )
+
+        assert _manager_config_path() == str(manager_dir / "config.ini")
+
+    def test_nonlocal_default_policy_requires_personal_cloud(self, tmp_path):
+        policy = _get_manager_install_policy(
+            path=str(tmp_path / "missing.ini"),
+            listen_address="0.0.0.0",
+        )
+
+        assert policy["network_mode"] == "public"
+        assert policy["security_level"] == "normal"
+        assert policy["security_level_allows_install"] is True
+        assert policy["requires_personal_cloud"] is True
+        assert policy["install_allowed"] is False
+
+    def test_loopback_default_policy_is_allowed(self, tmp_path):
+        policy = _get_manager_install_policy(
+            path=str(tmp_path / "missing.ini"),
+            listen_address="127.0.0.1",
+        )
+
+        assert policy["listener_is_loopback"] is True
+        assert policy["install_allowed"] is True
+        assert policy["requires_personal_cloud"] is False
+
+    def test_unknown_listener_defers_to_manager_instead_of_relaxing_policy(self, tmp_path):
+        policy = _get_manager_install_policy(
+            path=str(tmp_path / "missing.ini"),
+            listen_address="",
+        )
+
+        assert policy["listener_is_loopback"] is None
+        assert policy["install_allowed"] is True
+        assert policy["requires_personal_cloud"] is False
+
+    def test_enables_personal_cloud_without_rewriting_other_settings(self, tmp_path):
+        path = tmp_path / "config.ini"
+        original = (
+            "; keep this comment\n"
+            "[default]\n"
+            "security_level = normal\n"
+            "network_mode = public ; keep inline comment\n"
+            "channel_url = https://example.invalid/channel\n"
+            "\n"
+            "[other]\n"
+            "network_mode = private\n"
+        )
+        path.write_text(original, encoding="utf-8")
+
+        result = _enable_manager_personal_cloud(str(path))
+        updated = path.read_text(encoding="utf-8")
+
+        assert result == {"changed": True, "restart_required": True}
+        assert "; keep this comment" in updated
+        assert "security_level = normal" in updated
+        assert "network_mode = personal_cloud\n; keep inline comment" in updated
+        assert "channel_url = https://example.invalid/channel" in updated
+        assert "[other]\nnetwork_mode = private" in updated
+        assert (tmp_path / "config.ini.vnccs-backup").read_text(encoding="utf-8") == original
+        policy = _get_manager_install_policy(str(path), listen_address="0.0.0.0")
+        assert policy["network_mode"] == "personal_cloud"
+        assert policy["security_level"] == "normal"
+        assert policy["install_allowed"] is True
+
+        second_result = _enable_manager_personal_cloud(str(path))
+        assert second_result == {"changed": False, "restart_required": True}
+        assert (tmp_path / "config.ini.vnccs-backup").read_text(encoding="utf-8") == original
+
+    def test_creates_default_section_for_missing_config(self, tmp_path):
+        path = tmp_path / "manager" / "config.ini"
+
+        result = _enable_manager_personal_cloud(str(path))
+
+        assert result["changed"] is True
+        assert path.read_text(encoding="utf-8") == "[default]\nnetwork_mode = personal_cloud\n"
+
+    def test_never_weakens_strong_security_level(self, tmp_path):
+        path = tmp_path / "config.ini"
+        original = "[default]\nsecurity_level = strong\nnetwork_mode = public\n"
+        path.write_text(original, encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="will not weaken"):
+            _enable_manager_personal_cloud(str(path))
+
+        assert path.read_text(encoding="utf-8") == original
+        assert not (tmp_path / "config.ini.vnccs-backup").exists()
+
+    def test_refuses_symlinked_manager_config(self, tmp_path):
+        target = tmp_path / "real.ini"
+        target.write_text("[default]\nnetwork_mode = public\n", encoding="utf-8")
+        link = tmp_path / "config.ini"
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks are unavailable")
+
+        with pytest.raises(RuntimeError, match="symlinked"):
+            _enable_manager_personal_cloud(str(link))
+
+        assert "network_mode = public" in target.read_text(encoding="utf-8")
 
 
 # ── _find_entry ───────────────────────────────────────────────────────────────
@@ -145,23 +259,8 @@ class TestFindModelOnDisk:
 
 
 class TestDownloadSafety:
-    def test_https_url_required(self):
-        with pytest.raises(ValueError):
-            _validate_https_url("http://example.com/model.safetensors")
-
-    def test_https_url_rejects_private_ip_literal(self):
-        with pytest.raises(ValueError):
-            _validate_https_url("https://127.0.0.1/model.safetensors")
-
-    def test_download_response_rejects_oversized_content_length(self, monkeypatch):
-        class Response:
-            url = "https://example.com/model.safetensors"
-            headers = {"content-length": str(11)}
-
-        monkeypatch.setenv("VNCCS_MAX_MODEL_DOWNLOAD_BYTES", "10")
-
-        with pytest.raises(ValueError):
-            _validate_download_response(Response(), "model.safetensors")
+    def test_download_limit_is_fixed_in_source(self):
+        assert _max_download_bytes() == 50 * 1024 * 1024 * 1024
 
     def test_resolve_model_download_path_rejects_absolute(self):
         with pytest.raises(ValueError):
@@ -213,6 +312,26 @@ class TestDownloadSafety:
         path = _control_center_data_path("vnccs_user_config.json", for_write=True)
 
         assert path == os.path.join(str(tmp_path), "VNCCS", "vnccs_user_config.json")
+
+    def test_obsolete_secret_stores_are_deleted(self, tmp_path, monkeypatch):
+        user_store = tmp_path / "user" / "vnccs_user_config.json"
+        portable_store = tmp_path / "portable" / "vnccs_user_config.json"
+        user_store.parent.mkdir()
+        portable_store.parent.mkdir()
+        user_store.write_text("{}", encoding="utf-8")
+        portable_store.write_text("{}", encoding="utf-8")
+
+        monkeypatch.setattr(
+            _CONTROL_CENTER_MODULE,
+            "_control_center_data_path",
+            lambda *args, **kwargs: str(user_store),
+        )
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "resolve_path", lambda *args: str(portable_store))
+
+        _purge_legacy_download_credentials()
+
+        assert not user_store.exists()
+        assert not portable_store.exists()
 
 
 class TestModuleStatusHelpers:
@@ -678,11 +797,23 @@ class TestControlCenterFrontendFamilies:
         with open(path, "r", encoding="utf-8") as handle:
             source = handle.read()
 
+        assert 'api.fetchApi("/manager/queue/install"' in source
+        assert 'api.fetchApi("/manager/queue/start"' in source
         assert 'api.fetchApi("/v2/manager/queue/task"' in source
         assert 'api.fetchApi("/v2/manager/queue/start"' in source
-        assert 'api.fetchApi("/v2/manager/queue/batch"' in source
         assert 'api.addEventListener("cm-task-completed"' in source
+        assert 'api.addEventListener("cm-queue-status"' in source
+        assert 'api.fetchApi("/manager/reboot"' in source
         assert 'api.fetchApi("/v2/manager/reboot"' in source
+        assert 'api.fetchApi("/vnccs/manager/install_policy"' in source
+        assert 'api.fetchApi("/vnccs/manager/enable_personal_cloud"' in source
+        assert 'confirmation: "enable_personal_cloud"' in source
+        assert '"X-VNCCS-CSRF": "1"' in source
+        assert 'sessionStorage.setItem(PENDING_DEPENDENCY_INSTALLS_KEY' in source
+        assert 'sessionStorage.removeItem(PENDING_DEPENDENCY_INSTALLS_KEY)' in source
+        assert "window.location.reload();" in source
+        assert 'this._btn("Enable & restart"' in source
+        assert "security_level will not be changed" in source
         assert 'selected_version: "latest"' in source
         assert 'kind: "install"' in source
         assert "skip_post_install: false" in source
@@ -691,6 +822,16 @@ class TestControlCenterFrontendFamilies:
         assert "this._dependencyRestartRequired && this._dependencyInstallTasks.size === 0" in source
         assert 'info.status === "unsupported"' in source
         assert 'info.status !== "unsupported"' in source
+        assert source.index('api.fetchApi("/manager/queue/install"') < source.index(
+            'api.fetchApi("/v2/manager/queue/task"'
+        )
+        queue_source = source.split("async _queueDependencyInstall", 1)[1].split(
+            "async _installDependency", 1
+        )[0]
+        assert queue_source.index("this._dependencyInstallTasks.set(uiId, tracked)") < queue_source.index(
+            "await this._queueLegacyDependencyInstall(item, uiId)"
+        )
+        assert "this._dependencyInstallTasks.delete(uiId);" in queue_source
         assert "git clone" not in source.split("async _queueDependencyInstall", 1)[1].split(
             "_handleManagerTaskCompleted", 1
         )[0]

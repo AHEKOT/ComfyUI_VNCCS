@@ -1,9 +1,7 @@
 name: Tests
 
 on:
-  push:
-    branches-ignore:
-      - main
+  push: {}
   pull_request:
     branches:
       - main
@@ -22,6 +20,9 @@ jobs:
 
       - name: Install test dependencies
         run: pip install pytest numpy Pillow
+
+      - name: Run mandatory security scan
+        run: python scripts/security_scan.py
 
       - name: Run tests
         run: pytest tests/ -v --tb=short

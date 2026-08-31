@@ -25,11 +25,6 @@ import cv2
 import torch.nn.functional as F
 
 try:
-    import requests
-except Exception:
-    requests = None
-
-try:
     from aiohttp import web
 except Exception:
     web = None
@@ -63,10 +58,9 @@ except ImportError:
     folder_paths = None
 
 try:
-    from huggingface_hub import hf_hub_download, hf_hub_url
+    from huggingface_hub import hf_hub_download
 except ImportError:
     hf_hub_download = None
-    hf_hub_url = None
 
 # Device selection used by RMBG/BiRefNet models
 def _select_torch_device():
@@ -98,10 +92,7 @@ QWEN_VL_MMPROJ_NAMES = [
 QWEN_VL_MODEL_REPO_ID = "unsloth/Qwen2.5-VL-7B-Instruct-GGUF"
 QWEN_VL_MODEL_FILENAME = "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
 QWEN_VL_MMPROJ_FILENAME = "mmproj-F16.gguf"
-QWEN_VL_ENV_REPO = "VNCCS_QWEN_VL_REPO_ID"
-QWEN_VL_ENV_MODEL_FILENAME = "VNCCS_QWEN_VL_MODEL_FILENAME"
-QWEN_VL_ENV_MMPROJ_FILENAME = "VNCCS_QWEN_VL_MMPROJ_FILENAME"
-QWEN_VL_ENV_REVISION = "VNCCS_QWEN_VL_REVISION"
+QWEN_VL_MODEL_REVISION = "68bb8bc4b7df5289c143aaec0ab477a7d4051aab"
 _QWEN_VL_DOWNLOAD_LOCK = threading.Lock()
 _QWEN_VL_DOWNLOAD_STATUS = {
     "status": "idle",
@@ -120,9 +111,7 @@ if folder_paths:
 
 SAM3_MODEL_REPO_ID = "yolain/sam3-safetensors"
 SAM3_MODEL_FILENAME = "sam3-fp16.safetensors"
-SAM3_MODEL_ENV_REPO = "VNCCS_SAM3_REPO_ID"
-SAM3_MODEL_ENV_FILENAME = "VNCCS_SAM3_FILENAME"
-SAM3_MODEL_ENV_REVISION = "VNCCS_SAM3_REVISION"
+SAM3_MODEL_REVISION = "eb174af94625028887dfe92d2d8483ca5a5d3336"
 _SAM3_DOWNLOAD_LOCK = threading.Lock()
 
 
@@ -272,38 +261,12 @@ def _reset_qwen_vl_download_status(status="idle"):
 
 
 def _download_qwen_vl_file(repo_id, filename, target_dir, revision=None):
-    if requests is None or hf_hub_url is None:
-        if hf_hub_download is None:
-            raise RuntimeError(
-                "huggingface_hub is not installed. Install it or place "
-                f"'{filename}' in '{target_dir}'."
-            )
-        _set_qwen_vl_download_status(
-            status="downloading",
-            current_file=filename,
-            progress=0,
-            total_size=0,
-            downloaded_size=0,
-            error="",
-        )
-        path = hf_hub_download(
-            repo_id=repo_id,
-            filename=filename,
-            revision=revision,
-            local_dir=target_dir,
-        )
-        _validate_gguf_file(path, filename)
-        _set_qwen_vl_download_status(status="downloading", current_file=filename, progress=100)
-        return path
-
-    if hf_hub_url is None:
+    if hf_hub_download is None:
         raise RuntimeError(
             "huggingface_hub is not installed. Install it or place "
             f"'{filename}' in '{target_dir}'."
         )
     os.makedirs(target_dir, exist_ok=True)
-    dest_path = os.path.join(target_dir, filename)
-    tmp_path = dest_path + ".part"
     print(f"[VNCCS QwenVL] Downloading '{filename}' from Hugging Face repo '{repo_id}'...")
     _set_qwen_vl_download_status(
         status="downloading",
@@ -314,45 +277,24 @@ def _download_qwen_vl_file(repo_id, filename, target_dir, revision=None):
         error="",
     )
     try:
-        headers = {}
-        token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        url = hf_hub_url(repo_id=repo_id, filename=filename, revision=revision)
-        with requests.get(url, stream=True, timeout=(30, 60), headers=headers) as response:
-            response.raise_for_status()
-            total_size = int(response.headers.get("content-length", 0) or 0)
-            downloaded_size = 0
-            _set_qwen_vl_download_status(total_size=total_size, downloaded_size=0)
-            with open(tmp_path, "wb") as file:
-                for chunk in response.iter_content(1024 * 1024):
-                    if not chunk:
-                        continue
-                    file.write(chunk)
-                    downloaded_size += len(chunk)
-                    progress = int((downloaded_size / total_size) * 100) if total_size > 0 else 0
-                    _set_qwen_vl_download_status(
-                        downloaded_size=downloaded_size,
-                        progress=max(0, min(99, progress)),
-                    )
-        if total_size > 0 and downloaded_size != total_size:
-            raise ValueError(f"Incomplete download for {filename}: {downloaded_size} of {total_size} bytes")
-        _validate_gguf_file(tmp_path, filename)
-        os.replace(tmp_path, dest_path)
+        path = hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            revision=revision,
+            local_dir=target_dir,
+            token=False,
+        )
+        _validate_gguf_file(path, filename)
+        downloaded_size = os.path.getsize(path)
         _set_qwen_vl_download_status(
             current_file=filename,
             progress=100,
             downloaded_size=downloaded_size,
-            total_size=total_size,
+            total_size=downloaded_size,
         )
-        print(f"[VNCCS QwenVL] File ready: {dest_path}")
-        return dest_path
+        print(f"[VNCCS QwenVL] File ready: {path}")
+        return path
     except Exception:
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except Exception as cleanup_exc:
-            print(f"[VNCCS QwenVL] Failed to remove partial download '{tmp_path}': {cleanup_exc}")
         raise
 
 
@@ -384,16 +326,10 @@ def _ensure_qwen_vl_assets():
             )
             return model_path, mmproj_path
 
-        repo_id = os.environ.get(QWEN_VL_ENV_REPO, QWEN_VL_MODEL_REPO_ID)
-        model_filename = os.path.basename(
-            os.environ.get(QWEN_VL_ENV_MODEL_FILENAME, QWEN_VL_MODEL_FILENAME)
-            or QWEN_VL_MODEL_FILENAME
-        )
-        mmproj_filename = os.path.basename(
-            os.environ.get(QWEN_VL_ENV_MMPROJ_FILENAME, QWEN_VL_MMPROJ_FILENAME)
-            or QWEN_VL_MMPROJ_FILENAME
-        )
-        revision = os.environ.get(QWEN_VL_ENV_REVISION) or None
+        repo_id = QWEN_VL_MODEL_REPO_ID
+        model_filename = QWEN_VL_MODEL_FILENAME
+        mmproj_filename = QWEN_VL_MMPROJ_FILENAME
+        revision = QWEN_VL_MODEL_REVISION
         target_dir = os.path.dirname(model_path) if model_path else _qwen_vl_download_dir()
 
         try:
@@ -799,7 +735,7 @@ def _find_sam3_model_file(filename):
 
 
 def _ensure_sam3_model_available():
-    filename = os.environ.get(SAM3_MODEL_ENV_FILENAME, SAM3_MODEL_FILENAME)
+    filename = SAM3_MODEL_FILENAME
     filename = os.path.basename(str(filename or SAM3_MODEL_FILENAME))
     existing = _find_sam3_model_file(filename)
     if existing:
@@ -815,8 +751,8 @@ def _ensure_sam3_model_available():
         if existing:
             return filename
 
-        repo_id = os.environ.get(SAM3_MODEL_ENV_REPO, SAM3_MODEL_REPO_ID)
-        revision = os.environ.get(SAM3_MODEL_ENV_REVISION) or None
+        repo_id = SAM3_MODEL_REPO_ID
+        revision = SAM3_MODEL_REVISION
         target_dir = _sam3_model_dir()
         os.makedirs(target_dir, exist_ok=True)
         print(f"[VNCCS SAM3] '{filename}' not found. Downloading from Hugging Face repo '{repo_id}'...")
@@ -826,6 +762,7 @@ def _ensure_sam3_model_available():
                 filename=filename,
                 revision=revision,
                 local_dir=target_dir,
+                token=False,
             )
         except Exception as exc:
             raise RuntimeError(
@@ -1166,15 +1103,6 @@ AVAILABLE_MODELS = {
         },
         "cache_dir": "BEN"
     },
-    "BEN2": {
-        "type": "ben2",
-        "repo_id": "1038lab/BEN2",
-        "revision": "7e1bfdf0b53c9d93d82ed2bccf240ba33b3aed38",
-        "files": {
-            "BEN2_Base.pth": "BEN2_Base.pth"
-        },
-        "cache_dir": "BEN2"
-    }
 }
 
 
@@ -1209,8 +1137,7 @@ class BaseModelLoader:
     def download_model(self, model_name):
         model_info = AVAILABLE_MODELS[model_name]
         cache_dir = self.get_cache_dir(model_name)
-        env_key = "VNCCS_" + "".join(ch if ch.isalnum() else "_" for ch in model_name.upper()) + "_REVISION"
-        revision = os.environ.get(env_key) or model_info.get("revision")
+        revision = model_info.get("revision")
         
         try:
             os.makedirs(cache_dir, exist_ok=True)
@@ -1222,7 +1149,8 @@ class BaseModelLoader:
                     repo_id=model_info["repo_id"],
                     filename=filename,
                     revision=revision,
-                    local_dir=cache_dir
+                    local_dir=cache_dir,
+                    token=False,
                 )
                     
             return True, "Model files downloaded successfully"
@@ -1504,87 +1432,6 @@ class BENModel(BaseModelLoader):
             handle_model_error(f"Error in BEN processing: {str(e)}")
 
 
-class BEN2Model(BaseModelLoader):
-    def __init__(self):
-        super().__init__()
-        
-    def load_model(self, model_name):
-        if self.current_model_version != model_name:
-            self.clear_model()
-            
-            try:
-                cache_dir = self.get_cache_dir(model_name)
-                try:
-                    from ._vendored_ben2 import BEN_Base
-                except Exception:
-                    from _vendored_ben2 import BEN_Base
-                
-                model_weights_path = os.path.join(cache_dir, "BEN2_Base.pth")
-                self.model = BEN_Base()
-                self.model.loadcheckpoints(model_weights_path)
-                
-                self.model.eval()
-                for param in self.model.parameters():
-                    param.requires_grad = False
-                
-                torch.set_float32_matmul_precision('high')
-                self.model.to(device)
-                self.current_model_version = model_name
-                
-            except Exception as e:
-                handle_model_error(f"Error loading BEN2 model: {str(e)}")
-    
-    def process_image(self, images, model_name, params):
-        try:
-            self.load_model(model_name)
-            
-            if isinstance(images, torch.Tensor):
-                if len(images.shape) == 3:
-                    images = [images]
-                else:
-                    images = [img for img in images]
-            
-            batch_size = 3
-            all_masks = []
-            
-            for i in range(0, len(images), batch_size):
-                batch_images = images[i:i + batch_size]
-                batch_pil_images = []
-                original_sizes = []
-                
-                for img in batch_images:
-                    orig_image = tensor2pil(img)
-                    w, h = orig_image.size
-                    original_sizes.append((w, h))
-                    
-                    aspect_ratio = h / w
-                    new_w = params["process_res"]
-                    new_h = int(params["process_res"] * aspect_ratio)
-                    resized_image = orig_image.resize((new_w, new_h), Image.LANCZOS)
-                    processed_input = resized_image.convert("RGBA")
-                    batch_pil_images.append(processed_input)
-                
-                with torch.no_grad():
-                    try:
-                        foregrounds = self.model.inference(batch_pil_images)
-                        if not isinstance(foregrounds, list):
-                            foregrounds = [foregrounds]
-                    except Exception as e:
-                        handle_model_error(f"Error in BEN2 inference: {str(e)}")
-                
-                for foreground, (orig_w, orig_h) in zip(foregrounds, original_sizes):
-                    foreground = foreground.resize((orig_w, orig_h), Image.LANCZOS)
-                    mask = foreground.split()[-1]
-                    all_masks.append(mask)
-            
-            if len(all_masks) == 1:
-                return all_masks[0]
-            return all_masks
-
-        except Exception as e:
-            handle_model_error(f"Error in BEN2 processing: {str(e)}")
-
-
 def refine_foreground(image_bchw, masks_b1hw):
     b, c, h, w = image_bchw.shape
     if b != masks_b1hw.shape[0]:
@@ -1630,7 +1477,6 @@ class VNCCS_RMBG2:
             "RMBG-2.0": RMBGModel(),
             "INSPYRENET": InspyrenetModel(),
             "BEN": BENModel(),
-            "BEN2": BEN2Model()
         }
     
     @classmethod
@@ -1770,7 +1616,7 @@ class VNCCS_RMBG2:
                 
                 processed_masks.append(pil2tensor(mask_img_local))
             
-            if model_type in ("rmbg", "ben2"):
+            if model_type == "rmbg":
                 images_list = [img for img in image]
                 chunk_size = 4
                 for start in range(0, len(images_list), chunk_size):

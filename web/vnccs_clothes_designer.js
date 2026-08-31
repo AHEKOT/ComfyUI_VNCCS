@@ -565,7 +565,8 @@ app.registerExtension({
     name: "VNCCS.ClothesDesigner",
 
     async setup() {
-        const origQueuePrompt = app.queuePrompt.bind(app);
+        const queuePrompt = app.queuePrompt;
+        const origQueuePrompt = (...args) => queuePrompt.apply(app, args);
         app.queuePrompt = async function(...args) {
             const nodes = app.graph?._nodes?.filter(n => n.type === "ClothesDesigner") || [];
             for (const node of nodes) {
@@ -1141,8 +1142,14 @@ app.registerExtension({
                 const patchPoseStudioSync = () => {
                     const sync = window.__vnccsPoseStudioCharacterCreatorSync;
                     if (!sync || sync._vnccsClothesDesignerPatched) return !!sync;
-                    const originalFindSourceNode = sync.findSourceNode?.bind(sync);
-                    const originalRegisterStudio = sync.registerStudio?.bind(sync);
+                    const findSourceNode = sync.findSourceNode;
+                    const registerStudio = sync.registerStudio;
+                    const originalFindSourceNode = typeof findSourceNode === "function"
+                        ? (...args) => findSourceNode.apply(sync, args)
+                        : null;
+                    const originalRegisterStudio = typeof registerStudio === "function"
+                        ? (...args) => registerStudio.apply(sync, args)
+                        : null;
 
                     sync.findClothesDesignerSourceNode = () => {
                         const nodes = app.graph?._nodes || [];
