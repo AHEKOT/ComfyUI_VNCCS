@@ -1009,6 +1009,12 @@ Example:
 
             # Generate Prompt
             positive_text, negative_text = CharacterCreatorV2.construct_prompt(char_info)
+            CharacterCreatorV2.log_generation_prompts(
+                "Preview",
+                positive_text,
+                negative_text,
+                framing=char_info.get("framing"),
+            )
             
             steps = int(gen_settings.get("steps", 20))
             cfg = float(gen_settings.get("cfg", 8.0))
@@ -1169,9 +1175,14 @@ class CharacterCreatorV2:
         aesthetics = info.get("aesthetics", "masterpiece")
         sex = info.get("sex", "female")
         age = int(info.get("age", 18))
+        framing = (
+            "standing, full body"
+            if str(info.get("framing", "cowboy_shot") or "").strip().lower() == "full_body"
+            else "cowboy_shot"
+        )
         
         # Base Prompt
-        positive_prompt = f"{aesthetics}, simple background, expressionless, solo, cowboy_shot"
+        positive_prompt = f"{aesthetics}, simple background, expressionless, solo, {framing}"
         positive_prompt, gender_negative = apply_sex(sex, positive_prompt, "")
         
         # NSFW / Clothing
@@ -1210,6 +1221,13 @@ class CharacterCreatorV2:
 
         return positive_prompt, negative_prompt
 
+    @staticmethod
+    def log_generation_prompts(context, positive_prompt, negative_prompt, framing=None):
+        label = str(context or "Generation").strip() or "Generation"
+        print(f"[VNCCS Character Creator V2] {label} framing input: {framing!r}")
+        print(f"[VNCCS Character Creator V2] {label} positive generation prompt: {positive_prompt}")
+        print(f"[VNCCS Character Creator V2] {label} negative generation prompt: {negative_prompt}")
+
     def process(self, widget_data="{}", unique_id=None):
         # Clear Preview Cache to free memory for workflow run
         global PREVIEW_CACHE
@@ -1238,6 +1256,12 @@ class CharacterCreatorV2:
         
         # 1. Generate Prompts
         positive_prompt, negative_prompt = self.construct_prompt(info)
+        self.log_generation_prompts(
+            "Workflow",
+            positive_prompt,
+            negative_prompt,
+            framing=info.get("framing"),
+        )
         
         # 2. Re-extract local vars for saving / outputs
         face_details = build_face_details(info)

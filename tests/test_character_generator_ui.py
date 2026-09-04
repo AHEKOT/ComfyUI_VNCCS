@@ -21,6 +21,11 @@ def test_seedvr_upscaler_exposes_resolution_controls():
     assert 'this.field("upscaler", "max_resolution", "maximum edge", "number", { min: 0, max: 16384, step: 2 })' in SOURCE
 
 
+def test_pose_resolution_control_uses_clear_label():
+    assert '"target_size", "resolution scale", "select"' in SOURCE
+    assert '"target_size", "scale area", "select"' not in SOURCE
+
+
 def test_seedvr_model_card_uses_persistent_widget_setter():
     assert 'this.set("upscaler", "model", rel);' in SOURCE
     assert "this.data.upscaler.model = rel;" not in SOURCE

@@ -1,0 +1,1267 @@
+{
+  "id": "e3f2b845-8f2c-4b5a-9caf-eac1029d3e7e",
+  "revision": 0,
+  "last_node_id": 161,
+  "last_link_id": 322,
+  "nodes": [
+    {
+      "id": 119,
+      "type": "VAELoader",
+      "pos": [
+        -1490,
+        5490
+      ],
+      "size": [
+        640,
+        70
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            273,
+            319
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.33.0",
+        "Node name for S&R": "VAELoader",
+        "models": [
+          {
+            "name": "minimax_h3_video_vae_fp16.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors",
+            "directory": "vae"
+          }
+        ]
+      },
+      "widgets_values": [
+        "minimax_h3_video_vae_fp16.safetensors"
+      ],
+      "widgets_values_named": {
+        "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+      }
+    },
+    {
+      "id": 120,
+      "type": "VAELoader",
+      "pos": [
+        -1490,
+        5630
+      ],
+      "size": [
+        650,
+        70
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            274
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.33.0",
+        "Node name for S&R": "VAELoader",
+        "models": [
+          {
+            "name": "minimax_h3_audio_vae_fp32.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors",
+            "directory": "vae"
+          }
+        ]
+      },
+      "widgets_values": [
+        "minimax_h3_audio_vae_fp32.safetensors"
+      ],
+      "widgets_values_named": {
+        "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+      }
+    },
+    {
+      "id": 123,
+      "type": "KSamplerSelect",
+      "pos": [
+        0,
+        5200
+      ],
+      "size": [
+        370,
+        70
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "SAMPLER",
+          "type": "SAMPLER",
+          "links": [
+            255
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.33.0",
+        "Node name for S&R": "KSamplerSelect"
+      },
+      "widgets_values": [
+        "res_multistep"
+      ],
+      "widgets_values_named": {
+        "sampler_name": "res_multistep"
+      }
+    },
+    {
+      "id": 125,
+      "type": "SamplerCustomAdvanced",
+      "pos": [
+        410,
+        5120
+      ],
+      "size": [
+        230,
+        140
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "noise",
+          "type": "NOISE",
+          "link": 253
+        },
+        {
+          "name": "guider",
+          "type": "GUIDER",
+          "link": 254
+        },
+        {
+          "name": "sampler",
+          "type": "SAMPLER",
+          "link": 255
+        },
+        {
+          "name": "sigmas",
+          "type": "SIGMAS",
+          "link": 256
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 271
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "type": "LATENT",
+          "links": [
+            318
+          ]
+        },
+        {
+          "name": "denoised_output",
+          "type": "LATENT",
+          "links": []
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.33.0",
+        "Node name for S&R": "SamplerCustomAdvanced"
+      }
+    },
+    {
+      "id": 126,
+      "type": "BasicGuider",
+      "pos": [
+        0,
+        5090
+      ],
+      "size": [
+        360,
+        60
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 316
+        },
+        {
+          "name": "conditioning",
+          "type": "CONDITIONING",
+          "link": 270
+        }
+      ],
+      "outputs": [
+        {
+          "name": "GUIDER",
+          "type": "GUIDER",
+          "links": [
+            254
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.33.0",
+        "Node name for S&R": "BasicGuider"
+      }
+    },
+    {
+      "id": 128,
+      "type": "CLIPLoader",
+      "pos": [
+        -1490,
+        5300
+      ],
+      "size": [
+        640,
+        120
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            272
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.33.0",
+        "Node name for S&R": "CLIPLoader",
+        "models": [
+          {
+            "name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+            "directory": "text_encoders"
+          }
+        ]
+      },
+      "widgets_values": [
+        "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+        "minimax",
+        "default"
+      ],
+      "widgets_values_named": {
+        "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+        "type": "minimax",
+        "device": "default"
+      }
+    },
+    {
+      "id": 131,
+      "type": "ComfyMathExpression",
+      "pos": [
+        -1490,
+        6440
+      ],
+      "size": [
+        230,
+        80
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "a",
+          "name": "values.a",
+          "type": "FLOAT,INT,BOOLEAN",
+          "link": 261
+        },
+        {
+          "name": "values.b",
+          "shape": 7,
+          "type": "FLOAT,INT,BOOLEAN",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": []
+        },
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            275
+          ]
+        },
+        {
+          "name": "BOOL",
+          "type": "BOOLEAN",
+          "links": []
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.33.0",
+        "Node name for S&R": "ComfyMathExpression"
+      },
+      "widgets_values": [
+        "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17"
+      ],
+      "widgets_values_named": {
+        "expression": "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17"
+      }
+    },
+    {
+      "id": 132,
+      "type": "PrimitiveFloat",
+      "pos": [
+        -1490,
+        6300
+      ],
+      "size": [
+        270,
+        70
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": [
+            261
+          ]
+        }
+      ],
+      "title": "Float (Duration)",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.33.0",
+        "Node name for S&R": "PrimitiveFloat"
+      },
+      "widgets_values": [
+        0
+      ],
+      "widgets_values_named": {
+        "value": 0
+      },
+      "color": "#322",
+      "bgcolor": "#533"
+    },
+    {
+      "id": 157,
+      "type": "ImageFromBatch",
+      "pos": [
+        0,
+        5640
+      ],
+      "size": [
+        270,
+        90
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 320
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            308
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.34.0",
+        "Node name for S&R": "ImageFromBatch"
+      },
+      "widgets_values": [
+        0,
+        1
+      ],
+      "widgets_values_named": {
+        "batch_index": 0,
+        "length": 1
+      }
+    },
+    {
+      "id": 145,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        -2530,
+        5140
+      ],
+      "size": [
+        640,
+        120
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 285
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            310
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.33.0",
+        "Node name for S&R": "LoraLoaderModelOnly",
+        "models": [
+          {
+            "name": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+            "directory": "loras"
+          }
+        ]
+      },
+      "widgets_values": [
+        "MiniMax\\minimax_h3_fl2v_lightx2v_turbo_8step_v1.0_resized_avg_rank_24_bf16.safetensors",
+        1
+      ],
+      "widgets_values_named": {
+        "lora_name": "MiniMax\\minimax_h3_fl2v_lightx2v_turbo_8step_v1.0_resized_avg_rank_24_bf16.safetensors",
+        "strength_model": 1
+      }
+    },
+    {
+      "id": 127,
+      "type": "UNETLoader",
+      "pos": [
+        -1490,
+        4980
+      ],
+      "size": [
+        640,
+        90
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            285
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.33.0",
+        "Node name for S&R": "UNETLoader",
+        "models": [
+          {
+            "name": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+            "directory": "diffusion_models"
+          }
+        ]
+      },
+      "widgets_values": [
+        "minimaxH3INT8INT4_fl2vaINT8Pruned.safetensors",
+        "default"
+      ],
+      "widgets_values_named": {
+        "unet_name": "minimaxH3INT8INT4_fl2vaINT8Pruned.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    {
+      "id": 158,
+      "type": "SaveImage",
+      "pos": [
+        260,
+        6120
+      ],
+      "size": [
+        880,
+        950
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 308
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": []
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.34.0",
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "ComfyUI"
+      ],
+      "widgets_values_named": {
+        "filename_prefix": "ComfyUI"
+      }
+    },
+    {
+      "id": 129,
+      "type": "RandomNoise",
+      "pos": [
+        0,
+        4950
+      ],
+      "size": [
+        360,
+        90
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "NOISE",
+          "type": "NOISE",
+          "links": [
+            253
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.33.0",
+        "Node name for S&R": "RandomNoise"
+      },
+      "widgets_values": [
+        1000885348087806,
+        "fixed"
+      ],
+      "widgets_values_named": {
+        "noise_seed": 1000885348087806,
+        "control_after_generate": "fixed"
+      }
+    },
+    {
+      "id": 159,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        -1760,
+        5140
+      ],
+      "size": [
+        640,
+        120
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 310
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            316,
+            317
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.33.0",
+        "Node name for S&R": "LoraLoaderModelOnly",
+        "models": [
+          {
+            "name": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+            "directory": "loras"
+          }
+        ]
+      },
+      "widgets_values": [
+        "MiniMax\\H3_PoseStudioV1.safetensors",
+        1
+      ],
+      "widgets_values_named": {
+        "lora_name": "MiniMax\\H3_PoseStudioV1.safetensors",
+        "strength_model": 1
+      }
+    },
+    {
+      "id": 161,
+      "type": "VAEDecodeTiled",
+      "pos": [
+        690,
+        5350
+      ],
+      "size": [
+        270,
+        150
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 318
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 319
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            320
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.34.0",
+        "Node name for S&R": "VAEDecodeTiled"
+      },
+      "widgets_values": [
+        512,
+        64,
+        64,
+        8
+      ],
+      "widgets_values_named": {
+        "tile_size": 512,
+        "overlap": 64,
+        "temporal_size": 64,
+        "temporal_overlap": 8
+      }
+    },
+    {
+      "id": 115,
+      "type": "ResolutionSelector",
+      "pos": [
+        -1490,
+        6060
+      ],
+      "size": [
+        270,
+        170
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "showAdvanced": false,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "width",
+          "type": "INT",
+          "links": []
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "links": []
+        }
+      ],
+      "title": "Resolution Selector (Size)",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.33.0",
+        "Node name for S&R": "ResolutionSelector"
+      },
+      "widgets_values": [
+        "1:1 (Square)",
+        3,
+        32
+      ],
+      "widgets_values_named": {
+        "aspect_ratio": "1:1 (Square)",
+        "megapixels": 3,
+        "multiple": 32
+      },
+      "color": "#322",
+      "bgcolor": "#533"
+    },
+    {
+      "id": 136,
+      "type": "MiniMaxH3ReferenceToVideo",
+      "pos": [
+        -620,
+        5420
+      ],
+      "size": [
+        400,
+        370
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 272
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 273
+        },
+        {
+          "name": "audio_vae",
+          "type": "VAE",
+          "link": 274
+        },
+        {
+          "label": "ref_image_0",
+          "name": "ref_images.ref_image_0",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 313
+        },
+        {
+          "name": "ref_images.ref_image_1",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 314
+        },
+        {
+          "name": "ref_images.ref_image_2",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "label": "ref_video_0",
+          "name": "ref_videos.ref_video_0",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "label": "ref_video_audio_0",
+          "name": "ref_video_audios.ref_video_audio_0",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "label": "ref_audio_0",
+          "name": "ref_audios.ref_audio_0",
+          "shape": 7,
+          "type": "AUDIO",
+          "link": null
+        },
+        {
+          "name": "length",
+          "type": "INT",
+          "widget": {
+            "name": "length"
+          },
+          "link": 275
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "links": [
+            270
+          ]
+        },
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            271
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.33.0",
+        "Node name for S&R": "MiniMaxH3ReferenceToVideo"
+      },
+      "widgets_values": [
+        "draw character <image 2> is character  <image 1> is referenсe for first frame pose. [Shot 1] The camera holds a static shot throughout the sequence.",
+        2048,
+        2048,
+        124,
+        "match"
+      ],
+      "widgets_values_named": {
+        "prompt": "draw character <image 2> is character  <image 1> is referenсe for first frame pose. [Shot 1] The camera holds a static shot throughout the sequence.",
+        "width": 2048,
+        "height": 2048,
+        "length": 124,
+        "ref_image_size": "match"
+      }
+    },
+    {
+      "id": 124,
+      "type": "BasicScheduler",
+      "pos": [
+        0,
+        5320
+      ],
+      "size": [
+        370,
+        130
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 317
+        }
+      ],
+      "outputs": [
+        {
+          "name": "SIGMAS",
+          "type": "SIGMAS",
+          "links": [
+            256
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.33.0",
+        "Node name for S&R": "BasicScheduler"
+      },
+      "widgets_values": [
+        "simple",
+        8,
+        1
+      ],
+      "widgets_values_named": {
+        "scheduler": "simple",
+        "steps": 8,
+        "denoise": 1
+      }
+    },
+    {
+      "id": 149,
+      "type": "LoadImage",
+      "pos": [
+        -520,
+        6130
+      ],
+      "size": [
+        760,
+        950
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            314
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.34.0",
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "ComfyUI_temp_jeydt_00002_.png",
+        "image"
+      ],
+      "widgets_values_named": {
+        "image": "ComfyUI_temp_jeydt_00002_.png",
+        "upload": "image"
+      }
+    },
+    {
+      "id": 160,
+      "type": "VNCCS_PoseStudio",
+      "pos": [
+        -2600,
+        5430
+      ],
+      "size": [
+        900,
+        740
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pose_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "label": "images",
+          "name": "images",
+          "shape": 6,
+          "type": "IMAGE",
+          "links": [
+            313
+          ]
+        },
+        {
+          "name": "lighting_prompt",
+          "shape": 6,
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VNCCS_PoseStudio"
+      },
+      "widgets_values": [
+        "{\"schema_version\":3,\"active_character_id\":\"character-1\",\"characters\":[{\"id\":\"character-1\",\"slot\":0,\"name\":\"Main Character\",\"color\":\"#ffffff\",\"transform\":{\"x\":0.4610706793452729,\"y\":0.1347921287916654,\"z\":-0.37111993193626414,\"zoom\":1.37},\"mesh\":{\"age\":25,\"gender\":0.5,\"weight\":0.5,\"muscle\":0.5,\"height\":0.5,\"breast_size\":0.5,\"firmness\":0.5,\"show_genitals\":false,\"penis_len\":0.5,\"penis_circ\":0.5,\"penis_test\":0.5,\"head_size\":1,\"arm_size\":1,\"hand_size\":1,\"foot_size\":1,\"shoulder_l_length\":0.5,\"shoulder_r_length\":0.5,\"hip_l_length\":0.5,\"hip_r_length\":0.5,\"upper_arm_l_length\":0.5,\"upper_arm_r_length\":0.5,\"forearm_l_length\":0.5,\"forearm_r_length\":0.5,\"thigh_l_length\":0.5,\"thigh_r_length\":0.5,\"shin_l_length\":0.5,\"shin_r_length\":0.5,\"spine_length\":0.5},\"poses\":[{\"bones\":{\"pelvis\":[12.990331899292247,9.219747205348527,76.34653289612825],\"spine_01\":[-10.146748905011384,0.22789601561643608,-4.463181522745409],\"spine_02\":[6.378741513210045,11.005296092059872,0.7178456203160783],\"spine_03\":[3.8004091255356838,11.117568132816473,-3.4559149241279497],\"thigh_l\":[34.76995491589472,-9.88939423492189,81.13687212268198],\"thigh_r\":[0.547550415800155,19.7649738067347,-71.74591588764584],\"calf_l\":[15.812870555710093,36.00737796149715,-3.773104707088255],\"calf_r\":[-9.896224230989464,-1.3268675883615408,-2.940163471326647],\"clavicle_l\":[-62.9731356842708,-11.649198445381789,-33.57367805531141],\"clavicle_r\":[12.415684921649879,-23.944978884908643,-33.782214484891746],\"foot_l\":[21.491674462591366,-3.6093982772473,-0.7015388475085126],\"foot_r\":[1.0863596059822889,-49.02796566437797,-17.81750951226172],\"neck_01\":[28.925644381772248,36.927895879124726,-0.5541334295663121],\"upperarm_l\":[31.743932336236554,-31.82784529124835,-40.05731660561868],\"upperarm_r\":[2.770046652061817,-16.211681178863916,45.78796596387809],\"head\":[-8.45190410203362,-9.054142953556624,-41.11722943986104],\"lowerarm_l\":[-3.929741227825868,-27.420465978974367,-41.20684540493188],\"lowerarm_r\":[9.103047744966021,40.90040807410982,40.17416994920737],\"hand_l\":[16.46956142684866,-30.222044395557525,35.86539303836105],\"hand_r\":[-18.35617055452978,19.22714302136031,-18.541447634692904],\"index_01_l\":[24.83340137512696,4.52830016570126,-9.774813846565552],\"index_01_r\":[30.293315428376772,-4.350979132332966,14.648236600966744],\"index_02_l\":[25.239545660165632,-4.143384369928852,-31.078891399255596],\"index_02_r\":[27.51296212208179,1.7617339758056956,28.34098136933847],\"index_03_l\":[3.7370260309627037,9.594289809077576,-3.0319595007836506],\"index_03_r\":[5.428734626927554,-13.412142899453745,4.466435619337762],\"middle_01_l\":[17.574564554126397,3.8331921555042165,-34.68001633808898],\"middle_01_r\":[19.50115870150979,-3.6014636619421614,27.76011727372053],\"middle_02_l\":[37.722203829566304,5.193195570056543,-30.569788200901556],\"middle_02_r\":[36.562858672834835,-1.748077290954697,36.279271966818776],\"middle_03_l\":[2.0796154973519037,11.270986414404758,-3.981889770010905],\"middle_03_r\":[1.976645997134387,-10.808500995234539,3.806691055474722],\"pinky_01_l\":[4.566515459175825,13.627853563025294,-28.311440122190405],\"pinky_01_r\":[8.85966822300006,-15.725722801780085,32.87592949262383],\"pinky_02_l\":[27.16909995640244,10.458776685434923,-29.097933085914043],\"pinky_02_r\":[26.237540400509392,-10.576180061466411,24.52897804185982],\"pinky_03_l\":[-2.856617520775962,15.219103746818448,-4.527138063298956],\"pinky_03_r\":[-2.884046564942677,-15.400873268923943,4.577780661650569],\"ring_01_l\":[4.526934435822918,3.0852339134554794,-30.501876606793488],\"ring_01_r\":[10.315167278926653,-4.89219173081196,33.795217589198685],\"ring_02_l\":[37.70955928635037,4.847702891777232,-43.19251421709973],\"ring_02_r\":[36.71873244041988,-6.030218383127296,37.19685737512235],\"ring_03_l\":[1.3575481803253981,11.685701877823185,-4.437642262435902],\"ring_03_r\":[1.2415031070609635,-10.939799382661828,4.140175694725895],\"thumb_01_l\":[-7.102160143036763,15.096129312153117,2.4805772012192286],\"thumb_01_r\":[-1.6302272193910687,-11.831571910420738,1.5128555493915006],\"thumb_02_l\":[6.493607860723591,-0.9519047519391254,-5.736521480982301],\"thumb_02_r\":[8.491592516864841,1.8132640263715523,9.19285272585312],\"thumb_03_l\":[-2.869922169700036,-0.6552673484223414,-0.8716982277004786],\"thumb_03_r\":[5.578641070835139,-1.4019675390373858,-1.6038374861226439]},\"bonePositions\":{\"pelvis\":[-0.13242968529099672,7.4980043494891,0.25063300649384357]},\"modelRotation\":[3.312729835363453,4.651104745747366,0],\"ikEffectorPositions\":{\"pelvis\":[0.27946026215168146,-0.795734247682681,-0.4198386033582724],\"hand_l\":[-1.744435957691727,-2.1542517131635117,2.0820674752693247],\"hand_r\":[-1.7753519901153814,-2.7199872752125294,0.506438811455066],\"foot_l\":[3.882273864549092,8.795941917412076,0.9660360297166435],\"foot_r\":[0.7937553208211718,-11.251761603842077,0.37936205315097693],\"head\":[-5.57861936555596,1.5850660296805534,2.1919885932274203],\"upperarm_l\":[-3.270079156574904,2.0333477231484984,1.76614337870962],\"upperarm_r\":[-5.656090875453762,-0.5637965193022072,1.1158386313470219]},\"poleTargetPositions\":{\"leftArm\":[-0.95965310596637,0.3758175642252919,1.8317611501294102],\"rightArm\":[-3.401646139028534,-2.3273198090703087,-0.555140981730275],\"leftLeg\":[0.8338063723827586,2.9041650751631485,0.9924437585465858],\"rightLeg\":[-0.16250383054426815,-4.511540596775333,0.37465431017445167]},\"hipBonePosition\":{\"hips\":[-0.13242968529099672,7.4980043494891,0.25063300649384357]},\"cameraParams\":{\"offset_x\":0.4610706793452729,\"offset_y\":0.1347921287916654,\"zoom\":1.37,\"yaw_deg\":0,\"pitch_deg\":0},\"prompt\":\"\"}],\"animation\":{\"schemaVersion\":2,\"storage\":\"server_cache\",\"cacheId\":\"vnccs_pose_animation_160_mtn4sw808ttb47xeyr\",\"revision\":1,\"frameCount\":24,\"duration\":2,\"fps\":12,\"currentFrame\":0,\"loop\":true,\"autoKey\":true,\"snap\":true,\"defaultInterpolation\":\"easeInOut\",\"basePose\":{\"bones\":{},\"modelRotation\":[0,0,0]},\"baseTransform\":{\"x\":0.4610706793452729,\"y\":0.1347921287916654,\"z\":-0.37111993193626414,\"zoom\":1.37},\"trackCount\":0,\"characterId\":\"character-1\"}}],\"timeline\":{\"fps\":12,\"duration\":2,\"frameCount\":24,\"currentFrame\":0,\"loop\":true},\"pose_prompts\":[\"\"],\"mesh\":{\"age\":25,\"gender\":0.5,\"weight\":0.5,\"muscle\":0.5,\"height\":0.5,\"breast_size\":0.5,\"firmness\":0.5,\"show_genitals\":false,\"penis_len\":0.5,\"penis_circ\":0.5,\"penis_test\":0.5,\"head_size\":1,\"arm_size\":1,\"hand_size\":1,\"foot_size\":1,\"shoulder_l_length\":0.5,\"shoulder_r_length\":0.5,\"hip_l_length\":0.5,\"hip_r_length\":0.5,\"upper_arm_l_length\":0.5,\"upper_arm_r_length\":0.5,\"forearm_l_length\":0.5,\"forearm_r_length\":0.5,\"thigh_l_length\":0.5,\"thigh_r_length\":0.5,\"shin_l_length\":0.5,\"shin_r_length\":0.5,\"spine_length\":0.5},\"export\":{\"view_width\":1024,\"view_height\":1024,\"cam_zoom\":1.37,\"cam_offset_x\":0.4610706793452729,\"cam_offset_y\":0.1347921287916654,\"cam_yaw_deg\":0,\"cam_pitch_deg\":0,\"output_mode\":\"LIST\",\"grid_columns\":2,\"bg_color\":[255,255,255],\"debugMode\":false,\"debugKeepLighting\":false,\"debugShowSAMHelper\":false,\"debugShowSAMMeshOverlay\":false,\"samApplyCamera\":false,\"keepOriginalLighting\":false,\"user_prompt\":\"\",\"prompt_template\":\"Draw character from image2\\n<lighting>\\n<user_prompt>\",\"skin_type\":\"naked\",\"interface_mode\":\"studio\",\"manager_auto_analyze_proportions\":true,\"capture_image_size\":false,\"editor_mode\":\"image\",\"animation_image_batch\":false,\"hand_controls_v2\":true,\"directional_skydome_enabled\":false},\"poses\":[{\"bones\":{\"pelvis\":[12.990331899292247,9.219747205348527,76.34653289612825],\"spine_01\":[-10.146748905011384,0.22789601561643608,-4.463181522745409],\"spine_02\":[6.378741513210045,11.005296092059872,0.7178456203160783],\"spine_03\":[3.8004091255356838,11.117568132816473,-3.4559149241279497],\"thigh_l\":[34.76995491589472,-9.88939423492189,81.13687212268198],\"thigh_r\":[0.547550415800155,19.7649738067347,-71.74591588764584],\"calf_l\":[15.812870555710093,36.00737796149715,-3.773104707088255],\"calf_r\":[-9.896224230989464,-1.3268675883615408,-2.940163471326647],\"clavicle_l\":[-62.9731356842708,-11.649198445381789,-33.57367805531141],\"clavicle_r\":[12.415684921649879,-23.944978884908643,-33.782214484891746],\"foot_l\":[21.491674462591366,-3.6093982772473,-0.7015388475085126],\"foot_r\":[1.0863596059822889,-49.02796566437797,-17.81750951226172],\"neck_01\":[28.925644381772248,36.927895879124726,-0.5541334295663121],\"upperarm_l\":[31.743932336236554,-31.82784529124835,-40.05731660561868],\"upperarm_r\":[2.770046652061817,-16.211681178863916,45.78796596387809],\"head\":[-8.45190410203362,-9.054142953556624,-41.11722943986104],\"lowerarm_l\":[-3.929741227825868,-27.420465978974367,-41.20684540493188],\"lowerarm_r\":[9.103047744966021,40.90040807410982,40.17416994920737],\"hand_l\":[16.46956142684866,-30.222044395557525,35.86539303836105],\"hand_r\":[-18.35617055452978,19.22714302136031,-18.541447634692904],\"index_01_l\":[24.83340137512696,4.52830016570126,-9.774813846565552],\"index_01_r\":[30.293315428376772,-4.350979132332966,14.648236600966744],\"index_02_l\":[25.239545660165632,-4.143384369928852,-31.078891399255596],\"index_02_r\":[27.51296212208179,1.7617339758056956,28.34098136933847],\"index_03_l\":[3.7370260309627037,9.594289809077576,-3.0319595007836506],\"index_03_r\":[5.428734626927554,-13.412142899453745,4.466435619337762],\"middle_01_l\":[17.574564554126397,3.8331921555042165,-34.68001633808898],\"middle_01_r\":[19.50115870150979,-3.6014636619421614,27.76011727372053],\"middle_02_l\":[37.722203829566304,5.193195570056543,-30.569788200901556],\"middle_02_r\":[36.562858672834835,-1.748077290954697,36.279271966818776],\"middle_03_l\":[2.0796154973519037,11.270986414404758,-3.981889770010905],\"middle_03_r\":[1.976645997134387,-10.808500995234539,3.806691055474722],\"pinky_01_l\":[4.566515459175825,13.627853563025294,-28.311440122190405],\"pinky_01_r\":[8.85966822300006,-15.725722801780085,32.87592949262383],\"pinky_02_l\":[27.16909995640244,10.458776685434923,-29.097933085914043],\"pinky_02_r\":[26.237540400509392,-10.576180061466411,24.52897804185982],\"pinky_03_l\":[-2.856617520775962,15.219103746818448,-4.527138063298956],\"pinky_03_r\":[-2.884046564942677,-15.400873268923943,4.577780661650569],\"ring_01_l\":[4.526934435822918,3.0852339134554794,-30.501876606793488],\"ring_01_r\":[10.315167278926653,-4.89219173081196,33.795217589198685],\"ring_02_l\":[37.70955928635037,4.847702891777232,-43.19251421709973],\"ring_02_r\":[36.71873244041988,-6.030218383127296,37.19685737512235],\"ring_03_l\":[1.3575481803253981,11.685701877823185,-4.437642262435902],\"ring_03_r\":[1.2415031070609635,-10.939799382661828,4.140175694725895],\"thumb_01_l\":[-7.102160143036763,15.096129312153117,2.4805772012192286],\"thumb_01_r\":[-1.6302272193910687,-11.831571910420738,1.5128555493915006],\"thumb_02_l\":[6.493607860723591,-0.9519047519391254,-5.736521480982301],\"thumb_02_r\":[8.491592516864841,1.8132640263715523,9.19285272585312],\"thumb_03_l\":[-2.869922169700036,-0.6552673484223414,-0.8716982277004786],\"thumb_03_r\":[5.578641070835139,-1.4019675390373858,-1.6038374861226439]},\"bonePositions\":{\"pelvis\":[-0.13242968529099672,7.4980043494891,0.25063300649384357]},\"modelRotation\":[3.312729835363453,4.651104745747366,0],\"ikEffectorPositions\":{\"pelvis\":[0.27946026215168146,-0.795734247682681,-0.4198386033582724],\"hand_l\":[-1.744435957691727,-2.1542517131635117,2.0820674752693247],\"hand_r\":[-1.7753519901153814,-2.7199872752125294,0.506438811455066],\"foot_l\":[3.882273864549092,8.795941917412076,0.9660360297166435],\"foot_r\":[0.7937553208211718,-11.251761603842077,0.37936205315097693],\"head\":[-5.57861936555596,1.5850660296805534,2.1919885932274203],\"upperarm_l\":[-3.270079156574904,2.0333477231484984,1.76614337870962],\"upperarm_r\":[-5.656090875453762,-0.5637965193022072,1.1158386313470219]},\"poleTargetPositions\":{\"leftArm\":[-0.95965310596637,0.3758175642252919,1.8317611501294102],\"rightArm\":[-3.401646139028534,-2.3273198090703087,-0.555140981730275],\"leftLeg\":[0.8338063723827586,2.9041650751631485,0.9924437585465858],\"rightLeg\":[-0.16250383054426815,-4.511540596775333,0.37465431017445167]},\"hipBonePosition\":{\"hips\":[-0.13242968529099672,7.4980043494891,0.25063300649384357]},\"cameraParams\":{\"offset_x\":0.4610706793452729,\"offset_y\":0.1347921287916654,\"zoom\":1.37,\"yaw_deg\":0,\"pitch_deg\":0},\"prompt\":\"\"}],\"animation\":{\"schemaVersion\":2,\"storage\":\"server_cache\",\"cacheId\":\"vnccs_pose_animation_160_mtn4sw808ttb47xeyr\",\"revision\":1,\"frameCount\":24,\"duration\":2,\"fps\":12,\"currentFrame\":0,\"loop\":true,\"autoKey\":true,\"snap\":true,\"defaultInterpolation\":\"easeInOut\",\"basePose\":{\"bones\":{},\"modelRotation\":[0,0,0]},\"baseTransform\":{\"x\":0.4610706793452729,\"y\":0.1347921287916654,\"z\":-0.37111993193626414,\"zoom\":1.37},\"trackCount\":0},\"lights\":[{\"type\":\"directional\",\"color\":\"#ffffff\",\"intensity\":2,\"x\":10,\"y\":20,\"z\":30},{\"type\":\"ambient\",\"color\":\"#505050\",\"intensity\":1,\"x\":0,\"y\":0,\"z\":0}],\"activeTab\":0,\"capture_id\":\"vnccs_capture_160\",\"lighting_prompts\":[\"Draw character from image2\\nstrong Pale White lighting coming from the eye-level front\"],\"background_url\":null}",
+        false,
+        ""
+      ],
+      "widgets_values_named": {
+        "pose_data": "{\"schema_version\":3,\"active_character_id\":\"character-1\",\"characters\":[{\"id\":\"character-1\",\"slot\":0,\"name\":\"Main Character\",\"color\":\"#ffffff\",\"transform\":{\"x\":0.4610706793452729,\"y\":0.1347921287916654,\"z\":-0.37111993193626414,\"zoom\":1.37},\"mesh\":{\"age\":25,\"gender\":0.5,\"weight\":0.5,\"muscle\":0.5,\"height\":0.5,\"breast_size\":0.5,\"firmness\":0.5,\"show_genitals\":false,\"penis_len\":0.5,\"penis_circ\":0.5,\"penis_test\":0.5,\"head_size\":1,\"arm_size\":1,\"hand_size\":1,\"foot_size\":1,\"shoulder_l_length\":0.5,\"shoulder_r_length\":0.5,\"hip_l_length\":0.5,\"hip_r_length\":0.5,\"upper_arm_l_length\":0.5,\"upper_arm_r_length\":0.5,\"forearm_l_length\":0.5,\"forearm_r_length\":0.5,\"thigh_l_length\":0.5,\"thigh_r_length\":0.5,\"shin_l_length\":0.5,\"shin_r_length\":0.5,\"spine_length\":0.5},\"poses\":[{\"bones\":{\"pelvis\":[12.990331899292247,9.219747205348527,76.34653289612825],\"spine_01\":[-10.146748905011384,0.22789601561643608,-4.463181522745409],\"spine_02\":[6.378741513210045,11.005296092059872,0.7178456203160783],\"spine_03\":[3.8004091255356838,11.117568132816473,-3.4559149241279497],\"thigh_l\":[34.76995491589472,-9.88939423492189,81.13687212268198],\"thigh_r\":[0.547550415800155,19.7649738067347,-71.74591588764584],\"calf_l\":[15.812870555710093,36.00737796149715,-3.773104707088255],\"calf_r\":[-9.896224230989464,-1.3268675883615408,-2.940163471326647],\"clavicle_l\":[-62.9731356842708,-11.649198445381789,-33.57367805531141],\"clavicle_r\":[12.415684921649879,-23.944978884908643,-33.782214484891746],\"foot_l\":[21.491674462591366,-3.6093982772473,-0.7015388475085126],\"foot_r\":[1.0863596059822889,-49.02796566437797,-17.81750951226172],\"neck_01\":[28.925644381772248,36.927895879124726,-0.5541334295663121],\"upperarm_l\":[31.743932336236554,-31.82784529124835,-40.05731660561868],\"upperarm_r\":[2.770046652061817,-16.211681178863916,45.78796596387809],\"head\":[-8.45190410203362,-9.054142953556624,-41.11722943986104],\"lowerarm_l\":[-3.929741227825868,-27.420465978974367,-41.20684540493188],\"lowerarm_r\":[9.103047744966021,40.90040807410982,40.17416994920737],\"hand_l\":[16.46956142684866,-30.222044395557525,35.86539303836105],\"hand_r\":[-18.35617055452978,19.22714302136031,-18.541447634692904],\"index_01_l\":[24.83340137512696,4.52830016570126,-9.774813846565552],\"index_01_r\":[30.293315428376772,-4.350979132332966,14.648236600966744],\"index_02_l\":[25.239545660165632,-4.143384369928852,-31.078891399255596],\"index_02_r\":[27.51296212208179,1.7617339758056956,28.34098136933847],\"index_03_l\":[3.7370260309627037,9.594289809077576,-3.0319595007836506],\"index_03_r\":[5.428734626927554,-13.412142899453745,4.466435619337762],\"middle_01_l\":[17.574564554126397,3.8331921555042165,-34.68001633808898],\"middle_01_r\":[19.50115870150979,-3.6014636619421614,27.76011727372053],\"middle_02_l\":[37.722203829566304,5.193195570056543,-30.569788200901556],\"middle_02_r\":[36.562858672834835,-1.748077290954697,36.279271966818776],\"middle_03_l\":[2.0796154973519037,11.270986414404758,-3.981889770010905],\"middle_03_r\":[1.976645997134387,-10.808500995234539,3.806691055474722],\"pinky_01_l\":[4.566515459175825,13.627853563025294,-28.311440122190405],\"pinky_01_r\":[8.85966822300006,-15.725722801780085,32.87592949262383],\"pinky_02_l\":[27.16909995640244,10.458776685434923,-29.097933085914043],\"pinky_02_r\":[26.237540400509392,-10.576180061466411,24.52897804185982],\"pinky_03_l\":[-2.856617520775962,15.219103746818448,-4.527138063298956],\"pinky_03_r\":[-2.884046564942677,-15.400873268923943,4.577780661650569],\"ring_01_l\":[4.526934435822918,3.0852339134554794,-30.501876606793488],\"ring_01_r\":[10.315167278926653,-4.89219173081196,33.795217589198685],\"ring_02_l\":[37.70955928635037,4.847702891777232,-43.19251421709973],\"ring_02_r\":[36.71873244041988,-6.030218383127296,37.19685737512235],\"ring_03_l\":[1.3575481803253981,11.685701877823185,-4.437642262435902],\"ring_03_r\":[1.2415031070609635,-10.939799382661828,4.140175694725895],\"thumb_01_l\":[-7.102160143036763,15.096129312153117,2.4805772012192286],\"thumb_01_r\":[-1.6302272193910687,-11.831571910420738,1.5128555493915006],\"thumb_02_l\":[6.493607860723591,-0.9519047519391254,-5.736521480982301],\"thumb_02_r\":[8.491592516864841,1.8132640263715523,9.19285272585312],\"thumb_03_l\":[-2.869922169700036,-0.6552673484223414,-0.8716982277004786],\"thumb_03_r\":[5.578641070835139,-1.4019675390373858,-1.6038374861226439]},\"bonePositions\":{\"pelvis\":[-0.13242968529099672,7.4980043494891,0.25063300649384357]},\"modelRotation\":[3.312729835363453,4.651104745747366,0],\"ikEffectorPositions\":{\"pelvis\":[0.27946026215168146,-0.795734247682681,-0.4198386033582724],\"hand_l\":[-1.744435957691727,-2.1542517131635117,2.0820674752693247],\"hand_r\":[-1.7753519901153814,-2.7199872752125294,0.506438811455066],\"foot_l\":[3.882273864549092,8.795941917412076,0.9660360297166435],\"foot_r\":[0.7937553208211718,-11.251761603842077,0.37936205315097693],\"head\":[-5.57861936555596,1.5850660296805534,2.1919885932274203],\"upperarm_l\":[-3.270079156574904,2.0333477231484984,1.76614337870962],\"upperarm_r\":[-5.656090875453762,-0.5637965193022072,1.1158386313470219]},\"poleTargetPositions\":{\"leftArm\":[-0.95965310596637,0.3758175642252919,1.8317611501294102],\"rightArm\":[-3.401646139028534,-2.3273198090703087,-0.555140981730275],\"leftLeg\":[0.8338063723827586,2.9041650751631485,0.9924437585465858],\"rightLeg\":[-0.16250383054426815,-4.511540596775333,0.37465431017445167]},\"hipBonePosition\":{\"hips\":[-0.13242968529099672,7.4980043494891,0.25063300649384357]},\"cameraParams\":{\"offset_x\":0.4610706793452729,\"offset_y\":0.1347921287916654,\"zoom\":1.37,\"yaw_deg\":0,\"pitch_deg\":0},\"prompt\":\"\"}],\"animation\":{\"schemaVersion\":2,\"storage\":\"server_cache\",\"cacheId\":\"vnccs_pose_animation_160_mtn4sw808ttb47xeyr\",\"revision\":1,\"frameCount\":24,\"duration\":2,\"fps\":12,\"currentFrame\":0,\"loop\":true,\"autoKey\":true,\"snap\":true,\"defaultInterpolation\":\"easeInOut\",\"basePose\":{\"bones\":{},\"modelRotation\":[0,0,0]},\"baseTransform\":{\"x\":0.4610706793452729,\"y\":0.1347921287916654,\"z\":-0.37111993193626414,\"zoom\":1.37},\"trackCount\":0,\"characterId\":\"character-1\"}}],\"timeline\":{\"fps\":12,\"duration\":2,\"frameCount\":24,\"currentFrame\":0,\"loop\":true},\"pose_prompts\":[\"\"],\"mesh\":{\"age\":25,\"gender\":0.5,\"weight\":0.5,\"muscle\":0.5,\"height\":0.5,\"breast_size\":0.5,\"firmness\":0.5,\"show_genitals\":false,\"penis_len\":0.5,\"penis_circ\":0.5,\"penis_test\":0.5,\"head_size\":1,\"arm_size\":1,\"hand_size\":1,\"foot_size\":1,\"shoulder_l_length\":0.5,\"shoulder_r_length\":0.5,\"hip_l_length\":0.5,\"hip_r_length\":0.5,\"upper_arm_l_length\":0.5,\"upper_arm_r_length\":0.5,\"forearm_l_length\":0.5,\"forearm_r_length\":0.5,\"thigh_l_length\":0.5,\"thigh_r_length\":0.5,\"shin_l_length\":0.5,\"shin_r_length\":0.5,\"spine_length\":0.5},\"export\":{\"view_width\":1024,\"view_height\":1024,\"cam_zoom\":1.37,\"cam_offset_x\":0.4610706793452729,\"cam_offset_y\":0.1347921287916654,\"cam_yaw_deg\":0,\"cam_pitch_deg\":0,\"output_mode\":\"LIST\",\"grid_columns\":2,\"bg_color\":[255,255,255],\"debugMode\":false,\"debugKeepLighting\":false,\"debugShowSAMHelper\":false,\"debugShowSAMMeshOverlay\":false,\"samApplyCamera\":false,\"keepOriginalLighting\":false,\"user_prompt\":\"\",\"prompt_template\":\"Draw character from image2\\n<lighting>\\n<user_prompt>\",\"skin_type\":\"naked\",\"interface_mode\":\"studio\",\"manager_auto_analyze_proportions\":true,\"capture_image_size\":false,\"editor_mode\":\"image\",\"animation_image_batch\":false,\"hand_controls_v2\":true,\"directional_skydome_enabled\":false},\"poses\":[{\"bones\":{\"pelvis\":[12.990331899292247,9.219747205348527,76.34653289612825],\"spine_01\":[-10.146748905011384,0.22789601561643608,-4.463181522745409],\"spine_02\":[6.378741513210045,11.005296092059872,0.7178456203160783],\"spine_03\":[3.8004091255356838,11.117568132816473,-3.4559149241279497],\"thigh_l\":[34.76995491589472,-9.88939423492189,81.13687212268198],\"thigh_r\":[0.547550415800155,19.7649738067347,-71.74591588764584],\"calf_l\":[15.812870555710093,36.00737796149715,-3.773104707088255],\"calf_r\":[-9.896224230989464,-1.3268675883615408,-2.940163471326647],\"clavicle_l\":[-62.9731356842708,-11.649198445381789,-33.57367805531141],\"clavicle_r\":[12.415684921649879,-23.944978884908643,-33.782214484891746],\"foot_l\":[21.491674462591366,-3.6093982772473,-0.7015388475085126],\"foot_r\":[1.0863596059822889,-49.02796566437797,-17.81750951226172],\"neck_01\":[28.925644381772248,36.927895879124726,-0.5541334295663121],\"upperarm_l\":[31.743932336236554,-31.82784529124835,-40.05731660561868],\"upperarm_r\":[2.770046652061817,-16.211681178863916,45.78796596387809],\"head\":[-8.45190410203362,-9.054142953556624,-41.11722943986104],\"lowerarm_l\":[-3.929741227825868,-27.420465978974367,-41.20684540493188],\"lowerarm_r\":[9.103047744966021,40.90040807410982,40.17416994920737],\"hand_l\":[16.46956142684866,-30.222044395557525,35.86539303836105],\"hand_r\":[-18.35617055452978,19.22714302136031,-18.541447634692904],\"index_01_l\":[24.83340137512696,4.52830016570126,-9.774813846565552],\"index_01_r\":[30.293315428376772,-4.350979132332966,14.648236600966744],\"index_02_l\":[25.239545660165632,-4.143384369928852,-31.078891399255596],\"index_02_r\":[27.51296212208179,1.7617339758056956,28.34098136933847],\"index_03_l\":[3.7370260309627037,9.594289809077576,-3.0319595007836506],\"index_03_r\":[5.428734626927554,-13.412142899453745,4.466435619337762],\"middle_01_l\":[17.574564554126397,3.8331921555042165,-34.68001633808898],\"middle_01_r\":[19.50115870150979,-3.6014636619421614,27.76011727372053],\"middle_02_l\":[37.722203829566304,5.193195570056543,-30.569788200901556],\"middle_02_r\":[36.562858672834835,-1.748077290954697,36.279271966818776],\"middle_03_l\":[2.0796154973519037,11.270986414404758,-3.981889770010905],\"middle_03_r\":[1.976645997134387,-10.808500995234539,3.806691055474722],\"pinky_01_l\":[4.566515459175825,13.627853563025294,-28.311440122190405],\"pinky_01_r\":[8.85966822300006,-15.725722801780085,32.87592949262383],\"pinky_02_l\":[27.16909995640244,10.458776685434923,-29.097933085914043],\"pinky_02_r\":[26.237540400509392,-10.576180061466411,24.52897804185982],\"pinky_03_l\":[-2.856617520775962,15.219103746818448,-4.527138063298956],\"pinky_03_r\":[-2.884046564942677,-15.400873268923943,4.577780661650569],\"ring_01_l\":[4.526934435822918,3.0852339134554794,-30.501876606793488],\"ring_01_r\":[10.315167278926653,-4.89219173081196,33.795217589198685],\"ring_02_l\":[37.70955928635037,4.847702891777232,-43.19251421709973],\"ring_02_r\":[36.71873244041988,-6.030218383127296,37.19685737512235],\"ring_03_l\":[1.3575481803253981,11.685701877823185,-4.437642262435902],\"ring_03_r\":[1.2415031070609635,-10.939799382661828,4.140175694725895],\"thumb_01_l\":[-7.102160143036763,15.096129312153117,2.4805772012192286],\"thumb_01_r\":[-1.6302272193910687,-11.831571910420738,1.5128555493915006],\"thumb_02_l\":[6.493607860723591,-0.9519047519391254,-5.736521480982301],\"thumb_02_r\":[8.491592516864841,1.8132640263715523,9.19285272585312],\"thumb_03_l\":[-2.869922169700036,-0.6552673484223414,-0.8716982277004786],\"thumb_03_r\":[5.578641070835139,-1.4019675390373858,-1.6038374861226439]},\"bonePositions\":{\"pelvis\":[-0.13242968529099672,7.4980043494891,0.25063300649384357]},\"modelRotation\":[3.312729835363453,4.651104745747366,0],\"ikEffectorPositions\":{\"pelvis\":[0.27946026215168146,-0.795734247682681,-0.4198386033582724],\"hand_l\":[-1.744435957691727,-2.1542517131635117,2.0820674752693247],\"hand_r\":[-1.7753519901153814,-2.7199872752125294,0.506438811455066],\"foot_l\":[3.882273864549092,8.795941917412076,0.9660360297166435],\"foot_r\":[0.7937553208211718,-11.251761603842077,0.37936205315097693],\"head\":[-5.57861936555596,1.5850660296805534,2.1919885932274203],\"upperarm_l\":[-3.270079156574904,2.0333477231484984,1.76614337870962],\"upperarm_r\":[-5.656090875453762,-0.5637965193022072,1.1158386313470219]},\"poleTargetPositions\":{\"leftArm\":[-0.95965310596637,0.3758175642252919,1.8317611501294102],\"rightArm\":[-3.401646139028534,-2.3273198090703087,-0.555140981730275],\"leftLeg\":[0.8338063723827586,2.9041650751631485,0.9924437585465858],\"rightLeg\":[-0.16250383054426815,-4.511540596775333,0.37465431017445167]},\"hipBonePosition\":{\"hips\":[-0.13242968529099672,7.4980043494891,0.25063300649384357]},\"cameraParams\":{\"offset_x\":0.4610706793452729,\"offset_y\":0.1347921287916654,\"zoom\":1.37,\"yaw_deg\":0,\"pitch_deg\":0},\"prompt\":\"\"}],\"animation\":{\"schemaVersion\":2,\"storage\":\"server_cache\",\"cacheId\":\"vnccs_pose_animation_160_mtn4sw808ttb47xeyr\",\"revision\":1,\"frameCount\":24,\"duration\":2,\"fps\":12,\"currentFrame\":0,\"loop\":true,\"autoKey\":true,\"snap\":true,\"defaultInterpolation\":\"easeInOut\",\"basePose\":{\"bones\":{},\"modelRotation\":[0,0,0]},\"baseTransform\":{\"x\":0.4610706793452729,\"y\":0.1347921287916654,\"z\":-0.37111993193626414,\"zoom\":1.37},\"trackCount\":0},\"lights\":[{\"type\":\"directional\",\"color\":\"#ffffff\",\"intensity\":2,\"x\":10,\"y\":20,\"z\":30},{\"type\":\"ambient\",\"color\":\"#505050\",\"intensity\":1,\"x\":0,\"y\":0,\"z\":0}],\"activeTab\":0,\"capture_id\":\"vnccs_capture_160\",\"lighting_prompts\":[\"Draw character from image2\\nstrong Pale White lighting coming from the eye-level front\"],\"background_url\":null}",
+        "animation_image_batch": false,
+        "pose_studio_ui": ""
+      }
+    }
+  ],
+  "links": [
+    [
+      253,
+      129,
+      0,
+      125,
+      0,
+      "NOISE"
+    ],
+    [
+      254,
+      126,
+      0,
+      125,
+      1,
+      "GUIDER"
+    ],
+    [
+      255,
+      123,
+      0,
+      125,
+      2,
+      "SAMPLER"
+    ],
+    [
+      256,
+      124,
+      0,
+      125,
+      3,
+      "SIGMAS"
+    ],
+    [
+      261,
+      132,
+      0,
+      131,
+      0,
+      "FLOAT"
+    ],
+    [
+      270,
+      136,
+      0,
+      126,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      271,
+      136,
+      1,
+      125,
+      4,
+      "LATENT"
+    ],
+    [
+      272,
+      128,
+      0,
+      136,
+      0,
+      "CLIP"
+    ],
+    [
+      273,
+      119,
+      0,
+      136,
+      1,
+      "VAE"
+    ],
+    [
+      274,
+      120,
+      0,
+      136,
+      2,
+      "VAE"
+    ],
+    [
+      275,
+      131,
+      1,
+      136,
+      9,
+      "INT"
+    ],
+    [
+      285,
+      127,
+      0,
+      145,
+      0,
+      "MODEL"
+    ],
+    [
+      308,
+      157,
+      0,
+      158,
+      0,
+      "IMAGE"
+    ],
+    [
+      310,
+      145,
+      0,
+      159,
+      0,
+      "MODEL"
+    ],
+    [
+      313,
+      160,
+      0,
+      136,
+      3,
+      "IMAGE"
+    ],
+    [
+      314,
+      149,
+      0,
+      136,
+      4,
+      "IMAGE"
+    ],
+    [
+      316,
+      159,
+      0,
+      126,
+      0,
+      "MODEL"
+    ],
+    [
+      317,
+      159,
+      0,
+      124,
+      0,
+      "MODEL"
+    ],
+    [
+      318,
+      125,
+      0,
+      161,
+      0,
+      "LATENT"
+    ],
+    [
+      319,
+      119,
+      0,
+      161,
+      1,
+      "VAE"
+    ],
+    [
+      320,
+      161,
+      0,
+      157,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "Models",
+      "bounding": [
+        -1520,
+        4840,
+        700,
+        990
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 2,
+      "title": "Sampling",
+      "bounding": [
+        -30,
+        4840,
+        690,
+        700
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 3,
+      "title": "Switch Model and Settings",
+      "bounding": [
+        -790,
+        4840,
+        730,
+        490
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 4,
+      "title": "Decoding and create video",
+      "bounding": [
+        -30,
+        5570,
+        690,
+        260
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 5,
+      "title": "User Inputs",
+      "bounding": [
+        -1520,
+        5860,
+        2190,
+        1090
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    },
+    {
+      "id": 6,
+      "title": "Conditioning",
+      "bounding": [
+        -790,
+        5350,
+        730,
+        480
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.6638210508387165,
+      "offset": [
+        3048.8158303918844,
+        -4475.6126021837545
+      ]
+    },
+    "frontendVersion": "1.51.9",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4
+}
