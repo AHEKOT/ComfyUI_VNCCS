@@ -2615,7 +2615,7 @@ class CharacterGeneratorWidget {
         }
         if (this.isClone) {
             this.settingsEl.appendChild(this.block("Common", [
-                this.field("common", "target_size", "scale area", "select", [1024, 1344, 1536, 2048, 768, 512]),
+                this.field("common", "target_size", "resolution scale", "select", [1024, 1344, 1536, 2048, 768, 512]),
             ]));
             if (this.isCloneNsfwEnabled()) {
                 this.settingsEl.appendChild(this.block("Remove Clothes", [
@@ -2624,7 +2624,7 @@ class CharacterGeneratorWidget {
             }
         } else {
             this.settingsEl.appendChild(this.block("Pose Generation", [
-                this.field("pose_generation", "target_size", "scale area", "select", [1024, 1344, 1536, 2048, 768, 512]),
+                this.field("pose_generation", "target_size", "resolution scale", "select", [1024, 1344, 1536, 2048, 768, 512]),
             ]));
         }
         const upscalerFields = [

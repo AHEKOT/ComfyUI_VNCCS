@@ -80,6 +80,8 @@ _PIPELINE_LOCAL_LORAS = {
     "vnccs pose studio qie2511",
     "vnccs clothes core klein9b",
     "vnccs pose studio klein9b",
+    "h3_posestudio",
+    "minimax h3 pose studio",
 }
 _FOLDER_MAP = {
     "unet": ["unet", "diffusion_models"],
@@ -646,7 +648,7 @@ def _build_custom_lora_name(rel_path, used_names=None):
     return unique
 
 
-def _build_custom_lora_entry(rel_path, used_names=None):
+def _build_custom_lora_entry(rel_path, used_names=None, kind="Custom"):
     normalized = rel_path.replace("\\", "/").strip("/")
     if not normalized:
         raise ValueError("LoRA path is empty")
@@ -655,11 +657,12 @@ def _build_custom_lora_entry(rel_path, used_names=None):
     if not full_path or not os.path.exists(full_path):
         raise FileNotFoundError(f"LoRA '{normalized}' not found in ComfyUI loras folder")
 
+    normalized_kind = str(kind or "Custom").strip() or "Custom"
     return {
         "name": _build_custom_lora_name(normalized, used_names=used_names),
         "local_path": f"models/loras/{normalized}",
         "type": "Custom",
-        "kind": "Custom",
+        "kind": normalized_kind,
         "description": f"Custom LoRA from ComfyUI folder: {normalized}",
         "custom": True,
     }
@@ -885,20 +888,30 @@ def _selected_model_name_for_type(state, entry_type, kind=""):
 def _custom_context_model_entry(config, state):
     models = config.get("models", []) if isinstance(config, dict) else []
     active_kind = str(state.get("active_kind", "") or "").strip()
-    normalized_kind = _normalize_meta_value(active_kind)
-    context_type = "unet" if normalized_kind == "klein9b" else "gguf"
+    normalized_kind = _normalize_model_kind(active_kind)
+    context_type = "unet" if normalized_kind in {"klein9b", "minimaxh3"} else "gguf"
     name = _selected_model_name_for_type(state, context_type, active_kind) or state.get("selected_model", "")
     selected = _find_entry(models, name)
     if selected and (not normalized_kind or _entry_kind(selected) == normalized_kind):
         return selected
-    return next(
+    matched = next(
         (
             entry for entry in models
             if _entry_type(entry) == context_type
             and (not normalized_kind or _entry_kind(entry) == normalized_kind)
         ),
-        _find_first_entry_by_type(models, context_type),
+        None,
     )
+    if matched:
+        return matched
+    if normalized_kind:
+        return {
+            "name": f"Custom {active_kind}",
+            "type": "custom",
+            "kind": active_kind,
+            "custom": True,
+        }
+    return _find_first_entry_by_type(models, context_type)
 
 
 def _rel_within_folder(local_path):
@@ -1052,8 +1065,16 @@ def _normalize_meta_value(value):
     return str(value or "").strip().lower()
 
 
+def _normalize_model_kind(value):
+    normalized = _normalize_meta_value(value)
+    compact = "".join(char for char in normalized if char.isalnum())
+    if compact in {"h3", "minimaxh3"}:
+        return "minimaxh3"
+    return normalized
+
+
 def _entry_kind(entry):
-    return _normalize_meta_value((entry or {}).get("kind") or (entry or {}).get("Kind"))
+    return _normalize_model_kind((entry or {}).get("kind") or (entry or {}).get("Kind"))
 
 
 def _entry_type(entry):
@@ -1125,7 +1146,7 @@ def _ensure_required_turbo_lora_state(loras, config, model_entry, model_params):
 
 
 def _filter_entries_by_kind(entries, kind):
-    normalized_kind = _normalize_meta_value(kind)
+    normalized_kind = _normalize_model_kind(kind)
     entries = list(entries or [])
     if not normalized_kind:
         return entries
@@ -1141,6 +1162,17 @@ def _filter_entries_by_kind(entries, kind):
         f"[VNCCS Control Center] No assets compatible with model kind '{normalized_kind}'. "
         f"Available asset kinds: {available_text}."
     )
+
+
+def _is_audio_vae_entry(entry):
+    entry = entry or {}
+    role = _normalize_meta_value(entry.get("vae_role") or entry.get("role"))
+    entry_type = _entry_type(entry).replace("_", "").replace("-", "")
+    identity = " ".join([
+        str(entry.get("name", "")),
+        str(entry.get("local_path", "")),
+    ]).lower()
+    return role == "audio" or entry_type == "audiovae" or "audio_vae" in identity or "audio vae" in identity
 
 
 def _load_checkpoint(full_path):
@@ -1378,6 +1410,9 @@ def _apply_loras(model, clip, lora_states, config, model_type, type_settings=Non
 
         if not is_custom and not is_turbo:
             continue
+        custom_kind = _entry_kind(entry)
+        if is_custom and custom_kind not in {"", "custom"} and not _lora_matches_model_kind(entry, model_entry):
+            continue
         if not is_custom and not _lora_matches_model_kind(entry, model_entry):
             continue
 
@@ -1491,10 +1526,11 @@ threading.Thread(target=_download_worker_loop, daemon=True).start()
 
 
 class VNCCSPipeProxy:
-    def __init__(self, model, clip, vae):
+    def __init__(self, model, clip, vae, audio_vae=None):
         self.model = model
         self.clip = clip
         self.vae = vae
+        self.audio_vae = audio_vae
         self.pos = None
         self.neg = None
         self.seed_int = 0
@@ -1507,6 +1543,7 @@ class VNCCSPipeProxy:
         self.nunchaku_kind = None      # "flux" | "qwen-image" | None
         self.nunchaku_settings = None  # dict or None
         self.model_entry = None        # config model entry dict or None
+        self.model_kind = ""           # stable family identity, including custom models
         self.repo_id = None            # source Control Center repo id
         self.lora_entries = []         # config lora entries
         self.lora_states = []          # UI lora state
@@ -1524,6 +1561,7 @@ class VNCCS_ControlCenter:
                 "model": ("MODEL",),
                 "clip": ("CLIP",),
                 "vae": ("VAE",),
+                "audio_vae": ("VAE",),
             }
         }
 
@@ -1536,18 +1574,26 @@ class VNCCS_ControlCenter:
     FUNCTION = "execute"
     CATEGORY = "VNCCS/manager"
 
-    def execute(self, repo_id, node_state="{}", model=None, clip=None, vae=None):
+    def execute(self, repo_id, node_state="{}", model=None, clip=None, vae=None, audio_vae=None):
         pipe = _build_control_center_pipe(
             repo_id,
             node_state,
             custom_model=model,
             custom_clip=clip,
             custom_vae=vae,
+            custom_audio_vae=audio_vae,
         )
         return (pipe,)
 
 
-def _build_control_center_pipe(repo_id, node_state, custom_model=None, custom_clip=None, custom_vae=None):
+def _build_control_center_pipe(
+    repo_id,
+    node_state,
+    custom_model=None,
+    custom_clip=None,
+    custom_vae=None,
+    custom_audio_vae=None,
+):
     try:
         state = json.loads(node_state) if isinstance(node_state, str) and node_state and node_state != "{}" else (node_state or {})
     except Exception:
@@ -1599,15 +1645,29 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None, custom_cl
         # guard together with all legacy Nunchaku state after migration.
         raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
 
-    model_kind = _entry_kind(model_entry)
+    model_kind = _entry_kind(model_entry) or _normalize_model_kind(active_kind)
+    selected_audio_vae_name = ""
     if selected_type == "custom":
         all_clip_names = []
         first_vae_name = ""
+        if model_kind == "minimaxh3" and custom_audio_vae is None:
+            raise RuntimeError("[VNCCS Control Center] Custom MiniMax H3 audio VAE input is not connected.")
     else:
         compatible_clips = _filter_entries_by_kind(config.get("clip", []), model_kind)
         compatible_vaes = _filter_entries_by_kind(config.get("vae", []), model_kind)
         all_clip_names = [entry["name"] for entry in compatible_clips]
-        first_vae_name = compatible_vaes[0]["name"] if compatible_vaes else ""
+        if model_kind == "minimaxh3":
+            video_vaes = [entry for entry in compatible_vaes if not _is_audio_vae_entry(entry)]
+            audio_vaes = [entry for entry in compatible_vaes if _is_audio_vae_entry(entry)]
+            if not video_vaes or not audio_vaes:
+                raise RuntimeError(
+                    "[VNCCS Control Center] MiniMax H3 requires both video and audio VAE entries. "
+                    "Mark the audio entry with vae_role='audio', role='audio', or type='AudioVAE'."
+                )
+            first_vae_name = video_vaes[0]["name"]
+            selected_audio_vae_name = audio_vaes[0]["name"]
+        else:
+            first_vae_name = compatible_vaes[0]["name"] if compatible_vaes else ""
     model, clip, vae = _load_model_block(
         model_entry,
         selected_type,
@@ -1619,6 +1679,9 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None, custom_cl
         custom_clip=custom_clip,
         custom_vae=custom_vae,
     )
+    audio_vae = custom_audio_vae if selected_type == "custom" else None
+    if selected_audio_vae_name:
+        audio_vae = _load_vae(config.get("vae", []), selected_audio_vae_name)
     model, clip = _apply_loras(
         model,
         clip,
@@ -1629,7 +1692,7 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None, custom_cl
         model_entry=model_entry,
     )
 
-    pipe = VNCCSPipeProxy(model, clip, vae)
+    pipe = VNCCSPipeProxy(model, clip, vae, audio_vae=audio_vae)
     pipe.repo_id = repo_id
     pipe.lora_entries = list(config.get("lora", []) or [])
     pipe.lora_states = list(loras or [])
@@ -1640,11 +1703,13 @@ def _build_control_center_pipe(repo_id, node_state, custom_model=None, custom_cl
     pipe.nunchaku_kind = None
     pipe.nunchaku_settings = None
     pipe.model_entry = model_entry
+    pipe.model_kind = model_kind
 
-    pipe.sample_steps = int(model_params.get("steps") or DEFAULT_MODEL_STEPS)
+    default_steps = 8 if model_kind == "minimaxh3" else DEFAULT_MODEL_STEPS
+    default_sampler = "res_multistep" if model_kind == "minimaxh3" else None
+    pipe.sample_steps = int(model_params.get("steps") or default_steps)
     pipe.cfg = float(model_params.get("cfg") if model_params.get("cfg") is not None else DEFAULT_MODEL_CFG)
-    if model_params.get("sampler"):
-        pipe.sampler_name = model_params["sampler"]
+    pipe.sampler_name = model_params.get("sampler") or default_sampler
     pipe.scheduler = model_params.get("scheduler") or DEFAULT_MODEL_SCHEDULER
 
     return pipe
@@ -1808,10 +1873,13 @@ async def cc_add_custom_lora(request):
 
     repo_id = (data.get("repo_id") or "").strip()
     rel_path = (data.get("path") or "").strip().replace("\\", "/")
+    kind = str(data.get("kind") or "Custom").strip() or "Custom"
     if not repo_id or " " in repo_id:
         return web.json_response({"error": "Invalid repo_id"}, status=400)
     if not rel_path:
         return web.json_response({"error": "LoRA path is required"}, status=400)
+    if kind not in {"Custom", "QIE2511", "Klein9b", "MiniMaxH3"}:
+        return web.json_response({"error": "Unsupported model family"}, status=400)
 
     try:
         config = _get_cc_config(repo_id)
@@ -1829,7 +1897,7 @@ async def cc_add_custom_lora(request):
             for entry in config.get("lora", [])
             if isinstance(entry, dict) and entry.get("name")
         }
-        entry = _build_custom_lora_entry(rel_path, used_names=used_names)
+        entry = _build_custom_lora_entry(rel_path, used_names=used_names, kind=kind)
         _save_custom_loras([entry])
         _CC_CONFIG_CACHE.pop(repo_id, None)
         return web.json_response({"status": "ok", "entry": entry})

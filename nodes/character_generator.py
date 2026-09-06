@@ -10,6 +10,7 @@ import gc
 import inspect
 import io
 import json
+import math
 import os
 import random
 import shutil
@@ -314,7 +315,7 @@ def _call_comfy_node(class_name, **kwargs):
     accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values())
     accepted = kwargs if accepts_kwargs else {k: v for k, v in kwargs.items() if k in signature.parameters}
     try:
-        return method(**accepted)
+        result = method(**accepted)
     except AttributeError as exc:
         if vnccs_node_id is None or "'NoneType' object has no attribute 'node_id'" not in str(exc):
             raise
@@ -325,9 +326,15 @@ def _call_comfy_node(class_name, **kwargs):
         context = SimpleNamespace(node_id=str(vnccs_node_id))
         setattr(module, "get_executing_context", lambda: context)
         try:
-            return method(**accepted)
+            result = method(**accepted)
         finally:
             setattr(module, "get_executing_context", context_getter)
+    if hasattr(result, "result") and type(result).__name__ == "NodeOutput":
+        block_execution = getattr(result, "block_execution", None)
+        if block_execution:
+            raise RuntimeError(str(block_execution))
+        result = result.result
+    return result if isinstance(result, tuple) else (result,)
 
 
 def _tensor_to_png_data_url(image, max_items=12):
@@ -951,6 +958,15 @@ POSE_GENERATION_LORA_NAME = "VNCCS Pose Studio QIE2511"
 CLOTHES_CORE_LORA_NAME = "VNCCS Clothes Core"
 KLEIN_POSE_GENERATION_LORA_NAME = "VNCCS Pose Studio Klein9b"
 KLEIN_CLOTHES_CORE_LORA_NAME = "VNCCS Clothes Core Klein9b"
+H3_POSE_GENERATION_LORA_NAME = "PoseStudio"
+H3_POSE_PROMPT_SOURCE = "Draw character from image2"
+H3_POSE_PROMPT = (
+    "Draw character from image2"
+    "keep emotion. Do not draw shadow. Solid vibrant green background. 4k quality, sharp lines, detailed eyes"
+)
+# The generator keeps only the first decoded frame. The reference workflow's
+# zero-second duration expression resolves to H3's minimum valid clip: 5 frames.
+H3_FRAME_COUNT = 5
 
 
 class VNCCS_CharacterGenerator:
@@ -1174,17 +1190,20 @@ class VNCCS_CharacterGenerator:
 
     def _extract_pipe(self, pipe):
         out = VNCCS_Pipe().process_pipe(pipe=pipe)
+        model_entry = getattr(pipe, "model_entry", None)
         return {
             "model": out[0],
             "clip": out[1],
             "vae": out[2],
+            "audio_vae": getattr(pipe, "audio_vae", None),
             "seed": int(out[5] or 0),
             "steps": int(out[6] or 1),
             "cfg": float(out[7] or 1.0),
             "denoise": max(0.0, min(1.0, float(out[8] if out[8] is not None else 0.0))),
             "sampler": out[10] or "euler",
             "scheduler": out[11] or "simple",
-            "model_entry": getattr(pipe, "model_entry", None),
+            "model_entry": model_entry,
+            "model_kind": _entry_kind(model_entry) or str(getattr(pipe, "model_kind", "") or "").strip().lower(),
         }
 
     def _expected_conditioning_width(self, pipe_values):
@@ -1207,7 +1226,17 @@ class VNCCS_CharacterGenerator:
             str(model_entry.get("local_path", "")),
             str(_entry_kind(model_entry)),
         ]).lower()
-        return "klein" in identity
+        return pipe_values.get("model_kind") == "klein9b" or "klein" in identity
+
+    def _is_h3_pipe(self, pipe_values):
+        model_entry = pipe_values.get("model_entry") or {}
+        identity = " ".join([
+            str(model_entry.get("name", "")),
+            str(model_entry.get("local_path", "")),
+            str(_entry_kind(model_entry)),
+            str(pipe_values.get("model_kind", "")),
+        ]).lower()
+        return "minimaxh3" in identity or "minimax h3" in identity or "minimax_h3" in identity
 
     def _encoder_call(self, pipe_values, prompt, image1=None, image2=None, image3=None, qwen_settings=None):
         if self._is_klein_pipe(pipe_values):
@@ -1506,13 +1535,19 @@ class VNCCS_CharacterGenerator:
         states = getattr(pipe, "lora_states", []) or []
         entry = None
         target = str(lora_name or "").strip().lower()
-        model_kind = _entry_kind(getattr(pipe, "model_entry", None))
+        normalized_target = "".join(char for char in target if char.isalnum())
+        model_kind = _entry_kind(getattr(pipe, "model_entry", None)) or str(getattr(pipe, "model_kind", "") or "").strip().lower()
         for candidate in entries:
             candidate_name = str(candidate.get("name", "")).strip().lower()
+            normalized_candidate_name = "".join(char for char in candidate_name if char.isalnum())
             candidate_kind = _entry_kind(candidate)
             if candidate_kind and model_kind and candidate_kind != model_kind:
                 continue
-            if candidate_name == target or target in candidate_name:
+            if (
+                candidate_name == target
+                or target in candidate_name
+                or (normalized_target and normalized_target in normalized_candidate_name)
+            ):
                 entry = candidate
                 break
 
@@ -1529,6 +1564,12 @@ class VNCCS_CharacterGenerator:
                 item for item in states
                 if str(item.get("name", "")).strip().lower() == target
                 or target in str(item.get("name", "")).strip().lower()
+                or (
+                    normalized_target
+                    and normalized_target in "".join(
+                        char for char in str(item.get("name", "")).strip().lower() if char.isalnum()
+                    )
+                )
             ),
             {},
         )
@@ -1542,15 +1583,28 @@ class VNCCS_CharacterGenerator:
             "path": full_path,
             "rel_path": rel_path,
             "strength": strength,
+            "custom": bool(entry.get("custom")),
+            "enabled": not entry.get("custom") or bool(state.get("auto_apply", False)),
             "exists": bool(exists),
             "status": "ready" if exists else "missing",
             "message": f"{entry.get('name', lora_name)}: {filename or 'not found'}",
         }
 
     def _find_pose_lora(self, pipe):
-        model_kind = _entry_kind(getattr(pipe, "model_entry", None))
-        name = KLEIN_POSE_GENERATION_LORA_NAME if model_kind == "klein9b" else POSE_GENERATION_LORA_NAME
-        return self._find_lora(pipe, name)
+        model_kind = _entry_kind(getattr(pipe, "model_entry", None)) or str(getattr(pipe, "model_kind", "") or "").strip().lower()
+        if model_kind == "minimaxh3":
+            name = H3_POSE_GENERATION_LORA_NAME
+        elif model_kind == "klein9b":
+            name = KLEIN_POSE_GENERATION_LORA_NAME
+        else:
+            name = POSE_GENERATION_LORA_NAME
+        info = self._find_lora(pipe, name)
+        if model_kind == "minimaxh3" and info.get("custom") and not info.get("enabled"):
+            info.update(
+                status="disabled",
+                message=f"{info.get('name', name)}: enable this custom LoRA in VNCCS Control Center",
+            )
+        return info
 
     def _find_clothes_lora(self, pipe):
         model_kind = _entry_kind(getattr(pipe, "model_entry", None))
@@ -1571,6 +1625,8 @@ class VNCCS_CharacterGenerator:
         return instruction
 
     def _apply_lora_to_model(self, model, clip, pipe, lora_info, stage_label):
+        if lora_info and lora_info.get("status") == "disabled":
+            raise RuntimeError(f"{stage_label} requires LoRA from VNCCS Control Center: {lora_info.get('message')}")
         if not lora_info or not lora_info.get("exists") or not lora_info.get("path"):
             message = lora_info.get("message") if lora_info else stage_label
             raise RuntimeError(f"{stage_label} requires LoRA from VNCCS Control Center: {message}")
@@ -1642,6 +1698,130 @@ class VNCCS_CharacterGenerator:
                 outputs[out_index].append(value)
         return tuple(outputs or [])
 
+    def _h3_pose_prompt(self, prompt):
+        normalized = " ".join(str(prompt or "").split()).lower()
+        if H3_POSE_PROMPT_SOURCE in normalized:
+            return H3_POSE_PROMPT
+        return str(prompt or "").strip()
+
+    def _resolution_scale_dimensions(self, image, target_size, multiple=32):
+        image = _first_tensor(image)
+        if not torch.is_tensor(image) or image.ndim not in {3, 4}:
+            raise ValueError("Resolution scaling requires an IMAGE tensor with B,H,W,C shape.")
+        height = int(image.shape[-3])
+        width = int(image.shape[-2])
+        if width <= 0 or height <= 0:
+            raise ValueError(f"Resolution scaling received invalid dimensions: {width}x{height}.")
+        target_size = max(int(multiple), int(target_size))
+        scale = math.sqrt(float(target_size * target_size) / float(width * height))
+        target_width = max(int(multiple), round(width * scale / multiple) * multiple)
+        target_height = max(int(multiple), round(height * scale / multiple) * multiple)
+        return int(target_width), int(target_height)
+
+    def _h3_first_frame_to_cpu(self, decoded):
+        decoded_items = self._image_list(decoded)
+        if not decoded_items:
+            raise RuntimeError("MiniMax H3 VAE decode returned no video frames.")
+        # A slice is a view and would keep the complete decoded video storage alive.
+        # Clone on CPU so only the required first frame survives this list item.
+        return decoded_items[0].detach().to(device="cpu").clone()
+
+    def _run_h3_pose_generation(
+        self,
+        pose_parts,
+        character_rgb,
+        pipe,
+        pipe_values,
+        prompt,
+        settings,
+        lora_info,
+        sampler,
+        vae_decode,
+    ):
+        audio_vae = pipe_values.get("audio_vae")
+        if audio_vae is None:
+            raise RuntimeError("MiniMax H3 generation requires the audio VAE from VNCCS Control Center.")
+        if not pose_parts:
+            raise RuntimeError("MiniMax H3 generation requires at least one pose image.")
+
+        sampler_model = self._apply_pose_lora_to_model(
+            pipe_values["model"], pipe_values["clip"], pipe, lora_info
+        )
+        sampler_object = _call_comfy_node(
+            "KSamplerSelect",
+            sampler_name=sampler["sampler_name"],
+        )[0]
+        sigmas = _call_comfy_node(
+            "BasicScheduler",
+            model=sampler_model,
+            scheduler=sampler["scheduler"],
+            steps=sampler["steps"],
+            denoise=sampler["denoise"],
+        )[0]
+        h3_prompt = self._h3_pose_prompt(prompt)
+        target_size = int(settings.get("target_size", DEFAULT_WIDGET_DATA["pose_generation"]["target_size"]))
+        character_parts = self._image_list(character_rgb)
+        if not character_parts:
+            raise RuntimeError("MiniMax H3 generation requires a character reference image.")
+        character_reference = character_parts[0]
+
+        # Preserve ComfyUI LIST semantics without building an IMAGE batch. Run
+        # every B=1 item through the same stage before moving to the next stage,
+        # so H3 does not switch DiT -> VAE -> DiT between adjacent poses.
+        encoded_items = []
+        sampled_items = []
+        decoded_first_frames = []
+        try:
+            for pose in pose_parts:
+                pose_reference = self._image_list(pose)[0]
+                width, height = self._resolution_scale_dimensions(pose_reference, target_size, multiple=32)
+                positive, latent = _call_comfy_node(
+                    "MiniMaxH3ReferenceToVideo",
+                    clip=pipe_values["clip"],
+                    vae=pipe_values["vae"],
+                    audio_vae=audio_vae,
+                    prompt=h3_prompt,
+                    width=width,
+                    height=height,
+                    length=H3_FRAME_COUNT,
+                    ref_image_size="match",
+                    ref_images={"ref_image_1": pose_reference, "ref_image_2": character_reference},
+                )
+                encoded_items.append((positive, latent))
+
+            for index, (positive, latent) in enumerate(encoded_items):
+                guider = _call_comfy_node(
+                    "BasicGuider",
+                    model=sampler_model,
+                    conditioning=positive,
+                )[0]
+                noise = _call_comfy_node("RandomNoise", noise_seed=sampler["seed"])[0]
+                sampled = _call_comfy_node(
+                    "SamplerCustomAdvanced",
+                    noise=noise,
+                    guider=guider,
+                    sampler=sampler_object,
+                    sigmas=sigmas,
+                    latent_image=latent,
+                )[0]
+                sampled_items.append(sampled)
+                encoded_items[index] = None
+
+            for index, sampled in enumerate(sampled_items):
+                decoded = _call_comfy_node(
+                    "VAEDecodeTiled",
+                    samples=sampled,
+                    vae=pipe_values["vae"],
+                    **vae_decode,
+                )[0]
+                decoded_first_frames.append(self._h3_first_frame_to_cpu(decoded))
+                sampled_items[index] = None
+        finally:
+            encoded_items.clear()
+            sampled_items.clear()
+
+        return self._safe_image_batch(decoded_first_frames, stage="MiniMax H3 first-frame decode")
+
     def _run_pose_generation(
         self,
         poses,
@@ -1660,6 +1840,18 @@ class VNCCS_CharacterGenerator:
         vae_decode = self._vae_decode_settings(vae_decode_settings)
         pose_parts = self._image_list(poses)
         character_rgb = VNCCS_MaskExtractor().fill_alpha_with_color(character)[0]
+        if self._is_h3_pipe(pipe_values):
+            return self._run_h3_pose_generation(
+                pose_parts,
+                character_rgb,
+                pipe,
+                pipe_values,
+                prompt,
+                settings,
+                lora_info,
+                sampler,
+                vae_decode,
+            )
         prompt = self._prompt_with_solid_background(prompt, background)
 
         encoder_class = "VNCCS_Flux_Klein_Encoder" if self._is_klein_pipe(pipe_values) else "VNCCS_QWEN_Encoder"

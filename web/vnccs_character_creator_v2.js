@@ -1229,7 +1229,7 @@ app.registerExtension({
                     },
                     prompt_defaults_version: 1,
                     character_info: {
-                        sex: "female", age: 18, race: "human", skin_color: "",
+                        sex: "female", age: 18, framing: "cowboy_shot", race: "human", skin_color: "",
                         hair: "black hair, long hair", eyes: "", face: "", body: "", additional_details: "",
                         nsfw: false, aesthetics: "masterpiece, best quality",
                         negative_prompt: "bad quality, worst quality",
@@ -1690,7 +1690,7 @@ app.registerExtension({
                 };
 
                 const getDefaultCharacterInfo = () => ({
-                    sex: "female", age: 18, race: "human", skin_color: "",
+                    sex: "female", age: 18, framing: "cowboy_shot", race: "human", skin_color: "",
                     hair: "black hair, long hair", eyes: "", face: "", body: "", additional_details: "",
                     nsfw: false, aesthetics: "masterpiece, best quality",
                     negative_prompt: "bad quality, worst quality",
@@ -2038,6 +2038,7 @@ app.registerExtension({
                     sex: "Character gender profile used for prompt defaults and pose/body synchronization.",
                     nsfw: "Allows adult-oriented prompt details and generation behavior for this character.",
                     age: "Controls the character age used for prompt building and pose/body synchronization.",
+                    framing: "Chooses whether the generated character uses cowboy-shot or full-body framing.",
                     race: "Species or race tags for the character, such as human, elf, demon girl, or kemonomimi.",
                     skin_color: "Skin tone tags added to the character prompt.",
                     body: "Body type and silhouette details, including chest/body build tags.",
@@ -2131,8 +2132,14 @@ app.registerExtension({
                     let inp;
                     if (type === "select") {
                         inp = document.createElement("select"); inp.className = "vnccs-select";
-                        opts.forEach(v => inp.add(new Option(v, v)));
-                        inp.value = targetObj[key] || opts[0];
+                        inp.setAttribute("aria-label", lbl);
+                        opts.forEach(option => {
+                            const value = typeof option === "object" ? option.value : option;
+                            const label = typeof option === "object" ? option.label : option;
+                            inp.add(new Option(label, value));
+                        });
+                        const fallback = typeof opts[0] === "object" ? opts[0]?.value : opts[0];
+                        inp.value = targetObj[key] || fallback;
                         inp.onchange = (e) => { targetObj[key] = e.target.value; saveState(); };
                     } else if (type === "number") {
                         inp = document.createElement("input"); inp.className = "vnccs-input";
@@ -3246,6 +3253,10 @@ app.registerExtension({
                     { label: "Female", value: "female" },
                 ]));
                 colCenter.appendChild(createSlider("Age", "age", 1, 100, 1, state.character_info));
+                colCenter.appendChild(createField("Framing", "framing", "select", [
+                    { label: "Cowboy shot", value: "cowboy_shot" },
+                    { label: "Full body", value: "Full_body" },
+                ]));
                 colCenter.appendChild(createField("Race", "race"));
                 colCenter.appendChild(createField("Skin Color", "skin_color"));
                 colCenter.appendChild(createField("Body Type", "body"));

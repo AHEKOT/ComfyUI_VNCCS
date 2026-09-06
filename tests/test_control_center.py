@@ -23,8 +23,10 @@ from nodes.vnccs_control_center import (
     _max_download_bytes,
     _apply_lora_standard,
     _filter_entries_by_kind,
+    _is_audio_vae_entry,
     _build_dynamic_paths,
     _build_custom_lora_name,
+    _build_custom_lora_entry,
     _dedupe_config_by_name,
     _enrich_config_entries,
     _merge_custom_loras,
@@ -681,6 +683,45 @@ class TestPackagedConfigSync:
             "VNCCS Pose Studio Klein9b",
         }
 
+    def test_packaged_catalog_contains_complete_minimax_h3_family(self):
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "control_center.json")
+        with open(path, "r", encoding="utf-8") as handle:
+            config = json.load(handle)
+
+        h3_models = [entry for entry in config["models"] if entry.get("kind") == "minimaxh3"]
+        h3_clips = [entry for entry in config["clip"] if entry.get("kind") == "minimaxh3"]
+        h3_vaes = [entry for entry in config["vae"] if entry.get("kind") == "minimaxh3"]
+        h3_loras = [entry for entry in config["lora"] if entry.get("kind") == "minimaxh3"]
+
+        assert [entry["type"] for entry in h3_models] == ["unet", "unet"]
+        assert [entry["hf_repo"] for entry in h3_models] == [
+            "Comfy-Org/MiniMax-H3",
+            "Comfy-Org/MiniMax-H3",
+        ]
+        assert [entry["hf_path"] for entry in h3_models] == [
+            "diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors",
+            "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        ]
+        assert [entry["clip_type"] for entry in h3_clips] == ["minimax"]
+        assert [entry["hf_path"] for entry in h3_clips] == [
+            "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+        ]
+        assert [entry["local_path"] for entry in h3_vaes] == [
+            "models/vae/minimax_h3_video_vae_fp16.safetensors",
+            "models/vae/minimax_h3_audio_vae_fp32.safetensors",
+        ]
+        assert [entry["type"] for entry in h3_vaes] == ["VAE", "AudioVAE"]
+        assert [_is_audio_vae_entry(entry) for entry in h3_vaes] == [False, True]
+        assert {entry["name"] for entry in h3_loras} == {
+            "MiniMax H3 Pose Studio",
+            "MiniMax H3 Ref2V Turbo 8-Step 768p",
+        }
+        h3_turbo = next(entry for entry in h3_loras if entry["type"] == "TurboLora")
+        assert h3_turbo["hf_repo"] == "lightx2v/Minimax-h3-Turbo"
+        assert h3_turbo["hf_path"] == (
+            "minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors"
+        )
+
 
 class TestControlCenterFamilyState:
     def test_builds_klein_pipe_from_family_scoped_state(self, monkeypatch):
@@ -761,6 +802,116 @@ class TestControlCenterFamilyState:
         assert captured == {"entry": klein_entry, "selected_type": "custom"}
         assert pipe.model_entry == klein_entry
 
+    def test_custom_h3_pipe_uses_audio_vae_and_workflow_defaults(self, monkeypatch):
+        custom_model = object()
+        custom_clip = object()
+        video_vae = object()
+        audio_vae = object()
+        monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
+            "models": [], "clip": [], "vae": [], "lora": [],
+        })
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._load_model_block",
+            lambda *args, **kwargs: (custom_model, custom_clip, video_vae),
+        )
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._apply_loras",
+            lambda model, clip, *args, **kwargs: (model, clip),
+        )
+
+        pipe = _build_control_center_pipe(
+            "demo/repo",
+            {
+                "active_kind": "MiniMaxH3",
+                "selected_types_by_kind": {"MiniMaxH3": "custom"},
+            },
+            custom_model=custom_model,
+            custom_clip=custom_clip,
+            custom_vae=video_vae,
+            custom_audio_vae=audio_vae,
+        )
+
+        assert pipe.model_entry["kind"] == "MiniMaxH3"
+        assert pipe.model_kind == "minimaxh3"
+        assert pipe.audio_vae is audio_vae
+        assert pipe.sample_steps == 8
+        assert pipe.sampler_name == "res_multistep"
+        assert pipe.scheduler == "simple"
+
+    def test_custom_h3_pipe_requires_audio_vae(self, monkeypatch):
+        monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
+            "models": [], "clip": [], "vae": [], "lora": [],
+        })
+
+        with pytest.raises(RuntimeError, match="audio VAE input is not connected"):
+            _build_control_center_pipe(
+                "demo/repo",
+                {
+                    "active_kind": "MiniMaxH3",
+                    "selected_types_by_kind": {"MiniMaxH3": "custom"},
+                },
+                custom_model=object(),
+                custom_clip=object(),
+                custom_vae=object(),
+            )
+
+    def test_managed_h3_catalog_selects_video_and_audio_vaes(self, monkeypatch):
+        model = object()
+        clip = object()
+        video_vae = object()
+        audio_vae = object()
+        model_entry = {"name": "H3", "type": "unet", "kind": "MiniMaxH3"}
+        vae_entries = [
+            {"name": "H3 Video VAE", "type": "VAE", "kind": "MiniMaxH3"},
+            {"name": "H3 Audio VAE", "type": "AudioVAE", "kind": "MiniMaxH3"},
+        ]
+        monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
+            "models": [model_entry],
+            "clip": [{"name": "H3 CLIP", "kind": "MiniMaxH3"}],
+            "vae": vae_entries,
+            "lora": [],
+        })
+        captured = {}
+
+        def fake_load_model_block(entry, selected_type, settings, config, clips, vae_name, **kwargs):
+            captured.update(clips=clips, video_vae=vae_name)
+            return model, clip, video_vae
+
+        monkeypatch.setattr("nodes.vnccs_control_center._load_model_block", fake_load_model_block)
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._load_vae",
+            lambda entries, name: captured.setdefault("audio_vae", name) and audio_vae,
+        )
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._apply_loras",
+            lambda model, clip, *args, **kwargs: (model, clip),
+        )
+
+        pipe = _build_control_center_pipe("demo/repo", {
+            "active_kind": "MiniMaxH3",
+            "selected_types_by_kind": {"MiniMaxH3": "unet"},
+            "selected_models": {"MiniMaxH3:unet": "H3"},
+        })
+
+        assert captured == {
+            "clips": ["H3 CLIP"],
+            "video_vae": "H3 Video VAE",
+            "audio_vae": "H3 Audio VAE",
+        }
+        assert pipe.audio_vae is audio_vae
+        assert pipe.model_kind == "minimaxh3"
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            {"name": "H3 audio_vae", "type": "VAE"},
+            {"name": "H3 VAE", "type": "AudioVAE"},
+            {"name": "H3 VAE", "type": "VAE", "vae_role": "audio"},
+        ],
+    )
+    def test_h3_audio_vae_catalog_metadata_is_detected(self, entry):
+        assert _is_audio_vae_entry(entry) is True
+
 
 class TestControlCenterFrontendFamilies:
     def test_frontend_has_family_tabs_and_kind_filters(self):
@@ -768,9 +919,14 @@ class TestControlCenterFrontendFamilies:
         with open(path, "r", encoding="utf-8") as handle:
             source = handle.read()
 
-        assert '{ kind: "QIE2511", label: "QIE2511", defaultType: "gguf" }' in source
-        assert '{ kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet" }' in source
-        assert 'activeKind === "Klein9b" ? ["unet", "custom"]' in source
+        assert '{ kind: "QIE2511", label: "QIE2511", defaultType: "gguf", preferredTypes: ["gguf", "custom"]' in source
+        assert '{ kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet", preferredTypes: ["unet", "custom"]' in source
+        assert '{ kind: "MiniMaxH3", label: "MiniMax H3", defaultType: "unet", preferredTypes: ["unet", "custom"]' in source
+        assert "const preferred = this._familyDefinition(activeKind).preferredTypes;" in source
+        assert 'sync("audio_vae", "VAE"' in source
+        assert 'grid-template-columns: repeat(3, minmax(0, 1fr));' in source
+        assert 'button.onkeydown = event =>' in source
+        assert "const previousScrollTop = this.scrollArea.scrollTop;" in source
         assert 'const contextType = this._familyDefinition().defaultType;' in source
         assert '.vnccs-cc-twocol-left > .vnccs-cc-model-card' in source
         assert 'this.scrollArea.appendChild(this._renderFamilyTabs())' in source
@@ -903,6 +1059,21 @@ class TestCustomLoraHelpers:
     def test_build_custom_lora_name_disambiguates_parent_folder(self):
         result = _build_custom_lora_name("portraits/my_style.safetensors", {"my_style"})
         assert result == "my_style (portraits)"
+
+    def test_custom_lora_keeps_selected_model_family(self, monkeypatch):
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center.get_full_path_agnostic",
+            lambda *args, **kwargs: "/models/loras/MiniMax/H3_PoseStudioV1.safetensors",
+        )
+        monkeypatch.setattr("nodes.vnccs_control_center.os.path.exists", lambda path: True)
+
+        entry = _build_custom_lora_entry(
+            "MiniMax/H3_PoseStudioV1.safetensors",
+            kind="MiniMaxH3",
+        )
+
+        assert entry["kind"] == "MiniMaxH3"
+        assert entry["custom"] is True
 
     def test_merge_custom_loras_appends_non_duplicate_entries(self, monkeypatch):
         monkeypatch.setattr(

@@ -26,8 +26,9 @@ const DEFAULT_MODEL_CFG = 1.0;
 const DEFAULT_MODEL_SCHEDULER = "simple";
 const PENDING_DEPENDENCY_INSTALLS_KEY = "vnccs-control-center-pending-dependency-installs";
 const MODEL_FAMILIES = [
-    { kind: "QIE2511", label: "QIE2511", defaultType: "gguf" },
-    { kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet" },
+    { kind: "QIE2511", label: "QIE2511", defaultType: "gguf", preferredTypes: ["gguf", "custom"], steps: 4, sampler: "euler" },
+    { kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 4, sampler: "euler" },
+    { kind: "MiniMaxH3", label: "MiniMax H3", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 20, sampler: "res_multistep" },
 ];
 
 // ─── CSS injection (once per page load) ──────────────────────────────────────
@@ -382,7 +383,7 @@ function _injectVNCCSControlCenterStyles() {
 }
 .vnccs-cc-family-tabs {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 5px;
     padding: 6px;
     margin-bottom: 6px;
@@ -1313,7 +1314,7 @@ class VNCCSControlCenterWidget {
         // are intentionally hidden from the Control Center UI. Delete this after
         // catalogs are cleaned and old workflow JSON is migrated.
         const activeKind = this._activeKind();
-        const preferred = activeKind === "Klein9b" ? ["unet", "custom"] : ["gguf", "custom"];
+        const preferred = this._familyDefinition(activeKind).preferredTypes;
         const available = new Set((this.config?.models ?? [])
             .filter(entry => this._metaKind(entry).toLowerCase() === activeKind.toLowerCase())
             .map(entry => entry.type)
@@ -1333,6 +1334,10 @@ class VNCCSControlCenterWidget {
 
     _getCustomVaeInputIndex() {
         return (this.node.inputs ?? []).findIndex(input => input?.name === "vae");
+    }
+
+    _getCustomAudioVaeInputIndex() {
+        return (this.node.inputs ?? []).findIndex(input => input?.name === "audio_vae");
     }
 
     _getStoredSelectedType() {
@@ -1369,6 +1374,7 @@ class VNCCSControlCenterWidget {
         sync("model", "MODEL", this._getCustomModelInputIndex, isCustom);
         sync("clip", "CLIP", this._getCustomClipInputIndex, isCustom);
         sync("vae", "VAE", this._getCustomVaeInputIndex, isCustom);
+        sync("audio_vae", "VAE", this._getCustomAudioVaeInputIndex, isCustom && this._activeKind() === "MiniMaxH3");
     }
 
     _setSelectedType(nextType) {
@@ -1425,7 +1431,9 @@ class VNCCSControlCenterWidget {
     _getRepoId()     { return (this.node.widgets?.find(w => w.name === "repo_id")?.value ?? "").trim(); }
     _getStateWidget(){ return this.node.widgets?.find(w => w.name === "node_state"); }
     _activeKind() {
-        const kind = String(this.state.active_kind || "QIE2511");
+        const rawKind = String(this.state.active_kind || "QIE2511");
+        const compactKind = rawKind.toLowerCase().replace(/[^a-z0-9]/g, "");
+        const kind = compactKind === "h3" || compactKind === "minimaxh3" ? "MiniMaxH3" : rawKind;
         return MODEL_FAMILIES.some(entry => entry.kind === kind) ? kind : "QIE2511";
     }
 
@@ -1473,7 +1481,12 @@ class VNCCSControlCenterWidget {
         const contextType = this._familyDefinition().defaultType;
         const variants = this._visibleModelsByType(contextType);
         const selectedModel = this._getSelectedModelName(contextType);
-        return variants.find(m => m.name === selectedModel) ?? variants[0] ?? null;
+        return variants.find(m => m.name === selectedModel) ?? variants[0] ?? {
+            name: `Custom ${this._activeKind()}`,
+            type: "custom",
+            kind: this._activeKind(),
+            custom: true,
+        };
     }
 
     _visibleModelsByType(type) {
@@ -1487,7 +1500,9 @@ class VNCCSControlCenterWidget {
     }
 
     _metaKind(entry) {
-        return String(entry?.kind ?? entry?.Kind ?? "").trim();
+        const value = String(entry?.kind ?? entry?.Kind ?? "").trim();
+        const compact = value.toLowerCase().replace(/[^a-z0-9]/g, "");
+        return compact === "h3" || compact === "minimaxh3" ? "MiniMaxH3" : value;
     }
 
     _metaType(entry) {
@@ -1524,10 +1539,11 @@ class VNCCSControlCenterWidget {
             const legacy = kind === "QIE2511" && this.state.model_params
                 ? this.state.model_params
                 : {};
+            const family = this._familyDefinition(kind);
             this.state.model_params_by_kind[kind] = {
-                steps: DEFAULT_MODEL_STEPS,
+                steps: family.steps ?? DEFAULT_MODEL_STEPS,
                 cfg: DEFAULT_MODEL_CFG,
-                sampler: "euler",
+                sampler: family.sampler ?? "euler",
                 scheduler: DEFAULT_MODEL_SCHEDULER,
                 ...legacy,
             };
@@ -1558,6 +1574,7 @@ class VNCCSControlCenterWidget {
         this._syncCustomModelInput();
         this._saveState();
         this._renderAll();
+        this.scrollArea?.querySelector(`.vnccs-cc-family-tab[data-kind="${kind}"]`)?.focus({ preventScroll: true });
         this._scheduleDependencyRefresh(true);
     }
 
@@ -1588,7 +1605,7 @@ class VNCCSControlCenterWidget {
                 steps: params.steps ?? DEFAULT_MODEL_STEPS,
                 cfg: params.cfg ?? DEFAULT_MODEL_CFG,
             };
-            params.steps = 4;
+            params.steps = this._activeKind() === "MiniMaxH3" ? 8 : 4;
             params.cfg = 1.0;
             return;
         }
@@ -2718,6 +2735,10 @@ class VNCCSControlCenterWidget {
 
     _renderAll() {
         if (!this.config) return;
+        const renderSequence = (this._renderSequence ?? 0) + 1;
+        this._renderSequence = renderSequence;
+        const previousScrollTop = this.scrollArea.scrollTop;
+        const previousScrollLeft = this.scrollArea.scrollLeft;
         this.scrollArea.innerHTML = "";
 
         // TECH DEBT: legacy Nunchaku error rendering disabled. Delete after
@@ -2781,6 +2802,14 @@ class VNCCSControlCenterWidget {
             e => this._renderCnetEntry("controlnet", e));
         this._renderBlock("OTHER", this.config.other, "other",
             e => this._renderCnetEntry("other", e));
+
+        this.scrollArea.scrollTop = previousScrollTop;
+        this.scrollArea.scrollLeft = previousScrollLeft;
+        requestAnimationFrame(() => {
+            if (!this.scrollArea?.isConnected || this._renderSequence !== renderSequence) return;
+            this.scrollArea.scrollTop = previousScrollTop;
+            this.scrollArea.scrollLeft = previousScrollLeft;
+        });
     }
 
     _renderFamilyTabs() {
@@ -2788,15 +2817,28 @@ class VNCCSControlCenterWidget {
         tabs.className = "vnccs-cc-family-tabs";
         tabs.setAttribute("role", "tablist");
         const activeKind = this._activeKind();
-        MODEL_FAMILIES.forEach(family => {
+        MODEL_FAMILIES.forEach((family, index) => {
             const button = document.createElement("button");
             button.type = "button";
             button.className = "vnccs-cc-family-tab";
             button.textContent = family.label;
+            button.dataset.kind = family.kind;
             button.setAttribute("role", "tab");
             button.setAttribute("aria-selected", String(family.kind === activeKind));
+            button.setAttribute("aria-label", `${family.label} model family`);
+            button.tabIndex = family.kind === activeKind ? 0 : -1;
             if (family.kind === activeKind) button.classList.add("vnccs-cc-family-tab--active");
             button.onclick = () => this._setActiveKind(family.kind);
+            button.onkeydown = event => {
+                let nextIndex = null;
+                if (event.key === "ArrowLeft") nextIndex = (index - 1 + MODEL_FAMILIES.length) % MODEL_FAMILIES.length;
+                if (event.key === "ArrowRight") nextIndex = (index + 1) % MODEL_FAMILIES.length;
+                if (event.key === "Home") nextIndex = 0;
+                if (event.key === "End") nextIndex = MODEL_FAMILIES.length - 1;
+                if (nextIndex === null) return;
+                event.preventDefault();
+                this._setActiveKind(MODEL_FAMILIES[nextIndex].kind);
+            };
             tabs.appendChild(button);
         });
         return tabs;
@@ -2930,7 +2972,12 @@ class VNCCSControlCenterWidget {
     }
 
     _buildCustomLoraBlock() {
-        const entries = (this.config.lora || []).filter(entry => entry.custom);
+        const activeKind = this._activeKind().toLowerCase();
+        const entries = (this.config.lora || []).filter(entry => {
+            if (!entry.custom) return false;
+            const kind = this._metaKind(entry).toLowerCase();
+            return !kind || kind === "custom" || kind === activeKind;
+        });
         const collapsed = this.state.collapsed?.custom_lora ?? false;
         const block = this._blockShell("CUSTOM LORAS", entries.length, "custom_lora", collapsed);
 
@@ -3092,7 +3139,7 @@ class VNCCSControlCenterWidget {
 
         const desc = document.createElement("div");
         desc.className = "vnccs-cc-lora-add-note";
-        desc.textContent = "Choose an installed LoRA file from ComfyUI's standard loras folder. It will be saved into a separate VNCCS JSON file and stay available between sessions.";
+        desc.textContent = `Choose an installed LoRA for ${this._familyDefinition().label}. It will be saved into a separate VNCCS JSON file and stay available between sessions.`;
         panel.appendChild(desc);
 
         const selectWrap = document.createElement("div");
@@ -3123,7 +3170,7 @@ class VNCCSControlCenterWidget {
                 const response = await api.fetchApi("/vnccs/control_center/custom_lora", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ repo_id: repoId, path }),
+                    body: JSON.stringify({ repo_id: repoId, path, kind: this._activeKind() }),
                 });
                 const result = await response.json();
                 if (!response.ok || result.error) throw new Error(result.error || "Failed to add custom LoRA");
@@ -3387,7 +3434,9 @@ class VNCCSControlCenterWidget {
 
         const text = document.createElement("div");
         text.className = "vnccs-cc-model-card-placeholder-text";
-        text.textContent = "Pass-through mode is enabled. Connect MODEL, CLIP, and VAE to the node inputs.";
+        text.textContent = this._activeKind() === "MiniMaxH3"
+            ? "Pass-through mode is enabled. Connect MODEL, CLIP, video VAE, and audio VAE to the node inputs."
+            : "Pass-through mode is enabled. Connect MODEL, CLIP, and VAE to the node inputs.";
         card.appendChild(text);
 
         return card;

@@ -877,6 +877,190 @@ def test_pose_generation_decode_preserves_encoder_aspect(monkeypatch):
     assert result.shape == (1, 1584, 664, 3)
 
 
+def test_h3_resolution_scale_uses_square_pixel_area_at_2048():
+    torch = pytest.importorskip("torch")
+    generator = cg.VNCCS_CharacterGenerator()
+
+    assert generator._resolution_scale_dimensions(
+        torch.rand(1, 1024, 1024, 3), 2048
+    ) == (2048, 2048)
+    width, height = generator._resolution_scale_dimensions(
+        torch.rand(1, 1536, 640, 3), 2048
+    )
+    assert width % 32 == 0
+    assert height % 32 == 0
+    assert width * height == pytest.approx(2048 * 2048, rel=0.025)
+    assert height / width == pytest.approx(1536 / 640, rel=0.025)
+
+
+def test_h3_pose_generation_follows_reference_workflow_and_returns_first_frame(monkeypatch):
+    torch = pytest.importorskip("torch")
+    calls = []
+    decoded = torch.rand(5, 8, 8, 3)
+    pose = torch.rand(2, 64, 64, 3)
+    character = torch.rand(2, 64, 64, 3)
+
+    class FakeMaskExtractor:
+        def fill_alpha_with_color(self, image):
+            return (image,)
+
+    class TestGenerator(cg.VNCCS_CharacterGenerator):
+        def _extract_pipe(self, pipe):
+            return {
+                "clip": "clip",
+                "vae": "video_vae",
+                "audio_vae": "audio_vae",
+                "model": "model",
+                "model_kind": "minimaxh3",
+                "model_entry": {"kind": "MiniMaxH3"},
+                "seed": 77,
+                "steps": 8,
+                "cfg": 1.0,
+                "sampler": "res_multistep",
+                "scheduler": "simple",
+            }
+
+        def _apply_pose_lora_to_model(self, model, clip, pipe, lora_info):
+            return "pose_model"
+
+    def fake_call(class_name, **kwargs):
+        calls.append((class_name, kwargs))
+        outputs = {
+            "KSamplerSelect": ("sampler",),
+            "BasicScheduler": ("sigmas",),
+            "MiniMaxH3ReferenceToVideo": ("positive", "latent"),
+            "BasicGuider": ("guider",),
+            "RandomNoise": ("noise",),
+            "SamplerCustomAdvanced": ("sampled", "denoised"),
+            "VAEDecodeTiled": (decoded,),
+        }
+        return outputs[class_name]
+
+    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", FakeMaskExtractor)
+    monkeypatch.setattr(cg, "_call_comfy_node", fake_call)
+
+    result = TestGenerator()._run_pose_generation(
+        pose,
+        character,
+        object(),
+        "Draw character from image2\n<lighting>",
+        {"target_size": 2048},
+        lora_info={"exists": True, "enabled": True, "path": "/models/loras/H3_PoseStudioV1.safetensors"},
+        sampler_settings={"inherit_pipe": True, "denoise": 1.0},
+        vae_decode_settings={"tile_size": 512, "overlap": 64, "temporal_size": 64, "temporal_overlap": 8},
+    )
+
+    names = [name for name, _ in calls]
+    assert names == [
+        "KSamplerSelect",
+        "BasicScheduler",
+        "MiniMaxH3ReferenceToVideo",
+        "MiniMaxH3ReferenceToVideo",
+        "BasicGuider",
+        "RandomNoise",
+        "SamplerCustomAdvanced",
+        "BasicGuider",
+        "RandomNoise",
+        "SamplerCustomAdvanced",
+        "VAEDecodeTiled",
+        "VAEDecodeTiled",
+    ]
+    scheduler_call = next(kwargs for name, kwargs in calls if name == "BasicScheduler")
+    assert scheduler_call["model"] == "pose_model"
+    h3_calls = [kwargs for name, kwargs in calls if name == "MiniMaxH3ReferenceToVideo"]
+    assert len(h3_calls) == 2
+    for index, h3_kwargs in enumerate(h3_calls):
+        assert h3_kwargs["prompt"] == cg.H3_POSE_PROMPT
+        assert h3_kwargs["width"] == 2048
+        assert h3_kwargs["height"] == 2048
+        assert h3_kwargs["length"] == 5
+        assert h3_kwargs["ref_image_size"] == "match"
+        assert list(h3_kwargs["ref_images"]) == ["ref_image_1", "ref_image_2"]
+        assert h3_kwargs["ref_images"]["ref_image_1"].shape[0] == 1
+        assert h3_kwargs["ref_images"]["ref_image_2"].shape[0] == 1
+        assert torch.equal(h3_kwargs["ref_images"]["ref_image_1"], pose[index:index + 1])
+        assert torch.equal(h3_kwargs["ref_images"]["ref_image_2"], character[:1])
+    assert result.shape == (2, 8, 8, 3)
+    assert result.device.type == "cpu"
+    assert torch.equal(result[0:1], decoded[:1])
+    assert torch.equal(result[1:2], decoded[:1])
+
+
+def test_h3_first_frame_cpu_copy_does_not_retain_video_storage():
+    torch = pytest.importorskip("torch")
+    decoded_video = torch.rand(124, 8, 8, 3)
+
+    first_frame = cg.VNCCS_CharacterGenerator()._h3_first_frame_to_cpu(decoded_video)
+
+    assert first_frame.shape == (1, 8, 8, 3)
+    assert first_frame.device.type == "cpu"
+    assert first_frame.untyped_storage().nbytes() == first_frame.numel() * first_frame.element_size()
+    assert first_frame.untyped_storage().data_ptr() != decoded_video.untyped_storage().data_ptr()
+
+
+def test_h3_uses_minimum_frame_count_from_reference_workflow():
+    assert cg.H3_FRAME_COUNT == 5
+
+
+def test_h3_pose_generation_requires_control_center_lora():
+    generator = cg.VNCCS_CharacterGenerator()
+
+    with pytest.raises(RuntimeError, match="Pose Generation requires LoRA from VNCCS Control Center"):
+        generator._apply_pose_lora_to_model(
+            object(),
+            object(),
+            object(),
+            {"status": "missing", "exists": False, "message": "PoseStudio: not downloaded"},
+        )
+
+
+def test_comfy_v3_node_output_is_unwrapped_for_h3_nodes(monkeypatch):
+    class NodeOutput:
+        def __init__(self):
+            self.result = ("positive", "latent")
+            self.block_execution = None
+
+    class FakeH3Node:
+        FUNCTION = "execute"
+
+        def execute(self):
+            return NodeOutput()
+
+    monkeypatch.setattr(
+        cg,
+        "comfy_nodes",
+        cg.SimpleNamespace(NODE_CLASS_MAPPINGS={"MiniMaxH3ReferenceToVideo": FakeH3Node}),
+    )
+
+    assert cg._call_comfy_node("MiniMaxH3ReferenceToVideo") == ("positive", "latent")
+
+
+def test_h3_custom_pose_lora_must_be_enabled_in_control_center(monkeypatch):
+    monkeypatch.setattr(
+        cg,
+        "_find_model_on_disk",
+        lambda path: ("/models/loras/MiniMax/H3_PoseStudioV1.safetensors", True),
+    )
+    pipe = cg.SimpleNamespace(
+        model_entry={"kind": "MiniMaxH3"},
+        model_kind="minimaxh3",
+        lora_entries=[{
+            "name": "H3_PoseStudioV1",
+            "local_path": "models/loras/MiniMax/H3_PoseStudioV1.safetensors",
+            "kind": "MiniMaxH3",
+            "custom": True,
+        }],
+        lora_states=[{"name": "H3_PoseStudioV1", "auto_apply": False, "strength": 1.0}],
+    )
+
+    disabled = cg.VNCCS_CharacterGenerator()._find_pose_lora(pipe)
+    assert disabled["status"] == "disabled"
+
+    pipe.lora_states[0]["auto_apply"] = True
+    enabled = cg.VNCCS_CharacterGenerator()._find_pose_lora(pipe)
+    assert enabled["status"] == "ready"
+
+
 def test_seedvr_loader_cleans_vram_and_uses_settings(monkeypatch):
     torch = pytest.importorskip("torch")
     calls = []

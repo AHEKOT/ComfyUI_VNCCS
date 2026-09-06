@@ -112,6 +112,26 @@
       "kind": "Klein9b"
     },
     {
+      "name": "MiniMax H3 Ref2VA Pruned FP8 Scaled",
+      "type": "unet",
+      "hf_repo": "Comfy-Org/MiniMax-H3",
+      "hf_path": "diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors",
+      "local_path": "models/diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors",
+      "version": "1.0",
+      "description": "Pruned FP8-scaled MiniMax H3 Ref2VA diffusion model.",
+      "kind": "minimaxh3"
+    },
+    {
+      "name": "MiniMax H3 Ref2VA Pruned INT8 ConvRot",
+      "type": "unet",
+      "hf_repo": "Comfy-Org/MiniMax-H3",
+      "hf_path": "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "local_path": "models/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "version": "1.0",
+      "description": "Pruned INT8 ConvRot MiniMax H3 Ref2VA diffusion model.",
+      "kind": "minimaxh3"
+    },
+    {
       "name": "Anima Base v1.0",
       "type": "unet",
       "kind": "Anima",
@@ -176,6 +196,17 @@
       "kind": "Klein9b"
     },
     {
+      "name": "MiniMax H3 Qwen3-VL 32B NVFP4 Text Encoder",
+      "clip_type": "minimax",
+      "hf_repo": "Comfy-Org/MiniMax-H3",
+      "hf_path": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "local_path": "models/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "version": "1.0",
+      "description": "Qwen3-VL 32B NVFP4 text encoder for MiniMax H3.",
+      "type": "TextEncoder",
+      "kind": "minimaxh3"
+    },
+    {
       "name": "Anima Qwen 3 0.6B Text Encoder",
       "type": "TextEncoder",
       "kind": "Anima",
@@ -207,6 +238,26 @@
       "description": "VAE used by the FLUX.2 Klein 9B workflow.",
       "type": "VAE",
       "kind": "Klein9b"
+    },
+    {
+      "name": "MiniMax H3 Video VAE",
+      "hf_repo": "Comfy-Org/MiniMax-H3",
+      "hf_path": "vae/minimax_h3_video_vae_fp16.safetensors",
+      "local_path": "models/vae/minimax_h3_video_vae_fp16.safetensors",
+      "version": "1.0",
+      "description": "FP16 video VAE for MiniMax H3.",
+      "type": "VAE",
+      "kind": "minimaxh3"
+    },
+    {
+      "name": "MiniMax H3 Audio VAE",
+      "hf_repo": "Comfy-Org/MiniMax-H3",
+      "hf_path": "vae/minimax_h3_audio_vae_fp32.safetensors",
+      "local_path": "models/vae/minimax_h3_audio_vae_fp32.safetensors",
+      "version": "1.0",
+      "description": "FP32 audio VAE for the MiniMax H3 audio slot.",
+      "type": "AudioVAE",
+      "kind": "minimaxh3"
     },
     {
       "name": "Anima VAE",
@@ -283,12 +334,32 @@
     {
       "name": "VNCCS Pose Studio Klein9b",
       "hf_repo": "MIUProject/VNCCS_v3.0",
-      "hf_path": "models/loras/Klein9b/VNCCS_PoseStudioKlein9b_V2.safetensors",
-      "local_path": "models/loras/Klein9b/VNCCS_PoseStudioKlein9b_V2.safetensors",
-      "version": "2.0",
+      "hf_path": "models/loras/Klein9b/VNCCS_PoseStudioKlein9b_V2.2.safetensors",
+      "local_path": "models/loras/Klein9b/VNCCS_PoseStudioKlein9b_V2.2.safetensors",
+      "version": "2.2",
       "description": "Klein9b LoRA for VNCCS Pose Studio.",
       "type": "Helper",
       "kind": "Klein9b"
+    },
+    {
+      "name": "MiniMax H3 Pose Studio",
+      "hf_repo": "MIUProject/VNCCS_v3.0",
+      "hf_path": "models/loras/MiniMax/H3_PoseStudioV1.safetensors",
+      "local_path": "models/loras/MiniMax/H3_PoseStudioV1.safetensors",
+      "version": "1.0",
+      "description": "MiniMax H3 LoRA for VNCCS Pose Studio.",
+      "type": "Helper",
+      "kind": "minimaxh3"
+    },
+    {
+      "name": "MiniMax H3 Ref2V Turbo 8-Step 768p",
+      "hf_repo": "lightx2v/Minimax-h3-Turbo",
+      "hf_path": "minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors",
+      "local_path": "models/loras/MiniMax/minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors",
+      "version": "1.0",
+      "description": "Eight-step 768p Ref2V Turbo LoRA for the VNCCS MiniMax H3 workflow.",
+      "type": "TurboLora",
+      "kind": "minimaxh3"
     },
     {
       "name": "Qwen Image Edit 2511 Lightning",

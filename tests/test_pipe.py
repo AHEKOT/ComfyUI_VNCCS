@@ -212,6 +212,13 @@ class TestProcessPipeLoaderContext:
         result = self._run(pipe)
         assert result[9].model_entry is entry
 
+    def test_propagates_h3_family_and_audio_vae(self):
+        audio_vae = object()
+        pipe = _make_pipe(model_kind="minimaxh3", audio_vae=audio_vae)
+        result = self._run(pipe)
+        assert result[9].model_kind == "minimaxh3"
+        assert result[9].audio_vae is audio_vae
+
 
 # ── return tuple shape ────────────────────────────────────────────────────────
 
