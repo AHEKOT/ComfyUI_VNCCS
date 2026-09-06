@@ -959,10 +959,10 @@ CLOTHES_CORE_LORA_NAME = "VNCCS Clothes Core"
 KLEIN_POSE_GENERATION_LORA_NAME = "VNCCS Pose Studio Klein9b"
 KLEIN_CLOTHES_CORE_LORA_NAME = "VNCCS Clothes Core Klein9b"
 H3_POSE_GENERATION_LORA_NAME = "PoseStudio"
-H3_POSE_PROMPT_SOURCE = "draw character from image2"
+H3_POSE_PROMPT_SOURCE = "Draw character from image2"
 H3_POSE_PROMPT = (
-    "draw character <image 2> is character  <image 1> is referenсe for first frame pose. "
-    "[Shot 1] The camera holds a static shot throughout the sequence."
+    "Draw character from image2"
+    "keep emotion. Do not draw shadow. Solid vibrant green background. 4k quality, sharp lines, detailed eyes"
 )
 # The generator keeps only the first decoded frame. The reference workflow's
 # zero-second duration expression resolves to H3's minimum valid clip: 5 frames.
@@ -1653,20 +1653,6 @@ class VNCCS_CharacterGenerator:
     def _apply_pose_lora_to_model(self, model, clip, pipe, lora_info):
         return self._apply_lora_to_model(model, clip, pipe, lora_info, "Pose Generation")
 
-    def _apply_optional_h3_pose_lora_to_model(self, model, clip, pipe, lora_info):
-        if not (
-            lora_info
-            and lora_info.get("enabled", True)
-            and lora_info.get("exists")
-            and lora_info.get("path")
-        ):
-            print(
-                "[VNCCS Character Generator] MiniMax H3 PoseStudio LoRA is not managed by "
-                "VNCCS Control Center; using the incoming MODEL unchanged."
-            )
-            return model
-        return self._apply_pose_lora_to_model(model, clip, pipe, lora_info)
-
     def _list_to_batch(self, values):
         normalized = normalize_image_batch(values, stage="generator list_to_batch")
         return normalized if normalized is not None else values
@@ -1758,7 +1744,7 @@ class VNCCS_CharacterGenerator:
         if not pose_parts:
             raise RuntimeError("MiniMax H3 generation requires at least one pose image.")
 
-        sampler_model = self._apply_optional_h3_pose_lora_to_model(
+        sampler_model = self._apply_pose_lora_to_model(
             pipe_values["model"], pipe_values["clip"], pipe, lora_info
         )
         sampler_object = _call_comfy_node(

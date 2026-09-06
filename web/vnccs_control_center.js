@@ -28,7 +28,7 @@ const PENDING_DEPENDENCY_INSTALLS_KEY = "vnccs-control-center-pending-dependency
 const MODEL_FAMILIES = [
     { kind: "QIE2511", label: "QIE2511", defaultType: "gguf", preferredTypes: ["gguf", "custom"], steps: 4, sampler: "euler" },
     { kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 4, sampler: "euler" },
-    { kind: "MiniMaxH3", label: "MiniMax H3", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 8, sampler: "res_multistep" },
+    { kind: "MiniMaxH3", label: "MiniMax H3", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 20, sampler: "res_multistep" },
 ];
 
 // ─── CSS injection (once per page load) ──────────────────────────────────────
@@ -1605,7 +1605,7 @@ class VNCCSControlCenterWidget {
                 steps: params.steps ?? DEFAULT_MODEL_STEPS,
                 cfg: params.cfg ?? DEFAULT_MODEL_CFG,
             };
-            params.steps = 4;
+            params.steps = this._activeKind() === "MiniMaxH3" ? 8 : 4;
             params.cfg = 1.0;
             return;
         }

@@ -683,6 +683,45 @@ class TestPackagedConfigSync:
             "VNCCS Pose Studio Klein9b",
         }
 
+    def test_packaged_catalog_contains_complete_minimax_h3_family(self):
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "control_center.json")
+        with open(path, "r", encoding="utf-8") as handle:
+            config = json.load(handle)
+
+        h3_models = [entry for entry in config["models"] if entry.get("kind") == "minimaxh3"]
+        h3_clips = [entry for entry in config["clip"] if entry.get("kind") == "minimaxh3"]
+        h3_vaes = [entry for entry in config["vae"] if entry.get("kind") == "minimaxh3"]
+        h3_loras = [entry for entry in config["lora"] if entry.get("kind") == "minimaxh3"]
+
+        assert [entry["type"] for entry in h3_models] == ["unet", "unet"]
+        assert [entry["hf_repo"] for entry in h3_models] == [
+            "Comfy-Org/MiniMax-H3",
+            "Comfy-Org/MiniMax-H3",
+        ]
+        assert [entry["hf_path"] for entry in h3_models] == [
+            "diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors",
+            "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        ]
+        assert [entry["clip_type"] for entry in h3_clips] == ["minimax"]
+        assert [entry["hf_path"] for entry in h3_clips] == [
+            "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+        ]
+        assert [entry["local_path"] for entry in h3_vaes] == [
+            "models/vae/minimax_h3_video_vae_fp16.safetensors",
+            "models/vae/minimax_h3_audio_vae_fp32.safetensors",
+        ]
+        assert [entry["type"] for entry in h3_vaes] == ["VAE", "AudioVAE"]
+        assert [_is_audio_vae_entry(entry) for entry in h3_vaes] == [False, True]
+        assert {entry["name"] for entry in h3_loras} == {
+            "MiniMax H3 Pose Studio",
+            "MiniMax H3 Ref2V Turbo 8-Step 768p",
+        }
+        h3_turbo = next(entry for entry in h3_loras if entry["type"] == "TurboLora")
+        assert h3_turbo["hf_repo"] == "lightx2v/Minimax-h3-Turbo"
+        assert h3_turbo["hf_path"] == (
+            "minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors"
+        )
+
 
 class TestControlCenterFamilyState:
     def test_builds_klein_pipe_from_family_scoped_state(self, monkeypatch):

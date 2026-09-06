@@ -965,6 +965,8 @@ def test_h3_pose_generation_follows_reference_workflow_and_returns_first_frame(m
         "VAEDecodeTiled",
         "VAEDecodeTiled",
     ]
+    scheduler_call = next(kwargs for name, kwargs in calls if name == "BasicScheduler")
+    assert scheduler_call["model"] == "pose_model"
     h3_calls = [kwargs for name, kwargs in calls if name == "MiniMaxH3ReferenceToVideo"]
     assert len(h3_calls) == 2
     for index, h3_kwargs in enumerate(h3_calls):
@@ -1000,27 +1002,16 @@ def test_h3_uses_minimum_frame_count_from_reference_workflow():
     assert cg.H3_FRAME_COUNT == 5
 
 
-def test_h3_pose_generation_accepts_model_with_manually_applied_lora(monkeypatch):
+def test_h3_pose_generation_requires_control_center_lora():
     generator = cg.VNCCS_CharacterGenerator()
-    monkeypatch.setattr(
-        generator,
-        "_apply_pose_lora_to_model",
-        lambda *args, **kwargs: pytest.fail("Missing optional H3 LoRA must not be loaded"),
-    )
 
-    model = object()
-    assert generator._apply_optional_h3_pose_lora_to_model(
-        model,
-        object(),
-        object(),
-        {"status": "missing", "exists": False},
-    ) is model
-    assert generator._apply_optional_h3_pose_lora_to_model(
-        model,
-        object(),
-        object(),
-        None,
-    ) is model
+    with pytest.raises(RuntimeError, match="Pose Generation requires LoRA from VNCCS Control Center"):
+        generator._apply_pose_lora_to_model(
+            object(),
+            object(),
+            object(),
+            {"status": "missing", "exists": False, "message": "PoseStudio: not downloaded"},
+        )
 
 
 def test_comfy_v3_node_output_is_unwrapped_for_h3_nodes(monkeypatch):
