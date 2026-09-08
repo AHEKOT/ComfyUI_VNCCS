@@ -996,3 +996,94 @@ class TestMaskExtractor:
         image = torch.rand(1, 8, 8, 3)
         result, = VNCCS_MaskExtractor().fill_alpha_with_color(image)
         assert result.shape[-1] == 3
+
+
+@pytest.mark.parametrize("directory", ["llm", "LLM", "llm/Qwen3.5-4B"])
+def test_qwen35_text_wizard_reuses_local_model_without_projector(tmp_path, monkeypatch, directory):
+    monkeypatch.setattr(vnccs_utils.folder_paths, "models_dir", str(tmp_path))
+    model = tmp_path / directory / vnccs_utils.QWEN_VL_MODEL_FILENAME
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"GGUF" + bytes(1024 * 1024))
+    monkeypatch.setattr(vnccs_utils, "hf_hub_download", lambda **kwargs: pytest.fail("Local model must not download"))
+    found, projector = vnccs_utils._ensure_qwen_vl_assets(allow_download=False, require_mmproj=False)
+    assert os.path.samefile(found, model)
+    assert projector is None
+
+
+def test_qwen35_missing_model_does_not_download_without_consent(tmp_path, monkeypatch):
+    monkeypatch.setattr(vnccs_utils.folder_paths, "models_dir", str(tmp_path))
+    legacy = tmp_path / "llm" / "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
+    legacy.parent.mkdir()
+    legacy.write_bytes(b"GGUF" + bytes(1024 * 1024))
+    monkeypatch.setattr(vnccs_utils, "hf_hub_download", lambda **kwargs: pytest.fail("Missing model must only prompt"))
+    with pytest.raises(FileNotFoundError, match="Qwen3.5-4B-Q8_0.gguf"):
+        vnccs_utils._ensure_qwen_vl_assets(allow_download=False, require_mmproj=False)
+
+
+@pytest.mark.parametrize("vision", [False, True])
+def test_qwen35_download_uses_pinned_public_assets(tmp_path, monkeypatch, vision):
+    monkeypatch.setattr(vnccs_utils.folder_paths, "models_dir", str(tmp_path))
+    calls = []
+    def download(**kwargs):
+        calls.append(kwargs)
+        path = Path(kwargs["local_dir"]) / kwargs["filename"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"GGUF" + bytes(1024 * 1024))
+        return str(path)
+    from pathlib import Path
+    monkeypatch.setattr(vnccs_utils, "hf_hub_download", download)
+    model, projector = vnccs_utils._ensure_qwen_vl_assets(require_mmproj=vision)
+    assert len(calls) == (2 if vision else 1)
+    assert model.endswith("llm/Qwen3.5-4B/Qwen3.5-4B-Q8_0.gguf")
+    assert bool(projector) == vision
+    for call in calls:
+        assert call["token"] is False
+        assert call["revision"] == vnccs_utils.QWEN_VL_MODEL_REVISION
+        assert call["repo_id"] == "unsloth/Qwen3.5-4B-GGUF"
+    vnccs_utils._ensure_qwen_vl_assets(allow_download=False, require_mmproj=vision)
+    assert len(calls) == (2 if vision else 1)
+
+
+def test_qwen35_does_not_reuse_ambiguous_legacy_projector(tmp_path, monkeypatch):
+    monkeypatch.setattr(vnccs_utils.folder_paths, "models_dir", str(tmp_path))
+    directory = tmp_path / "llm"
+    directory.mkdir()
+    model = directory / vnccs_utils.QWEN_VL_MODEL_FILENAME
+    model.write_bytes(b"GGUF" + bytes(1024 * 1024))
+    (directory / "mmproj-F16.gguf").write_bytes(b"GGUF" + bytes(1024 * 1024))
+    with pytest.raises(FileNotFoundError, match="vision projector"):
+        vnccs_utils._ensure_qwen_vl_assets(allow_download=False)
+    projector = directory / "mmproj-Qwen3.5-4B-F16.gguf"
+    projector.write_bytes(b"GGUF" + bytes(1024 * 1024))
+    assert vnccs_utils._ensure_qwen_vl_assets(allow_download=False) == (str(model), str(projector))
+
+
+def test_qwen_status_check_does_not_finish_an_active_download(tmp_path, monkeypatch):
+    monkeypatch.setattr(vnccs_utils.folder_paths, "models_dir", str(tmp_path))
+    model = tmp_path / "llm" / vnccs_utils.QWEN_VL_MODEL_FILENAME
+    model.parent.mkdir()
+    model.write_bytes(b"GGUF" + bytes(1024 * 1024))
+    monkeypatch.setattr(vnccs_utils, "_QWEN_VL_DOWNLOAD_STATUS", {"status": "downloading", "progress": 42})
+    vnccs_utils._ensure_qwen_vl_assets(allow_download=False, require_mmproj=False)
+    assert vnccs_utils._QWEN_VL_DOWNLOAD_STATUS == {"status": "downloading", "progress": 42}
+
+
+def test_qwen_download_repairs_invalid_model_after_confirmation(tmp_path, monkeypatch):
+    from pathlib import Path
+    monkeypatch.setattr(vnccs_utils.folder_paths, "models_dir", str(tmp_path))
+    model = tmp_path / "llm" / vnccs_utils.QWEN_VL_MODEL_FILENAME
+    model.parent.mkdir()
+    model.write_bytes(b"incomplete")
+    calls = []
+    def download(**kwargs):
+        calls.append(kwargs)
+        destination = Path(kwargs["local_dir"]) / kwargs["filename"]
+        destination.write_bytes(b"GGUF" + bytes(1024 * 1024))
+        return str(destination)
+    monkeypatch.setattr(vnccs_utils, "hf_hub_download", download)
+    with pytest.raises(ValueError):
+        vnccs_utils._ensure_qwen_vl_assets(allow_download=False, require_mmproj=False)
+    assert calls == []
+    vnccs_utils._ensure_qwen_vl_assets(require_mmproj=False)
+    assert calls[0]["force_download"] is True
+    assert calls[0]["token"] is False

@@ -77,22 +77,12 @@ OUTFITS_JSON_PATH = os.path.join(
     "character_template",
     "outfits.json",
 )
-QWEN_VL_MODEL_NAMES = [
-    "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
-    "Qwen2-VL-7B-Instruct-Q4_K_M.gguf",
-    "qwen2-vl-7b-instruct-q4_k_m.gguf",
-]
-QWEN_VL_MMPROJ_NAMES = [
-    "mmproj-F16.gguf",
-    "mmproj-BF16.gguf",
-    "mmproj-F32.gguf",
-    "mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf",
-    "mmproj-Qwen2-VL-7B-Instruct-f16.gguf",
-]
-QWEN_VL_MODEL_REPO_ID = "unsloth/Qwen2.5-VL-7B-Instruct-GGUF"
-QWEN_VL_MODEL_FILENAME = "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
+QWEN_VL_MODEL_FILENAME = "Qwen3.5-4B-Q8_0.gguf"
+QWEN_VL_MODEL_NAMES = [QWEN_VL_MODEL_FILENAME]
+QWEN_VL_MMPROJ_NAMES = ["mmproj-Qwen3.5-4B-F16.gguf", "mmproj-Qwen3.5-4B-BF16.gguf"]
+QWEN_VL_MODEL_REPO_ID = "unsloth/Qwen3.5-4B-GGUF"
 QWEN_VL_MMPROJ_FILENAME = "mmproj-F16.gguf"
-QWEN_VL_MODEL_REVISION = "68bb8bc4b7df5289c143aaec0ab477a7d4051aab"
+QWEN_VL_MODEL_REVISION = "e966ccab6d3f3c91e94d858b4a01c921a5d7ef53"
 _QWEN_VL_DOWNLOAD_LOCK = threading.Lock()
 _QWEN_VL_DOWNLOAD_STATUS = {
     "status": "idle",
@@ -206,7 +196,8 @@ def _llm_search_dirs():
     if not folder_paths or not hasattr(folder_paths, "models_dir"):
         return []
     base_path = folder_paths.models_dir
-    return [os.path.join(base_path, "LLM"), os.path.join(base_path, "llm"), base_path]
+    roots = [os.path.join(base_path, "llm"), os.path.join(base_path, "LLM"), base_path]
+    return [directory for root in roots for directory in (root, os.path.join(root, "Qwen3.5-4B"))]
 
 
 def _find_qwen_vl_model():
@@ -225,24 +216,27 @@ def _find_qwen_vl_mmproj(model_path):
         return None
 
     model_dir = os.path.dirname(model_path)
+    # Generic projector names are safe only inside this model's own directory.
+    directories = [os.path.join(model_dir, "Qwen3.5-4B")]
+    if "qwen3.5-4b" in os.path.basename(model_dir).lower():
+        directories.insert(0, model_dir)
+    for directory in directories:
+        for name in ("mmproj-F16.gguf", "mmproj-BF16.gguf", "mmproj-F32.gguf"):
+            path = os.path.join(directory, name)
+            if os.path.isfile(path):
+                return path
     for name in QWEN_VL_MMPROJ_NAMES:
         path = os.path.join(model_dir, name)
         if os.path.exists(path):
             return path
 
-    try:
-        for filename in os.listdir(model_dir):
-            if "mmproj" in filename.lower() and filename.lower().endswith(".gguf"):
-                return os.path.join(model_dir, filename)
-    except OSError:
-        return None
     return None
 
 
 def _qwen_vl_download_dir():
     if not folder_paths or not getattr(folder_paths, "models_dir", None):
-        return os.path.join("models", "LLM")
-    return os.path.join(folder_paths.models_dir, "LLM")
+        return os.path.join("models", "llm", "Qwen3.5-4B")
+    return os.path.join(folder_paths.models_dir, "llm", "Qwen3.5-4B")
 
 
 def _set_qwen_vl_download_status(**updates):
@@ -277,12 +271,20 @@ def _download_qwen_vl_file(repo_id, filename, target_dir, revision=None):
         error="",
     )
     try:
+        download_options = {}
+        existing = os.path.join(target_dir, filename)
+        if os.path.isfile(existing):
+            try:
+                _validate_gguf_file(existing, filename)
+            except ValueError:
+                download_options["force_download"] = True
         path = hf_hub_download(
             repo_id=repo_id,
             filename=filename,
             revision=revision,
             local_dir=target_dir,
             token=False,
+            **download_options,
         )
         _validate_gguf_file(path, filename)
         downloaded_size = os.path.getsize(path)
@@ -298,88 +300,98 @@ def _download_qwen_vl_file(repo_id, filename, target_dir, revision=None):
         raise
 
 
-def _ensure_qwen_vl_assets():
+def _local_qwen_vl_assets(require_mmproj=True):
     model_path = _find_qwen_vl_model()
-    mmproj_path = _find_qwen_vl_mmproj(model_path) if model_path else None
-    if model_path and mmproj_path:
-        _validate_gguf_file(model_path, os.path.basename(model_path))
+    if not model_path:
+        raise FileNotFoundError(f"{QWEN_VL_MODEL_FILENAME} is missing from models/llm. Download it from Hugging Face to continue.")
+    _validate_gguf_file(model_path, os.path.basename(model_path))
+    mmproj_path = _find_qwen_vl_mmproj(model_path)
+    if require_mmproj:
+        if not mmproj_path:
+            raise FileNotFoundError("Qwen3.5-4B vision projector is missing. Download it from Hugging Face to continue.")
         _validate_gguf_file(mmproj_path, os.path.basename(mmproj_path))
-        _set_qwen_vl_download_status(
-            status="completed",
-            progress=100,
-            current_file="QwenVL assets ready",
-            error="",
-        )
-        return model_path, mmproj_path
+    return model_path, mmproj_path
+
+
+def _ensure_qwen_vl_assets(allow_download=True, require_mmproj=True):
+    try:
+        return _local_qwen_vl_assets(require_mmproj)
+    except (FileNotFoundError, ValueError):
+        if not allow_download:
+            raise
 
     with _QWEN_VL_DOWNLOAD_LOCK:
-        model_path = _find_qwen_vl_model()
-        mmproj_path = _find_qwen_vl_mmproj(model_path) if model_path else None
-        if model_path and mmproj_path:
-            _validate_gguf_file(model_path, os.path.basename(model_path))
-            _validate_gguf_file(mmproj_path, os.path.basename(mmproj_path))
-            _set_qwen_vl_download_status(
-                status="completed",
-                progress=100,
-                current_file="QwenVL assets ready",
-                error="",
-            )
-            return model_path, mmproj_path
-
-        repo_id = QWEN_VL_MODEL_REPO_ID
-        model_filename = QWEN_VL_MODEL_FILENAME
-        mmproj_filename = QWEN_VL_MMPROJ_FILENAME
-        revision = QWEN_VL_MODEL_REVISION
-        target_dir = os.path.dirname(model_path) if model_path else _qwen_vl_download_dir()
-
         try:
-            if not model_path:
-                model_path = _download_qwen_vl_file(repo_id, model_filename, target_dir, revision=revision)
-            if not _find_qwen_vl_mmproj(model_path):
-                mmproj_path = _download_qwen_vl_file(repo_id, mmproj_filename, os.path.dirname(model_path), revision=revision)
-            else:
-                mmproj_path = _find_qwen_vl_mmproj(model_path)
-        except Exception as exc:
-            _set_qwen_vl_download_status(status="error", error=str(exc))
-            raise RuntimeError(
-                "Failed to download QwenVL GGUF assets. "
-                f"Place '{model_filename}' and '{mmproj_filename}' in '{target_dir}' manually "
-                f"or check access to Hugging Face repo '{repo_id}'. Original error: {exc}"
-            ) from exc
+            assets = _local_qwen_vl_assets(require_mmproj)
+        except (FileNotFoundError, ValueError):
+            model_path = _find_qwen_vl_model()
+            target_dir = os.path.dirname(model_path) if model_path else _qwen_vl_download_dir()
+            try:
+                try:
+                    if model_path:
+                        _validate_gguf_file(model_path, QWEN_VL_MODEL_FILENAME)
+                except ValueError:
+                    model_path = None
+                if not model_path:
+                    model_path = _download_qwen_vl_file(
+                        QWEN_VL_MODEL_REPO_ID, QWEN_VL_MODEL_FILENAME, target_dir,
+                        revision=QWEN_VL_MODEL_REVISION,
+                    )
+                if require_mmproj:
+                    mmproj_path = _find_qwen_vl_mmproj(model_path)
+                    try:
+                        if mmproj_path:
+                            _validate_gguf_file(mmproj_path, "Vision projector")
+                    except ValueError:
+                        mmproj_path = None
+                    if not mmproj_path:
+                        model_dir = os.path.dirname(model_path)
+                        projector_dir = model_dir if "qwen3.5-4b" in os.path.basename(model_dir).lower() else os.path.join(model_dir, "Qwen3.5-4B")
+                        _download_qwen_vl_file(
+                            QWEN_VL_MODEL_REPO_ID, QWEN_VL_MMPROJ_FILENAME, projector_dir,
+                            revision=QWEN_VL_MODEL_REVISION,
+                        )
+                assets = _local_qwen_vl_assets(require_mmproj)
+            except Exception as exc:
+                _set_qwen_vl_download_status(status="error", error=str(exc))
+                raise RuntimeError(f"Failed to prepare Qwen3.5 assets from Hugging Face: {exc}") from exc
+        _set_qwen_vl_download_status(status="completed", progress=100, current_file="Qwen3.5 assets ready", error="")
+        return assets
 
-        _validate_gguf_file(model_path, os.path.basename(model_path))
-        _validate_gguf_file(mmproj_path, os.path.basename(mmproj_path))
-        _set_qwen_vl_download_status(
-            status="completed",
-            progress=100,
-            current_file="QwenVL assets ready",
-            error="",
-        )
-        return model_path, mmproj_path
 
-
-def _qwen_vl_download_worker():
+def _qwen_vl_download_worker(require_mmproj=True):
     try:
-        _ensure_qwen_vl_assets()
+        _ensure_qwen_vl_assets(require_mmproj=require_mmproj)
+        _set_qwen_vl_download_status(status="completed", progress=100, current_file="Qwen3.5 assets ready", error="")
     except Exception as exc:
         _set_qwen_vl_download_status(status="error", error=str(exc))
 
 
 if server is not None and web is not None:
+    @server.PromptServer.instance.routes.get("/vnccs/qwen_vl_model_status")
+    async def qwen_vl_model_status(request):
+        try:
+            _ensure_qwen_vl_assets(allow_download=False, require_mmproj=request.rel_url.query.get("vision") != "false")
+            return web.json_response({"ready": True, "model_name": QWEN_VL_MODEL_FILENAME})
+        except (FileNotFoundError, ValueError) as exc:
+            return web.json_response({"ready": False, "model_name": QWEN_VL_MODEL_FILENAME, "message": str(exc)})
+
     @server.PromptServer.instance.routes.get("/vnccs/qwen_vl_download_status")
     async def qwen_vl_download_status(request):
         return web.json_response(dict(_QWEN_VL_DOWNLOAD_STATUS))
 
     @server.PromptServer.instance.routes.post("/vnccs/qwen_vl_download_model")
     async def qwen_vl_download_model(request):
+        require_mmproj = request.rel_url.query.get("vision") != "false"
         if _QWEN_VL_DOWNLOAD_STATUS.get("status") == "downloading":
             return web.json_response(dict(_QWEN_VL_DOWNLOAD_STATUS), status=409)
         try:
             model_path = _find_qwen_vl_model()
             mmproj_path = _find_qwen_vl_mmproj(model_path) if model_path else None
-            if model_path and mmproj_path:
+            if model_path and (mmproj_path or not require_mmproj):
                 _validate_gguf_file(model_path, os.path.basename(model_path))
-                _validate_gguf_file(mmproj_path, os.path.basename(mmproj_path))
+                if require_mmproj:
+                    _validate_gguf_file(mmproj_path, os.path.basename(mmproj_path))
                 _set_qwen_vl_download_status(
                     status="completed",
                     progress=100,
@@ -391,7 +403,7 @@ if server is not None and web is not None:
             pass
 
         _reset_qwen_vl_download_status("downloading")
-        thread = threading.Thread(target=_qwen_vl_download_worker, daemon=True)
+        thread = threading.Thread(target=_qwen_vl_download_worker, args=(require_mmproj,), daemon=True)
         thread.start()
         return web.json_response({"status": "started"})
 
@@ -555,7 +567,7 @@ class VNCCS_VLAnalyzer:
 
         print(f"[VNCCS VL Analyzer] Loading model: {model_path}")
         print(f"[VNCCS VL Analyzer] Loading mmproj: {mmproj_path}")
-        chat_handler = HandlerCls(clip_model_path=mmproj_path, verbose=False)
+        chat_handler = HandlerCls(clip_model_path=mmproj_path, enable_thinking=False, verbose=False)
         llm = llama_cpp.Llama(
             model_path=model_path,
             chat_handler=chat_handler,

@@ -1971,7 +1971,7 @@ app.registerExtension({
 
                     try {
                         autoGenBtn.innerText = "CHECKING MODEL...";
-                        await ensureQwenVLReady();
+                        if (!await ensureQwenVLReady()) return true;
                         autoGenBtn.innerText = "ANALYZING...";
                         const r = await api.fetchApi("/vnccs/cloner_auto_generate", {
                             method: "POST",
@@ -2087,6 +2087,25 @@ app.registerExtension({
 
                 // Helper: Progress Polling
                 const ensureQwenVLReady = async () => {
+                    const statusResponse = await api.fetchApi("/vnccs/qwen_vl_model_status");
+                    if (!statusResponse.ok) throw new Error("Failed to check Qwen3.5 model files.");
+                    const modelStatus = await statusResponse.json();
+                    if (modelStatus.ready) return true;
+                    const approved = await new Promise(resolve => {
+                        const { modal } = showModal("Qwen3.5 Model Required", () => {
+                            const text = document.createElement("div");
+                            text.textContent = `${modelStatus.message || modelStatus.model_name} Download the required files from Hugging Face now?`;
+                            return text;
+                        }, [
+                            { text: "Cancel", action: () => { resolve(false); return false; } },
+                            { text: "DOWNLOAD & INSTALL", class: "vnccs-btn-primary", action: () => { resolve(true); return false; } },
+                        ]);
+                        modal.addEventListener("keydown", event => {
+                            if (event.key === "Escape") resolve(false);
+                        }, true);
+                    });
+                    if (!approved) return false;
+
                     const start = await api.fetchApi("/vnccs/qwen_vl_download_model", { method: "POST" });
                     if (!start.ok && start.status !== 409) {
                         let err;
