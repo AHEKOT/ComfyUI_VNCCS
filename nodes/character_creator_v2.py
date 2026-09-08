@@ -26,7 +26,8 @@ from ..utils import (
     sheets_dir, faces_dir, normalize_hair_tags, ensure_safe_name,
     get_full_path_agnostic,
 )
-from .vnccs_utils import _ensure_qwen_vl_assets
+from .vnccs_utils import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
+from .qwen_vl import configure_qwen_text_chat
 
 # --------------------------------------------------------------------
 # Helper Functions
@@ -182,26 +183,11 @@ def _validate_character_wizard_gguf(path, file_label="File"):
 
 
 def _find_character_wizard_model():
-    base_path = folder_paths.models_dir
-    possible_names = [
-        "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
-        "Qwen2-VL-7B-Instruct-Q4_K_M.gguf",
-        "qwen2-vl-7b-instruct-q4_k_m.gguf",
-    ]
-    search_dirs = [os.path.join(base_path, "LLM"), os.path.join(base_path, "llm"), base_path]
-
-    for directory in search_dirs:
-        if not os.path.isdir(directory):
-            continue
-        for name in possible_names:
-            path = os.path.join(directory, name)
-            if os.path.exists(path):
-                return path
-    return None
+    return _find_qwen_vl_model()
 
 
 def _ensure_character_wizard_model():
-    model_path, _mmproj_path = _ensure_qwen_vl_assets()
+    model_path, _mmproj_path = _ensure_qwen_vl_assets(allow_download=False, require_mmproj=False)
     return model_path
 
 
@@ -884,9 +870,9 @@ if server:
                 model_path = _ensure_character_wizard_model()
             except Exception as e:
                 return web.json_response({
-                    "error": "MODEL_DOWNLOAD_FAILED",
+                    "error": "MODEL_MISSING" if isinstance(e, FileNotFoundError) else "MODEL_INVALID",
                     "message": str(e),
-                    "model_name": "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+                    "model_name": QWEN_VL_MODEL_FILENAME,
                 }, status=500)
 
             try:
@@ -970,6 +956,7 @@ Example:
                 verbose=False,
             )
 
+            configure_qwen_text_chat(llm)
             response = llm.create_chat_completion(
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -996,7 +983,7 @@ Example:
             return web.json_response({
                 "error": "INFERENCE_ERROR",
                 "message": f"Engine Error: {e}",
-                "model_name": "Qwen2VL (Check Console)",
+                "model_name": QWEN_VL_MODEL_FILENAME,
             }, status=500)
 
     @server.PromptServer.instance.routes.post("/vnccs/preview_generate")

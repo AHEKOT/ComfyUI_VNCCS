@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 pytest.importorskip("torch")
 import torch
 
-from nodes.clothes_designer import (
+from _vnccs.nodes.clothes_designer import (
     ClothesDesigner,
     PipeContext,
     _resolve_pipe_clothes_core_lora,
@@ -286,3 +286,65 @@ class TestPipeContext:
         assert ctx.loader_type == "standard"
         assert ctx.nunchaku_kind is None
         assert ctx.nunchaku_settings is None
+
+
+@pytest.mark.parametrize("kind,size,expected", [
+    ("MiniMaxH3", None, 1536), ("MiniMaxH3", 1024, 1024),
+    ("QIE2511", None, 1024), ("QIE2511", 1536, 1536),
+    ("Klein9b", None, 1024), ("Klein9b", 2048, 2048),
+])
+@pytest.mark.parametrize("clone", [False, True])
+def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, size, expected, clone):
+    from _vnccs.nodes import clothes_designer as cd
+    from PIL import Image
+    import json
+
+    reference = torch.zeros((1, 96, 64, 3))
+    clone_path = tmp_path / "clone.png"
+    Image.new("RGB", (64, 96)).save(clone_path)
+    monkeypatch.setattr(cd, "get_latest_sprite_path", lambda *args: "reference.png")
+    monkeypatch.setattr(cd, "sheets_dir", lambda *args: str(tmp_path))
+    monkeypatch.setattr(cd, "_resolve_pipe_clothes_core_lora", lambda pipe: "clothes.safetensors")
+    monkeypatch.setattr(cd, "resolve_comfy_image_path", lambda info: str(clone_path))
+    monkeypatch.setattr(cd.server.PromptServer.instance, "send_sync", lambda *args: None, raising=False)
+    node = cd.ClothesDesigner()
+    monkeypatch.setattr(node, "get_reference_sprite", lambda *args: reference)
+    monkeypatch.setattr(node, "get_cache_paths", lambda *args: (str(tmp_path / "preview.png"), str(tmp_path / "preview.json")))
+    calls = {}
+    def call(name, **kwargs):
+        calls[name] = kwargs
+        if name in (cd.WORKFLOW_ENCODER_CLASS, cd.KLEIN_ENCODER_CLASS):
+            return "positive", "negative", {"samples": torch.zeros(1)}
+        if name == "MiniMaxH3ReferenceToVideo":
+            return "positive", {"samples": torch.zeros(1)}
+        if name in ("KSampler", "SamplerCustomAdvanced"):
+            return ({"samples": torch.zeros(1)},)
+        if name == "VAEDecodeTiled":
+            return (torch.zeros((5 if kind == "MiniMaxH3" else 1, 96, 64, 3)),)
+        return (object(),)
+    monkeypatch.setattr(cd, "_call_comfy_node", call)
+    pipe = types.SimpleNamespace(model=object(), clip=object(), vae=object(), audio_vae=object(), model_entry={"kind": kind})
+    data = {"character": "Alice", "costume": "Dress", "gen_settings": {"target_size": size},
+            "activeTab": "clone" if clone else "generate", "clone_image": {"name": "clone.png"} if clone else None}
+    image, _, _ = node.process(pipe=pipe, widget_data=json.dumps(data), unique_id="123")
+    assert image.shape == (1, 96, 64, 3)
+    if kind == "MiniMaxH3":
+        encoder = calls["MiniMaxH3ReferenceToVideo"]
+        width, height = encoder["width"], encoder["height"]
+        assert width % 32 == height % 32 == 0
+        assert width * height == pytest.approx(expected ** 2, rel=0.04)
+        assert width / height == pytest.approx(64 / 96, rel=0.04)
+        assert encoder["length"] == 5
+        assert len(encoder["ref_images"]) == (2 if clone else 1)
+        assert "SamplerCustomAdvanced" in calls and "KSampler" not in calls
+    elif kind == "Klein9b":
+        assert calls[cd.KLEIN_ENCODER_CLASS]["megapixels"] == (expected / 1024) ** 2
+    else:
+        assert calls[cd.WORKFLOW_ENCODER_CLASS]["target_size"] == expected
+
+
+@pytest.mark.parametrize("size", [True, "bad", -1, 0, 511, 4097, 1024.5, float("inf"), float("nan")])
+def test_resolution_rejects_invalid_values(size):
+    from _vnccs.nodes.clothes_designer import _clothes_target_size
+    with pytest.raises(ValueError, match="Resolution scale"):
+        _clothes_target_size({"target_size": size}, "minimaxh3")

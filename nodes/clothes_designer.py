@@ -16,9 +16,10 @@ from ..utils import (
     sheets_dir,
     ensure_safe_name, safe_join_under, safe_relative_path
 )
-from .character_generator import _call_comfy_node
+from .character_generator import _call_comfy_node, VNCCS_CharacterGenerator, H3_FRAME_COUNT
 from .vnccs_control_center import _entry_kind
-from .vnccs_utils import _ensure_qwen_vl_assets
+from .vnccs_utils import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
+from .qwen_vl import configure_qwen_text_chat
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 WORKFLOW_ENCODER_CLASS = "VNCCS_QWEN_Encoder"
@@ -61,6 +62,20 @@ BACKGROUND_RGB = {
     "Green": (0.0, 1.0, 0.0),
     "Blue": (0.0, 0.0, 1.0),
 }
+
+
+def _clothes_target_size(settings, model_kind):
+    default = 1536 if model_kind == "minimaxh3" else 1024
+    value = settings.get("target_size")
+    if value is None or value == "":
+        return default
+    try:
+        size = int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("Resolution scale must be an integer between 512 and 4096.") from None
+    if isinstance(value, bool) or size != float(value) or not 512 <= size <= 4096:
+        raise ValueError("Resolution scale must be an integer between 512 and 4096.")
+    return size
 
 
 def _latest_image_file(files):
@@ -176,26 +191,11 @@ def _validate_clothes_wizard_gguf(path, file_label="File"):
 
 
 def _find_clothes_wizard_model():
-    base_path = folder_paths.models_dir
-    possible_names = [
-        "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
-        "Qwen2-VL-7B-Instruct-Q4_K_M.gguf",
-        "qwen2-vl-7b-instruct-q4_k_m.gguf",
-    ]
-    search_dirs = [os.path.join(base_path, "LLM"), os.path.join(base_path, "llm"), base_path]
-
-    for directory in search_dirs:
-        if not os.path.isdir(directory):
-            continue
-        for name in possible_names:
-            path = os.path.join(directory, name)
-            if os.path.exists(path):
-                return path
-    return None
+    return _find_qwen_vl_model()
 
 
 def _ensure_clothes_wizard_model():
-    model_path, _mmproj_path = _ensure_qwen_vl_assets()
+    model_path, _mmproj_path = _ensure_qwen_vl_assets(allow_download=False, require_mmproj=False)
     return model_path
 
 
@@ -476,6 +476,9 @@ class ClothesDesigner:
         sampler_name = getattr(pipe, "sampler_name", None) or WORKFLOW_SAMPLER_DEFAULTS["sampler_name"]
         scheduler = getattr(pipe, "scheduler", None) or WORKFLOW_SAMPLER_DEFAULTS["scheduler"]
         clothes_core_lora = _resolve_pipe_clothes_core_lora(pipe)
+        model_kind = _entry_kind(getattr(pipe, "model_entry", None))
+        is_h3 = model_kind == "minimaxh3"
+        target_size = _clothes_target_size(gen_settings, model_kind)
 
         # 3. Cache check
         import hashlib
@@ -492,6 +495,7 @@ class ClothesDesigner:
                     "scheduler": scheduler,
                 },
                 "clothes_core_lora": clothes_core_lora,
+                "resolution": {"model_kind": model_kind, "target_size": target_size},
             }
             canonical_str = json.dumps(cache_payload, sort_keys=True, separators=(',', ':'))
             input_hash = hashlib.sha256(canonical_str.encode('utf-8')).hexdigest()
@@ -541,7 +545,7 @@ class ClothesDesigner:
             f"mode={active_tab}, image1=reference sprite, "
             f"image2={'clone reference' if image2 is not None else 'none'}, prompt={positive_prompt!r}"
         )
-        is_klein = _entry_kind(getattr(pipe, "model_entry", None)) == "klein9b"
+        is_klein = model_kind == "klein9b"
         encoder_class = KLEIN_ENCODER_CLASS if is_klein else WORKFLOW_ENCODER_CLASS
         encoder_kwargs = {
             "clip": clip,
@@ -552,7 +556,7 @@ class ClothesDesigner:
             "image3": None,
         }
         if is_klein:
-            encoder_kwargs.update(upscale_method="lanczos", megapixels=1.0, resolution_steps=1)
+            encoder_kwargs.update(upscale_method="lanczos", megapixels=(target_size / 1024.0) ** 2, resolution_steps=1)
         else:
             encoder_kwargs.update(
                 image1_name="Picture 1",
@@ -560,10 +564,24 @@ class ClothesDesigner:
                 image3_name="Picture 3",
                 **WORKFLOW_ENCODER_DEFAULTS,
             )
-        pos_cond, neg_cond, empty_latent = _call_comfy_node(
-            encoder_class,
-            **encoder_kwargs,
-        )
+        if is_h3:
+            audio_vae = getattr(pipe, "audio_vae", None)
+            if audio_vae is None:
+                raise ValueError("MiniMax H3 requires the audio VAE from VNCCS Control Center.")
+            width, height = VNCCS_CharacterGenerator()._resolution_scale_dimensions(ref_image, target_size)
+            references = {"ref_image_1": ref_image}
+            if image2 is not None:
+                references["ref_image_2"] = image2
+            pos_cond, empty_latent = _call_comfy_node(
+                "MiniMaxH3ReferenceToVideo", clip=clip, vae=vae, audio_vae=audio_vae,
+                prompt=positive_prompt, width=width, height=height, length=H3_FRAME_COUNT,
+                ref_image_size="match", ref_images=references,
+            )
+            neg_cond = None
+        else:
+            if not is_klein:
+                encoder_kwargs["target_size"] = target_size
+            pos_cond, neg_cond, empty_latent = _call_comfy_node(encoder_class, **encoder_kwargs)
         
         out_pipe = PipeContext(
             source=pipe,
@@ -587,12 +605,22 @@ class ClothesDesigner:
 
         # 4. Sampling using the incoming Control Center pipe configuration
         print("[ClothesDesigner] Sampling...")
-        latent_result = _call_comfy_node(
-            "KSampler",
-            model=sampler_model, seed=out_pipe.seed_int, steps=out_pipe.sample_steps,
-            cfg=out_pipe.cfg, sampler_name=out_pipe.sampler_name, scheduler=out_pipe.scheduler,
-            positive=pos_cond, negative=neg_cond, latent_image=empty_latent, denoise=out_pipe.denoise
-        )[0]
+        if is_h3:
+            sampler = _call_comfy_node("KSamplerSelect", sampler_name=sampler_name)[0]
+            sigmas = _call_comfy_node("BasicScheduler", model=sampler_model, scheduler=scheduler, steps=sample_steps, denoise=denoise)[0]
+            guider = _call_comfy_node("BasicGuider", model=sampler_model, conditioning=pos_cond)[0]
+            noise = _call_comfy_node("RandomNoise", noise_seed=seed_int)[0]
+            latent_result = _call_comfy_node(
+                "SamplerCustomAdvanced", noise=noise, guider=guider, sampler=sampler,
+                sigmas=sigmas, latent_image=empty_latent,
+            )[0]
+        else:
+            latent_result = _call_comfy_node(
+                "KSampler",
+                model=sampler_model, seed=out_pipe.seed_int, steps=out_pipe.sample_steps,
+                cfg=out_pipe.cfg, sampler_name=out_pipe.sampler_name, scheduler=out_pipe.scheduler,
+                positive=pos_cond, negative=neg_cond, latent_image=empty_latent, denoise=out_pipe.denoise
+            )[0]
 
         def normalize_decode_input(value):
             if torch.is_tensor(value):
@@ -621,6 +649,9 @@ class ClothesDesigner:
             print(f"[ClothesDesigner] VAEDecodeTiled failed ({e}), falling back to VAEDecode...")
             with torch.inference_mode():
                 image, = _call_comfy_node("VAEDecode", vae=vae, samples=latent_for_decode)
+
+        if is_h3:
+            image = VNCCS_CharacterGenerator()._h3_first_frame_to_cpu(image)
 
         # Cache for UI preview
         try:
@@ -707,9 +738,9 @@ async def vnccs_clothes_wizard(request):
             model_path = _ensure_clothes_wizard_model()
         except Exception as e:
             return web.json_response({
-                "error": "MODEL_DOWNLOAD_FAILED",
+                "error": "MODEL_MISSING" if isinstance(e, FileNotFoundError) else "MODEL_INVALID",
                 "message": str(e),
-                "model_name": "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+                "model_name": QWEN_VL_MODEL_FILENAME,
             }, status=500)
 
         try:
@@ -766,6 +797,7 @@ Example for "Santa Claus costume":
             verbose=False,
         )
 
+        configure_qwen_text_chat(llm)
         response = llm.create_chat_completion(
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -791,7 +823,7 @@ Example for "Santa Claus costume":
         return web.json_response({
             "error": "INFERENCE_ERROR",
             "message": f"Engine Error: {e}",
-            "model_name": "Qwen2VL (Check Console)",
+            "model_name": QWEN_VL_MODEL_FILENAME,
         }, status=500)
 
 

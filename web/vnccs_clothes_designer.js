@@ -190,6 +190,11 @@ const STYLE = `
     height: 14px;
     line-height: 14px;
 }
+.vnccs-resolution-field {
+    display: block;
+    flex-shrink: 0;
+    margin: 4px 0 12px;
+}
 .vnccs-segmented-field {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -622,6 +627,7 @@ app.registerExtension({
                     },
                     gen_settings: {
                         background_color: "Green",
+                        target_size: null,
                         seed: 0,
                         seed_mode: "fixed",
                         lora_name: "none",
@@ -689,7 +695,9 @@ app.registerExtension({
                     }
                 };
 
+                const onSerialize = node.onSerialize;
                 node.onSerialize = function (o) {
+                    onSerialize?.apply(this, arguments);
                     if (dataWidget) dataWidget.value = JSON.stringify(state);
                 };
 
@@ -753,7 +761,26 @@ app.registerExtension({
                 registerCleanup(node, () => api.removeEventListener("vnccs.clothes_designer.validation_error", onValidationError));
 
                 const ensureQwenVLReady = async () => {
-                    const start = await api.fetchApi("/vnccs/qwen_vl_download_model", { method: "POST" });
+                    const statusResponse = await api.fetchApi("/vnccs/qwen_vl_model_status?vision=false");
+                    if (!statusResponse.ok) throw new Error("Failed to check Qwen3.5 model files.");
+                    const modelStatus = await statusResponse.json();
+                    if (modelStatus.ready) return true;
+                    const approved = await new Promise(resolve => {
+                        const { modal } = showModal("Qwen3.5 Model Required", () => {
+                            const text = document.createElement("div");
+                            text.textContent = `${modelStatus.message || modelStatus.model_name} Download the required files from Hugging Face now?`;
+                            return text;
+                        }, [
+                            { text: "Cancel", action: () => { resolve(false); return false; } },
+                            { text: "DOWNLOAD & INSTALL", class: "vnccs-btn-primary", action: () => { resolve(true); return false; } },
+                        ]);
+                        modal.addEventListener("keydown", event => {
+                            if (event.key === "Escape") resolve(false);
+                        }, true);
+                    });
+                    if (!approved) return false;
+
+                    const start = await api.fetchApi("/vnccs/qwen_vl_download_model?vision=false", { method: "POST" });
                     if (!start.ok && start.status !== 409) {
                         let err;
                         try { err = await start.json(); } catch (e) { err = { error: await start.text() }; }
@@ -835,7 +862,7 @@ app.registerExtension({
                                 class: "vnccs-btn-primary",
                                 action: async () => {
                                     try {
-                                        const dl = await api.fetchApi("/vnccs/qwen_vl_download_model", { method: "POST" });
+                                        const dl = await api.fetchApi("/vnccs/qwen_vl_download_model?vision=false", { method: "POST" });
                                         if (dl.ok || dl.status === 409) {
                                             ensureQwenVLReady().catch(e => showInfo("Error", String(e)));
                                             return false;
@@ -886,7 +913,7 @@ app.registerExtension({
                                 btn.disabled = true;
                                 btn.innerText = "CHECKING MODEL...";
                                 try {
-                                    await ensureQwenVLReady();
+                                    if (!await ensureQwenVLReady()) return true;
                                     btn.innerText = "THINKING...";
                                     const r = await api.fetchApi("/vnccs/clothes_wizard", {
                                         method: "POST",
@@ -1095,6 +1122,7 @@ app.registerExtension({
                 };
 
                 const setClothesCoreLora = (entryOrPath = null) => {
+                    syncResolutionControl();
                     let entry = entryOrPath && typeof entryOrPath === "object" ? entryOrPath : null;
                     let rel = entry ? normalizeLoraPath(entry) : normalizeLoraPath(entryOrPath);
                     if (rel && !isClothesCoreLora(rel) && !isClothesCoreLora(entry?.name)) {
@@ -1333,7 +1361,20 @@ app.registerExtension({
                     return wrap;
                 };
 
+                const syncResolutionControl = () => {
+                    if (!els.target_size) return;
+                    const kind = getConnectedModelKind().toLowerCase().replace(/[^a-z0-9]/g, "");
+                    const defaultSize = ["h3", "minimaxh3"].includes(kind) ? 1536 : 1024;
+                    els.target_size.options[0].textContent = `Auto (${defaultSize})`;
+                    const size = Number(state.gen_settings.target_size);
+                    if (Number.isInteger(size) && size >= 512 && size <= 4096 && !Array.from(els.target_size.options).some(option => option.value === String(size))) {
+                        els.target_size.add(new Option(String(size), String(size)));
+                    }
+                    els.target_size.value = state.gen_settings.target_size == null ? "" : String(state.gen_settings.target_size);
+                };
+
                 const syncGenerationControls = () => {
+                    syncResolutionControl();
                     if (els.seed) els.seed.value = state.gen_settings.seed || 0;
                     if (els.seed_mode) {
                         const randomize = (state.gen_settings.seed_mode || "fixed") === "randomize";
@@ -1374,6 +1415,31 @@ app.registerExtension({
                     desc.className = "vnccs-lora-card-desc";
                     desc.innerText = hasLora ? rel : "Connect VNCCS Control Center with VNCCS Clothes Core.";
                     card.appendChild(desc);
+                };
+
+                const createResolutionControl = () => {
+                    const resolutionWrap = document.createElement("label");
+                    resolutionWrap.className = "vnccs-field vnccs-resolution-field";
+                    setHelpText(resolutionWrap, "Scales total pixel area while preserving the reference aspect ratio. Auto uses 1536 for H3 and 1024 for other models.");
+                    const resolutionLabel = document.createElement("div");
+                    resolutionLabel.className = "vnccs-label";
+                    resolutionLabel.textContent = "Resolution scale";
+                    const resolutionSelect = document.createElement("select");
+                    resolutionSelect.className = "vnccs-select";
+                    resolutionSelect.add(new Option("Auto (1024)", ""));
+                    const sizes = new Set([1024, 1344, 1536, 2048, 768, 512]);
+                    const restoredSize = Number(state.gen_settings.target_size);
+                    if (Number.isInteger(restoredSize) && restoredSize >= 512 && restoredSize <= 4096) sizes.add(restoredSize);
+                    for (const size of sizes) resolutionSelect.add(new Option(String(size), String(size)));
+                    resolutionSelect.onchange = () => {
+                        state.gen_settings.target_size = resolutionSelect.value ? Number(resolutionSelect.value) : null;
+                        saveState();
+                    };
+                    els.target_size = resolutionSelect;
+                    resolutionWrap.append(resolutionLabel, resolutionSelect);
+                    syncResolutionControl();
+
+                    return resolutionWrap;
                 };
 
                 const createGenerationControls = () => {
@@ -1776,6 +1842,7 @@ app.registerExtension({
                 const controlsWrap = createGenerationControls();
                 controlsWrap.style.paddingTop = "16px";
                 colMid.appendChild(controlsWrap);
+                colMid.appendChild(createResolutionControl());
 
                 // Tab Header
                 const tabBar = document.createElement("div");
@@ -1810,6 +1877,19 @@ app.registerExtension({
                 colMid.appendChild(tabBar);
                 colMid.appendChild(contentArea);
                 topRow.appendChild(colMid);
+
+                node._vnccsRestoreClothesState = () => {
+                    try {
+                        const restored = JSON.parse(dataWidget.value || "{}");
+                        Object.assign(state, restored, {
+                            costume_info: { ...defaultState.costume_info, ...restored.costume_info },
+                            character_info: { ...defaultState.character_info, ...restored.character_info },
+                            gen_settings: { ...defaultState.gen_settings, ...restored.gen_settings },
+                        });
+                        syncGenerationControls();
+                    } catch (error) { console.warn("[VNCCS] Clothes Designer state restore failed", error); }
+                };
+                registerCleanup(node, () => { delete node._vnccsRestoreClothesState; });
 
                 // Initial Load
                 (async () => {
@@ -1965,6 +2045,7 @@ app.registerExtension({
             const onConfigure = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function (info) {
                 onConfigure?.apply(this, arguments);
+                this._vnccsRestoreClothesState?.();
                 syncDOMWidgetWidth(this, "clothes_designer_ui");
                 setTimeout(() => syncDOMWidgetWidth(this, "clothes_designer_ui"), 100);
             };

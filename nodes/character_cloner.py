@@ -18,10 +18,10 @@ from ..utils import (
 
 try:
     from .qwen_vl import get_qwen_vl_chat_handler
-    from .vnccs_utils import _ensure_qwen_vl_assets
+    from .vnccs_utils import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME
 except Exception:
     from nodes.qwen_vl import get_qwen_vl_chat_handler
-    from nodes.vnccs_utils import _ensure_qwen_vl_assets
+    from nodes.vnccs_utils import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME
 
 SKIN_COLOR_OPTIONS = [
     "light skin",
@@ -348,12 +348,12 @@ if server:
                 return web.Response(status=404, text=f"Image {img_name} not found")
 
             try:
-                model_path, mmproj_path = _ensure_qwen_vl_assets()
+                model_path, mmproj_path = _ensure_qwen_vl_assets(allow_download=False)
             except Exception as e:
                 return web.json_response({
-                    "error": "MODEL_DOWNLOAD_FAILED",
+                    "error": "MODEL_MISSING" if isinstance(e, FileNotFoundError) else "MODEL_INVALID",
                     "message": str(e),
-                    "model_name": "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
+                    "model_name": QWEN_VL_MODEL_FILENAME
                 }, status=500)
             
             # 4. Inference
@@ -384,7 +384,7 @@ if server:
                 print(f"[VNCCS] Loading Model: {model_path}")
                 print(f"[VNCCS] Loading MMProj: {mmproj_path}")
 
-                chat_handler = HandlerCls(clip_model_path=mmproj_path, verbose=False)
+                chat_handler = HandlerCls(clip_model_path=mmproj_path, enable_thinking=False, verbose=False)
                 
                 llm = llama_cpp.Llama(
                     model_path=model_path,
