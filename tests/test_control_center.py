@@ -377,7 +377,7 @@ class TestModuleStatusHelpers:
         with open(path, "r", encoding="utf-8") as handle:
             source = handle.read()
 
-        assert '"manager_id": "ComfyUI-GGUF"' in source
+        assert '"manager_id": "ComfyUI-GGUF"' not in source
         assert '"manager_id": "comfyui-impact-pack"' in source
         assert '"manager_id": "comfyui-impact-subpack"' in source
         assert '"manager_id": "comfyui-easy-sam3"' in source
@@ -919,7 +919,7 @@ class TestControlCenterFrontendFamilies:
         with open(path, "r", encoding="utf-8") as handle:
             source = handle.read()
 
-        assert '{ kind: "QIE2511", label: "QIE2511", defaultType: "gguf", preferredTypes: ["gguf", "custom"]' in source
+        assert '{ kind: "QIE2511", label: "QIE2511", defaultType: "unet", preferredTypes: ["unet", "custom"]' in source
         assert '{ kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet", preferredTypes: ["unet", "custom"]' in source
         assert '{ kind: "MiniMaxH3", label: "MiniMax H3", defaultType: "unet", preferredTypes: ["unet", "custom"]' in source
         assert "const preferred = this._familyDefinition(activeKind).preferredTypes;" in source
@@ -1162,7 +1162,7 @@ class TestControlCenterCustomModel:
         custom_model = object()
         custom_clip = object()
         custom_vae = object()
-        context_model = {"name": "Qwen GGUF", "type": "gguf", "kind": "QIE2511"}
+        context_model = {"name": "Qwen Native UNet", "type": "unet", "kind": "QIE2511"}
 
         monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
             "models": [context_model],
@@ -1205,7 +1205,7 @@ class TestControlCenterCustomModel:
             "demo/repo",
             {
                 "selected_type": "custom",
-                "selected_models": {"gguf": "Qwen GGUF"},
+                "selected_models": {"unet": "Qwen Native UNet"},
                 "loras": [],
                 "type_settings": {},
                 "model_params": {},
@@ -1230,7 +1230,7 @@ class TestControlCenterCustomModel:
     def test_custom_type_requires_external_clip_and_vae_inputs(self, monkeypatch):
         custom_model = object()
         custom_clip = object()
-        context_model = {"name": "Qwen GGUF", "type": "gguf", "kind": "QIE2511"}
+        context_model = {"name": "Qwen Native UNet", "type": "unet", "kind": "QIE2511"}
 
         monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
             "models": [context_model],
@@ -1241,7 +1241,7 @@ class TestControlCenterCustomModel:
 
         base_state = {
             "selected_type": "custom",
-            "selected_models": {"gguf": "Qwen GGUF"},
+            "selected_models": {"unet": "Qwen Native UNet"},
             "loras": [],
             "type_settings": {},
             "model_params": {},
@@ -1268,7 +1268,7 @@ class TestControlCenterRequiredTurboLora:
         model = object()
         clip = object()
         vae = object()
-        model_entry = {"name": "Qwen-Image-Edit-2511-GGUF-Q5", "type": "gguf", "kind": "QIE2511"}
+        model_entry = {"name": "Qwen-Image-Edit-2511-int8-convrot", "type": "unet", "kind": "QIE2511"}
         lightning_entry = {
             "name": "Qwen Image Edit 2511 Lightning",
             "type": "TurboLora",
@@ -1297,8 +1297,8 @@ class TestControlCenterRequiredTurboLora:
         pipe = _build_control_center_pipe(
             "demo/repo",
             {
-                "selected_type": "gguf",
-                "selected_model": "Qwen-Image-Edit-2511-GGUF-Q5",
+                "selected_type": "unet",
+                "selected_model": "Qwen-Image-Edit-2511-int8-convrot",
                 "loras": [],
                 "model_params": {"steps": 4, "cfg": 1},
             },
@@ -1314,7 +1314,7 @@ class TestControlCenterRequiredTurboLora:
         model = object()
         clip = object()
         vae = object()
-        model_entry = {"name": "Qwen-Image-Edit-2511-GGUF-Q5", "type": "gguf", "kind": "QIE2511"}
+        model_entry = {"name": "Qwen-Image-Edit-2511-int8-convrot", "type": "unet", "kind": "QIE2511"}
         lightning_entry = {
             "name": "Qwen Image Edit 2511 Lightning",
             "type": "TurboLora",
@@ -1343,8 +1343,8 @@ class TestControlCenterRequiredTurboLora:
         _build_control_center_pipe(
             "demo/repo",
             {
-                "selected_type": "gguf",
-                "selected_model": "Qwen-Image-Edit-2511-GGUF-Q5",
+                "selected_type": "unet",
+                "selected_model": "Qwen-Image-Edit-2511-int8-convrot",
                 "loras": [],
                 "model_params": {"steps": 8, "cfg": 1},
             },

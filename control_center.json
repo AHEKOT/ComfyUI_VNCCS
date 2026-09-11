@@ -2,33 +2,13 @@
   "name": "VNCCS Core Models",
   "models": [
     {
-      "name": "Qwen-Image-Edit-2511-GGUF-Q4",
-      "type": "gguf",
-      "hf_repo": "unsloth/Qwen-Image-Edit-2511-GGUF",
-      "hf_path": "qwen-image-edit-2511-Q4_0.gguf",
-      "local_path": "models/unet/qwen-image-edit-2511-Q4_0.gguf",
+      "name": "Qwen-Image-Edit-2511-int8-convrot",
+      "type": "unet",
+      "hf_repo": "MIUProject/Qwen-Image-Edit-2511-int8-convrot",
+      "hf_path": "qwen_image_edit_2511_int8_convrot.safetensors",
+      "local_path": "models/diffusion_models/qwen_image_edit_2511_int8_convrot.safetensors",
       "version": "1.0",
-      "description": "Quantized Q4 GGUF — lower VRAM, slightly lower quality.",
-      "kind": "QIE2511"
-    },
-    {
-      "name": "Qwen-Image-Edit-2511-GGUF-Q5",
-      "type": "gguf",
-      "hf_repo": "unsloth/Qwen-Image-Edit-2511-GGUF",
-      "hf_path": "qwen-image-edit-2511-Q5_0.gguf",
-      "local_path": "models/unet/qwen-image-edit-2511-Q5_0.gguf",
-      "version": "1.0",
-      "description": "Quantized Q5 GGUF — lower VRAM, slightly lower quality.",
-      "kind": "QIE2511"
-    },
-    {
-      "name": "Qwen-Image-Edit-2511-GGUF-Q8",
-      "type": "gguf",
-      "hf_repo": "unsloth/Qwen-Image-Edit-2511-GGUF",
-      "hf_path": "qwen-image-edit-2511-Q8_0.gguf",
-      "local_path": "models/unet/qwen-image-edit-2511-Q8_0.gguf",
-      "version": "1.0",
-      "description": "Quantized Q8 GGUF — near-lossless, higher VRAM than Q4.",
+      "description": "int8-convrot Native UNet — full quality at reduced VRAM.",
       "kind": "QIE2511"
     },
     {

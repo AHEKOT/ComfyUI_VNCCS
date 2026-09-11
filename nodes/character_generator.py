@@ -1684,9 +1684,20 @@ class VNCCS_CharacterGenerator:
                 return [images[i:i + 1] for i in range(images.shape[0])]
         return []
 
-    def _run_list_mapped(self, class_name, list_kwargs, **kwargs):
+    def _stage_progress_callback(self, unique_id, stage, message, lora_info=None):
+        def report(current, total):
+            self._emit(
+                unique_id, stage, "running", message=message,
+                current=current, total=total, lora_info=lora_info,
+            )
+
+        return report
+
+    def _run_list_mapped(self, class_name, list_kwargs, progress_callback=None, **kwargs):
         count = max((len(v) for v in list_kwargs.values()), default=0)
         outputs = None
+        if progress_callback is not None:
+            progress_callback(0, count)
         for index in range(count):
             call_kwargs = dict(kwargs)
             for key, values in list_kwargs.items():
@@ -1696,6 +1707,8 @@ class VNCCS_CharacterGenerator:
                 outputs = [[] for _ in result]
             for out_index, value in enumerate(result):
                 outputs[out_index].append(value)
+            if progress_callback is not None:
+                progress_callback(index + 1, count)
         return tuple(outputs or [])
 
     def _h3_pose_prompt(self, prompt):
@@ -1737,6 +1750,8 @@ class VNCCS_CharacterGenerator:
         lora_info,
         sampler,
         vae_decode,
+        unique_id=None,
+        stage="pose_generation",
     ):
         audio_vae = pipe_values.get("audio_vae")
         if audio_vae is None:
@@ -1771,7 +1786,12 @@ class VNCCS_CharacterGenerator:
         encoded_items = []
         sampled_items = []
         decoded_first_frames = []
+        total = len(pose_parts)
+        encoding_progress = self._stage_progress_callback(unique_id, stage, "Encoding poses", lora_info)
+        sampling_progress = self._stage_progress_callback(unique_id, stage, "Sampling poses", lora_info)
+        decoding_progress = self._stage_progress_callback(unique_id, stage, "Decoding poses", lora_info)
         try:
+            encoding_progress(0, total)
             for pose in pose_parts:
                 pose_reference = self._image_list(pose)[0]
                 width, height = self._resolution_scale_dimensions(pose_reference, target_size, multiple=32)
@@ -1788,7 +1808,9 @@ class VNCCS_CharacterGenerator:
                     ref_images={"ref_image_1": pose_reference, "ref_image_2": character_reference},
                 )
                 encoded_items.append((positive, latent))
+                encoding_progress(len(encoded_items), total)
 
+            sampling_progress(0, total)
             for index, (positive, latent) in enumerate(encoded_items):
                 guider = _call_comfy_node(
                     "BasicGuider",
@@ -1806,7 +1828,9 @@ class VNCCS_CharacterGenerator:
                 )[0]
                 sampled_items.append(sampled)
                 encoded_items[index] = None
+                sampling_progress(index + 1, total)
 
+            decoding_progress(0, total)
             for index, sampled in enumerate(sampled_items):
                 decoded = _call_comfy_node(
                     "VAEDecodeTiled",
@@ -1816,6 +1840,7 @@ class VNCCS_CharacterGenerator:
                 )[0]
                 decoded_first_frames.append(self._h3_first_frame_to_cpu(decoded))
                 sampled_items[index] = None
+                decoding_progress(index + 1, total)
         finally:
             encoded_items.clear()
             sampled_items.clear()
@@ -1833,6 +1858,8 @@ class VNCCS_CharacterGenerator:
         background="Green",
         sampler_settings=None,
         vae_decode_settings=None,
+        unique_id=None,
+        stage="pose_generation",
     ):
         pipe_values = self._extract_pipe(pipe)
         qwen_settings = self._qwen_settings(settings, background)
@@ -1851,6 +1878,8 @@ class VNCCS_CharacterGenerator:
                 lora_info,
                 sampler,
                 vae_decode,
+                unique_id=unique_id,
+                stage=stage,
             )
         prompt = self._prompt_with_solid_background(prompt, background)
 
@@ -1868,6 +1897,8 @@ class VNCCS_CharacterGenerator:
         positive_list, negative_list, latent_list = self._run_list_mapped(
             encoder_class,
             {"image1": pose_parts},
+            progress_callback=self._stage_progress_callback(unique_id, stage, "Encoding poses", lora_info),
+            _vnccs_node_id=unique_id,
             **encoder_kwargs,
         )
 
@@ -1877,6 +1908,8 @@ class VNCCS_CharacterGenerator:
         sampled_list = self._run_list_mapped(
             "KSampler",
             {"positive": positive_list, "negative": negative_list, "latent_image": latent_list},
+            progress_callback=self._stage_progress_callback(unique_id, stage, "Sampling poses", lora_info),
+            _vnccs_node_id=unique_id,
             model=sampler_model,
             **sampler,
         )[0]
@@ -1884,6 +1917,8 @@ class VNCCS_CharacterGenerator:
         decoded_list = self._run_list_mapped(
             "VAEDecodeTiled",
             {"samples": sampled_list},
+            progress_callback=self._stage_progress_callback(unique_id, stage, "Decoding poses", lora_info),
+            _vnccs_node_id=unique_id,
             vae=pipe_values["vae"],
             **vae_decode,
         )[0]
@@ -1898,6 +1933,7 @@ class VNCCS_CharacterGenerator:
         lora_info=None,
         sampler_settings=None,
         vae_decode_settings=None,
+        unique_id=None,
     ):
         pipe_values = self._extract_pipe(pipe)
         qwen_settings = self._qwen_settings(
@@ -1908,12 +1944,17 @@ class VNCCS_CharacterGenerator:
         vae_decode = self._vae_decode_settings(vae_decode_settings)
         character_rgb = VNCCS_MaskExtractor().fill_alpha_with_color(character)[0]
 
+        encoding_progress = self._stage_progress_callback(unique_id, "remove_clothes", "Encoding source character", lora_info)
+        sampling_progress = self._stage_progress_callback(unique_id, "remove_clothes", "Sampling source character", lora_info)
+        decoding_progress = self._stage_progress_callback(unique_id, "remove_clothes", "Decoding source character", lora_info)
+        encoding_progress(0, 1)
         positive, negative, latent = self._encoder_call(
             pipe_values,
             settings.get("prompt", DEFAULT_WIDGET_DATA["remove_clothes"]["prompt"]),
             image1=character_rgb,
             qwen_settings=qwen_settings,
         )
+        encoding_progress(1, 1)
 
         sampler_model = self._apply_lora_to_model(
             pipe_values["model"],
@@ -1923,6 +1964,7 @@ class VNCCS_CharacterGenerator:
             "Remove Clothes",
         )
         self._validate_conditioning_for_model(pipe_values, positive, negative, "Remove Clothes")
+        sampling_progress(0, 1)
         sampled = _call_comfy_node(
             "KSampler",
             model=sampler_model,
@@ -1931,13 +1973,17 @@ class VNCCS_CharacterGenerator:
             latent_image=latent,
             **sampler,
         )[0]
+        sampling_progress(1, 1)
 
-        return _call_comfy_node(
+        decoding_progress(0, 1)
+        decoded = _call_comfy_node(
             "VAEDecodeTiled",
             samples=sampled,
             vae=pipe_values["vae"],
             **vae_decode,
         )[0]
+        decoding_progress(1, 1)
+        return decoded
 
     def _run_upscaler_models(self, settings, node_id=None):
         defaults = DEFAULT_WIDGET_DATA["upscaler"]
@@ -2431,7 +2477,6 @@ class VNCCS_CharacterGenerator:
                 widget_payload=widget_payload,
             )
             pose_lora_info = self._find_pose_lora(pipe)
-            input_total = len(self._image_list(poses))
             order = ("pose_generation", "upscaler", "bg_remove")
             if not self._should_regenerate_stage(order, regenerate_from, "pose_generation"):
                 pose_images = self._load_cached_stage(cache_dir, "pose_generation", unique_id, "Using cached pose generation")
@@ -2443,9 +2488,9 @@ class VNCCS_CharacterGenerator:
                     unique_id,
                     "pose_generation",
                     "running",
-                    message="Encoding pose list",
+                    message="Preparing pose generation",
                     current=0,
-                    total=input_total,
+                    total=len(self._image_list(pose_input)),
                     cache_dir=cache_dir,
                     lora_info=pose_lora_info,
                 )
@@ -2459,6 +2504,7 @@ class VNCCS_CharacterGenerator:
                     background=background,
                     sampler_settings=settings["pose_sampler"],
                     vae_decode_settings=settings["vae_decode"],
+                    unique_id=unique_id,
                 )
                 if regenerate_index is not None:
                     pose_images = self._replace_batch_item(_load_cached_tensor(cache_dir, "pose_generation"), regenerate_index, pose_images)
@@ -2574,7 +2620,6 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
             "naked_bg_remove",
         )
 
-        input_total = len(self._image_list(poses))
         if not self._should_regenerate_stage(order, regenerate_from, pose_stage):
             pose_images = self._load_cached_stage(cache_dir, pose_stage, unique_id, f"Using cached {pose_stage}")
         else:
@@ -2585,9 +2630,9 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 unique_id,
                 pose_stage,
                 "running",
-                message="Encoding pose list",
+                message="Preparing pose generation",
                 current=0,
-                total=input_total,
+                total=len(self._image_list(pose_input)),
                 cache_dir=cache_dir,
                 lora_info=pose_lora_info,
             )
@@ -2601,6 +2646,8 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 background=background,
                 sampler_settings=settings["pose_sampler"],
                 vae_decode_settings=settings["vae_decode"],
+                unique_id=unique_id,
+                stage=pose_stage,
             )
             if regenerate_index is not None:
                 pose_images = self._replace_batch_item(_load_cached_tensor(cache_dir, pose_stage), regenerate_index, pose_images)
@@ -2751,6 +2798,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                     lora_info=clothes_lora_info,
                     sampler_settings=settings["remove_clothes_sampler"],
                     vae_decode_settings=settings["vae_decode"],
+                    unique_id=unique_id,
                 )
                 self._save_stage(cache_dir, "remove_clothes", naked_character)
                 self._emit(
@@ -2832,6 +2880,8 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
         use_internal_rmbg=False,
         sampler_settings=None,
         vae_decode_settings=None,
+        unique_id=None,
+        stage="pose_generation",
     ):
         pose_images = self._run_pose_generation(
             poses,
@@ -2843,6 +2893,8 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
             background=background,
             sampler_settings=sampler_settings,
             vae_decode_settings=vae_decode_settings,
+            unique_id=unique_id,
+            stage=stage,
         )
         if not INTERNAL_RMBG_PROCESSING_ENABLED or not _as_bool(use_internal_rmbg, False):
             return pose_images
@@ -2924,7 +2976,6 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                 )
                 self._save_stage(cache_dir, "source_upscaler", source_upscaled)
 
-            input_total = len(self._image_list(poses))
             if not self._should_regenerate_stage(order, regenerate_from, "pose_generation"):
                 pose_images = self._load_cached_stage(cache_dir, "pose_generation", unique_id, "Using cached pose generation")
             else:
@@ -2935,9 +2986,9 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                     unique_id,
                     "pose_generation",
                     "running",
-                    message="Encoding pose list",
+                    message="Preparing pose generation",
                     current=0,
-                    total=input_total,
+                    total=len(self._image_list(pose_input)),
                     cache_dir=cache_dir,
                     lora_info=pose_lora_info,
                 )
@@ -2952,6 +3003,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                     use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", False),
                     sampler_settings=settings["pose_sampler"],
                     vae_decode_settings=settings["vae_decode"],
+                    unique_id=unique_id,
                 )
                 if regenerate_index is not None:
                     pose_images = self._replace_batch_item(_load_cached_tensor(cache_dir, "pose_generation"), regenerate_index, pose_images)
