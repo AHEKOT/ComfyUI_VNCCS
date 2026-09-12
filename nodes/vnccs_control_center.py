@@ -75,6 +75,7 @@ _DOWNLOAD_STATUS = {}
 _DOWNLOAD_QUEUE = queue.Queue()
 _CUSTOM_LORAS_FILE = "vnccs_custom_loras.json"
 _PACKAGED_CC_REPO_IDS = {"MIUProject/VNCCS_v3.0"}
+DEFAULT_QIE_MODEL = "Qwen-Image-Edit-2511-int8-convrot"
 _PIPELINE_LOCAL_LORAS = {
     "vnccs clothes core",
     "vnccs pose studio qie2511",
@@ -85,6 +86,7 @@ _PIPELINE_LOCAL_LORAS = {
 }
 _FOLDER_MAP = {
     "unet": ["unet", "diffusion_models"],
+    "diffusion_models": ["diffusion_models", "unet"],
     "checkpoints": ["checkpoints"],
     "loras": ["loras"],
     "clip": ["clip"],
@@ -105,7 +107,7 @@ DEFAULT_MODEL_STEPS = 4
 DEFAULT_MODEL_CFG = 1.0
 DEFAULT_MODEL_SCHEDULER = "simple"
 NUNCHAKU_DISABLED_MESSAGE = (
-    "Nunchaku support is disabled in VNCCS. Use GGUF models instead."
+    "Nunchaku support is disabled in VNCCS. Use native UNet models instead."
 )
 CLASSIC_GGUF_FOLDER = "ComfyUI-GGUF"
 GGUF_FORK_WARNING = (
@@ -712,7 +714,9 @@ def update_installed_version(model_name, version):
 
 
 def _get_packaged_cc_path():
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "control_center.json"))
+    """Keep the catalog beside this installed package, including linked checkouts."""
+    module_path = os.path.realpath(__file__)
+    return os.path.abspath(os.path.join(os.path.dirname(module_path), "..", "control_center.json"))
 
 
 def _uses_packaged_cc_config(repo_id):
@@ -737,7 +741,10 @@ def _sync_packaged_cc_config(repo_id, data):
             if current == data:
                 return False
 
-            os.makedirs(os.path.dirname(target), exist_ok=True)
+            # A package renamed or removed after startup must not be recreated
+            # at its old path just to hold the catalog. Restart to load its new location.
+            if not os.path.isdir(os.path.dirname(target)):
+                raise FileNotFoundError("VNCCS installation directory is missing; restart ComfyUI after moving the package")
             tmp_path = f"{target}.tmp.{os.getpid()}.{threading.get_ident()}"
             with open(tmp_path, "w", encoding="utf-8") as handle:
                 json.dump(data, handle, indent=2, ensure_ascii=False)
@@ -887,13 +894,17 @@ def _selected_model_name_for_type(state, entry_type, kind=""):
 
 def _custom_context_model_entry(config, state):
     models = config.get("models", []) if isinstance(config, dict) else []
-    active_kind = str(state.get("active_kind", "") or "").strip()
+    active_kind = str(state.get("active_kind", "QIE2511") or "QIE2511").strip()
     normalized_kind = _normalize_model_kind(active_kind)
-    context_type = "unet" if normalized_kind in {"klein9b", "minimaxh3"} else "gguf"
+    context_type = "unet"
     name = _selected_model_name_for_type(state, context_type, active_kind) or state.get("selected_model", "")
     selected = _find_entry(models, name)
-    if selected and (not normalized_kind or _entry_kind(selected) == normalized_kind):
+    if selected and _entry_type(selected) == context_type and (not normalized_kind or _entry_kind(selected) == normalized_kind):
         return selected
+    if normalized_kind in {"", "qie2511"}:
+        preferred = _find_entry(models, DEFAULT_QIE_MODEL)
+        if preferred and _entry_type(preferred) == "unet" and _entry_kind(preferred) == "qie2511":
+            return preferred
     matched = next(
         (
             entry for entry in models
@@ -1438,6 +1449,129 @@ def _apply_loras(model, clip, lora_states, config, model_type, type_settings=Non
     return model, clip
 
 
+def _download_with_progress(model_key, repo_id, filename, revision=None):
+    """Use Hub's HTTP download path for regular, measured byte progress."""
+    from huggingface_hub import file_download
+
+    original_tqdm = file_download.tqdm
+    original_context = getattr(file_download, "_get_progress_bar_context", None)
+    original_constants = file_download.constants
+    original_xet_available = getattr(file_download, "is_xet_available", None)
+    owner_thread = threading.get_ident()
+    primary_bar = None
+    active = True
+
+    class DownloadConstants:
+        def __getattr__(self, name):
+            if active and threading.get_ident() == owner_thread:
+                if name == "HF_HUB_DISABLE_XET":
+                    return True
+                if name == "HF_HUB_ENABLE_HF_TRANSFER":
+                    return False
+                if name == "DOWNLOAD_CHUNK_SIZE":
+                    return 1024 * 1024
+            return getattr(original_constants, name)
+
+    download_constants = DownloadConstants()
+
+    def xet_available():
+        if active and threading.get_ident() == owner_thread:
+            return False
+        return original_xet_available()
+
+    class DownloadProgress(original_tqdm):
+        def __init__(self, *args, **kwargs):
+            nonlocal primary_bar
+            super().__init__(*args, **kwargs)
+            # Xet can create a second bar for compressed network traffic. Report
+            # only the first byte bar, which tracks the reconstructed model.
+            self._report_download = (
+                threading.get_ident() == owner_thread
+                and kwargs.get("unit") == "B"
+                and primary_bar is None
+            )
+            if self._report_download:
+                primary_bar = self
+                self._publish_download()
+
+        def _publish_download(self):
+            if not active or not self._report_download:
+                return
+            done = max(0, self.n)
+            total = self.total
+            message = f"Downloading: {done / (1024 * 1024):.1f} MB"
+            status = {"status": "downloading", "message": message}
+            if total is not None and total > 0:
+                progress = min(100, done / total * 100)
+                status.update(
+                    message=f"Downloading: {progress:.0f}% · {done / (1024 * 1024):.1f}/{total / (1024 * 1024):.1f} MB",
+                    progress=progress,
+                )
+            _DOWNLOAD_STATUS[model_key] = status
+
+        def update(self, n=1):
+            # Disabled terminal bars skip tqdm's counter, but GUI reporting must
+            # still work in ComfyUI Desktop and when console progress is hidden.
+            if self._report_download and self.disable:
+                self.n += n
+            result = super().update(n)
+            self._publish_download()
+            return result
+
+        def close(self):
+            nonlocal primary_bar
+            try:
+                super().close()
+            finally:
+                if primary_bar is self:
+                    primary_bar = None
+
+    supports_progress = "tqdm_class" in inspect.signature(hf_hub_download).parameters
+
+    def progress_context(**kwargs):
+        if threading.get_ident() != owner_thread or kwargs.get("_tqdm_bar") is not None:
+            return original_context(**kwargs)
+        # Later 0.x releases construct both HTTP and Xet bars in this helper.
+        options = dict(kwargs)
+        options.pop("_tqdm_bar", None)
+        log_level = options.pop("log_level", None)
+        options.setdefault("unit", "B")
+        options.setdefault("unit_scale", True)
+        options["disable"] = True if log_level == 0 else None
+        return DownloadProgress(**options)
+
+    try:
+        # Older Xet callbacks count buffered reconstruction, leaving the UI
+        # unchanged during network transfer. Keep Hub's cache, resume and
+        # validation, but use its HTTP stream in this worker only. Other Hub
+        # users retain their transport and chunk size, even on other threads.
+        file_download.constants = download_constants
+        if original_xet_available is not None:
+            file_download.is_xet_available = xet_available
+        if supports_progress:
+            return hf_hub_download(
+                repo_id=repo_id, filename=filename, revision=revision,
+                token=False, tqdm_class=DownloadProgress,
+            )
+        # Hub 0.x has no per-call progress parameter. Scope its adapter to this
+        # worker call; bars constructed by other threads never publish here.
+        file_download.tqdm = DownloadProgress
+        if original_context is not None:
+            file_download._get_progress_bar_context = progress_context
+        return hf_hub_download(repo_id=repo_id, filename=filename, revision=revision, token=False)
+    finally:
+        active = False
+        if file_download.constants is download_constants:
+            file_download.constants = original_constants
+        if original_xet_available is not None and file_download.is_xet_available is xet_available:
+            file_download.is_xet_available = original_xet_available
+        if not supports_progress and file_download.tqdm is DownloadProgress:
+            file_download.tqdm = original_tqdm
+        if not supports_progress and original_context is not None:
+            if file_download._get_progress_bar_context is progress_context:
+                file_download._get_progress_bar_context = original_context
+
+
 def _download_worker_loop():
     while True:
         task = _DOWNLOAD_QUEUE.get()
@@ -1458,11 +1592,11 @@ def _download_worker_loop():
             if filename.startswith(f"{download_repo_id}/"):
                 filename = filename[len(download_repo_id) + 1:]
             _validate_model_filename(filename)
-            cached_path = hf_hub_download(
+            cached_path = _download_with_progress(
+                model_key,
                 repo_id=download_repo_id,
                 filename=filename,
                 revision=target_model.get("revision") or None,
-                token=False,
             )
 
             expected_name = basename_agnostic(target_model.get("local_path", "") or target_model.get("hf_path", "") or "model")
@@ -1490,7 +1624,7 @@ def _download_worker_loop():
                         mb_total = total_size / (1024 * 1024)
                         _DOWNLOAD_STATUS[model_key] = {
                             "status": "downloading",
-                            "message": f"{mb_done:.1f}/{mb_total:.1f} MB",
+                            "message": f"Installing: {mb_done:.1f}/{mb_total:.1f} MB",
                             "progress": (downloaded / total_size) * 100,
                         }
 
@@ -1595,7 +1729,9 @@ def _build_control_center_pipe(
     custom_audio_vae=None,
 ):
     try:
-        state = json.loads(node_state) if isinstance(node_state, str) and node_state and node_state != "{}" else (node_state or {})
+        state = json.loads(node_state) if isinstance(node_state, str) and node_state.strip() else (node_state or {})
+        if not isinstance(state, dict):
+            state = {}
     except Exception:
         state = {}
 
@@ -1620,6 +1756,27 @@ def _build_control_center_pipe(
         model_entry = _custom_context_model_entry(config, state)
     else:
         model_entry = _find_entry(config.get("models", []), selected_model)
+        selection_kind = _normalize_model_kind(active_kind) or _entry_kind(model_entry)
+        if not selection_kind and model_entry is None:
+            selection_kind = "qie2511"
+        if selection_kind == "qie2511" and selected_type in {"", "gguf", "unet"}:
+            selected_type = "unet"
+            if not model_entry or _entry_type(model_entry) != "unet" or _entry_kind(model_entry) != "qie2511":
+                candidates = [
+                    entry for entry in config.get("models", [])
+                    if _entry_kind(entry) == "qie2511" and _entry_type(entry) == "unet"
+                ]
+                saved_unet = _selected_model_name_for_type(state, "unet", "QIE2511")
+                model_entry = (
+                    _find_entry(candidates, saved_unet)
+                    or _find_entry(candidates, DEFAULT_QIE_MODEL)
+                    or next(iter(candidates), None)
+                )
+            if model_entry is None:
+                raise RuntimeError(
+                    "[VNCCS Control Center] No native QIE2511 UNet model in the catalog. "
+                    "Refresh the Control Center catalog to load the int8-convrot model."
+                )
     loras = _ensure_required_turbo_lora_state(loras, config, model_entry, model_params)
     lora_entry_by_name = {
         entry.get("name"): entry
@@ -1811,11 +1968,11 @@ async def cc_check(request):
 
     installed = get_installed_version_info()
 
-    # Legacy remote catalogs may still contain Nunchaku entries, but VNCCS no
-    # longer exposes or uses them.
+    # Legacy catalogs may still contain obsolete QIE2511 GGUF selections.
     visible_models = [
         entry for entry in config.get("models", [])
         if entry.get("type") != "nunchaku"
+        and not (_entry_kind(entry) == "qie2511" and _entry_type(entry) == "gguf")
     ]
     available_types = list(dict.fromkeys(
         entry.get("type", "") for entry in visible_models if entry.get("type")
@@ -2025,16 +2182,6 @@ async def vnccs_module_status(request):
         "utils": ["vnccs-utils", "ComfyUI_VNCCS_Utils"],
     }
     dependency_modules = {
-        "gguf": {
-            "label": "GGUF",
-            "github_url": "https://github.com/city96/ComfyUI-GGUF",
-            "manager_id": "ComfyUI-GGUF",
-            "folders": ["ComfyUI-GGUF"],
-            "loader_check": "gguf",
-            "nodes": [
-                {"class_names": ["UnetLoaderGGUF"]},
-            ],
-        },
         "impact_pack": {
             "label": "Impact Pack",
             "github_url": "https://github.com/ltdrdata/ComfyUI-Impact-Pack",
@@ -2102,21 +2249,6 @@ async def vnccs_module_status(request):
                 missing_nodes.append(node_spec.get("node_id") or "/".join(node_spec.get("class_names", [])))
 
         if not missing_nodes:
-            extra = {}
-            if spec.get("loader_check") == "gguf":
-                loader_info = _describe_gguf_loader()
-                extra["loader"] = loader_info
-                if loader_info.get("warning"):
-                    return {
-                        "label": spec["label"],
-                        "github_url": spec.get("github_url"),
-                        **manager_metadata,
-                        "status": "warning",
-                        "folder": folders[0] if folders else loader_info.get("folder"),
-                        "missing_nodes": [],
-                        "warning": loader_info["warning"],
-                        **extra,
-                    }
             return {
                 "label": spec["label"],
                 "github_url": spec.get("github_url"),
@@ -2124,7 +2256,6 @@ async def vnccs_module_status(request):
                 "status": "ok",
                 "folder": folders[0] if folders else None,
                 "missing_nodes": [],
-                **extra,
             }
         return {
             "label": spec["label"],

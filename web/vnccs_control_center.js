@@ -25,8 +25,9 @@ const DEFAULT_MODEL_STEPS = 4;
 const DEFAULT_MODEL_CFG = 1.0;
 const DEFAULT_MODEL_SCHEDULER = "simple";
 const PENDING_DEPENDENCY_INSTALLS_KEY = "vnccs-control-center-pending-dependency-installs";
+const DEFAULT_QIE_MODEL = "Qwen-Image-Edit-2511-int8-convrot";
 const MODEL_FAMILIES = [
-    { kind: "QIE2511", label: "QIE2511", defaultType: "gguf", preferredTypes: ["gguf", "custom"], steps: 4, sampler: "euler" },
+    { kind: "QIE2511", label: "QIE2511", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 4, sampler: "euler" },
     { kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 4, sampler: "euler" },
     { kind: "MiniMaxH3", label: "MiniMax H3", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 20, sampler: "res_multistep" },
 ];
@@ -1259,7 +1260,7 @@ class VNCCSControlCenterWidget {
         this._dependencyRefreshSeq = 0;
         this._draggingLoraSlider = false;
         this._onGlobalPointerUp = null;
-        this.downloadStartTimes = {};  // for fake progress bars
+        this._downloadRefreshPending = false;
         this._samplers   = DEFAULT_SAMPLERS;
         this._schedulers = DEFAULT_SCHEDULERS;
         this.pollingInterval = null;
@@ -1310,9 +1311,7 @@ class VNCCSControlCenterWidget {
     }
 
     _getModelTypeTabs() {
-        // TECH DEBT: Nunchaku/NVFP entries can remain in old catalogs/state, but
-        // are intentionally hidden from the Control Center UI. Delete this after
-        // catalogs are cleaned and old workflow JSON is migrated.
+        // Only supported model types are selectable for the active family.
         const activeKind = this._activeKind();
         const preferred = this._familyDefinition(activeKind).preferredTypes;
         const available = new Set((this.config?.models ?? [])
@@ -1320,6 +1319,7 @@ class VNCCSControlCenterWidget {
             .map(entry => entry.type)
             .filter(Boolean));
         available.add("custom");
+        if (activeKind === "QIE2511") available.add("unet");
         const preferredTabs = preferred.filter(type => available.has(type));
         return preferredTabs.length ? preferredTabs : Array.from(available);
     }
@@ -1454,7 +1454,12 @@ class VNCCSControlCenterWidget {
         const selectedByType = this.state.selected_models ?? {};
         const familyKey = `${this._activeKind()}:${type}`;
         if (selectedByType[familyKey]) return selectedByType[familyKey];
-        if (this._activeKind() === "QIE2511") return selectedByType[type] ?? this.state.selected_model ?? "";
+        if (this._activeKind() === "QIE2511") {
+            if (selectedByType[type]) return selectedByType[type];
+            const legacy = this.state.selected_model;
+            if (legacy && this._visibleModelsByType(type).some(entry => entry.name === legacy)) return legacy;
+            return type === "unet" ? (this._visibleModelsByType(type)[0]?.name || DEFAULT_QIE_MODEL) : "";
+        }
         return "";
     }
 
@@ -1490,13 +1495,11 @@ class VNCCSControlCenterWidget {
     }
 
     _visibleModelsByType(type) {
-        // TECH DEBT: Nunchaku and NVFP/UNet entries are still present in
-        // control_center.json for future use, but hidden from the UI for now.
         if (type === "custom") return [];
         const activeKind = this._activeKind().toLowerCase();
         return (this.config?.models || []).filter(m =>
             (!m.type || m.type === type) && this._metaKind(m).toLowerCase() === activeKind
-        );
+        ).sort((a, b) => Number(b.name === DEFAULT_QIE_MODEL) - Number(a.name === DEFAULT_QIE_MODEL));
     }
 
     _metaKind(entry) {
@@ -1639,6 +1642,9 @@ class VNCCSControlCenterWidget {
         if (w) w.value = JSON.stringify(this.state);
         this.node.setDirtyCanvas(true, true);
         this._dispatchLoraOptions();
+        window.dispatchEvent(new CustomEvent("vnccs-control-center-model-changed", {
+            detail: { node_id: this.node.id },
+        }));
     }
 
     _dispatchLoraOptions() {
@@ -1653,6 +1659,23 @@ class VNCCSControlCenterWidget {
             options.push(rel);
         }
         window.dispatchEvent(new CustomEvent("vnccs-lora-options-updated", { detail: { options } }));
+    }
+
+    _migrateQieModelState() {
+        const types = this.state.selected_types_by_kind ?? {};
+        const activeQie = this._activeKind() === "QIE2511";
+        if (types.QIE2511 !== "gguf" && !(activeQie && this.state.selected_type === "gguf")) return false;
+        const models = this.state.selected_models ?? {};
+        const model = models["QIE2511:unet"] || models.unet || DEFAULT_QIE_MODEL;
+        this.state.selected_types_by_kind = { ...types, QIE2511: "unet" };
+        this.state.selected_models = { ...models, "QIE2511:unet": model, unet: model };
+        delete this.state.selected_models["QIE2511:gguf"];
+        delete this.state.selected_models.gguf;
+        if (activeQie) {
+            this.state.selected_type = "unet";
+            this.state.selected_model = model;
+        }
+        return true;
     }
 
     restoreState() {
@@ -1677,6 +1700,7 @@ class VNCCSControlCenterWidget {
         if (!this.state.selected_types_by_kind.QIE2511 && this.state.selected_type) {
             this.state.selected_types_by_kind.QIE2511 = this.state.selected_type;
         }
+        if (this._migrateQieModelState() && w) w.value = JSON.stringify(this.state);
         // Control Center now exposes a single pipe output.
         this.state.output_slot_names = [];
         this._syncOutputSlots();
@@ -1826,22 +1850,25 @@ class VNCCSControlCenterWidget {
                 const newStatuses = await r.json();
 
                 // Detect transitions to "success" → re-fetch config to update disk state
-                let needsRefresh = false;
                 for (const key in newStatuses) {
                     const s = newStatuses[key];
                     const old = this.dlStatus[key];
                     if (s?.status === "success" && old?.status !== "success") {
-                        needsRefresh = true;
+                        this._downloadRefreshPending = true;
                         break;
                     }
                 }
 
                 this.dlStatus = newStatuses;
+                this._updateDownloadIndicators();
 
                 if (this._isUserInteracting()) return;
-                if (needsRefresh) {
+                if (this._downloadRefreshPending) {
                     const repo = this._getRepoId();
-                    if (repo) this.fetchConfig(repo);
+                    if (repo) {
+                        this._downloadRefreshPending = false;
+                        await this.fetchConfig(repo);
+                    }
                 } else {
                     this._renderAll();
                 }
@@ -2729,6 +2756,7 @@ class VNCCSControlCenterWidget {
         if (status === "outdated") return "↑ Update";
         if (status === "queued") return "⏳ Queued";
         if (status === "downloading") return dls.message || "Downloading…";
+        if (status === "error") return dls.message || "Download failed";
         if (status === "auth_required") return "⚠ Key Required";
         return "↓ Missing";
     }
@@ -3536,6 +3564,7 @@ class VNCCSControlCenterWidget {
 
         const row = document.createElement("div");
         row.className = "vnccs-cc-turbo-strip";
+        row.dataset.downloadKey = `cc_lora_${entry.name}`;
         row.classList.toggle("is-installed", installed);
         row.classList.toggle("is-active", active);
         if (installed) {
@@ -4024,8 +4053,7 @@ class VNCCSControlCenterWidget {
         panel.className = "vnccs-cc-settings-panel";
 
         const ts   = this.state.type_settings ?? {};
-        const sel  = this._getSelectedType() || "gguf";
-        const gguf = ts.gguf ?? {};
+        const sel  = this._getSelectedType() || "unet";
         const unet = ts.unet ?? {};
         // TECH DEBT: legacy Nunchaku settings are disabled. Delete after stale
         // workflow state no longer stores type_settings.nunchaku.
@@ -4036,7 +4064,6 @@ class VNCCSControlCenterWidget {
             w.className = "vnccs-cc-settings-field";
             const help = {
                 "Weight Dtype": "Precision mode for UNet loading. Default follows the loader; fp8 modes can reduce memory use.",
-                "dequant_dtype": "Dequantization precision for GGUF models.",
                 // TECH DEBT: Nunchaku settings help removed with disabled UI.
                 // "CPU Offload": "Controls whether Nunchaku can offload model blocks to CPU memory.",
                 // "Blocks On GPU": "How many Nunchaku blocks should stay on GPU. Higher uses more VRAM and can be faster.",
@@ -4077,18 +4104,6 @@ class VNCCSControlCenterWidget {
                 ["default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2"],
                 unet.weight_dtype ?? "default")));
         panel.appendChild(unetDet);
-
-        // GGUF
-        const ggufDet = document.createElement("details");
-        ggufDet.className = "vnccs-cc-settings-details";
-        ggufDet.open = sel === "gguf";
-        const ggufSum = document.createElement("summary");
-        ggufSum.textContent = "GGUF";
-        ggufDet.appendChild(ggufSum);
-        ggufDet.appendChild(field("dequant_dtype",
-            mkSel("vnccs-cc-gguf-dequant", ["default","float32","float16","bfloat16"],
-                gguf.dequant_dtype ?? "default")));
-        panel.appendChild(ggufDet);
 
         /*
         // TECH DEBT: Nunchaku settings UI is disabled. Delete this commented
@@ -4171,9 +4186,6 @@ class VNCCSControlCenterWidget {
             this.state.type_settings.unet = {
                 weight_dtype: panel.querySelector("#vnccs-cc-unet-dtype")?.value ?? "default",
             };
-            this.state.type_settings.gguf = {
-                dequant_dtype: panel.querySelector("#vnccs-cc-gguf-dequant")?.value ?? "default",
-            };
             // TECH DEBT: Nunchaku settings persistence disabled. Delete after
             // stale workflow state no longer stores type_settings.nunchaku.
             delete this.state.type_settings.nunchaku;
@@ -4196,9 +4208,8 @@ class VNCCSControlCenterWidget {
         const repoId = this._getRepoId();
         if (!repoId) return;
         const key = `cc_${cat}_${entry.name}`;
-        // Optimistic update with start time for fake progress
+        // Show the queued state while the server accepts the request.
         this.dlStatus[key] = { status: "queued", message: "Queued…" };
-        this.downloadStartTimes[key] = Date.now();
         this._renderAll();
         try {
             const r = await api.fetchApi("/vnccs/control_center/download", {
@@ -4260,20 +4271,46 @@ class VNCCSControlCenterWidget {
 
     // ── Progress bar helper ───────────────────────────────────────────────────
 
+    _updateDownloadIndicators() {
+        // Update only status DOM while an input or dropdown is focused. Replacing
+        // the full widget here would interrupt editing and reset open controls.
+        for (const row of this.scrollArea.querySelectorAll("[data-download-key]")) {
+            const key = row.dataset.downloadKey;
+            const dls = this.dlStatus[key];
+            if (!dls) continue;
+            if (dls.status === "success" && !this._downloadRefreshPending) continue;
+            const badge = row.querySelector(".vnccs-cc-badge");
+            if (badge) {
+                const updated = this._badge(dls.status);
+                badge.className = updated.className;
+                badge.textContent = updated.textContent;
+            }
+            const label = row.querySelector(".vnccs-cc-model-card-status, .vnccs-cc-lora-card-status, .vnccs-cc-turbo-strip-status, .vnccs-cc-row-progress");
+            if (label) {
+                label.textContent = dls.status === "success" ? "Checking installation…"
+                    : this._statusLabel(dls.status, dls);
+            }
+            if (!row.classList.contains("vnccs-cc-turbo-strip")) {
+                this._applyProgressLayer(row, key, dls);
+            }
+        }
+    }
+
     _applyProgressLayer(row, key, dls) {
+        row.dataset.downloadKey = key;
+        row.querySelector(".vnccs-cc-row-bg")?.remove();
         const status = dls?.status;
-        if (!status || status === "installed" || status === "missing") return;
+        if (!["downloading", "queued", "auth_required", "error"].includes(status)) return;
 
         const bg = document.createElement("div");
         bg.className = "vnccs-cc-row-bg";
 
-        if (status === "downloading") {
-            const elapsed = Date.now() - (this.downloadStartTimes[key] ?? Date.now());
-            const progress = dls.progress ?? Math.min((elapsed / 30000) * 100, 95);
+        if (status === "downloading" && Number.isFinite(dls.progress)) {
+            const progress = Math.max(0, Math.min(dls.progress, 100));
             bg.style.width = `${progress}%`;
             bg.style.background = "rgba(0, 214, 143, 0.15)";
             bg.style.transition = "width 0.3s linear";
-        } else if (status === "queued") {
+        } else if (status === "queued" || status === "downloading") {
             bg.style.width = "100%";
             bg.style.background = "repeating-linear-gradient(45deg, rgba(184,169,232,0.12), rgba(184,169,232,0.12) 10px, transparent 10px, transparent 20px)";
         } else if (status === "auth_required") {

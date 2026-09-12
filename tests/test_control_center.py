@@ -377,7 +377,7 @@ class TestModuleStatusHelpers:
         with open(path, "r", encoding="utf-8") as handle:
             source = handle.read()
 
-        assert '"manager_id": "ComfyUI-GGUF"' in source
+        assert '"manager_id": "ComfyUI-GGUF"' not in source
         assert '"manager_id": "comfyui-impact-pack"' in source
         assert '"manager_id": "comfyui-impact-subpack"' in source
         assert '"manager_id": "comfyui-easy-sam3"' in source
@@ -541,6 +541,46 @@ class TestEnrichConfigEntries:
 
 
 class TestPackagedConfigSync:
+    @pytest.mark.parametrize("folder_name", ["vnccs", "ComfyUI_VNCCS", "ComfyUI_vnccs", "my-vnccs-checkout"])
+    def test_catalog_is_written_inside_the_loaded_package(self, tmp_path, monkeypatch, folder_name):
+        package = tmp_path / "custom_nodes" / folder_name
+        module = package / "nodes" / "vnccs_control_center.py"
+        module.parent.mkdir(parents=True)
+        module.write_text("# Installed module\n", encoding="utf-8")
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "__file__", str(module))
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE.folder_paths, "base_path", str(tmp_path / "unrelated"))
+
+        assert _CONTROL_CENTER_MODULE._get_packaged_cc_path() == str(package / "control_center.json")
+        assert _sync_packaged_cc_config("MIUProject/VNCCS_v3.0", {"name": "updated"}) is True
+        assert json.loads((package / "control_center.json").read_text()) == {"name": "updated"}
+        assert sorted(path.name for path in package.parent.iterdir()) == [folder_name]
+
+    def test_catalog_follows_a_linked_checkout(self, tmp_path, monkeypatch):
+        package = tmp_path / "ComfyUI_VNCCS"
+        module = package / "nodes" / "vnccs_control_center.py"
+        module.parent.mkdir(parents=True)
+        module.write_text("# Installed module\n", encoding="utf-8")
+        alias = tmp_path / "vnccs"
+        alias.symlink_to(package, target_is_directory=True)
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "__file__", str(alias / "nodes" / module.name))
+        assert _CONTROL_CENTER_MODULE._get_packaged_cc_path() == str(package / "control_center.json")
+
+    def test_refresh_does_not_recreate_a_package_renamed_after_startup(self, tmp_path, monkeypatch):
+        package = tmp_path / "custom_nodes" / "vnccs"
+        module = package / "nodes" / "vnccs_control_center.py"
+        module.parent.mkdir(parents=True)
+        module.write_text("# Installed module\n", encoding="utf-8")
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "__file__", str(module))
+        renamed = package.with_name("ComfyUI_VNCCS")
+        package.rename(renamed)
+
+        assert _sync_packaged_cc_config("MIUProject/VNCCS_v3.0", {"name": "updated"}) is False
+        assert not package.exists()
+        # After restarting, __file__ reflects the newly loaded location.
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "__file__", str(renamed / "nodes" / module.name))
+        assert _sync_packaged_cc_config("MIUProject/VNCCS_v3.0", {"name": "updated"}) is True
+        assert (renamed / "control_center.json").is_file()
+
     def test_updates_packaged_catalog_atomically(self, tmp_path, monkeypatch):
         target = tmp_path / "control_center.json"
         target.write_text('{"name": "old"}\n', encoding="utf-8")
@@ -919,7 +959,7 @@ class TestControlCenterFrontendFamilies:
         with open(path, "r", encoding="utf-8") as handle:
             source = handle.read()
 
-        assert '{ kind: "QIE2511", label: "QIE2511", defaultType: "gguf", preferredTypes: ["gguf", "custom"]' in source
+        assert '{ kind: "QIE2511", label: "QIE2511", defaultType: "unet", preferredTypes: ["unet", "custom"]' in source
         assert '{ kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet", preferredTypes: ["unet", "custom"]' in source
         assert '{ kind: "MiniMaxH3", label: "MiniMax H3", defaultType: "unet", preferredTypes: ["unet", "custom"]' in source
         assert "const preferred = this._familyDefinition(activeKind).preferredTypes;" in source
@@ -1162,7 +1202,7 @@ class TestControlCenterCustomModel:
         custom_model = object()
         custom_clip = object()
         custom_vae = object()
-        context_model = {"name": "Qwen GGUF", "type": "gguf", "kind": "QIE2511"}
+        context_model = {"name": "Qwen Native UNet", "type": "unet", "kind": "QIE2511"}
 
         monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
             "models": [context_model],
@@ -1205,7 +1245,7 @@ class TestControlCenterCustomModel:
             "demo/repo",
             {
                 "selected_type": "custom",
-                "selected_models": {"gguf": "Qwen GGUF"},
+                "selected_models": {"unet": "Qwen Native UNet"},
                 "loras": [],
                 "type_settings": {},
                 "model_params": {},
@@ -1230,7 +1270,7 @@ class TestControlCenterCustomModel:
     def test_custom_type_requires_external_clip_and_vae_inputs(self, monkeypatch):
         custom_model = object()
         custom_clip = object()
-        context_model = {"name": "Qwen GGUF", "type": "gguf", "kind": "QIE2511"}
+        context_model = {"name": "Qwen Native UNet", "type": "unet", "kind": "QIE2511"}
 
         monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
             "models": [context_model],
@@ -1241,7 +1281,7 @@ class TestControlCenterCustomModel:
 
         base_state = {
             "selected_type": "custom",
-            "selected_models": {"gguf": "Qwen GGUF"},
+            "selected_models": {"unet": "Qwen Native UNet"},
             "loras": [],
             "type_settings": {},
             "model_params": {},
@@ -1268,7 +1308,7 @@ class TestControlCenterRequiredTurboLora:
         model = object()
         clip = object()
         vae = object()
-        model_entry = {"name": "Qwen-Image-Edit-2511-GGUF-Q5", "type": "gguf", "kind": "QIE2511"}
+        model_entry = {"name": "Qwen-Image-Edit-2511-int8-convrot", "type": "unet", "kind": "QIE2511"}
         lightning_entry = {
             "name": "Qwen Image Edit 2511 Lightning",
             "type": "TurboLora",
@@ -1297,8 +1337,8 @@ class TestControlCenterRequiredTurboLora:
         pipe = _build_control_center_pipe(
             "demo/repo",
             {
-                "selected_type": "gguf",
-                "selected_model": "Qwen-Image-Edit-2511-GGUF-Q5",
+                "selected_type": "unet",
+                "selected_model": "Qwen-Image-Edit-2511-int8-convrot",
                 "loras": [],
                 "model_params": {"steps": 4, "cfg": 1},
             },
@@ -1314,7 +1354,7 @@ class TestControlCenterRequiredTurboLora:
         model = object()
         clip = object()
         vae = object()
-        model_entry = {"name": "Qwen-Image-Edit-2511-GGUF-Q5", "type": "gguf", "kind": "QIE2511"}
+        model_entry = {"name": "Qwen-Image-Edit-2511-int8-convrot", "type": "unet", "kind": "QIE2511"}
         lightning_entry = {
             "name": "Qwen Image Edit 2511 Lightning",
             "type": "TurboLora",
@@ -1343,8 +1383,8 @@ class TestControlCenterRequiredTurboLora:
         _build_control_center_pipe(
             "demo/repo",
             {
-                "selected_type": "gguf",
-                "selected_model": "Qwen-Image-Edit-2511-GGUF-Q5",
+                "selected_type": "unet",
+                "selected_model": "Qwen-Image-Edit-2511-int8-convrot",
                 "loras": [],
                 "model_params": {"steps": 8, "cfg": 1},
             },

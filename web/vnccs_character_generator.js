@@ -1065,10 +1065,12 @@ class CharacterGeneratorWidget {
 
         this.syncCharacterSourceData();
         this.syncStagesFromData();
+        this.syncModelResolution();
         writeData(this.node, this.data);
         this.node._vnccsCharacterGeneratorSyncBeforeQueue = () => {
             this.syncCharacterSourceData();
             this.syncStagesFromData();
+            this.syncModelResolution();
             writeData(this.node, this.data);
             return this.validateNativeSeedvr(true);
         };
@@ -1082,6 +1084,7 @@ class CharacterGeneratorWidget {
         registerCleanup(this.node, () => this.previewResizeObserver?.disconnect());
         registerCleanup(this.node, () => clearInterval(this.regenerateTimer));
         registerCleanup(this.node, () => clearInterval(this.seedvrPollTimer));
+        this.bindModelResolutionSync();
         if (this.isClone) {
             this.sourceSyncTimer = setInterval(() => {
                 const previous = this.data.nsfw_enabled;
@@ -1119,7 +1122,7 @@ class CharacterGeneratorWidget {
                     const continuingBatch = previousStageState.status === "running"
                         && (Boolean(detail.append_images) || !hasImages);
                     if (!continuingBatch) this.resetStagesFrom(stage);
-                    if (stage === "pose_generation" || stage === "original_pose_generation" || stage === "source_upscaler") {
+                    if (!continuingBatch && (stage === "pose_generation" || stage === "original_pose_generation" || stage === "source_upscaler")) {
                         this.userSelectedPreview = false;
                         if (!this.data.ui) this.data.ui = {};
                         this.data.ui.user_selected_preview = false;
@@ -1778,6 +1781,67 @@ class CharacterGeneratorWidget {
         }
     }
 
+    controlCenterWidgetNode() {
+        const graph = this.node.graph || app.graph;
+        const pending = [this.node];
+        const visited = new Set();
+        while (pending.length) {
+            const node = pending.shift();
+            if (!node || visited.has(node)) continue;
+            visited.add(node);
+            if (node.type === "VNCCS_ControlCenter" || node.comfyClass === "VNCCS_ControlCenter") return node;
+            for (const input of node.inputs || []) {
+                if (input.link == null) continue;
+                const link = graph?.links?.[input.link];
+                const source = graph?.getNodeById?.(link?.origin_id);
+                if (source) pending.push(source);
+            }
+        }
+        return null;
+    }
+
+    syncModelResolution(sourceId = null) {
+        if (this.isEmotions) return false;
+        const source = this.controlCenterWidgetNode();
+        if (!source || (sourceId != null && String(source.id) !== String(sourceId))) return false;
+        const stateWidget = source.widgets?.find(widget => widget.name === "node_state");
+        let state;
+        try { state = JSON.parse(stateWidget?.value || "{}"); } catch { return false; }
+        const kind = String(state.active_kind || "QIE2511").trim().toLowerCase();
+        if (!["qie2511", "klein9b", "minimaxh3"].includes(kind)) return false;
+        const previousKind = this.data.ui?.resolution_model_kind;
+        if (previousKind === kind) return false;
+        const section = this.isClone ? "common" : "pose_generation";
+        const settings = this.data[section];
+        // Keep custom sizes from legacy workflows on their first synchronization.
+        // A family switch selects its default; later edits remain until the next switch.
+        if (previousKind || Number(settings.target_size) === 1024) {
+            settings.target_size = kind === "minimaxh3" ? 1536 : 1024;
+        }
+        if (this.isClone) {
+            this.data.pose_generation.target_size = settings.target_size;
+            this.data.remove_clothes.target_size = settings.target_size;
+        }
+        this.data.ui = { ...this.data.ui, resolution_model_kind: kind };
+        return true;
+    }
+
+    bindModelResolutionSync() {
+        if (this.isEmotions) return;
+        const sync = event => {
+            if (!this.syncModelResolution(event?.detail?.node_id)) return;
+            writeData(this.node, this.data);
+            this.renderSettings();
+        };
+        window.addEventListener("vnccs-control-center-model-changed", sync);
+        // Also cover graph reconnection and loading saved workflows in any node order.
+        const timer = setInterval(sync, 500);
+        registerCleanup(this.node, () => {
+            window.removeEventListener("vnccs-control-center-model-changed", sync);
+            clearInterval(timer);
+        });
+    }
+
     syncCharacterNameFromCreator() {
         return this.syncCharacterSourceData();
     }
@@ -1925,7 +1989,14 @@ class CharacterGeneratorWidget {
 
         let restoredData = false;
         if (saved.data) {
+            const resolutionSections = ["common", "pose_generation", "remove_clothes"];
+            const resolutions = resolutionSections.map(section => this.data[section]?.target_size);
+            const modelKind = this.data.ui?.resolution_model_kind;
             this.data = deepMerge(this.data, saved.data);
+            resolutionSections.forEach((section, index) => {
+                this.data[section].target_size = resolutions[index];
+            });
+            this.data.ui.resolution_model_kind = modelKind;
             restoredData = true;
         }
         if (this.stages.some(([key]) => key === saved.selectedPreview)) {
@@ -2229,7 +2300,7 @@ class CharacterGeneratorWidget {
         const wrap = document.createElement("label");
         wrap.className = "vnccs-pipe-field";
         const help = {
-            target_size: "Scales the QWEN encoder latent by total pixel area while preserving the pose aspect ratio.",
+            target_size: "Model defaults: QIE2511 and Klein 1024, MiniMaxH3 1536. You can change this value manually until the next model-family switch.",
             prompt: "Prompt text used for the remove-clothes/preparation stage.",
             gan_model: "Upscale model used when GAN upscaling is selected.",
             model: "SeedVR diffusion model used for the upscaler stage.",
@@ -3253,6 +3324,8 @@ app.registerExtension({
                 this._vnccsCharacterGeneratorWidget.restoreBrowserState();
                 this._vnccsCharacterGeneratorWidget.syncCharacterSourceData();
                 this._vnccsCharacterGeneratorWidget.syncStagesFromData();
+                this._vnccsCharacterGeneratorWidget.syncModelResolution();
+                writeData(this, this._vnccsCharacterGeneratorWidget.data);
                 this._vnccsCharacterGeneratorWidget.renderSettings();
                 this._vnccsCharacterGeneratorWidget.renderPreview();
                 this._vnccsCharacterGeneratorWidget.renderChain();
@@ -3264,6 +3337,20 @@ app.registerExtension({
                 }
             }
             syncDOMWidgetWidthSoon(this, "character_generator_ui");
+        };
+
+        const onSerialize = nodeType.prototype.onSerialize;
+        nodeType.prototype.onSerialize = function (serialized) {
+            const widget = this._vnccsCharacterGeneratorWidget;
+            if (widget) {
+                widget.syncModelResolution();
+                writeData(this, widget.data, { notify: false });
+            }
+            onSerialize?.apply(this, arguments);
+            const index = this.widgets?.findIndex(item => item.name === "widget_data") ?? -1;
+            if (widget && index >= 0 && Array.isArray(serialized?.widgets_values)) {
+                serialized.widgets_values[index] = this.widgets[index].value;
+            }
         };
 
         const onResize = nodeType.prototype.onResize;
