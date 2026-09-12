@@ -95,7 +95,7 @@ def test_module_status_no_longer_tracks_or_installs_comfyui_gguf(monkeypatch):
     assert "impact_pack" in dependencies
 
 
-def test_packaged_catalog_and_workflows_use_native_qie_models():
+def test_packaged_catalog_uses_native_qie_models():
     root = Path(__file__).resolve().parents[1]
     catalog = json.loads((root / "control_center.json").read_text())
     qie = [entry for entry in catalog["models"] if entry.get("kind") == "QIE2511"]
@@ -103,22 +103,3 @@ def test_packaged_catalog_and_workflows_use_native_qie_models():
     assert qie[0]["local_path"] == MODEL["local_path"]
     assert qie[0]["hf_repo"] == "MIUProject/Qwen-Image-Edit-2511-int8-convrot"
     assert all(entry["type"] != "gguf" for entry in qie)
-    states = []
-
-    def inspect_workflow(value):
-        if isinstance(value, dict):
-            assert "gguf" not in str(value.get("type", "")).lower()
-            if value.get("type") == "VNCCS_ControlCenter":
-                state = json.loads(value["widgets_values"][1])
-                assert state["selected_type"] == "unet"
-                assert state["selected_model"] == MODEL["name"]
-                states.append(state)
-            for child in value.values():
-                inspect_workflow(child)
-        elif isinstance(value, list):
-            for child in value:
-                inspect_workflow(child)
-
-    for path in (root / "workflows").glob("*.json"):
-        inspect_workflow(json.loads(path.read_text()))
-    assert len(states) == 3

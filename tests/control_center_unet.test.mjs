@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
@@ -89,4 +89,26 @@ test("serializing a new Control Center writes native defaults", () => {
     assert.equal(saved.selected_type, "unet");
     assert.equal(saved.selected_model, defaultName);
     assert.equal(events.at(-1).type, "vnccs-control-center-model-changed");
+});
+
+test("existing workflow selections migrate when loaded without requiring rewritten JSON files", () => {
+    let count = 0;
+    function inspect(value) {
+        if (!value || typeof value !== "object") return;
+        if (value.type === "VNCCS_ControlCenter") {
+            const saved = JSON.parse(value.widgets_values[1]);
+            const { widget, serialized } = setup(saved);
+            widget.restoreState();
+            assert.equal(widget._getSelectedType(), "unet");
+            assert.equal(widget._getSelectedModelEntry().name, defaultName);
+            assert.equal(JSON.parse(serialized.value).selected_type, "unet");
+            count++;
+        }
+        Object.values(value).forEach(inspect);
+    }
+    const directory = new URL("../workflows/", import.meta.url);
+    for (const name of readdirSync(directory).filter(name => name.endsWith(".json"))) {
+        inspect(JSON.parse(readFileSync(new URL(name, directory), "utf8")));
+    }
+    assert.equal(count, 3);
 });
