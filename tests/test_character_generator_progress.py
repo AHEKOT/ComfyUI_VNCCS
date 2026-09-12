@@ -4,7 +4,8 @@ import json
 from types import SimpleNamespace
 
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 from nodes import character_generator as cg
 

@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -30,6 +32,9 @@ LEGACY = {**MODEL, "name": "Qwen-Image-Edit-2511-GGUF-Q5", "type": "gguf"}
     ({"selected_type": "gguf", "selected_model": MODEL["name"]}, MODEL["name"]),
 ])
 def test_qie_loads_native_unet_without_gguf(monkeypatch, state, expected):
+    # The default dtype path imports torch but does not use tensor operations.
+    # Keep this loader-routing test runnable in the lightweight CI environment.
+    monkeypatch.setitem(sys.modules, "torch", ModuleType("torch"))
     config = {
         "models": [LEGACY, ALTERNATE, MODEL],
         "clip": [{"name": "QIE clip", "kind": "QIE2511"}],
