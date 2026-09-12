@@ -541,6 +541,46 @@ class TestEnrichConfigEntries:
 
 
 class TestPackagedConfigSync:
+    @pytest.mark.parametrize("folder_name", ["vnccs", "ComfyUI_VNCCS", "ComfyUI_vnccs", "my-vnccs-checkout"])
+    def test_catalog_is_written_inside_the_loaded_package(self, tmp_path, monkeypatch, folder_name):
+        package = tmp_path / "custom_nodes" / folder_name
+        module = package / "nodes" / "vnccs_control_center.py"
+        module.parent.mkdir(parents=True)
+        module.write_text("# Installed module\n", encoding="utf-8")
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "__file__", str(module))
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE.folder_paths, "base_path", str(tmp_path / "unrelated"))
+
+        assert _CONTROL_CENTER_MODULE._get_packaged_cc_path() == str(package / "control_center.json")
+        assert _sync_packaged_cc_config("MIUProject/VNCCS_v3.0", {"name": "updated"}) is True
+        assert json.loads((package / "control_center.json").read_text()) == {"name": "updated"}
+        assert sorted(path.name for path in package.parent.iterdir()) == [folder_name]
+
+    def test_catalog_follows_a_linked_checkout(self, tmp_path, monkeypatch):
+        package = tmp_path / "ComfyUI_VNCCS"
+        module = package / "nodes" / "vnccs_control_center.py"
+        module.parent.mkdir(parents=True)
+        module.write_text("# Installed module\n", encoding="utf-8")
+        alias = tmp_path / "vnccs"
+        alias.symlink_to(package, target_is_directory=True)
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "__file__", str(alias / "nodes" / module.name))
+        assert _CONTROL_CENTER_MODULE._get_packaged_cc_path() == str(package / "control_center.json")
+
+    def test_refresh_does_not_recreate_a_package_renamed_after_startup(self, tmp_path, monkeypatch):
+        package = tmp_path / "custom_nodes" / "vnccs"
+        module = package / "nodes" / "vnccs_control_center.py"
+        module.parent.mkdir(parents=True)
+        module.write_text("# Installed module\n", encoding="utf-8")
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "__file__", str(module))
+        renamed = package.with_name("ComfyUI_VNCCS")
+        package.rename(renamed)
+
+        assert _sync_packaged_cc_config("MIUProject/VNCCS_v3.0", {"name": "updated"}) is False
+        assert not package.exists()
+        # After restarting, __file__ reflects the newly loaded location.
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "__file__", str(renamed / "nodes" / module.name))
+        assert _sync_packaged_cc_config("MIUProject/VNCCS_v3.0", {"name": "updated"}) is True
+        assert (renamed / "control_center.json").is_file()
+
     def test_updates_packaged_catalog_atomically(self, tmp_path, monkeypatch):
         target = tmp_path / "control_center.json"
         target.write_text('{"name": "old"}\n', encoding="utf-8")

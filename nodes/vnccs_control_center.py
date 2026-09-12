@@ -714,7 +714,9 @@ def update_installed_version(model_name, version):
 
 
 def _get_packaged_cc_path():
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "control_center.json"))
+    """Keep the catalog beside this installed package, including linked checkouts."""
+    module_path = os.path.realpath(__file__)
+    return os.path.abspath(os.path.join(os.path.dirname(module_path), "..", "control_center.json"))
 
 
 def _uses_packaged_cc_config(repo_id):
@@ -739,7 +741,10 @@ def _sync_packaged_cc_config(repo_id, data):
             if current == data:
                 return False
 
-            os.makedirs(os.path.dirname(target), exist_ok=True)
+            # A package renamed or removed after startup must not be recreated
+            # at its old path just to hold the catalog. Restart to load its new location.
+            if not os.path.isdir(os.path.dirname(target)):
+                raise FileNotFoundError("VNCCS installation directory is missing; restart ComfyUI after moving the package")
             tmp_path = f"{target}.tmp.{os.getpid()}.{threading.get_ident()}"
             with open(tmp_path, "w", encoding="utf-8") as handle:
                 json.dump(data, handle, indent=2, ensure_ascii=False)
