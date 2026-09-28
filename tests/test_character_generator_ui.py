@@ -59,3 +59,20 @@ def test_emotion_result_tabs_stay_single_row_and_only_show_final_stage():
     assert 'grid-template-columns: repeat(var(--vnccs-stage-count, 1), minmax(0, 1fr));' in SOURCE
     assert '.vnccs-pipe-root.is-emotions .vnccs-pipe-tabs' in SOURCE
     assert 'flex-wrap: nowrap;' in SOURCE
+
+
+def test_emotion_tabs_resync_after_late_studio_restore():
+    assert "const sourceChanged = this.syncCharacterSourceData();" in SOURCE
+    assert "if (!sourceChanged && !modelChanged) return;" in SOURCE
+    assert "const source = this.connectedEmotionStudioNode();" in SOURCE
+    assert "this.renderPreview();" in SOURCE
+    assert "this.renderChain();" in SOURCE
+
+
+def test_new_qi2_emotion_generators_receive_bbox_defaults_without_migrating_saved_workflows():
+    assert "bbox_threshold: 0.3" in SOURCE
+    assert "bbox_dilation: 50" in SOURCE
+    assert "feather: 50" in SOURCE
+    assert "drop_size: 10" in SOURCE
+    assert "this.qi2EmotionDefaultsPending = this.isEmotions;" in SOURCE
+    assert "this._vnccsCharacterGeneratorWidget.qi2EmotionDefaultsPending = false;" in SOURCE

@@ -1102,6 +1102,7 @@ class VNCCS_CharacterGenerator:
         lora_info=None,
         preview_start=0,
         append_images=False,
+        replace_images=False,
     ):
         if server is None or not unique_id:
             return
@@ -1126,6 +1127,8 @@ class VNCCS_CharacterGenerator:
                 start_index=preview_start,
             )
             payload["append_images"] = bool(append_images)
+            payload["preview_start"] = int(preview_start)
+            payload["replace_images"] = bool(replace_images)
         try:
             server.PromptServer.instance.send_sync("vnccs.character_generator.stage", payload)
         except Exception as exc:
@@ -4825,6 +4828,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                         cache_dir=cache_dir,
                         preview_start=batch_positions[0] if batch_positions else batch_start,
                         append_images=batch_number > 1,
+                        replace_images=regenerate_index is not None,
                     )
 
                     records.clear()

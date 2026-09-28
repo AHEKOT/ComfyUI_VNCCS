@@ -4,6 +4,12 @@ import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMidd
 
 const GENERATOR_QWEN_INSTRUCTION = "Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.";
 const QI2_EMOTION_PROMPT_TEMPLATE = "Upscale face image.\nMake character's face emotion {emotion}\nChange only face. Keep original neck colour, clothes and hairs\nkeep character's clothes";
+const QI2_EMOTION_BBOX_DEFAULTS = Object.freeze({
+    bbox_threshold: 0.3,
+    bbox_dilation: 50,
+    feather: 50,
+    drop_size: 10,
+});
 const RESOLUTION_SCALE_BASE = 1024;
 const RESOLUTION_SCALE_MIN_MP = 1;
 const RESOLUTION_SCALE_MAX_MP = 4;
@@ -1070,6 +1076,7 @@ class CharacterGeneratorWidget {
         this.isClone = Boolean(options.isClone);
         this.isClothes = Boolean(options.isClothes);
         this.isEmotions = Boolean(options.isEmotions);
+        this.qi2EmotionDefaultsPending = this.isEmotions;
         this.title = options.title || "VNCCS Character Generator";
         this.data = readData(node);
         this.seedvrAttention = { current: null, available: SEEDVR_ATTENTION_MODES };
@@ -1210,9 +1217,13 @@ class CharacterGeneratorWidget {
                 const status = detail.status || "waiting";
                 const previousStageState = this.stageState[stage] || {};
                 const hasImages = Object.prototype.hasOwnProperty.call(detail, "images");
+                const targetedRegenerate = Number.isInteger(this.regenerateState?.imageIndex)
+                    && this.regenerateState?.targetStages?.includes(stage);
                 if (status === "running") {
-                    const continuingBatch = previousStageState.status === "running"
-                        && (Boolean(detail.append_images) || !hasImages);
+                    const continuingBatch = targetedRegenerate || (
+                        previousStageState.status === "running"
+                        && (Boolean(detail.append_images) || !hasImages)
+                    );
                     if (!continuingBatch) this.resetStagesFrom(stage);
                     if (!continuingBatch && (stage === "pose_generation" || stage === "original_pose_generation" || stage === "source_upscaler")) {
                         this.userSelectedPreview = false;
@@ -1220,9 +1231,18 @@ class CharacterGeneratorWidget {
                         this.data.ui.user_selected_preview = false;
                     }
                 }
-                const nextImages = hasImages && detail.append_images
-                    ? [...(previousStageState.images || []), ...(detail.images || [])]
-                    : (hasImages ? detail.images : (previousStageState.images || null));
+                let nextImages = previousStageState.images || null;
+                if (hasImages && detail.replace_images) {
+                    nextImages = [...(previousStageState.images || [])];
+                    const previewStart = Math.max(0, Number.parseInt(detail.preview_start, 10) || 0);
+                    for (const [offset, image] of (detail.images || []).entries()) {
+                        nextImages[previewStart + offset] = image;
+                    }
+                } else if (hasImages && detail.append_images) {
+                    nextImages = [...(previousStageState.images || []), ...(detail.images || [])];
+                } else if (hasImages) {
+                    nextImages = detail.images;
+                }
                 this.stageState[stage] = {
                     status,
                     images: nextImages,
@@ -1268,13 +1288,13 @@ class CharacterGeneratorWidget {
         }
     }
 
-    resetStagesFrom(stageKey) {
+    resetStagesFrom(stageKey, { preserveImages = false } = {}) {
         const start = this.stages.findIndex(([key]) => key === stageKey);
         if (start < 0) return;
         for (const [key] of this.stages.slice(start)) {
             this.stageState[key] = {
                 status: "waiting",
-                images: null,
+                images: preserveImages ? (this.stageState[key]?.images || null) : null,
                 message: "",
                 current: undefined,
                 total: undefined,
@@ -1902,7 +1922,7 @@ class CharacterGeneratorWidget {
         if (!this.data.ui) this.data.ui = {};
         this.data.ui.selected_preview = stageKey;
         this.data.ui.user_selected_preview = false;
-        this.resetStagesFrom(stageKey);
+        this.resetStagesFrom(stageKey, { preserveImages: Number.isInteger(imageIndex) });
         this.startRegenerate(stageKey, imageIndex);
         writeData(this.node, this.data);
         this.renderPreview();
@@ -1973,6 +1993,14 @@ class CharacterGeneratorWidget {
         const previousKind = this.data.ui?.resolution_model_kind;
         const previousBgKind = this.data.ui?.bg_remove_model_kind;
         let changed = false;
+        if (kind === "qi2" && this.qi2EmotionDefaultsPending) {
+            this.data.emotion_generation = {
+                ...(this.data.emotion_generation || {}),
+                ...QI2_EMOTION_BBOX_DEFAULTS,
+            };
+            this.qi2EmotionDefaultsPending = false;
+            changed = true;
+        }
         if (!this.isEmotions && previousKind !== kind) {
             const section = this.isClone ? "common" : "pose_generation";
             const settings = this.data[section];
@@ -2007,9 +2035,14 @@ class CharacterGeneratorWidget {
 
     bindModelResolutionSync() {
         const sync = event => {
-            if (!this.syncModelResolution(event?.detail?.node_id)) return;
+            const sourceChanged = this.syncCharacterSourceData();
+            const modelChanged = this.syncModelResolution(event?.detail?.node_id);
+            if (!sourceChanged && !modelChanged) return;
+            this.syncStagesFromData();
             writeData(this.node, this.data);
             this.renderSettings();
+            this.renderPreview();
+            this.renderChain();
         };
         window.addEventListener("vnccs-control-center-model-changed", sync);
         // Also cover graph reconnection and loading saved workflows in any node order.
@@ -2058,11 +2091,7 @@ class CharacterGeneratorWidget {
     }
 
     syncEmotionStudioSourceData() {
-        const matchesType = (node, type, displayName = "") => {
-            const title = typeof node?.getTitle === "function" ? node.getTitle() : node?.title;
-            return node?.type === type || node?.comfyClass === type || node?.constructor?.type === type || title === displayName;
-        };
-        const source = app.graph?._nodes?.find(n => matchesType(n, "EmotionGeneratorV2", "VNCCS Emotion Studio"));
+        const source = this.connectedEmotionStudioNode();
         if (!source) return false;
         const character = source.widgets?.find(w => w.name === "character")?.value || "";
         const costumesRaw = source.widgets?.find(w => w.name === "costumes_data")?.value || "[]";
@@ -2748,12 +2777,8 @@ class CharacterGeneratorWidget {
     }
 
     connectedEmotionStudioMode() {
-        if (!this.isEmotions) return false;
-        const pipeInput = (this.node.inputs || []).find(input => input.name === "pipe");
-        if (!pipeInput || pipeInput.link == null) return false;
-        const link = app.graph?.links?.[pipeInput.link];
-        const sourceNode = app.graph?.getNodeById?.(link?.origin_id);
-        if (!sourceNode || (sourceNode.type !== "EmotionGeneratorV2" && sourceNode.comfyClass !== "EmotionGeneratorV2")) return false;
+        const sourceNode = this.connectedEmotionStudioNode();
+        if (!sourceNode) return false;
 
         const settingsWidget = sourceNode.widgets?.find(widget => widget.name === "generation_settings");
         try {
@@ -2766,6 +2791,16 @@ class CharacterGeneratorWidget {
         const modeWidget = sourceNode.widgets?.find(widget => widget.name === "generation_model");
         const mode = String(modeWidget?.value || "").toLowerCase();
         return ["qi2", "anima", "illustrious"].includes(mode) ? mode : "";
+    }
+
+    connectedEmotionStudioNode() {
+        if (!this.isEmotions) return null;
+        const pipeInput = (this.node.inputs || []).find(input => input.name === "pipe");
+        if (!pipeInput || pipeInput.link == null) return null;
+        const link = app.graph?.links?.[pipeInput.link];
+        const sourceNode = app.graph?.getNodeById?.(link?.origin_id);
+        if (!sourceNode || (sourceNode.type !== "EmotionGeneratorV2" && sourceNode.comfyClass !== "EmotionGeneratorV2")) return null;
+        return sourceNode;
     }
 
     connectedEmotionStudioIsAnima() {
@@ -3565,6 +3600,8 @@ app.registerExtension({
         nodeType.prototype.onConfigure = function () {
             onConfigure?.apply(this, arguments);
             if (this._vnccsCharacterGeneratorWidget) {
+                // Loading a saved workflow must preserve its explicit values.
+                this._vnccsCharacterGeneratorWidget.qi2EmotionDefaultsPending = false;
                 this._vnccsCharacterGeneratorWidget.data = readData(this);
                 this._vnccsCharacterGeneratorWidget.syncCharacterSourceData();
                 this._vnccsCharacterGeneratorWidget.syncStagesFromData();

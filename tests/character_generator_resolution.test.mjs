@@ -29,7 +29,7 @@ function setup({ kind = "QI2", saved = {}, clone = false, clothes = false, emoti
     vm.runInContext(source.replace(/^import .*;\n/gm, "") + "\nthis.Widget = CharacterGeneratorWidget; this.readData = readData;", context);
     const widget = Object.create(context.Widget.prototype);
     Object.assign(widget, { node, data: context.readData(node), isClone: clone, isClothes: clothes, isEmotions: emotions,
-        stages: [], renders: 0, renderSettings() { this.renders++; }, syncCharacterSourceData() {}, saveBrowserState() {} });
+        stages: [], renders: 0, renderSettings() { this.renders++; }, renderPreview() {}, renderChain() {}, syncCharacterSourceData() {}, saveBrowserState() {} });
     widget.bindModelResolutionSync();
     return { widget, graph, serialized, cleanups, listeners, timers, app,
         switchTo(nextKind, sourceId = 1) {
@@ -71,12 +71,16 @@ function setupEmotionStudio(mode = "qi2") {
         isClone: false,
         isClothes: false,
         isEmotions: true,
+        qi2EmotionDefaultsPending: true,
         stages: [],
-        renderSettings() {},
+        renders: 0,
+        renderSettings() { this.renders++; },
+        renderPreview() { this.renders++; },
+        renderChain() { this.renders++; },
         saveBrowserState() {},
     });
     widget.bindModelResolutionSync();
-    return { widget, settings, serialized, timers };
+    return { widget, studio, settings, serialized, timers };
 }
 
 for (const mode of [{}, { clone: true }, { clothes: true }, { emotions: true }]) {
@@ -136,6 +140,10 @@ test("connected QI2 Emotion Studio selects Native BG Remove and restores the pri
     assert.equal(JSON.parse(serialized.value).bg_remove.preset, "Native");
     assert.equal(widget.shouldShowEmotionDenoiseControl(), false);
     assert.equal(widget.data.emotion_generation.target_size, 2048);
+    assert.equal(widget.data.emotion_generation.bbox_threshold, 0.3);
+    assert.equal(widget.data.emotion_generation.bbox_dilation, 50);
+    assert.equal(widget.data.emotion_generation.feather, 50);
+    assert.equal(widget.data.emotion_generation.drop_size, 10);
     const qi2Groups = widget.generatorSettingsGroups();
     assert.equal(qi2Groups.some(group => group.title.includes("VNCCS BBox Extractor")), true);
     assert.equal(qi2Groups.some(group => group.title === "FaceDetailer"), false);
@@ -152,6 +160,45 @@ test("connected QI2 Emotion Studio selects Native BG Remove and restores the pri
     timers.get(1)();
     assert.equal(widget.data.bg_remove.preset, "balanced");
     assert.equal(widget.shouldShowEmotionDenoiseControl(), true);
+});
+
+test("saved QI2 bbox values are preserved after workflow configuration", () => {
+    const { widget, timers } = setupEmotionStudio("qi2");
+    widget.qi2EmotionDefaultsPending = false;
+    Object.assign(widget.data.emotion_generation, {
+        bbox_threshold: 0.42,
+        bbox_dilation: 17,
+        feather: 9,
+        drop_size: 23,
+    });
+    timers.get(1)();
+
+    assert.equal(widget.data.emotion_generation.bbox_threshold, 0.42);
+    assert.equal(widget.data.emotion_generation.bbox_dilation, 17);
+    assert.equal(widget.data.emotion_generation.feather, 9);
+    assert.equal(widget.data.emotion_generation.drop_size, 23);
+});
+
+test("late Emotion Studio restore rebuilds emotion tabs without a click", () => {
+    const { widget, studio, timers } = setupEmotionStudio("qi2");
+    assert.equal(JSON.stringify(widget.currentStages()), JSON.stringify([["emotion_0001_bg_remove", "Emotion"]]));
+
+    studio.widgets.push(
+        { name: "character", value: "Qi2_test" },
+        { name: "costumes_data", value: JSON.stringify(["Naked", "Simple"]) },
+        { name: "emotions_data", value: JSON.stringify(["angry", "happy"]) },
+    );
+    const rendersBeforeRestore = widget.renders;
+    timers.get(1)();
+
+    assert.equal(JSON.stringify(widget.stages), JSON.stringify([
+        ["emotion_0001_bg_remove", "Naked / angry"],
+        ["emotion_0002_bg_remove", "Naked / happy"],
+        ["emotion_0003_bg_remove", "Simple / angry"],
+        ["emotion_0004_bg_remove", "Simple / happy"],
+    ]));
+    assert.equal(widget.selectedPreview, "emotion_0001_bg_remove");
+    assert.ok(widget.renders >= rendersBeforeRestore + 3);
 });
 
 test("Emotion Generator exposes only final result stages", () => {

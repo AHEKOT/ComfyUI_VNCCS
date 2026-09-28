@@ -91,3 +91,25 @@ test("starting a new generation resets downstream stages and follows its preview
     assert.equal(widget.selectedPreview, "pose_generation");
     assert.equal(widget.userSelectedPreview, false);
 });
+
+test("single-image regeneration replaces its preview without dropping siblings", () => {
+    const stage = "emotion_0001_bg_remove";
+    const { widget, emit } = setup(stage);
+    widget.stageState[stage].images = ["first", "second", "third"];
+    widget.regenerateState = {
+        imageIndex: 1,
+        targetStages: [stage],
+        activeStage: stage,
+    };
+
+    emit({ status: "running", message: "Regenerating image 2" });
+    assert.deepEqual(Array.from(widget.stageState[stage].images), ["first", "second", "third"]);
+
+    emit({
+        status: "running",
+        images: ["second-new"],
+        preview_start: 1,
+        replace_images: true,
+    });
+    assert.deepEqual(Array.from(widget.stageState[stage].images), ["first", "second-new", "third"]);
+});
