@@ -1,6 +1,10 @@
 import json
 from pathlib import Path
 
+import pytest
+
+pytest.importorskip("torch", exc_type=ImportError)
+
 from nodes import emotion_generator_v2 as emotion
 
 
@@ -53,4 +57,3 @@ def test_qi2_emotion_card_uses_natural_prompt_without_sdxl_wrapping():
     source = (ROOT / "nodes" / "emotion_generator_v2.py").read_text(encoding="utf-8")
     assert 'if mode == "qi2":' in source
     assert 'emotion_text = str(natural_prompt or emotion_description or emotion_key).strip()' in source
-
