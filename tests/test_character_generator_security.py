@@ -655,6 +655,48 @@ def test_emotions_generator_bg_remove_uses_character_background_color(tmp_path, 
     assert seen["background"] == "Green"
 
 
+def test_emotions_generator_qi2_passes_source_alpha_into_generation(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    seen = {}
+
+    monkeypatch.setattr(cg, "_character_cache_dir_from_sheets_path", lambda *args, **kwargs: str(tmp_path))
+    monkeypatch.setattr(cg, "_rotate_preview_cache", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cg, "_save_run_inputs", lambda *args, **kwargs: None)
+
+    node = cg.VNCCS_EmotionsGenerator()
+    monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(node, "_save_stage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(node, "_load_source_sprite_from_path", lambda *args, **kwargs: (None, None))
+
+    def capture_generation(image, *args, **kwargs):
+        seen["encoder_input"] = image.clone()
+        return image, image, torch.ones((image.shape[0], image.shape[1], image.shape[2]))
+
+    monkeypatch.setattr(node, "_run_emotion_generation_one", capture_generation)
+    monkeypatch.setattr(node, "_run_emotion_bg_remove", lambda images, *args, **kwargs: images)
+
+    images = torch.zeros(1, 4, 4, 4)
+    images[..., :3] = torch.tensor([0.2, 0.4, 0.6])
+    images[..., 3] = 0.25
+    pipe = type("Pipe", (), {"model_kind": "qi2", "model_entry": {"kind": "QI2"}})()
+    emotion_data = json.dumps([{
+        "emotion_prompt": "happy",
+        "sprite_output_path": "",
+        "background_color": "Alpha",
+    }])
+    widget_data = json.dumps({
+        "character_name": "Alice",
+        "bg_remove": {"preset": "Native", "use_sam3_details_recovery": False},
+    })
+
+    node.process(images, pipe, emotion_data, widget_data=widget_data, unique_id="test-node")
+
+    encoder_input = seen["encoder_input"]
+    assert encoder_input.shape == (1, 4, 4, 4)
+    assert torch.allclose(encoder_input[..., :3], images[..., :3])
+    assert torch.allclose(encoder_input[..., 3], images[..., 3])
+
+
 def test_emotions_generator_single_bg_regenerate_slices_cached_raw_batch(tmp_path, monkeypatch):
     torch = pytest.importorskip("torch")
     seen = {}
@@ -724,6 +766,27 @@ def test_emotion_detailer_input_rebuilds_clean_chroma_plate_from_source_alpha():
     assert prepared[0, 0, 0].tolist() == pytest.approx([0.0, 1.0, 0.0])
     assert prepared[0, 0, 1].tolist() == pytest.approx([0.1, 0.8, 0.4])
     assert prepared[0, 0, 2].tolist() == pytest.approx([0.2, 0.6, 0.8])
+
+
+def test_emotion_qi2_input_reconstructs_rgba_without_chroma_compositing():
+    torch = pytest.importorskip("torch")
+    node = cg.VNCCS_EmotionsGenerator()
+    image = torch.tensor(
+        [[[[0.2, 0.6, 0.8], [0.3, 0.4, 0.5], [0.7, 0.1, 0.9]]]],
+        dtype=torch.float32,
+    )
+    inverse_alpha = torch.tensor([[[1.0, 0.5, 0.0]]], dtype=torch.float32)
+
+    prepared = node._prepare_emotion_detailer_input(
+        image,
+        inverse_alpha,
+        "Green",
+        preserve_transparency=True,
+    )
+
+    assert prepared.shape == (1, 1, 3, 4)
+    assert torch.equal(prepared[..., :3], image)
+    assert prepared[..., 3].flatten().tolist() == pytest.approx([0.0, 0.5, 1.0])
 
 
 def test_emotion_rgba_merge_uses_premultiplied_color_at_soft_alpha_transition():

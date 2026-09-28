@@ -683,7 +683,11 @@ class EmotionGeneratorV2:
                     face_details = f"{face_details}, {costume_details}" if face_details else costume_details
                 
                 if mode == "qi2":
-                    emotion_text = str(natural_prompt or emotion_description or emotion_key).strip()
+                    emotion_text = build_anima_emotion_prompt(
+                        natural_prompt,
+                        emotion_description,
+                        emotion_key,
+                    )
                 elif effective_prompt_style == "Anima":
                     if face_details:
                         positive_prompt += f", Character face details: {face_details}"

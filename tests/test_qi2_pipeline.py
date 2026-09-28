@@ -190,12 +190,38 @@ def test_viggle_detailer_schedule_uses_encoded_crop_latent():
     latent = {"samples": torch.zeros(1, 4, 96, 80)}
     assert hook.post_encode(latent) is latent
     assert torch.equal(hook.scheduler_func(None, "euler", 6), viggle_turbo_sigmas(latent))
+    image = torch.zeros(1, 64, 64, 3)
+    assert hook.post_paste(image) is image
+    assert hook.should_retry_patch(object()) is False
 
 
-def test_qi2_emotion_detailer_uses_native_prompt_cache_and_system_encoder(monkeypatch):
+def test_qi2_emotion_crop_alignment_is_square_symmetric_and_reversible():
+    generator = cg.VNCCS_EmotionsGenerator()
+    crop = torch.rand(1, 119, 122, 3)
+    aligned, padding = generator._pad_image_to_square_multiple(crop, multiple=32)
+    left, top, right, bottom = padding
+    assert aligned.shape == (1, 128, 128, 3)
+    assert padding == (3, 4, 3, 5)
+    restored = aligned[:, top:128 - bottom, left:128 - right, :]
+    assert torch.equal(restored, crop)
+
+
+def test_qi2_emotion_uses_bbox_crop_qwen_encoder_and_exact_paste_region(monkeypatch):
     calls = []
-    image = torch.zeros(1, 512, 384, 3)
-    mask = torch.zeros(1, 512, 384)
+    image = torch.zeros(1, 512, 384, 4)
+    image[..., :3] = 0.2
+    image[..., 3] = 0.35
+    mask = 1.0 - image[..., 3]
+
+    class Segment:
+        crop_region = (100, 50, 200, 150)
+
+    class Detector:
+        def detect(self, _image, threshold, dilation, crop_factor, drop_size):
+            assert (threshold, dilation, crop_factor, drop_size) == (0.5, 10, 1.0, 10)
+            return ((512, 384), [Segment()])
+
+    detector = Detector()
 
     class Generator(cg.VNCCS_EmotionsGenerator):
         def _extract_pipe(self, _pipe):
@@ -216,33 +242,110 @@ def test_qi2_emotion_detailer_uses_native_prompt_cache_and_system_encoder(monkey
         if name == "TextEncodeQwenImage21":
             return ("positive", "negative", "encoder latent")
         if name == "UltralyticsDetectorProvider":
-            return (object(), object())
-        if name == "SAMLoader":
-            return (object(),)
-        if name == "FaceDetailer":
-            return (image, image, None, mask)
+            return (detector, object())
+        if name == "ImageScaleToTotalPixels":
+            return (torch.zeros(1, 256, 256, 4),)
+        if name == "EmptyLatentImage":
+            return ({"samples": torch.zeros(1, 4, 16, 16)},)
+        if name == "KSampler":
+            return (kwargs["latent_image"],)
+        if name == "VAEDecode":
+            decoded = torch.ones(1, 256, 256, 4)
+            decoded[..., 3] = 0.75
+            return (decoded,)
         raise AssertionError(name)
 
     monkeypatch.setattr(cg, "_call_comfy_node", fake_node)
-    Generator()._run_emotion_generation_one(
+    full_image, generated_crop, detailer_mask = Generator()._run_emotion_generation_one(
         image, mask, object(), "warm happy smile", "ignored face tags", "", 42,
+        detailer_settings={"face_denoise": 0.25, "target_size": 2048},
         bg_remove_settings={"preset": "Native"},
     )
 
-    assert [name for name, _ in calls[:2]] == ["QwenImage21Cache", "TextEncodeQwenImage21"]
-    cache = calls[0][1]
+    names = [name for name, _ in calls]
+    assert names == [
+        "UltralyticsDetectorProvider", "ImageScaleToTotalPixels",
+        "TextEncodeQwenImage21", "EmptyLatentImage", "QwenImage21Cache", "KSampler", "VAEDecode",
+    ]
+    scale = next(kwargs for name, kwargs in calls if name == "ImageScaleToTotalPixels")
+    assert scale["megapixels"] == 2.0
+    cache = next(kwargs for name, kwargs in calls if name == "QwenImage21Cache")
     assert (cache["device"], cache["dtype"]) == ("cpu", "int4")
-    encoder = calls[1][1]
+    encoder = next(kwargs for name, kwargs in calls if name == "TextEncodeQwenImage21")
     assert encoder["prompt"] == (
+        "Upscale face image.\n"
         "Make character's face emotion warm happy smile\n"
+        "Change only face. Keep original neck colour, clothes and hairs\n"
         "keep character's clothes\n"
         "Transparent background with alpha channel."
     )
     assert encoder["resolution"] == 1024
-    assert encoder["images"]["image_1"] is image
-    detailer = next(kwargs for name, kwargs in calls if name == "FaceDetailer")
-    assert detailer["tiled_encode"] is False
-    assert detailer["tiled_decode"] is False
+    assert encoder["images"]["image_1"].shape == (1, 128, 128, 4)
+    assert torch.allclose(
+        encoder["images"]["image_1"][..., 3],
+        torch.full((1, 128, 128), 0.35),
+    )
+    assert scale["image"] is encoder["images"]["image_1"]
+    assert scale["resolution_steps"] == 32
+    empty = next(kwargs for name, kwargs in calls if name == "EmptyLatentImage")
+    assert empty["width"] % 32 == 0
+    assert empty["height"] % 32 == 0
+    sample = next(kwargs for name, kwargs in calls if name == "KSampler")
+    assert sample["seed"] == 42
+    assert sample["denoise"] == 1.0
+    assert generated_crop.shape == (1, 256, 256, 4)
+    assert full_image.shape == image.shape
+    assert full_image[0, 100, 150, :].tolist() == pytest.approx([1.0, 1.0, 1.0, 0.75])
+    assert full_image[0, 40, 150, :].tolist() == pytest.approx([0.2, 0.2, 0.2, 0.35])
+    assert full_image[0, 42, 150, :].tolist() == pytest.approx([0.52, 0.52, 0.52, 0.51])
+    assert torch.allclose(full_image[:, :40, :, :3], torch.full((1, 40, 384, 3), 0.2))
+    assert torch.allclose(full_image[:, :40, :, 3], torch.full((1, 40, 384), 0.35))
+    assert torch.all(detailer_mask[:, 40:160, 90:210] == 1)
+    assert torch.all(detailer_mask[:, :40, :] == 0)
+    assert "FaceDetailer" not in names
+    assert "VNCCS_BBox_Extractor" not in names
+
+
+def test_qi2_emotion_crop_uses_physical_five_pixel_feather():
+    generator = cg.VNCCS_EmotionsGenerator()
+    reference = torch.zeros(1, 20, 20, 4)
+
+    mask = generator._crop_feather_mask(20, 20, feather=5, reference=reference)
+
+    assert mask.shape == (1, 20, 20)
+    assert mask[0, 0, 10].item() == pytest.approx(0.0)
+    assert mask[0, 1, 10].item() == pytest.approx(0.2)
+    assert mask[0, 4, 10].item() == pytest.approx(0.8)
+    assert mask[0, 5, 10].item() == pytest.approx(1.0)
+    assert mask[0, 10, 10].item() == pytest.approx(1.0)
+
+
+def test_qi2_emotion_prompt_template_keeps_dynamic_emotion_text():
+    generator = cg.VNCCS_EmotionsGenerator()
+
+    assert generator._qi2_emotion_prompt(
+        "A natural smile.\n\nEmotion Tags: smile, happy",
+        {"qi2_prompt_template": "Edit only the face:\n{emotion}\nKeep the hair."},
+    ) == (
+        "Edit only the face:\n"
+        "A natural smile.\n\nEmotion Tags: smile, happy\n"
+        "Keep the hair."
+    )
+    assert generator._qi2_emotion_prompt(
+        "angry face",
+        {"qi2_prompt_template": "Custom static instruction"},
+    ) == "Custom static instruction\nangry face"
+
+
+def test_emotion_preview_keeps_full_resolution_and_alpha():
+    generator = cg.VNCCS_EmotionsGenerator()
+    image = torch.rand(1, 1200, 800, 4)
+
+    preview = generator._emotion_preview_tensor(image)
+
+    assert preview.shape == image.shape
+    assert preview.device.type == "cpu"
+    assert torch.equal(preview, image.cpu())
 
 
 def test_qi2_decode_uses_standard_vae_decode(monkeypatch):

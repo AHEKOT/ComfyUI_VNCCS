@@ -53,7 +53,24 @@ def test_emotion_studio_ui_exposes_qi2_model_cache_and_turbo_controls():
     assert 'mode === "qi2" ? "QI2"' in UI_SOURCE
 
 
-def test_qi2_emotion_card_uses_natural_prompt_without_sdxl_wrapping():
+def test_qi2_emotion_card_uses_natural_prompt_and_description_tags():
     source = (ROOT / "nodes" / "emotion_generator_v2.py").read_text(encoding="utf-8")
     assert 'if mode == "qi2":' in source
-    assert 'emotion_text = str(natural_prompt or emotion_description or emotion_key).strip()' in source
+    assert """emotion_text = build_anima_emotion_prompt(
+                        natural_prompt,
+                        emotion_description,
+                        emotion_key,
+                    )""" in source
+
+
+def test_emotion_prompt_combines_natural_prompt_with_description_tags():
+    prompt = emotion.build_anima_emotion_prompt(
+        "The character gives a warm, relaxed smile.",
+        "soft smile, relaxed eyes, raised cheeks",
+        "happy",
+    )
+
+    assert prompt == (
+        "The character gives a warm, relaxed smile.\n\n"
+        "Emotion Tags: soft smile, relaxed eyes, raised cheeks"
+    )

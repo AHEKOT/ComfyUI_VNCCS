@@ -54,7 +54,7 @@ from .vnccs_control_center import (
     _entry_kind,
 )
 from .vnccs_flux_klein_encoder import VNCCS_Flux_Klein_Encoder
-from .qi2_viggle import apply_viggle_turbo_lora, viggle_turbo_sigmas, ViggleDetailerSchedule
+from .qi2_viggle import apply_viggle_turbo_lora, viggle_turbo_sigmas
 from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, VNCCS_RMBG2
 from ..utils import (
     basename_agnostic,
@@ -711,6 +711,12 @@ GENERATOR_QWEN_INSTRUCTION = (
     "character. Generate a new image that meets the user's requirements while maintaining consistency "
     "with the original character where appropriate."
 )
+QI2_EMOTION_PROMPT_TEMPLATE = (
+    "Upscale face image.\n"
+    "Make character's face emotion {emotion}\n"
+    "Change only face. Keep original neck colour, clothes and hairs\n"
+    "keep character's clothes"
+)
 
 
 DEFAULT_WIDGET_DATA = {
@@ -810,6 +816,7 @@ DEFAULT_WIDGET_DATA = {
     },
     "emotion_generation": {
         "task_batch_size": 0,
+        "target_size": 2048,
         "face_denoise": 0.55,
         "use_sam": False,
         "bbox_model": "bbox/face_yolov8m.pt",
@@ -827,6 +834,7 @@ DEFAULT_WIDGET_DATA = {
         "force_inpaint": True,
         "bbox_threshold": 0.5,
         "bbox_dilation": 10,
+        "qi2_prompt_template": QI2_EMOTION_PROMPT_TEMPLATE,
         "bbox_crop_factor": 3.0,
         "sam_detection_hint": "center-1",
         "sam_dilation": 0,
@@ -1597,6 +1605,200 @@ class VNCCS_CharacterGenerator:
         else:
             result[:, y1:y2, x1:x2, :patch.shape[-1]] = patch
         return result
+
+    def _crop_feather_mask(self, height, width, feather=5, reference=None):
+        height = max(1, int(height))
+        width = max(1, int(width))
+        feather = max(0, int(feather))
+        device = reference.device if torch.is_tensor(reference) else None
+        dtype = reference.dtype if torch.is_tensor(reference) else torch.float32
+        if feather <= 0:
+            return torch.ones((1, height, width), device=device, dtype=dtype)
+
+        y = torch.arange(height, device=device, dtype=dtype)
+        x = torch.arange(width, device=device, dtype=dtype)
+        y_distance = torch.minimum(y, (height - 1) - y).view(height, 1)
+        x_distance = torch.minimum(x, (width - 1) - x).view(1, width)
+        edge_distance = torch.minimum(y_distance, x_distance)
+        return (edge_distance / float(feather)).clamp(0.0, 1.0).unsqueeze(0)
+
+    def _vnccs_bbox_extract_face(self, image, bbox_detector, threshold=0.5, dilation=10, drop_size=10):
+        if not torch.is_tensor(image) or image.ndim != 4:
+            raise ValueError("QI2 BBox extraction requires a B,H,W,C IMAGE tensor.")
+        if int(image.shape[0]) != 1:
+            raise ValueError("QI2 BBox extraction supports one image at a time.")
+
+        try:
+            segs = bbox_detector.detect(
+                image,
+                float(threshold),
+                int(dilation),
+                1.0,
+                int(drop_size),
+            )
+        except Exception as exc:
+            raise RuntimeError(f"QI2 face BBox detection failed: {exc}") from exc
+        if not isinstance(segs, tuple) or len(segs) != 2 or not isinstance(segs[1], (list, tuple)):
+            return None, None
+
+        image_h, image_w = [int(value) for value in segs[0]]
+        regions = []
+        for seg in segs[1]:
+            x1, y1, x2, y2 = [int(value) for value in seg.crop_region]
+            x1 = max(0, x1 - int(dilation))
+            y1 = max(0, y1 - int(dilation))
+            x2 = min(image_w, x2 + int(dilation))
+            y2 = min(image_h, y2 + int(dilation))
+            if x2 - x1 >= 10 and y2 - y1 >= 10:
+                regions.append((x1, y1, x2, y2))
+        if not regions:
+            return None, None
+
+        x1, y1, x2, y2 = regions[0]
+        # Slice the original BHWC tensor directly. This intentionally preserves
+        # every channel, including QI2's alpha channel, without an RGB canvas or
+        # a round trip through another registered custom node.
+        crop = image[:1, y1:y2, x1:x2, :].contiguous()
+        return crop, (x1, y1, x2, y2)
+
+    def _pad_image_to_square_multiple(self, image, multiple=32):
+        if not torch.is_tensor(image) or image.ndim != 4:
+            raise ValueError("QI2 crop alignment requires a B,H,W,C IMAGE tensor.")
+        height, width = int(image.shape[1]), int(image.shape[2])
+        target_side = max(int(multiple), math.ceil(max(width, height) / int(multiple)) * int(multiple))
+        pad_w = target_side - width
+        pad_h = target_side - height
+        left = pad_w // 2
+        right = pad_w - left
+        top = pad_h // 2
+        bottom = pad_h - top
+        if pad_w == 0 and pad_h == 0:
+            return image, (left, top, right, bottom)
+        aligned = F.pad(
+            image.permute(0, 3, 1, 2),
+            (left, right, top, bottom),
+            mode="replicate",
+        ).permute(0, 2, 3, 1).contiguous()
+        return aligned, (left, top, right, bottom)
+
+    def _run_qi2_emotion_crop_generation(
+        self,
+        image,
+        pipe,
+        pipe_values,
+        prompt,
+        negative_prompt,
+        seed,
+        sampler,
+        bbox_detector,
+        configured,
+    ):
+        try:
+            bbox_threshold = max(0.0, min(1.0, float(configured.get("bbox_threshold", 0.5))))
+        except (TypeError, ValueError):
+            bbox_threshold = 0.5
+        try:
+            drop_size = max(1, min(4096, int(configured.get("drop_size", 10))))
+        except (TypeError, ValueError):
+            drop_size = 10
+        try:
+            bbox_dilation = max(0, min(1024, int(configured.get("bbox_dilation", 10))))
+        except (TypeError, ValueError):
+            bbox_dilation = 10
+        try:
+            feather = max(0, min(1024, int(configured.get("feather", 5))))
+        except (TypeError, ValueError):
+            feather = 5
+        crop, crop_region = self._vnccs_bbox_extract_face(
+            image,
+            bbox_detector,
+            threshold=bbox_threshold,
+            dilation=bbox_dilation,
+            drop_size=drop_size,
+        )
+        if crop is None or crop_region is None:
+            empty_mask = torch.zeros(
+                (int(image.shape[0]), int(image.shape[1]), int(image.shape[2])),
+                device=image.device,
+                dtype=image.dtype,
+            )
+            return image, image, empty_mask
+
+        aligned_crop, crop_padding = self._pad_image_to_square_multiple(crop, multiple=32)
+
+        target_size = _resolution_scale_value(configured.get("target_size", 2048))
+        scaled_crop = _call_comfy_node(
+            "ImageScaleToTotalPixels",
+            image=aligned_crop,
+            upscale_method="lanczos",
+            megapixels=float(target_size) / 1024.0,
+            resolution_steps=32,
+        )[0]
+        scaled_tensor = _first_tensor(scaled_crop)
+        if not torch.is_tensor(scaled_tensor) or scaled_tensor.ndim != 4:
+            raise RuntimeError("QI2 emotion crop scaling did not return an IMAGE tensor.")
+
+        positive, negative, _encoder_latent = _call_comfy_node(
+            "TextEncodeQwenImage21",
+            clip=pipe_values["clip"],
+            vae=pipe_values["vae"],
+            prompt=prompt,
+            negative_prompt=str(negative_prompt or ""),
+            resolution=1024,
+            images={"image_1": aligned_crop},
+        )
+        latent = _call_comfy_node(
+            "EmptyLatentImage",
+            width=int(scaled_tensor.shape[2]),
+            height=int(scaled_tensor.shape[1]),
+            batch_size=1,
+        )[0]
+        model, turbo = self._qi2_prepare_model(pipe_values["model"], pipe, pipe_values)
+        samples = self._qi2_sample(model, positive, negative, latent, sampler, turbo=turbo)
+        generated_crop = self._qi2_decode(samples, pipe_values["vae"])
+        generated_crop = self._list_to_batch(generated_crop)
+        aligned_h, aligned_w = int(aligned_crop.shape[1]), int(aligned_crop.shape[2])
+        paste_crop = self._tensor_resize_like_impact(generated_crop, aligned_w, aligned_h)
+        left, top, right, bottom = crop_padding
+        paste_crop = paste_crop[
+            :,
+            top:aligned_h - bottom if bottom else aligned_h,
+            left:aligned_w - right if right else aligned_w,
+            :,
+        ].contiguous()
+        crop_height = int(crop_region[3]) - int(crop_region[1])
+        crop_width = int(crop_region[2]) - int(crop_region[0])
+        paste_mask = self._crop_feather_mask(
+            crop_height,
+            crop_width,
+            feather=feather,
+            reference=image,
+        )
+        full_image = self._paste_crop_direct(
+            image,
+            paste_crop,
+            crop_region,
+            paste_mask=paste_mask,
+        )
+
+        x1, y1, x2, y2 = crop_region
+        detailer_mask = torch.zeros(
+            (int(full_image.shape[0]), int(full_image.shape[1]), int(full_image.shape[2])),
+            device=full_image.device,
+            dtype=full_image.dtype,
+        )
+        detailer_mask[:, y1:y2, x1:x2] = 1.0
+        return full_image, generated_crop, detailer_mask
+
+    def _qi2_emotion_prompt(self, emotion_prompt, configured):
+        selected_prompt = str(emotion_prompt or "").strip()
+        configured = configured if isinstance(configured, dict) else {}
+        template = str(configured.get("qi2_prompt_template", QI2_EMOTION_PROMPT_TEMPLATE) or "").strip()
+        if not template:
+            return selected_prompt
+        if "{emotion}" in template:
+            return template.replace("{emotion}", selected_prompt).strip()
+        return f"{template}\n{selected_prompt}".strip()
 
     def _conditioning_width(self, conditioning):
         try:
@@ -3458,23 +3660,11 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             "available_ram_gib": available_ram / gib if available_ram else 0.0,
         }
 
-    def _emotion_preview_tensor(self, image, max_side=768):
+    def _emotion_preview_tensor(self, image):
         batch = self._list_to_batch(image)
         if not torch.is_tensor(batch) or batch.ndim != 4:
             return None
-        height, width = int(batch.shape[1]), int(batch.shape[2])
-        longest = max(height, width)
-        if longest <= int(max_side):
-            return batch.detach().cpu()
-        scale = float(max_side) / float(longest)
-        target = (max(1, int(round(height * scale))), max(1, int(round(width * scale))))
-        return F.interpolate(
-            batch.detach().cpu().movedim(-1, 1).float(),
-            size=target,
-            mode="bilinear",
-            align_corners=False,
-            antialias=True,
-        ).movedim(1, -1).clamp(0.0, 1.0)
+        return batch.detach().cpu()
 
     def _emotion_cache_item_key(self, stage, item_index):
         return f"{stage}__item_{int(item_index) + 1:04d}"
@@ -3561,10 +3751,18 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         color = colors[self._emotion_chroma_background(background)]
         return torch.tensor(color, device=reference.device, dtype=reference.dtype).view(1, 1, 1, 3)
 
-    def _prepare_emotion_detailer_input(self, image, mask, background):
+    def _prepare_emotion_detailer_input(
+        self,
+        image,
+        mask,
+        background,
+        preserve_transparency=False,
+    ):
         rgb, alpha = self._source_rgb_alpha(image, mask)
         if alpha is None:
             return rgb
+        if preserve_transparency:
+            return torch.cat([rgb, alpha.unsqueeze(-1)], dim=-1).clamp(0.0, 1.0)
         screen = self._background_rgb(rgb, background)
         return (rgb * alpha.unsqueeze(-1) + screen * (1.0 - alpha.unsqueeze(-1))).clamp(0.0, 1.0)
 
@@ -4114,46 +4312,23 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             "sampler_name": pipe_values["sampler"],
             "scheduler": pipe_values["scheduler"],
         }
-        qi2_turbo_lora = self._qi2_turbo_lora(pipe) if self._is_qi2_pipe(pipe_values) else ""
-        if qi2_turbo_lora:
-            sampler.update(steps=6, cfg=1.0, sampler_name="euler", scheduler="simple")
-            # Viggle's schedule is defined for a complete six-step pass.  The
-            # FaceDetailer reference workflow therefore uses denoise 1.0.
+        is_qi2 = self._is_qi2_pipe(pipe_values)
+        if is_qi2:
+            # QI2 crop generation always performs a complete edit pass.
             face_denoise = 1.0
         if not _as_bool(configured.get("inherit_pipe_sampler", True), True):
             sampler["sampler_name"] = str(configured.get("sampler_name", pipe_values["sampler"]))
             sampler["scheduler"] = str(configured.get("scheduler", pipe_values["scheduler"]))
         model_for_detailer = pipe_values["model"]
-        viggle_detailer = None
-        if self._is_qi2_pipe(pipe_values):
-            if qi2_turbo_lora:
-                model_for_detailer = apply_viggle_turbo_lora(
-                    model_for_detailer,
-                    qi2_turbo_lora,
-                    strength=1.0,
-                )
-                viggle_detailer = ViggleDetailerSchedule()
-            model_for_detailer = self._qi2_cache_model(model_for_detailer, pipe_values)
 
-        if self._is_qi2_pipe(pipe_values):
-            selected_prompt = str(emotion_prompt or "").strip()
-            detailer_positive_text = (
-                f"Make character's face emotion {selected_prompt}\n"
-                "keep character's clothes"
-            )
+        if is_qi2:
+            detailer_positive_text = self._qi2_emotion_prompt(emotion_prompt, configured)
             if self._is_native_bg_remove(bg_remove_settings):
                 detailer_positive_text += f"\n{NATIVE_BACKGROUND_PROMPT}"
         else:
             detailer_positive_text = self._detailer_positive_prompt(emotion_prompt, face_details)
         print(f"[VNCCS Emotions Generator] Emotion positive: {detailer_positive_text[:500]}")
-        if self._is_qi2_pipe(pipe_values):
-            positive, negative, _encoder_latent = _call_comfy_node(
-                "TextEncodeQwenImage21",
-                clip=pipe_values["clip"], vae=pipe_values["vae"],
-                prompt=detailer_positive_text, negative_prompt=str(negative_prompt or ""),
-                resolution=1024, images={"image_1": image},
-            )
-        else:
+        if not is_qi2:
             positive = _call_comfy_node(
                 "CLIPTextEncode", clip=pipe_values["clip"], text=detailer_positive_text,
             )[0]
@@ -4165,6 +4340,19 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             "UltralyticsDetectorProvider",
             model_name=str(configured.get("bbox_model", "bbox/face_yolov8m.pt")),
         )[0]
+
+        if is_qi2:
+            return self._run_qi2_emotion_crop_generation(
+                image,
+                pipe,
+                pipe_values,
+                detailer_positive_text,
+                negative_prompt,
+                seed,
+                {**sampler, "seed": int(seed or pipe_values["seed"]), "denoise": 1.0},
+                bbox_detector,
+                configured,
+            )
 
         sam_model = None
         segm_detector = None
@@ -4212,11 +4400,11 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             cycle=int(configured.get("cycle", 1)),
             inpaint_model=_as_bool(configured.get("inpaint_model", False), False),
             noise_mask_feather=int(configured.get("noise_mask_feather", 20)),
-            tiled_encode=False if self._is_qi2_pipe(pipe_values) else _as_bool(configured.get("tiled_encode", True), True),
-            tiled_decode=False if self._is_qi2_pipe(pipe_values) else _as_bool(configured.get("tiled_decode", True), True),
+            tiled_encode=False if is_qi2 else _as_bool(configured.get("tiled_encode", True), True),
+            tiled_decode=False if is_qi2 else _as_bool(configured.get("tiled_decode", True), True),
             wildcard=detailer_positive_text,
-            detailer_hook=viggle_detailer,
-            scheduler_func_opt=viggle_detailer.scheduler_func if viggle_detailer else None,
+            detailer_hook=None,
+            scheduler_func_opt=None,
         )
         full_image = self._list_to_batch(detailed[0])
         face_crop = self._list_to_batch(detailed[1]) if len(detailed) > 1 and detailed[1] is not None else full_image
@@ -4273,6 +4461,11 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             **bg_settings,
         }
         pipe = self._unwrap_scalar(pipe)
+        pipe_model_kind = (
+            _entry_kind(getattr(pipe, "model_entry", None))
+            or str(getattr(pipe, "model_kind", "") or "").strip().lower()
+        )
+        emotion_is_qi2 = pipe_model_kind == "qi2"
         unique_id = self._unwrap_scalar(unique_id)
         prompt = self._unwrap_scalar(prompt)
         extra_pnginfo = self._unwrap_scalar(extra_pnginfo)
@@ -4402,9 +4595,9 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 batch_total = max(1, (group_total + batch_size - 1) // batch_size)
                 self._emit(
                     unique_id,
-                    stage_key,
+                    bg_stage_key,
                     "running",
-                    message=f"{plan_message}. Starting {stage_label}",
+                    message=f"{plan_message}. Starting final {stage_label} generation",
                     current=0,
                     total=group_total,
                     cache_dir=cache_dir,
@@ -4459,6 +4652,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                                 source_image,
                                 source_mask,
                                 background_color,
+                                preserve_transparency=emotion_is_qi2,
                             )
                             raw_result, face_crop, detailer_mask = self._run_emotion_generation_one(
                                 detailer_input,
@@ -4503,29 +4697,18 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                             "generated_final": False,
                         })
 
-                    raw_previews = [
-                        self._emotion_preview_tensor(record["raw_result"])
-                        for record in records
-                    ]
-                    raw_preview_batch = self._safe_image_batch(
-                        raw_previews,
-                        stage=f"{stage_key} preview batch",
-                    )
                     group_done = min(group_total, batch_start + len(records))
                     self._emit(
                         unique_id,
-                        stage_key,
+                        bg_stage_key,
                         "running",
-                        raw_preview_batch,
-                        (
-                            f"Batch {batch_number}/{batch_total}: generated {group_done}/{group_total} {stage_label}; "
-                            f"overall {completed_tasks}/{total} complete"
+                        message=(
+                            f"Batch {batch_number}/{batch_total}: generated {group_done}/{group_total} "
+                            f"{stage_label}; preparing final background"
                         ),
-                        group_done,
-                        group_total,
+                        current=group_done,
+                        total=group_total,
                         cache_dir=cache_dir,
-                        preview_start=batch_positions[0] if batch_positions else batch_start,
-                        append_images=batch_number > 1,
                     )
                     bg_records = []
                     if not regenerate_bg:
@@ -4645,10 +4828,8 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                     )
 
                     records.clear()
-                    raw_previews.clear()
                     final_previews.clear()
                     bg_records.clear()
-                    raw_preview_batch = None
                     final_preview_batch = None
                     raw_batch = None
                     detailer_masks = None
@@ -4666,15 +4847,6 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                     record = None
                     self._release_emotion_batch()
 
-                self._emit(
-                    unique_id,
-                    stage_key,
-                    "done",
-                    message=f"Finished {group_total} {stage_label} raw image(s) in {batch_total} batch(es)",
-                    current=group_total,
-                    total=group_total,
-                    cache_dir=cache_dir,
-                )
                 bg_done = "Chroma key skipped" if self._bg_remove_disabled(bg_settings) else "Background removed"
                 self._emit(
                     unique_id,

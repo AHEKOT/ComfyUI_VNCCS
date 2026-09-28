@@ -84,6 +84,12 @@ class ViggleDetailerSchedule:
     def post_detection(self, segs):
         return segs
 
+    def post_paste(self, image):
+        return image
+
+    def should_retry_patch(self, _patch):
+        return False
+
 
 def _lora_linear(tensor, pair):
     down, up = pair

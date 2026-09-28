@@ -134,10 +134,39 @@ test("connected QI2 Emotion Studio selects Native BG Remove and restores the pri
     timers.get(1)();
     assert.equal(widget.data.bg_remove.preset, "Native");
     assert.equal(JSON.parse(serialized.value).bg_remove.preset, "Native");
+    assert.equal(widget.shouldShowEmotionDenoiseControl(), false);
+    assert.equal(widget.data.emotion_generation.target_size, 2048);
+    const qi2Groups = widget.generatorSettingsGroups();
+    assert.equal(qi2Groups.some(group => group.title.includes("VNCCS BBox Extractor")), true);
+    assert.equal(qi2Groups.some(group => group.title === "FaceDetailer"), false);
+    const bboxFields = qi2Groups.find(group => group.title.includes("VNCCS BBox Extractor")).fields;
+    assert.deepEqual(
+        Array.from(bboxFields, field => field.key),
+        ["target_size", "bbox_threshold", "bbox_dilation", "feather", "drop_size"],
+    );
+    const promptGroup = qi2Groups.find(group => group.title.includes("Emotion Prompt"));
+    assert.equal(promptGroup.fields[0].key, "qi2_prompt_template");
+    assert.match(widget.data.emotion_generation.qi2_prompt_template, /\{emotion\}/);
 
     settings.value = JSON.stringify({ generation_mode: "anima" });
     timers.get(1)();
     assert.equal(widget.data.bg_remove.preset, "balanced");
+    assert.equal(widget.shouldShowEmotionDenoiseControl(), true);
+});
+
+test("Emotion Generator exposes only final result stages", () => {
+    const { widget } = setup({ emotions: true });
+    assert.equal(JSON.stringify(widget.currentStages()), JSON.stringify([["emotion_0001_bg_remove", "Emotion"]]));
+
+    widget.data.emotion_pairs = [
+        { costume: "Naked", emotion: "angry" },
+        { costume: "Simple", emotion: "happy" },
+    ];
+    assert.equal(JSON.stringify(widget.currentStages()), JSON.stringify([
+        ["emotion_0001_bg_remove", "Naked / angry"],
+        ["emotion_0002_bg_remove", "Simple / happy"],
+    ]));
+    assert.equal(widget.defaultPreviewStage(), "emotion_0001_bg_remove");
 });
 
 for (const mode of [{}, { clone: true }, { clothes: true }]) {
