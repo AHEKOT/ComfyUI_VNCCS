@@ -2331,7 +2331,7 @@ class CharacterGeneratorWidget {
         const wrap = document.createElement("label");
         wrap.className = "vnccs-pipe-field";
         const help = {
-            target_size: "Model defaults: QI2 and Klein 1024, MiniMaxH3 1536. You can change this value manually until the next model-family switch.",
+            target_size: "Model defaults: QI2 and Klein 1024, MiniMaxH3 1536. For QI2, 1024 means a 1 MP output budget and 2048 means 2 MP.",
             prompt: "Prompt text used for the remove-clothes/preparation stage.",
             gan_model: "Upscale model used when GAN upscaling is selected.",
             model: "SeedVR diffusion model used for the upscaler stage.",

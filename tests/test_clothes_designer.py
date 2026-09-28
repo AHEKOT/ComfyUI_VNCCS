@@ -318,6 +318,14 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
             return "positive", "negative", {"samples": torch.zeros(1)}
         if name == "ImageScale":
             return (kwargs["image"],)
+        if name == "ImageScaleToTotalPixels":
+            source = kwargs["image"]
+            height, width = int(source.shape[1]), int(source.shape[2])
+            target_pixels = float(kwargs["megapixels"]) * 1024 * 1024
+            scale = (target_pixels / (width * height)) ** 0.5
+            scaled_width = round(width * scale)
+            scaled_height = round(height * scale)
+            return (torch.zeros((1, scaled_height, scaled_width, 3)),)
         if name == "TextEncodeQwenImage21":
             return "positive", "negative", {"samples": torch.zeros(1)}
         if name == "EmptyLatentImage":
@@ -326,7 +334,7 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
             return "positive", {"samples": torch.zeros(1)}
         if name in ("KSampler", "SamplerCustomAdvanced"):
             return ({"samples": torch.zeros(1)},)
-        if name == "VAEDecodeTiled":
+        if name in ("VAEDecodeTiled", "VAEDecode"):
             return (torch.zeros((5 if kind == "MiniMaxH3" else 1, 96, 64, 3)),)
         return (object(),)
     monkeypatch.setattr(cd, "_call_comfy_node", call)
@@ -349,10 +357,13 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
         assert calls[cd.KLEIN_ENCODER_CLASS]["megapixels"] == (expected / 1024) ** 2
     else:
         latent = calls["EmptyLatentImage"]
-        assert latent["width"] * latent["height"] == pytest.approx(expected ** 2, rel=0.04)
+        assert latent["width"] * latent["height"] == pytest.approx(expected * 1024, rel=0.04)
         assert latent["width"] / latent["height"] == pytest.approx(64 / 96, rel=0.04)
-        assert calls["TextEncodeQwenImage21"]["resolution"] == 0
+        assert calls["ImageScaleToTotalPixels"]["megapixels"] == pytest.approx(expected / 1024)
+        assert calls["TextEncodeQwenImage21"]["resolution"] == 1024
         assert "QwenImage21Cache" in calls
+        assert "VAEDecode" in calls
+        assert "VAEDecodeTiled" not in calls
 
 
 @pytest.mark.parametrize("size", [True, "bad", -1, 0, 511, 4097, 1024.5, float("inf"), float("nan")])

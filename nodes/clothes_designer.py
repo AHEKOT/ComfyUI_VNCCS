@@ -638,18 +638,22 @@ class ClothesDesigner:
 
         # 5. Decode
         print("[ClothesDesigner] VAE Decoding...")
-        try:
-            with torch.inference_mode():
-                image, = _call_comfy_node(
-                    "VAEDecodeTiled",
-                    vae=vae,
-                    samples=latent_for_decode,
-                    **WORKFLOW_DECODE_DEFAULTS,
-                )
-        except Exception as e:
-            print(f"[ClothesDesigner] VAEDecodeTiled failed ({e}), falling back to VAEDecode...")
+        if is_qi2:
             with torch.inference_mode():
                 image, = _call_comfy_node("VAEDecode", vae=vae, samples=latent_for_decode)
+        else:
+            try:
+                with torch.inference_mode():
+                    image, = _call_comfy_node(
+                        "VAEDecodeTiled",
+                        vae=vae,
+                        samples=latent_for_decode,
+                        **WORKFLOW_DECODE_DEFAULTS,
+                    )
+            except Exception as e:
+                print(f"[ClothesDesigner] VAEDecodeTiled failed ({e}), falling back to VAEDecode...")
+                with torch.inference_mode():
+                    image, = _call_comfy_node("VAEDecode", vae=vae, samples=latent_for_decode)
 
         if is_h3:
             image = VNCCS_CharacterGenerator()._h3_first_frame_to_cpu(image)

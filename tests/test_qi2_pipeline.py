@@ -13,15 +13,16 @@ from nodes.qi2_viggle import (
 )
 
 
-def test_qi2_uses_scaled_pose_and_separate_empty_latent(monkeypatch):
+def test_qi2_system_encoder_scales_references_and_uses_separate_empty_latent(monkeypatch):
     calls = []
     encoder_latent = object()
     sampler_latent = object()
+    scaled_pose = torch.zeros(1, 836, 1254, 3)
 
     def fake_node(name, **kwargs):
         calls.append((name, kwargs))
-        if name == "ImageScale":
-            return (kwargs["image"],)
+        if name == "ImageScaleToTotalPixels":
+            return (scaled_pose,)
         if name == "TextEncodeQwenImage21":
             return ("positive", "negative", encoder_latent)
         if name == "EmptyLatentImage":
@@ -36,17 +37,54 @@ def test_qi2_uses_scaled_pose_and_separate_empty_latent(monkeypatch):
         {"clip": "clip", "vae": "vae"}, "pose prompt", (pose, character), target_size=1024,
     )
 
-    expected_width, expected_height = generator._resolution_scale_dimensions(pose, 1024)
     assert (positive, negative, latent) == ("positive", "negative", sampler_latent)
-    scales = [kwargs for name, kwargs in calls if name == "ImageScale"]
-    assert (scales[0]["width"], scales[0]["height"]) == (expected_width, expected_height)
+    assert [name for name, _ in calls] == [
+        "ImageScaleToTotalPixels", "TextEncodeQwenImage21", "EmptyLatentImage",
+    ]
+    scale = calls[0][1]
+    assert scale == {
+        "image": pose,
+        "upscale_method": "lanczos",
+        "megapixels": 1.0,
+        "resolution_steps": 1,
+    }
     encode = next(kwargs for name, kwargs in calls if name == "TextEncodeQwenImage21")
-    assert encode["images"]["image_1"] is pose
+    assert encode["images"]["image_1"] is scaled_pose
     assert encode["images"]["image_2"] is character
-    assert encode["resolution"] == 0
+    assert encode["resolution"] == 1024
     assert encode["negative_prompt"] == ""
     empty = next(kwargs for name, kwargs in calls if name == "EmptyLatentImage")
-    assert empty == {"width": expected_width, "height": expected_height, "batch_size": 1}
+    assert empty == {"width": 1254, "height": 836, "batch_size": 1}
+
+
+def test_qi2_2048_setting_means_two_megapixels_not_2048_squared(monkeypatch):
+    calls = []
+    scaled_pose = torch.zeros(1, 2243, 935, 1)
+
+    def fake_node(name, **kwargs):
+        calls.append((name, kwargs))
+        if name == "ImageScaleToTotalPixels":
+            return (scaled_pose,)
+        if name == "TextEncodeQwenImage21":
+            return ("positive", "negative", "encoder latent")
+        if name == "EmptyLatentImage":
+            return ("empty latent",)
+        raise AssertionError(name)
+
+    monkeypatch.setattr(cg, "_call_comfy_node", fake_node)
+    pose = torch.zeros(1, 1536, 640, 3)
+    character = torch.zeros(1, 1536, 640, 3)
+
+    cg.VNCCS_CharacterGenerator()._qi2_encode(
+        {"clip": "clip", "vae": "vae"}, "pose prompt", (pose, character), target_size=2048,
+    )
+
+    assert calls[0][0] == "ImageScaleToTotalPixels"
+    assert calls[0][1]["megapixels"] == 2.0
+    encoder = next(kwargs for name, kwargs in calls if name == "TextEncodeQwenImage21")
+    assert encoder["resolution"] == 1024
+    empty = next(kwargs for name, kwargs in calls if name == "EmptyLatentImage")
+    assert empty == {"width": 935, "height": 2243, "batch_size": 1}
 
 
 def test_viggle_turbo_uses_unmerged_lora_cache_and_latent_dependent_sigmas(monkeypatch):
@@ -165,7 +203,7 @@ def test_qi2_emotion_detailer_uses_native_prompt_cache_and_system_encoder(monkey
 
     def fake_node(name, **kwargs):
         calls.append((name, kwargs))
-        if name in {"QwenImage21Cache", "ImageScale"}:
+        if name == "QwenImage21Cache":
             return (kwargs.get("model", kwargs.get("image")),)
         if name == "TextEncodeQwenImage21":
             return ("positive", "negative", "encoder latent")
@@ -183,14 +221,91 @@ def test_qi2_emotion_detailer_uses_native_prompt_cache_and_system_encoder(monkey
         bg_remove_settings={"preset": "Native"},
     )
 
-    assert [name for name, _ in calls[:3]] == ["QwenImage21Cache", "ImageScale", "TextEncodeQwenImage21"]
+    assert [name for name, _ in calls[:2]] == ["QwenImage21Cache", "TextEncodeQwenImage21"]
     cache = calls[0][1]
     assert (cache["device"], cache["dtype"]) == ("cpu", "int4")
-    encoder = calls[2][1]
+    encoder = calls[1][1]
     assert encoder["prompt"] == (
         "Make character's face emotion warm happy smile\n"
         "keep character's clothes\n"
         "Transparent background with alpha channel."
     )
-    assert encoder["resolution"] == 0
+    assert encoder["resolution"] == 1024
     assert encoder["images"]["image_1"] is image
+    detailer = next(kwargs for name, kwargs in calls if name == "FaceDetailer")
+    assert detailer["tiled_encode"] is False
+    assert detailer["tiled_decode"] is False
+
+
+def test_qi2_decode_uses_standard_vae_decode(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        cg,
+        "_call_comfy_node",
+        lambda name, **kwargs: calls.append((name, kwargs)) or ("image",),
+    )
+
+    result = cg.VNCCS_CharacterGenerator()._qi2_decode("samples", "vae")
+
+    assert result == "image"
+    assert calls == [("VAEDecode", {"samples": "samples", "vae": "vae"})]
+
+
+def test_qi2_pose_pipeline_matches_reference_encoder_and_decode_nodes(monkeypatch):
+    calls = []
+    pose = torch.zeros(1, 640, 384, 3)
+    character = torch.ones(1, 640, 384, 3)
+    decoded = torch.full((1, 640, 384, 3), 0.5)
+
+    class MaskExtractor:
+        def fill_alpha_with_color(self, image):
+            return (image,)
+
+    class Generator(cg.VNCCS_CharacterGenerator):
+        def _extract_pipe(self, _pipe):
+            return {
+                "model": "model", "clip": "clip", "vae": "vae", "seed": 7,
+                "steps": 25, "cfg": 3.0, "denoise": 1.0,
+                "sampler": "euler", "scheduler": "simple",
+                "model_kind": "qi2", "model_entry": {"kind": "QI2"},
+                "qi2_cache": {"device": "gpu", "dtype": "int8"},
+            }
+
+        def _apply_pose_lora_to_model(self, model, *_args):
+            return model
+
+    def fake_node(name, **kwargs):
+        calls.append((name, kwargs))
+        outputs = {
+            "ImageScaleToTotalPixels": (kwargs.get("image"),),
+            "TextEncodeQwenImage21": ("positive", "negative", "encoder latent"),
+            "EmptyLatentImage": ("empty latent",),
+            "QwenImage21Cache": ("cached model",),
+            "KSampler": ("sampled latent",),
+            "VAEDecode": (decoded,),
+        }
+        return outputs[name]
+
+    pipe = type("Pipe", (), {"lora_entries": [], "lora_states": []})()
+    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", MaskExtractor)
+    monkeypatch.setattr(cg, "_call_comfy_node", fake_node)
+
+    result = Generator()._run_pose_generation(
+        pose, character, pipe, "pose prompt", {"target_size": 1024},
+    )
+
+    assert torch.equal(result, decoded)
+    assert [name for name, _ in calls] == [
+        "ImageScaleToTotalPixels",
+        "TextEncodeQwenImage21",
+        "EmptyLatentImage",
+        "QwenImage21Cache",
+        "KSampler",
+        "VAEDecode",
+    ]
+    encoder = calls[1][1]
+    assert encoder["resolution"] == 1024
+    assert torch.equal(encoder["images"]["image_1"], pose)
+    assert torch.equal(encoder["images"]["image_2"], character)
+    assert calls[0][1]["megapixels"] == 1.0
+    assert calls[-1][1] == {"samples": "sampled latent", "vae": "vae"}

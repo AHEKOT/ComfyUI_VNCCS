@@ -1281,31 +1281,42 @@ class VNCCS_CharacterGenerator:
         )[0]
 
     def _qi2_encode(self, pipe_values, prompt, images, target_size=1024, negative_prompt=""):
-        scaled_images = {}
+        reference_images = {}
         output_width = output_height = None
         for index, image in enumerate(images, start=1):
             if image is None:
                 continue
-            width, height = self._resolution_scale_dimensions(image, target_size)
-            scaled = _call_comfy_node(
-                "ImageScale", image=image, upscale_method="lanczos",
-                width=width, height=height, crop="disabled",
-            )[0]
-            scaled_images[f"image_{index}"] = scaled
             if output_width is None:
-                output_width, output_height = width, height
-        if not scaled_images:
+                scaled_output = _call_comfy_node(
+                    "ImageScaleToTotalPixels",
+                    image=image,
+                    upscale_method="lanczos",
+                    megapixels=float(target_size) / 1024.0,
+                    resolution_steps=1,
+                )[0]
+                scaled_tensor = _first_tensor(scaled_output)
+                if not torch.is_tensor(scaled_tensor) or scaled_tensor.ndim not in {3, 4}:
+                    raise ValueError("Qwen Image 2.1 output scaling did not return an IMAGE tensor.")
+                output_height = int(scaled_tensor.shape[-3])
+                output_width = int(scaled_tensor.shape[-2])
+                reference_images[f"image_{index}"] = scaled_output
+            else:
+                reference_images[f"image_{index}"] = image
+        if not reference_images:
             raise ValueError("Qwen Image 2.1 generation requires a reference image.")
         positive, negative, _encoder_latent = _call_comfy_node(
             "TextEncodeQwenImage21",
             clip=pipe_values["clip"], vae=pipe_values["vae"],
             prompt=str(prompt or ""), negative_prompt=str(negative_prompt or ""),
-            resolution=0, images=scaled_images,
+            resolution=1024, images=reference_images,
         )
         latent = _call_comfy_node(
             "EmptyLatentImage", width=output_width, height=output_height, batch_size=1,
         )[0]
         return positive, negative, latent
+
+    def _qi2_decode(self, samples, vae):
+        return _call_comfy_node("VAEDecode", samples=samples, vae=vae)[0]
 
     def _is_h3_pipe(self, pipe_values):
         model_entry = pipe_values.get("model_entry") or {}
@@ -2000,10 +2011,7 @@ class VNCCS_CharacterGenerator:
             decoded = []
             decode_progress(0, total)
             for index, samples in enumerate(sampled, start=1):
-                decoded.append(_call_comfy_node(
-                    "VAEDecodeTiled", samples=samples, vae=pipe_values["vae"],
-                    **vae_decode,
-                )[0])
+                decoded.append(self._qi2_decode(samples, pipe_values["vae"]))
                 decode_progress(index, total)
             return self._safe_image_batch(decoded, stage="QI2 pose generation decode")
 
@@ -2106,12 +2114,15 @@ class VNCCS_CharacterGenerator:
         sampling_progress(1, 1)
 
         decoding_progress(0, 1)
-        decoded = _call_comfy_node(
-            "VAEDecodeTiled",
-            samples=sampled,
-            vae=pipe_values["vae"],
-            **vae_decode,
-        )[0]
+        if self._is_qi2_pipe(pipe_values):
+            decoded = self._qi2_decode(sampled, pipe_values["vae"])
+        else:
+            decoded = _call_comfy_node(
+                "VAEDecodeTiled",
+                samples=sampled,
+                vae=pipe_values["vae"],
+                **vae_decode,
+            )[0]
         decoding_progress(1, 1)
         return decoded
 
@@ -4115,16 +4126,11 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             detailer_positive_text = self._detailer_positive_prompt(emotion_prompt, face_details)
         print(f"[VNCCS Emotions Generator] Emotion positive: {detailer_positive_text[:500]}")
         if self._is_qi2_pipe(pipe_values):
-            width, height = self._resolution_scale_dimensions(image, 1024)
-            scaled_reference = _call_comfy_node(
-                "ImageScale", image=image, upscale_method="lanczos",
-                width=width, height=height, crop="disabled",
-            )[0]
             positive, negative, _encoder_latent = _call_comfy_node(
                 "TextEncodeQwenImage21",
                 clip=pipe_values["clip"], vae=pipe_values["vae"],
                 prompt=detailer_positive_text, negative_prompt=str(negative_prompt or ""),
-                resolution=0, images={"image_1": scaled_reference},
+                resolution=1024, images={"image_1": image},
             )
         else:
             positive = _call_comfy_node(
@@ -4185,8 +4191,8 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             cycle=int(configured.get("cycle", 1)),
             inpaint_model=_as_bool(configured.get("inpaint_model", False), False),
             noise_mask_feather=int(configured.get("noise_mask_feather", 20)),
-            tiled_encode=_as_bool(configured.get("tiled_encode", True), True),
-            tiled_decode=_as_bool(configured.get("tiled_decode", True), True),
+            tiled_encode=False if self._is_qi2_pipe(pipe_values) else _as_bool(configured.get("tiled_encode", True), True),
+            tiled_decode=False if self._is_qi2_pipe(pipe_values) else _as_bool(configured.get("tiled_decode", True), True),
             wildcard=detailer_positive_text,
             detailer_hook=viggle_detailer,
             scheduler_func_opt=viggle_detailer.scheduler_func if viggle_detailer else None,
