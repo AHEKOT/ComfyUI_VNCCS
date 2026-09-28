@@ -2,6 +2,30 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { registerCleanup, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator } from "./vnccs_common.js";
 
+const RESOLUTION_SCALE_BASE = 1024;
+const RESOLUTION_SCALE_MIN_MP = 1;
+const RESOLUTION_SCALE_MAX_MP = 4;
+const RESOLUTION_SCALE_STEP_MP = 0.1;
+const RESOLUTION_SCALE_PRESETS = new Map([
+    [1.3, 1344],
+    [1.5, 1536],
+]);
+
+const resolutionScaleMegapixels = value => {
+    const numeric = Number(value);
+    const megapixels = Number.isFinite(numeric) ? numeric / RESOLUTION_SCALE_BASE : RESOLUTION_SCALE_MIN_MP;
+    return Math.max(RESOLUTION_SCALE_MIN_MP, Math.min(RESOLUTION_SCALE_MAX_MP, megapixels));
+};
+const resolutionScaleValue = megapixels => {
+    const clamped = Math.max(
+        RESOLUTION_SCALE_MIN_MP,
+        Math.min(RESOLUTION_SCALE_MAX_MP, Number(megapixels) || RESOLUTION_SCALE_MIN_MP)
+    );
+    const stepped = Number((Math.round(clamped / RESOLUTION_SCALE_STEP_MP) * RESOLUTION_SCALE_STEP_MP).toFixed(1));
+    return RESOLUTION_SCALE_PRESETS.get(stepped) ?? Math.round(stepped * RESOLUTION_SCALE_BASE);
+};
+const resolutionScaleText = value => `${resolutionScaleMegapixels(value).toFixed(1)} MP`;
+
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
@@ -195,11 +219,31 @@ const STYLE = `
     flex-shrink: 0;
     margin: 4px 0 12px;
 }
+.vnccs-resolution-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+.vnccs-resolution-value {
+    color: var(--accent-hover);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+}
+.vnccs-resolution-slider {
+    width: 100%;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
 .vnccs-segmented-field {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 6px;
     height: var(--setup-control-height);
+}
+.vnccs-segmented-field.is-three {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 .vnccs-segmented-btn {
     border: 1px solid var(--border);
@@ -214,6 +258,8 @@ const STYLE = `
     height: var(--setup-control-height);
     min-height: var(--setup-control-height);
     padding: 0 10px;
+    min-width: 0;
+    white-space: nowrap;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -228,6 +274,9 @@ const STYLE = `
     background: rgba(255,143,163,0.16);
     color: var(--accent-hover);
     box-shadow: 0 0 0 1px rgba(255,143,163,0.14) inset;
+}
+.vnccs-segmented-field.is-three .vnccs-segmented-btn {
+    padding-inline: 5px;
 }
 .vnccs-seed-row {
     display: grid;
@@ -627,6 +676,8 @@ app.registerExtension({
                     },
                     gen_settings: {
                         background_color: "Green",
+                        background_model_kind: "",
+                        previous_background_color: "Green",
                         target_size: null,
                         seed: 0,
                         seed_mode: "fixed",
@@ -656,6 +707,11 @@ app.registerExtension({
                     character_info: { ...defaultState.character_info, ...(saved.character_info || {}) },
                     gen_settings: { ...defaultState.gen_settings, ...(saved.gen_settings || {}) }
                 };
+                if (state.gen_settings.target_size != null) {
+                    state.gen_settings.target_size = resolutionScaleValue(
+                        resolutionScaleMegapixels(state.gen_settings.target_size)
+                    );
+                }
 
                 const els = {};
                 let spritePreviewNavigator = null;
@@ -1283,7 +1339,7 @@ app.registerExtension({
                     shoes: "Footwear description used in the clothing prompt.",
                     head: "Headwear and hair accessories, such as hats, ribbons, crowns, or headphones.",
                     face: "Face accessories, such as glasses, mask, piercings, or makeup tied to the outfit.",
-                    background_color: "Sets the solid chroma key background for the generated clothing sheet.",
+                    background_color: "Sets a solid chroma key background or native transparency for Qwen Image 2.1.",
                     lora_name: "VNCCS Clothes Core LoRA used to keep outfit generation compatible with this workflow.",
                     seed: "Numeric seed for reproducible clothing previews.",
                     seed_mode: "Toggles fixed seed versus a fresh random seed for each preview."
@@ -1334,6 +1390,9 @@ app.registerExtension({
                     label.innerText = lbl;
                     const segmented = document.createElement("div");
                     segmented.className = "vnccs-segmented-field";
+                    if (options.length === 3) segmented.classList.add("is-three");
+                    segmented.setAttribute("role", "group");
+                    segmented.setAttribute("aria-label", lbl);
                     const buttons = [];
 
                     const setValue = (value, persist = false) => {
@@ -1341,7 +1400,19 @@ app.registerExtension({
                         const matched = options.find(option => String(option.value).toLowerCase() === raw.toLowerCase());
                         const normalized = matched?.value || raw;
                         targetObj[key] = normalized;
-                        buttons.forEach(({ btn, value: btnValue }) => btn.classList.toggle("is-active", btnValue === normalized));
+                        if (
+                            persist
+                            && key === "background_color"
+                            && getConnectedModelKind().trim().toLowerCase() === "qi2"
+                            && normalized !== "Transparent"
+                        ) {
+                            targetObj.previous_background_color = normalized;
+                        }
+                        buttons.forEach(({ btn, value: btnValue }) => {
+                            const selected = btnValue === normalized;
+                            btn.classList.toggle("is-active", selected);
+                            btn.setAttribute("aria-pressed", String(selected));
+                        });
                         if (persist) saveState();
                     };
 
@@ -1365,15 +1436,33 @@ app.registerExtension({
                     if (!els.target_size) return;
                     const kind = getConnectedModelKind().toLowerCase().replace(/[^a-z0-9]/g, "");
                     const defaultSize = ["h3", "minimaxh3"].includes(kind) ? 1536 : 1024;
-                    els.target_size.options[0].textContent = `Auto (${defaultSize})`;
-                    const size = Number(state.gen_settings.target_size);
-                    if (Number.isInteger(size) && size >= 512 && size <= 4096 && !Array.from(els.target_size.options).some(option => option.value === String(size))) {
-                        els.target_size.add(new Option(String(size), String(size)));
+                    const size = state.gen_settings.target_size == null ? defaultSize : state.gen_settings.target_size;
+                    els.target_size.value = resolutionScaleMegapixels(size).toFixed(1);
+                    if (els.target_size_value) {
+                        const suffix = state.gen_settings.target_size == null ? " · Auto" : "";
+                        els.target_size_value.textContent = `${resolutionScaleText(size)}${suffix}`;
                     }
-                    els.target_size.value = state.gen_settings.target_size == null ? "" : String(state.gen_settings.target_size);
+                };
+
+                const syncBackgroundForModel = () => {
+                    const kind = getConnectedModelKind().trim().toLowerCase();
+                    if (!kind || state.gen_settings.background_model_kind === kind) return false;
+                    const current = String(state.gen_settings.background_color || "Green");
+                    if (kind === "qi2") {
+                        if (current !== "Transparent") {
+                            state.gen_settings.previous_background_color = current;
+                        }
+                        state.gen_settings.background_color = "Transparent";
+                    } else if (current === "Transparent") {
+                        const previous = String(state.gen_settings.previous_background_color || "Green");
+                        state.gen_settings.background_color = ["Green", "Blue"].includes(previous) ? previous : "Green";
+                    }
+                    state.gen_settings.background_model_kind = kind;
+                    return true;
                 };
 
                 const syncGenerationControls = () => {
+                    const backgroundChanged = syncBackgroundForModel();
                     syncResolutionControl();
                     if (els.seed) els.seed.value = state.gen_settings.seed || 0;
                     if (els.seed_mode) {
@@ -1383,6 +1472,7 @@ app.registerExtension({
                     }
                     els.background_color?.setValue?.(state.gen_settings.background_color || "Green");
                     renderClothesCoreLoraCard();
+                    if (backgroundChanged) saveState();
                 };
 
                 const renderClothesCoreLoraCard = (entryOrPath = null) => {
@@ -1420,23 +1510,30 @@ app.registerExtension({
                 const createResolutionControl = () => {
                     const resolutionWrap = document.createElement("label");
                     resolutionWrap.className = "vnccs-field vnccs-resolution-field";
-                    setHelpText(resolutionWrap, "Scales total pixel area while preserving the reference aspect ratio. Auto uses 1536 for H3 and 1024 for other models.");
+                    setHelpText(resolutionWrap, "Sets the generated image area from 1.0 to 4.0 megapixels while preserving aspect ratio. Auto uses 1.5 MP for H3 and 1.0 MP for other models.");
+                    const resolutionHead = document.createElement("div");
+                    resolutionHead.className = "vnccs-resolution-head";
                     const resolutionLabel = document.createElement("div");
                     resolutionLabel.className = "vnccs-label";
                     resolutionLabel.textContent = "Resolution scale";
-                    const resolutionSelect = document.createElement("select");
-                    resolutionSelect.className = "vnccs-select";
-                    resolutionSelect.add(new Option("Auto (1024)", ""));
-                    const sizes = new Set([1024, 1344, 1536, 2048, 768, 512]);
-                    const restoredSize = Number(state.gen_settings.target_size);
-                    if (Number.isInteger(restoredSize) && restoredSize >= 512 && restoredSize <= 4096) sizes.add(restoredSize);
-                    for (const size of sizes) resolutionSelect.add(new Option(String(size), String(size)));
-                    resolutionSelect.onchange = () => {
-                        state.gen_settings.target_size = resolutionSelect.value ? Number(resolutionSelect.value) : null;
+                    const resolutionValue = document.createElement("div");
+                    resolutionValue.className = "vnccs-resolution-value";
+                    resolutionHead.append(resolutionLabel, resolutionValue);
+                    const resolutionSlider = document.createElement("input");
+                    resolutionSlider.type = "range";
+                    resolutionSlider.className = "vnccs-resolution-slider";
+                    resolutionSlider.min = String(RESOLUTION_SCALE_MIN_MP);
+                    resolutionSlider.max = String(RESOLUTION_SCALE_MAX_MP);
+                    resolutionSlider.step = String(RESOLUTION_SCALE_STEP_MP);
+                    resolutionSlider.setAttribute("aria-label", "Resolution scale in megapixels");
+                    resolutionSlider.oninput = () => {
+                        state.gen_settings.target_size = resolutionScaleValue(resolutionSlider.value);
+                        resolutionValue.textContent = resolutionScaleText(state.gen_settings.target_size);
                         saveState();
                     };
-                    els.target_size = resolutionSelect;
-                    resolutionWrap.append(resolutionLabel, resolutionSelect);
+                    els.target_size = resolutionSlider;
+                    els.target_size_value = resolutionValue;
+                    resolutionWrap.append(resolutionHead, resolutionSlider);
                     syncResolutionControl();
 
                     return resolutionWrap;
@@ -1449,6 +1546,7 @@ app.registerExtension({
                     wrap.appendChild(createSegmentedField("Background", "background_color", [
                         { label: "Green", value: "Green" },
                         { label: "Blue", value: "Blue" },
+                        { label: "Alpha", value: "Transparent" },
                     ]));
 
                     const loraWrap = document.createElement("div");
@@ -1916,9 +2014,17 @@ app.registerExtension({
                     const options = e.detail?.options;
                     if (!Array.isArray(options)) return;
                     setClothesCoreLora();
+                    syncGenerationControls();
                 };
                 window.addEventListener("vnccs-lora-options-updated", _onLoraOptions);
                 registerCleanup(node, () => window.removeEventListener("vnccs-lora-options-updated", _onLoraOptions));
+
+                const _onControlCenterModelChanged = () => {
+                    setClothesCoreLora();
+                    syncGenerationControls();
+                };
+                window.addEventListener("vnccs-control-center-model-changed", _onControlCenterModelChanged);
+                registerCleanup(node, () => window.removeEventListener("vnccs-control-center-model-changed", _onControlCenterModelChanged));
 
                 // Functions
                 const loadCostumes = async () => {

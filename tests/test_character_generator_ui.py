@@ -14,6 +14,13 @@ def test_emotions_generator_exposes_face_denoise_slider():
     assert "this.faceDenoiseSlider()" in SOURCE
 
 
+def test_sam_defaults_are_disabled_and_native_hides_recovery_controls():
+    assert "use_sam: false" in SOURCE
+    assert "use_sam3_details_recovery: false" in SOURCE
+    assert "if (!this.isNativeBgRemove())" in SOURCE
+    assert 'this.block("BG Remove", this.bgRemoveFields())' in SOURCE
+
+
 def test_seedvr_upscaler_exposes_resolution_controls():
     assert 'number("upscaler", "resolution", "target short edge", 16, 16384, 2)' in SOURCE
     assert 'number("upscaler", "max_resolution", "maximum edge (0 = unlimited)", 0, 16384, 2)' in SOURCE
@@ -22,7 +29,14 @@ def test_seedvr_upscaler_exposes_resolution_controls():
 
 
 def test_pose_resolution_control_uses_clear_label():
-    assert '"target_size", "resolution scale", "select"' in SOURCE
+    assert 'caption.textContent = "resolution scale"' in SOURCE
+    assert 'slider.type = "range"' in SOURCE
+    assert "RESOLUTION_SCALE_MIN_MP = 1" in SOURCE
+    assert "RESOLUTION_SCALE_MAX_MP = 4" in SOURCE
+    assert "RESOLUTION_SCALE_STEP_MP = 0.1" in SOURCE
+    assert "[1.3, 1344]" in SOURCE
+    assert "[1.5, 1536]" in SOURCE
+    assert "resolutionScaleValue(slider.value)" in SOURCE
     assert '"target_size", "scale area", "select"' not in SOURCE
 
 

@@ -13,6 +13,14 @@ from nodes.qi2_viggle import (
 )
 
 
+def test_resolution_scale_preserves_fractional_legacy_presets():
+    assert cg._resolution_scale_value(1344) == 1344
+    assert cg._resolution_scale_value(1536) == 1536
+    assert cg._resolution_scale_megapixels(1344) == pytest.approx(1.3125)
+    assert cg._resolution_scale_megapixels(1536) == pytest.approx(1.5)
+    assert cg._resolution_scale_value(768) == 1024
+
+
 def test_qi2_system_encoder_scales_references_and_uses_separate_empty_latent(monkeypatch):
     calls = []
     encoder_latent = object()

@@ -149,6 +149,9 @@ def test_native_bg_remove_uses_alpha_prompt_and_skips_chroma_key(monkeypatch):
     )
     assert prompt == "Keep the pose, Transparent background with alpha channel."
     assert "solid Green" not in prompt
+    assert generator._prompt_with_solid_background(
+        "Keep the pose", "Alpha", {"preset": "balanced"},
+    ) == "Keep the pose, Transparent background with alpha channel."
 
     images = torch.rand(1, 4, 4, 4)
     result = generator._run_bg_remove(images, {"preset": "Native"}, background="Green")
@@ -281,7 +284,7 @@ def test_clothes_internal_rmbg_cannot_run_when_directly_requested(monkeypatch):
     assert torch.equal(result, poses)
 
 
-def test_bg_remove_uses_sam3_details_recovery_by_default(monkeypatch):
+def test_bg_remove_disables_sam3_details_recovery_by_default(monkeypatch):
     torch = pytest.importorskip("torch")
     seen = {}
 
@@ -302,7 +305,7 @@ def test_bg_remove_uses_sam3_details_recovery_by_default(monkeypatch):
 
     assert seen == {
         "tolerance": 0.15,
-        "use_sam3_recovery_mask": True,
+        "use_sam3_recovery_mask": False,
     }
 
 
@@ -584,6 +587,7 @@ def test_emotion_detailer_defaults_match_face_detailer_and_step3_workflow():
         "inpaint_model": False,
     }
     assert {key: defaults[key] for key in expected} == expected
+    assert defaults["use_sam"] is False
     assert "steps" not in defaults
     assert "cfg" not in defaults
 
@@ -597,6 +601,7 @@ def test_emotion_detailer_defaults_match_face_detailer_and_step3_workflow():
     node = next(item for item in workflow["nodes"] if item["type"] == "VNCCS_EmotionsGenerator")
     workflow_settings = json.loads(node["widgets_values"][0])["emotion_generation"]
     assert {key: workflow_settings[key] for key in expected} == expected
+    assert workflow_settings["use_sam"] is False
     assert "steps" not in workflow_settings
     assert "cfg" not in workflow_settings
 
@@ -923,19 +928,21 @@ def test_pose_generation_decode_preserves_encoder_aspect(monkeypatch):
     assert result.shape == (1, 1584, 664, 3)
 
 
-def test_h3_resolution_scale_uses_square_pixel_area_at_2048():
+def test_h3_resolution_scale_uses_linear_megapixel_area_at_2048():
     torch = pytest.importorskip("torch")
     generator = cg.VNCCS_CharacterGenerator()
 
-    assert generator._resolution_scale_dimensions(
+    square_width, square_height = generator._resolution_scale_dimensions(
         torch.rand(1, 1024, 1024, 3), 2048
-    ) == (2048, 2048)
+    )
+    assert square_width == square_height
+    assert square_width * square_height == pytest.approx(2048 * 1024, rel=0.025)
     width, height = generator._resolution_scale_dimensions(
         torch.rand(1, 1536, 640, 3), 2048
     )
     assert width % 32 == 0
     assert height % 32 == 0
-    assert width * height == pytest.approx(2048 * 2048, rel=0.025)
+    assert width * height == pytest.approx(2048 * 1024, rel=0.025)
     assert height / width == pytest.approx(1536 / 640, rel=0.025)
 
 

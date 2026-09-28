@@ -754,7 +754,7 @@ DEFAULT_WIDGET_DATA = {
         # TODO: Decide whether internal RMBG should return as a supported generator option.
         "use_internal_rmbg": False,
         "preset": "balanced",
-        "use_sam3_details_recovery": True,
+        "use_sam3_details_recovery": False,
         "use_preset_values": True,
         "tolerance": 0.15,
         "softness": 0.12,
@@ -811,7 +811,7 @@ DEFAULT_WIDGET_DATA = {
     "emotion_generation": {
         "task_batch_size": 0,
         "face_denoise": 0.55,
-        "use_sam": True,
+        "use_sam": False,
         "bbox_model": "bbox/face_yolov8m.pt",
         "segm_model": "bbox/face_yolov8m.pt",
         "sam_model": "sam_vit_b_01ec64.pth",
@@ -965,6 +965,19 @@ NATIVE_BACKGROUND_PROMPT = "Transparent background with alpha channel."
 # The generator keeps only the first decoded frame. The reference workflow's
 # zero-second duration expression resolves to H3's minimum valid clip: 5 frames.
 H3_FRAME_COUNT = 5
+
+
+def _resolution_scale_value(value, default=1024):
+    """Clamp legacy scale units to the user-facing 1–4 MP range."""
+    try:
+        scale = int(round(float(value)))
+    except (TypeError, ValueError, OverflowError):
+        scale = int(default)
+    return max(1024, min(4096, scale))
+
+
+def _resolution_scale_megapixels(value, default=1024):
+    return _resolution_scale_value(value, default=default) / 1024.0
 
 
 class VNCCS_CharacterGenerator:
@@ -1281,6 +1294,7 @@ class VNCCS_CharacterGenerator:
         )[0]
 
     def _qi2_encode(self, pipe_values, prompt, images, target_size=1024, negative_prompt=""):
+        target_size = _resolution_scale_value(target_size)
         reference_images = {}
         output_width = output_height = None
         for index, image in enumerate(images, start=1):
@@ -1705,7 +1719,8 @@ class VNCCS_CharacterGenerator:
 
     def _prompt_with_solid_background(self, prompt, background, bg_remove_settings=None):
         text = str(prompt or "").strip()
-        if self._is_native_bg_remove(bg_remove_settings):
+        transparent_background = str(background or "").strip().lower() in {"alpha", "transparent"}
+        if self._is_native_bg_remove(bg_remove_settings) or transparent_background:
             if NATIVE_BACKGROUND_PROMPT.lower() in text.lower():
                 return text
             return f"{text}, {NATIVE_BACKGROUND_PROMPT}" if text else NATIVE_BACKGROUND_PROMPT
@@ -1821,8 +1836,8 @@ class VNCCS_CharacterGenerator:
         width = int(image.shape[-2])
         if width <= 0 or height <= 0:
             raise ValueError(f"Resolution scaling received invalid dimensions: {width}x{height}.")
-        target_size = max(int(multiple), int(target_size))
-        scale = math.sqrt(float(target_size * target_size) / float(width * height))
+        target_size = _resolution_scale_value(target_size)
+        scale = math.sqrt(float(target_size * 1024) / float(width * height))
         target_width = max(int(multiple), round(width * scale / multiple) * multiple)
         target_height = max(int(multiple), round(height * scale / multiple) * multiple)
         return int(target_width), int(target_height)
@@ -1870,7 +1885,9 @@ class VNCCS_CharacterGenerator:
             denoise=sampler["denoise"],
         )[0]
         h3_prompt = self._h3_pose_prompt(prompt)
-        target_size = int(settings.get("target_size", DEFAULT_WIDGET_DATA["pose_generation"]["target_size"]))
+        target_size = _resolution_scale_value(
+            settings.get("target_size", DEFAULT_WIDGET_DATA["pose_generation"]["target_size"])
+        )
         character_parts = self._image_list(character_rgb)
         if not character_parts:
             raise RuntimeError("MiniMax H3 generation requires a character reference image.")
@@ -2025,7 +2042,11 @@ class VNCCS_CharacterGenerator:
             "image2": character_rgb,
         }
         if self._is_klein_pipe(pipe_values):
-            encoder_kwargs.update(upscale_method="lanczos", megapixels=1.0, resolution_steps=1)
+            encoder_kwargs.update(
+                upscale_method="lanczos",
+                megapixels=_resolution_scale_megapixels(qwen_settings["target_size"]),
+                resolution_steps=1,
+            )
         else:
             encoder_kwargs.update(qwen_settings)
         positive_list, negative_list, latent_list = self._run_list_mapped(
@@ -2556,7 +2577,7 @@ class VNCCS_CharacterGenerator:
             str(preset["matte_method"]),
             screen_mode,
             str(preset["output_mode"]),
-            _as_bool(settings.get("use_sam3_details_recovery", True), True),
+            _as_bool(settings.get("use_sam3_details_recovery", False), False),
             sam3_settings=settings,
         )[0]
         elapsed = time.time() - started_at
@@ -4071,7 +4092,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         sam_dilation=0,
         sam_threshold=0.93,
         sam_bbox_expansion=0,
-        use_sam=True,
+        use_sam=False,
         detailer_settings=None,
         bg_remove_settings=None,
     ):
@@ -4086,7 +4107,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         sam_dilation = max(0, int(configured.get("sam_dilation", sam_dilation)))
         sam_threshold = max(0.0, min(1.0, float(configured.get("sam_threshold", sam_threshold))))
         sam_bbox_expansion = max(0, int(configured.get("sam_bbox_expansion", sam_bbox_expansion)))
-        use_sam = _as_bool(configured.get("use_sam", use_sam), True)
+        use_sam = _as_bool(configured.get("use_sam", use_sam), False)
         sampler = {
             "steps": pipe_values["steps"],
             "cfg": pipe_values["cfg"],
@@ -4147,7 +4168,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
 
         sam_model = None
         segm_detector = None
-        if _as_bool(use_sam, True):
+        if _as_bool(use_sam, False):
             sam_model = _call_comfy_node(
                 "SAMLoader",
                 model_name=str(configured.get("sam_model", "sam_vit_b_01ec64.pth")),
@@ -4235,9 +4256,9 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         use_sam = _as_bool(
             emotion_settings.get(
                 "use_sam",
-                emotion_settings.get("use_sam_model", emotion_defaults.get("use_sam", True)),
+                emotion_settings.get("use_sam_model", emotion_defaults.get("use_sam", False)),
             ),
-            True,
+            False,
         )
         bbox_threshold = _clamp_float("bbox_threshold", 0.0, 1.0)
         bbox_dilation = _clamp_int("bbox_dilation", 0, 128)

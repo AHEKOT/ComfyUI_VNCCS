@@ -109,6 +109,26 @@ test("Native is exposed as a BG Remove mode", () => {
     assert.match(source, /const BG_REMOVE_MODES = \["Native", "disabled"/);
 });
 
+test("Native BG Remove is detected for conditional SAM recovery controls", () => {
+    const { widget } = setup({ kind: "QI2" });
+    widget.data.bg_remove.preset = "Native";
+    assert.equal(widget.isNativeBgRemove(), true);
+    const nativeGroups = widget.generatorSettingsGroups();
+    assert.equal(nativeGroups.some(group => group.title.includes("SAM3")), false);
+    assert.equal(nativeGroups.flatMap(group => group.fields).some(field => field.key === "use_sam3_details_recovery"), false);
+    widget.data.bg_remove.preset = "balanced";
+    assert.equal(widget.isNativeBgRemove(), false);
+    const chromaGroups = widget.generatorSettingsGroups();
+    assert.equal(chromaGroups.some(group => group.title.includes("SAM3")), true);
+    assert.equal(chromaGroups.flatMap(group => group.fields).some(field => field.key === "use_sam3_details_recovery"), true);
+});
+
+test("SAM analysis and SAM3 recovery are disabled by default", () => {
+    const { widget } = setup({ kind: "Klein9b" });
+    assert.equal(widget.data.emotion_generation.use_sam, false);
+    assert.equal(widget.data.bg_remove.use_sam3_details_recovery, false);
+});
+
 test("connected QI2 Emotion Studio selects Native BG Remove and restores the prior mode", () => {
     const { widget, settings, serialized, timers } = setupEmotionStudio("qi2");
     timers.get(1)();

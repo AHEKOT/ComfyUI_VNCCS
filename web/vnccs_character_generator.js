@@ -3,6 +3,31 @@ import { api } from "../../scripts/api.js";
 import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
 
 const GENERATOR_QWEN_INSTRUCTION = "Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.";
+const RESOLUTION_SCALE_BASE = 1024;
+const RESOLUTION_SCALE_MIN_MP = 1;
+const RESOLUTION_SCALE_MAX_MP = 4;
+const RESOLUTION_SCALE_STEP_MP = 0.1;
+const RESOLUTION_SCALE_PRESETS = new Map([
+    [1.3, 1344],
+    [1.5, 1536],
+]);
+
+function resolutionScaleMegapixels(value) {
+    const numeric = Number(value);
+    const megapixels = Number.isFinite(numeric) ? numeric / RESOLUTION_SCALE_BASE : RESOLUTION_SCALE_MIN_MP;
+    return Math.max(RESOLUTION_SCALE_MIN_MP, Math.min(RESOLUTION_SCALE_MAX_MP, megapixels));
+}
+
+function resolutionScaleValue(megapixels) {
+    const numeric = Number(megapixels);
+    const clamped = Math.max(RESOLUTION_SCALE_MIN_MP, Math.min(RESOLUTION_SCALE_MAX_MP, Number.isFinite(numeric) ? numeric : RESOLUTION_SCALE_MIN_MP));
+    const stepped = Number((Math.round(clamped / RESOLUTION_SCALE_STEP_MP) * RESOLUTION_SCALE_STEP_MP).toFixed(1));
+    return RESOLUTION_SCALE_PRESETS.get(stepped) ?? Math.round(stepped * RESOLUTION_SCALE_BASE);
+}
+
+function resolutionScaleText(value) {
+    return `${resolutionScaleMegapixels(value).toFixed(1)} MP`;
+}
 
 const DEFAULT_DATA = {
     nsfw_enabled: true,
@@ -43,7 +68,7 @@ const DEFAULT_DATA = {
     emotion_generation: {
         task_batch_size: 0,
         face_denoise: 0.55,
-        use_sam: true,
+        use_sam: false,
         bbox_model: "bbox/face_yolov8m.pt",
         segm_model: "bbox/face_yolov8m.pt",
         sam_model: "sam_vit_b_01ec64.pth",
@@ -138,7 +163,7 @@ const DEFAULT_DATA = {
         // TODO: Decide what to do with internal RMBG later.
         use_internal_rmbg: false,
         preset: "balanced",
-        use_sam3_details_recovery: true,
+        use_sam3_details_recovery: false,
         use_preset_values: true,
         tolerance: 0.15,
         softness: 0.12,
@@ -944,6 +969,9 @@ function readData(node) {
         if (!SEEDVR_COLOR_CORRECTION_MODES.includes(data.upscaler?.color_correction)) {
             data.upscaler.color_correction = "lab";
         }
+        for (const section of ["common", "pose_generation", "remove_clothes"]) {
+            data[section].target_size = resolutionScaleValue(resolutionScaleMegapixels(data[section].target_size));
+        }
         return data;
     } catch {
         return JSON.parse(JSON.stringify(DEFAULT_DATA));
@@ -1244,6 +1272,9 @@ class CharacterGeneratorWidget {
     set(section, key, value) {
         this.syncCharacterSourceData();
         if (!this.data[section] || typeof this.data[section] !== "object") this.data[section] = {};
+        const rerenderBgRemove = section === "bg_remove"
+            && key === "preset"
+            && this.data.bg_remove.preset !== value;
         this.data[section][key] = value;
         if (section === "bg_remove" && key === "preset") {
             this.data.bg_remove.use_preset_values = true;
@@ -1254,10 +1285,16 @@ class CharacterGeneratorWidget {
         }
         writeData(this.node, this.data, { notify: false });
         this.saveBrowserState();
+        if (rerenderBgRemove) this.renderSettings();
+    }
+
+    isNativeBgRemove() {
+        return String(this.data.bg_remove?.preset || "").trim().toLowerCase() === "native";
     }
 
     generatorSettingsGroups() {
         const isQI2 = this.data.ui?.resolution_model_kind === "qi2";
+        const isNativeBgRemove = this.isNativeBgRemove();
         const number = (section, key, label, min, max, step = 1, extra = {}) => ({
             section, key, label, type: "number", min, max, step, ...extra,
         });
@@ -1265,6 +1302,9 @@ class CharacterGeneratorWidget {
         const check = (section, key, label, extra = {}) => ({ section, key, label, type: "checkbox", wide: true, ...extra });
         const select = (section, key, label, options, extra = {}) => ({
             section, key, label, type: "select", options, ...extra,
+        });
+        const resolutionScale = (section, key = "target_size") => ({
+            section, key, label: "resolution scale", type: "resolution_scale", wide: true,
         });
         const textarea = (section, key, label, extra = {}) => ({
             section, key, label, type: "textarea", wide: true, ...extra,
@@ -1276,10 +1316,10 @@ class CharacterGeneratorWidget {
             groups.push({
                 title: isQI2 ? "Text Encode Qwen Image 2.1 · Pose Generation" : "Encoder · Pose Generation",
                 fields: isQI2 ? [
-                    number(poseTargetSection, "target_size", "target_size", 512, 4096, 32),
+                    resolutionScale(poseTargetSection),
                     select("pose_generation", "background_color", "background_color", ["from_generator", "White", "Green", "Blue"]),
                 ] : [
-                    number(poseTargetSection, "target_size", "target_size", 512, 4096, 8),
+                    resolutionScale(poseTargetSection),
                     select("pose_generation", "upscale_method", "upscale_method", ["lanczos", "bicubic", "area"]),
                     select("pose_generation", "crop_method", "crop_method", ["disabled", "pad", "center"]),
                     number("pose_generation", "latent_image_index", "latent_image_index", 1, 3, 1),
@@ -1451,30 +1491,32 @@ class CharacterGeneratorWidget {
                 select("bg_remove", "matte_method", "matte_method", ["chroma_soft", "guided_edge", "pymatting_if_available"]),
                 select("bg_remove", "screen_mode", "screen_mode", ["from_background", "auto", "green", "blue", "red"]),
                 select("bg_remove", "output_mode", "output_mode", ["straight_rgba", "premultiplied_rgba"]),
-                check("bg_remove", "use_sam3_details_recovery", "Use SAM3 recovery mask"),
+                ...(!isNativeBgRemove ? [check("bg_remove", "use_sam3_details_recovery", "Use SAM3 recovery mask")] : []),
             ],
             note: "When preset values are enabled, the individual chroma parameters are retained but the preset controls processing.",
         });
-        groups.push({
-            title: "Easy SAM3 · Model Loader",
-            fields: [
-                text("bg_remove", "sam3_model", "model (blank = managed VNCCS model)", { wide: true }),
-                select("bg_remove", "sam3_segmentor", "segmentor", ["image"], { nodeName: "LoadSam3Model", inputName: "segmentor" }),
-                select("bg_remove", "sam3_device", "device", ["auto", "cuda", "cpu", "mps"], { nodeName: "LoadSam3Model", inputName: "device" }),
-                select("bg_remove", "sam3_precision", "precision", ["bf16", "fp16", "fp32"], { nodeName: "LoadSam3Model", inputName: "precision" }),
-            ],
-        });
-        groups.push({
-            title: "Easy SAM3 · Image Segmentation / Recovery",
-            fields: [
-                textarea("bg_remove", "sam3_prompt", "prompt"),
-                number("bg_remove", "sam3_threshold", "threshold", 0, 1, 0.01),
-                select("bg_remove", "sam3_add_background", "add_background", ["none", "black", "white", "green", "blue"], { nodeName: "Sam3ImageSegmentation", inputName: "add_background" }),
-                number("bg_remove", "sam3_detection_limit", "detection_limit", -1, 10000, 1),
-                number("bg_remove", "sam3_erode_radius", "recovery erode radius", 0, 256, 1),
-                number("bg_remove", "sam3_min_foreground_overlap", "minimum foreground overlap", 0, 1, 0.01),
-            ],
-        });
+        if (!isNativeBgRemove) {
+            groups.push({
+                title: "Easy SAM3 · Model Loader",
+                fields: [
+                    text("bg_remove", "sam3_model", "model (blank = managed VNCCS model)", { wide: true }),
+                    select("bg_remove", "sam3_segmentor", "segmentor", ["image"], { nodeName: "LoadSam3Model", inputName: "segmentor" }),
+                    select("bg_remove", "sam3_device", "device", ["auto", "cuda", "cpu", "mps"], { nodeName: "LoadSam3Model", inputName: "device" }),
+                    select("bg_remove", "sam3_precision", "precision", ["bf16", "fp16", "fp32"], { nodeName: "LoadSam3Model", inputName: "precision" }),
+                ],
+            });
+            groups.push({
+                title: "Easy SAM3 · Image Segmentation / Recovery",
+                fields: [
+                    textarea("bg_remove", "sam3_prompt", "prompt"),
+                    number("bg_remove", "sam3_threshold", "threshold", 0, 1, 0.01),
+                    select("bg_remove", "sam3_add_background", "add_background", ["none", "black", "white", "green", "blue"], { nodeName: "Sam3ImageSegmentation", inputName: "add_background" }),
+                    number("bg_remove", "sam3_detection_limit", "detection_limit", -1, 10000, 1),
+                    number("bg_remove", "sam3_erode_radius", "recovery erode radius", 0, 256, 1),
+                    number("bg_remove", "sam3_min_foreground_overlap", "minimum foreground overlap", 0, 1, 0.01),
+                ],
+            });
+        }
         return groups;
     }
 
@@ -1503,6 +1545,22 @@ class CharacterGeneratorWidget {
                 draft[field.section][field.key] = input.checked;
             };
             wrap.append(input, caption);
+        } else if (field.type === "resolution_scale") {
+            wrap.classList.add("is-wide");
+            const value = document.createElement("span");
+            value.className = "vnccs-pipe-settings-field-label";
+            value.textContent = resolutionScaleText(current);
+            input = document.createElement("input");
+            input.type = "range";
+            input.min = String(RESOLUTION_SCALE_MIN_MP);
+            input.max = String(RESOLUTION_SCALE_MAX_MP);
+            input.step = String(RESOLUTION_SCALE_STEP_MP);
+            input.value = resolutionScaleMegapixels(current).toFixed(1);
+            input.oninput = () => {
+                draft[field.section][field.key] = resolutionScaleValue(input.value);
+                value.textContent = resolutionScaleText(draft[field.section][field.key]);
+            };
+            wrap.append(caption, value, input);
         } else if (field.type === "select") {
             input = document.createElement("select");
             for (const value of this.settingsFieldOptions(field, current)) {
@@ -2331,7 +2389,7 @@ class CharacterGeneratorWidget {
         const wrap = document.createElement("label");
         wrap.className = "vnccs-pipe-field";
         const help = {
-            target_size: "Model defaults: QI2 and Klein 1024, MiniMaxH3 1536. For QI2, 1024 means a 1 MP output budget and 2048 means 2 MP.",
+            target_size: "Sets the generated image area from 1.0 to 4.0 megapixels while preserving aspect ratio.",
             prompt: "Prompt text used for the remove-clothes/preparation stage.",
             gan_model: "Upscale model used when GAN upscaling is selected.",
             model: "SeedVR diffusion model used for the upscaler stage.",
@@ -2409,6 +2467,40 @@ class CharacterGeneratorWidget {
             this.set(section, key, raw);
         };
         wrap.append(caption, input);
+        return wrap;
+    }
+
+    resolutionScaleSlider(section, key = "target_size") {
+        const wrap = document.createElement("label");
+        wrap.className = "vnccs-pipe-slider-field";
+        setHelpText(wrap, "Sets the generated image area from 1.0 to 4.0 megapixels while preserving aspect ratio.");
+        const head = document.createElement("div");
+        head.className = "vnccs-pipe-slider-head";
+        const caption = document.createElement("div");
+        caption.className = "vnccs-pipe-label";
+        caption.textContent = "resolution scale";
+        const value = document.createElement("div");
+        value.className = "vnccs-pipe-slider-value";
+        value.textContent = resolutionScaleText(this.data[section][key]);
+        head.append(caption, value);
+
+        const slider = document.createElement("input");
+        slider.className = "vnccs-pipe-slider";
+        slider.type = "range";
+        slider.min = String(RESOLUTION_SCALE_MIN_MP);
+        slider.max = String(RESOLUTION_SCALE_MAX_MP);
+        slider.step = String(RESOLUTION_SCALE_STEP_MP);
+        slider.value = resolutionScaleMegapixels(this.data[section][key]).toFixed(1);
+        slider.style.setProperty("--fill", `${((Number(slider.value) - 1) / 3) * 100}%`);
+        slider.setAttribute("aria-label", "Resolution scale in megapixels");
+        this.protectNativeControl(slider);
+        slider.oninput = () => {
+            const targetSize = resolutionScaleValue(slider.value);
+            value.textContent = resolutionScaleText(targetSize);
+            slider.style.setProperty("--fill", `${((Number(slider.value) - 1) / 3) * 100}%`);
+            this.set(section, key, targetSize);
+        };
+        wrap.append(head, slider);
         return wrap;
     }
 
@@ -2549,6 +2641,16 @@ class CharacterGeneratorWidget {
 
         wrap.append(caption, input);
         return wrap;
+    }
+
+    bgRemoveFields() {
+        const fields = [
+            this.field("bg_remove", "preset", "mode", "select", BG_REMOVE_MODES),
+        ];
+        if (!this.isNativeBgRemove()) {
+            fields.push(this.field("bg_remove", "use_sam3_details_recovery", "Use SAM3 Details Recovery", "checkbox"));
+        }
+        return fields;
     }
 
     connectedEmotionStudioMode() {
@@ -2713,15 +2815,12 @@ class CharacterGeneratorWidget {
                 this.faceDetailerNumberField("sam_bbox_expansion", "sam_bbox_expansion", { min: 0, max: 128, step: 1 }),
             ];
             this.settingsEl.appendChild(this.block("Face Detailer", faceDetailerFields));
-            this.settingsEl.appendChild(this.block("BG Remove", [
-                this.field("bg_remove", "preset", "mode", "select", BG_REMOVE_MODES),
-                this.field("bg_remove", "use_sam3_details_recovery", "Use SAM3 Details Recovery", "checkbox"),
-            ]));
+            this.settingsEl.appendChild(this.block("BG Remove", this.bgRemoveFields()));
             return;
         }
         if (this.isClone) {
             this.settingsEl.appendChild(this.block("Common", [
-                this.field("common", "target_size", "resolution scale", "select", [1024, 1344, 1536, 2048, 768, 512]),
+                this.resolutionScaleSlider("common"),
             ]));
             if (this.isCloneNsfwEnabled()) {
                 this.settingsEl.appendChild(this.block("Remove Clothes", [
@@ -2730,7 +2829,7 @@ class CharacterGeneratorWidget {
             }
         } else {
             this.settingsEl.appendChild(this.block("Pose Generation", [
-                this.field("pose_generation", "target_size", "resolution scale", "select", [1024, 1344, 1536, 2048, 768, 512]),
+                this.resolutionScaleSlider("pose_generation"),
             ]));
         }
         const upscalerFields = [
@@ -2759,11 +2858,7 @@ class CharacterGeneratorWidget {
             );
         }
         this.settingsEl.appendChild(this.block("Upscaler", upscalerFields));
-        this.settingsEl.appendChild(this.block("BG Remove", [
-            // TODO: Decide what to do with internal RMBG later.
-            this.field("bg_remove", "preset", "mode", "select", BG_REMOVE_MODES),
-            this.field("bg_remove", "use_sam3_details_recovery", "Use SAM3 Details Recovery", "checkbox"),
-        ]));
+        this.settingsEl.appendChild(this.block("BG Remove", this.bgRemoveFields()));
     }
 
     renderPreview() {
