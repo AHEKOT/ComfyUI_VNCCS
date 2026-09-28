@@ -53,8 +53,8 @@ from .vnccs_control_center import (
     _rel_within_folder,
     _entry_kind,
 )
-from .vnccs_qwen_encoder import VNCCS_QWEN_Encoder
 from .vnccs_flux_klein_encoder import VNCCS_Flux_Klein_Encoder
+from .qi2_viggle import apply_viggle_turbo_lora, viggle_turbo_sigmas, ViggleDetailerSchedule
 from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, VNCCS_RMBG2
 from ..utils import (
     basename_agnostic,
@@ -291,7 +291,6 @@ def _call_comfy_node(class_name, **kwargs):
     cls = mappings.get(class_name)
     if cls is None:
         local_mappings = {
-            "VNCCS_QWEN_Encoder": VNCCS_QWEN_Encoder,
             "VNCCS_Flux_Klein_Encoder": VNCCS_Flux_Klein_Encoder,
             "VNCCS_RMBG2": VNCCS_RMBG2,
             "VNCCSChromaKey": VNCCSChromaKey,
@@ -793,7 +792,6 @@ DEFAULT_WIDGET_DATA = {
         "background_color": "from_generator",
         "latent_image_index": 1,
         "instruction": GENERATOR_QWEN_INSTRUCTION,
-        "qwen_2511": True,
     },
     "pose_sampler": {
         "inherit_pipe": True,
@@ -861,7 +859,6 @@ DEFAULT_WIDGET_DATA = {
         "background_color": "White",
         "latent_image_index": 1,
         "instruction": GENERATOR_QWEN_INSTRUCTION,
-        "qwen_2511": True,
     },
     "remove_clothes_sampler": {
         "inherit_pipe": True,
@@ -954,7 +951,7 @@ CHROMA_KEY_PRESETS = {
     },
 }
 
-POSE_GENERATION_LORA_NAME = "VNCCS Pose Studio QIE2511"
+QI2_POSE_GENERATION_LORA_NAME = "VNCCS Pose Studio QI2"
 CLOTHES_CORE_LORA_NAME = "VNCCS Clothes Core"
 KLEIN_POSE_GENERATION_LORA_NAME = "VNCCS Pose Studio Klein9b"
 KLEIN_CLOTHES_CORE_LORA_NAME = "VNCCS Clothes Core Klein9b"
@@ -964,6 +961,7 @@ H3_POSE_PROMPT = (
     "Draw character from image2"
     "keep emotion. Do not draw shadow. Solid vibrant green background. 4k quality, sharp lines, detailed eyes"
 )
+NATIVE_BACKGROUND_PROMPT = "Transparent background with alpha channel."
 # The generator keeps only the first decoded frame. The reference workflow's
 # zero-second duration expression resolves to H3's minimum valid clip: 5 frames.
 H3_FRAME_COUNT = 5
@@ -1046,7 +1044,6 @@ class VNCCS_CharacterGenerator:
             "background_color": configured_background,
             "latent_image_index": int(settings.get("latent_image_index", defaults["latent_image_index"])),
             "instruction": str(settings.get("instruction", defaults["instruction"])),
-            "qwen_2511": _as_bool(settings.get("qwen_2511", defaults["qwen_2511"]), True),
         }
 
     def _vae_decode_settings(self, settings):
@@ -1191,6 +1188,9 @@ class VNCCS_CharacterGenerator:
     def _extract_pipe(self, pipe):
         out = VNCCS_Pipe().process_pipe(pipe=pipe)
         model_entry = getattr(pipe, "model_entry", None)
+        model_kind = _entry_kind(model_entry) or str(getattr(pipe, "model_kind", "") or "").strip().lower()
+        if model_kind == "qie2511":
+            raise RuntimeError("QIE2511 is no longer supported. Select a QI2 model in VNCCS Control Center.")
         return {
             "model": out[0],
             "clip": out[1],
@@ -1203,7 +1203,8 @@ class VNCCS_CharacterGenerator:
             "sampler": out[10] or "euler",
             "scheduler": out[11] or "simple",
             "model_entry": model_entry,
-            "model_kind": _entry_kind(model_entry) or str(getattr(pipe, "model_kind", "") or "").strip().lower(),
+            "model_kind": model_kind,
+            "qi2_cache": getattr(pipe, "qi2_cache", {"device": "gpu", "dtype": "int8"}),
         }
 
     def _expected_conditioning_width(self, pipe_values):
@@ -1213,8 +1214,6 @@ class VNCCS_CharacterGenerator:
             str(model_entry.get("local_path", "")),
             str(_entry_kind(model_entry)),
         ]).lower()
-        if "qie2511" in identity or "qwen-image-edit-2511" in identity or "qwen_image_edit_2511" in identity:
-            return 3584
         if "anima" in identity:
             return 2048
         return None
@@ -1228,6 +1227,86 @@ class VNCCS_CharacterGenerator:
         ]).lower()
         return pipe_values.get("model_kind") == "klein9b" or "klein" in identity
 
+    def _is_qi2_pipe(self, pipe_values):
+        return pipe_values.get("model_kind") == "qi2"
+
+    def _qi2_cache_model(self, model, pipe_values):
+        cache = pipe_values.get("qi2_cache") or {}
+        return _call_comfy_node(
+            "QwenImage21Cache",
+            model=model,
+            device=cache.get("device", "gpu"),
+            dtype=cache.get("dtype", "int8"),
+        )[0]
+
+    def _qi2_turbo_lora(self, pipe):
+        entries = getattr(pipe, "lora_entries", []) or []
+        states = getattr(pipe, "lora_states", []) or []
+        enabled = {item.get("name") for item in states if item.get("auto_apply")}
+        for entry in entries:
+            if (_entry_kind(entry) != "qi2" or str(entry.get("type", "")).lower() != "turbolora"
+                    or entry.get("name") not in enabled):
+                continue
+            if "viggle" not in str(entry.get("name", "")).lower():
+                raise RuntimeError("QI2 Turbo LoRA must use the Viggle six-step adapter.")
+            full_path, exists = _find_model_on_disk(entry.get("local_path", ""))
+            if not exists:
+                raise RuntimeError(f"QI2 Turbo LoRA is not installed: {entry.get('name')}")
+            return _rel_within_folder(entry.get("local_path", ""))
+        return ""
+
+    def _qi2_prepare_model(self, model, pipe, pipe_values):
+        turbo_lora = self._qi2_turbo_lora(pipe)
+        if turbo_lora:
+            model = apply_viggle_turbo_lora(model, turbo_lora, strength=1.0)
+        return self._qi2_cache_model(model, pipe_values), bool(turbo_lora)
+
+    def _qi2_sample(self, model, positive, negative, latent, sampler, turbo=False):
+        if not turbo:
+            return _call_comfy_node(
+                "KSampler", model=model, positive=positive, negative=negative,
+                latent_image=latent, **sampler,
+            )[0]
+        if int(sampler["steps"]) != 6 or abs(float(sampler["cfg"]) - 1.0) > 1e-6:
+            raise ValueError("Viggle Turbo requires 6 steps and CFG 1 in Control Center.")
+        if float(sampler.get("denoise", 1.0)) != 1.0:
+            raise ValueError("Viggle Turbo requires denoise 1.0.")
+        noise = _call_comfy_node("RandomNoise", noise_seed=sampler["seed"])[0]
+        guider = _call_comfy_node("BasicGuider", model=model, conditioning=positive)[0]
+        sampler_node = _call_comfy_node("KSamplerSelect", sampler_name="euler")[0]
+        sigmas = viggle_turbo_sigmas(latent)
+        return _call_comfy_node(
+            "SamplerCustomAdvanced", noise=noise, guider=guider, sampler=sampler_node,
+            sigmas=sigmas, latent_image=latent,
+        )[0]
+
+    def _qi2_encode(self, pipe_values, prompt, images, target_size=1024, negative_prompt=""):
+        scaled_images = {}
+        output_width = output_height = None
+        for index, image in enumerate(images, start=1):
+            if image is None:
+                continue
+            width, height = self._resolution_scale_dimensions(image, target_size)
+            scaled = _call_comfy_node(
+                "ImageScale", image=image, upscale_method="lanczos",
+                width=width, height=height, crop="disabled",
+            )[0]
+            scaled_images[f"image_{index}"] = scaled
+            if output_width is None:
+                output_width, output_height = width, height
+        if not scaled_images:
+            raise ValueError("Qwen Image 2.1 generation requires a reference image.")
+        positive, negative, _encoder_latent = _call_comfy_node(
+            "TextEncodeQwenImage21",
+            clip=pipe_values["clip"], vae=pipe_values["vae"],
+            prompt=str(prompt or ""), negative_prompt=str(negative_prompt or ""),
+            resolution=0, images=scaled_images,
+        )
+        latent = _call_comfy_node(
+            "EmptyLatentImage", width=output_width, height=output_height, batch_size=1,
+        )[0]
+        return positive, negative, latent
+
     def _is_h3_pipe(self, pipe_values):
         model_entry = pipe_values.get("model_entry") or {}
         identity = " ".join([
@@ -1239,6 +1318,11 @@ class VNCCS_CharacterGenerator:
         return "minimaxh3" in identity or "minimax h3" in identity or "minimax_h3" in identity
 
     def _encoder_call(self, pipe_values, prompt, image1=None, image2=None, image3=None, qwen_settings=None):
+        if self._is_qi2_pipe(pipe_values):
+            return self._qi2_encode(
+                pipe_values, prompt, (image1, image2, image3),
+                target_size=(qwen_settings or {}).get("target_size", 1024),
+            )
         if self._is_klein_pipe(pipe_values):
             return _call_comfy_node(
                 "VNCCS_Flux_Klein_Encoder",
@@ -1252,16 +1336,7 @@ class VNCCS_CharacterGenerator:
                 megapixels=1.0,
                 resolution_steps=1,
             )
-        return _call_comfy_node(
-            "VNCCS_QWEN_Encoder",
-            clip=pipe_values["clip"],
-            vae=pipe_values["vae"],
-            prompt=prompt,
-            image1=image1,
-            image2=image2,
-            image3=image3,
-            **(qwen_settings or {}),
-        )
+        raise RuntimeError(f"Unsupported generator model family: {pipe_values.get('model_kind') or 'unknown'}")
 
     def _is_anima_pipe(self, pipe_values):
         model_entry = pipe_values.get("model_entry") or {}
@@ -1526,8 +1601,7 @@ class VNCCS_CharacterGenerator:
         raise RuntimeError(
             f"{stage_label} has incompatible text conditioning width {bad[0]} for "
             f"'{model_entry.get('name', 'selected model')}'. Expected {expected}. "
-            "Select the matching Control Center text encoder for this model family "
-            "(for Qwen-Image-Edit 2511 use QIE2511_Text_Encoder, not the Anima text encoder)."
+            "Select the matching Control Center text encoder for this model family."
         )
 
     def _find_lora(self, pipe, lora_name):
@@ -1592,12 +1666,14 @@ class VNCCS_CharacterGenerator:
 
     def _find_pose_lora(self, pipe):
         model_kind = _entry_kind(getattr(pipe, "model_entry", None)) or str(getattr(pipe, "model_kind", "") or "").strip().lower()
-        if model_kind == "minimaxh3":
+        if model_kind == "qi2":
+            name = QI2_POSE_GENERATION_LORA_NAME
+        elif model_kind == "minimaxh3":
             name = H3_POSE_GENERATION_LORA_NAME
         elif model_kind == "klein9b":
             name = KLEIN_POSE_GENERATION_LORA_NAME
         else:
-            name = POSE_GENERATION_LORA_NAME
+            raise RuntimeError(f"Unsupported pose generation model family: {model_kind or 'unknown'}")
         info = self._find_lora(pipe, name)
         if model_kind == "minimaxh3" and info.get("custom") and not info.get("enabled"):
             info.update(
@@ -1608,11 +1684,20 @@ class VNCCS_CharacterGenerator:
 
     def _find_clothes_lora(self, pipe):
         model_kind = _entry_kind(getattr(pipe, "model_entry", None))
+        if model_kind == "qi2":
+            return self._find_lora(pipe, CLOTHES_CORE_LORA_NAME)
         name = KLEIN_CLOTHES_CORE_LORA_NAME if model_kind == "klein9b" else CLOTHES_CORE_LORA_NAME
         return self._find_lora(pipe, name)
 
-    def _prompt_with_solid_background(self, prompt, background):
+    def _is_native_bg_remove(self, settings):
+        return str((settings or {}).get("preset", "") or "").strip().lower() == "native"
+
+    def _prompt_with_solid_background(self, prompt, background, bg_remove_settings=None):
         text = str(prompt or "").strip()
+        if self._is_native_bg_remove(bg_remove_settings):
+            if NATIVE_BACKGROUND_PROMPT.lower() in text.lower():
+                return text
+            return f"{text}, {NATIVE_BACKGROUND_PROMPT}" if text else NATIVE_BACKGROUND_PROMPT
         bg = str(background or "").strip()
         if not bg:
             return text
@@ -1858,6 +1943,7 @@ class VNCCS_CharacterGenerator:
         background="Green",
         sampler_settings=None,
         vae_decode_settings=None,
+        bg_remove_settings=None,
         unique_id=None,
         stage="pose_generation",
     ):
@@ -1881,9 +1967,49 @@ class VNCCS_CharacterGenerator:
                 unique_id=unique_id,
                 stage=stage,
             )
-        prompt = self._prompt_with_solid_background(prompt, background)
+        prompt = self._prompt_with_solid_background(prompt, background, bg_remove_settings)
 
-        encoder_class = "VNCCS_Flux_Klein_Encoder" if self._is_klein_pipe(pipe_values) else "VNCCS_QWEN_Encoder"
+        if self._is_qi2_pipe(pipe_values):
+            encode_progress = self._stage_progress_callback(unique_id, stage, "Encoding poses", lora_info)
+            sample_progress = self._stage_progress_callback(unique_id, stage, "Sampling poses", lora_info)
+            decode_progress = self._stage_progress_callback(unique_id, stage, "Decoding poses", lora_info)
+            total = len(pose_parts)
+            conditioning = []
+            qi2_prompt = (
+                "Replace the pose of <image 2> with the pose of <image 1>. "
+                "Keep the character of <image 2>. " + prompt
+            )
+            encode_progress(0, total)
+            for index, pose in enumerate(pose_parts, start=1):
+                conditioning.append(self._qi2_encode(
+                    pipe_values, qi2_prompt, (pose, character_rgb),
+                    target_size=qwen_settings["target_size"],
+                ))
+                encode_progress(index, total)
+            sampler_model = self._apply_pose_lora_to_model(
+                pipe_values["model"], pipe_values["clip"], pipe, lora_info,
+            )
+            sampler_model, turbo = self._qi2_prepare_model(sampler_model, pipe, pipe_values)
+            sampled = []
+            sample_progress(0, total)
+            for index, (positive, negative, latent) in enumerate(conditioning, start=1):
+                sampled.append(self._qi2_sample(
+                    sampler_model, positive, negative, latent, sampler, turbo=turbo,
+                ))
+                sample_progress(index, total)
+            decoded = []
+            decode_progress(0, total)
+            for index, samples in enumerate(sampled, start=1):
+                decoded.append(_call_comfy_node(
+                    "VAEDecodeTiled", samples=samples, vae=pipe_values["vae"],
+                    **vae_decode,
+                )[0])
+                decode_progress(index, total)
+            return self._safe_image_batch(decoded, stage="QI2 pose generation decode")
+
+        if not self._is_klein_pipe(pipe_values):
+            raise RuntimeError(f"Unsupported pose generation model family: {pipe_values.get('model_kind') or 'unknown'}")
+        encoder_class = "VNCCS_Flux_Klein_Encoder"
         encoder_kwargs = {
             "clip": pipe_values["clip"],
             "vae": pipe_values["vae"],
@@ -1956,23 +2082,27 @@ class VNCCS_CharacterGenerator:
         )
         encoding_progress(1, 1)
 
-        sampler_model = self._apply_lora_to_model(
-            pipe_values["model"],
-            pipe_values["clip"],
-            pipe,
-            lora_info,
-            "Remove Clothes",
-        )
+        if self._is_qi2_pipe(pipe_values) and not (lora_info or {}).get("exists"):
+            sampler_model = pipe_values["model"]
+        else:
+            sampler_model = self._apply_lora_to_model(
+                pipe_values["model"], pipe_values["clip"], pipe,
+                lora_info, "Remove Clothes",
+            )
+        turbo = False
+        if self._is_qi2_pipe(pipe_values):
+            sampler_model, turbo = self._qi2_prepare_model(sampler_model, pipe, pipe_values)
         self._validate_conditioning_for_model(pipe_values, positive, negative, "Remove Clothes")
         sampling_progress(0, 1)
-        sampled = _call_comfy_node(
-            "KSampler",
-            model=sampler_model,
-            positive=positive,
-            negative=negative,
-            latent_image=latent,
-            **sampler,
-        )[0]
+        if self._is_qi2_pipe(pipe_values):
+            sampled = self._qi2_sample(
+                sampler_model, positive, negative, latent, sampler, turbo=turbo,
+            )
+        else:
+            sampled = _call_comfy_node(
+                "KSampler", model=sampler_model, positive=positive,
+                negative=negative, latent_image=latent, **sampler,
+            )[0]
         sampling_progress(1, 1)
 
         decoding_progress(0, 1)
@@ -2177,8 +2307,33 @@ class VNCCS_CharacterGenerator:
             image=image,
         )[0]
 
-    def _run_upscaler(self, image, background, settings, seed, unique_id=None, cache_dir=None, stage="upscaler", use_internal_rmbg=False):
-        images = self._split_batch(image)
+    def _restore_native_alpha(self, source, result):
+        source = self._list_to_batch(source)
+        result = self._list_to_batch(result)
+        if (
+            not torch.is_tensor(source) or source.ndim != 4 or source.shape[-1] < 4
+            or not torch.is_tensor(result) or result.ndim != 4 or result.shape[-1] < 3
+        ):
+            return result
+        alpha = source[..., 3:4].movedim(-1, 1)
+        alpha = torch.nn.functional.interpolate(
+            alpha,
+            size=(int(result.shape[1]), int(result.shape[2])),
+            mode="bilinear",
+            align_corners=False,
+        ).movedim(1, -1)
+        if alpha.shape[0] != result.shape[0]:
+            if alpha.shape[0] == 1:
+                alpha = alpha.expand(result.shape[0], -1, -1, -1)
+            else:
+                alpha = alpha[:result.shape[0]]
+        return torch.cat([result[..., :3], alpha.to(device=result.device, dtype=result.dtype)], dim=-1)
+
+    def _run_upscaler(self, image, background, settings, seed, unique_id=None, cache_dir=None, stage="upscaler", use_internal_rmbg=False, bg_remove_settings=None):
+        native_bg_remove = self._is_native_bg_remove(bg_remove_settings)
+        source_image = self._list_to_batch(image)
+        model_image = source_image[..., :3] if native_bg_remove and torch.is_tensor(source_image) and source_image.ndim == 4 and source_image.shape[-1] >= 4 else image
+        images = self._split_batch(model_image)
         total = len(images)
         seed = self._upscaler_seed(settings, seed)
         mode = str(settings.get("mode", "seedvr") or "seedvr").lower()
@@ -2213,7 +2368,8 @@ class VNCCS_CharacterGenerator:
                     total,
                     cache_dir=cache_dir,
                 )
-            return self._safe_image_batch(results, stage=stage) if results else image
+            result_batch = self._safe_image_batch(results, stage=stage) if results else model_image
+            return self._restore_native_alpha(source_image, result_batch) if native_bg_remove else result_batch
 
         self._log_stage(unique_id, stage, f"Loading SeedVR models for {total} image(s)", current=0, total=total, cache_dir=cache_dir)
         dit, vae = self._run_upscaler_models(settings, node_id=unique_id)
@@ -2250,6 +2406,8 @@ class VNCCS_CharacterGenerator:
             self._log_stage(unique_id, stage, f"Internal RMBG finished in {rmbg_elapsed:.1f}s; preparing upscaler output", current=total, total=total, cache_dir=cache_dir)
             results = self._split_batch(result_batch)
             result_batch = self._safe_image_batch(results, stage=stage) if results else result_batch
+        if native_bg_remove:
+            result_batch = self._restore_native_alpha(source_image, result_batch)
         done_total = result_batch.shape[0] if torch.is_tensor(result_batch) and result_batch.ndim == 4 else total
         self._emit(
             unique_id,
@@ -2355,7 +2513,7 @@ class VNCCS_CharacterGenerator:
         return preset
 
     def _bg_remove_disabled(self, settings):
-        return str(settings.get("preset", "") or "").strip().lower() == "disabled"
+        return str(settings.get("preset", "") or "").strip().lower() in {"disabled", "native"}
 
     def _run_bg_remove(self, images, settings, background="Green", unique_id=None, cache_dir=None, stage="bg_remove"):
         if self._bg_remove_disabled(settings):
@@ -2504,6 +2662,7 @@ class VNCCS_CharacterGenerator:
                     background=background,
                     sampler_settings=settings["pose_sampler"],
                     vae_decode_settings=settings["vae_decode"],
+                    bg_remove_settings=settings["bg_remove"],
                     unique_id=unique_id,
                 )
                 if regenerate_index is not None:
@@ -2528,6 +2687,7 @@ class VNCCS_CharacterGenerator:
                     unique_id=unique_id,
                     cache_dir=cache_dir,
                     use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", False),
+                    bg_remove_settings=settings["bg_remove"],
                 )
                 if regenerate_index is not None:
                     upscaled = self._replace_batch_item(_load_cached_tensor(cache_dir, "upscaler"), regenerate_index, upscaled)
@@ -2646,6 +2806,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 background=background,
                 sampler_settings=settings["pose_sampler"],
                 vae_decode_settings=settings["vae_decode"],
+                bg_remove_settings=settings["bg_remove"],
                 unique_id=unique_id,
                 stage=pose_stage,
             )
@@ -2672,6 +2833,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 cache_dir=cache_dir,
                 stage=up_stage,
                 use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", False),
+                bg_remove_settings=settings["bg_remove"],
             )
             if regenerate_index is not None:
                 upscaled = self._replace_batch_item(_load_cached_tensor(cache_dir, up_stage), regenerate_index, upscaled)
@@ -2880,6 +3042,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
         use_internal_rmbg=False,
         sampler_settings=None,
         vae_decode_settings=None,
+        bg_remove_settings=None,
         unique_id=None,
         stage="pose_generation",
     ):
@@ -2893,6 +3056,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
             background=background,
             sampler_settings=sampler_settings,
             vae_decode_settings=vae_decode_settings,
+            bg_remove_settings=bg_remove_settings,
             unique_id=unique_id,
             stage=stage,
         )
@@ -3003,6 +3167,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                     use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", False),
                     sampler_settings=settings["pose_sampler"],
                     vae_decode_settings=settings["vae_decode"],
+                    bg_remove_settings=settings["bg_remove"],
                     unique_id=unique_id,
                 )
                 if regenerate_index is not None:
@@ -3027,6 +3192,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                     unique_id=unique_id,
                     cache_dir=cache_dir,
                     use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", False),
+                    bg_remove_settings=settings["bg_remove"],
                 )
                 if regenerate_index is not None:
                     upscaled = self._replace_batch_item(_load_cached_tensor(cache_dir, "upscaler"), regenerate_index, upscaled)
@@ -3896,6 +4062,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         sam_bbox_expansion=0,
         use_sam=True,
         detailer_settings=None,
+        bg_remove_settings=None,
     ):
         pipe_values = self._extract_pipe(pipe)
         configured = detailer_settings if isinstance(detailer_settings, dict) else {}
@@ -3915,23 +4082,57 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             "sampler_name": pipe_values["sampler"],
             "scheduler": pipe_values["scheduler"],
         }
+        qi2_turbo_lora = self._qi2_turbo_lora(pipe) if self._is_qi2_pipe(pipe_values) else ""
+        if qi2_turbo_lora:
+            sampler.update(steps=6, cfg=1.0, sampler_name="euler", scheduler="simple")
+            # Viggle's schedule is defined for a complete six-step pass.  The
+            # FaceDetailer reference workflow therefore uses denoise 1.0.
+            face_denoise = 1.0
         if not _as_bool(configured.get("inherit_pipe_sampler", True), True):
             sampler["sampler_name"] = str(configured.get("sampler_name", pipe_values["sampler"]))
             sampler["scheduler"] = str(configured.get("scheduler", pipe_values["scheduler"]))
         model_for_detailer = pipe_values["model"]
+        viggle_detailer = None
+        if self._is_qi2_pipe(pipe_values):
+            if qi2_turbo_lora:
+                model_for_detailer = apply_viggle_turbo_lora(
+                    model_for_detailer,
+                    qi2_turbo_lora,
+                    strength=1.0,
+                )
+                viggle_detailer = ViggleDetailerSchedule()
+            model_for_detailer = self._qi2_cache_model(model_for_detailer, pipe_values)
 
-        detailer_positive_text = self._detailer_positive_prompt(emotion_prompt, face_details)
+        if self._is_qi2_pipe(pipe_values):
+            selected_prompt = str(emotion_prompt or "").strip()
+            detailer_positive_text = (
+                f"Make character's face emotion {selected_prompt}\n"
+                "keep character's clothes"
+            )
+            if self._is_native_bg_remove(bg_remove_settings):
+                detailer_positive_text += f"\n{NATIVE_BACKGROUND_PROMPT}"
+        else:
+            detailer_positive_text = self._detailer_positive_prompt(emotion_prompt, face_details)
         print(f"[VNCCS Emotions Generator] Emotion positive: {detailer_positive_text[:500]}")
-        positive = _call_comfy_node(
-            "CLIPTextEncode",
-            clip=pipe_values["clip"],
-            text=detailer_positive_text,
-        )[0]
-        negative = _call_comfy_node(
-            "CLIPTextEncode",
-            clip=pipe_values["clip"],
-            text=str(negative_prompt or ""),
-        )[0]
+        if self._is_qi2_pipe(pipe_values):
+            width, height = self._resolution_scale_dimensions(image, 1024)
+            scaled_reference = _call_comfy_node(
+                "ImageScale", image=image, upscale_method="lanczos",
+                width=width, height=height, crop="disabled",
+            )[0]
+            positive, negative, _encoder_latent = _call_comfy_node(
+                "TextEncodeQwenImage21",
+                clip=pipe_values["clip"], vae=pipe_values["vae"],
+                prompt=detailer_positive_text, negative_prompt=str(negative_prompt or ""),
+                resolution=0, images={"image_1": scaled_reference},
+            )
+        else:
+            positive = _call_comfy_node(
+                "CLIPTextEncode", clip=pipe_values["clip"], text=detailer_positive_text,
+            )[0]
+            negative = _call_comfy_node(
+                "CLIPTextEncode", clip=pipe_values["clip"], text=str(negative_prompt or ""),
+            )[0]
 
         bbox_detector = _call_comfy_node(
             "UltralyticsDetectorProvider",
@@ -3987,6 +4188,8 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             tiled_encode=_as_bool(configured.get("tiled_encode", True), True),
             tiled_decode=_as_bool(configured.get("tiled_decode", True), True),
             wildcard=detailer_positive_text,
+            detailer_hook=viggle_detailer,
+            scheduler_func_opt=viggle_detailer.scheduler_func if viggle_detailer else None,
         )
         full_image = self._list_to_batch(detailed[0])
         face_crop = self._list_to_batch(detailed[1]) if len(detailed) > 1 and detailed[1] is not None else full_image
@@ -4245,6 +4448,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                                 sam_bbox_expansion=sam_bbox_expansion,
                                 use_sam=use_sam,
                                 detailer_settings=emotion_settings,
+                                bg_remove_settings=bg_settings,
                             )
                             self._save_emotion_cache_item(cache_dir, stage_key, group_position, raw_result)
                             self._save_emotion_cache_item(

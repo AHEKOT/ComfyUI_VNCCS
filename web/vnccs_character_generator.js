@@ -24,7 +24,6 @@ const DEFAULT_DATA = {
         background_color: "from_generator",
         latent_image_index: 1,
         instruction: GENERATOR_QWEN_INSTRUCTION,
-        qwen_2511: true,
     },
     pose_sampler: {
         inherit_pipe: true,
@@ -92,7 +91,6 @@ const DEFAULT_DATA = {
         background_color: "White",
         latent_image_index: 1,
         instruction: GENERATOR_QWEN_INSTRUCTION,
-        qwen_2511: true,
     },
     remove_clothes_sampler: {
         inherit_pipe: true,
@@ -220,8 +218,8 @@ const WORKFLOW_UPSCALER_VAE_MODELS = [
 const SEEDVR_ATTENTION_MODES = ["sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3"];
 const SEEDVR_COLOR_CORRECTION_MODES = ["lab", "wavelet", "adain", "none"];
 const NATIVE_SEEDVR_NODE_NAMES = ["SeedVR2Preprocess", "SeedVR2Conditioning", "SeedVR2PostProcessing"];
+const BG_REMOVE_MODES = ["Native", "disabled", "ultra_light", "light", "balanced", "strong", "aggressive"];
 
-const POSE_GENERATION_LORA_LABEL = "VNCCS Pose Studio QIE2511";
 const CLOTHES_CORE_LORA_LABEL = "VNCCS Clothes Core";
 
 const CSS = `
@@ -1167,7 +1165,10 @@ class CharacterGeneratorWidget {
             registerCleanup(this.node, () => window.removeEventListener("vnccs-character-cloner-updated", this.onClonerUpdated));
         }
         if (this.isEmotions) {
-            this.onEmotionStudioModeChanged = () => this.renderSettings();
+            this.onEmotionStudioModeChanged = () => {
+                if (this.syncModelResolution()) writeData(this.node, this.data);
+                this.renderSettings();
+            };
             window.addEventListener("vnccs-emotion-studio-generation-mode-changed", this.onEmotionStudioModeChanged);
             registerCleanup(this.node, () => window.removeEventListener("vnccs-emotion-studio-generation-mode-changed", this.onEmotionStudioModeChanged));
         }
@@ -1256,6 +1257,7 @@ class CharacterGeneratorWidget {
     }
 
     generatorSettingsGroups() {
+        const isQI2 = this.data.ui?.resolution_model_kind === "qi2";
         const number = (section, key, label, min, max, step = 1, extra = {}) => ({
             section, key, label, type: "number", min, max, step, ...extra,
         });
@@ -1272,8 +1274,11 @@ class CharacterGeneratorWidget {
         if (!this.isEmotions) {
             const poseTargetSection = this.isClone ? "common" : "pose_generation";
             groups.push({
-                title: "VNCCS QWEN Encoder · Pose Generation",
-                fields: [
+                title: isQI2 ? "Text Encode Qwen Image 2.1 · Pose Generation" : "Encoder · Pose Generation",
+                fields: isQI2 ? [
+                    number(poseTargetSection, "target_size", "target_size", 512, 4096, 32),
+                    select("pose_generation", "background_color", "background_color", ["from_generator", "White", "Green", "Blue"]),
+                ] : [
                     number(poseTargetSection, "target_size", "target_size", 512, 4096, 8),
                     select("pose_generation", "upscale_method", "upscale_method", ["lanczos", "bicubic", "area"]),
                     select("pose_generation", "crop_method", "crop_method", ["disabled", "pad", "center"]),
@@ -1286,7 +1291,6 @@ class CharacterGeneratorWidget {
                     text("pose_generation", "image1_name", "image1_name"),
                     text("pose_generation", "image2_name", "image2_name"),
                     text("pose_generation", "image3_name", "image3_name"),
-                    check("pose_generation", "qwen_2511", "qwen_2511"),
                     textarea("pose_generation", "instruction", "instruction"),
                 ],
             });
@@ -1314,8 +1318,11 @@ class CharacterGeneratorWidget {
             });
             if (this.isClone) {
                 groups.push({
-                    title: "VNCCS QWEN Encoder · Remove Clothes",
-                    fields: [
+                    title: isQI2 ? "Text Encode Qwen Image 2.1 · Remove Clothes" : "Encoder · Remove Clothes",
+                    fields: isQI2 ? [
+                        textarea("remove_clothes", "prompt", "prompt"),
+                        select("remove_clothes", "background_color", "background_color", ["White", "Green", "Blue"]),
+                    ] : [
                         textarea("remove_clothes", "prompt", "prompt"),
                         select("remove_clothes", "upscale_method", "upscale_method", ["lanczos", "bicubic", "area"]),
                         select("remove_clothes", "crop_method", "crop_method", ["disabled", "pad", "center"]),
@@ -1328,7 +1335,6 @@ class CharacterGeneratorWidget {
                         text("remove_clothes", "image1_name", "image1_name"),
                         text("remove_clothes", "image2_name", "image2_name"),
                         text("remove_clothes", "image3_name", "image3_name"),
-                        check("remove_clothes", "qwen_2511", "qwen_2511"),
                         textarea("remove_clothes", "instruction", "instruction"),
                     ],
                     note: "target_size is shared with the clone pose-generation encoder.",
@@ -1432,7 +1438,7 @@ class CharacterGeneratorWidget {
         groups.push({
             title: "VNCCS Chroma Key",
             fields: [
-                select("bg_remove", "preset", "preset", ["disabled", "ultra_light", "light", "balanced", "strong", "aggressive"]),
+                select("bg_remove", "preset", "preset", BG_REMOVE_MODES),
                 check("bg_remove", "use_preset_values", "Use values from selected preset"),
                 number("bg_remove", "tolerance", "tolerance", 0, 1, 0.01),
                 number("bg_remove", "softness", "softness", 0.001, 1, 0.01),
@@ -1801,33 +1807,56 @@ class CharacterGeneratorWidget {
     }
 
     syncModelResolution(sourceId = null) {
-        if (this.isEmotions) return false;
         const source = this.controlCenterWidgetNode();
-        if (!source || (sourceId != null && String(source.id) !== String(sourceId))) return false;
-        const stateWidget = source.widgets?.find(widget => widget.name === "node_state");
-        let state;
-        try { state = JSON.parse(stateWidget?.value || "{}"); } catch { return false; }
-        const kind = String(state.active_kind || "QIE2511").trim().toLowerCase();
-        if (!["qie2511", "klein9b", "minimaxh3"].includes(kind)) return false;
-        const previousKind = this.data.ui?.resolution_model_kind;
-        if (previousKind === kind) return false;
-        const section = this.isClone ? "common" : "pose_generation";
-        const settings = this.data[section];
-        // Keep custom sizes from legacy workflows on their first synchronization.
-        // A family switch selects its default; later edits remain until the next switch.
-        if (previousKind || Number(settings.target_size) === 1024) {
-            settings.target_size = kind === "minimaxh3" ? 1536 : 1024;
+        let kind = "";
+        if (source) {
+            if (sourceId != null && String(source.id) !== String(sourceId)) return false;
+            const stateWidget = source.widgets?.find(widget => widget.name === "node_state");
+            let state;
+            try { state = JSON.parse(stateWidget?.value || "{}"); } catch { return false; }
+            kind = String(state.active_kind || "QI2").trim().toLowerCase();
+        } else if (this.isEmotions && sourceId == null) {
+            kind = this.connectedEmotionStudioMode();
+        } else {
+            return false;
         }
-        if (this.isClone) {
-            this.data.pose_generation.target_size = settings.target_size;
-            this.data.remove_clothes.target_size = settings.target_size;
+        if (!["qi2", "klein9b", "minimaxh3", "anima", "illustrious"].includes(kind)) return false;
+        const previousKind = this.data.ui?.resolution_model_kind;
+        const previousBgKind = this.data.ui?.bg_remove_model_kind;
+        let changed = false;
+        if (!this.isEmotions && previousKind !== kind) {
+            const section = this.isClone ? "common" : "pose_generation";
+            const settings = this.data[section];
+            // Keep custom sizes from legacy workflows on their first synchronization.
+            // A family switch selects its default; later edits remain until the next switch.
+            if (previousKind || Number(settings.target_size) === 1024) {
+                settings.target_size = kind === "minimaxh3" ? 1536 : 1024;
+            }
+            if (this.isClone) {
+                this.data.pose_generation.target_size = settings.target_size;
+                this.data.remove_clothes.target_size = settings.target_size;
+            }
+            changed = true;
+        }
+
+        if (previousBgKind !== kind) {
+            const preset = String(this.data.bg_remove?.preset || "balanced");
+            if (kind === "qi2") {
+                if (preset.toLowerCase() !== "native") {
+                    this.data.ui.bg_remove_previous_preset = preset;
+                }
+                this.data.bg_remove.preset = "Native";
+            } else if (preset.toLowerCase() === "native") {
+                this.data.bg_remove.preset = this.data.ui.bg_remove_previous_preset || "balanced";
+            }
+            this.data.ui.bg_remove_model_kind = kind;
+            changed = true;
         }
         this.data.ui = { ...this.data.ui, resolution_model_kind: kind };
-        return true;
+        return changed;
     }
 
     bindModelResolutionSync() {
-        if (this.isEmotions) return;
         const sync = event => {
             if (!this.syncModelResolution(event?.detail?.node_id)) return;
             writeData(this.node, this.data);
@@ -2143,6 +2172,8 @@ class CharacterGeneratorWidget {
     async loadNodeDefs() {
         const names = [
             "VNCCS_QWEN_Encoder",
+            "TextEncodeQwenImage21",
+            "QwenImage21Cache",
             "KSampler",
             "VAEDecodeTiled",
             "UNETLoader",
@@ -2300,7 +2331,7 @@ class CharacterGeneratorWidget {
         const wrap = document.createElement("label");
         wrap.className = "vnccs-pipe-field";
         const help = {
-            target_size: "Model defaults: QIE2511 and Klein 1024, MiniMaxH3 1536. You can change this value manually until the next model-family switch.",
+            target_size: "Model defaults: QI2 and Klein 1024, MiniMaxH3 1536. You can change this value manually until the next model-family switch.",
             prompt: "Prompt text used for the remove-clothes/preparation stage.",
             gan_model: "Upscale model used when GAN upscaling is selected.",
             model: "SeedVR diffusion model used for the upscaler stage.",
@@ -2520,25 +2551,29 @@ class CharacterGeneratorWidget {
         return wrap;
     }
 
-    connectedEmotionStudioIsAnima() {
+    connectedEmotionStudioMode() {
         if (!this.isEmotions) return false;
         const pipeInput = (this.node.inputs || []).find(input => input.name === "pipe");
-        if (!pipeInput?.link) return false;
+        if (!pipeInput || pipeInput.link == null) return false;
         const link = app.graph?.links?.[pipeInput.link];
         const sourceNode = app.graph?.getNodeById?.(link?.origin_id);
-        if (!sourceNode || sourceNode.type !== "EmotionGeneratorV2") return false;
+        if (!sourceNode || (sourceNode.type !== "EmotionGeneratorV2" && sourceNode.comfyClass !== "EmotionGeneratorV2")) return false;
 
         const settingsWidget = sourceNode.widgets?.find(widget => widget.name === "generation_settings");
         try {
             const settings = settingsWidget?.value ? JSON.parse(settingsWidget.value) : {};
             const settingsMode = String(settings?.generation_mode || "").toLowerCase();
-            if (settingsMode === "anima") return true;
-            if (settingsMode === "illustrious") return false;
+            if (["qi2", "anima", "illustrious"].includes(settingsMode)) return settingsMode;
         } catch (_) {
             // Fall back to the hidden mode widget below.
         }
         const modeWidget = sourceNode.widgets?.find(widget => widget.name === "generation_model");
-        return String(modeWidget?.value || "").toLowerCase() === "anima";
+        const mode = String(modeWidget?.value || "").toLowerCase();
+        return ["qi2", "anima", "illustrious"].includes(mode) ? mode : "";
+    }
+
+    connectedEmotionStudioIsAnima() {
+        return this.connectedEmotionStudioMode() === "anima";
     }
 
     async loadSeedvrAssets(force = false) {
@@ -2679,7 +2714,7 @@ class CharacterGeneratorWidget {
             ];
             this.settingsEl.appendChild(this.block("Face Detailer", faceDetailerFields));
             this.settingsEl.appendChild(this.block("BG Remove", [
-                this.field("bg_remove", "preset", "chroma preset", "select", ["disabled", "ultra_light", "light", "balanced", "strong", "aggressive"]),
+                this.field("bg_remove", "preset", "mode", "select", BG_REMOVE_MODES),
                 this.field("bg_remove", "use_sam3_details_recovery", "Use SAM3 Details Recovery", "checkbox"),
             ]));
             return;
@@ -2726,7 +2761,7 @@ class CharacterGeneratorWidget {
         this.settingsEl.appendChild(this.block("Upscaler", upscalerFields));
         this.settingsEl.appendChild(this.block("BG Remove", [
             // TODO: Decide what to do with internal RMBG later.
-            this.field("bg_remove", "preset", "chroma preset", "select", ["disabled", "ultra_light", "light", "balanced", "strong", "aggressive"]),
+            this.field("bg_remove", "preset", "mode", "select", BG_REMOVE_MODES),
             this.field("bg_remove", "use_sam3_details_recovery", "Use SAM3 Details Recovery", "checkbox"),
         ]));
     }
@@ -2972,10 +3007,12 @@ class CharacterGeneratorWidget {
             if (key === "pose_generation" || key === "original_pose_generation" || key === "naked_pose_generation") {
                 const l = document.createElement("div");
                 l.className = "vnccs-pipe-stage-lora";
-                l.textContent = `LoRA: ${POSE_GENERATION_LORA_LABEL}`;
+                const poseLora = this.data.ui?.resolution_model_kind === "klein9b"
+                    ? "VNCCS Pose Studio Klein9b" : "VNCCS Pose Studio QI2";
+                l.textContent = `LoRA: ${poseLora}`;
                 stage.appendChild(l);
             }
-            if (key === "remove_clothes") {
+            if (key === "remove_clothes" && this.data.ui?.resolution_model_kind !== "qi2") {
                 const l = document.createElement("div");
                 l.className = "vnccs-pipe-stage-lora";
                 l.textContent = `LoRA: ${CLOTHES_CORE_LORA_LABEL}`;

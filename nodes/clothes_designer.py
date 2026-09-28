@@ -22,27 +22,7 @@ from .vnccs_utils import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MO
 from .qwen_vl import configure_qwen_text_chat
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-WORKFLOW_ENCODER_CLASS = "VNCCS_QWEN_Encoder"
 KLEIN_ENCODER_CLASS = "VNCCS_Flux_Klein_Encoder"
-WORKFLOW_ENCODER_INSTRUCTION = (
-    "Describe the character and their key features (body shape, physical characteristics, "
-    "clothing, items, accessories). Then explain how the user's text instruction should alter "
-    "or modify the character. Generate a new image that meets the user's requirements while "
-    "maintaining consistency with the original character where appropriate."
-)
-WORKFLOW_ENCODER_DEFAULTS = {
-    "target_size": 1024,
-    "upscale_method": "lanczos",
-    "crop_method": "disabled",
-    "latent_image_index": 1,
-    "weight1": 1,
-    "weight2": 1,
-    "weight3": 1,
-    "vl_size": 384,
-    "instruction": WORKFLOW_ENCODER_INSTRUCTION,
-    "qwen_2511": True,
-    "background_color": "White",
-}
 WORKFLOW_SAMPLER_DEFAULTS = {
     "seed": 200413815563996,
     "steps": 4,
@@ -57,7 +37,6 @@ WORKFLOW_DECODE_DEFAULTS = {
     "temporal_size": 64,
     "temporal_overlap": 8,
 }
-WORKFLOW_CLOTHES_CORE_LORA = "qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.6.safetensors"
 BACKGROUND_RGB = {
     "Green": (0.0, 1.0, 0.0),
     "Blue": (0.0, 0.0, 1.0),
@@ -266,6 +245,8 @@ def _resolve_pipe_clothes_core_lora(pipe):
         rel_path = _normalize_lora_rel_path(entry.get("local_path") or entry.get("path"))
         if _is_clothes_core_lora_name(name) or _is_clothes_core_lora_name(rel_path):
             return rel_path
+    if model_kind == "qi2":
+        return ""
     raise ValueError("VNCCS Clothes Designer requires VNCCS Clothes Core LoRA from Control Center pipe.")
 
 
@@ -469,15 +450,18 @@ class ClothesDesigner:
         # 2. Paths
         sheet_path = sheets_dir(character_name, costume_name, "neutral") 
 
+        model_kind = _entry_kind(getattr(pipe, "model_entry", None))
+        default_steps = 25 if model_kind == "qi2" else WORKFLOW_SAMPLER_DEFAULTS["steps"]
+        default_cfg = 3.0 if model_kind == "qi2" else WORKFLOW_SAMPLER_DEFAULTS["cfg"]
         seed_int = int(getattr(pipe, "seed_int", getattr(pipe, "seed", 0)) or WORKFLOW_SAMPLER_DEFAULTS["seed"])
-        sample_steps = int(getattr(pipe, "sample_steps", getattr(pipe, "steps", 0)) or WORKFLOW_SAMPLER_DEFAULTS["steps"])
-        cfg = float(getattr(pipe, "cfg", 0.0) or WORKFLOW_SAMPLER_DEFAULTS["cfg"])
+        sample_steps = int(getattr(pipe, "sample_steps", getattr(pipe, "steps", 0)) or default_steps)
+        cfg = float(getattr(pipe, "cfg", 0.0) or default_cfg)
         denoise = float(getattr(pipe, "denoise", 0.0) or WORKFLOW_SAMPLER_DEFAULTS["denoise"])
         sampler_name = getattr(pipe, "sampler_name", None) or WORKFLOW_SAMPLER_DEFAULTS["sampler_name"]
         scheduler = getattr(pipe, "scheduler", None) or WORKFLOW_SAMPLER_DEFAULTS["scheduler"]
         clothes_core_lora = _resolve_pipe_clothes_core_lora(pipe)
-        model_kind = _entry_kind(getattr(pipe, "model_entry", None))
         is_h3 = model_kind == "minimaxh3"
+        is_qi2 = model_kind == "qi2"
         target_size = _clothes_target_size(gen_settings, model_kind)
 
         # 3. Cache check
@@ -497,6 +481,12 @@ class ClothesDesigner:
                 "clothes_core_lora": clothes_core_lora,
                 "resolution": {"model_kind": model_kind, "target_size": target_size},
             }
+            if is_qi2:
+                cache_payload["qi2_cache"] = getattr(pipe, "qi2_cache", {})
+                cache_payload["qi2_turbo"] = sorted(
+                    item.get("name", "") for item in (getattr(pipe, "lora_states", []) or [])
+                    if item.get("auto_apply") and "viggle" in str(item.get("name", "")).lower()
+                )
             canonical_str = json.dumps(cache_payload, sort_keys=True, separators=(',', ':'))
             input_hash = hashlib.sha256(canonical_str.encode('utf-8')).hexdigest()
         except Exception:
@@ -546,7 +536,8 @@ class ClothesDesigner:
             f"image2={'clone reference' if image2 is not None else 'none'}, prompt={positive_prompt!r}"
         )
         is_klein = model_kind == "klein9b"
-        encoder_class = KLEIN_ENCODER_CLASS if is_klein else WORKFLOW_ENCODER_CLASS
+        if not (is_h3 or is_qi2 or is_klein):
+            raise ValueError(f"Unsupported clothes model family: {model_kind or 'unknown'}")
         encoder_kwargs = {
             "clip": clip,
             "prompt": positive_prompt,
@@ -557,13 +548,6 @@ class ClothesDesigner:
         }
         if is_klein:
             encoder_kwargs.update(upscale_method="lanczos", megapixels=(target_size / 1024.0) ** 2, resolution_steps=1)
-        else:
-            encoder_kwargs.update(
-                image1_name="Picture 1",
-                image2_name="Picture 2",
-                image3_name="Picture 3",
-                **WORKFLOW_ENCODER_DEFAULTS,
-            )
         if is_h3:
             audio_vae = getattr(pipe, "audio_vae", None)
             if audio_vae is None:
@@ -578,10 +562,14 @@ class ClothesDesigner:
                 ref_image_size="match", ref_images=references,
             )
             neg_cond = None
+        elif is_qi2:
+            pos_cond, neg_cond, empty_latent = VNCCS_CharacterGenerator()._qi2_encode(
+                {"clip": clip, "vae": vae}, positive_prompt,
+                (ref_image, image2), target_size=target_size,
+                negative_prompt=negative_prompt,
+            )
         else:
-            if not is_klein:
-                encoder_kwargs["target_size"] = target_size
-            pos_cond, neg_cond, empty_latent = _call_comfy_node(encoder_class, **encoder_kwargs)
+            pos_cond, neg_cond, empty_latent = _call_comfy_node(KLEIN_ENCODER_CLASS, **encoder_kwargs)
         
         out_pipe = PipeContext(
             source=pipe,
@@ -595,13 +583,18 @@ class ClothesDesigner:
             scheduler=scheduler,
         )
 
-        print(f"[ClothesDesigner] Applying VNCCS Clothes Core LoRA from pipe: {clothes_core_lora} (strength=1)")
-        sampler_model = _call_comfy_node(
-            "LoraLoaderModelOnly",
-            model=model,
-            lora_name=clothes_core_lora,
-            strength_model=1,
-        )[0]
+        sampler_model = model
+        if clothes_core_lora:
+            print(f"[ClothesDesigner] Applying VNCCS Clothes Core LoRA from pipe: {clothes_core_lora} (strength=1)")
+            sampler_model = _call_comfy_node(
+                "LoraLoaderModelOnly", model=model,
+                lora_name=clothes_core_lora, strength_model=1,
+            )[0]
+        if is_qi2:
+            qi2_generator = VNCCS_CharacterGenerator()
+            sampler_model, qi2_turbo = qi2_generator._qi2_prepare_model(
+                sampler_model, pipe, {"qi2_cache": getattr(pipe, "qi2_cache", {})},
+            )
 
         # 4. Sampling using the incoming Control Center pipe configuration
         print("[ClothesDesigner] Sampling...")
@@ -614,6 +607,14 @@ class ClothesDesigner:
                 "SamplerCustomAdvanced", noise=noise, guider=guider, sampler=sampler,
                 sigmas=sigmas, latent_image=empty_latent,
             )[0]
+        elif is_qi2:
+            latent_result = qi2_generator._qi2_sample(
+                sampler_model, pos_cond, neg_cond, empty_latent,
+                {"seed": out_pipe.seed_int, "steps": out_pipe.sample_steps,
+                 "cfg": out_pipe.cfg, "sampler_name": out_pipe.sampler_name,
+                 "scheduler": out_pipe.scheduler, "denoise": out_pipe.denoise},
+                turbo=qi2_turbo,
+            )
         else:
             latent_result = _call_comfy_node(
                 "KSampler",

@@ -5,7 +5,7 @@ import vm from "node:vm";
 
 const source = readFileSync(new URL("../web/vnccs_character_generator.js", import.meta.url), "utf8");
 
-function setup({ kind = "QIE2511", saved = {}, clone = false, clothes = false } = {}) {
+function setup({ kind = "QI2", saved = {}, clone = false, clothes = false, emotions = false } = {}) {
     const listeners = new Map();
     const timers = new Map();
     const cleanups = [];
@@ -28,7 +28,7 @@ function setup({ kind = "QIE2511", saved = {}, clone = false, clothes = false } 
     });
     vm.runInContext(source.replace(/^import .*;\n/gm, "") + "\nthis.Widget = CharacterGeneratorWidget; this.readData = readData;", context);
     const widget = Object.create(context.Widget.prototype);
-    Object.assign(widget, { node, data: context.readData(node), isClone: clone, isClothes: clothes,
+    Object.assign(widget, { node, data: context.readData(node), isClone: clone, isClothes: clothes, isEmotions: emotions,
         stages: [], renders: 0, renderSettings() { this.renders++; }, syncCharacterSourceData() {}, saveBrowserState() {} });
     widget.bindModelResolutionSync();
     return { widget, graph, serialized, cleanups, listeners, timers, app,
@@ -41,11 +41,90 @@ function setup({ kind = "QIE2511", saved = {}, clone = false, clothes = false } 
     };
 }
 
+function setupEmotionStudio(mode = "qi2") {
+    const timers = new Map();
+    const settings = { name: "generation_settings", value: JSON.stringify({ generation_mode: mode }) };
+    const studio = { id: 10, type: "EmotionGeneratorV2", widgets: [settings] };
+    const serialized = { name: "widget_data", value: "{}" };
+    const node = { id: 11, inputs: [{ name: "pipe", link: 10 }], widgets: [serialized] };
+    const graph = {
+        links: { 10: { origin_id: 10 } },
+        _nodes: [studio, node],
+        getNodeById: id => graph._nodes.find(item => item.id === id),
+        setDirtyCanvas() {},
+    };
+    node.graph = graph;
+    const app = { graph, registerExtension(extension) { this.extension = extension; } };
+    const context = vm.createContext({
+        app,
+        window: { addEventListener() {}, removeEventListener() {} },
+        setInterval: fn => { timers.set(1, fn); return 1; },
+        clearInterval: id => timers.delete(id),
+        registerCleanup() {},
+        localStorage: { getItem: () => null },
+    });
+    vm.runInContext(source.replace(/^import .*;\n/gm, "") + "\nthis.Widget = CharacterGeneratorWidget; this.readData = readData;", context);
+    const widget = Object.create(context.Widget.prototype);
+    Object.assign(widget, {
+        node,
+        data: context.readData(node),
+        isClone: false,
+        isClothes: false,
+        isEmotions: true,
+        stages: [],
+        renderSettings() {},
+        saveBrowserState() {},
+    });
+    widget.bindModelResolutionSync();
+    return { widget, settings, serialized, timers };
+}
+
+for (const mode of [{}, { clone: true }, { clothes: true }, { emotions: true }]) {
+    test(`QI2 selects Native BG Remove for every generator (${JSON.stringify(mode)})`, () => {
+        const { widget, timers, switchTo, serialized } = setup(mode);
+        timers.get(1)();
+        assert.equal(widget.data.bg_remove.preset, "Native");
+        assert.equal(JSON.parse(serialized.value).bg_remove.preset, "Native");
+
+        switchTo("Klein9b");
+        assert.equal(widget.data.bg_remove.preset, "balanced");
+        switchTo("QI2");
+        assert.equal(widget.data.bg_remove.preset, "Native");
+    });
+}
+
+test("manual BG Remove choice survives repeated QI2 updates until the family changes", () => {
+    const { widget, timers, switchTo } = setup();
+    timers.get(1)();
+    widget.set("bg_remove", "preset", "strong");
+    switchTo("QI2");
+    timers.get(1)();
+    assert.equal(widget.data.bg_remove.preset, "strong");
+    switchTo("Klein9b");
+    switchTo("QI2");
+    assert.equal(widget.data.bg_remove.preset, "Native");
+});
+
+test("Native is exposed as a BG Remove mode", () => {
+    assert.match(source, /const BG_REMOVE_MODES = \["Native", "disabled"/);
+});
+
+test("connected QI2 Emotion Studio selects Native BG Remove and restores the prior mode", () => {
+    const { widget, settings, serialized, timers } = setupEmotionStudio("qi2");
+    timers.get(1)();
+    assert.equal(widget.data.bg_remove.preset, "Native");
+    assert.equal(JSON.parse(serialized.value).bg_remove.preset, "Native");
+
+    settings.value = JSON.stringify({ generation_mode: "anima" });
+    timers.get(1)();
+    assert.equal(widget.data.bg_remove.preset, "balanced");
+});
+
 for (const mode of [{}, { clone: true }, { clothes: true }]) {
     test(`family changes update visible and serialized resolution (${JSON.stringify(mode)})`, () => {
         const { widget, switchTo, serialized } = setup(mode);
         const section = mode.clone ? "common" : "pose_generation";
-        for (const [kind, size] of [["QIE2511", 1024], ["MiniMaxH3", 1536], ["Klein9b", 1024], ["MiniMaxH3", 1536], ["QIE2511", 1024]]) {
+        for (const [kind, size] of [["QI2", 1024], ["MiniMaxH3", 1536], ["Klein9b", 1024], ["MiniMaxH3", 1536], ["QI2", 1024]]) {
             switchTo(kind);
             assert.equal(widget.data[section].target_size, size);
             assert.equal(JSON.parse(serialized.value)[section].target_size, size);
@@ -67,7 +146,7 @@ test("manual choice survives updates, polling, and workflow reload until a famil
     reload();
     assert.equal(widget.syncModelResolution(), false);
     assert.equal(widget.data.pose_generation.target_size, 1024);
-    switchTo("QIE2511");
+    switchTo("QI2");
     switchTo("MiniMaxH3");
     assert.equal(widget.data.pose_generation.target_size, 1536);
 });
@@ -85,7 +164,7 @@ test("events are scoped to the upstream widget and reconnection is detected", ()
     const { widget, switchTo, graph, timers } = setup();
     const other = { id: 3, type: "VNCCS_ControlCenter", widgets: [{ name: "node_state", value: '{"active_kind":"MiniMaxH3"}' }] };
     graph._nodes.unshift(other);
-    switchTo("QIE2511");
+    switchTo("QI2");
     switchTo("MiniMaxH3", 3);
     assert.equal(widget.data.pose_generation.target_size, 1024);
     graph.links[0].origin_id = 3;

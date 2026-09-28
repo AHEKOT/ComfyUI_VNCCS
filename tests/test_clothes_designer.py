@@ -177,9 +177,9 @@ class TestCloneReferencePreparation:
 # ── Clothes Core LoRA resolution ──────────────────────────────────────────────
 
 class TestClothesCoreLoraResolution:
-    def test_prefers_pipe_lora_entry(self):
+    def test_qi2_does_not_reuse_legacy_clothes_lora(self):
         pipe = types.SimpleNamespace(
-            model_entry={"kind": "QIE2511"},
+            model_entry={"kind": "QI2"},
             lora_entries=[
                 {
                     "name": "VNCCS Clothes Core",
@@ -188,7 +188,7 @@ class TestClothesCoreLoraResolution:
                 }
             ],
         )
-        assert _resolve_pipe_clothes_core_lora(pipe) == "qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.5.safetensors"
+        assert _resolve_pipe_clothes_core_lora(pipe) == ""
 
     def test_selects_only_lora_matching_klein_model_kind(self):
         pipe = types.SimpleNamespace(
@@ -290,12 +290,13 @@ class TestPipeContext:
 
 @pytest.mark.parametrize("kind,size,expected", [
     ("MiniMaxH3", None, 1536), ("MiniMaxH3", 1024, 1024),
-    ("QIE2511", None, 1024), ("QIE2511", 1536, 1536),
+    ("QI2", None, 1024), ("QI2", 1536, 1536),
     ("Klein9b", None, 1024), ("Klein9b", 2048, 2048),
 ])
 @pytest.mark.parametrize("clone", [False, True])
 def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, size, expected, clone):
     from _vnccs.nodes import clothes_designer as cd
+    from _vnccs.nodes import character_generator as cg
     from PIL import Image
     import json
 
@@ -304,7 +305,7 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
     Image.new("RGB", (64, 96)).save(clone_path)
     monkeypatch.setattr(cd, "get_latest_sprite_path", lambda *args: "reference.png")
     monkeypatch.setattr(cd, "sheets_dir", lambda *args: str(tmp_path))
-    monkeypatch.setattr(cd, "_resolve_pipe_clothes_core_lora", lambda pipe: "clothes.safetensors")
+    monkeypatch.setattr(cd, "_resolve_pipe_clothes_core_lora", lambda pipe: "" if kind == "QI2" else "clothes.safetensors")
     monkeypatch.setattr(cd, "resolve_comfy_image_path", lambda info: str(clone_path))
     monkeypatch.setattr(cd.server.PromptServer.instance, "send_sync", lambda *args: None, raising=False)
     node = cd.ClothesDesigner()
@@ -313,8 +314,14 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
     calls = {}
     def call(name, **kwargs):
         calls[name] = kwargs
-        if name in (cd.WORKFLOW_ENCODER_CLASS, cd.KLEIN_ENCODER_CLASS):
+        if name == cd.KLEIN_ENCODER_CLASS:
             return "positive", "negative", {"samples": torch.zeros(1)}
+        if name == "ImageScale":
+            return (kwargs["image"],)
+        if name == "TextEncodeQwenImage21":
+            return "positive", "negative", {"samples": torch.zeros(1)}
+        if name == "EmptyLatentImage":
+            return ({"samples": torch.zeros(1)},)
         if name == "MiniMaxH3ReferenceToVideo":
             return "positive", {"samples": torch.zeros(1)}
         if name in ("KSampler", "SamplerCustomAdvanced"):
@@ -323,6 +330,7 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
             return (torch.zeros((5 if kind == "MiniMaxH3" else 1, 96, 64, 3)),)
         return (object(),)
     monkeypatch.setattr(cd, "_call_comfy_node", call)
+    monkeypatch.setattr(cg, "_call_comfy_node", call)
     pipe = types.SimpleNamespace(model=object(), clip=object(), vae=object(), audio_vae=object(), model_entry={"kind": kind})
     data = {"character": "Alice", "costume": "Dress", "gen_settings": {"target_size": size},
             "activeTab": "clone" if clone else "generate", "clone_image": {"name": "clone.png"} if clone else None}
@@ -340,7 +348,11 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
     elif kind == "Klein9b":
         assert calls[cd.KLEIN_ENCODER_CLASS]["megapixels"] == (expected / 1024) ** 2
     else:
-        assert calls[cd.WORKFLOW_ENCODER_CLASS]["target_size"] == expected
+        latent = calls["EmptyLatentImage"]
+        assert latent["width"] * latent["height"] == pytest.approx(expected ** 2, rel=0.04)
+        assert latent["width"] / latent["height"] == pytest.approx(64 / 96, rel=0.04)
+        assert calls["TextEncodeQwenImage21"]["resolution"] == 0
+        assert "QwenImage21Cache" in calls
 
 
 @pytest.mark.parametrize("size", [True, "bad", -1, 0, 511, 4097, 1024.5, float("inf"), float("nan")])

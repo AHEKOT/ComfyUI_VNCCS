@@ -75,10 +75,12 @@ _DOWNLOAD_STATUS = {}
 _DOWNLOAD_QUEUE = queue.Queue()
 _CUSTOM_LORAS_FILE = "vnccs_custom_loras.json"
 _PACKAGED_CC_REPO_IDS = {"MIUProject/VNCCS_v3.0"}
-DEFAULT_QIE_MODEL = "Qwen-Image-Edit-2511-int8-convrot"
+DEFAULT_QI2_MODEL = "Qwen Image 2.1 INT8 ConvRot"
+QI2_CACHE_DEFAULTS = {"device": "gpu", "dtype": "int8"}
 _PIPELINE_LOCAL_LORAS = {
     "vnccs clothes core",
-    "vnccs pose studio qie2511",
+    "vnccs pose studio qi2",
+    "qwen image 2.1 viggle turbo",
     "vnccs clothes core klein9b",
     "vnccs pose studio klein9b",
     "h3_posestudio",
@@ -784,6 +786,18 @@ def _get_cc_config(repo_id, prefer_remote=False):
     with open(path, "r", encoding="utf-8") as handle:
         data = json.load(handle)
     if source == "huggingface":
+        if _uses_packaged_cc_config(repo_id):
+            with open(_get_packaged_cc_path(), "r", encoding="utf-8") as handle:
+                packaged = json.load(handle)
+            data = dict(data)
+            for category in ("models", "clip", "vae", "lora"):
+                remote_entries = [e for e in data.get(category, []) if _entry_kind(e) != "qie2511"]
+                names = {e.get("name") for e in remote_entries}
+                additions = [
+                    e for e in packaged.get(category, [])
+                    if _entry_kind(e) == "qi2" and e.get("name") not in names
+                ]
+                data[category] = additions + remote_entries
         _sync_packaged_cc_config(repo_id, data)
     _CC_CONFIG_CACHE[repo_id] = {"ts": now, "data": data, "source": source}
     return _dedupe_config_by_name(_merge_custom_loras(data))
@@ -894,16 +908,16 @@ def _selected_model_name_for_type(state, entry_type, kind=""):
 
 def _custom_context_model_entry(config, state):
     models = config.get("models", []) if isinstance(config, dict) else []
-    active_kind = str(state.get("active_kind", "QIE2511") or "QIE2511").strip()
+    active_kind = str(state.get("active_kind", "QI2") or "QI2").strip()
     normalized_kind = _normalize_model_kind(active_kind)
     context_type = "unet"
     name = _selected_model_name_for_type(state, context_type, active_kind) or state.get("selected_model", "")
     selected = _find_entry(models, name)
     if selected and _entry_type(selected) == context_type and (not normalized_kind or _entry_kind(selected) == normalized_kind):
         return selected
-    if normalized_kind in {"", "qie2511"}:
-        preferred = _find_entry(models, DEFAULT_QIE_MODEL)
-        if preferred and _entry_type(preferred) == "unet" and _entry_kind(preferred) == "qie2511":
+    if normalized_kind in {"", "qi2"}:
+        preferred = _find_entry(models, DEFAULT_QI2_MODEL)
+        if preferred and _entry_type(preferred) == "unet" and _entry_kind(preferred) == "qi2":
             return preferred
     matched = next(
         (
@@ -1106,21 +1120,22 @@ def _is_qwen_model_entry(model_entry):
         str((model_entry or {}).get("name", "")),
         str((model_entry or {}).get("local_path", "")),
     ]).lower()
-    return "qwen" in identity or "qie" in identity
+    return "qwen" in identity or "qi2" in identity
 
 
-def _is_four_step_cfg_one(model_params):
+def _is_turbo_preset(model_params, model_entry=None):
     try:
         steps = int((model_params or {}).get("steps") or DEFAULT_MODEL_STEPS)
         cfg = float((model_params or {}).get("cfg") if (model_params or {}).get("cfg") is not None else DEFAULT_MODEL_CFG)
     except (TypeError, ValueError):
         return False
-    return steps == 4 and abs(cfg - 1.0) < 1e-6
+    expected_steps = 6 if _entry_kind(model_entry) == "qi2" else 4
+    return steps == expected_steps and abs(cfg - 1.0) < 1e-6
 
 
 def _ensure_required_turbo_lora_state(loras, config, model_entry, model_params):
     loras = list(loras or [])
-    if not _is_qwen_model_entry(model_entry) or not _is_four_step_cfg_one(model_params):
+    if not _is_qwen_model_entry(model_entry) or not _is_turbo_preset(model_params, model_entry):
         return loras
 
     turbo_entries = [
@@ -1453,7 +1468,36 @@ def _download_with_progress(model_key, repo_id, filename, revision=None):
     """Use Hub's HTTP download path for regular, measured byte progress."""
     from huggingface_hub import file_download
 
-    original_tqdm = file_download.tqdm
+    supports_progress = "tqdm_class" in inspect.signature(hf_hub_download).parameters
+    had_file_download_tqdm = hasattr(file_download, "tqdm")
+    original_tqdm = getattr(file_download, "tqdm", None)
+    if original_tqdm is None:
+        try:
+            from huggingface_hub.utils import tqdm as original_tqdm
+        except ImportError:
+            try:
+                from tqdm.auto import tqdm as original_tqdm
+            except ImportError:
+                class original_tqdm:
+                    """Minimal tqdm-compatible base for modern Hub installs."""
+
+                    def __init__(self, *args, total=None, initial=0, disable=None, **kwargs):
+                        self.total = total
+                        self.n = initial
+                        self.disable = disable is not False
+
+                    def update(self, n=1):
+                        if not self.disable:
+                            self.n += n
+
+                    def close(self):
+                        pass
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *args):
+                        self.close()
     original_context = getattr(file_download, "_get_progress_bar_context", None)
     original_constants = file_download.constants
     original_xet_available = getattr(file_download, "is_xet_available", None)
@@ -1526,8 +1570,6 @@ def _download_with_progress(model_key, repo_id, filename, revision=None):
                 if primary_bar is self:
                     primary_bar = None
 
-    supports_progress = "tqdm_class" in inspect.signature(hf_hub_download).parameters
-
     def progress_context(**kwargs):
         if threading.get_ident() != owner_thread or kwargs.get("_tqdm_bar") is not None:
             return original_context(**kwargs)
@@ -1565,8 +1607,11 @@ def _download_with_progress(model_key, repo_id, filename, revision=None):
             file_download.constants = original_constants
         if original_xet_available is not None and file_download.is_xet_available is xet_available:
             file_download.is_xet_available = original_xet_available
-        if not supports_progress and file_download.tqdm is DownloadProgress:
-            file_download.tqdm = original_tqdm
+        if not supports_progress and getattr(file_download, "tqdm", None) is DownloadProgress:
+            if had_file_download_tqdm:
+                file_download.tqdm = original_tqdm
+            else:
+                delattr(file_download, "tqdm")
         if not supports_progress and original_context is not None:
             if file_download._get_progress_bar_context is progress_context:
                 file_download._get_progress_bar_context = original_context
@@ -1678,6 +1723,7 @@ class VNCCSPipeProxy:
         self.nunchaku_settings = None  # dict or None
         self.model_entry = None        # config model entry dict or None
         self.model_kind = ""           # stable family identity, including custom models
+        self.qi2_cache = dict(QI2_CACHE_DEFAULTS)
         self.repo_id = None            # source Control Center repo id
         self.lora_entries = []         # config lora entries
         self.lora_states = []          # UI lora state
@@ -1736,6 +1782,10 @@ def _build_control_center_pipe(
         state = {}
 
     active_kind = str(state.get("active_kind", "") or "").strip()
+    if active_kind.lower() == "qie2511" or state.get("unsupported_model_kind") == "QIE2511":
+        raise RuntimeError("[VNCCS Control Center] QIE2511 is no longer supported. Select a QI2 model in Control Center.")
+    if not active_kind and "qwen-image-edit-2511" in str(state.get("selected_model", "")).lower():
+        raise RuntimeError("[VNCCS Control Center] QIE2511 is no longer supported. Select a QI2 model in Control Center.")
     selected_type = state.get("selected_type", "")
     selected_types_by_kind = state.get("selected_types_by_kind", {})
     if active_kind and isinstance(selected_types_by_kind, dict):
@@ -1758,24 +1808,24 @@ def _build_control_center_pipe(
         model_entry = _find_entry(config.get("models", []), selected_model)
         selection_kind = _normalize_model_kind(active_kind) or _entry_kind(model_entry)
         if not selection_kind and model_entry is None:
-            selection_kind = "qie2511"
-        if selection_kind == "qie2511" and selected_type in {"", "gguf", "unet"}:
+            selection_kind = "qi2"
+        if selection_kind == "qi2" and selected_type in {"", "gguf", "unet"}:
             selected_type = "unet"
-            if not model_entry or _entry_type(model_entry) != "unet" or _entry_kind(model_entry) != "qie2511":
+            if not model_entry or _entry_type(model_entry) != "unet" or _entry_kind(model_entry) != "qi2":
                 candidates = [
                     entry for entry in config.get("models", [])
-                    if _entry_kind(entry) == "qie2511" and _entry_type(entry) == "unet"
+                    if _entry_kind(entry) == "qi2" and _entry_type(entry) == "unet"
                 ]
-                saved_unet = _selected_model_name_for_type(state, "unet", "QIE2511")
+                saved_unet = _selected_model_name_for_type(state, "unet", "QI2")
                 model_entry = (
                     _find_entry(candidates, saved_unet)
-                    or _find_entry(candidates, DEFAULT_QIE_MODEL)
+                    or _find_entry(candidates, DEFAULT_QI2_MODEL)
                     or next(iter(candidates), None)
                 )
             if model_entry is None:
                 raise RuntimeError(
-                    "[VNCCS Control Center] No native QIE2511 UNet model in the catalog. "
-                    "Refresh the Control Center catalog to load the int8-convrot model."
+                    "[VNCCS Control Center] No native QI2 UNet model in the catalog. "
+                    "Refresh the Control Center catalog to load Qwen Image 2.1."
                 )
     loras = _ensure_required_turbo_lora_state(loras, config, model_entry, model_params)
     lora_entry_by_name = {
@@ -1803,6 +1853,8 @@ def _build_control_center_pipe(
         raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
 
     model_kind = _entry_kind(model_entry) or _normalize_model_kind(active_kind)
+    if model_kind == "qie2511":
+        raise RuntimeError("[VNCCS Control Center] QIE2511 is no longer supported. Select a QI2 model.")
     selected_audio_vae_name = ""
     if selected_type == "custom":
         all_clip_names = []
@@ -1861,11 +1913,19 @@ def _build_control_center_pipe(
     pipe.nunchaku_settings = None
     pipe.model_entry = model_entry
     pipe.model_kind = model_kind
+    cache_settings = state.get("qi2_cache", {})
+    if not isinstance(cache_settings, dict):
+        cache_settings = {}
+    pipe.qi2_cache = {
+        "device": cache_settings.get("device") if cache_settings.get("device") in {"auto", "gpu", "cpu", "off"} else QI2_CACHE_DEFAULTS["device"],
+        "dtype": cache_settings.get("dtype") if cache_settings.get("dtype") in {"default", "int8", "int4"} else QI2_CACHE_DEFAULTS["dtype"],
+    }
 
-    default_steps = 8 if model_kind == "minimaxh3" else DEFAULT_MODEL_STEPS
+    default_steps = 8 if model_kind == "minimaxh3" else 25 if model_kind == "qi2" else DEFAULT_MODEL_STEPS
+    default_cfg = 3.0 if model_kind == "qi2" else DEFAULT_MODEL_CFG
     default_sampler = "res_multistep" if model_kind == "minimaxh3" else None
     pipe.sample_steps = int(model_params.get("steps") or default_steps)
-    pipe.cfg = float(model_params.get("cfg") if model_params.get("cfg") is not None else DEFAULT_MODEL_CFG)
+    pipe.cfg = float(model_params.get("cfg") if model_params.get("cfg") is not None else default_cfg)
     pipe.sampler_name = model_params.get("sampler") or default_sampler
     pipe.scheduler = model_params.get("scheduler") or DEFAULT_MODEL_SCHEDULER
 
@@ -1968,11 +2028,11 @@ async def cc_check(request):
 
     installed = get_installed_version_info()
 
-    # Legacy catalogs may still contain obsolete QIE2511 GGUF selections.
+    # Remote catalogs may still contain retired QIE2511 entries.
     visible_models = [
         entry for entry in config.get("models", [])
         if entry.get("type") != "nunchaku"
-        and not (_entry_kind(entry) == "qie2511" and _entry_type(entry) == "gguf")
+        and _entry_kind(entry) != "qie2511"
     ]
     available_types = list(dict.fromkeys(
         entry.get("type", "") for entry in visible_models if entry.get("type")
@@ -1983,9 +2043,9 @@ async def cc_check(request):
         "source": _get_cc_config_source(repo_id),
         "available_types": available_types,
         "models": _enrich_config_entries(visible_models, "models", installed),
-        "clip": _enrich_config_entries(config.get("clip", []), "clip", installed),
-        "vae": _enrich_config_entries(config.get("vae", []), "vae", installed),
-        "lora": _enrich_config_entries(config.get("lora", []), "lora", installed),
+        "clip": _enrich_config_entries([e for e in config.get("clip", []) if _entry_kind(e) != "qie2511"], "clip", installed),
+        "vae": _enrich_config_entries([e for e in config.get("vae", []) if _entry_kind(e) != "qie2511"], "vae", installed),
+        "lora": _enrich_config_entries([e for e in config.get("lora", []) if _entry_kind(e) != "qie2511"], "lora", installed),
         "controlnet": _enrich_config_entries(config.get("controlnet", []), "controlnet", installed),
         "other": _enrich_config_entries(config.get("other", []), "other", installed),
     })
@@ -2035,7 +2095,7 @@ async def cc_add_custom_lora(request):
         return web.json_response({"error": "Invalid repo_id"}, status=400)
     if not rel_path:
         return web.json_response({"error": "LoRA path is required"}, status=400)
-    if kind not in {"Custom", "QIE2511", "Klein9b", "MiniMaxH3"}:
+    if kind not in {"Custom", "QI2", "Klein9b", "MiniMaxH3"}:
         return web.json_response({"error": "Unsupported model family"}, status=400)
 
     try:

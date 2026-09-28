@@ -19,11 +19,37 @@ from ..utils import (
 from .character_creator_v2 import (
     ANIMA_DEFAULTS,
     ILLUSTRIOUS_DEFAULTS,
+    load_anima_assets,
     load_generation_assets,
     normalize_gen_settings,
     get_lora_full_path,
 )
 from .vnccs_pipe import VNCCS_Pipe
+
+
+QI2_TURBO_LORA_NAME = "QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors"
+QI2_DEFAULTS = {
+    "generation_mode": "qi2",
+    "diffusion_model_name": "qwen_image_2.1_int8_convrot.safetensors",
+    "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+    "vae_name": "qwen_image_2.1_vae_bf16.safetensors",
+    "clip_type": "qwen_image",
+    "sampler": "euler",
+    "scheduler": "simple",
+    "steps": 25,
+    "cfg": 3.0,
+    "turbo_enabled": False,
+    "dmd_lora_name": QI2_TURBO_LORA_NAME,
+    "dmd_lora_strength": 1.0,
+    "lora_stack": [],
+    "qi2_cache": {"device": "gpu", "dtype": "int8"},
+}
+QI2_TURBO_ENTRY = {
+    "name": "Qwen Image 2.1 Viggle Turbo",
+    "type": "TurboLora",
+    "kind": "QI2",
+    "local_path": f"models/loras/{QI2_TURBO_LORA_NAME}",
+}
 
 # --- ComfyUI Server Imports ---
 try:
@@ -107,6 +133,7 @@ def default_generation_settings():
     settings.setdefault("mode_settings", {
         "illustrious": dict(ILLUSTRIOUS_DEFAULTS),
         "anima": dict(ANIMA_DEFAULTS),
+        "qi2": dict(QI2_DEFAULTS),
     })
     return settings
 
@@ -125,16 +152,30 @@ def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
         parsed = {}
 
     mode = str(generation_model or parsed.get("generation_mode") or "Anima").lower()
-    if mode not in ("illustrious", "anima"):
+    if mode not in ("illustrious", "anima", "qi2"):
         mode = "anima"
 
     merged = default_generation_settings()
     if isinstance(parsed, dict):
         merged.update(parsed)
     merged["generation_mode"] = mode
-    gen_settings = normalize_gen_settings(merged)
-
-    _, model, clip, vae = load_generation_assets(gen_settings)
+    if mode == "qi2":
+        gen_settings = dict(QI2_DEFAULTS)
+        if isinstance(parsed, dict):
+            gen_settings.update(parsed)
+        mode_settings = parsed.get("mode_settings", {}) if isinstance(parsed, dict) else {}
+        mode_profile = mode_settings.get("qi2", {}) if isinstance(mode_settings, dict) else {}
+        if isinstance(mode_profile, dict):
+            gen_settings.update(mode_profile)
+        gen_settings["generation_mode"] = "qi2"
+        gen_settings["clip_type"] = "qwen_image"
+        if gen_settings.get("turbo_enabled"):
+            gen_settings["steps"] = 6
+            gen_settings["cfg"] = 1.0
+        model, clip, vae = load_anima_assets(gen_settings)
+    else:
+        gen_settings = normalize_gen_settings(merged)
+        _, model, clip, vae = load_generation_assets(gen_settings)
 
     def apply_lora_safe(m, c, lora_name, strength, clip_strength=None):
         if not lora_name or lora_name == "None" or float(strength or 0) == 0:
@@ -164,10 +205,16 @@ def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
         for item in gen_settings.get("lora_stack", []) or []:
             if isinstance(item, dict):
                 model, clip = apply_lora_safe(model, clip, item.get("name"), item.get("strength", 1.0))
-    else:
+    elif mode == "illustrious":
         dmd_name = gen_settings.get("dmd_lora_name")
         if dmd_name:
             model, clip = apply_lora_safe(model, clip, dmd_name, gen_settings.get("dmd_lora_strength", 1.0))
+        for item in gen_settings.get("lora_stack", []) or []:
+            if isinstance(item, dict):
+                model, clip = apply_lora_safe(model, clip, item.get("name"), item.get("strength", 1.0))
+    else:
+        # Viggle uses VNCCS' unmerged adapter and latent-aware sigma schedule in
+        # VNCCS Emotions Generator.  Only ordinary user LoRAs are merged here.
         for item in gen_settings.get("lora_stack", []) or []:
             if isinstance(item, dict):
                 model, clip = apply_lora_safe(model, clip, item.get("name"), item.get("strength", 1.0))
@@ -194,6 +241,26 @@ def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
             "kind": "Anima",
             "local_path": gen_settings.get("diffusion_model_name", ""),
         }
+    elif mode == "qi2":
+        cache = gen_settings.get("qi2_cache", {})
+        cache = cache if isinstance(cache, dict) else {}
+        pipe.model_entry = {
+            "name": "Qwen Image 2.1",
+            "type": "unet",
+            "kind": "QI2",
+            "local_path": f"models/diffusion_models/{gen_settings.get('diffusion_model_name', '')}",
+        }
+        pipe.model_kind = "qi2"
+        pipe.qi2_cache = {
+            "device": cache.get("device") if cache.get("device") in {"auto", "gpu", "cpu", "off"} else "gpu",
+            "dtype": cache.get("dtype") if cache.get("dtype") in {"default", "int8", "int4"} else "int8",
+        }
+        pipe.lora_entries = [dict(QI2_TURBO_ENTRY)]
+        pipe.lora_states = [{
+            "name": QI2_TURBO_ENTRY["name"],
+            "auto_apply": bool(gen_settings.get("turbo_enabled")),
+            "strength": float(gen_settings.get("dmd_lora_strength", 1.0) or 1.0),
+        }]
     return pipe, seed
 
 
@@ -473,7 +540,7 @@ class EmotionGeneratorV2:
 
         return {
             "required": {
-                "generation_model": (["Illustrious", "Anima"], {"default": "Anima"}),
+                "generation_model": (["Illustrious", "Anima", "QI2"], {"default": "Anima"}),
                 "generation_settings": ("STRING", {"default": json.dumps(default_generation_settings()), "multiline": False}),
                 "prompt_style": (["SDXL Style", "Anima"], {"default": "Anima"}),
                 "character": (characters, {"default": characters[0] if characters else "Character Name"}),
@@ -615,7 +682,9 @@ class EmotionGeneratorV2:
                 if costume_details:
                     face_details = f"{face_details}, {costume_details}" if face_details else costume_details
                 
-                if effective_prompt_style == "Anima":
+                if mode == "qi2":
+                    emotion_text = str(natural_prompt or emotion_description or emotion_key).strip()
+                elif effective_prompt_style == "Anima":
                     if face_details:
                         positive_prompt += f", Character face details: {face_details}"
                     emotion_text = build_anima_emotion_prompt(natural_prompt, emotion_description, emotion_key)

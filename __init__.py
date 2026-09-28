@@ -1,11 +1,22 @@
 """VNCCS - Visual Novel Character Creator Suite for ComfyUI."""
 
 import os, json, inspect
+import sys
 import traceback
 
 print("[VNCCS] Automatic legacy migration is disabled. Use the VNCCS Migration Assistent node to migrate legacy sheets.")
 
+_nodes_module_name = f"{__name__}.nodes"
+_preloaded_nodes = sys.modules.get(_nodes_module_name)
+if _preloaded_nodes is not None and getattr(_preloaded_nodes, "__file__", None) is None:
+    # Some custom-node loaders may pre-register this path as a namespace package.
+    # Remove that placeholder so the regular relative import executes nodes/__init__.py.
+    sys.modules.pop(_nodes_module_name, None)
+
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+
+if not NODE_CLASS_MAPPINGS:
+    raise RuntimeError("VNCCS node registration returned no nodes. Check the preceding registration traceback.")
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
 

@@ -135,6 +135,52 @@ def test_bg_remove_disabled_skips_chroma_key(monkeypatch):
     assert torch.equal(result, images)
 
 
+def test_native_bg_remove_uses_alpha_prompt_and_skips_chroma_key(monkeypatch):
+    torch = pytest.importorskip("torch")
+
+    class FailingChromaKey:
+        def chroma_key(self, *args, **kwargs):
+            raise AssertionError("native alpha must not run chroma key")
+
+    monkeypatch.setattr(cg, "VNCCSChromaKey", FailingChromaKey)
+    generator = cg.VNCCS_CharacterGenerator()
+    prompt = generator._prompt_with_solid_background(
+        "Keep the pose", "Green", {"preset": "Native"},
+    )
+    assert prompt == "Keep the pose, Transparent background with alpha channel."
+    assert "solid Green" not in prompt
+
+    images = torch.rand(1, 4, 4, 4)
+    result = generator._run_bg_remove(images, {"preset": "Native"}, background="Green")
+    assert torch.equal(result, images)
+
+
+def test_native_bg_remove_preserves_alpha_through_upscaler(monkeypatch):
+    torch = pytest.importorskip("torch")
+    generator = cg.VNCCS_CharacterGenerator()
+    source = torch.zeros(1, 2, 2, 4)
+    source[..., 3] = torch.tensor([[0.0, 1.0], [1.0, 0.0]])
+
+    monkeypatch.setattr(generator, "_run_upscaler_models", lambda settings, node_id=None: (None, None))
+    monkeypatch.setattr(
+        generator,
+        "_run_seedvr_upscale_batch",
+        lambda images, *args, **kwargs: [torch.ones(1, 4, 4, 3)],
+    )
+    monkeypatch.setattr(generator, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(generator, "_log_stage", lambda *args, **kwargs: None)
+
+    result = generator._run_upscaler(
+        source, "Green", {"mode": "seedvr"}, seed=1,
+        bg_remove_settings={"preset": "Native"},
+    )
+    assert result.shape == (1, 4, 4, 4)
+    expected_alpha = torch.nn.functional.interpolate(
+        source[..., 3:4].movedim(-1, 1), size=(4, 4), mode="bilinear", align_corners=False,
+    ).movedim(1, -1)
+    assert torch.allclose(result[..., 3:4], expected_alpha)
+
+
 def test_settings_force_internal_rmbg_off_for_legacy_workflows():
     settings = cg.VNCCS_CharacterGenerator()._settings(
         json.dumps({"bg_remove": {"use_internal_rmbg": True}})

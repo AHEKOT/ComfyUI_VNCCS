@@ -4,15 +4,15 @@ import test from "node:test";
 import vm from "node:vm";
 
 const source = readFileSync(new URL("../web/vnccs_control_center.js", import.meta.url), "utf8");
-const defaultName = "Qwen-Image-Edit-2511-int8-convrot";
+const defaultName = "Qwen Image 2.1 INT8 ConvRot";
 const models = [
-    { name: "Qwen-Image-Edit-2511-GGUF-Q5", type: "gguf", kind: "QIE2511" },
-    { name: "Other native Qwen", type: "unet", kind: "QIE2511" },
-    { name: defaultName, type: "unet", kind: "QIE2511" },
+    { name: "Other QI2", type: "unet", kind: "QI2" },
+    { name: defaultName, type: "unet", kind: "QI2" },
     { name: "Flux Klein", type: "unet", kind: "Klein9b" },
 ];
+const turbo = { name: "Qwen Image 2.1 Viggle Turbo", type: "TurboLora", kind: "QI2" };
 
-function setup(state = {}, config = { models }) {
+function setup(state = {}, config = { models, lora: [turbo] }) {
     const events = [];
     const context = vm.createContext({
         window: { dispatchEvent: event => events.push(event) },
@@ -30,78 +30,76 @@ function setup(state = {}, config = { models }) {
         _syncOutputSlots() {},
         _syncCustomModelInput() {},
         _dispatchLoraOptions() {},
+        _renderAll() {},
+        _scheduleDependencyRefresh() {},
     });
     return { widget, serialized, events };
 }
 
-test("QIE defaults to native UNet and int8-convrot regardless of catalog ordering", () => {
+test("QI2 defaults to native UNet, 25 steps, and CFG 3", () => {
     const { widget } = setup();
     assert.deepEqual(Array.from(widget._getModelTypeTabs()), ["unet", "custom"]);
     assert.equal(widget._getSelectedType(), "unet");
     assert.equal(widget._getSelectedModelEntry().name, defaultName);
-    assert.equal(setup({}, null).widget._getSelectedType(), "unet");
+    assert.equal(widget._currentModelParams().steps, 25);
+    assert.equal(widget._currentModelParams().cfg, 3);
 });
 
-for (const state of [
-    { selected_type: "gguf", selected_model: models[0].name },
-    { active_kind: "QIE2511", selected_types_by_kind: { QIE2511: "gguf" }, selected_models: { "QIE2511:gguf": models[0].name } },
-]) {
-    test("restoring legacy GGUF state persists a native selection", () => {
-        const { widget, serialized } = setup(state);
-        widget.restoreState();
-        assert.equal(widget._getSelectedType(), "unet");
-        assert.equal(widget._getSelectedModelEntry().name, defaultName);
-        const saved = JSON.parse(serialized.value);
-        assert.equal(saved.selected_type, "unet");
-        assert.equal(saved.selected_model, defaultName);
-        assert.equal(saved.selected_models["QIE2511:unet"], defaultName);
-        assert.equal(saved.selected_models.gguf, undefined);
-    });
-}
+test("Viggle Turbo switches QI2 to 6 steps and CFG 1, then restores normal settings", () => {
+    const { widget } = setup();
+    widget._selectTurboLora(turbo.name, true);
+    assert.equal(widget._currentModelParams().steps, 6);
+    assert.equal(widget._currentModelParams().cfg, 1);
+    assert.equal(widget.state.loras.find(item => item.name === turbo.name).auto_apply, true);
+    widget._selectTurboLora(turbo.name, false);
+    assert.equal(widget._currentModelParams().steps, 25);
+    assert.equal(widget._currentModelParams().cfg, 3);
+});
 
-test("explicit native selection and custom mode survive restoration", () => {
-    const selected = { selected_type: "unet", selected_model: "Other native Qwen" };
+test("legacy QIE2511 selection is marked unsupported until explicitly changed", () => {
+    const { widget, serialized } = setup({
+        selected_type: "gguf", selected_model: "Qwen-Image-Edit-2511-GGUF-Q5",
+    });
+    widget.restoreState();
+    widget._saveState();
+    const saved = JSON.parse(serialized.value);
+    assert.equal(saved.active_kind, "QI2");
+    assert.equal(saved.unsupported_model_kind, "QIE2511");
+    assert.equal(widget._getSelectedModelEntry().name, defaultName);
+});
+
+test("native selection and custom mode survive restoration", () => {
+    const selected = { active_kind: "QI2", selected_type: "unet", selected_model: "Other QI2" };
     const { widget } = setup(selected);
     widget.restoreState();
-    assert.equal(widget._getSelectedModelEntry().name, "Other native Qwen");
-    const custom = setup({ selected_type: "custom", selected_model: models[0].name }).widget;
+    assert.equal(widget._getSelectedModelEntry().name, "Other QI2");
+    const custom = setup({ active_kind: "QI2", selected_types_by_kind: { QI2: "custom" } }).widget;
     custom.restoreState();
     assert.equal(custom._getSelectedType(), "custom");
     assert.equal(custom._getCustomContextModelEntry().name, defaultName);
 });
 
-test("migrating a dormant QIE selection preserves active Klein settings", () => {
-    const { widget } = setup({
-        active_kind: "Klein9b", selected_type: "unet", selected_model: "Flux Klein",
-        selected_types_by_kind: { QIE2511: "gguf", Klein9b: "unet" },
-        selected_models: { "Klein9b:unet": "Flux Klein" },
-    });
-    widget.restoreState();
-    assert.equal(widget.state.selected_types_by_kind.QIE2511, "unet");
-    assert.equal(widget.state.selected_model, "Flux Klein");
-    assert.equal(widget._getSelectedModelEntry().name, "Flux Klein");
-});
-
-test("serializing a new Control Center writes native defaults", () => {
+test("new Control Center serializes QI2 defaults", () => {
     const { widget, serialized, events } = setup();
     widget._saveState();
     const saved = JSON.parse(serialized.value);
+    assert.equal(saved.active_kind, "QI2");
     assert.equal(saved.selected_type, "unet");
     assert.equal(saved.selected_model, defaultName);
+    assert.equal(saved.model_params.steps, 25);
+    assert.equal(saved.model_params.cfg, 3);
     assert.equal(events.at(-1).type, "vnccs-control-center-model-changed");
 });
 
-test("existing workflow selections migrate when loaded without requiring rewritten JSON files", () => {
+test("packaged workflows select QI2 without legacy model state", () => {
     let count = 0;
     function inspect(value) {
         if (!value || typeof value !== "object") return;
         if (value.type === "VNCCS_ControlCenter") {
             const saved = JSON.parse(value.widgets_values[1]);
-            const { widget, serialized } = setup(saved);
-            widget.restoreState();
-            assert.equal(widget._getSelectedType(), "unet");
-            assert.equal(widget._getSelectedModelEntry().name, defaultName);
-            assert.equal(JSON.parse(serialized.value).selected_type, "unet");
+            assert.equal(saved.active_kind, "QI2");
+            assert.equal(saved.selected_model, defaultName);
+            assert.equal(saved.model_params.steps, 25);
             count++;
         }
         Object.values(value).forEach(inspect);
@@ -111,4 +109,19 @@ test("existing workflow selections migrate when loaded without requiring rewritt
         inspect(JSON.parse(readFileSync(new URL(name, directory), "utf8")));
     }
     assert.equal(count, 3);
+});
+
+test("QI2 cache controls are inline above Turbo LoRA and persist node parameters", () => {
+    const { widget, serialized } = setup();
+    assert.deepEqual({ ...widget._qi2CacheSettings() }, { device: "gpu", dtype: "int8" });
+    widget._qi2CacheSave({ device: "cpu", dtype: "int4" });
+    assert.deepEqual(JSON.parse(serialized.value).qi2_cache, { device: "cpu", dtype: "int4" });
+    assert.equal(setup({ active_kind: "Klein9b" }).widget._buildQI2CacheInlineSection(), null);
+
+    assert.match(source, /_buildQI2CacheInlineSection\(\) \{\s*if \(this\._activeKind\(\) !== "QI2"\) return null/);
+    assert.match(source, /label\.textContent = "Qwen Image 2\.1 Cache"/);
+    assert.match(source, /\["auto", "gpu", "cpu", "off"\]/);
+    assert.match(source, /\["default", "int8", "int4"\]/);
+    assert.ok(source.indexOf("const cacheInline = this._buildQI2CacheInlineSection()") <
+        source.indexOf("const turboInline = this._buildModelTurboInlineSection()"));
 });
