@@ -30,6 +30,7 @@ from ..utils import (
 )
 from .vnccs_utils import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
 from .qwen_vl import configure_qwen_text_chat
+from .character_presets import CHARACTER_PRESETS, RACE_PRESETS, preset_key, race_features, race_prompt
 
 # --------------------------------------------------------------------
 # Helper Functions
@@ -232,6 +233,7 @@ QI2_CHARACTER_FIELD_LABELS = {
     "gender": "Gender",
     "age": "Age",
     "race": "Race / species",
+    "race_features": "Species preset defaults",
     "skin_color": "Skin color",
     "body": "Body proportions",
     "face": "Facial features",
@@ -390,25 +392,17 @@ def _extract_character_tag_options(tags_data):
 
     return {
         "race": collect(tags.get("races", [])),
-        "hair": collect(tags.get("hair_color", [])) + collect(tags.get("hairstyles", [])),
-        "eyes": collect(tags.get("eyes", {})),
-        "body": collect(tags.get("breast_size", [])),
+        "skin_color": collect(tags.get("skin_color", [])),
+        "hair": [item for key in ("hair_color", "hair_pattern", "hair_length", "hair_texture", "hairstyles", "hair_framing")
+                 for item in collect(tags.get(key, []))],
+        "eyes": collect(tags.get("eye_color", [])) + collect(tags.get("eye_features", [])),
+        "face": collect(tags.get("face_shape", [])) + collect(tags.get("face_details", [])),
+        "body": collect(tags.get("body_type", [])) + collect(tags.get("breast_size", [])),
         "additional_details": collect(tags.get("details", [])),
     }
 
 
-SKIN_COLOR_OPTIONS = [
-    "light skin",
-    "fair skin",
-    "pale skin",
-    "tan skin",
-    "dark skin",
-    "brown skin",
-    "olive skin",
-    "blue skin",
-    "green skin",
-    "grey skin",
-]
+SKIN_COLOR_OPTIONS = [item["tag"] for item in CHARACTER_PRESETS["tags"]["skin_color"]]
 
 SKIN_COLOR_HINT_RE = re.compile(
     r"\b(skin|complexion|pale|fair|light[- ]skinned|tan|tanned|dark[- ]skinned|"
@@ -553,11 +547,11 @@ def _normalize_wizard_race(race, description):
             continue
         if key in {"afro", "afro_student", "african", "african_student", "black", "black_student", "student"}:
             continue
-        if key in RACE_OPTION_TAGS:
+        if key in RACE_OPTION_TAGS or preset_key(key) in RACE_PRESETS:
             kept.append(token)
     if kept:
         return _join_prompt_tokens(kept)
-    if HUMAN_HINT_RE.search(description or ""):
+    if any(preset_key(token) == "human" for token in tokens) or HUMAN_HINT_RE.search(description or ""):
         return "human"
     return ""
 
@@ -935,7 +929,7 @@ def _character_clothing_prompt(info):
 
 
 def _qi2_character_fields(info):
-    """Keep field boundaries and raw attribute values intact for PE and encoding."""
+    """Keep supplied fields intact and attach species hints for PE and encoding."""
     framing_key = "full_body" if str(info.get("framing", "") or "").strip().lower() == "full_body" else "cowboy_shot"
     background = _effective_character_background(info.get("background_color", ""), "qi2")
     fields = {
@@ -944,6 +938,7 @@ def _qi2_character_fields(info):
         **{key: info.get(key, "") for key in (
             "race", "skin_color", "body", "face", "hair", "eyes", "additional_details",
         )},
+        "race_features": race_features(info.get("race", "")),
         "clothing": _character_clothing_prompt(info),
         "expression": "expressionless unless a specific expression is supplied in facial features",
         "framing": f"single character; {QI2_NATURAL_FRAMING[framing_key]}",
@@ -1340,6 +1335,8 @@ if server:
     @server.PromptServer.instance.routes.get("/vnccs/get_tags")
     async def get_tags(request):
         try:
+            if request.rel_url.query.get("catalog") == "creator_v2":
+                return web.json_response(CHARACTER_PRESETS)
             # Locate the file relative to the node
             # Assuming nodes/character_creator_v2.py -> ../character_template/character_tags.json
             current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1390,14 +1387,7 @@ if server:
                     "model_name": os.path.basename(model_path),
                 }, status=422)
 
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            root_dir = os.path.dirname(current_dir)
-            tags_path = os.path.join(root_dir, "character_template", "character_tags.json")
-            tags_data = {}
-            if os.path.exists(tags_path):
-                with open(tags_path, "r", encoding="utf-8") as f:
-                    tags_data = json.load(f)
-            tag_options = _extract_character_tag_options(tags_data)
+            tag_options = _extract_character_tag_options(CHARACTER_PRESETS)
 
             system_prompt = (
                 "You are a professional anime/game character designer. "
@@ -1408,7 +1398,7 @@ if server:
 Create a character from this abstract idea:
 {user_description}
 
-Prefer these exact existing tags when they fit. Only invent a different tag or phrase if no listed tag matches the character:
+Use these curated presets when they fit. Free-form descriptions are also supported; keep breast/chest size tags exactly as listed:
 {json.dumps(tag_options, ensure_ascii=False)}
 
 Use one of these skin_color values only when the user's idea explicitly mentions skin tone or complexion:
@@ -1431,7 +1421,8 @@ Rules:
 - Never put ethnicity, nationality, profession, role, clothing, or archetype in race. Examples of invalid race values: "afro_student", "black student", "asian girl", "teacher".
 - Put skin tone in skin_color, not race. "afro", "African", "African-American", "black", or similar means skin_color should be "dark skin" unless another skin tone is explicit.
 - For body, always provide a visible body/build descriptor. Use listed breast/chest tags when relevant, and add concise build phrases like "slim build", "average build", "athletic build" when useful.
-- For race, hair, eyes, body and additional_details, prefer exact tags from the provided tag list when they fit.
+- For race, use a listed species name when it fits; its visual features are added automatically.
+- For other fields, prefer concise natural-language descriptions from the presets when they fit.
 - For skin_color, do not guess a default. Use an empty string unless the user's idea explicitly mentions skin tone, complexion, or non-human skin color.
 - Do not use "pale skin" as a fallback.
 - Do not describe clothing or outfit items.
@@ -1444,13 +1435,13 @@ Example:
 {{
   "sex": "female",
   "age": 24,
-  "race": "demon_girl, demon_horns",
+  "race": "demon",
   "skin_color": "",
   "body": "medium_breasts, slim waist",
-  "face": "mole_under_eye, sharp features",
-  "hair": "white_hair, long_hair, blunt_bangs",
-  "eyes": "red_eyes, glowing",
-  "additional_details": "tattoo, black_nails"
+  "face": "beauty mark below one eye, high cheekbones",
+  "hair": "white hair, waist-length hair, blunt bangs",
+  "eyes": "red eyes, luminous irises",
+  "additional_details": "geometric body tattoos, black fingernails"
 }}
 """
 
@@ -1710,7 +1701,9 @@ class CharacterCreatorV2:
         # Physical Attributes
         for attr in ["race", "hair", "eyes", "face", "body", "skin_color", "additional_details"]:
             val = info.get(attr, "")
-            if attr == "hair":
+            if attr == "race":
+                val = race_prompt(val)
+            elif attr == "hair":
                 val = normalize_hair_tags(val)
             if val:
                 positive_prompt += f", ({val})"

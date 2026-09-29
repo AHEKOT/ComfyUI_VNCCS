@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { presetGroups, presetSelection } from "./character_presets.mjs";
 import { debounce, registerCleanup, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
 
 const RESOLUTION_SCALE_BASE = 1024;
@@ -544,6 +545,8 @@ const STYLE = `
     border-radius: var(--radius-sm);
 }
 .vnccs-tag-chip {
+    font-family: inherit;
+    text-align: left;
     padding: 4px 10px;
     background: rgba(255,255,255,0.05);
     border: 1px solid var(--border);
@@ -553,6 +556,17 @@ const STYLE = `
     cursor: pointer;
     user-select: none;
     transition: all var(--transition);
+}
+.vnccs-tag-btn:focus-visible, .vnccs-tag-chip:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.vnccs-preset-description {
+    width: 100%;
+    min-height: 5em;
+    margin: 0 0 8px;
+    color: var(--text-secondary);
+    line-height: 1.5;
 }
 .vnccs-tag-chip:hover { background: rgba(255,143,163,0.1); border-color: var(--accent-border); color: var(--accent-hover); }
 .vnccs-tag-chip.selected { background: rgba(255,143,163,0.18); color: var(--accent-hover); border-color: var(--accent); }
@@ -2265,12 +2279,12 @@ app.registerExtension({
                     framing: "Chooses whether the generated character uses cowboy-shot or full-body framing.",
                     style: "Selects a visual style template that is added to the character prompt.",
                     custom_style: "Custom visual style description added to the character prompt.",
-                    race: "Species or race tags for the character, such as human, elf, demon girl, or kemonomimi.",
-                    skin_color: "Skin tone tags added to the character prompt.",
+                    race: "Species presets with automatic visual descriptions in the prompt. Combine species for hybrids or add custom traits; explicit traits override preset defaults.",
+                    skin_color: "Natural and fantasy skin tones. Use the preset picker or enter a custom description.",
                     body: "Body type and silhouette details, including chest/body build tags.",
                     face: "Face-specific details such as freckles, scars, makeup, or other defining features.",
-                    hair: "Hair color, length, and style tags used when generating the character.",
-                    eyes: "Eye color and eye-shape tags used in the character prompt.",
+                    hair: "Hair color, color pattern, length, texture, style, and face-framing details.",
+                    eyes: "Iris colors, eye shapes, pupils, and other eye features.",
                     additional_details: "Extra persistent character traits that should appear across outfits and emotions.",
                     aesthetics: "Visual style notes for the character, such as mood, fashion direction, or rendering flavor.",
                     generation_mode: "Chooses the generation backend profile. Illustrious uses checkpoint-style generation; Anima uses the Qwen/Anima stack.",
@@ -2341,14 +2355,15 @@ app.registerExtension({
                     header.style.justifyContent = "space-between";
                     header.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
 
-                    // Fields that support tag constructor
-                    // hair, eyes, race, body, skin_color(maybe), face, details
-                    const tagSupported = ["hair", "eyes", "race", "body", "face", "additional_details"].includes(key);
+                    // Fields with curated presets and free-form input
+                    const tagSupported = ["hair", "eyes", "race", "skin_color", "body", "face", "additional_details"].includes(key);
                     if (tagSupported && type === "text") {
-                        const btn = document.createElement("div");
+                        const btn = document.createElement("button");
+                        btn.type = "button";
+                        btn.setAttribute("aria-label", `Choose ${lbl.toLowerCase()} presets`);
                         btn.className = "vnccs-tag-btn";
                         btn.innerHTML = "✎"; // Pencil or List icon
-                        btn.title = "Open Tag Constructor";
+                        btn.title = "Choose Presets";
                         btn.onclick = () => openTagConstructor(key, inp);
                         header.appendChild(btn);
                     }
@@ -3446,65 +3461,34 @@ app.registerExtension({
                     // 1. Ensure Data
                     if (!TAG_DATA) {
                         try {
-                            const r = await api.fetchApi("/vnccs/get_tags");
+                            const r = await api.fetchApi("/vnccs/get_tags?catalog=creator_v2");
                             if (r.ok) TAG_DATA = await r.json();
-                            else throw new Error("Failed to load tags");
+                            else throw new Error("Failed to load presets");
                         } catch (e) {
-                            showAlertModal("Tag Database Error", "Error loading tag database: " + e);
+                            showAlertModal("Preset Catalog Error", "Error loading character presets: " + e);
                             return;
                         }
                     }
 
-                    // 2. Determine Categories
-                    // Mapping: widget_key -> [json_keys...]
-                    const map = {
-                        "hair": ["hair_color", "hairstyles"],
-                        "eyes": ["eyes"], // special handling for nested
-                        "face": ["eyes"], // special handling (nested under eyes in user update)
-                        "race": ["races"],
-                        "body": ["breast_size"],
-                        "additional_details": ["details"]
-                    };
-
-                    const categories = map[fieldKey] || [];
-                    if (!categories.length) return;
-
-                    // 3. Collect Tags
-                    const allTags = [];
-                    categories.forEach(cat => {
-                        let data = TAG_DATA.tags[cat];
-                        if (cat === "eyes") {
-                            if (fieldKey === "eyes") {
-                                // Flatten eyes
-                                if (TAG_DATA.tags.eyes.colors) allTags.push({ header: "Eye Colors", items: TAG_DATA.tags.eyes.colors });
-                                if (TAG_DATA.tags.eyes.features) allTags.push({ header: "Eye Features", items: TAG_DATA.tags.eyes.features });
-                            } else if (fieldKey === "face") {
-                                // Face Characteristics
-                                if (TAG_DATA.tags.eyes.face_characteristics) allTags.push({ header: "Face Characteristics", items: TAG_DATA.tags.eyes.face_characteristics });
-                            }
-                        } else if (data) {
-                            // Arrays
-                            // format header nicel
-                            const h = cat.replace("_", " ").toUpperCase();
-                            allTags.push({ header: h, items: data });
-                        }
-                    });
-
+                    const allTags = presetGroups(TAG_DATA, fieldKey);
                     if (!allTags.length) {
-                        showAlertModal("No Tags", "No tags found for this category.");
+                        showAlertModal("No Presets", "No presets found for this category.");
                         return;
                     }
+                    const selected = presetSelection(inputEl.value, allTags);
 
-                    // 4. Modal
-                    // Parse current values to pre-select
-                    const currentVals = inputEl.value.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
-                    const selected = new Set(currentVals);
-
-                    showModal(`Tag Constructor: ${fieldKey}`, (modal) => {
+                    showModal(`Choose Presets: ${fieldKey.replaceAll("_", " ")}`, (modal) => {
                         const container = document.createElement("div");
                         container.className = "vnccs-tag-grid";
 
-                        // Fix width for tag modal
+                        const description = document.createElement("p");
+                        description.className = "vnccs-preset-description";
+                        description.setAttribute("aria-live", "polite");
+                        description.textContent = fieldKey === "race"
+                            ? "Choose a species to see its features. These descriptions are added automatically to the prompt. Combine species for hybrids; custom traits take priority."
+                            : "Choose the traits you need. Custom text remains editable in the character field.";
+                        const content = document.createElement("div");
+                        content.append(description, container);
                         modal.style.width = "500px";
 
                         allTags.forEach(group => {
@@ -3517,35 +3501,40 @@ app.registerExtension({
                             }
 
                             group.items.forEach(item => {
-                                const t = item.tag;
-                                const chip = document.createElement("div");
+                                const chip = document.createElement("button");
+                                chip.type = "button";
                                 chip.className = "vnccs-tag-chip";
-                                chip.innerText = item.label || t;
-                                const normTag = t.replace(/_/g, " ");
-                                if (selected.has(normTag)) chip.classList.add("selected");
-
+                                chip.innerText = item.label || item.tag;
+                                if (item.prompt) {
+                                    chip.title = item.prompt;
+                                    chip.setAttribute("aria-description", item.prompt);
+                                }
+                                const updateChip = () => {
+                                    const active = selected.has(item);
+                                    chip.classList.toggle("selected", active);
+                                    chip.setAttribute("aria-pressed", String(active));
+                                };
+                                updateChip();
                                 chip.onclick = () => {
-                                    const useTag = t.replace(/_/g, " ");
-                                    if (selected.has(useTag)) {
-                                        selected.delete(useTag);
-                                        chip.classList.remove("selected");
-                                    } else {
-                                        selected.add(useTag);
-                                        chip.classList.add("selected");
-                                    }
+                                    selected.toggle(item);
+                                    updateChip();
+                                    if (item.prompt) description.textContent = item.prompt;
+                                };
+                                chip.onfocus = () => {
+                                    if (item.prompt) description.textContent = item.prompt;
                                 };
                                 container.appendChild(chip);
                             });
                         });
 
-                        return container;
+                        return content;
                     }, [
                         { text: "Cancel" },
                         {
                             text: "APPLY",
                             class: "vnccs-btn-primary",
                             action: () => {
-                                const final = Array.from(selected).join(", ");
+                                const final = selected.value();
                                 inputEl.value = final;
                                 // Trigger oninput so state.character_info is updated
                                 inputEl.dispatchEvent(new Event('input'));
