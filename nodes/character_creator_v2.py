@@ -17,6 +17,8 @@ import traceback
 import inspect
 import random
 import re
+import math
+from types import SimpleNamespace
 
 from ..utils import (
     load_character_info, ensure_character_structure, EMOTIONS, MAIN_DIRS,
@@ -117,6 +119,7 @@ PREVIEW_CACHE = {
 
 ILLUSTRIOUS_DEFAULTS = {
     "generation_mode": "illustrious",
+    "target_size": 1024,
     "ckpt_name": "",
     "sampler": "euler",
     "scheduler": "normal",
@@ -126,7 +129,7 @@ ILLUSTRIOUS_DEFAULTS = {
 
 ANIMA_DEFAULTS = {
     "generation_mode": "anima",
-    "resolution_preset": "normal",
+    "target_size": 1024,
     "diffusion_model_name": "",
     "clip_name": "qwen_3_06b_base.safetensors",
     "vae_name": "qwen_image_vae.safetensors",
@@ -141,6 +144,120 @@ ANIMA_DEFAULTS = {
     "lora_stack": [],
 }
 
+QI2_TURBO_LORA_NAME = "QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors"
+QI2_DEFAULTS = {
+    "generation_mode": "qi2",
+    "target_size": 1024,
+    "diffusion_model_name": "qwen_image_2.1_int8_convrot.safetensors",
+    "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+    "vae_name": "qwen_image_2.1_vae_bf16.safetensors",
+    "clip_type": "qwen_image",
+    "sampler": "euler",
+    "scheduler": "simple",
+    "steps": 25,
+    "cfg": 3.0,
+    "turbo_enabled": False,
+    "dmd_lora_name": QI2_TURBO_LORA_NAME,
+    "dmd_lora_strength": 1.0,
+    "lora_stack": [],
+    "qi2_cache": {"device": "gpu", "dtype": "int8"},
+}
+QI2_TURBO_ENTRY = {
+    "name": "Qwen Image 2.1 Viggle Turbo",
+    "type": "TurboLora",
+    "kind": "QI2",
+    "local_path": f"models/loras/{QI2_TURBO_LORA_NAME}",
+}
+QI2_TEXT_GENERATION_DEFAULTS = {
+    "max_length": 512,
+    "sampling_mode": {
+        "sampling_mode": "on",
+        "temperature": 0.7,
+        "top_k": 64,
+        "top_p": 0.95,
+        "min_p": 0.05,
+        "repetition_penalty": 1.05,
+        "seed": 0,
+        "presence_penalty": 0.0,
+    },
+    "thinking": True,
+    "use_default_template": True,
+    "mtp": "auto",
+}
+QI2_ALPHA_BACKGROUND_PROMPT = "transparent background with alpha channel"
+QI2_NATURAL_FRAMING = {
+    "cowboy_shot": "draw the character from the head to slightly below the waist",
+    "full_body": "show the character's complete body from head to toe",
+}
+QI2_PROMPT_REWRITER_FALLBACK = """# Image Prompt Rewriting Expert
+
+Rewrite the user's image request as one detailed English paragraph describing the finished image as an observer. Preserve every fixed subject, count, colour, position, requested text, framing requirement, and background requirement. Fill in useful visual details without changing the user's intent. Describe a single character from background and pose through face, hair, body, clothing, materials, lighting, shadows, palette, and overall composition. Use natural present-tense prose instead of renderer instructions, prompt tags, quality boosters, resolutions, or pixel counts. Keep requested text exactly as written and do not invent visible text. The description must always be in English except for text explicitly shown inside the image. Return one strictly valid JSON object on a single line with nothing before or after it:
+{"rewritten_prompt": "<the description>", "wh_ratio": "<e.g. 2:3>"}"""
+CHARACTER_STYLE_CATALOG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "character_template",
+    "character_styles.json",
+)
+
+
+def _load_character_style_catalog(path=CHARACTER_STYLE_CATALOG_PATH):
+    try:
+        with open(path, "r", encoding="utf-8") as catalog_file:
+            catalog = json.load(catalog_file)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Failed to load character style catalog '{path}': {exc}") from exc
+
+    if not isinstance(catalog, dict):
+        raise RuntimeError("Character style catalog must be a JSON object")
+
+    groups = catalog.get("groups")
+    if not isinstance(groups, list) or not groups:
+        raise RuntimeError("Character style catalog must contain non-empty 'groups'")
+
+    prompts = {}
+    for group in groups:
+        if not isinstance(group, dict) or not str(group.get("label", "")).strip():
+            raise RuntimeError("Each character style group must have a label")
+        styles = group.get("styles")
+        if not isinstance(styles, list) or not styles:
+            raise RuntimeError(f"Character style group '{group.get('label')}' has no styles")
+        for style in styles:
+            if not isinstance(style, dict):
+                raise RuntimeError("Each character style must be a JSON object")
+            style_id = str(style.get("id", "")).strip()
+            label = str(style.get("label", "")).strip()
+            prompt = str(style.get("prompt", "")).strip()
+            if not style_id or not label or not prompt:
+                raise RuntimeError("Each character style must define id, label, and prompt")
+            if style_id in prompts:
+                raise RuntimeError(f"Duplicate character style id: {style_id}")
+            prompts[style_id] = prompt
+
+    default_style = str(catalog.get("default_style", "")).strip()
+    if default_style not in prompts:
+        raise RuntimeError(f"Unknown default character style: {default_style or '<empty>'}")
+
+    raw_aliases = catalog.get("aliases", {})
+    if not isinstance(raw_aliases, dict):
+        raise RuntimeError("Character style aliases must be a JSON object")
+    aliases = {}
+    for alias, target in raw_aliases.items():
+        alias = str(alias).strip()
+        target = str(target).strip()
+        if not alias or target not in prompts:
+            raise RuntimeError(f"Invalid character style alias: {alias or '<empty>'} -> {target or '<empty>'}")
+        aliases[alias] = target
+
+    return catalog, prompts, aliases, default_style
+
+
+(
+    CHARACTER_STYLE_CATALOG,
+    CHARACTER_STYLE_PROMPTS,
+    CHARACTER_STYLE_ALIASES,
+    DEFAULT_CHARACTER_STYLE,
+) = _load_character_style_catalog()
+
 
 def resolve_generation_seed(gen_settings):
     seed = int(gen_settings.get("seed", 0) or 0)
@@ -148,13 +265,26 @@ def resolve_generation_seed(gen_settings):
         return generate_seed(0)
     return seed
 
-DEFAULT_PREVIEW_WIDTH = 640
-DEFAULT_PREVIEW_HEIGHT = 1536
+DEFAULT_PREVIEW_WIDTH = 720
+DEFAULT_PREVIEW_HEIGHT = 1280
+LATENT_ASPECT_WIDTH = 9
+LATENT_ASPECT_HEIGHT = 16
+LATENT_DIMENSION_STEP = 8
+RESOLUTION_SCALE_MIN = 1024
+RESOLUTION_SCALE_MAX = 4096
 ANIMA_RESOLUTION_PRESETS = {
     "normal": (DEFAULT_PREVIEW_WIDTH, DEFAULT_PREVIEW_HEIGHT),
     "high": (856, 2048),
     "maximum": (1024, 2456),
 }
+
+
+def _normalize_resolution_scale(value, default=1024):
+    try:
+        scale = int(round(float(value)))
+    except (TypeError, ValueError, OverflowError):
+        scale = int(default)
+    return max(RESOLUTION_SCALE_MIN, min(RESOLUTION_SCALE_MAX, scale))
 
 
 def safe_filename_list(category):
@@ -325,6 +455,25 @@ def _join_prompt_tokens(tokens):
     return ", ".join(out)
 
 
+def _strip_unit_prompt_weights(value):
+    return re.sub(r":\s*1\.0+\b", "", str(value or ""))
+
+
+def _effective_character_background(value, generation_mode="illustrious"):
+    background = str(value or "Green").strip()
+    if background.lower() in {"alpha", "transparent"}:
+        return "Transparent" if str(generation_mode or "").lower() == "qi2" else "Green"
+    return background
+
+
+def _character_style_prompt(info):
+    style_key = str(info.get("style", DEFAULT_CHARACTER_STYLE) or DEFAULT_CHARACTER_STYLE).strip().lower()
+    if style_key == "custom":
+        return str(info.get("custom_style", "") or "").strip()
+    style_key = CHARACTER_STYLE_ALIASES.get(style_key, style_key)
+    return CHARACTER_STYLE_PROMPTS.get(style_key, CHARACTER_STYLE_PROMPTS[DEFAULT_CHARACTER_STYLE])
+
+
 def _infer_skin_color_from_description(description):
     text = str(description or "").lower()
     if re.search(r"\b(afro|african|african[- ]american|black|black[- ]skinned)\b", text):
@@ -410,17 +559,43 @@ def normalize_gen_settings(gen_settings):
     generation_mode = str(normalized.get("generation_mode", "illustrious")).lower()
     mode_settings = normalized.get("mode_settings", {})
     mode_profile = mode_settings.get(generation_mode, {}) if isinstance(mode_settings, dict) else {}
-    defaults = ANIMA_DEFAULTS if generation_mode == "anima" else ILLUSTRIOUS_DEFAULTS
+    has_saved_target_size = (
+        "target_size" in normalized
+        or isinstance(mode_profile, dict) and "target_size" in mode_profile
+    )
+    defaults = (
+        QI2_DEFAULTS
+        if generation_mode == "qi2"
+        else ANIMA_DEFAULTS
+        if generation_mode == "anima"
+        else ILLUSTRIOUS_DEFAULTS
+    )
     merged = dict(defaults)
     merged.update(normalized)
     if isinstance(mode_profile, dict):
         merged.update(mode_profile)
     merged["generation_mode"] = generation_mode
-    if generation_mode == "anima":
-        resolution_preset = str(merged.get("resolution_preset", "normal") or "normal").lower()
-        merged["resolution_preset"] = (
-            resolution_preset if resolution_preset in ANIMA_RESOLUTION_PRESETS else "normal"
+    if generation_mode == "anima" and not has_saved_target_size:
+        legacy_preset = str(merged.get("resolution_preset", "normal") or "normal").lower()
+        legacy_width, legacy_height = ANIMA_RESOLUTION_PRESETS.get(
+            legacy_preset, ANIMA_RESOLUTION_PRESETS["normal"]
         )
+        legacy_megapixels = (legacy_width * legacy_height) / float(1024 * 1024)
+        merged["target_size"] = int(round(round(legacy_megapixels, 1) * 1024))
+    merged["target_size"] = _normalize_resolution_scale(merged.get("target_size", 1024))
+    if generation_mode == "anima":
+        merged.pop("resolution_preset", None)
+    elif generation_mode == "qi2":
+        merged["clip_type"] = "qwen_image"
+        cache = merged.get("qi2_cache", {})
+        cache = cache if isinstance(cache, dict) else {}
+        merged["qi2_cache"] = {
+            "device": cache.get("device") if cache.get("device") in {"auto", "gpu", "cpu", "off"} else "gpu",
+            "dtype": cache.get("dtype") if cache.get("dtype") in {"default", "int8", "int4"} else "int8",
+        }
+        if merged.get("turbo_enabled"):
+            merged["steps"] = 6
+            merged["cfg"] = 1.0
     return merged
 
 
@@ -467,18 +642,54 @@ def _call_node_method(class_names, method_names, **kwargs):
     return None
 
 
-def load_anima_assets(gen_settings):
-    diffusion_model_name = gen_settings.get("diffusion_model_name")
+def load_generation_clip(gen_settings):
+    """Load a fresh text encoder for a split-model generation profile."""
+    generation_mode = str(gen_settings.get("generation_mode", "anima") or "anima").lower()
+    profile_label = "QI2" if generation_mode == "qi2" else "ANIMA"
     clip_name = gen_settings.get("clip_name")
-    vae_name = gen_settings.get("vae_name")
     clip_type_name = str(gen_settings.get("clip_type", "stable_diffusion") or "stable_diffusion").lower()
 
-    if not diffusion_model_name:
-        raise ValueError("No Diffusion Model selected in Character Creator V2 ANIMA mode")
     if not clip_name:
-        raise ValueError("No CLIP selected in Character Creator V2 ANIMA mode")
+        raise ValueError(f"No CLIP selected in Character Creator V2 {profile_label} mode")
+
+    clip = _call_loader_node(
+        ["CLIPLoader", "Load CLIP"],
+        ["load_clip", "load_model"],
+        clip_name=clip_name,
+        model_name=clip_name,
+        type=clip_type_name,
+        device="default",
+    )
+    if clip is None and hasattr(comfy.sd, "load_clip"):
+        clip_path = get_full_path_agnostic(folder_paths, "text_encoders", clip_name)
+        if clip_path:
+            clip_type = getattr(comfy.sd.CLIPType, clip_type_name.upper(), None)
+            if clip_type is None:
+                raise ValueError(
+                    f"ComfyUI CLIPType.{clip_type_name.upper()} is not available. "
+                    f"{profile_label} requires its configured CLIP loader type '{clip_type_name}'."
+                )
+            clip = comfy.sd.load_clip(
+                ckpt_paths=[clip_path],
+                embedding_directory=folder_paths.get_folder_paths("embeddings"),
+                clip_type=clip_type,
+            )
+
+    if clip is None:
+        raise ValueError(f"Failed to load CLIP '{clip_name}'")
+    return clip
+
+
+def load_anima_assets(gen_settings):
+    generation_mode = str(gen_settings.get("generation_mode", "anima") or "anima").lower()
+    profile_label = "QI2" if generation_mode == "qi2" else "ANIMA"
+    diffusion_model_name = gen_settings.get("diffusion_model_name")
+    vae_name = gen_settings.get("vae_name")
+
+    if not diffusion_model_name:
+        raise ValueError(f"No Diffusion Model selected in Character Creator V2 {profile_label} mode")
     if not vae_name:
-        raise ValueError("No VAE selected in Character Creator V2 ANIMA mode")
+        raise ValueError(f"No VAE selected in Character Creator V2 {profile_label} mode")
 
     model = None
     if model is None:
@@ -495,30 +706,7 @@ def load_anima_assets(gen_settings):
         if diffusion_model_path:
             model = comfy.sd.load_diffusion_model(diffusion_model_path)
 
-    clip = None
-    if clip is None:
-        clip = _call_loader_node(
-            ["CLIPLoader", "Load CLIP"],
-            ["load_clip", "load_model"],
-            clip_name=clip_name,
-            model_name=clip_name,
-            type=clip_type_name,
-            device="default",
-        )
-    if clip is None and hasattr(comfy.sd, "load_clip"):
-        clip_path = get_full_path_agnostic(folder_paths, "text_encoders", clip_name)
-        if clip_path:
-            clip_type = getattr(comfy.sd.CLIPType, clip_type_name.upper(), None)
-            if clip_type is None:
-                raise ValueError(
-                    f"ComfyUI CLIPType.{clip_type_name.upper()} is not available. "
-                    "ANIMA uses the official workflow CLIPLoader type 'stable_diffusion'."
-                )
-            clip = comfy.sd.load_clip(
-                ckpt_paths=[clip_path],
-                embedding_directory=folder_paths.get_folder_paths("embeddings"),
-                clip_type=clip_type,
-            )
+    clip = load_generation_clip(gen_settings)
 
     vae = None
     if vae is None:
@@ -535,8 +723,6 @@ def load_anima_assets(gen_settings):
 
     if model is None:
         raise ValueError(f"Failed to load Diffusion Model '{diffusion_model_name}'")
-    if clip is None:
-        raise ValueError(f"Failed to load CLIP '{clip_name}'")
     if vae is None:
         raise ValueError(f"Failed to load VAE '{vae_name}'")
 
@@ -546,7 +732,7 @@ def load_anima_assets(gen_settings):
 def load_generation_assets(gen_settings):
     generation_mode = str(gen_settings.get("generation_mode", "illustrious")).lower()
 
-    if generation_mode == "anima":
+    if generation_mode in {"anima", "qi2"}:
         asset_key = (
             generation_mode,
             gen_settings.get("diffusion_model_name", ""),
@@ -582,16 +768,167 @@ def load_generation_assets(gen_settings):
     return (generation_mode, ckpt_name), model, clip, vae
 
 
-def get_generation_resolution(gen_settings):
-    if str(gen_settings.get("generation_mode", "illustrious")).lower() != "anima":
-        return DEFAULT_PREVIEW_WIDTH, DEFAULT_PREVIEW_HEIGHT
+def acquire_preview_assets(gen_settings):
+    """Return request-local preview assets while retaining only reusable state."""
+    generation_mode = str(gen_settings.get("generation_mode", "illustrious") or "illustrious").lower()
+    if generation_mode in {"anima", "qi2"}:
+        asset_key = (
+            generation_mode,
+            gen_settings.get("diffusion_model_name", ""),
+            gen_settings.get("clip_name", ""),
+            gen_settings.get("vae_name", ""),
+        )
+    else:
+        asset_key = (generation_mode, gen_settings.get("ckpt_name", ""))
 
-    preset = str(gen_settings.get("resolution_preset", "normal") or "normal").lower()
-    return ANIMA_RESOLUTION_PRESETS.get(preset, ANIMA_RESOLUTION_PRESETS["normal"])
+    if PREVIEW_CACHE["asset_key"] == asset_key and PREVIEW_CACHE["asset_obj"]:
+        print(f"[VNCCS] Preview: Using Cached Assets {asset_key}")
+        model, clip, vae = PREVIEW_CACHE["asset_obj"]
+        if generation_mode == "qi2":
+            # Qwen3-VL generation mutates runtime state inside cond_stage_model.
+            # ComfyUI's CLIP.clone() shares that object, so retaining it across
+            # requests is unsafe after diffusion and VAE have displaced it.
+            print("[VNCCS] Preview: Loading fresh QI2 text encoder")
+            clip = load_generation_clip(gen_settings)
+    else:
+        print(f"[VNCCS] Preview: Loading Assets {asset_key}")
+        _, model, clip, vae = load_generation_assets(gen_settings)
+        PREVIEW_CACHE["asset_key"] = asset_key
+        # Keep the expensive QI2 diffusion model and VAE. The Qwen3-VL text
+        # encoder is request-local because its internal generation state is not.
+        cached_clip = None if generation_mode == "qi2" else clip
+        PREVIEW_CACHE["asset_obj"] = (model, cached_clip, vae)
+
+    model = model.clone()
+    if generation_mode != "qi2":
+        clip = clip.clone()
+    return model, clip, vae
+
+
+def get_generation_resolution(gen_settings):
+    target_size = _normalize_resolution_scale(gen_settings.get("target_size", 1024))
+    target_pixels = float(target_size * 1024)
+    width_unit = LATENT_ASPECT_WIDTH * LATENT_DIMENSION_STEP
+    height_unit = LATENT_ASPECT_HEIGHT * LATENT_DIMENSION_STEP
+    scale_units = max(1, round(math.sqrt(target_pixels / float(width_unit * height_unit))))
+    return int(width_unit * scale_units), int(height_unit * scale_units)
+
+
+def _qi2_prompt_rewriter_system_prompt():
+    module_path = os.path.abspath(__file__)
+    resolved_path = os.path.realpath(__file__)
+    roots = [os.path.dirname(os.path.dirname(module_path))]
+    resolved_root = os.path.dirname(os.path.dirname(resolved_path))
+    if resolved_root not in roots:
+        roots.append(resolved_root)
+    for root in roots:
+        prompt_path = os.path.join(root, "character_template", "qi2_prompt_rewriter.txt")
+        if not os.path.isfile(prompt_path):
+            continue
+        try:
+            with open(prompt_path, "r", encoding="utf-8") as prompt_file:
+                prompt = prompt_file.read().strip()
+            if prompt:
+                return prompt
+        except OSError as exc:
+            print(f"[VNCCS Character Creator V2] Failed to read QI2 prompt rewriter file: {exc}")
+    print("[VNCCS Character Creator V2] QI2 prompt rewriter file is missing; using built-in fallback.")
+    return QI2_PROMPT_REWRITER_FALLBACK
+
+
+def _ensure_prompt_server_progress_context():
+    prompt_server = getattr(getattr(server, "PromptServer", None), "instance", None)
+    if prompt_server is not None and not hasattr(prompt_server, "last_prompt_id"):
+        prompt_server.last_prompt_id = "vnccs_character_creator_v2"
+
+
+def _qi2_rewritten_prompt(generated_text, original_prompt):
+    text = str(generated_text or "").strip()
+    if not text:
+        return str(original_prompt or "").strip()
+    decoder = json.JSONDecoder()
+    for start in (index for index, char in enumerate(text) if char == "{"):
+        try:
+            parsed, _end = decoder.raw_decode(text[start:])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(parsed, dict):
+            rewritten = str(parsed.get("rewritten_prompt", "") or "").strip()
+            if rewritten:
+                return rewritten
+    return text
+
+
+def generate_qi2_prompt(clip, character_prompt):
+    from .character_generator import _call_comfy_node
+
+    _ensure_prompt_server_progress_context()
+    combined_prompt = (
+        f"{_qi2_prompt_rewriter_system_prompt()}\n\n"
+        f"User image request:\n{str(character_prompt or '').strip()}"
+    )
+    generated_text = _call_comfy_node(
+        "TextGenerate",
+        clip=clip,
+        prompt=combined_prompt,
+        **QI2_TEXT_GENERATION_DEFAULTS,
+    )[0]
+    rewritten_prompt = _strip_unit_prompt_weights(
+        _qi2_rewritten_prompt(generated_text, character_prompt)
+    )
+    if (
+        QI2_ALPHA_BACKGROUND_PROMPT in str(character_prompt or "").lower()
+        and QI2_ALPHA_BACKGROUND_PROMPT not in rewritten_prompt.lower()
+    ):
+        rewritten_prompt = f"{rewritten_prompt.rstrip()}\n{QI2_ALPHA_BACKGROUND_PROMPT}"
+    return rewritten_prompt
+
+
+def encode_generation_conditioning(clip, vae, positive_text, negative_text, gen_settings):
+    if str(gen_settings.get("generation_mode", "illustrious")).lower() == "qi2":
+        from .character_generator import _call_comfy_node
+
+        rewritten_prompt = generate_qi2_prompt(clip, positive_text)
+        positive, negative, _encoder_latent = _call_comfy_node(
+            "TextEncodeQwenImage21",
+            clip=clip,
+            vae=vae,
+            prompt=rewritten_prompt,
+            negative_prompt=str(negative_text or ""),
+            resolution=1024,
+            images={},
+        )
+        return positive, negative, rewritten_prompt
+    return (
+        encode_generation_prompt(clip, positive_text, gen_settings),
+        encode_generation_prompt(clip, negative_text, gen_settings),
+        positive_text,
+    )
+
+
+def prepare_qi2_model(model, gen_settings):
+    from .character_generator import VNCCS_CharacterGenerator
+
+    turbo_enabled = bool(gen_settings.get("turbo_enabled"))
+    pipe = SimpleNamespace(
+        lora_entries=[dict(QI2_TURBO_ENTRY)],
+        lora_states=[{
+            "name": QI2_TURBO_ENTRY["name"],
+            "auto_apply": turbo_enabled,
+            "strength": float(gen_settings.get("dmd_lora_strength", 1.0) or 1.0),
+        }],
+    )
+    generator = VNCCS_CharacterGenerator()
+    prepared, turbo = generator._qi2_prepare_model(
+        model,
+        pipe,
+        {"qi2_cache": gen_settings.get("qi2_cache", {})},
+    )
+    return prepared, turbo
 
 
 def create_generation_latent(model, width, height, gen_settings, batch_size=1):
-    if str(gen_settings.get("generation_mode", "illustrious")).lower() == "anima":
+    if str(gen_settings.get("generation_mode", "illustrious")).lower() in {"anima", "qi2"}:
         generated = _call_node_method(
             ["EmptyLatentImage"],
             ["generate"],
@@ -606,7 +943,25 @@ def create_generation_latent(model, width, height, gen_settings, batch_size=1):
     return {"samples": torch.zeros([batch_size, 4, height // 8, width // 8], device=model.load_device)}
 
 
-def sample_generation_latent(model, positive, negative, latent, seed, steps, cfg, sampler_name, scheduler, gen_settings):
+def sample_generation_latent(model, positive, negative, latent, seed, steps, cfg, sampler_name, scheduler, gen_settings, qi2_turbo=False):
+    if str(gen_settings.get("generation_mode", "illustrious")).lower() == "qi2":
+        from .character_generator import VNCCS_CharacterGenerator
+
+        return VNCCS_CharacterGenerator()._qi2_sample(
+            model,
+            positive,
+            negative,
+            latent,
+            {
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg,
+                "sampler_name": sampler_name,
+                "scheduler": scheduler,
+                "denoise": 1.0,
+            },
+            turbo=qi2_turbo,
+        )
     if str(gen_settings.get("generation_mode", "illustrious")).lower() == "anima":
         sampled = _call_node_method(
             ["KSampler"],
@@ -694,7 +1049,7 @@ def decode_generation_samples(vae, samples, gen_settings):
                 value = value[0]
         return value
 
-    if str(gen_settings.get("generation_mode", "illustrious")).lower() == "anima":
+    if str(gen_settings.get("generation_mode", "illustrious")).lower() in {"anima", "qi2"}:
         latent_payload = samples if isinstance(samples, dict) else {"samples": samples}
         latent_tensor = unwrap_latent_samples(latent_payload)
         decode_payload = {"samples": latent_tensor}
@@ -713,6 +1068,10 @@ def decode_generation_samples(vae, samples, gen_settings):
     return vae.decode_tiled(latent_samples, tile_x=512, tile_y=512)
 
 if server:
+    @server.PromptServer.instance.routes.get("/vnccs/character_styles")
+    async def get_character_styles(request):
+        return web.json_response(CHARACTER_STYLE_CATALOG)
+
     @server.PromptServer.instance.routes.get("/vnccs/context_lists")
     async def get_context_lists(request):
         try:
@@ -995,7 +1354,10 @@ Example:
             character_name = data.get("character", "Unknown")
 
             # Generate Prompt
-            positive_text, negative_text = CharacterCreatorV2.construct_prompt(char_info)
+            positive_text, negative_text = CharacterCreatorV2.construct_prompt(
+                char_info,
+                gen_settings.get("generation_mode", "illustrious"),
+            )
             CharacterCreatorV2.log_generation_prompts(
                 "Preview",
                 positive_text,
@@ -1017,32 +1379,10 @@ Example:
             global PREVIEW_CACHE
             
             with torch.inference_mode():
-                asset_key = None
-                if generation_mode == "anima":
-                    asset_key = (
-                        generation_mode,
-                        gen_settings.get("diffusion_model_name", ""),
-                        gen_settings.get("clip_name", ""),
-                        gen_settings.get("vae_name", ""),
-                    )
-                else:
-                    asset_key = (generation_mode, gen_settings.get("ckpt_name", ""))
-
-                if PREVIEW_CACHE["asset_key"] == asset_key and PREVIEW_CACHE["asset_obj"]:
-                    print(f"[VNCCS] Preview: Using Cached Assets {asset_key}")
-                    model, clip, vae = PREVIEW_CACHE["asset_obj"]
-                else:
-                    print(f"[VNCCS] Preview: Loading Assets {asset_key}")
-                    try:
-                        _, model, clip, vae = load_generation_assets(gen_settings)
-                    except ValueError as exc:
-                        return web.Response(status=400, text=str(exc))
-                    PREVIEW_CACHE["asset_key"] = asset_key
-                    PREVIEW_CACHE["asset_obj"] = (model, clip, vae)
-
-                # Clone to avoid tainting cached model with LoRAs
-                model = model.clone()
-                clip = clip.clone()
+                try:
+                    model, clip, vae = acquire_preview_assets(gen_settings)
+                except ValueError as exc:
+                    return web.Response(status=400, text=str(exc))
 
                 # Helper for Cached LoRA
                 def apply_lora_cached(m, c, l_name, l_strength, clip_strength=None):
@@ -1069,6 +1409,12 @@ Example:
                     lora_stack = gen_settings.get("lora_stack", [])
                     for l_item in lora_stack:
                         model, clip = apply_lora_cached(model, clip, l_item.get("name"), float(l_item.get("strength", 1.0)))
+                elif generation_mode == "qi2":
+                    # Viggle Turbo is installed by the dedicated execution wrapper
+                    # below. Ordinary user LoRAs keep the standard loader.
+                    lora_stack = gen_settings.get("lora_stack", [])
+                    for l_item in lora_stack:
+                        model, clip = apply_lora_cached(model, clip, l_item.get("name"), float(l_item.get("strength", 1.0)))
                 else:
                     dmd_lora_name = gen_settings.get("dmd_lora_name")
                     dmd_lora_strength = float(gen_settings.get("dmd_lora_strength", 1.0))
@@ -1084,15 +1430,27 @@ Example:
                     for l_item in lora_stack:
                         model, clip = apply_lora_cached(model, clip, l_item.get("name"), float(l_item.get("strength", 1.0)))
 
-                # 2. Encode Prompts
-                positive_cond = encode_generation_prompt(clip, positive_text, gen_settings)
-                negative_cond = encode_generation_prompt(clip, negative_text, gen_settings)
+                qi2_turbo = False
+                if generation_mode == "qi2":
+                    model, qi2_turbo = prepare_qi2_model(model, gen_settings)
+
+                # 2. Rewrite QI2 prompts with Generate Text, then encode.
+                positive_cond, negative_cond, encoded_positive_text = encode_generation_conditioning(
+                    clip,
+                    vae,
+                    positive_text,
+                    negative_text,
+                    gen_settings,
+                )
+                if generation_mode == "qi2":
+                    CharacterCreatorV2.log_generation_prompts(
+                        "QI2 rewritten preview",
+                        encoded_positive_text,
+                        negative_text,
+                        framing=char_info.get("framing"),
+                    )
                 if generation_mode == "anima":
                     validate_anima_conditioning(positive_cond, negative_cond, gen_settings.get("clip_name", ""))
-
-                # Patch PromptServer
-                if not hasattr(server.PromptServer.instance, 'last_prompt_id'):
-                    server.PromptServer.instance.last_prompt_id = 'preview_gen'
 
                 # 3. Sample
                 latent = create_generation_latent(model, width, height, gen_settings)
@@ -1107,6 +1465,7 @@ Example:
                     sampler_name=sampler_name,
                     scheduler=scheduler,
                     gen_settings=gen_settings,
+                    qi2_turbo=qi2_turbo,
                 )
 
                 # 4. Decode
@@ -1155,21 +1514,34 @@ class CharacterCreatorV2:
     CATEGORY = "VNCCS"
 
     @staticmethod
-    def construct_prompt(info):
+    def construct_prompt(info, generation_mode="illustrious"):
         """
         Centralized logic for constructing positive/negative prompts from character info.
         """
         aesthetics = info.get("aesthetics", "masterpiece")
         sex = info.get("sex", "female")
         age = int(info.get("age", 18))
-        framing = (
-            "standing, full body"
+        generation_mode = str(generation_mode or "illustrious").lower()
+        framing_key = (
+            "full_body"
             if str(info.get("framing", "cowboy_shot") or "").strip().lower() == "full_body"
             else "cowboy_shot"
         )
+        if generation_mode == "qi2":
+            framing = QI2_NATURAL_FRAMING[framing_key]
+        else:
+            framing = "standing, full body" if framing_key == "full_body" else "cowboy_shot"
+
+        background_color = _effective_character_background(
+            info.get("background_color", ""), generation_mode,
+        )
+        native_alpha = generation_mode == "qi2" and background_color == "Transparent"
+        style_prompt = _character_style_prompt(info)
         
         # Base Prompt
-        positive_prompt = f"{aesthetics}, simple background, expressionless, solo, {framing}"
+        background_prompt = QI2_ALPHA_BACKGROUND_PROMPT if native_alpha else "simple background"
+        prompt_parts = [style_prompt, aesthetics, background_prompt, "expressionless", "solo", framing]
+        positive_prompt = ", ".join(part for part in prompt_parts if part)
         positive_prompt, gender_negative = apply_sex(sex, positive_prompt, "")
         
         # NSFW / Clothing
@@ -1185,8 +1557,7 @@ class CharacterCreatorV2:
         # Age
         positive_prompt = append_age(positive_prompt, age, sex)
 
-        background_color = info.get("background_color", "")
-        if background_color:
+        if background_color and not native_alpha:
             positive_prompt += f", {background_color} background"
         
         # Physical Attributes
@@ -1195,16 +1566,20 @@ class CharacterCreatorV2:
             if attr == "hair":
                 val = normalize_hair_tags(val)
             if val:
-                positive_prompt += f", ({val}:{1.0 if 'skin' in attr else 1.0})"
+                positive_prompt += f", ({val})"
 
         # LoRA Trigger
         lora_prompt = info.get("lora_prompt", "")
         if lora_prompt:
             positive_prompt += f", {lora_prompt}"
 
+        positive_prompt = _strip_unit_prompt_weights(positive_prompt)
+
         # Negative Prompt
         neg = info.get("negative_prompt", "")
-        negative_prompt = dedupe_tokens(f"{neg},{gender_negative}")
+        negative_prompt = _strip_unit_prompt_weights(
+            dedupe_tokens(f"{neg},{gender_negative}")
+        )
 
         return positive_prompt, negative_prompt
 
@@ -1242,7 +1617,10 @@ class CharacterCreatorV2:
             )
         
         # 1. Generate Prompts
-        positive_prompt, negative_prompt = self.construct_prompt(info)
+        positive_prompt, negative_prompt = self.construct_prompt(
+            info,
+            gen_settings.get("generation_mode", "illustrious"),
+        )
         self.log_generation_prompts(
             "Workflow",
             positive_prompt,
@@ -1251,8 +1629,8 @@ class CharacterCreatorV2:
         )
         
         # 2. Re-extract local vars for saving / outputs
-        face_details = build_face_details(info)
-        face_details += ", (expressionless:1.0)"
+        face_details = _strip_unit_prompt_weights(build_face_details(info))
+        face_details += ", (expressionless)"
 
         # Save Config logic
         character_path = character_dir(character_name)
@@ -1294,12 +1672,19 @@ class CharacterCreatorV2:
             return m, c
 
         # Apply DMD2
-        if gen_settings.get("generation_mode") == "anima":
+        generation_mode = str(gen_settings.get("generation_mode", "illustrious")).lower()
+        if generation_mode == "anima":
             if gen_settings.get("turbo_enabled"):
                 dmd_name = gen_settings.get("dmd_lora_name")
                 dmd_str = float(gen_settings.get("dmd_lora_strength", 1.0))
                 model, clip = apply_lora_safe(model, clip, dmd_name, dmd_str, 0.0)
 
+            stack = gen_settings.get("lora_stack", [])
+            for item in stack:
+                model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
+        elif generation_mode == "qi2":
+            # The Viggle adapter is applied by prepare_qi2_model so its custom
+            # execution wrapper and sigma schedule remain intact.
             stack = gen_settings.get("lora_stack", [])
             for item in stack:
                 model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
@@ -1320,10 +1705,26 @@ class CharacterCreatorV2:
             for item in stack:
                 model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
 
+        qi2_turbo = False
+        if generation_mode == "qi2":
+            model, qi2_turbo = prepare_qi2_model(model, gen_settings)
+
         # Encode Conditioning
-        conditioning_pos = encode_generation_prompt(clip, positive_prompt, gen_settings)
-        conditioning_neg = encode_generation_prompt(clip, negative_prompt, gen_settings)
-        if gen_settings.get("generation_mode") == "anima":
+        conditioning_pos, conditioning_neg, encoded_positive_prompt = encode_generation_conditioning(
+            clip,
+            vae,
+            positive_prompt,
+            negative_prompt,
+            gen_settings,
+        )
+        if generation_mode == "qi2":
+            self.log_generation_prompts(
+                "QI2 rewritten workflow",
+                encoded_positive_prompt,
+                negative_prompt,
+                framing=info.get("framing"),
+            )
+        if generation_mode == "anima":
             validate_anima_conditioning(conditioning_pos, conditioning_neg, gen_settings.get("clip_name", ""))
 
         # Construct Pipe Object
@@ -1345,6 +1746,21 @@ class CharacterCreatorV2:
             sampler_name=gen_settings.get("sampler", ILLUSTRIOUS_DEFAULTS["sampler"]),
             scheduler=gen_settings.get("scheduler", ILLUSTRIOUS_DEFAULTS["scheduler"])
         )
+        if generation_mode == "qi2":
+            pipe.model_kind = "qi2"
+            pipe.model_entry = {
+                "name": "Qwen Image 2.1",
+                "type": "unet",
+                "kind": "QI2",
+                "local_path": f"models/diffusion_models/{gen_settings.get('diffusion_model_name', '')}",
+            }
+            pipe.qi2_cache = dict(gen_settings.get("qi2_cache", {}))
+            pipe.lora_entries = [dict(QI2_TURBO_ENTRY)]
+            pipe.lora_states = [{
+                "name": QI2_TURBO_ENTRY["name"],
+                "auto_apply": bool(gen_settings.get("turbo_enabled")),
+                "strength": float(gen_settings.get("dmd_lora_strength", 1.0) or 1.0),
+            }]
 
         # 4. Generate Image (Smart Cache Logic)
         
@@ -1441,6 +1857,7 @@ class CharacterCreatorV2:
                     negative=conditioning_neg,
                     latent=latent,
                     gen_settings=gen_settings,
+                    qi2_turbo=qi2_turbo,
                 )
                 
                 image = decode_generation_samples(vae, sampled, gen_settings)
@@ -1461,7 +1878,11 @@ class CharacterCreatorV2:
                 image = torch.zeros((1, 512, 512, 3))
 
         # Get background color
-        background_color = info.get("background_color", "Green")
+        background_color = _effective_character_background(
+            info.get("background_color", "Green"), generation_mode,
+        )
+        if background_color == "Transparent":
+            background_color = "Alpha"
 
         # Resize full sheet (1024x3072) to single character size (512x1536)
         if torch.is_tensor(image) and image.shape[1] == 3072 and image.shape[2] == 1024:
