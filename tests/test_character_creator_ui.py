@@ -62,16 +62,26 @@ def test_style_selector_has_readable_character_focused_options():
         for style in group["styles"]
     }
     assert {
-        "Soft Pastel Anime",
-        "Bold Cel Anime",
-        "Cinematic Anime",
-        "Manga Ink & Screentone",
-        "Anime Game Character Art",
-        "Classical Oil Character",
+        "Hayao Miyazaki / Studio Ghibli",
+        "Yoshiyuki Sadamoto",
+        "CLAMP",
+        "Fortiche / Arcane",
+        "Cartoon Saloon",
+        "Academic Realism",
+        "Shonen Anime",
+        "Shojo Anime",
+        "Seinen Anime",
+        "Josei Anime",
+        "1970s Anime",
+        "1980s Anime",
+        "1990s Anime",
+        "2000s Anime",
+        "2010s Anime",
+        "2020s Anime",
     }.issubset(labels)
-    assert {"Shoujo Anime", "Shonen Anime", "Seinen Anime", "Cubist Geometric"}.isdisjoint(labels)
-    assert STYLE_CATALOG["aliases"]["shoujo_anime"] == "soft_pastel_anime"
-    assert "Soft Pastel Anime" not in SOURCE
+    assert {"Marker Anime", "Brush Ink Anime", "Cubist Geometric"}.isdisjoint(labels)
+    assert "aliases" not in STYLE_CATALOG
+    assert "Fortiche / Arcane" not in SOURCE
 
 
 def test_aesthetics_defaults_do_not_force_anime():

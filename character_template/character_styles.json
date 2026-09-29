@@ -1,210 +1,214 @@
 {
-  "version": 1,
-  "default_style": "classic_anime",
-  "aliases": {
-    "shoujo_anime": "soft_pastel_anime",
-    "shonen_anime": "bold_cel_anime",
-    "seinen_anime": "cinematic_anime",
-    "monochrome_manga": "manga_ink"
-  },
+  "version": 4,
+  "default_style": "ghibli_miyazaki",
   "groups": [
     {
-      "label": "Anime & Manga",
+      "label": "Anime Meta Styles",
       "styles": [
         {
-          "id": "classic_anime",
-          "label": "Classic Cel Anime",
-          "prompt": "classic hand-drawn Japanese cel character art, clean expressive linework, flat cel shadows, restrained highlights, balanced vivid colours"
+          "id": "shonen_anime",
+          "label": "Shonen Anime",
+          "prompt": "Style: Shonen Anime.\nReference: Naruto; Fullmetal Alchemist: Brotherhood.\nVisual description: Confident, clearly articulated contours, crisp cel-shadow boundaries, emphatic facial linework and strong graphic separation of forms. Keep the specified age, anatomy and expression. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "modern_clean_anime",
-          "label": "Modern Clean Anime",
-          "prompt": "modern clean anime character illustration, precise thin linework, polished flat colours, soft two-step cel shading, crisp readable details"
+          "id": "shojo_anime",
+          "label": "Shojo Anime",
+          "prompt": "Style: Shojo Anime.\nReference: Cardcaptor Sakura; Fruits Basket (2019).\nVisual description: Graceful tapered contours, delicately articulated eyelashes and irises, flowing hair linework and softly layered cel shading. Keep the specified eye shape, eye color, age and body proportions. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "soft_pastel_anime",
-          "label": "Soft Pastel Anime",
-          "prompt": "soft pastel anime character illustration, delicate flowing linework, luminous eyes, gentle colour transitions, airy highlights, harmonious pastel palette"
+          "id": "seinen_anime",
+          "label": "Seinen Anime",
+          "prompt": "Style: Seinen Anime.\nReference: Monster; Mushishi.\nVisual description: Understated facial drawing, closely observed contours, controlled interior detail and measured shadow planes with restrained highlights. Keep the specified age, anatomy, expression and local colors. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "bold_cel_anime",
-          "label": "Bold Cel Anime",
-          "prompt": "bold cel-shaded anime character art, strong variable-weight contours, graphic shadow shapes, energetic silhouette, saturated controlled colours"
+          "id": "josei_anime",
+          "label": "Josei Anime",
+          "prompt": "Style: Josei Anime.\nReference: Honey and Clover; Chihayafuru.\nVisual description: Fine, supple contours, nuanced facial articulation, gently modeled color transitions and selectively detailed eyes and hair. Keep the specified age, facial features and body proportions. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "cinematic_anime",
-          "label": "Cinematic Anime",
-          "prompt": "cinematic anime character illustration, natural anatomy, refined linework, dimensional cel shading, dramatic rim light, restrained filmic colours"
+          "id": "anime_1970s",
+          "label": "1970s Anime",
+          "prompt": "Style: 1970s Anime.\nReference: Lupin the Third (1971 television series); Anne of Green Gables (1979).\nVisual description: Economical hand-drawn contours with slight organic variation, broad clean cel-color regions, selective single-step shadows and clearly separated facial marks. Retain small identifying details and all specified colors. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "anime_key_visual",
-          "label": "Detailed Anime Key Visual",
-          "prompt": "detailed anime key visual character art, production-ready linework, layered cel shading, polished material rendering, strong silhouette, premium finish"
+          "id": "anime_1980s",
+          "label": "1980s Anime",
+          "prompt": "Style: 1980s Anime.\nReference: Super Dimension Fortress Macross (1982); City Hunter (1987).\nVisual description: Assertive tapered outlines, angular contour accents, sharply defined cel-shadow shapes and compact highlights with a lightly textured painted-cel finish. Preserve the specified hairstyle, facial features and color assignments. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "light_novel_illustration",
-          "label": "Light Novel Character Art",
-          "prompt": "light novel character illustration, elegant clean lines, softly painted cel shading, detailed hair and eyes, refined costume materials, luminous finish"
+          "id": "anime_1990s",
+          "label": "1990s Anime",
+          "prompt": "Style: 1990s Anime.\nReference: Yu Yu Hakusho (1992); Neon Genesis Evangelion (1995).\nVisual description: Precisely inked contours, expressive variation in line weight, layered hard-edged cel shadows and segmented highlights with an analog cel finish. Keep irises, eye colors and small character details clearly readable. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "visual_novel_character",
-          "label": "Visual Novel Character Art",
-          "prompt": "visual novel character art, clean consistent outlines, front-facing readable silhouette, smooth cel shading, carefully rendered face and costume details"
+          "id": "anime_2000s",
+          "label": "2000s Anime",
+          "prompt": "Style: 2000s Anime.\nReference: The Melancholy of Haruhi Suzumiya (2006); Toradora! (2008).\nVisual description: Clean early-digital anime contours, smooth solid color fills, sharply separated cel shadows and selective soft gradients in the eyes and hair. Keep the specified facial structure, proportions and palette. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "game_character_illustration",
-          "label": "Anime Game Character Art",
-          "prompt": "anime game character illustration, confident silhouette, intricate costume design, crisp line art, layered cel shading, polished promotional rendering"
+          "id": "anime_2010s",
+          "label": "2010s Anime",
+          "prompt": "Style: 2010s Anime.\nReference: Hyouka (2012); Your Lie in April (2014).\nVisual description: Fine polished digital linework, carefully layered iris detail, crisp cel-shadow cores with softly graduated reflected light and translucent highlights. Maintain the specified eye colors and distinct local colors. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "painterly_anime",
-          "label": "Painterly Anime",
-          "prompt": "painterly anime character illustration, controlled sketch lines, blended brush shading, soft edge variation, rich colour modelling, detailed expressive face"
-        },
-        {
-          "id": "manga_ink",
-          "label": "Manga Ink & Screentone",
-          "prompt": "black-and-white manga character art, expressive ink line weight, solid black shapes, cut-edge screentone shading, clean white highlights"
-        },
-        {
-          "id": "chibi_anime",
-          "label": "Chibi Character",
-          "prompt": "chibi anime character art, oversized head, compact simplified body, rounded readable silhouette, highly expressive face, crisp flat cel colours"
-        },
-        {
-          "id": "retro_80s_anime",
-          "label": "Retro 80s Cel Anime",
-          "prompt": "1980s Japanese cel character art, hand-inked contours, simple painted shadows, warm analogue colours, restrained highlights, subtle film grain"
-        },
-        {
-          "id": "retro_90s_anime",
-          "label": "Retro 90s Cel Anime",
-          "prompt": "1990s Japanese cel character art, hand-inked outlines, painted cel shadows, slightly muted analogue colours, detailed eyes, subtle broadcast grain"
-        },
-        {
-          "id": "digital_2000s_anime",
-          "label": "Early 2000s Digital Anime",
-          "prompt": "early-2000s digital anime character art, crisp coloured outlines, bright digital cel shading, compact highlights, clean saturated palette"
-        },
-        {
-          "id": "glossy_anime",
-          "label": "Glossy Anime Illustration",
-          "prompt": "glossy anime character illustration, smooth precise linework, luminous hair and eye highlights, clean gradient accents, polished vibrant finish"
-        },
-        {
-          "id": "fashion_anime",
-          "label": "Anime Fashion Illustration",
-          "prompt": "anime fashion character illustration, elegant elongated silhouette, confident clean linework, refined garment folds, editorial colour styling, polished cel shading"
-        },
-        {
-          "id": "anime_3d_cel",
-          "label": "3D Cel-shaded Anime",
-          "prompt": "3D cel-shaded anime character, sculpted anime proportions, crisp toon outlines, stepped cel lighting, clean material separation, production-quality render"
+          "id": "anime_2020s",
+          "label": "2020s Anime",
+          "prompt": "Style: 2020s Anime.\nReference: Frieren: Beyond Journey's End (2023); The Apothecary Diaries (2023).\nVisual description: Controlled fine contours, selective color-tinted linework, detailed yet readable eyes, refined cel shading and subtly integrated dimensional lighting. Retain the specified facial details, materials and colors. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         }
       ]
     },
     {
-      "label": "Comics & Animation",
+      "label": "Anime",
       "styles": [
         {
-          "id": "american_superhero_comic",
-          "label": "American Superhero Comic",
-          "prompt": "American superhero comic character art, powerful anatomy, bold ink contours, dramatic foreshortening, saturated colours, hard graphic shadows"
+          "id": "ghibli_miyazaki",
+          "label": "Hayao Miyazaki / Studio Ghibli",
+          "prompt": "Style: Hayao Miyazaki / Studio Ghibli.\nReference: Princess Mononoke; Howl's Moving Castle.\nVisual description: Gentle, economical character drawing with clear organic forms, supple contours, restrained cel shadows and naturally expressive facial rendering. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "ligne_claire_comic",
-          "label": "European Ligne Claire",
-          "prompt": "European ligne claire character illustration, uniform precise outlines, flat clean colours, minimal hatching, readable anatomy, carefully observed costume details"
+          "id": "makoto_shinkai",
+          "label": "Makoto Shinkai",
+          "prompt": "Style: Makoto Shinkai.\nReference: Your Name; Weathering with You, with character designs by Masayoshi Tanaka.\nVisual description: Clean contemporary anime drawing with finely resolved facial details, translucent light transitions, luminous highlights and carefully modeled illumination. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "noir_graphic_novel",
-          "label": "Noir Graphic Novel",
-          "prompt": "noir graphic novel character art, stark black-and-white inks, deep angular shadows, selective rim light, gritty paper texture, clear silhouette"
+          "id": "kyoto_violet_evergarden",
+          "label": "Kyoto Animation / Violet Evergarden",
+          "prompt": "Style: Kyoto Animation / Violet Evergarden.\nReference: Violet Evergarden, character design by Akiko Takase.\nVisual description: Delicate, detailed anime linework, intricately rendered irises, finely articulated hair shading and polished dimensional color modeling. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "pulp_comic",
-          "label": "Vintage Pulp Comic",
-          "prompt": "vintage pulp comic character illustration, vigorous painted brushwork, dramatic pose, warm limited palette, aged paper, printed colour texture"
+          "id": "kyoto_k_on",
+          "label": "Kyoto Animation / K-On!",
+          "prompt": "Style: Kyoto Animation / K-On!.\nReference: K-On!, character design by Yukiko Horiguchi.\nVisual description: Soft, rounded drawing language, flowing economical contours, gentle cel shading and clear, understated facial rendering. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "pop_art_comic",
-          "label": "Pop Art Comic",
-          "prompt": "Pop Art comic character illustration, thick black outlines, flat primary colours, Ben-Day dots, sharp graphic contrast, clean readable anatomy"
+          "id": "trigger_imaishi",
+          "label": "Hiroyuki Imaishi / Studio Trigger",
+          "prompt": "Style: Hiroyuki Imaishi / Studio Trigger.\nReference: Kill la Kill; Cyberpunk: Edgerunners.\nVisual description: Angular graphic linework, sharply cut shadow shapes, assertive contour weight and energetic contrasts within the specified colors. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "classic_western_cel",
-          "label": "Classic Western Cel",
-          "prompt": "classic Western cel-animation character art, rounded expressive forms, clean ink outlines, painted flat colours, simple readable shading"
+          "id": "yoshiyuki_sadamoto",
+          "label": "Yoshiyuki Sadamoto",
+          "prompt": "Style: Yoshiyuki Sadamoto.\nReference: Neon Genesis Evangelion.\nVisual description: Precise, economical anime linework, angular contour accents, distinctive facial construction and controlled cel shading with finely separated details. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "modern_tv_cartoon",
-          "label": "Modern TV Cartoon",
-          "prompt": "modern television cartoon character design, simplified geometric anatomy, confident outlines, flat bright colours, compact readable silhouette"
+          "id": "clamp",
+          "label": "CLAMP",
+          "prompt": "Style: CLAMP.\nReference: Cardcaptor Sakura; Chobits.\nVisual description: Elegant flowing contours, romantic illustrative refinement, delicately layered shading and carefully articulated eyes, retaining the specified proportions and surface details. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "rubber_hose_cartoon",
-          "label": "Rubber Hose Cartoon",
-          "prompt": "1920s rubber-hose cartoon character art, pie-cut eyes, flexible curved limbs, rhythmic black contours, limited vintage palette, film-grain texture"
+          "id": "sailor_moon_90s",
+          "label": "Sailor Moon / 1990s Anime",
+          "prompt": "Style: Sailor Moon / 1990s Anime.\nReference: The original Sailor Moon television series, with designs by Kazuko Tadano and Ikuko Itoh.\nVisual description: Classic romantic shojo anime drawing, graceful contour rhythms, carefully defined eyelids and irises, smooth cel colors and restrained luminous shading. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "storybook_animation",
-          "label": "Storybook Character",
-          "prompt": "storybook character illustration, soft pencil contours, gentle painted colours, warm paper texture, expressive readable features, handcrafted finish"
+          "id": "akira_toriyama",
+          "label": "Akira Toriyama",
+          "prompt": "Style: Akira Toriyama.\nReference: Dragon Ball; Chrono Trigger.\nVisual description: Confident clean contours, clearly constructed forms, crisp interior marks and decisive cel shadows with strong graphic readability. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "clay_animation",
-          "label": "Clay Character",
-          "prompt": "clay-animation character, hand-modelled forms, subtle fingerprints, readable stylized anatomy, miniature studio lighting, tactile stop-motion finish"
+          "id": "rumiko_takahashi",
+          "label": "Rumiko Takahashi",
+          "prompt": "Style: Rumiko Takahashi.\nReference: Ranma 1/2; Maison Ikkoku.\nVisual description: Supple, readable character drawing, rounded contour rhythms, economical facial lines and light, clean shading with a gently comic drawing sensibility. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "feature_3d_animation",
-          "label": "Feature 3D Character",
-          "prompt": "feature-animation 3D character, appealing stylized proportions, smooth sculpted forms, expressive face, soft global illumination, detailed materials"
+          "id": "katsuhiro_otomo",
+          "label": "Katsuhiro Otomo",
+          "prompt": "Style: Katsuhiro Otomo.\nReference: Akira.\nVisual description: Dense, precise anime draftsmanship, carefully observed facial construction, finely resolved internal lines and solid, convincing tonal volume. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "flat_vector_cartoon",
-          "label": "Flat Vector Character",
-          "prompt": "flat vector character illustration, precise geometric shapes, uniform curves, minimal shading, harmonious limited palette, clear readable silhouette"
+          "id": "satoshi_kon",
+          "label": "Satoshi Kon",
+          "prompt": "Style: Satoshi Kon.\nReference: Perfect Blue; Paprika.\nVisual description: Restrained realistic anime drawing, individually articulated facial features, controlled contour variation and subtle, closely observed shading. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
+        },
+        {
+          "id": "ghost_in_the_shell_1995",
+          "label": "Ghost in the Shell / 1995 Film",
+          "prompt": "Style: Ghost in the Shell / 1995 Film.\nReference: Mamoru Oshii's Ghost in the Shell, character design by Hiroyuki Okiura.\nVisual description: Strict, sculptural anime rendering, precise anatomical contours, deliberate shadow planes and detailed, understated facial modeling. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
+        },
+        {
+          "id": "toshihiro_kawamoto",
+          "label": "Toshihiro Kawamoto",
+          "prompt": "Style: Toshihiro Kawamoto.\nReference: Cowboy Bebop.\nVisual description: Angular classic anime linework with realistic accents, tapered contours, expressive shadow shapes and clearly articulated facial planes. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
+        },
+        {
+          "id": "yoshitoshi_abe",
+          "label": "Yoshitoshi ABe",
+          "prompt": "Style: Yoshitoshi ABe.\nReference: Serial Experiments Lain; Haibane Renmei.\nVisual description: Understated illustrative anime drawing, delicate irregular linework, softly layered tonal modeling and a restrained, less glossy surface finish. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
+        },
+        {
+          "id": "nobuteru_yuki",
+          "label": "Nobuteru Yuki",
+          "prompt": "Style: Nobuteru Yuki.\nReference: Record of Lodoss War, the original OVA.\nVisual description: Detailed classic OVA character rendering, emphatic tapered contours, intricate facial and hair linework, layered cel shadows and sharply defined highlights. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         }
       ]
     },
     {
-      "label": "Illustration & Print",
+      "label": "Animation",
       "styles": [
         {
-          "id": "ukiyoe_woodblock",
-          "label": "Ukiyo-e Character Print",
-          "prompt": "ukiyo-e inspired character print, strong carved contours, flat mineral colours, patterned clothing, stylized anatomy, visible handmade paper grain"
+          "id": "disney_renaissance",
+          "label": "Disney Renaissance",
+          "prompt": "Style: Disney Renaissance.\nReference: Aladdin; The Little Mermaid.\nVisual description: Fluid classical animation drawing, sweeping controlled contours, clearly modeled forms and carefully shaped cel shadows with expressive facial articulation. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "watercolor_storybook",
-          "label": "Watercolour Character",
-          "prompt": "watercolour character illustration, translucent colour washes, softly bleeding edges, delicate pencil underdrawing, luminous paper, readable facial details"
+          "id": "don_bluth",
+          "label": "Don Bluth",
+          "prompt": "Style: Don Bluth.\nReference: Anastasia.\nVisual description: Softly dimensional hand-drawn animation, supple contours, distinctive eyelid and mouth rendering, layered cel shadows and carefully modeled facial transitions. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "gouache_editorial",
-          "label": "Gouache Character",
-          "prompt": "gouache character illustration, opaque matte colour blocks, visible brush edges, simplified anatomy, restrained palette, strong readable silhouette"
+          "id": "bruce_timm_dcau",
+          "label": "Bruce Timm / DCAU",
+          "prompt": "Style: Bruce Timm / DCAU.\nReference: Batman: The Animated Series.\nVisual description: Dark Deco character drawing, economical geometric forms, strong clean contours and broad graphic shadows, keeping specified eye details and colors readable. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "art_nouveau_poster",
-          "label": "Art Nouveau Character Poster",
-          "prompt": "Art Nouveau character poster, flowing organic contours, elegant silhouette, muted jewel colours, decorative flat rendering"
+          "id": "genndy_tartakovsky",
+          "label": "Genndy Tartakovsky",
+          "prompt": "Style: Genndy Tartakovsky.\nReference: Samurai Jack.\nVisual description: Expressive geometric minimalism, precise silhouette boundaries, clear adjacent color shapes and selective interior detail, retaining specified facial features and proportions. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "pixel_art",
-          "label": "Pixel Art Character",
-          "prompt": "detailed pixel-art character, deliberate pixel clusters, crisp hard edges, limited colour palette, selective dithering, readable game-character silhouette"
+          "id": "cartoon_saloon",
+          "label": "Cartoon Saloon",
+          "prompt": "Style: Cartoon Saloon.\nReference: Song of the Sea; Wolfwalkers.\nVisual description: Decorative European storybook character drawing, flattened spatial treatment, rhythmic geometric construction and lively hand-drawn contours with clearly rendered small features. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "ink_wash",
-          "label": "Ink Wash Character",
-          "prompt": "ink-wash character painting, expressive black brush contours, diluted grey modelling, absorbent paper texture, restrained accent colour"
+          "id": "disney_tangled",
+          "label": "Disney / Tangled",
+          "prompt": "Style: Disney / Tangled.\nReference: Tangled, the animated feature film, with visual development by Glen Keane.\nVisual description: Soft volumetric character stylization rooted in classical drawing, fluid surface transitions, delicate facial modeling and gently blended illumination. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "linocut_print",
-          "label": "Linocut Character Print",
-          "prompt": "linocut character print, bold carved black shapes, rough hand-cut marks, strong positive-negative contrast, limited spot colours, fibrous print texture"
+          "id": "pixar_incredibles",
+          "label": "Pixar / The Incredibles",
+          "prompt": "Style: Pixar / The Incredibles.\nReference: The Incredibles.\nVisual description: Sculptural geometric character rendering, a retro-modern graphic sensibility, clean surface organization and controlled dimensional shading within the specified anatomy. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
+        },
+        {
+          "id": "fortiche_arcane",
+          "label": "Fortiche / Arcane",
+          "prompt": "Style: Fortiche / Arcane.\nReference: Arcane.\nVisual description: Painterly dimensional character rendering, faceted light and shadow, visible painted surface variation and fine drawn accents integrated with a 3D sense of volume. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
+        },
+        {
+          "id": "spider_verse",
+          "label": "Spider-Verse",
+          "prompt": "Style: Spider-Verse.\nReference: Spider-Man: Into the Spider-Verse, Sony Pictures Imageworks.\nVisual description: Comic-book graphic language integrated with dimensional animation, drawn facial accents, fine halftone shadows and hatching over clearly separated local colors. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
+        },
+        {
+          "id": "coraline_selick",
+          "label": "Henry Selick / Coraline",
+          "prompt": "Style: Henry Selick / Coraline.\nReference: Coraline, LAIKA.\nVisual description: Handcrafted puppet-like character rendering, tactile modeled surfaces, subtly irregular contours and delicately painted facial details, retaining the specified eyes and anatomy. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
+        }
+      ]
+    },
+    {
+      "label": "Artistic",
+      "styles": [
+        {
+          "id": "art_nouveau_mucha",
+          "label": "Art Nouveau / Alphonse Mucha",
+          "prompt": "Style: Art Nouveau / Alphonse Mucha.\nReference: Alphonse Mucha's figurative illustrations.\nVisual description: Flowing rhythmic contours, elegant decorative organization of the existing forms, softly modeled interiors and precise graphic boundaries. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
+        },
+        {
+          "id": "art_deco_lempicka",
+          "label": "Art Deco / Tamara de Lempicka",
+          "prompt": "Style: Art Deco / Tamara de Lempicka.\nReference: Tamara de Lempicka's figurative portraits.\nVisual description: Sculptural geometric modeling, smooth polished tonal transitions, sharply articulated light planes and precise contour definition. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         }
       ]
     },
@@ -212,29 +216,14 @@
       "label": "Realistic",
       "styles": [
         {
-          "id": "photoreal_studio",
-          "label": "Studio Character Photo",
-          "prompt": "photorealistic studio character photography, natural skin texture, precise anatomy, controlled softbox lighting, realistic fabric materials, clean lens detail"
+          "id": "academic_realism",
+          "label": "Academic Realism",
+          "prompt": "Style: Academic Realism.\nReference: William-Adolphe Bouguereau's figurative paintings.\nVisual description: Careful anatomical modeling of the specified subject, seamless tonal transitions, subtle skin and material rendering and a finely finished classical painted surface. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         },
         {
-          "id": "cinematic_live_action",
-          "label": "Cinematic Character Photo",
-          "prompt": "cinematic live-action character photography, realistic anatomy and materials, motivated dramatic lighting, natural colour grading, subtle film grain"
-        },
-        {
-          "id": "editorial_fashion_photo",
-          "label": "Editorial Fashion Character",
-          "prompt": "editorial fashion character photography, confident full-body pose, sculpted studio light, refined wardrobe textures, polished colour grading"
-        },
-        {
-          "id": "documentary_photo",
-          "label": "Natural Documentary Character",
-          "prompt": "natural documentary character photography, relaxed posture, available light, truthful skin and fabric texture, restrained colour"
-        },
-        {
-          "id": "realist_oil_portrait",
-          "label": "Classical Oil Character",
-          "prompt": "classical realist oil character painting, accurate anatomy, layered natural skin tones, carefully modelled light, fine visible brushwork, rich material detail"
+          "id": "photorealism",
+          "label": "Photorealism",
+          "prompt": "Style: Photorealism.\nReference: Photorealist figurative painting, including Chuck Close's early portraits.\nVisual description: Photographic precision of light and surface, closely observed microtexture, natural tonal transitions and sharply resolved individual features. Use these references for visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories, pose and background."
         }
       ]
     }
