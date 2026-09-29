@@ -381,17 +381,7 @@ class ClothesDesigner:
     @staticmethod
     def construct_prompt(data, model_kind=""):
         active_tab = data.get("activeTab", "generate")
-
-        if active_tab == "clone" and data.get("clone_image"):
-            return "Dress character: clothes, footwear and accessories from Picture 2", ""
-
-        info = data.get("costume_info", {})
-        parts = []
-        for k in ["top", "bottom", "head", "shoes", "face"]:
-            v = info.get(k, "").strip()
-            if v: parts.append(v)
-
-        clothes_desc = "\n".join(parts)
+        is_clone = active_tab == "clone" and bool(data.get("clone_image"))
         bg_col = ClothesDesigner._effective_background_color(
             data.get("gen_settings", {}).get("background_color"), model_kind,
         )
@@ -408,11 +398,31 @@ class ClothesDesigner:
                 "hex #00FF00, no gradient"
             )
 
-        positive_prompt = (
-            f"Dress the character:\n{clothes_desc}\n"
-            f"{background_prompt}"
-        )
+        if is_clone:
+            positive_prompt = (
+                "Dress character: clothes, footwear and accessories from Picture 2\n"
+                f"{background_prompt}\n"
+                "Do not copy the background from Picture 2. "
+                "No background scenery, patterns, or shapes."
+            )
+        else:
+            info = data.get("costume_info", {})
+            parts = []
+            for k in ["top", "bottom", "head", "shoes", "face"]:
+                v = info.get(k, "").strip()
+                if v: parts.append(v)
+
+            clothes_desc = "\n".join(parts)
+            positive_prompt = (
+                f"Dress the character:\n{clothes_desc}\n"
+                f"{background_prompt}"
+            )
         negative_prompt = "bad quality, worst quality, (naked, nude, nipple, penis, vagina:2.0)"
+        if is_clone:
+            negative_prompt += (
+                ", background scenery, patterned background, shapes in background, "
+                "multicolored background, textured background, gradient background"
+            )
         if bg_col == "Blue":
             negative_prompt += ", purple background, violet background, gradient background"
         return positive_prompt, negative_prompt

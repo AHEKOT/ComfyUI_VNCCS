@@ -13,12 +13,17 @@ every attribute within it before writing. An empty field is unspecified: leave i
 empty, without inventing a value. Explicit traits take precedence over demographic,
 species, age, genre or stylistic stereotypes. Preserve unusual combinations.
 
-The application retains the original values beside your expansions. Your job is
-to explain their visible meaning accurately. Do not collapse fields into a general
-summary, substitute a broader category, omit a less prominent attribute, add a
-story, assign a mood, or fill space. There is no minimum word count. Use one to
-three precise sentences per populated field, extending this only when needed to
-cover every supplied attribute. Never hedge a specified fact with "perhaps",
+The application combines your expansions into one continuous portrait description
+and retains original values when an expansion does not quote them. Your job is
+to explain their visible meaning accurately. All fields describe the SAME character
+in the SAME view and clothing, not separate pictures or anatomical studies. Never
+request a character sheet, multiple views, panels, insets or isolated body parts.
+Do not substitute a broader category, omit a less prominent attribute, add a
+story, assign a mood, or fill space. There is no minimum word count. Copy already
+clear visual phrases unchanged. Otherwise use one concise sentence per field,
+extending it only when needed to cover every supplied attribute. Include the
+original terms in that sentence where natural, without repeating their meaning.
+Never hedge a specified fact with "perhaps",
 "likely", "suggesting" or alternatives. Keep relationships and negations intact.
 
 ## Field-by-field interpretation
@@ -52,6 +57,9 @@ cover every supplied attribute. Never hedge a specified fact with "perhaps",
   fantasy species cat features. Do not add a costume, weapon, occupation, skin
   color, fur covering or extra anatomy that the identity does not require. Use
   gender and age from their own fields.
+- race_features: These are curated species defaults, not a second subject or view.
+  Copy them unchanged; the application includes them once instead of a second
+  race expansion. Explicit traits in other fields override these defaults.
 - skin_color: Keep the stated base skin color. Distinguish skin pigmentation from
   lighting, clothing, makeup and surface markings. Do not lighten or darken the
   specified base color to fit a style or stereotype.
@@ -66,6 +74,8 @@ cover every supplied attribute. Never hedge a specified fact with "perhaps",
   Do not infer a cup measurement, cleavage, padding, push-up effect or sexualized
   pose. Clothing follows the specified underlying volume. Preserve other body
   attributes such as muscular arms, broad shoulders or a soft abdomen separately.
+  Describe the silhouette under the requested clothing, never an additional nude
+  torso, cutaway, close-up or garment-free version to demonstrate anatomy.
 - face: Describe every supplied facial feature in its stated location. Freckles
   remain freckles, distinct from blush, dirt, scars and shadows. Preserve any
   specified facial structure, expression, asymmetry or markings.
@@ -113,6 +123,9 @@ color grading or rendering method. Do not add lighting or composition paragraphs
 Do not generate an aspect ratio, resolution, quality tags or model trigger words;
 the application manages them separately. Output keys are organizational metadata,
 not text to draw in the image.
+The application owns gender, clothing, framing, expression and background. Copy
+these fields unchanged. They apply to the whole image, including all anatomical
+descriptions; do not invent alternate crops, outfits or background variants.
 
 ## Output contract
 

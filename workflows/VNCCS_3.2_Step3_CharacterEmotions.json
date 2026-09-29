@@ -1,0 +1,179 @@
+{
+  "id": "cb50a96d-5d45-45f0-b60e-379bdac161f0",
+  "revision": 0,
+  "last_node_id": 405,
+  "last_link_id": 1040,
+  "nodes": [
+    {
+      "id": 405,
+      "type": "VNCCS_EmotionsGenerator",
+      "pos": [
+        2860,
+        -600
+      ],
+      "size": [
+        1630,
+        1240
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 1038
+        },
+        {
+          "name": "pipe",
+          "type": "VNCCS_PIPE",
+          "link": 1039
+        },
+        {
+          "name": "emotion_data",
+          "type": "STRING",
+          "link": 1040
+        }
+      ],
+      "outputs": [
+        {
+          "name": "sprites",
+          "shape": 6,
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "faces",
+          "shape": 6,
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs",
+        "ver": "3.0.0",
+        "Node name for S&R": "VNCCS_EmotionsGenerator"
+      },
+      "widgets_values": [
+        "{\"nsfw_enabled\":true,\"emotion_pairs\":[{\"costume\":\"Original\",\"emotion\":\"explosive-fury\"}],\"common\":{\"target_size\":1024},\"pose_generation\":{\"target_size\":1024,\"upscale_method\":\"lanczos\",\"crop_method\":\"disabled\",\"image1_name\":\"image 1\",\"image2_name\":\"image 2\",\"image3_name\":\"image 3\",\"weight1\":1,\"weight2\":1,\"weight3\":1,\"vl_size\":384,\"background_color\":\"from_generator\",\"latent_image_index\":1,\"instruction\":\"Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.\"},\"pose_sampler\":{\"inherit_pipe\":true,\"seed\":0,\"steps\":20,\"cfg\":1,\"sampler_name\":\"euler\",\"scheduler\":\"simple\",\"denoise\":1},\"vae_decode\":{\"tile_size\":512,\"overlap\":64,\"temporal_size\":64,\"temporal_overlap\":8},\"emotion_generation\":{\"task_batch_size\":0,\"target_size\":2048,\"face_denoise\":0.55,\"use_sam\":false,\"bbox_model\":\"bbox/face_yolov8m.pt\",\"segm_model\":\"bbox/face_yolov8m.pt\",\"sam_model\":\"sam_vit_b_01ec64.pth\",\"sam_device_mode\":\"AUTO\",\"guide_size\":1536,\"guide_size_for\":true,\"max_size\":1536,\"inherit_pipe_sampler\":true,\"sampler_name\":\"euler\",\"scheduler\":\"simple\",\"feather\":50,\"noise_mask\":true,\"force_inpaint\":true,\"bbox_threshold\":0.5,\"bbox_dilation\":50,\"qi2_prompt_template\":\"Upscale face image.\\nMake character's face emotion {emotion}\\nChange only face. Keep original neck colour, clothes and hairs\\nkeep character's clothes\",\"bbox_crop_factor\":3,\"sam_detection_hint\":\"center-1\",\"sam_dilation\":0,\"sam_threshold\":0.93,\"sam_bbox_expansion\":0,\"sam_mask_hint_threshold\":0.7,\"sam_mask_hint_use_negative\":\"False\",\"drop_size\":10,\"cycle\":1,\"inpaint_model\":false,\"noise_mask_feather\":20,\"tiled_encode\":true,\"tiled_decode\":true,\"matte_expand_radius\":8,\"matte_feather_radius\":4,\"chroma_context\":16},\"remove_clothes\":{\"prompt\":\"Dress character: White underwear\",\"target_size\":1024,\"upscale_method\":\"lanczos\",\"crop_method\":\"disabled\",\"image1_name\":\"image 1\",\"image2_name\":\"image 2\",\"image3_name\":\"image 3\",\"weight1\":1,\"weight2\":1,\"weight3\":1,\"vl_size\":384,\"background_color\":\"White\",\"latent_image_index\":1,\"instruction\":\"Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.\"},\"remove_clothes_sampler\":{\"inherit_pipe\":true,\"seed\":0,\"steps\":20,\"cfg\":1,\"sampler_name\":\"euler\",\"scheduler\":\"simple\",\"denoise\":1},\"upscaler\":{\"mode\":\"seedvr\",\"model\":\"seedvr2_3b_fp8_e4m3fn.safetensors\",\"vae\":\"ema_vae_fp16.safetensors\",\"gan_model\":\"\",\"device\":\"cuda:0\",\"offload_device\":\"cpu\",\"seed\":42,\"inherit_pipe_seed\":true,\"resolution\":2048,\"max_resolution\":3840,\"batch_size\":1,\"uniform_batch_size\":false,\"color_correction\":\"lab\",\"temporal_overlap\":0,\"prepend_frames\":0,\"input_noise_scale\":0,\"latent_noise_scale\":0,\"blocks_to_swap\":0,\"swap_io_components\":false,\"cache_dit\":true,\"attention_mode\":\"sdpa\",\"attention_mode_manual\":false,\"encode_tiled\":true,\"encode_tile_size\":1024,\"encode_tile_overlap\":128,\"decode_tiled\":true,\"decode_tile_size\":1024,\"decode_tile_overlap\":128,\"tile_debug\":\"false\",\"cache_vae\":false,\"enable_debug\":false},\"bg_remove\":{\"use_internal_rmbg\":false,\"preset\":\"Native\",\"use_sam3_details_recovery\":false,\"use_preset_values\":true,\"tolerance\":0.15,\"softness\":0.12,\"despill_strength\":0.65,\"edge_width\":3,\"matte_cleanup\":0.1,\"foreground_recover\":0.35,\"edge_decontaminate\":0.75,\"edge_choke\":0.08,\"matte_method\":\"guided_edge\",\"screen_mode\":\"from_background\",\"output_mode\":\"straight_rgba\",\"sam3_model\":\"\",\"sam3_segmentor\":\"image\",\"sam3_device\":\"auto\",\"sam3_precision\":\"bf16\",\"sam3_prompt\":\"face, clothes, accessories, hat, boots, eyes\",\"sam3_threshold\":0.4,\"sam3_add_background\":\"none\",\"sam3_detection_limit\":-1,\"sam3_erode_radius\":4,\"sam3_min_foreground_overlap\":0.55},\"ui\":{\"selected_preview\":\"pose_generation\",\"user_selected_preview\":false,\"bg_remove_model_kind\":\"qi2\",\"resolution_model_kind\":\"qi2\",\"bg_remove_previous_preset\":\"balanced\"},\"character_name\":\"V-chan\"}",
+        ""
+      ],
+      "widgets_values_named": {
+        "widget_data": "{\"nsfw_enabled\":true,\"emotion_pairs\":[{\"costume\":\"Original\",\"emotion\":\"explosive-fury\"}],\"common\":{\"target_size\":1024},\"pose_generation\":{\"target_size\":1024,\"upscale_method\":\"lanczos\",\"crop_method\":\"disabled\",\"image1_name\":\"image 1\",\"image2_name\":\"image 2\",\"image3_name\":\"image 3\",\"weight1\":1,\"weight2\":1,\"weight3\":1,\"vl_size\":384,\"background_color\":\"from_generator\",\"latent_image_index\":1,\"instruction\":\"Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.\"},\"pose_sampler\":{\"inherit_pipe\":true,\"seed\":0,\"steps\":20,\"cfg\":1,\"sampler_name\":\"euler\",\"scheduler\":\"simple\",\"denoise\":1},\"vae_decode\":{\"tile_size\":512,\"overlap\":64,\"temporal_size\":64,\"temporal_overlap\":8},\"emotion_generation\":{\"task_batch_size\":0,\"target_size\":2048,\"face_denoise\":0.55,\"use_sam\":false,\"bbox_model\":\"bbox/face_yolov8m.pt\",\"segm_model\":\"bbox/face_yolov8m.pt\",\"sam_model\":\"sam_vit_b_01ec64.pth\",\"sam_device_mode\":\"AUTO\",\"guide_size\":1536,\"guide_size_for\":true,\"max_size\":1536,\"inherit_pipe_sampler\":true,\"sampler_name\":\"euler\",\"scheduler\":\"simple\",\"feather\":50,\"noise_mask\":true,\"force_inpaint\":true,\"bbox_threshold\":0.5,\"bbox_dilation\":50,\"qi2_prompt_template\":\"Upscale face image.\\nMake character's face emotion {emotion}\\nChange only face. Keep original neck colour, clothes and hairs\\nkeep character's clothes\",\"bbox_crop_factor\":3,\"sam_detection_hint\":\"center-1\",\"sam_dilation\":0,\"sam_threshold\":0.93,\"sam_bbox_expansion\":0,\"sam_mask_hint_threshold\":0.7,\"sam_mask_hint_use_negative\":\"False\",\"drop_size\":10,\"cycle\":1,\"inpaint_model\":false,\"noise_mask_feather\":20,\"tiled_encode\":true,\"tiled_decode\":true,\"matte_expand_radius\":8,\"matte_feather_radius\":4,\"chroma_context\":16},\"remove_clothes\":{\"prompt\":\"Dress character: White underwear\",\"target_size\":1024,\"upscale_method\":\"lanczos\",\"crop_method\":\"disabled\",\"image1_name\":\"image 1\",\"image2_name\":\"image 2\",\"image3_name\":\"image 3\",\"weight1\":1,\"weight2\":1,\"weight3\":1,\"vl_size\":384,\"background_color\":\"White\",\"latent_image_index\":1,\"instruction\":\"Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.\"},\"remove_clothes_sampler\":{\"inherit_pipe\":true,\"seed\":0,\"steps\":20,\"cfg\":1,\"sampler_name\":\"euler\",\"scheduler\":\"simple\",\"denoise\":1},\"upscaler\":{\"mode\":\"seedvr\",\"model\":\"seedvr2_3b_fp8_e4m3fn.safetensors\",\"vae\":\"ema_vae_fp16.safetensors\",\"gan_model\":\"\",\"device\":\"cuda:0\",\"offload_device\":\"cpu\",\"seed\":42,\"inherit_pipe_seed\":true,\"resolution\":2048,\"max_resolution\":3840,\"batch_size\":1,\"uniform_batch_size\":false,\"color_correction\":\"lab\",\"temporal_overlap\":0,\"prepend_frames\":0,\"input_noise_scale\":0,\"latent_noise_scale\":0,\"blocks_to_swap\":0,\"swap_io_components\":false,\"cache_dit\":true,\"attention_mode\":\"sdpa\",\"attention_mode_manual\":false,\"encode_tiled\":true,\"encode_tile_size\":1024,\"encode_tile_overlap\":128,\"decode_tiled\":true,\"decode_tile_size\":1024,\"decode_tile_overlap\":128,\"tile_debug\":\"false\",\"cache_vae\":false,\"enable_debug\":false},\"bg_remove\":{\"use_internal_rmbg\":false,\"preset\":\"Native\",\"use_sam3_details_recovery\":false,\"use_preset_values\":true,\"tolerance\":0.15,\"softness\":0.12,\"despill_strength\":0.65,\"edge_width\":3,\"matte_cleanup\":0.1,\"foreground_recover\":0.35,\"edge_decontaminate\":0.75,\"edge_choke\":0.08,\"matte_method\":\"guided_edge\",\"screen_mode\":\"from_background\",\"output_mode\":\"straight_rgba\",\"sam3_model\":\"\",\"sam3_segmentor\":\"image\",\"sam3_device\":\"auto\",\"sam3_precision\":\"bf16\",\"sam3_prompt\":\"face, clothes, accessories, hat, boots, eyes\",\"sam3_threshold\":0.4,\"sam3_add_background\":\"none\",\"sam3_detection_limit\":-1,\"sam3_erode_radius\":4,\"sam3_min_foreground_overlap\":0.55},\"ui\":{\"selected_preview\":\"pose_generation\",\"user_selected_preview\":false,\"bg_remove_model_kind\":\"qi2\",\"resolution_model_kind\":\"qi2\",\"bg_remove_previous_preset\":\"balanced\"},\"character_name\":\"V-chan\"}",
+        "character_generator_ui": ""
+      }
+    },
+    {
+      "id": 404,
+      "type": "EmotionGeneratorV2",
+      "pos": [
+        940,
+        -600
+      ],
+      "size": [
+        1890,
+        1240
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "images",
+          "shape": 6,
+          "type": "IMAGE",
+          "links": [
+            1038
+          ]
+        },
+        {
+          "name": "pipe",
+          "type": "VNCCS_PIPE",
+          "links": [
+            1039
+          ]
+        },
+        {
+          "name": "emotion_data",
+          "shape": 6,
+          "type": "STRING",
+          "links": [
+            1040
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs",
+        "ver": "3.0.0",
+        "Node name for S&R": "EmotionGeneratorV2"
+      },
+      "widgets_values": [
+        "QI2",
+        "{\"generation_mode\":\"qi2\",\"ckpt_name\":\"\",\"diffusion_model_name\":\"qwen_image_2.1_int8_convrot.safetensors\",\"clip_name\":\"qwen3vl_8b_int8_convrot.safetensors\",\"vae_name\":\"qwen_image_2.1_vae_bf16.safetensors\",\"clip_type\":\"qwen_image\",\"sampler\":\"euler\",\"scheduler\":\"simple\",\"steps\":6,\"cfg\":1,\"seed\":0,\"seed_mode\":\"fixed\",\"turbo_enabled\":true,\"turbo_previous_settings\":{\"steps\":25,\"cfg\":3},\"dmd_lora_name\":\"QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors\",\"dmd_lora_strength\":1,\"lora_stack\":[{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1}],\"mode_settings\":{\"illustrious\":{\"generation_mode\":\"illustrious\",\"ckpt_name\":\"Illustrious/ILFlatMix.safetensors\",\"diffusion_model_name\":\"anima-base-v1.0.safetensors\",\"clip_name\":\"qwen_3_06b_base.safetensors\",\"vae_name\":\"qwen_image_vae.safetensors\",\"clip_type\":\"stable_diffusion\",\"sampler\":\"euler\",\"scheduler\":\"normal\",\"steps\":20,\"cfg\":8,\"seed\":0,\"seed_mode\":\"fixed\",\"turbo_enabled\":false,\"turbo_previous_settings\":null,\"dmd_lora_name\":\"anima\\\\anima-turbo-lora-v0.1.safetensors\",\"dmd_lora_strength\":1,\"lora_stack\":[{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1}]},\"anima\":{\"generation_mode\":\"anima\",\"ckpt_name\":\"Illustrious\\\\ILFlatMix.safetensors\",\"diffusion_model_name\":\"anima-base-v1.0.safetensors\",\"clip_name\":\"qwen_3_06b_base.safetensors\",\"vae_name\":\"qwen_image_vae.safetensors\",\"clip_type\":\"stable_diffusion\",\"sampler\":\"er_sde\",\"scheduler\":\"simple\",\"steps\":12,\"cfg\":1,\"seed\":0,\"seed_mode\":\"fixed\",\"turbo_enabled\":true,\"turbo_previous_settings\":{\"steps\":30,\"cfg\":4},\"dmd_lora_name\":\"Anima/anima-turbo-lora-v0.1.safetensors\",\"dmd_lora_strength\":1,\"lora_stack\":[],\"selected_preview_sprite\":{\"character\":\"V-chan\",\"costume\":\"\",\"index\":3,\"count\":4}},\"qi2\":{\"generation_mode\":\"qi2\",\"ckpt_name\":\"\",\"diffusion_model_name\":\"qwen_image_2.1_int8_convrot.safetensors\",\"clip_name\":\"qwen3vl_8b_int8_convrot.safetensors\",\"vae_name\":\"qwen_image_2.1_vae_bf16.safetensors\",\"clip_type\":\"qwen_image\",\"sampler\":\"euler\",\"scheduler\":\"simple\",\"steps\":6,\"cfg\":1,\"seed\":0,\"seed_mode\":\"fixed\",\"turbo_enabled\":true,\"turbo_previous_settings\":{\"steps\":25,\"cfg\":3},\"dmd_lora_name\":\"QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors\",\"dmd_lora_strength\":1,\"lora_stack\":[{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1}],\"qi2_cache\":{\"device\":\"gpu\",\"dtype\":\"int8\"}}},\"qi2_cache\":{\"device\":\"gpu\",\"dtype\":\"int8\"}}",
+        "SDXL Style",
+        "V-chan",
+        "[\"Original\"]",
+        "[\"explosive-fury\"]",
+        ""
+      ],
+      "widgets_values_named": {
+        "generation_model": "QI2",
+        "generation_settings": "{\"generation_mode\":\"qi2\",\"ckpt_name\":\"\",\"diffusion_model_name\":\"qwen_image_2.1_int8_convrot.safetensors\",\"clip_name\":\"qwen3vl_8b_int8_convrot.safetensors\",\"vae_name\":\"qwen_image_2.1_vae_bf16.safetensors\",\"clip_type\":\"qwen_image\",\"sampler\":\"euler\",\"scheduler\":\"simple\",\"steps\":6,\"cfg\":1,\"seed\":0,\"seed_mode\":\"fixed\",\"turbo_enabled\":true,\"turbo_previous_settings\":{\"steps\":25,\"cfg\":3},\"dmd_lora_name\":\"QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors\",\"dmd_lora_strength\":1,\"lora_stack\":[{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1}],\"mode_settings\":{\"illustrious\":{\"generation_mode\":\"illustrious\",\"ckpt_name\":\"Illustrious/ILFlatMix.safetensors\",\"diffusion_model_name\":\"anima-base-v1.0.safetensors\",\"clip_name\":\"qwen_3_06b_base.safetensors\",\"vae_name\":\"qwen_image_vae.safetensors\",\"clip_type\":\"stable_diffusion\",\"sampler\":\"euler\",\"scheduler\":\"normal\",\"steps\":20,\"cfg\":8,\"seed\":0,\"seed_mode\":\"fixed\",\"turbo_enabled\":false,\"turbo_previous_settings\":null,\"dmd_lora_name\":\"anima\\\\anima-turbo-lora-v0.1.safetensors\",\"dmd_lora_strength\":1,\"lora_stack\":[{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1}]},\"anima\":{\"generation_mode\":\"anima\",\"ckpt_name\":\"Illustrious\\\\ILFlatMix.safetensors\",\"diffusion_model_name\":\"anima-base-v1.0.safetensors\",\"clip_name\":\"qwen_3_06b_base.safetensors\",\"vae_name\":\"qwen_image_vae.safetensors\",\"clip_type\":\"stable_diffusion\",\"sampler\":\"er_sde\",\"scheduler\":\"simple\",\"steps\":12,\"cfg\":1,\"seed\":0,\"seed_mode\":\"fixed\",\"turbo_enabled\":true,\"turbo_previous_settings\":{\"steps\":30,\"cfg\":4},\"dmd_lora_name\":\"Anima/anima-turbo-lora-v0.1.safetensors\",\"dmd_lora_strength\":1,\"lora_stack\":[],\"selected_preview_sprite\":{\"character\":\"V-chan\",\"costume\":\"\",\"index\":3,\"count\":4}},\"qi2\":{\"generation_mode\":\"qi2\",\"ckpt_name\":\"\",\"diffusion_model_name\":\"qwen_image_2.1_int8_convrot.safetensors\",\"clip_name\":\"qwen3vl_8b_int8_convrot.safetensors\",\"vae_name\":\"qwen_image_2.1_vae_bf16.safetensors\",\"clip_type\":\"qwen_image\",\"sampler\":\"euler\",\"scheduler\":\"simple\",\"steps\":6,\"cfg\":1,\"seed\":0,\"seed_mode\":\"fixed\",\"turbo_enabled\":true,\"turbo_previous_settings\":{\"steps\":25,\"cfg\":3},\"dmd_lora_name\":\"QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors\",\"dmd_lora_strength\":1,\"lora_stack\":[{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1},{\"name\":\"\",\"strength\":1}],\"qi2_cache\":{\"device\":\"gpu\",\"dtype\":\"int8\"}}},\"qi2_cache\":{\"device\":\"gpu\",\"dtype\":\"int8\"}}",
+        "prompt_style": "SDXL Style",
+        "character": "V-chan",
+        "costumes_data": "[\"Original\"]",
+        "emotions_data": "[\"explosive-fury\"]",
+        "emotion_ui_v2": ""
+      }
+    }
+  ],
+  "links": [
+    [
+      1038,
+      404,
+      0,
+      405,
+      0,
+      "IMAGE"
+    ],
+    [
+      1039,
+      404,
+      1,
+      405,
+      1,
+      "VNCCS_PIPE"
+    ],
+    [
+      1040,
+      404,
+      2,
+      405,
+      2,
+      "STRING"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "workflowRendererVersion": "LG",
+    "groupNodes": {},
+    "ue_links": [],
+    "links_added_by_ue": [],
+    "ds": {
+      "scale": 0.9618991596638659,
+      "offset": [
+        -964.0347526776518,
+        695.3093757098176
+      ]
+    },
+    "frontendVersion": "1.52.7",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4,
+  "seed_widgets": {}
+}

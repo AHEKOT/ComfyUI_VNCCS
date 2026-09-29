@@ -1,0 +1,1516 @@
+{
+  "version": "2.0",
+  "source": "VNCCS curated character descriptions",
+  "tags": {
+    "races": [
+      {
+        "tag": "human",
+        "label": "Human",
+        "group": "Humanoid peoples",
+        "prompt": "A human with rounded ears and ordinary human anatomy; skin tone and facial features follow the separate character fields."
+      },
+      {
+        "tag": "elf",
+        "label": "Elf",
+        "group": "Humanoid peoples",
+        "prompt": "A humanoid with long pointed ears and fine angular facial features."
+      },
+      {
+        "tag": "dark elf",
+        "label": "Dark Elf",
+        "group": "Humanoid peoples",
+        "prompt": "An elf with long pointed ears and a dusky violet or charcoal complexion unless another skin tone is specified.",
+        "synonyms": [
+          "drow"
+        ]
+      },
+      {
+        "tag": "dwarf",
+        "label": "Dwarf",
+        "group": "Humanoid peoples",
+        "prompt": "A short humanoid with a broad sturdy skeleton and compact limbs; facial hair follows the separate facial features."
+      },
+      {
+        "tag": "halfling",
+        "label": "Halfling",
+        "group": "Humanoid peoples",
+        "prompt": "A small humanlike person with rounded ears and broad feet with hair on their tops; retain the specified age.",
+        "synonyms": [
+          "hobbit"
+        ]
+      },
+      {
+        "tag": "gnome",
+        "label": "Gnome",
+        "group": "Humanoid peoples",
+        "prompt": "A small humanoid with large pointed ears and a prominent nose; retain the specified age."
+      },
+      {
+        "tag": "orc",
+        "label": "Orc",
+        "group": "Humanoid peoples",
+        "prompt": "A humanoid with a heavy jaw and upward-projecting lower tusks."
+      },
+      {
+        "tag": "goblin",
+        "label": "Goblin",
+        "group": "Humanoid peoples",
+        "prompt": "A small humanoid with oversized pointed ears and a sharply tapered nose."
+      },
+      {
+        "tag": "ogre",
+        "label": "Ogre",
+        "group": "Humanoid peoples",
+        "prompt": "A large humanoid with a thick neck and a heavy brow over a broad face."
+      },
+      {
+        "tag": "troll",
+        "label": "Troll",
+        "group": "Humanoid peoples",
+        "prompt": "A towering humanoid with elongated arms and a coarse ridged hide."
+      },
+      {
+        "tag": "giant",
+        "label": "Giant",
+        "group": "Humanoid peoples",
+        "prompt": "An exceptionally tall humanlike being with massive skeletal proportions."
+      },
+      {
+        "tag": "cyclops",
+        "label": "Cyclops",
+        "group": "Humanoid peoples",
+        "prompt": "A humanoid with one large eye centered in the forehead."
+      },
+      {
+        "tag": "catfolk",
+        "label": "Catfolk",
+        "group": "Humanlike animal folk",
+        "prompt": "A humanlike face and body with feline ears and a long flexible cat tail.",
+        "synonyms": [
+          "cat_girl",
+          "cat_boy",
+          "nekomimi"
+        ]
+      },
+      {
+        "tag": "foxfolk",
+        "label": "Foxfolk",
+        "group": "Humanlike animal folk",
+        "prompt": "A humanlike face and body with tall fox ears and a bushy fox tail.",
+        "synonyms": [
+          "fox_girl",
+          "fox_boy"
+        ]
+      },
+      {
+        "tag": "wolfkin",
+        "label": "Wolfkin",
+        "group": "Humanlike animal folk",
+        "prompt": "A humanlike face and body with upright wolf ears and a thick wolf tail.",
+        "synonyms": [
+          "wolf_girl",
+          "wolf_boy"
+        ]
+      },
+      {
+        "tag": "dogfolk",
+        "label": "Dogfolk",
+        "group": "Humanlike animal folk",
+        "prompt": "A humanlike face and body with canine ears and a dog tail.",
+        "synonyms": [
+          "dog_girl",
+          "dog_boy"
+        ]
+      },
+      {
+        "tag": "rabbitfolk",
+        "label": "Rabbitfolk",
+        "group": "Humanlike animal folk",
+        "prompt": "A humanlike face and body with long rabbit ears and a small round fluffy tail.",
+        "synonyms": [
+          "rabbit_girl",
+          "rabbit_boy",
+          "bunny_girl"
+        ]
+      },
+      {
+        "tag": "horsefolk",
+        "label": "Horsefolk",
+        "group": "Humanlike animal folk",
+        "prompt": "A humanlike face and two-legged body with horse ears and a long mane-like horse tail.",
+        "synonyms": [
+          "horse_girl",
+          "horse_boy"
+        ]
+      },
+      {
+        "tag": "deerfolk",
+        "label": "Deerfolk",
+        "group": "Humanlike animal folk",
+        "prompt": "A humanlike face and body with deer ears and branching antlers and a short deer tail."
+      },
+      {
+        "tag": "goatfolk",
+        "label": "Goatfolk",
+        "group": "Humanlike animal folk",
+        "prompt": "A humanlike face and body with goat ears and curved horns and a short goat tail."
+      },
+      {
+        "tag": "mousefolk",
+        "label": "Mousefolk",
+        "group": "Humanlike animal folk",
+        "prompt": "A humanlike face and body with large rounded mouse ears and a slender bare tail."
+      },
+      {
+        "tag": "squirrelfolk",
+        "label": "Squirrelfolk",
+        "group": "Humanlike animal folk",
+        "prompt": "A humanlike face and body with small rounded ears and a large plume-like squirrel tail."
+      },
+      {
+        "tag": "feline beastfolk",
+        "label": "Feline Beastfolk",
+        "group": "Anthropomorphic species",
+        "prompt": "An upright fur-covered feline with a feline muzzle and pawlike hands and a long tail."
+      },
+      {
+        "tag": "canine beastfolk",
+        "label": "Canine Beastfolk",
+        "group": "Anthropomorphic species",
+        "prompt": "An upright fur-covered canine with a projecting muzzle and pawlike hands and a canine tail."
+      },
+      {
+        "tag": "bearfolk",
+        "label": "Bearfolk",
+        "group": "Anthropomorphic species",
+        "prompt": "An upright bear covered in dense fur with a broad muzzle and small round ears and large clawed paws."
+      },
+      {
+        "tag": "avian",
+        "label": "Avian",
+        "group": "Anthropomorphic species",
+        "prompt": "An upright birdlike being with feathers covering the body and a beak and taloned feet."
+      },
+      {
+        "tag": "lizardfolk",
+        "label": "Lizardfolk",
+        "group": "Anthropomorphic species",
+        "prompt": "An upright reptilian being with a scaled hide and a reptilian muzzle and a long tapering tail."
+      },
+      {
+        "tag": "dragonkin",
+        "label": "Dragonkin",
+        "group": "Anthropomorphic species",
+        "prompt": "A humanoid with draconic horns and patches of scales and a long scaled tail.",
+        "synonyms": [
+          "dragon_girl",
+          "dragon_boy"
+        ]
+      },
+      {
+        "tag": "kobold",
+        "label": "Kobold",
+        "group": "Anthropomorphic species",
+        "prompt": "A small reptilian humanoid with a narrow snout and small horns and a thin scaled tail."
+      },
+      {
+        "tag": "sharkfolk",
+        "label": "Sharkfolk",
+        "group": "Anthropomorphic species",
+        "prompt": "A humanoid aquatic being with gill slits and a dorsal fin and a powerful shark tail."
+      },
+      {
+        "tag": "insectoid",
+        "label": "Insectoid",
+        "group": "Anthropomorphic species",
+        "prompt": "An upright insectlike being with segmented chitin armor and antennae and compound eyes."
+      },
+      {
+        "tag": "mothfolk",
+        "label": "Mothfolk",
+        "group": "Anthropomorphic species",
+        "prompt": "A humanoid moth with feathery antennae and a fuzzy neck ruff and broad patterned moth wings."
+      },
+      {
+        "tag": "merfolk",
+        "label": "Merfolk",
+        "group": "Hybrid bodies",
+        "prompt": "A humanlike upper body joined at the waist to a scaled fish tail instead of legs.",
+        "synonyms": [
+          "mermaid",
+          "merman"
+        ]
+      },
+      {
+        "tag": "naga",
+        "label": "Naga / Lamia",
+        "group": "Hybrid bodies",
+        "prompt": "A humanlike upper body joined at the waist to a long serpentine lower body instead of legs.",
+        "synonyms": [
+          "lamia"
+        ]
+      },
+      {
+        "tag": "centaur",
+        "label": "Centaur",
+        "group": "Hybrid bodies",
+        "prompt": "A humanlike torso rising from the shoulders of a four-legged horse body."
+      },
+      {
+        "tag": "satyr",
+        "label": "Satyr / Faun",
+        "group": "Hybrid bodies",
+        "prompt": "A humanlike upper body with small horns and goatlike furry legs ending in cloven hooves.",
+        "synonyms": [
+          "faun"
+        ]
+      },
+      {
+        "tag": "harpy",
+        "label": "Harpy",
+        "group": "Hybrid bodies",
+        "prompt": "A humanlike head and torso with feathered wings in place of arms and bird legs ending in talons."
+      },
+      {
+        "tag": "arachne",
+        "label": "Arachne",
+        "group": "Hybrid bodies",
+        "prompt": "A humanlike torso attached to a large spider abdomen with eight spider legs.",
+        "synonyms": [
+          "drider"
+        ]
+      },
+      {
+        "tag": "minotaur",
+        "label": "Minotaur",
+        "group": "Hybrid bodies",
+        "prompt": "An upright humanoid body with a bull head and curved horns and cloven hooves."
+      },
+      {
+        "tag": "angel",
+        "label": "Angel",
+        "group": "Supernatural beings",
+        "prompt": "A humanlike being with large feathered wings attached to the back and a luminous halo."
+      },
+      {
+        "tag": "demon",
+        "label": "Demon",
+        "group": "Supernatural beings",
+        "prompt": "A humanlike being with curved horns and a thin tail ending in a pointed tip.",
+        "synonyms": [
+          "demon_girl",
+          "demon_boy"
+        ]
+      },
+      {
+        "tag": "tiefling",
+        "label": "Tiefling",
+        "group": "Supernatural beings",
+        "prompt": "A humanoid with ridged horns and a long smooth tail and eyes with solid-colored sclerae."
+      },
+      {
+        "tag": "oni",
+        "label": "Oni",
+        "group": "Supernatural beings",
+        "prompt": "A humanoid with one or two short forehead horns and prominent canine teeth."
+      },
+      {
+        "tag": "vampire",
+        "label": "Vampire",
+        "group": "Supernatural beings",
+        "prompt": "A humanlike being distinguished by elongated upper canine fangs."
+      },
+      {
+        "tag": "fairy",
+        "label": "Fairy",
+        "group": "Supernatural beings",
+        "prompt": "A small humanoid with pointed ears and translucent insectlike wings; retain the specified age.",
+        "synonyms": [
+          "faerie"
+        ]
+      },
+      {
+        "tag": "dryad",
+        "label": "Dryad",
+        "group": "Supernatural beings",
+        "prompt": "A humanoid woodland being with bark-textured skin and leaves growing among the hair."
+      },
+      {
+        "tag": "slimefolk",
+        "label": "Slimefolk",
+        "group": "Supernatural beings",
+        "prompt": "A humanoid formed from translucent gelatinous material with softly flowing contours.",
+        "synonyms": [
+          "slime_girl",
+          "slime_boy"
+        ]
+      },
+      {
+        "tag": "ghost",
+        "label": "Ghost",
+        "group": "Supernatural beings",
+        "prompt": "A translucent humanoid spirit with softly fading body edges."
+      },
+      {
+        "tag": "skeleton",
+        "label": "Living Skeleton",
+        "group": "Supernatural beings",
+        "prompt": "An articulated animated skeleton with exposed bones and empty eye sockets."
+      },
+      {
+        "tag": "zombie",
+        "label": "Zombie",
+        "group": "Supernatural beings",
+        "prompt": "An undead humanoid with sunken facial features and weathered skin and visible stitched or cracked areas."
+      },
+      {
+        "tag": "djinn",
+        "label": "Djinn",
+        "group": "Supernatural beings",
+        "prompt": "A humanoid spirit with smoky edges and a swirling vaporous lower body.",
+        "synonyms": [
+          "genie"
+        ]
+      },
+      {
+        "tag": "living flame",
+        "label": "Fire Elemental",
+        "group": "Supernatural beings",
+        "prompt": "A humanoid whose body is formed from flowing flames and glowing embers.",
+        "synonyms": [
+          "fire_elemental"
+        ]
+      },
+      {
+        "tag": "water elemental",
+        "label": "Water Elemental",
+        "group": "Supernatural beings",
+        "prompt": "A humanoid whose body is formed from clear flowing water with rippling surfaces."
+      },
+      {
+        "tag": "crystal being",
+        "label": "Crystal Being",
+        "group": "Supernatural beings",
+        "prompt": "A humanoid formed from translucent angular crystals with refractive facets."
+      },
+      {
+        "tag": "android",
+        "label": "Android",
+        "group": "Artificial and alien beings",
+        "prompt": "A humanlike artificial being with fine panel seams and subtle mechanical joints."
+      },
+      {
+        "tag": "robot",
+        "label": "Robot",
+        "group": "Artificial and alien beings",
+        "prompt": "A visibly mechanical humanoid with exposed articulated joints and rigid body panels."
+      },
+      {
+        "tag": "cyborg",
+        "label": "Cyborg",
+        "group": "Artificial and alien beings",
+        "prompt": "A biological humanoid with visible integrated mechanical body parts and synthetic joints."
+      },
+      {
+        "tag": "automaton doll",
+        "label": "Living Doll",
+        "group": "Artificial and alien beings",
+        "prompt": "A humanoid doll with a porcelain-like surface and visible ball joints.",
+        "synonyms": [
+          "living_doll"
+        ]
+      },
+      {
+        "tag": "golem",
+        "label": "Stone Golem",
+        "group": "Artificial and alien beings",
+        "prompt": "A constructed humanoid with a body of interlocking rough stone slabs."
+      },
+      {
+        "tag": "grey alien",
+        "label": "Grey Alien",
+        "group": "Artificial and alien beings",
+        "prompt": "A slender extraterrestrial humanoid with an enlarged cranium and large dark almond-shaped eyes and a small nose.",
+        "synonyms": [
+          "gray_alien"
+        ]
+      },
+      {
+        "tag": "fungal being",
+        "label": "Fungal Being",
+        "group": "Artificial and alien beings",
+        "prompt": "A humanoid with a mushroom cap growing from the head and gill-like structures and a fibrous body."
+      }
+    ],
+    "skin_color": [
+      {
+        "tag": "porcelain skin",
+        "label": "Porcelain"
+      },
+      {
+        "tag": "fair skin",
+        "label": "Fair",
+        "synonyms": [
+          "light_skin",
+          "pale_skin"
+        ]
+      },
+      {
+        "tag": "light beige skin",
+        "label": "Light Beige"
+      },
+      {
+        "tag": "golden tan skin",
+        "label": "Golden Tan",
+        "synonyms": [
+          "tan_skin",
+          "tanned_skin"
+        ]
+      },
+      {
+        "tag": "olive skin",
+        "label": "Olive"
+      },
+      {
+        "tag": "warm brown skin",
+        "label": "Warm Brown",
+        "synonyms": [
+          "brown_skin"
+        ]
+      },
+      {
+        "tag": "deep brown skin",
+        "label": "Deep Brown",
+        "synonyms": [
+          "dark_skin"
+        ]
+      },
+      {
+        "tag": "ebony skin",
+        "label": "Ebony"
+      },
+      {
+        "tag": "ivory skin",
+        "label": "Ivory"
+      },
+      {
+        "tag": "ashen grey skin",
+        "label": "Ashen Grey",
+        "synonyms": [
+          "grey_skin",
+          "gray_skin"
+        ]
+      },
+      {
+        "tag": "slate blue skin",
+        "label": "Slate Blue"
+      },
+      {
+        "tag": "sky blue skin",
+        "label": "Sky Blue",
+        "synonyms": [
+          "blue_skin"
+        ]
+      },
+      {
+        "tag": "teal skin",
+        "label": "Teal"
+      },
+      {
+        "tag": "jade green skin",
+        "label": "Jade Green",
+        "synonyms": [
+          "green_skin"
+        ]
+      },
+      {
+        "tag": "lavender skin",
+        "label": "Lavender"
+      },
+      {
+        "tag": "violet skin",
+        "label": "Violet"
+      },
+      {
+        "tag": "rose pink skin",
+        "label": "Rose Pink"
+      },
+      {
+        "tag": "crimson skin",
+        "label": "Crimson"
+      },
+      {
+        "tag": "pure white skin",
+        "label": "Pure White"
+      },
+      {
+        "tag": "charcoal black skin",
+        "label": "Charcoal Black"
+      }
+    ],
+    "body_type": [
+      {
+        "tag": "slim build",
+        "label": "Slim",
+        "synonyms": [
+          "slender",
+          "slender_build"
+        ]
+      },
+      {
+        "tag": "average build",
+        "label": "Average"
+      },
+      {
+        "tag": "lean athletic build",
+        "label": "Lean Athletic",
+        "synonyms": [
+          "athletic",
+          "athletic_build"
+        ]
+      },
+      {
+        "tag": "muscular build",
+        "label": "Muscular",
+        "synonyms": [
+          "muscular"
+        ]
+      },
+      {
+        "tag": "stocky build",
+        "label": "Stocky",
+        "synonyms": [
+          "stocky"
+        ]
+      },
+      {
+        "tag": "full-bodied build",
+        "label": "Full-bodied",
+        "synonyms": [
+          "plump"
+        ]
+      },
+      {
+        "tag": "broad shoulders",
+        "label": "Broad Shoulders"
+      },
+      {
+        "tag": "narrow shoulders",
+        "label": "Narrow Shoulders"
+      },
+      {
+        "tag": "wide hips",
+        "label": "Wide Hips"
+      },
+      {
+        "tag": "narrow hips",
+        "label": "Narrow Hips"
+      },
+      {
+        "tag": "defined waist",
+        "label": "Defined Waist"
+      },
+      {
+        "tag": "straight waist",
+        "label": "Straight Waist"
+      },
+      {
+        "tag": "long legs",
+        "label": "Long Legs"
+      },
+      {
+        "tag": "short legs",
+        "label": "Short Legs"
+      },
+      {
+        "tag": "long torso",
+        "label": "Long Torso"
+      },
+      {
+        "tag": "short torso",
+        "label": "Short Torso"
+      },
+      {
+        "tag": "tall stature",
+        "label": "Tall"
+      },
+      {
+        "tag": "short stature",
+        "label": "Short"
+      },
+      {
+        "tag": "visible abdominal muscles",
+        "label": "Defined Abdomen"
+      },
+      {
+        "tag": "soft abdomen",
+        "label": "Soft Abdomen"
+      }
+    ],
+    "breast_size": [
+      {
+        "tag": "breasts",
+        "label": "Breasts (general)",
+        "count": 1023
+      },
+      {
+        "tag": "large_breasts",
+        "label": "Large Breasts",
+        "count": 484
+      },
+      {
+        "tag": "huge_breasts",
+        "label": "Huge Breasts",
+        "count": 82
+      },
+      {
+        "tag": "medium_breasts",
+        "label": "Medium Breasts",
+        "count": 209
+      },
+      {
+        "tag": "small_breasts",
+        "label": "Small Breasts",
+        "count": 140
+      },
+      {
+        "tag": "flat_chest",
+        "label": "Flat Chest",
+        "count": 119
+      },
+      {
+        "tag": "alternate_breast_size_(larger)",
+        "label": "Alternate Breast Size (larger)",
+        "count": 32
+      },
+      {
+        "tag": "mole_on_breast",
+        "label": "Mole On Breast",
+        "count": 25
+      }
+    ],
+    "face_shape": [
+      {
+        "tag": "oval face",
+        "label": "Oval Face"
+      },
+      {
+        "tag": "round face",
+        "label": "Round Face"
+      },
+      {
+        "tag": "square jaw",
+        "label": "Square Jaw"
+      },
+      {
+        "tag": "heart-shaped face",
+        "label": "Heart-shaped Face"
+      },
+      {
+        "tag": "long narrow face",
+        "label": "Long Face"
+      },
+      {
+        "tag": "high cheekbones",
+        "label": "High Cheekbones"
+      },
+      {
+        "tag": "full cheeks",
+        "label": "Full Cheeks"
+      },
+      {
+        "tag": "hollow cheeks",
+        "label": "Hollow Cheeks"
+      },
+      {
+        "tag": "pointed chin",
+        "label": "Pointed Chin"
+      },
+      {
+        "tag": "cleft chin",
+        "label": "Cleft Chin"
+      },
+      {
+        "tag": "straight nose",
+        "label": "Straight Nose"
+      },
+      {
+        "tag": "aquiline nose",
+        "label": "Aquiline Nose"
+      },
+      {
+        "tag": "upturned nose",
+        "label": "Upturned Nose"
+      },
+      {
+        "tag": "broad nose",
+        "label": "Broad Nose"
+      },
+      {
+        "tag": "full lips",
+        "label": "Full Lips"
+      },
+      {
+        "tag": "thin lips",
+        "label": "Thin Lips"
+      },
+      {
+        "tag": "thick eyebrows",
+        "label": "Thick Eyebrows"
+      },
+      {
+        "tag": "thin eyebrows",
+        "label": "Thin Eyebrows"
+      },
+      {
+        "tag": "arched eyebrows",
+        "label": "Arched Eyebrows"
+      }
+    ],
+    "face_details": [
+      {
+        "tag": "freckles across nose and cheeks",
+        "label": "Facial Freckles",
+        "synonyms": [
+          "freckles"
+        ]
+      },
+      {
+        "tag": "beauty mark below one eye",
+        "label": "Under-eye Beauty Mark",
+        "synonyms": [
+          "mole_under_eye"
+        ]
+      },
+      {
+        "tag": "beauty mark near the lips",
+        "label": "Lip Beauty Mark"
+      },
+      {
+        "tag": "scar across one cheek",
+        "label": "Cheek Scar",
+        "synonyms": [
+          "scar_on_face",
+          "facial_scar"
+        ]
+      },
+      {
+        "tag": "scar through one eyebrow",
+        "label": "Eyebrow Scar"
+      },
+      {
+        "tag": "dark circles under the eyes",
+        "label": "Under-eye Circles",
+        "synonyms": [
+          "bags_under_eyes"
+        ]
+      },
+      {
+        "tag": "facial birthmark",
+        "label": "Facial Birthmark"
+      },
+      {
+        "tag": "fine facial wrinkles",
+        "label": "Fine Wrinkles",
+        "synonyms": [
+          "wrinkles"
+        ]
+      },
+      {
+        "tag": "acne marks on the face",
+        "label": "Acne Marks",
+        "synonyms": [
+          "acne"
+        ]
+      },
+      {
+        "tag": "cheek dimples",
+        "label": "Dimples"
+      },
+      {
+        "tag": "short facial stubble",
+        "label": "Stubble"
+      },
+      {
+        "tag": "trimmed beard",
+        "label": "Trimmed Beard"
+      },
+      {
+        "tag": "long beard",
+        "label": "Long Beard"
+      },
+      {
+        "tag": "moustache",
+        "label": "Moustache"
+      },
+      {
+        "tag": "subtle eyeliner",
+        "label": "Eyeliner",
+        "synonyms": [
+          "eyeliner"
+        ]
+      },
+      {
+        "tag": "smoky eye makeup",
+        "label": "Smoky Eye Makeup"
+      },
+      {
+        "tag": "red lipstick",
+        "label": "Red Lipstick"
+      },
+      {
+        "tag": "black lipstick",
+        "label": "Black Lipstick"
+      },
+      {
+        "tag": "geometric face paint",
+        "label": "Geometric Face Paint",
+        "synonyms": [
+          "facial_mark"
+        ]
+      }
+    ],
+    "hair_color": [
+      {
+        "tag": "black hair",
+        "label": "Black"
+      },
+      {
+        "tag": "brown hair",
+        "label": "Brown"
+      },
+      {
+        "tag": "chestnut hair",
+        "label": "Chestnut"
+      },
+      {
+        "tag": "auburn hair",
+        "label": "Auburn"
+      },
+      {
+        "tag": "copper hair",
+        "label": "Copper"
+      },
+      {
+        "tag": "blonde hair",
+        "label": "Blonde",
+        "synonyms": [
+          "blond_hair"
+        ]
+      },
+      {
+        "tag": "platinum blonde hair",
+        "label": "Platinum Blonde"
+      },
+      {
+        "tag": "white hair",
+        "label": "White"
+      },
+      {
+        "tag": "grey hair",
+        "label": "Grey",
+        "synonyms": [
+          "gray_hair"
+        ]
+      },
+      {
+        "tag": "silver hair",
+        "label": "Silver"
+      },
+      {
+        "tag": "pink hair",
+        "label": "Pink"
+      },
+      {
+        "tag": "red hair",
+        "label": "Red"
+      },
+      {
+        "tag": "orange hair",
+        "label": "Orange"
+      },
+      {
+        "tag": "purple hair",
+        "label": "Purple"
+      },
+      {
+        "tag": "blue hair",
+        "label": "Blue"
+      },
+      {
+        "tag": "teal hair",
+        "label": "Teal"
+      },
+      {
+        "tag": "green hair",
+        "label": "Green"
+      }
+    ],
+    "hair_pattern": [
+      {
+        "tag": "split-dyed hair with two color halves",
+        "label": "Split Dye",
+        "synonyms": [
+          "two-tone_hair",
+          "two_tone_hair"
+        ]
+      },
+      {
+        "tag": "hair with contrasting streaks",
+        "label": "Contrasting Streaks",
+        "synonyms": [
+          "streaked_hair"
+        ]
+      },
+      {
+        "tag": "hair with a gradual color transition toward the tips",
+        "label": "Ombre",
+        "synonyms": [
+          "gradient_hair"
+        ]
+      },
+      {
+        "tag": "hair with a contrasting inner layer",
+        "label": "Contrasting Underlayer",
+        "synonyms": [
+          "colored_inner_hair"
+        ]
+      },
+      {
+        "tag": "hair with rainbow-colored bands",
+        "label": "Rainbow Bands",
+        "synonyms": [
+          "multicolored_hair"
+        ]
+      }
+    ],
+    "hair_length": [
+      {
+        "tag": "shaved head",
+        "label": "Shaved Head"
+      },
+      {
+        "tag": "buzz cut hair",
+        "label": "Buzz Cut"
+      },
+      {
+        "tag": "ear-length hair",
+        "label": "Ear Length",
+        "synonyms": [
+          "short_hair"
+        ]
+      },
+      {
+        "tag": "chin-length hair",
+        "label": "Chin Length"
+      },
+      {
+        "tag": "shoulder-length hair",
+        "label": "Shoulder Length",
+        "synonyms": [
+          "medium_hair"
+        ]
+      },
+      {
+        "tag": "waist-length hair",
+        "label": "Waist Length",
+        "synonyms": [
+          "long_hair"
+        ]
+      },
+      {
+        "tag": "floor-length hair",
+        "label": "Floor Length",
+        "synonyms": [
+          "very_long_hair"
+        ]
+      }
+    ],
+    "hair_texture": [
+      {
+        "tag": "straight hair",
+        "label": "Straight"
+      },
+      {
+        "tag": "wavy hair",
+        "label": "Wavy"
+      },
+      {
+        "tag": "curly hair",
+        "label": "Curly"
+      },
+      {
+        "tag": "tightly coiled hair",
+        "label": "Coiled"
+      },
+      {
+        "tag": "fluffy voluminous hair",
+        "label": "Voluminous"
+      },
+      {
+        "tag": "sleek hair",
+        "label": "Sleek"
+      },
+      {
+        "tag": "tousled hair",
+        "label": "Tousled",
+        "synonyms": [
+          "messy_hair"
+        ]
+      }
+    ],
+    "hairstyles": [
+      {
+        "tag": "bob haircut",
+        "label": "Bob"
+      },
+      {
+        "tag": "pixie haircut",
+        "label": "Pixie"
+      },
+      {
+        "tag": "layered shag haircut",
+        "label": "Layered Shag"
+      },
+      {
+        "tag": "undercut hairstyle",
+        "label": "Undercut"
+      },
+      {
+        "tag": "mohawk hairstyle",
+        "label": "Mohawk"
+      },
+      {
+        "tag": "high ponytail",
+        "label": "High Ponytail",
+        "synonyms": [
+          "ponytail"
+        ]
+      },
+      {
+        "tag": "low ponytail",
+        "label": "Low Ponytail"
+      },
+      {
+        "tag": "side ponytail",
+        "label": "Side Ponytail"
+      },
+      {
+        "tag": "twin ponytails",
+        "label": "Twin Ponytails",
+        "synonyms": [
+          "twintails"
+        ]
+      },
+      {
+        "tag": "single hair braid",
+        "label": "Single Braid",
+        "synonyms": [
+          "braid"
+        ]
+      },
+      {
+        "tag": "twin hair braids",
+        "label": "Twin Braids",
+        "synonyms": [
+          "twin_braids"
+        ]
+      },
+      {
+        "tag": "crown braid hairstyle",
+        "label": "Crown Braid"
+      },
+      {
+        "tag": "cornrow braids",
+        "label": "Cornrows"
+      },
+      {
+        "tag": "locs hairstyle",
+        "label": "Locs"
+      },
+      {
+        "tag": "single hair bun",
+        "label": "Single Bun",
+        "synonyms": [
+          "hair_bun"
+        ]
+      },
+      {
+        "tag": "double hair buns",
+        "label": "Double Buns"
+      },
+      {
+        "tag": "half-up hairstyle",
+        "label": "Half Up"
+      },
+      {
+        "tag": "loose hair worn down",
+        "label": "Worn Down"
+      },
+      {
+        "tag": "spiral ringlet hair",
+        "label": "Spiral Ringlets",
+        "synonyms": [
+          "drill_hair",
+          "drills"
+        ]
+      }
+    ],
+    "hair_framing": [
+      {
+        "tag": "blunt bangs",
+        "label": "Blunt Bangs"
+      },
+      {
+        "tag": "curtain bangs",
+        "label": "Curtain Bangs",
+        "synonyms": [
+          "parted_bangs"
+        ]
+      },
+      {
+        "tag": "side-swept bangs",
+        "label": "Side-swept Bangs"
+      },
+      {
+        "tag": "hair parted in the middle",
+        "label": "Middle Part"
+      },
+      {
+        "tag": "hair parted at the side",
+        "label": "Side Part"
+      },
+      {
+        "tag": "slicked-back hair",
+        "label": "Slicked Back"
+      },
+      {
+        "tag": "hair covering one eye",
+        "label": "Covering One Eye",
+        "synonyms": [
+          "hair_over_one_eye"
+        ]
+      },
+      {
+        "tag": "face-framing hair strands",
+        "label": "Face-framing Strands",
+        "synonyms": [
+          "sidelocks"
+        ]
+      },
+      {
+        "tag": "single upturned hair tuft",
+        "label": "Upturned Tuft",
+        "synonyms": [
+          "ahoge"
+        ]
+      }
+    ],
+    "eye_color": [
+      {
+        "tag": "blue eyes",
+        "label": "Blue"
+      },
+      {
+        "tag": "brown eyes",
+        "label": "Brown"
+      },
+      {
+        "tag": "green eyes",
+        "label": "Green"
+      },
+      {
+        "tag": "hazel eyes",
+        "label": "Hazel"
+      },
+      {
+        "tag": "amber eyes",
+        "label": "Amber"
+      },
+      {
+        "tag": "grey eyes",
+        "label": "Grey",
+        "synonyms": [
+          "gray_eyes"
+        ]
+      },
+      {
+        "tag": "black eyes",
+        "label": "Black"
+      },
+      {
+        "tag": "violet eyes",
+        "label": "Violet",
+        "synonyms": [
+          "purple_eyes"
+        ]
+      },
+      {
+        "tag": "pink eyes",
+        "label": "Pink"
+      },
+      {
+        "tag": "red eyes",
+        "label": "Red"
+      },
+      {
+        "tag": "yellow eyes",
+        "label": "Yellow"
+      },
+      {
+        "tag": "turquoise eyes",
+        "label": "Turquoise",
+        "synonyms": [
+          "aqua_eyes"
+        ]
+      },
+      {
+        "tag": "orange eyes",
+        "label": "Orange"
+      },
+      {
+        "tag": "silver eyes",
+        "label": "Silver"
+      }
+    ],
+    "eye_features": [
+      {
+        "tag": "eyes with differently colored irises",
+        "label": "Heterochromia",
+        "synonyms": [
+          "heterochromia"
+        ]
+      },
+      {
+        "tag": "irises with two distinct color sectors",
+        "label": "Sectoral Heterochromia"
+      },
+      {
+        "tag": "almond-shaped eyes",
+        "label": "Almond Shape"
+      },
+      {
+        "tag": "round eyes",
+        "label": "Round Shape"
+      },
+      {
+        "tag": "hooded eyelids",
+        "label": "Hooded Eyelids"
+      },
+      {
+        "tag": "upturned outer eye corners",
+        "label": "Upturned Eyes"
+      },
+      {
+        "tag": "downturned outer eye corners",
+        "label": "Downturned Eyes"
+      },
+      {
+        "tag": "vertical slit pupils",
+        "label": "Vertical Slit Pupils"
+      },
+      {
+        "tag": "horizontal slit pupils",
+        "label": "Horizontal Slit Pupils"
+      },
+      {
+        "tag": "star-shaped pupils",
+        "label": "Star Pupils"
+      },
+      {
+        "tag": "heart-shaped pupils",
+        "label": "Heart Pupils"
+      },
+      {
+        "tag": "luminous irises",
+        "label": "Glowing Irises",
+        "synonyms": [
+          "glowing",
+          "bright_pupils"
+        ]
+      },
+      {
+        "tag": "black sclerae",
+        "label": "Black Sclerae"
+      },
+      {
+        "tag": "long eyelashes",
+        "label": "Long Eyelashes",
+        "synonyms": [
+          "eyelashes"
+        ]
+      },
+      {
+        "tag": "short eyelashes",
+        "label": "Short Eyelashes"
+      }
+    ],
+    "details": [
+      {
+        "tag": "geometric body tattoos",
+        "label": "Geometric Tattoos",
+        "synonyms": [
+          "tattoo"
+        ]
+      },
+      {
+        "tag": "floral body tattoos",
+        "label": "Floral Tattoos"
+      },
+      {
+        "tag": "full sleeve tattoo",
+        "label": "Tattoo Sleeve"
+      },
+      {
+        "tag": "body scars",
+        "label": "Body Scars",
+        "synonyms": [
+          "scar_on_body",
+          "scar"
+        ]
+      },
+      {
+        "tag": "body birthmark",
+        "label": "Body Birthmark",
+        "synonyms": [
+          "birthmark"
+        ]
+      },
+      {
+        "tag": "freckles on shoulders and arms",
+        "label": "Body Freckles"
+      },
+      {
+        "tag": "patches of depigmented skin",
+        "label": "Vitiligo Patches"
+      },
+      {
+        "tag": "stretch marks",
+        "label": "Stretch Marks"
+      },
+      {
+        "tag": "visible veins",
+        "label": "Visible Veins",
+        "synonyms": [
+          "veins"
+        ]
+      },
+      {
+        "tag": "tan lines",
+        "label": "Tan Lines"
+      },
+      {
+        "tag": "geometric body paint",
+        "label": "Body Paint",
+        "synonyms": [
+          "body_paint",
+          "body_painted"
+        ]
+      },
+      {
+        "tag": "luminous markings on the skin",
+        "label": "Luminous Markings"
+      },
+      {
+        "tag": "metallic fingernail polish",
+        "label": "Metallic Nail Polish",
+        "synonyms": [
+          "nail_polish"
+        ]
+      },
+      {
+        "tag": "black fingernails",
+        "label": "Black Nails",
+        "synonyms": [
+          "black_nails"
+        ]
+      },
+      {
+        "tag": "elongated clawlike nails",
+        "label": "Clawlike Nails"
+      },
+      {
+        "tag": "ear piercings",
+        "label": "Ear Piercings",
+        "synonyms": [
+          "piercing",
+          "piercings"
+        ]
+      },
+      {
+        "tag": "nose piercing",
+        "label": "Nose Piercing"
+      },
+      {
+        "tag": "lip piercing",
+        "label": "Lip Piercing"
+      },
+      {
+        "tag": "prosthetic arm",
+        "label": "Prosthetic Arm"
+      },
+      {
+        "tag": "prosthetic leg",
+        "label": "Prosthetic Leg"
+      },
+      {
+        "tag": "pointed ears",
+        "label": "Pointed Ears",
+        "synonyms": [
+          "pointy_ears"
+        ]
+      },
+      {
+        "tag": "animal ears",
+        "label": "Animal Ears",
+        "synonyms": [
+          "kemonomimi"
+        ]
+      },
+      {
+        "tag": "curved horns",
+        "label": "Curved Horns",
+        "synonyms": [
+          "demon_horns"
+        ]
+      },
+      {
+        "tag": "branched horns",
+        "label": "Branched Horns",
+        "synonyms": [
+          "dragon_horns"
+        ]
+      },
+      {
+        "tag": "feathered wings",
+        "label": "Feathered Wings",
+        "synonyms": [
+          "wings"
+        ]
+      },
+      {
+        "tag": "batlike wings",
+        "label": "Batlike Wings"
+      },
+      {
+        "tag": "long fur-covered tail",
+        "label": "Furred Tail",
+        "synonyms": [
+          "tail"
+        ]
+      },
+      {
+        "tag": "scaled tail",
+        "label": "Scaled Tail"
+      },
+      {
+        "tag": "long canine fangs",
+        "label": "Fangs"
+      },
+      {
+        "tag": "patches of scales on the skin",
+        "label": "Scale Patches"
+      }
+    ]
+  }
+}

@@ -1,6 +1,22 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { presetGroups, presetSelection } from "./character_presets.mjs";
 import { debounce, registerCleanup, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
+
+const QI2_OVERHAUL_LORA_NAME = "QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.safetensors";
+const QI2_OVERHAUL_TITLE = "Qwen Image2.1 Character Overhaul";
+const QI2_OVERHAUL_ENTRY = {
+    name: "VNCCS Overhaul QI2", type: "Helper", kind: "QI2",
+    local_path: `models/loras/${QI2_OVERHAUL_LORA_NAME}`,
+    description: "Overhaul for Character Creator",
+};
+const normalizeOverhaulStrength = value => {
+    if (value == null || value === "") return 0.5;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? Math.round(Math.max(0, Math.min(1, numeric)) * 4) / 4 : 0.5;
+};
+const isCreatorOverhaulLora = name => String(name || "").replace(/\\/g, "/").split("/").pop().toLowerCase()
+    === QI2_OVERHAUL_LORA_NAME.split("/").pop().toLowerCase();
 
 const RESOLUTION_SCALE_BASE = 1024;
 const RESOLUTION_SCALE_MIN_MP = 1;
@@ -544,6 +560,8 @@ const STYLE = `
     border-radius: var(--radius-sm);
 }
 .vnccs-tag-chip {
+    font-family: inherit;
+    text-align: left;
     padding: 4px 10px;
     background: rgba(255,255,255,0.05);
     border: 1px solid var(--border);
@@ -553,6 +571,17 @@ const STYLE = `
     cursor: pointer;
     user-select: none;
     transition: all var(--transition);
+}
+.vnccs-tag-btn:focus-visible, .vnccs-tag-chip:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.vnccs-preset-description {
+    width: 100%;
+    min-height: 5em;
+    margin: 0 0 8px;
+    color: var(--text-secondary);
+    line-height: 1.5;
 }
 .vnccs-tag-chip:hover { background: rgba(255,143,163,0.1); border-color: var(--accent-border); color: var(--accent-hover); }
 .vnccs-tag-chip.selected { background: rgba(255,143,163,0.18); color: var(--accent-hover); border-color: var(--accent); }
@@ -1019,6 +1048,38 @@ const STYLE = `
     cursor: pointer;
 }
 
+.vnccs-overhaul-control { padding: 0 2px; }
+.vnccs-overhaul-slider { display: block; width: 100%; margin: 0; height: 20px; }
+.vnccs-overhaul-slider:focus-visible, .vnccs-overhaul-info:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.vnccs-overhaul-heading { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0; }
+.vnccs-overhaul-heading .vnccs-model-card-name { flex: 0 1 auto; }
+.vnccs-overhaul-help { display: inline-flex; flex-shrink: 0; }
+.vnccs-overhaul-info {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 20px; height: 20px; padding: 2px;
+    border: 0; border-radius: 50%; background: transparent;
+    color: var(--text-secondary); cursor: help;
+}
+.vnccs-overhaul-info:hover, .vnccs-overhaul-info[aria-expanded="true"] { color: var(--accent); background: var(--accent-subtle); }
+.vnccs-overhaul-info svg { width: 15px; height: 15px; }
+.vnccs-overhaul-tooltip {
+    position: fixed; inset: auto; margin: 0;
+    box-sizing: border-box; width: 320px; max-width: calc(100vw - 24px);
+    padding: 10px 12px; border: 1px solid var(--accent-border); border-radius: 8px;
+    background: var(--bg-secondary); color: var(--text-primary); box-shadow: var(--shadow-elevated);
+    font: 12px/1.5 var(--font); white-space: normal; text-transform: none; letter-spacing: normal;
+}
+.vnccs-overhaul-ticks {
+    display: flex;
+    justify-content: space-between;
+    color: var(--text-secondary);
+    font: 10px var(--font-mono);
+    padding: 0 2px;
+}
+
 .vnccs-qi2-cache {
     display: none;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -1406,6 +1467,7 @@ app.registerExtension({
                                 dmd_lora_name: "QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
                                 dmd_lora_strength: 1.0,
                                 turbo_previous_settings: null,
+                                qi2_overhaul_strength: 0.5,
                                 qi2_cache: { device: "gpu", dtype: "int8" },
                                 lora_stack: [
                                     { name: "", strength: 1.0 },
@@ -1480,6 +1542,7 @@ app.registerExtension({
                     dmd_lora_name: QI2_TURBO_LORA_NAME,
                     dmd_lora_strength: 1.0,
                     turbo_previous_settings: null,
+                    qi2_overhaul_strength: 0.5,
                     qi2_cache: { device: "gpu", dtype: "int8" },
                     lora_stack: [
                         { name: "", strength: 1.0 },
@@ -1494,7 +1557,7 @@ app.registerExtension({
                 const MODE_SETTING_KEYS = {
                     illustrious: ["target_size", "ckpt_name", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "dmd_lora_name", "dmd_lora_strength", "turbo_previous_settings", "age_lora_name", "lora_stack"],
                     anima: ["target_size", "diffusion_model_name", "clip_name", "vae_name", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "turbo_enabled", "dmd_lora_name", "dmd_lora_strength", "turbo_previous_settings", "lora_stack"],
-                    qi2: ["target_size", "diffusion_model_name", "clip_name", "vae_name", "clip_type", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "turbo_enabled", "dmd_lora_name", "dmd_lora_strength", "turbo_previous_settings", "qi2_cache", "lora_stack"],
+                    qi2: ["target_size", "diffusion_model_name", "clip_name", "vae_name", "clip_type", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "turbo_enabled", "dmd_lora_name", "dmd_lora_strength", "turbo_previous_settings", "qi2_cache", "qi2_overhaul_strength", "lora_stack"],
                 };
                 const MODE_PROMPT_DEFAULTS = {
                     illustrious: {
@@ -1526,6 +1589,7 @@ app.registerExtension({
                     diffusion_models: [],
                     text_encoders: [],
                     vae_models: [],
+                    loras: [],
                 };
                 let restoredWidgetInfoCharacter = null;
 
@@ -1698,6 +1762,7 @@ app.registerExtension({
 
                 const ensureLoraStack = (profile) => {
                     if (!Array.isArray(profile.lora_stack)) profile.lora_stack = [];
+                    profile.lora_stack = profile.lora_stack.filter(item => !isCreatorOverhaulLora(item?.name));
                     while (profile.lora_stack.length < 5) {
                         profile.lora_stack.push({ name: "", strength: 1.0 });
                     }
@@ -1722,6 +1787,7 @@ app.registerExtension({
                     delete profile.resolution_preset;
                     if (normalizedMode === "qi2") {
                         profile.clip_type = "qwen_image";
+                        profile.qi2_overhaul_strength = normalizeOverhaulStrength(profile.qi2_overhaul_strength);
                         profile.qi2_cache = {
                             device: profile.qi2_cache?.device || "gpu",
                             dtype: profile.qi2_cache?.dtype || "int8",
@@ -2265,12 +2331,12 @@ app.registerExtension({
                     framing: "Chooses whether the generated character uses cowboy-shot or full-body framing.",
                     style: "Selects a visual style template that is added to the character prompt.",
                     custom_style: "Custom visual style description added to the character prompt.",
-                    race: "Species or race tags for the character, such as human, elf, demon girl, or kemonomimi.",
-                    skin_color: "Skin tone tags added to the character prompt.",
+                    race: "Species presets with automatic visual descriptions in the prompt. Combine species for hybrids or add custom traits; explicit traits override preset defaults.",
+                    skin_color: "Natural and fantasy skin tones. Use the preset picker or enter a custom description.",
                     body: "Body type and silhouette details, including chest/body build tags.",
                     face: "Face-specific details such as freckles, scars, makeup, or other defining features.",
-                    hair: "Hair color, length, and style tags used when generating the character.",
-                    eyes: "Eye color and eye-shape tags used in the character prompt.",
+                    hair: "Hair color, color pattern, length, texture, style, and face-framing details.",
+                    eyes: "Iris colors, eye shapes, pupils, and other eye features.",
                     additional_details: "Extra persistent character traits that should appear across outfits and emotions.",
                     aesthetics: "Visual style notes for the character, such as mood, fashion direction, or rendering flavor.",
                     generation_mode: "Chooses the generation backend profile. Illustrious uses checkpoint-style generation; Anima uses the Qwen/Anima stack.",
@@ -2341,14 +2407,15 @@ app.registerExtension({
                     header.style.justifyContent = "space-between";
                     header.innerHTML = `<div class="vnccs-label">${lbl}</div>`;
 
-                    // Fields that support tag constructor
-                    // hair, eyes, race, body, skin_color(maybe), face, details
-                    const tagSupported = ["hair", "eyes", "race", "body", "face", "additional_details"].includes(key);
+                    // Fields with curated presets and free-form input
+                    const tagSupported = ["hair", "eyes", "race", "skin_color", "body", "face", "additional_details"].includes(key);
                     if (tagSupported && type === "text") {
-                        const btn = document.createElement("div");
+                        const btn = document.createElement("button");
+                        btn.type = "button";
+                        btn.setAttribute("aria-label", `Choose ${lbl.toLowerCase()} presets`);
                         btn.className = "vnccs-tag-btn";
                         btn.innerHTML = "✎"; // Pencil or List icon
-                        btn.title = "Open Tag Constructor";
+                        btn.title = "Choose Presets";
                         btn.onclick = () => openTagConstructor(key, inp);
                         header.appendChild(btn);
                     }
@@ -2619,7 +2686,7 @@ app.registerExtension({
                     return "Missing";
                 };
 
-                const buildAssetCard = ({ entry, cat, selectedValue, onSelect, compact = false, toggled = false, onToggle = null, pickerHead = false, onDownload = null }) => {
+                const buildAssetCard = ({ entry, cat, selectedValue, onSelect, compact = false, toggled = false, onToggle = null, pickerHead = false, onDownload = null, displayName = null, nameAccessory = null }) => {
                     const status = ccResolveStatus(entry, cat);
                     const rel = ccRelPath(entry);
                     const installed = status === "installed";
@@ -2645,8 +2712,15 @@ app.registerExtension({
 
                     const name = document.createElement("div");
                     name.className = "vnccs-model-card-name";
-                    name.textContent = entry.name || rel || "Unknown";
-                    top.appendChild(name);
+                    name.textContent = displayName || entry.name || rel || "Unknown";
+                    if (nameAccessory) {
+                        const heading = document.createElement("div");
+                        heading.className = "vnccs-overhaul-heading";
+                        heading.append(name, nameAccessory);
+                        top.appendChild(heading);
+                    } else {
+                        top.appendChild(name);
+                    }
 
                     const statusEl = document.createElement("div");
                     statusEl.className = "vnccs-model-card-status " + (installed ? "ok" : progress ? "progress" : "missing");
@@ -2697,6 +2771,108 @@ app.registerExtension({
                         card.appendChild(actions);
                     }
 
+                    return card;
+                };
+
+                let closeOverhaulHelp = null;
+                let overhaulHelpSequence = 0;
+                const buildOverhaulHelp = () => {
+                    const help = document.createElement("div");
+                    help.className = "vnccs-overhaul-help";
+                    const button = document.createElement("button");
+                    button.type = "button";
+                    button.className = "vnccs-overhaul-info";
+                    button.setAttribute("aria-label", `About ${QI2_OVERHAUL_TITLE}`);
+                    button.setAttribute("aria-expanded", "false");
+                    button.innerHTML = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="10" cy="10" r="8"/><path d="M10 9v5"/><circle cx="10" cy="6" r="0.8" fill="currentColor" stroke="none"/></svg>';
+                    const tooltip = document.createElement("div");
+                    tooltip.className = "vnccs-overhaul-tooltip";
+                    tooltip.id = `vnccs-overhaul-help-${node.id}-${++overhaulHelpSequence}`;
+                    tooltip.setAttribute("role", "tooltip");
+                    tooltip.setAttribute("popover", "auto");
+                    tooltip.textContent = "Character Overhaul helps Qwen Image 2.1 follow detailed character prompts more closely, including anatomy, colors, and small identifying features. It can also influence the visual style. Start with the recommended strength of 0.5. If requested details are missing or inaccurate, try 0.75 or 1. If the result drifts too far from your chosen style, lower the strength to 0.25 or 0. A value of 0 disables this LoRA. Compare results using the same prompt and seed to judge the balance between detail accuracy and style fidelity.";
+                    button.setAttribute("aria-describedby", tooltip.id);
+                    button.setAttribute("aria-controls", tooltip.id);
+                    let pinned = false;
+                    const close = () => {
+                        pinned = false;
+                        if (tooltip.matches(":popover-open")) tooltip.hidePopover();
+                        button.setAttribute("aria-expanded", "false");
+                        if (closeOverhaulHelp === close) closeOverhaulHelp = null;
+                    };
+                    const show = () => {
+                        if (closeOverhaulHelp && closeOverhaulHelp !== close) closeOverhaulHelp();
+                        closeOverhaulHelp = close;
+                        if (!tooltip.matches(":popover-open")) tooltip.showPopover();
+                        button.setAttribute("aria-expanded", "true");
+                        const anchor = button.getBoundingClientRect();
+                        const bounds = tooltip.getBoundingClientRect();
+                        // Convert screen coordinates to the node's CSS zoom scale.
+                        const scale = bounds.width / tooltip.offsetWidth || 1;
+                        const left = Math.max(12, Math.min(anchor.left, window.innerWidth - bounds.width - 12));
+                        const below = anchor.bottom + 8;
+                        const top = below + bounds.height <= window.innerHeight - 12
+                            ? below : Math.max(12, anchor.top - bounds.height - 8);
+                        tooltip.style.left = `${left / scale}px`;
+                        tooltip.style.top = `${top / scale}px`;
+                    };
+                    help.onpointerenter = show;
+                    help.onpointerleave = () => { if (!pinned) close(); };
+                    button.onfocus = show;
+                    button.onclick = event => {
+                        event.stopPropagation();
+                        if (pinned) close();
+                        else { show(); pinned = true; }
+                    };
+                    help.onfocusout = event => { if (!help.contains(event.relatedTarget)) close(); };
+                    help.onkeydown = event => {
+                        if (event.key === "Escape") { event.stopPropagation(); close(); }
+                    };
+                    tooltip.ontoggle = event => {
+                        if (event.newState === "closed") close();
+                    };
+                    help.append(button, tooltip);
+                    return help;
+                };
+
+                const buildOverhaulCard = (entry) => {
+                    const strength = normalizeOverhaulStrength(state.gen_settings.qi2_overhaul_strength);
+                    const card = buildAssetCard({
+                        entry, cat: "lora", compact: true,
+                        displayName: QI2_OVERHAUL_TITLE, toggled: strength > 0, nameAccessory: buildOverhaulHelp(),
+                    });
+                    const control = document.createElement("div");
+                    control.className = "vnccs-overhaul-control";
+                    const slider = document.createElement("input");
+                    slider.className = "vnccs-slider vnccs-overhaul-slider";
+                    slider.type = "range";
+                    slider.min = "0";
+                    slider.max = "1";
+                    slider.step = "0.25";
+                    slider.value = String(strength);
+                    slider.setAttribute("aria-label", `${QI2_OVERHAUL_TITLE} strength`);
+                    const updateValue = () => {
+                        const next = normalizeOverhaulStrength(slider.value);
+                        slider.value = String(next);
+                        slider.setAttribute("aria-valuetext", next === 0 ? "0 — Off" : String(next));
+                        card.classList.toggle("is-selected", next > 0);
+                        return next;
+                    };
+                    updateValue();
+                    slider.oninput = () => {
+                        state.gen_settings.qi2_overhaul_strength = updateValue();
+                        saveState();
+                    };
+                    const ticks = document.createElement("div");
+                    ticks.className = "vnccs-overhaul-ticks";
+                    ticks.setAttribute("aria-hidden", "true");
+                    [0, 0.25, 0.5, 0.75, 1].forEach(step => {
+                        const tick = document.createElement("span");
+                        tick.textContent = String(step);
+                        ticks.appendChild(tick);
+                    });
+                    control.append(slider, ticks);
+                    card.appendChild(control);
                     return card;
                 };
 
@@ -2864,6 +3040,15 @@ app.registerExtension({
                         });
                     });
 
+                    if (mode === "qi2") {
+                        const entry = (ccConfig?.lora || []).find(item =>
+                            ccKind(item) === "qi2" && ccType(item) === "helper"
+                            && (item.name === QI2_OVERHAUL_ENTRY.name || isCreatorOverhaulLora(ccRelPath(item)))
+                        ) || QI2_OVERHAUL_ENTRY;
+                        const installed = localAssetRelSet(localAssets.loras).has(ccRelPath(entry));
+                        containerEl.appendChild(buildOverhaulCard(installed ? { ...entry, status: "installed" } : entry));
+                    }
+
                     addGroup("Age LoRA", ageEntries, entry => {
                         const rel = ccRelPath(entry);
                         return buildAssetCard({
@@ -2960,6 +3145,7 @@ app.registerExtension({
                 };
 
                 const renderControlCenterCards = () => {
+                    closeOverhaulHelp?.();
                     if (!els.animaModelCards && !els.illustriousModelCards && !els.qi2ModelCards) return;
                     const currentMode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
                     const isAnimaMode = currentMode === "anima";
@@ -3108,6 +3294,8 @@ app.registerExtension({
                 container.className = "vnccs-container";
                 enableMiddleMouseCanvasPan(container);
                 attachHelpTooltips(container);
+                container.addEventListener("scroll", () => closeOverhaulHelp?.(), true);
+                registerCleanup(node, () => closeOverhaulHelp?.());
 
                 // --- TOP ROW ---
                 const topRow = document.createElement("div");
@@ -3446,65 +3634,34 @@ app.registerExtension({
                     // 1. Ensure Data
                     if (!TAG_DATA) {
                         try {
-                            const r = await api.fetchApi("/vnccs/get_tags");
+                            const r = await api.fetchApi("/vnccs/get_tags?catalog=creator_v2");
                             if (r.ok) TAG_DATA = await r.json();
-                            else throw new Error("Failed to load tags");
+                            else throw new Error("Failed to load presets");
                         } catch (e) {
-                            showAlertModal("Tag Database Error", "Error loading tag database: " + e);
+                            showAlertModal("Preset Catalog Error", "Error loading character presets: " + e);
                             return;
                         }
                     }
 
-                    // 2. Determine Categories
-                    // Mapping: widget_key -> [json_keys...]
-                    const map = {
-                        "hair": ["hair_color", "hairstyles"],
-                        "eyes": ["eyes"], // special handling for nested
-                        "face": ["eyes"], // special handling (nested under eyes in user update)
-                        "race": ["races"],
-                        "body": ["breast_size"],
-                        "additional_details": ["details"]
-                    };
-
-                    const categories = map[fieldKey] || [];
-                    if (!categories.length) return;
-
-                    // 3. Collect Tags
-                    const allTags = [];
-                    categories.forEach(cat => {
-                        let data = TAG_DATA.tags[cat];
-                        if (cat === "eyes") {
-                            if (fieldKey === "eyes") {
-                                // Flatten eyes
-                                if (TAG_DATA.tags.eyes.colors) allTags.push({ header: "Eye Colors", items: TAG_DATA.tags.eyes.colors });
-                                if (TAG_DATA.tags.eyes.features) allTags.push({ header: "Eye Features", items: TAG_DATA.tags.eyes.features });
-                            } else if (fieldKey === "face") {
-                                // Face Characteristics
-                                if (TAG_DATA.tags.eyes.face_characteristics) allTags.push({ header: "Face Characteristics", items: TAG_DATA.tags.eyes.face_characteristics });
-                            }
-                        } else if (data) {
-                            // Arrays
-                            // format header nicel
-                            const h = cat.replace("_", " ").toUpperCase();
-                            allTags.push({ header: h, items: data });
-                        }
-                    });
-
+                    const allTags = presetGroups(TAG_DATA, fieldKey);
                     if (!allTags.length) {
-                        showAlertModal("No Tags", "No tags found for this category.");
+                        showAlertModal("No Presets", "No presets found for this category.");
                         return;
                     }
+                    const selected = presetSelection(inputEl.value, allTags);
 
-                    // 4. Modal
-                    // Parse current values to pre-select
-                    const currentVals = inputEl.value.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
-                    const selected = new Set(currentVals);
-
-                    showModal(`Tag Constructor: ${fieldKey}`, (modal) => {
+                    showModal(`Choose Presets: ${fieldKey.replaceAll("_", " ")}`, (modal) => {
                         const container = document.createElement("div");
                         container.className = "vnccs-tag-grid";
 
-                        // Fix width for tag modal
+                        const description = document.createElement("p");
+                        description.className = "vnccs-preset-description";
+                        description.setAttribute("aria-live", "polite");
+                        description.textContent = fieldKey === "race"
+                            ? "Choose a species to see its features. These descriptions are added automatically to the prompt. Combine species for hybrids; custom traits take priority."
+                            : "Choose the traits you need. Custom text remains editable in the character field.";
+                        const content = document.createElement("div");
+                        content.append(description, container);
                         modal.style.width = "500px";
 
                         allTags.forEach(group => {
@@ -3517,35 +3674,40 @@ app.registerExtension({
                             }
 
                             group.items.forEach(item => {
-                                const t = item.tag;
-                                const chip = document.createElement("div");
+                                const chip = document.createElement("button");
+                                chip.type = "button";
                                 chip.className = "vnccs-tag-chip";
-                                chip.innerText = item.label || t;
-                                const normTag = t.replace(/_/g, " ");
-                                if (selected.has(normTag)) chip.classList.add("selected");
-
+                                chip.innerText = item.label || item.tag;
+                                if (item.prompt) {
+                                    chip.title = item.prompt;
+                                    chip.setAttribute("aria-description", item.prompt);
+                                }
+                                const updateChip = () => {
+                                    const active = selected.has(item);
+                                    chip.classList.toggle("selected", active);
+                                    chip.setAttribute("aria-pressed", String(active));
+                                };
+                                updateChip();
                                 chip.onclick = () => {
-                                    const useTag = t.replace(/_/g, " ");
-                                    if (selected.has(useTag)) {
-                                        selected.delete(useTag);
-                                        chip.classList.remove("selected");
-                                    } else {
-                                        selected.add(useTag);
-                                        chip.classList.add("selected");
-                                    }
+                                    selected.toggle(item);
+                                    updateChip();
+                                    if (item.prompt) description.textContent = item.prompt;
+                                };
+                                chip.onfocus = () => {
+                                    if (item.prompt) description.textContent = item.prompt;
                                 };
                                 container.appendChild(chip);
                             });
                         });
 
-                        return container;
+                        return content;
                     }, [
                         { text: "Cancel" },
                         {
                             text: "APPLY",
                             class: "vnccs-btn-primary",
                             action: () => {
-                                const final = Array.from(selected).join(", ");
+                                const final = selected.value();
                                 inputEl.value = final;
                                 // Trigger oninput so state.character_info is updated
                                 inputEl.dispatchEvent(new Event('input'));
@@ -3654,9 +3816,9 @@ app.registerExtension({
                 tabRow.className = "vnccs-tab-row";
                 els.modeTabs = {};
                 [
-                    ["illustrious", "Illustrious"],
-                    ["anima", "ANIMA"],
                     ["qi2", "Qwen Image 2.1"],
+                    ["anima", "ANIMA"],
+                    ["illustrious", "Illustrious"],
                 ].forEach(([value, label]) => {
                     const btn = document.createElement("button");
                     btn.type = "button";
@@ -4055,11 +4217,12 @@ app.registerExtension({
                             diffusion_models: d.diffusion_models || [],
                             text_encoders: d.text_encoders || [],
                             vae_models: d.vae_models || [],
+                            loras: d.loras || [],
                         };
                         renderControlCenterCards();
 
                         // Populate LoRA selectors
-                        const loras = d.loras || [];
+                        const loras = (d.loras || []).filter(name => !isCreatorOverhaulLora(name));
                         pop(els.dmdSelect, loras, true);
                         pop(els.ageSelect, loras, true);
                         els.loraStackSelects.forEach(o => pop(o.sel, loras, true));
