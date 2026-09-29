@@ -132,22 +132,50 @@ class TestClothesDesignerConstructPrompt:
         data = self._data(activeTab="clone", clone_image=None)
         pos, _ = ClothesDesigner.construct_prompt(data)
         # Without clone_image the clone branch is skipped; result is generate-style
-        assert isinstance(pos, str)
+        assert pos.startswith("Dress the character:")
+        assert "#00FF00" in pos
 
     def test_clone_tab_with_clone_image(self):
-        data = self._data(activeTab="clone", clone_image="img.png")
+        data = self._data(
+            activeTab="clone", clone_image="img.png",
+            costume_info={"top": "unused costume description"},
+        )
         pos, neg = ClothesDesigner.construct_prompt(data)
-        assert pos == "Dress character: clothes, footwear and accessories from Picture 2"
-        assert neg == ""
+        assert pos.startswith("Dress character: clothes, footwear and accessories from Picture 2")
+        assert "unused costume description" not in pos
+        assert "Do not copy the background from Picture 2." in pos
+        assert "No background scenery, patterns, or shapes." in pos
+        for constraint in (
+            "background scenery", "patterned background", "shapes in background",
+            "multicolored background", "textured background", "gradient background",
+        ):
+            assert constraint in neg
 
-    def test_clone_tab_ignores_background_color(self):
+    @pytest.mark.parametrize("background,model_kind,expected", [
+        ("Green", "klein9b", "flat uniform pure green background, exact RGB (0, 255, 0), hex #00FF00"),
+        ("Blue", "klein9b", "flat uniform pure blue background, exact RGB (0, 0, 255), hex #0000FF"),
+        (" blue ", "minimaxh3", "hex #0000FF"),
+        (None, "klein9b", "hex #00FF00"),
+        ("Red", "klein9b", "hex #00FF00"),
+        ("Transparent", "klein9b", "hex #00FF00"),
+        ("Transparent", "qi2", "Transparent background with alpha channel."),
+    ])
+    def test_clone_tab_respects_background_color(self, background, model_kind, expected):
         data = self._data(
             activeTab="clone",
             clone_image="img.png",
-            gen_settings={"background_color": "Blue"},
+            gen_settings={"background_color": background},
         )
-        pos, _ = ClothesDesigner.construct_prompt(data)
-        assert pos == "Dress character: clothes, footwear and accessories from Picture 2"
+        pos, neg = ClothesDesigner.construct_prompt(data, model_kind=model_kind)
+        assert expected in pos
+        if "#0000FF" in expected:
+            assert "purple background" in neg
+            assert "violet background" in neg
+        if model_kind == "qi2":
+            assert "#00FF00" not in pos
+            assert "#0000FF" not in pos
+        else:
+            assert "Transparent background" not in pos
 
 
 class TestReferenceBackgroundPreparation:
@@ -401,11 +429,15 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
         assert calls["ImageScaleToTotalPixels"]["megapixels"] == pytest.approx(expected / 1024)
         assert calls["ImageScaleToTotalPixels"]["image"].shape[-1] == 4
         assert calls["TextEncodeQwenImage21"]["resolution"] == 1024
-        if not clone:
-            assert "Transparent background with alpha channel." in calls["TextEncodeQwenImage21"]["prompt"]
+        assert "Transparent background with alpha channel." in calls["TextEncodeQwenImage21"]["prompt"]
+        if clone:
+            assert "patterned background" in calls["TextEncodeQwenImage21"]["negative_prompt"]
         assert "QwenImage21Cache" in calls
         assert "VAEDecode" in calls
         assert "VAEDecodeTiled" not in calls
+    if kind != "QI2":
+        encoder_name = "MiniMaxH3ReferenceToVideo" if kind == "MiniMaxH3" else cd.KLEIN_ENCODER_CLASS
+        assert "#00FF00" in calls[encoder_name]["prompt"]
 
 
 @pytest.mark.parametrize("size", [True, "bad", -1, 0, 511, 4097, 1024.5, float("inf"), float("nan")])
