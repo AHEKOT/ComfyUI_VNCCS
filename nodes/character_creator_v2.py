@@ -146,6 +146,7 @@ ANIMA_DEFAULTS = {
 }
 
 QI2_TURBO_LORA_NAME = "QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors"
+QI2_OVERHAUL_LORA_NAME = "QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.safetensors"
 QI2_DEFAULTS = {
     "generation_mode": "qi2",
     "target_size": 1024,
@@ -160,6 +161,7 @@ QI2_DEFAULTS = {
     "turbo_enabled": False,
     "dmd_lora_name": QI2_TURBO_LORA_NAME,
     "dmd_lora_strength": 1.0,
+    "qi2_overhaul_strength": 0.5,
     "lora_stack": [],
     "qi2_cache": {"device": "gpu", "dtype": "int8"},
 }
@@ -601,6 +603,35 @@ def postprocess_character_wizard_result(parsed, user_description):
     return result
 
 
+def normalize_overhaul_strength(value):
+    try:
+        strength = float(value)
+    except (TypeError, ValueError):
+        return 0.5
+    if not math.isfinite(strength):
+        return 0.5
+    return math.floor(max(0.0, min(1.0, strength)) * 4 + 0.5) / 4
+
+
+def is_creator_overhaul_lora(name):
+    return str(name or "").replace("\\", "/").rsplit("/", 1)[-1].lower() == QI2_OVERHAUL_LORA_NAME.rsplit("/", 1)[-1].lower()
+
+
+def apply_creator_overhaul(model, clip, gen_settings, apply_lora):
+    """Apply the Creator-only diffusion adapter, independently of Viggle Turbo."""
+    if str(gen_settings.get("generation_mode", "")).lower() != "qi2":
+        return model, clip
+    strength = normalize_overhaul_strength(gen_settings.get("qi2_overhaul_strength", 0.5))
+    if strength == 0:
+        return model, clip
+    if not get_lora_full_path(QI2_OVERHAUL_LORA_NAME):
+        raise ValueError(
+            "Qwen Image2.1 Character Overhaul is not installed. Download its card "
+            "in Character Creator V2 or set its strength to 0."
+        )
+    return apply_lora(model, clip, QI2_OVERHAUL_LORA_NAME, strength, 0.0)
+
+
 def normalize_gen_settings(gen_settings):
     normalized = dict(gen_settings or {})
     generation_mode = str(normalized.get("generation_mode", "illustrious")).lower()
@@ -622,6 +653,12 @@ def normalize_gen_settings(gen_settings):
     if isinstance(mode_profile, dict):
         merged.update(mode_profile)
     merged["generation_mode"] = generation_mode
+    # The dedicated control owns this adapter; legacy manual slots must not
+    # double-apply it or carry it into another generation profile.
+    merged["lora_stack"] = [
+        item for item in merged.get("lora_stack", [])
+        if not is_creator_overhaul_lora(item.get("name"))
+    ]
     if generation_mode == "anima" and not has_saved_target_size:
         legacy_preset = str(merged.get("resolution_preset", "normal") or "normal").lower()
         legacy_width, legacy_height = ANIMA_RESOLUTION_PRESETS.get(
@@ -634,6 +671,7 @@ def normalize_gen_settings(gen_settings):
         merged.pop("resolution_preset", None)
     elif generation_mode == "qi2":
         merged["clip_type"] = "qwen_image"
+        merged["qi2_overhaul_strength"] = normalize_overhaul_strength(merged.get("qi2_overhaul_strength"))
         cache = merged.get("qi2_cache", {})
         cache = cache if isinstance(cache, dict) else {}
         merged["qi2_cache"] = {
@@ -1554,6 +1592,7 @@ Example:
                     lora_stack = gen_settings.get("lora_stack", [])
                     for l_item in lora_stack:
                         model, clip = apply_lora_cached(model, clip, l_item.get("name"), float(l_item.get("strength", 1.0)))
+                    model, clip = apply_creator_overhaul(model, clip, gen_settings, apply_lora_cached)
                 else:
                     dmd_lora_name = gen_settings.get("dmd_lora_name")
                     dmd_lora_strength = float(gen_settings.get("dmd_lora_strength", 1.0))
@@ -1829,6 +1868,7 @@ class CharacterCreatorV2:
             stack = gen_settings.get("lora_stack", [])
             for item in stack:
                 model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
+            model, clip = apply_creator_overhaul(model, clip, gen_settings, apply_lora_safe)
         else:
             dmd_name = gen_settings.get("dmd_lora_name")
             dmd_str = float(gen_settings.get("dmd_lora_strength", 1.0))

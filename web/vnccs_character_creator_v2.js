@@ -3,6 +3,21 @@ import { api } from "../../scripts/api.js";
 import { presetGroups, presetSelection } from "./character_presets.mjs";
 import { debounce, registerCleanup, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
 
+const QI2_OVERHAUL_LORA_NAME = "QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.safetensors";
+const QI2_OVERHAUL_TITLE = "Qwen Image2.1 Character Overhaul";
+const QI2_OVERHAUL_ENTRY = {
+    name: "VNCCS Overhaul QI2", type: "Helper", kind: "QI2",
+    local_path: `models/loras/${QI2_OVERHAUL_LORA_NAME}`,
+    description: "Overhaul for Character Creator",
+};
+const normalizeOverhaulStrength = value => {
+    if (value == null || value === "") return 0.5;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? Math.round(Math.max(0, Math.min(1, numeric)) * 4) / 4 : 0.5;
+};
+const isCreatorOverhaulLora = name => String(name || "").replace(/\\/g, "/").split("/").pop().toLowerCase()
+    === QI2_OVERHAUL_LORA_NAME.split("/").pop().toLowerCase();
+
 const RESOLUTION_SCALE_BASE = 1024;
 const RESOLUTION_SCALE_MIN_MP = 1;
 const RESOLUTION_SCALE_MAX_MP = 4;
@@ -1033,6 +1048,26 @@ const STYLE = `
     cursor: pointer;
 }
 
+.vnccs-overhaul-control { padding: 8px 2px 2px; }
+.vnccs-overhaul-label {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+.vnccs-overhaul-label output { font-family: var(--font-mono); color: var(--text-primary); }
+.vnccs-overhaul-slider { grid-column: 1 / -1; width: 100%; margin: 0; height: 20px; }
+.vnccs-overhaul-slider:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.vnccs-overhaul-ticks {
+    display: flex;
+    justify-content: space-between;
+    color: var(--text-secondary);
+    font: 10px var(--font-mono);
+    padding: 0 2px;
+}
+
 .vnccs-qi2-cache {
     display: none;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -1420,6 +1455,7 @@ app.registerExtension({
                                 dmd_lora_name: "QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
                                 dmd_lora_strength: 1.0,
                                 turbo_previous_settings: null,
+                                qi2_overhaul_strength: 0.5,
                                 qi2_cache: { device: "gpu", dtype: "int8" },
                                 lora_stack: [
                                     { name: "", strength: 1.0 },
@@ -1494,6 +1530,7 @@ app.registerExtension({
                     dmd_lora_name: QI2_TURBO_LORA_NAME,
                     dmd_lora_strength: 1.0,
                     turbo_previous_settings: null,
+                    qi2_overhaul_strength: 0.5,
                     qi2_cache: { device: "gpu", dtype: "int8" },
                     lora_stack: [
                         { name: "", strength: 1.0 },
@@ -1508,7 +1545,7 @@ app.registerExtension({
                 const MODE_SETTING_KEYS = {
                     illustrious: ["target_size", "ckpt_name", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "dmd_lora_name", "dmd_lora_strength", "turbo_previous_settings", "age_lora_name", "lora_stack"],
                     anima: ["target_size", "diffusion_model_name", "clip_name", "vae_name", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "turbo_enabled", "dmd_lora_name", "dmd_lora_strength", "turbo_previous_settings", "lora_stack"],
-                    qi2: ["target_size", "diffusion_model_name", "clip_name", "vae_name", "clip_type", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "turbo_enabled", "dmd_lora_name", "dmd_lora_strength", "turbo_previous_settings", "qi2_cache", "lora_stack"],
+                    qi2: ["target_size", "diffusion_model_name", "clip_name", "vae_name", "clip_type", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "turbo_enabled", "dmd_lora_name", "dmd_lora_strength", "turbo_previous_settings", "qi2_cache", "qi2_overhaul_strength", "lora_stack"],
                 };
                 const MODE_PROMPT_DEFAULTS = {
                     illustrious: {
@@ -1540,6 +1577,7 @@ app.registerExtension({
                     diffusion_models: [],
                     text_encoders: [],
                     vae_models: [],
+                    loras: [],
                 };
                 let restoredWidgetInfoCharacter = null;
 
@@ -1712,6 +1750,7 @@ app.registerExtension({
 
                 const ensureLoraStack = (profile) => {
                     if (!Array.isArray(profile.lora_stack)) profile.lora_stack = [];
+                    profile.lora_stack = profile.lora_stack.filter(item => !isCreatorOverhaulLora(item?.name));
                     while (profile.lora_stack.length < 5) {
                         profile.lora_stack.push({ name: "", strength: 1.0 });
                     }
@@ -1736,6 +1775,7 @@ app.registerExtension({
                     delete profile.resolution_preset;
                     if (normalizedMode === "qi2") {
                         profile.clip_type = "qwen_image";
+                        profile.qi2_overhaul_strength = normalizeOverhaulStrength(profile.qi2_overhaul_strength);
                         profile.qi2_cache = {
                             device: profile.qi2_cache?.device || "gpu",
                             dtype: profile.qi2_cache?.dtype || "int8",
@@ -2634,7 +2674,7 @@ app.registerExtension({
                     return "Missing";
                 };
 
-                const buildAssetCard = ({ entry, cat, selectedValue, onSelect, compact = false, toggled = false, onToggle = null, pickerHead = false, onDownload = null }) => {
+                const buildAssetCard = ({ entry, cat, selectedValue, onSelect, compact = false, toggled = false, onToggle = null, pickerHead = false, onDownload = null, displayName = null }) => {
                     const status = ccResolveStatus(entry, cat);
                     const rel = ccRelPath(entry);
                     const installed = status === "installed";
@@ -2660,7 +2700,7 @@ app.registerExtension({
 
                     const name = document.createElement("div");
                     name.className = "vnccs-model-card-name";
-                    name.textContent = entry.name || rel || "Unknown";
+                    name.textContent = displayName || entry.name || rel || "Unknown";
                     top.appendChild(name);
 
                     const statusEl = document.createElement("div");
@@ -2712,6 +2752,55 @@ app.registerExtension({
                         card.appendChild(actions);
                     }
 
+                    return card;
+                };
+
+                const buildOverhaulCard = (entry) => {
+                    const strength = normalizeOverhaulStrength(state.gen_settings.qi2_overhaul_strength);
+                    const card = buildAssetCard({
+                        entry, cat: "lora", compact: true,
+                        displayName: QI2_OVERHAUL_TITLE, toggled: strength > 0,
+                    });
+                    const control = document.createElement("div");
+                    control.className = "vnccs-overhaul-control";
+                    const label = document.createElement("label");
+                    label.className = "vnccs-overhaul-label";
+                    const title = document.createElement("span");
+                    title.textContent = "Strength";
+                    const value = document.createElement("output");
+                    value.textContent = String(strength);
+                    const slider = document.createElement("input");
+                    slider.className = "vnccs-slider vnccs-overhaul-slider";
+                    slider.type = "range";
+                    slider.min = "0";
+                    slider.max = "1";
+                    slider.step = "0.25";
+                    slider.value = String(strength);
+                    slider.setAttribute("aria-label", `${QI2_OVERHAUL_TITLE} strength`);
+                    const updateValue = () => {
+                        const next = normalizeOverhaulStrength(slider.value);
+                        slider.value = String(next);
+                        slider.setAttribute("aria-valuetext", next === 0 ? "0 — Off" : String(next));
+                        value.textContent = String(next);
+                        card.classList.toggle("is-selected", next > 0);
+                        return next;
+                    };
+                    updateValue();
+                    slider.oninput = () => {
+                        state.gen_settings.qi2_overhaul_strength = updateValue();
+                        saveState();
+                    };
+                    label.append(title, value, slider);
+                    const ticks = document.createElement("div");
+                    ticks.className = "vnccs-overhaul-ticks";
+                    ticks.setAttribute("aria-hidden", "true");
+                    [0, 0.25, 0.5, 0.75, 1].forEach(step => {
+                        const tick = document.createElement("span");
+                        tick.textContent = String(step);
+                        ticks.appendChild(tick);
+                    });
+                    control.append(label, ticks);
+                    card.appendChild(control);
                     return card;
                 };
 
@@ -2878,6 +2967,15 @@ app.registerExtension({
                             onToggle: checked => setCcTurboMode(checked, rel, entry),
                         });
                     });
+
+                    if (mode === "qi2") {
+                        const entry = (ccConfig?.lora || []).find(item =>
+                            ccKind(item) === "qi2" && ccType(item) === "helper"
+                            && (item.name === QI2_OVERHAUL_ENTRY.name || isCreatorOverhaulLora(ccRelPath(item)))
+                        ) || QI2_OVERHAUL_ENTRY;
+                        const installed = localAssetRelSet(localAssets.loras).has(ccRelPath(entry));
+                        containerEl.appendChild(buildOverhaulCard(installed ? { ...entry, status: "installed" } : entry));
+                    }
 
                     addGroup("Age LoRA", ageEntries, entry => {
                         const rel = ccRelPath(entry);
@@ -3643,9 +3741,9 @@ app.registerExtension({
                 tabRow.className = "vnccs-tab-row";
                 els.modeTabs = {};
                 [
-                    ["illustrious", "Illustrious"],
-                    ["anima", "ANIMA"],
                     ["qi2", "Qwen Image 2.1"],
+                    ["anima", "ANIMA"],
+                    ["illustrious", "Illustrious"],
                 ].forEach(([value, label]) => {
                     const btn = document.createElement("button");
                     btn.type = "button";
@@ -4044,11 +4142,12 @@ app.registerExtension({
                             diffusion_models: d.diffusion_models || [],
                             text_encoders: d.text_encoders || [],
                             vae_models: d.vae_models || [],
+                            loras: d.loras || [],
                         };
                         renderControlCenterCards();
 
                         // Populate LoRA selectors
-                        const loras = d.loras || [];
+                        const loras = (d.loras || []).filter(name => !isCreatorOverhaulLora(name));
                         pop(els.dmdSelect, loras, true);
                         pop(els.ageSelect, loras, true);
                         els.loraStackSelects.forEach(o => pop(o.sel, loras, true));
