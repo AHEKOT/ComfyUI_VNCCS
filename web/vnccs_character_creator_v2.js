@@ -1048,18 +1048,30 @@ const STYLE = `
     cursor: pointer;
 }
 
-.vnccs-overhaul-control { padding: 8px 2px 2px; }
-.vnccs-overhaul-label {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    align-items: center;
-    gap: 5px;
-    font-size: 11px;
-    color: var(--text-secondary);
+.vnccs-overhaul-control { padding: 0 2px; }
+.vnccs-overhaul-slider { display: block; width: 100%; margin: 0; height: 20px; }
+.vnccs-overhaul-slider:focus-visible, .vnccs-overhaul-info:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
-.vnccs-overhaul-label output { font-family: var(--font-mono); color: var(--text-primary); }
-.vnccs-overhaul-slider { grid-column: 1 / -1; width: 100%; margin: 0; height: 20px; }
-.vnccs-overhaul-slider:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.vnccs-overhaul-heading { display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0; }
+.vnccs-overhaul-heading .vnccs-model-card-name { flex: 0 1 auto; }
+.vnccs-overhaul-help { display: inline-flex; flex-shrink: 0; }
+.vnccs-overhaul-info {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 20px; height: 20px; padding: 2px;
+    border: 0; border-radius: 50%; background: transparent;
+    color: var(--text-secondary); cursor: help;
+}
+.vnccs-overhaul-info:hover, .vnccs-overhaul-info[aria-expanded="true"] { color: var(--accent); background: var(--accent-subtle); }
+.vnccs-overhaul-info svg { width: 15px; height: 15px; }
+.vnccs-overhaul-tooltip {
+    position: fixed; inset: auto; margin: 0;
+    box-sizing: border-box; width: 320px; max-width: calc(100vw - 24px);
+    padding: 10px 12px; border: 1px solid var(--accent-border); border-radius: 8px;
+    background: var(--bg-secondary); color: var(--text-primary); box-shadow: var(--shadow-elevated);
+    font: 12px/1.5 var(--font); white-space: normal; text-transform: none; letter-spacing: normal;
+}
 .vnccs-overhaul-ticks {
     display: flex;
     justify-content: space-between;
@@ -2674,7 +2686,7 @@ app.registerExtension({
                     return "Missing";
                 };
 
-                const buildAssetCard = ({ entry, cat, selectedValue, onSelect, compact = false, toggled = false, onToggle = null, pickerHead = false, onDownload = null, displayName = null }) => {
+                const buildAssetCard = ({ entry, cat, selectedValue, onSelect, compact = false, toggled = false, onToggle = null, pickerHead = false, onDownload = null, displayName = null, nameAccessory = null }) => {
                     const status = ccResolveStatus(entry, cat);
                     const rel = ccRelPath(entry);
                     const installed = status === "installed";
@@ -2701,7 +2713,14 @@ app.registerExtension({
                     const name = document.createElement("div");
                     name.className = "vnccs-model-card-name";
                     name.textContent = displayName || entry.name || rel || "Unknown";
-                    top.appendChild(name);
+                    if (nameAccessory) {
+                        const heading = document.createElement("div");
+                        heading.className = "vnccs-overhaul-heading";
+                        heading.append(name, nameAccessory);
+                        top.appendChild(heading);
+                    } else {
+                        top.appendChild(name);
+                    }
 
                     const statusEl = document.createElement("div");
                     statusEl.className = "vnccs-model-card-status " + (installed ? "ok" : progress ? "progress" : "missing");
@@ -2755,20 +2774,75 @@ app.registerExtension({
                     return card;
                 };
 
+                let closeOverhaulHelp = null;
+                let overhaulHelpSequence = 0;
+                const buildOverhaulHelp = () => {
+                    const help = document.createElement("div");
+                    help.className = "vnccs-overhaul-help";
+                    const button = document.createElement("button");
+                    button.type = "button";
+                    button.className = "vnccs-overhaul-info";
+                    button.setAttribute("aria-label", `About ${QI2_OVERHAUL_TITLE}`);
+                    button.setAttribute("aria-expanded", "false");
+                    button.innerHTML = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="10" cy="10" r="8"/><path d="M10 9v5"/><circle cx="10" cy="6" r="0.8" fill="currentColor" stroke="none"/></svg>';
+                    const tooltip = document.createElement("div");
+                    tooltip.className = "vnccs-overhaul-tooltip";
+                    tooltip.id = `vnccs-overhaul-help-${node.id}-${++overhaulHelpSequence}`;
+                    tooltip.setAttribute("role", "tooltip");
+                    tooltip.setAttribute("popover", "auto");
+                    tooltip.textContent = "Character Overhaul helps Qwen Image 2.1 follow detailed character prompts more closely, including anatomy, colors, and small identifying features. It can also influence the visual style. Start with the recommended strength of 0.5. If requested details are missing or inaccurate, try 0.75 or 1. If the result drifts too far from your chosen style, lower the strength to 0.25 or 0. A value of 0 disables this LoRA. Compare results using the same prompt and seed to judge the balance between detail accuracy and style fidelity.";
+                    button.setAttribute("aria-describedby", tooltip.id);
+                    button.setAttribute("aria-controls", tooltip.id);
+                    let pinned = false;
+                    const close = () => {
+                        pinned = false;
+                        if (tooltip.matches(":popover-open")) tooltip.hidePopover();
+                        button.setAttribute("aria-expanded", "false");
+                        if (closeOverhaulHelp === close) closeOverhaulHelp = null;
+                    };
+                    const show = () => {
+                        if (closeOverhaulHelp && closeOverhaulHelp !== close) closeOverhaulHelp();
+                        closeOverhaulHelp = close;
+                        if (!tooltip.matches(":popover-open")) tooltip.showPopover();
+                        button.setAttribute("aria-expanded", "true");
+                        const anchor = button.getBoundingClientRect();
+                        const bounds = tooltip.getBoundingClientRect();
+                        // Convert screen coordinates to the node's CSS zoom scale.
+                        const scale = bounds.width / tooltip.offsetWidth || 1;
+                        const left = Math.max(12, Math.min(anchor.left, window.innerWidth - bounds.width - 12));
+                        const below = anchor.bottom + 8;
+                        const top = below + bounds.height <= window.innerHeight - 12
+                            ? below : Math.max(12, anchor.top - bounds.height - 8);
+                        tooltip.style.left = `${left / scale}px`;
+                        tooltip.style.top = `${top / scale}px`;
+                    };
+                    help.onpointerenter = show;
+                    help.onpointerleave = () => { if (!pinned) close(); };
+                    button.onfocus = show;
+                    button.onclick = event => {
+                        event.stopPropagation();
+                        if (pinned) close();
+                        else { show(); pinned = true; }
+                    };
+                    help.onfocusout = event => { if (!help.contains(event.relatedTarget)) close(); };
+                    help.onkeydown = event => {
+                        if (event.key === "Escape") { event.stopPropagation(); close(); }
+                    };
+                    tooltip.ontoggle = event => {
+                        if (event.newState === "closed") close();
+                    };
+                    help.append(button, tooltip);
+                    return help;
+                };
+
                 const buildOverhaulCard = (entry) => {
                     const strength = normalizeOverhaulStrength(state.gen_settings.qi2_overhaul_strength);
                     const card = buildAssetCard({
                         entry, cat: "lora", compact: true,
-                        displayName: QI2_OVERHAUL_TITLE, toggled: strength > 0,
+                        displayName: QI2_OVERHAUL_TITLE, toggled: strength > 0, nameAccessory: buildOverhaulHelp(),
                     });
                     const control = document.createElement("div");
                     control.className = "vnccs-overhaul-control";
-                    const label = document.createElement("label");
-                    label.className = "vnccs-overhaul-label";
-                    const title = document.createElement("span");
-                    title.textContent = "Strength";
-                    const value = document.createElement("output");
-                    value.textContent = String(strength);
                     const slider = document.createElement("input");
                     slider.className = "vnccs-slider vnccs-overhaul-slider";
                     slider.type = "range";
@@ -2781,7 +2855,6 @@ app.registerExtension({
                         const next = normalizeOverhaulStrength(slider.value);
                         slider.value = String(next);
                         slider.setAttribute("aria-valuetext", next === 0 ? "0 — Off" : String(next));
-                        value.textContent = String(next);
                         card.classList.toggle("is-selected", next > 0);
                         return next;
                     };
@@ -2790,7 +2863,6 @@ app.registerExtension({
                         state.gen_settings.qi2_overhaul_strength = updateValue();
                         saveState();
                     };
-                    label.append(title, value, slider);
                     const ticks = document.createElement("div");
                     ticks.className = "vnccs-overhaul-ticks";
                     ticks.setAttribute("aria-hidden", "true");
@@ -2799,7 +2871,7 @@ app.registerExtension({
                         tick.textContent = String(step);
                         ticks.appendChild(tick);
                     });
-                    control.append(label, ticks);
+                    control.append(slider, ticks);
                     card.appendChild(control);
                     return card;
                 };
@@ -3073,6 +3145,7 @@ app.registerExtension({
                 };
 
                 const renderControlCenterCards = () => {
+                    closeOverhaulHelp?.();
                     if (!els.animaModelCards && !els.illustriousModelCards && !els.qi2ModelCards) return;
                     const currentMode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
                     const isAnimaMode = currentMode === "anima";
@@ -3221,6 +3294,8 @@ app.registerExtension({
                 container.className = "vnccs-container";
                 enableMiddleMouseCanvasPan(container);
                 attachHelpTooltips(container);
+                container.addEventListener("scroll", () => closeOverhaulHelp?.(), true);
+                registerCleanup(node, () => closeOverhaulHelp?.());
 
                 // --- TOP ROW ---
                 const topRow = document.createElement("div");

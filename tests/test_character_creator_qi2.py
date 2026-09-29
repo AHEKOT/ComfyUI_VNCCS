@@ -361,8 +361,8 @@ def test_qi2_structured_character_reaches_encoder_with_sources_and_expansions(mo
     assert [name for name, _kwargs in calls] == ["TextGenerate", "TextEncodeQwenImage21"]
     assert calls[1][1]["prompt"] == final
     for key in ("race", "body", "face", "hair", "eyes", "additional_details"):
-        assert f"supplied value: {info[key]}" in final
-    assert "attached feline ears and a feline tail" in final
+        assert info[key].casefold() in final.casefold()
+    assert creator.race_features(info["race"]) in final
     assert "low volume and modest projection" in final
     assert "Lighter swimsuit-covered skin" in final
     assert "18 years old" in final
@@ -408,7 +408,7 @@ def test_qi2_partial_response_cannot_remove_attributes_or_populate_empty_fields(
     assert "cat girl, no tail, human ears absent" in final
     assert "small breasts" in final
     assert info["hair"] in final
-    assert "Two-tone hair." in final
+    assert "Two-tone hair" in final
     assert "invented skin tone" not in final
 
 
@@ -427,7 +427,7 @@ def test_qi2_preserves_exact_age_and_independent_body_details(age):
     info = _cat_character_info(age=age, body="small breasts, broad shoulders, muscular arms")
     fields = creator._qi2_character_fields(info)
     final = creator._qi2_expanded_field_prompt('{"fields":{}}', fields)
-    assert f"Age — supplied value: {age} years old" in final
+    assert f"The character is female, {age} years old." in final
     assert "small breasts, broad shoulders, muscular arms" in final
 
 
@@ -436,3 +436,79 @@ def test_qi2_field_clothing_matches_existing_creator_policy(sex, nsfw):
     info = _cat_character_info(sex=sex, nsfw=nsfw, age=30)
     positive, _negative = creator.CharacterCreatorV2.construct_prompt(info, "qi2", include_style=False)
     assert creator._qi2_character_fields(info)["clothing"] in positive
+
+
+@pytest.mark.parametrize("style", list(creator.CHARACTER_STYLE_PROMPTS))
+def test_qi2_portrait_composition_and_coverage_reach_positive_encoder_for_every_style(monkeypatch, style):
+    # Regression for the reported human / cowboy-shot prompt producing a sheet
+    # of separate torso, face and underwear views. No image model is mocked as
+    # passing: this verifies exactly what we send to its positive conditioning.
+    info = _cat_character_info(
+        style=style, race="human", body="medium breasts", hair="black long hair",
+        eyes="blue eyes", additional_details="", background_color="Transparent",
+    )
+    calls = []
+
+    def fake_node(name, **kwargs):
+        calls.append((name, kwargs))
+        if name == "TextGenerate":
+            return (json.dumps({"fields": {
+                "gender": "female",
+                "age": "An 18-year-old young adult with adult skeletal proportions and youthful skin texture.",
+                "race": "A human with rounded ears and ordinary human anatomy; her skin tone and facial features follow the separate character fields.",
+                "race_features": "A second human anatomy explanation.",
+                "body": "Medium breasts with moderate volume and projection.",
+                "face": "Freckles scattered across the face.",
+                "hair": "Black long hair.",
+                "eyes": "Blue eyes.",
+                "clothing": "Wearing a white bra and panties.",
+                "expression": "Expressionless.",
+                "framing": "Single character; show the complete head and body down to mid-thigh.",
+                "background": "Transparent background with alpha channel.",
+            }}),)
+        assert name == "TextEncodeQwenImage21"
+        return "positive", "negative", "latent"
+
+    monkeypatch.setattr(generator, "_call_comfy_node", fake_node)
+    original = dict(info)
+    reference = creator._character_style_prompt(info)
+    positive, negative = creator.CharacterCreatorV2.construct_prompt(info, "qi2", include_style=False)
+    result = creator.encode_generation_conditioning(
+        "clip", "vae", positive, negative, {"generation_mode": "qi2"},
+        style_reference=reference, character_info=info,
+    )
+    prompt = calls[-1][1]["prompt"]
+    assert prompt == result[2]
+    composition, appearance, style_block = prompt.split("\n\n")
+    assert "exactly one character in a single continuous view" in composition
+    assert "occupies most of the image height" in composition
+    assert "No character sheet, collage, panels, insets" in composition
+    assert "complete head and body down to mid-thigh" in composition
+    assert "wear white bra and panties" in appearance
+    assert "transparent background with alpha channel" in appearance
+    assert "18 years old" in appearance
+    for phrase in ("medium breasts", "freckles", "black long hair", "blue eyes", "rounded ears"):
+        assert appearance.casefold().count(phrase) == 1
+    assert "second human anatomy explanation" not in appearance
+    assert "supplied value" not in prompt and "Visual explanation" not in prompt
+    assert style_block == creator.QI2_STYLE_REFERENCE_HEADING + "\n" + reference
+    assert info == original
+
+
+@pytest.mark.parametrize("framing", ["cowboy_shot", "full_body"])
+@pytest.mark.parametrize("sex,nsfw", [("female", False), ("male", False), ("female", True), ("male", True)])
+def test_qi2_pe_cannot_replace_composition_clothing_or_background(framing, sex, nsfw):
+    info = _cat_character_info(framing=framing, sex=sex, nsfw=nsfw, age=30)
+    fields = creator._qi2_character_fields(info)
+    response = json.dumps({"fields": {
+        "framing": "invented multi-panel layout",
+        "clothing": "invented wardrobe",
+        "background": "invented scenery",
+        "gender": "invented gender",
+    }})
+    prompt = creator._qi2_expanded_field_prompt(response, fields)
+    assert fields["framing"] in prompt.split("\n\n", 1)[0]
+    assert fields["clothing"] in prompt
+    assert fields["background"] in prompt
+    assert f"The character is {sex}, 30 years old" in prompt
+    assert "invented" not in prompt
