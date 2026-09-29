@@ -189,7 +189,7 @@
         {
           "id": "art_nouveau_poster",
           "label": "Art Nouveau Character Poster",
-          "prompt": "Art Nouveau character poster, flowing organic contours, ornamental botanical framing, elegant silhouette, muted jewel colours, decorative flat rendering"
+          "prompt": "Art Nouveau character poster, flowing organic contours, elegant silhouette, muted jewel colours, decorative flat rendering"
         },
         {
           "id": "pixel_art",
@@ -199,7 +199,7 @@
         {
           "id": "ink_wash",
           "label": "Ink Wash Character",
-          "prompt": "ink-wash character painting, expressive black brush contours, diluted grey modelling, generous negative space, absorbent paper texture, restrained accent colour"
+          "prompt": "ink-wash character painting, expressive black brush contours, diluted grey modelling, absorbent paper texture, restrained accent colour"
         },
         {
           "id": "linocut_print",
@@ -229,7 +229,7 @@
         {
           "id": "documentary_photo",
           "label": "Natural Documentary Character",
-          "prompt": "natural documentary character photography, relaxed posture, available light, truthful skin and fabric texture, restrained colour, realistic framing"
+          "prompt": "natural documentary character photography, relaxed posture, available light, truthful skin and fabric texture, restrained colour"
         },
         {
           "id": "realist_oil_portrait",
