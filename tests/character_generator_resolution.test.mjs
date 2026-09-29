@@ -5,7 +5,7 @@ import vm from "node:vm";
 
 const source = readFileSync(new URL("../web/vnccs_character_generator.js", import.meta.url), "utf8");
 
-function setup({ kind = "QIE2511", saved = {}, clone = false, clothes = false } = {}) {
+function setup({ kind = "QI2", saved = {}, clone = false, clothes = false, emotions = false } = {}) {
     const listeners = new Map();
     const timers = new Map();
     const cleanups = [];
@@ -28,8 +28,8 @@ function setup({ kind = "QIE2511", saved = {}, clone = false, clothes = false } 
     });
     vm.runInContext(source.replace(/^import .*;\n/gm, "") + "\nthis.Widget = CharacterGeneratorWidget; this.readData = readData;", context);
     const widget = Object.create(context.Widget.prototype);
-    Object.assign(widget, { node, data: context.readData(node), isClone: clone, isClothes: clothes,
-        stages: [], renders: 0, renderSettings() { this.renders++; }, syncCharacterSourceData() {}, saveBrowserState() {} });
+    Object.assign(widget, { node, data: context.readData(node), isClone: clone, isClothes: clothes, isEmotions: emotions,
+        stages: [], renders: 0, renderSettings() { this.renders++; }, renderPreview() {}, renderChain() {}, syncCharacterSourceData() {}, saveBrowserState() {} });
     widget.bindModelResolutionSync();
     return { widget, graph, serialized, cleanups, listeners, timers, app,
         switchTo(nextKind, sourceId = 1) {
@@ -41,11 +41,186 @@ function setup({ kind = "QIE2511", saved = {}, clone = false, clothes = false } 
     };
 }
 
+function setupEmotionStudio(mode = "qi2") {
+    const timers = new Map();
+    const settings = { name: "generation_settings", value: JSON.stringify({ generation_mode: mode }) };
+    const studio = { id: 10, type: "EmotionGeneratorV2", widgets: [settings] };
+    const serialized = { name: "widget_data", value: "{}" };
+    const node = { id: 11, inputs: [{ name: "pipe", link: 10 }], widgets: [serialized] };
+    const graph = {
+        links: { 10: { origin_id: 10 } },
+        _nodes: [studio, node],
+        getNodeById: id => graph._nodes.find(item => item.id === id),
+        setDirtyCanvas() {},
+    };
+    node.graph = graph;
+    const app = { graph, registerExtension(extension) { this.extension = extension; } };
+    const context = vm.createContext({
+        app,
+        window: { addEventListener() {}, removeEventListener() {} },
+        setInterval: fn => { timers.set(1, fn); return 1; },
+        clearInterval: id => timers.delete(id),
+        registerCleanup() {},
+        localStorage: { getItem: () => null },
+    });
+    vm.runInContext(source.replace(/^import .*;\n/gm, "") + "\nthis.Widget = CharacterGeneratorWidget; this.readData = readData;", context);
+    const widget = Object.create(context.Widget.prototype);
+    Object.assign(widget, {
+        node,
+        data: context.readData(node),
+        isClone: false,
+        isClothes: false,
+        isEmotions: true,
+        qi2EmotionDefaultsPending: true,
+        stages: [],
+        renders: 0,
+        renderSettings() { this.renders++; },
+        renderPreview() { this.renders++; },
+        renderChain() { this.renders++; },
+        saveBrowserState() {},
+    });
+    widget.bindModelResolutionSync();
+    return { widget, studio, settings, serialized, timers };
+}
+
+for (const mode of [{}, { clone: true }, { clothes: true }, { emotions: true }]) {
+    test(`QI2 selects Native BG Remove for every generator (${JSON.stringify(mode)})`, () => {
+        const { widget, timers, switchTo, serialized } = setup(mode);
+        timers.get(1)();
+        assert.equal(widget.data.bg_remove.preset, "Native");
+        assert.equal(JSON.parse(serialized.value).bg_remove.preset, "Native");
+
+        switchTo("Klein9b");
+        assert.equal(widget.data.bg_remove.preset, "balanced");
+        switchTo("QI2");
+        assert.equal(widget.data.bg_remove.preset, "Native");
+    });
+}
+
+test("manual BG Remove choice survives repeated QI2 updates until the family changes", () => {
+    const { widget, timers, switchTo } = setup();
+    timers.get(1)();
+    widget.set("bg_remove", "preset", "strong");
+    switchTo("QI2");
+    timers.get(1)();
+    assert.equal(widget.data.bg_remove.preset, "strong");
+    switchTo("Klein9b");
+    switchTo("QI2");
+    assert.equal(widget.data.bg_remove.preset, "Native");
+});
+
+test("Native is exposed as a BG Remove mode", () => {
+    assert.match(source, /const BG_REMOVE_MODES = \["Native", "disabled"/);
+});
+
+test("Native BG Remove is detected for conditional SAM recovery controls", () => {
+    const { widget } = setup({ kind: "QI2" });
+    widget.data.bg_remove.preset = "Native";
+    assert.equal(widget.isNativeBgRemove(), true);
+    const nativeGroups = widget.generatorSettingsGroups();
+    assert.equal(nativeGroups.some(group => group.title.includes("SAM3")), false);
+    assert.equal(nativeGroups.flatMap(group => group.fields).some(field => field.key === "use_sam3_details_recovery"), false);
+    widget.data.bg_remove.preset = "balanced";
+    assert.equal(widget.isNativeBgRemove(), false);
+    const chromaGroups = widget.generatorSettingsGroups();
+    assert.equal(chromaGroups.some(group => group.title.includes("SAM3")), true);
+    assert.equal(chromaGroups.flatMap(group => group.fields).some(field => field.key === "use_sam3_details_recovery"), true);
+});
+
+test("SAM analysis and SAM3 recovery are disabled by default", () => {
+    const { widget } = setup({ kind: "Klein9b" });
+    assert.equal(widget.data.emotion_generation.use_sam, false);
+    assert.equal(widget.data.bg_remove.use_sam3_details_recovery, false);
+});
+
+test("connected QI2 Emotion Studio selects Native BG Remove and restores the prior mode", () => {
+    const { widget, settings, serialized, timers } = setupEmotionStudio("qi2");
+    timers.get(1)();
+    assert.equal(widget.data.bg_remove.preset, "Native");
+    assert.equal(JSON.parse(serialized.value).bg_remove.preset, "Native");
+    assert.equal(widget.shouldShowEmotionDenoiseControl(), false);
+    assert.equal(widget.data.emotion_generation.target_size, 2048);
+    assert.equal(widget.data.emotion_generation.bbox_threshold, 0.3);
+    assert.equal(widget.data.emotion_generation.bbox_dilation, 50);
+    assert.equal(widget.data.emotion_generation.feather, 50);
+    assert.equal(widget.data.emotion_generation.drop_size, 10);
+    const qi2Groups = widget.generatorSettingsGroups();
+    assert.equal(qi2Groups.some(group => group.title.includes("VNCCS BBox Extractor")), true);
+    assert.equal(qi2Groups.some(group => group.title === "FaceDetailer"), false);
+    const bboxFields = qi2Groups.find(group => group.title.includes("VNCCS BBox Extractor")).fields;
+    assert.deepEqual(
+        Array.from(bboxFields, field => field.key),
+        ["target_size", "bbox_threshold", "bbox_dilation", "feather", "drop_size"],
+    );
+    const promptGroup = qi2Groups.find(group => group.title.includes("Emotion Prompt"));
+    assert.equal(promptGroup.fields[0].key, "qi2_prompt_template");
+    assert.match(widget.data.emotion_generation.qi2_prompt_template, /\{emotion\}/);
+
+    settings.value = JSON.stringify({ generation_mode: "anima" });
+    timers.get(1)();
+    assert.equal(widget.data.bg_remove.preset, "balanced");
+    assert.equal(widget.shouldShowEmotionDenoiseControl(), true);
+});
+
+test("saved QI2 bbox values are preserved after workflow configuration", () => {
+    const { widget, timers } = setupEmotionStudio("qi2");
+    widget.qi2EmotionDefaultsPending = false;
+    Object.assign(widget.data.emotion_generation, {
+        bbox_threshold: 0.42,
+        bbox_dilation: 17,
+        feather: 9,
+        drop_size: 23,
+    });
+    timers.get(1)();
+
+    assert.equal(widget.data.emotion_generation.bbox_threshold, 0.42);
+    assert.equal(widget.data.emotion_generation.bbox_dilation, 17);
+    assert.equal(widget.data.emotion_generation.feather, 9);
+    assert.equal(widget.data.emotion_generation.drop_size, 23);
+});
+
+test("late Emotion Studio restore rebuilds emotion tabs without a click", () => {
+    const { widget, studio, timers } = setupEmotionStudio("qi2");
+    assert.equal(JSON.stringify(widget.currentStages()), JSON.stringify([["emotion_0001_bg_remove", "Emotion"]]));
+
+    studio.widgets.push(
+        { name: "character", value: "Qi2_test" },
+        { name: "costumes_data", value: JSON.stringify(["Naked", "Simple"]) },
+        { name: "emotions_data", value: JSON.stringify(["angry", "happy"]) },
+    );
+    const rendersBeforeRestore = widget.renders;
+    timers.get(1)();
+
+    assert.equal(JSON.stringify(widget.stages), JSON.stringify([
+        ["emotion_0001_bg_remove", "Naked / angry"],
+        ["emotion_0002_bg_remove", "Naked / happy"],
+        ["emotion_0003_bg_remove", "Simple / angry"],
+        ["emotion_0004_bg_remove", "Simple / happy"],
+    ]));
+    assert.equal(widget.selectedPreview, "emotion_0001_bg_remove");
+    assert.ok(widget.renders >= rendersBeforeRestore + 3);
+});
+
+test("Emotion Generator exposes only final result stages", () => {
+    const { widget } = setup({ emotions: true });
+    assert.equal(JSON.stringify(widget.currentStages()), JSON.stringify([["emotion_0001_bg_remove", "Emotion"]]));
+
+    widget.data.emotion_pairs = [
+        { costume: "Naked", emotion: "angry" },
+        { costume: "Simple", emotion: "happy" },
+    ];
+    assert.equal(JSON.stringify(widget.currentStages()), JSON.stringify([
+        ["emotion_0001_bg_remove", "Naked / angry"],
+        ["emotion_0002_bg_remove", "Simple / happy"],
+    ]));
+    assert.equal(widget.defaultPreviewStage(), "emotion_0001_bg_remove");
+});
+
 for (const mode of [{}, { clone: true }, { clothes: true }]) {
     test(`family changes update visible and serialized resolution (${JSON.stringify(mode)})`, () => {
         const { widget, switchTo, serialized } = setup(mode);
         const section = mode.clone ? "common" : "pose_generation";
-        for (const [kind, size] of [["QIE2511", 1024], ["MiniMaxH3", 1536], ["Klein9b", 1024], ["MiniMaxH3", 1536], ["QIE2511", 1024]]) {
+        for (const [kind, size] of [["QI2", 1024], ["MiniMaxH3", 1536], ["Klein9b", 1024], ["MiniMaxH3", 1536], ["QI2", 1024]]) {
             switchTo(kind);
             assert.equal(widget.data[section].target_size, size);
             assert.equal(JSON.parse(serialized.value)[section].target_size, size);
@@ -67,7 +242,7 @@ test("manual choice survives updates, polling, and workflow reload until a famil
     reload();
     assert.equal(widget.syncModelResolution(), false);
     assert.equal(widget.data.pose_generation.target_size, 1024);
-    switchTo("QIE2511");
+    switchTo("QI2");
     switchTo("MiniMaxH3");
     assert.equal(widget.data.pose_generation.target_size, 1536);
 });
@@ -85,7 +260,7 @@ test("events are scoped to the upstream widget and reconnection is detected", ()
     const { widget, switchTo, graph, timers } = setup();
     const other = { id: 3, type: "VNCCS_ControlCenter", widgets: [{ name: "node_state", value: '{"active_kind":"MiniMaxH3"}' }] };
     graph._nodes.unshift(other);
-    switchTo("QIE2511");
+    switchTo("QI2");
     switchTo("MiniMaxH3", 3);
     assert.equal(widget.data.pose_generation.target_size, 1024);
     graph.links[0].origin_id = 3;

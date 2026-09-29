@@ -1,11 +1,42 @@
 """VNCCS - Visual Novel Character Creator Suite for ComfyUI."""
 
+import importlib.util
 import os, json, inspect
+import sys
 import traceback
 
 print("[VNCCS] Automatic legacy migration is disabled. Use the VNCCS Migration Assistent node to migrate legacy sheets.")
 
-from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+def _runtime_module_available(name):
+    if name in sys.modules:
+        return True
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+if (
+    _runtime_module_available("torch")
+    and _runtime_module_available("comfy")
+    and _runtime_module_available("folder_paths")
+):
+    _nodes_module_name = f"{__name__}.nodes"
+    _preloaded_nodes = sys.modules.get(_nodes_module_name)
+    if _preloaded_nodes is not None and getattr(_preloaded_nodes, "__file__", None) is None:
+        # Some custom-node loaders may pre-register this path as a namespace package.
+        # Remove that placeholder so the regular relative import executes nodes/__init__.py.
+        sys.modules.pop(_nodes_module_name, None)
+
+    from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+
+    if not NODE_CLASS_MAPPINGS:
+        raise RuntimeError("VNCCS node registration returned no nodes. Check the preceding registration traceback.")
+else:
+    # Package discovery and source-analysis tools do not provide a ComfyUI runtime.
+    # Keep importing metadata possible without importing model dependencies such as torch.
+    NODE_CLASS_MAPPINGS = {}
+    NODE_DISPLAY_NAME_MAPPINGS = {}
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
 

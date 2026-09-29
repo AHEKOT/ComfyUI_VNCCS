@@ -124,6 +124,22 @@ def test_unknown_total_and_retry_do_not_invent_percent(monkeypatch, hub_progress
     assert hub_progress._get_progress_bar_context is original_context
 
 
+def test_modern_hub_does_not_require_file_download_tqdm(monkeypatch, hub_progress):
+    del hub_progress.tqdm
+
+    def transfer(*, tqdm_class, token, **kwargs):
+        assert token is False
+        with tqdm_class(unit="B", total=100, disable=True) as bar:
+            bar.update(40)
+            assert cc._DOWNLOAD_STATUS["model"]["progress"] == 40
+        return "/cache/model.safetensors"
+
+    monkeypatch.setattr(cc, "hf_hub_download", transfer)
+    result = cc._download_with_progress("model", "public/models", "model.safetensors")
+    assert result == "/cache/model.safetensors"
+    assert not hasattr(hub_progress, "tqdm")
+
+
 @pytest.mark.parametrize("fail", [False, True])
 def test_http_progress_remains_live_and_transport_override_is_scoped(monkeypatch, hub_progress, fail):
     original_constants = hub_progress.constants

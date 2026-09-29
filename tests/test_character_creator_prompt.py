@@ -23,7 +23,7 @@ def _base_info(**overrides):
 def test_full_body_framing_replaces_cowboy_shot():
     positive, _ = CharacterCreatorV2.construct_prompt(_base_info(framing="Full_body"))
 
-    assert "Full_body" in positive
+    assert "standing, full body" in positive
     assert "cowboy_shot" not in positive
 
 

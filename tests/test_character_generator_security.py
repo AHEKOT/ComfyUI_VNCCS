@@ -135,6 +135,55 @@ def test_bg_remove_disabled_skips_chroma_key(monkeypatch):
     assert torch.equal(result, images)
 
 
+def test_native_bg_remove_uses_alpha_prompt_and_skips_chroma_key(monkeypatch):
+    torch = pytest.importorskip("torch")
+
+    class FailingChromaKey:
+        def chroma_key(self, *args, **kwargs):
+            raise AssertionError("native alpha must not run chroma key")
+
+    monkeypatch.setattr(cg, "VNCCSChromaKey", FailingChromaKey)
+    generator = cg.VNCCS_CharacterGenerator()
+    prompt = generator._prompt_with_solid_background(
+        "Keep the pose", "Green", {"preset": "Native"},
+    )
+    assert prompt == "Keep the pose, Transparent background with alpha channel."
+    assert "solid Green" not in prompt
+    assert generator._prompt_with_solid_background(
+        "Keep the pose", "Alpha", {"preset": "balanced"},
+    ) == "Keep the pose, Transparent background with alpha channel."
+
+    images = torch.rand(1, 4, 4, 4)
+    result = generator._run_bg_remove(images, {"preset": "Native"}, background="Green")
+    assert torch.equal(result, images)
+
+
+def test_native_bg_remove_preserves_alpha_through_upscaler(monkeypatch):
+    torch = pytest.importorskip("torch")
+    generator = cg.VNCCS_CharacterGenerator()
+    source = torch.zeros(1, 2, 2, 4)
+    source[..., 3] = torch.tensor([[0.0, 1.0], [1.0, 0.0]])
+
+    monkeypatch.setattr(generator, "_run_upscaler_models", lambda settings, node_id=None: (None, None))
+    monkeypatch.setattr(
+        generator,
+        "_run_seedvr_upscale_batch",
+        lambda images, *args, **kwargs: [torch.ones(1, 4, 4, 3)],
+    )
+    monkeypatch.setattr(generator, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(generator, "_log_stage", lambda *args, **kwargs: None)
+
+    result = generator._run_upscaler(
+        source, "Green", {"mode": "seedvr"}, seed=1,
+        bg_remove_settings={"preset": "Native"},
+    )
+    assert result.shape == (1, 4, 4, 4)
+    expected_alpha = torch.nn.functional.interpolate(
+        source[..., 3:4].movedim(-1, 1), size=(4, 4), mode="bilinear", align_corners=False,
+    ).movedim(1, -1)
+    assert torch.allclose(result[..., 3:4], expected_alpha)
+
+
 def test_settings_force_internal_rmbg_off_for_legacy_workflows():
     settings = cg.VNCCS_CharacterGenerator()._settings(
         json.dumps({"bg_remove": {"use_internal_rmbg": True}})
@@ -235,7 +284,7 @@ def test_clothes_internal_rmbg_cannot_run_when_directly_requested(monkeypatch):
     assert torch.equal(result, poses)
 
 
-def test_bg_remove_uses_sam3_details_recovery_by_default(monkeypatch):
+def test_bg_remove_disables_sam3_details_recovery_by_default(monkeypatch):
     torch = pytest.importorskip("torch")
     seen = {}
 
@@ -256,7 +305,7 @@ def test_bg_remove_uses_sam3_details_recovery_by_default(monkeypatch):
 
     assert seen == {
         "tolerance": 0.15,
-        "use_sam3_recovery_mask": True,
+        "use_sam3_recovery_mask": False,
     }
 
 
@@ -538,6 +587,7 @@ def test_emotion_detailer_defaults_match_face_detailer_and_step3_workflow():
         "inpaint_model": False,
     }
     assert {key: defaults[key] for key in expected} == expected
+    assert defaults["use_sam"] is False
     assert "steps" not in defaults
     assert "cfg" not in defaults
 
@@ -551,6 +601,7 @@ def test_emotion_detailer_defaults_match_face_detailer_and_step3_workflow():
     node = next(item for item in workflow["nodes"] if item["type"] == "VNCCS_EmotionsGenerator")
     workflow_settings = json.loads(node["widgets_values"][0])["emotion_generation"]
     assert {key: workflow_settings[key] for key in expected} == expected
+    assert workflow_settings["use_sam"] is False
     assert "steps" not in workflow_settings
     assert "cfg" not in workflow_settings
 
@@ -602,6 +653,48 @@ def test_emotions_generator_bg_remove_uses_character_background_color(tmp_path, 
     node.process(images, object(), emotion_data, widget_data=widget_data, unique_id="test-node")
 
     assert seen["background"] == "Green"
+
+
+def test_emotions_generator_qi2_passes_source_alpha_into_generation(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    seen = {}
+
+    monkeypatch.setattr(cg, "_character_cache_dir_from_sheets_path", lambda *args, **kwargs: str(tmp_path))
+    monkeypatch.setattr(cg, "_rotate_preview_cache", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cg, "_save_run_inputs", lambda *args, **kwargs: None)
+
+    node = cg.VNCCS_EmotionsGenerator()
+    monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(node, "_save_stage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(node, "_load_source_sprite_from_path", lambda *args, **kwargs: (None, None))
+
+    def capture_generation(image, *args, **kwargs):
+        seen["encoder_input"] = image.clone()
+        return image, image, torch.ones((image.shape[0], image.shape[1], image.shape[2]))
+
+    monkeypatch.setattr(node, "_run_emotion_generation_one", capture_generation)
+    monkeypatch.setattr(node, "_run_emotion_bg_remove", lambda images, *args, **kwargs: images)
+
+    images = torch.zeros(1, 4, 4, 4)
+    images[..., :3] = torch.tensor([0.2, 0.4, 0.6])
+    images[..., 3] = 0.25
+    pipe = type("Pipe", (), {"model_kind": "qi2", "model_entry": {"kind": "QI2"}})()
+    emotion_data = json.dumps([{
+        "emotion_prompt": "happy",
+        "sprite_output_path": "",
+        "background_color": "Alpha",
+    }])
+    widget_data = json.dumps({
+        "character_name": "Alice",
+        "bg_remove": {"preset": "Native", "use_sam3_details_recovery": False},
+    })
+
+    node.process(images, pipe, emotion_data, widget_data=widget_data, unique_id="test-node")
+
+    encoder_input = seen["encoder_input"]
+    assert encoder_input.shape == (1, 4, 4, 4)
+    assert torch.allclose(encoder_input[..., :3], images[..., :3])
+    assert torch.allclose(encoder_input[..., 3], images[..., 3])
 
 
 def test_emotions_generator_single_bg_regenerate_slices_cached_raw_batch(tmp_path, monkeypatch):
@@ -673,6 +766,27 @@ def test_emotion_detailer_input_rebuilds_clean_chroma_plate_from_source_alpha():
     assert prepared[0, 0, 0].tolist() == pytest.approx([0.0, 1.0, 0.0])
     assert prepared[0, 0, 1].tolist() == pytest.approx([0.1, 0.8, 0.4])
     assert prepared[0, 0, 2].tolist() == pytest.approx([0.2, 0.6, 0.8])
+
+
+def test_emotion_qi2_input_reconstructs_rgba_without_chroma_compositing():
+    torch = pytest.importorskip("torch")
+    node = cg.VNCCS_EmotionsGenerator()
+    image = torch.tensor(
+        [[[[0.2, 0.6, 0.8], [0.3, 0.4, 0.5], [0.7, 0.1, 0.9]]]],
+        dtype=torch.float32,
+    )
+    inverse_alpha = torch.tensor([[[1.0, 0.5, 0.0]]], dtype=torch.float32)
+
+    prepared = node._prepare_emotion_detailer_input(
+        image,
+        inverse_alpha,
+        "Green",
+        preserve_transparency=True,
+    )
+
+    assert prepared.shape == (1, 1, 3, 4)
+    assert torch.equal(prepared[..., :3], image)
+    assert prepared[..., 3].flatten().tolist() == pytest.approx([0.0, 0.5, 1.0])
 
 
 def test_emotion_rgba_merge_uses_premultiplied_color_at_soft_alpha_transition():
@@ -877,19 +991,21 @@ def test_pose_generation_decode_preserves_encoder_aspect(monkeypatch):
     assert result.shape == (1, 1584, 664, 3)
 
 
-def test_h3_resolution_scale_uses_square_pixel_area_at_2048():
+def test_h3_resolution_scale_uses_linear_megapixel_area_at_2048():
     torch = pytest.importorskip("torch")
     generator = cg.VNCCS_CharacterGenerator()
 
-    assert generator._resolution_scale_dimensions(
+    square_width, square_height = generator._resolution_scale_dimensions(
         torch.rand(1, 1024, 1024, 3), 2048
-    ) == (2048, 2048)
+    )
+    assert square_width == square_height
+    assert square_width * square_height == pytest.approx(2048 * 1024, rel=0.025)
     width, height = generator._resolution_scale_dimensions(
         torch.rand(1, 1536, 640, 3), 2048
     )
     assert width % 32 == 0
     assert height % 32 == 0
-    assert width * height == pytest.approx(2048 * 2048, rel=0.025)
+    assert width * height == pytest.approx(2048 * 1024, rel=0.025)
     assert height / width == pytest.approx(1536 / 640, rel=0.025)
 
 

@@ -3,6 +3,38 @@ import { api } from "../../scripts/api.js";
 import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
 
 const GENERATOR_QWEN_INSTRUCTION = "Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.";
+const QI2_EMOTION_PROMPT_TEMPLATE = "Upscale face image.\nMake character's face emotion {emotion}\nChange only face. Keep original neck colour, clothes and hairs\nkeep character's clothes";
+const QI2_EMOTION_BBOX_DEFAULTS = Object.freeze({
+    bbox_threshold: 0.3,
+    bbox_dilation: 50,
+    feather: 50,
+    drop_size: 10,
+});
+const RESOLUTION_SCALE_BASE = 1024;
+const RESOLUTION_SCALE_MIN_MP = 1;
+const RESOLUTION_SCALE_MAX_MP = 4;
+const RESOLUTION_SCALE_STEP_MP = 0.1;
+const RESOLUTION_SCALE_PRESETS = new Map([
+    [1.3, 1344],
+    [1.5, 1536],
+]);
+
+function resolutionScaleMegapixels(value) {
+    const numeric = Number(value);
+    const megapixels = Number.isFinite(numeric) ? numeric / RESOLUTION_SCALE_BASE : RESOLUTION_SCALE_MIN_MP;
+    return Math.max(RESOLUTION_SCALE_MIN_MP, Math.min(RESOLUTION_SCALE_MAX_MP, megapixels));
+}
+
+function resolutionScaleValue(megapixels) {
+    const numeric = Number(megapixels);
+    const clamped = Math.max(RESOLUTION_SCALE_MIN_MP, Math.min(RESOLUTION_SCALE_MAX_MP, Number.isFinite(numeric) ? numeric : RESOLUTION_SCALE_MIN_MP));
+    const stepped = Number((Math.round(clamped / RESOLUTION_SCALE_STEP_MP) * RESOLUTION_SCALE_STEP_MP).toFixed(1));
+    return RESOLUTION_SCALE_PRESETS.get(stepped) ?? Math.round(stepped * RESOLUTION_SCALE_BASE);
+}
+
+function resolutionScaleText(value) {
+    return `${resolutionScaleMegapixels(value).toFixed(1)} MP`;
+}
 
 const DEFAULT_DATA = {
     nsfw_enabled: true,
@@ -24,7 +56,6 @@ const DEFAULT_DATA = {
         background_color: "from_generator",
         latent_image_index: 1,
         instruction: GENERATOR_QWEN_INSTRUCTION,
-        qwen_2511: true,
     },
     pose_sampler: {
         inherit_pipe: true,
@@ -43,8 +74,9 @@ const DEFAULT_DATA = {
     },
     emotion_generation: {
         task_batch_size: 0,
+        target_size: 2048,
         face_denoise: 0.55,
-        use_sam: true,
+        use_sam: false,
         bbox_model: "bbox/face_yolov8m.pt",
         segm_model: "bbox/face_yolov8m.pt",
         sam_model: "sam_vit_b_01ec64.pth",
@@ -60,6 +92,7 @@ const DEFAULT_DATA = {
         force_inpaint: true,
         bbox_threshold: 0.5,
         bbox_dilation: 10,
+        qi2_prompt_template: QI2_EMOTION_PROMPT_TEMPLATE,
         bbox_crop_factor: 3,
         sam_detection_hint: "center-1",
         sam_dilation: 0,
@@ -92,7 +125,6 @@ const DEFAULT_DATA = {
         background_color: "White",
         latent_image_index: 1,
         instruction: GENERATOR_QWEN_INSTRUCTION,
-        qwen_2511: true,
     },
     remove_clothes_sampler: {
         inherit_pipe: true,
@@ -140,7 +172,7 @@ const DEFAULT_DATA = {
         // TODO: Decide what to do with internal RMBG later.
         use_internal_rmbg: false,
         preset: "balanced",
-        use_sam3_details_recovery: true,
+        use_sam3_details_recovery: false,
         use_preset_values: true,
         tolerance: 0.15,
         softness: 0.12,
@@ -200,8 +232,7 @@ const CLOTHES_STAGES = [
 ];
 
 const DEFAULT_EMOTION_STAGES = [
-    ["emotion_0001", "Emotion"],
-    ["emotion_0001_bg_remove", "Emotion BG"],
+    ["emotion_0001_bg_remove", "Emotion"],
 ];
 
 const WORKFLOW_UPSCALER_DIT_MODELS = [
@@ -220,8 +251,8 @@ const WORKFLOW_UPSCALER_VAE_MODELS = [
 const SEEDVR_ATTENTION_MODES = ["sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3"];
 const SEEDVR_COLOR_CORRECTION_MODES = ["lab", "wavelet", "adain", "none"];
 const NATIVE_SEEDVR_NODE_NAMES = ["SeedVR2Preprocess", "SeedVR2Conditioning", "SeedVR2PostProcessing"];
+const BG_REMOVE_MODES = ["Native", "disabled", "ultra_light", "light", "balanced", "strong", "aggressive"];
 
-const POSE_GENERATION_LORA_LABEL = "VNCCS Pose Studio QIE2511";
 const CLOTHES_CORE_LORA_LABEL = "VNCCS Clothes Core";
 
 const CSS = `
@@ -726,6 +757,41 @@ const CSS = `
 .vnccs-pipe-chain.is-clothes {
     grid-template-columns: repeat(4, minmax(0, 1fr));
 }
+.vnccs-pipe-chain.is-emotions {
+    grid-template-columns: repeat(var(--vnccs-stage-count, 1), minmax(0, 1fr));
+    grid-template-rows: minmax(0, 1fr);
+    gap: calc(10px * var(--vnccs-stage-scale, 1));
+    overflow: hidden;
+}
+.vnccs-pipe-chain.is-emotions .vnccs-pipe-stage {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    padding: calc(10px * var(--vnccs-stage-scale, 1));
+    gap: calc(5px * var(--vnccs-stage-scale, 1));
+}
+.vnccs-pipe-chain.is-emotions .vnccs-pipe-stage-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: calc(12px * var(--vnccs-stage-scale, 1));
+}
+.vnccs-pipe-chain.is-emotions .vnccs-pipe-stage-status {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    font-size: calc(10px * var(--vnccs-stage-scale, 1));
+    line-height: 1.2;
+}
+.vnccs-pipe-chain.is-emotions .vnccs-pipe-regen {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: calc(4px * var(--vnccs-stage-scale, 1)) calc(7px * var(--vnccs-stage-scale, 1));
+    font-size: calc(10px * var(--vnccs-stage-scale, 1));
+}
 .vnccs-pipe-stage {
     position: relative;
     border: 1px solid rgba(255,255,255,0.08);
@@ -825,6 +891,32 @@ const CSS = `
     gap: 6px;
     flex-wrap: wrap;
     justify-content: flex-end;
+}
+.vnccs-pipe-root.is-emotions .vnccs-pipe-preview-head {
+    min-width: 0;
+    gap: 8px;
+}
+.vnccs-pipe-root.is-emotions .vnccs-pipe-preview-label {
+    flex: 0 1 24%;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.vnccs-pipe-root.is-emotions .vnccs-pipe-tabs {
+    flex: 1 1 auto;
+    min-width: 0;
+    flex-wrap: nowrap;
+    overflow: hidden;
+}
+.vnccs-pipe-root.is-emotions .vnccs-pipe-tab {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding-inline: calc(8px * var(--vnccs-stage-scale, 1));
+    font-size: calc(10px * var(--vnccs-stage-scale, 1));
 }
 .vnccs-pipe-tab {
     border: 1px solid rgba(255,255,255,0.08);
@@ -946,6 +1038,9 @@ function readData(node) {
         if (!SEEDVR_COLOR_CORRECTION_MODES.includes(data.upscaler?.color_correction)) {
             data.upscaler.color_correction = "lab";
         }
+        for (const section of ["common", "pose_generation", "remove_clothes"]) {
+            data[section].target_size = resolutionScaleValue(resolutionScaleMegapixels(data[section].target_size));
+        }
         return data;
     } catch {
         return JSON.parse(JSON.stringify(DEFAULT_DATA));
@@ -981,6 +1076,7 @@ class CharacterGeneratorWidget {
         this.isClone = Boolean(options.isClone);
         this.isClothes = Boolean(options.isClothes);
         this.isEmotions = Boolean(options.isEmotions);
+        this.qi2EmotionDefaultsPending = this.isEmotions;
         this.title = options.title || "VNCCS Character Generator";
         this.data = readData(node);
         this.seedvrAttention = { current: null, available: SEEDVR_ATTENTION_MODES };
@@ -997,10 +1093,13 @@ class CharacterGeneratorWidget {
         this.stageState = Object.fromEntries(this.stages.map(([key]) => [key, { status: "waiting", images: null, message: "" }]));
         const defaultPreview = this.defaultPreviewStage();
         this.selectedPreview = this.data.ui?.selected_preview || defaultPreview;
-        if (!this.stages.some(([key]) => key === this.selectedPreview)) {
+        const selectedPreviewWasInvalid = !this.stages.some(([key]) => key === this.selectedPreview);
+        if (selectedPreviewWasInvalid) {
             this.selectedPreview = defaultPreview;
         }
-        this.userSelectedPreview = Boolean(this.data.ui?.user_selected_preview);
+        this.userSelectedPreview = selectedPreviewWasInvalid
+            ? false
+            : Boolean(this.data.ui?.user_selected_preview);
         this.viewer = null;
         this.viewerFocus = null;
         this.restoredViewer = null;
@@ -1118,9 +1217,13 @@ class CharacterGeneratorWidget {
                 const status = detail.status || "waiting";
                 const previousStageState = this.stageState[stage] || {};
                 const hasImages = Object.prototype.hasOwnProperty.call(detail, "images");
+                const targetedRegenerate = Number.isInteger(this.regenerateState?.imageIndex)
+                    && this.regenerateState?.targetStages?.includes(stage);
                 if (status === "running") {
-                    const continuingBatch = previousStageState.status === "running"
-                        && (Boolean(detail.append_images) || !hasImages);
+                    const continuingBatch = targetedRegenerate || (
+                        previousStageState.status === "running"
+                        && (Boolean(detail.append_images) || !hasImages)
+                    );
                     if (!continuingBatch) this.resetStagesFrom(stage);
                     if (!continuingBatch && (stage === "pose_generation" || stage === "original_pose_generation" || stage === "source_upscaler")) {
                         this.userSelectedPreview = false;
@@ -1128,9 +1231,18 @@ class CharacterGeneratorWidget {
                         this.data.ui.user_selected_preview = false;
                     }
                 }
-                const nextImages = hasImages && detail.append_images
-                    ? [...(previousStageState.images || []), ...(detail.images || [])]
-                    : (hasImages ? detail.images : (previousStageState.images || null));
+                let nextImages = previousStageState.images || null;
+                if (hasImages && detail.replace_images) {
+                    nextImages = [...(previousStageState.images || [])];
+                    const previewStart = Math.max(0, Number.parseInt(detail.preview_start, 10) || 0);
+                    for (const [offset, image] of (detail.images || []).entries()) {
+                        nextImages[previewStart + offset] = image;
+                    }
+                } else if (hasImages && detail.append_images) {
+                    nextImages = [...(previousStageState.images || []), ...(detail.images || [])];
+                } else if (hasImages) {
+                    nextImages = detail.images;
+                }
                 this.stageState[stage] = {
                     status,
                     images: nextImages,
@@ -1167,19 +1279,22 @@ class CharacterGeneratorWidget {
             registerCleanup(this.node, () => window.removeEventListener("vnccs-character-cloner-updated", this.onClonerUpdated));
         }
         if (this.isEmotions) {
-            this.onEmotionStudioModeChanged = () => this.renderSettings();
+            this.onEmotionStudioModeChanged = () => {
+                if (this.syncModelResolution()) writeData(this.node, this.data);
+                this.renderSettings();
+            };
             window.addEventListener("vnccs-emotion-studio-generation-mode-changed", this.onEmotionStudioModeChanged);
             registerCleanup(this.node, () => window.removeEventListener("vnccs-emotion-studio-generation-mode-changed", this.onEmotionStudioModeChanged));
         }
     }
 
-    resetStagesFrom(stageKey) {
+    resetStagesFrom(stageKey, { preserveImages = false } = {}) {
         const start = this.stages.findIndex(([key]) => key === stageKey);
         if (start < 0) return;
         for (const [key] of this.stages.slice(start)) {
             this.stageState[key] = {
                 status: "waiting",
-                images: null,
+                images: preserveImages ? (this.stageState[key]?.images || null) : null,
                 message: "",
                 current: undefined,
                 total: undefined,
@@ -1243,6 +1358,9 @@ class CharacterGeneratorWidget {
     set(section, key, value) {
         this.syncCharacterSourceData();
         if (!this.data[section] || typeof this.data[section] !== "object") this.data[section] = {};
+        const rerenderBgRemove = section === "bg_remove"
+            && key === "preset"
+            && this.data.bg_remove.preset !== value;
         this.data[section][key] = value;
         if (section === "bg_remove" && key === "preset") {
             this.data.bg_remove.use_preset_values = true;
@@ -1253,9 +1371,16 @@ class CharacterGeneratorWidget {
         }
         writeData(this.node, this.data, { notify: false });
         this.saveBrowserState();
+        if (rerenderBgRemove) this.renderSettings();
+    }
+
+    isNativeBgRemove() {
+        return String(this.data.bg_remove?.preset || "").trim().toLowerCase() === "native";
     }
 
     generatorSettingsGroups() {
+        const isQI2 = this.data.ui?.resolution_model_kind === "qi2";
+        const isNativeBgRemove = this.isNativeBgRemove();
         const number = (section, key, label, min, max, step = 1, extra = {}) => ({
             section, key, label, type: "number", min, max, step, ...extra,
         });
@@ -1263,6 +1388,9 @@ class CharacterGeneratorWidget {
         const check = (section, key, label, extra = {}) => ({ section, key, label, type: "checkbox", wide: true, ...extra });
         const select = (section, key, label, options, extra = {}) => ({
             section, key, label, type: "select", options, ...extra,
+        });
+        const resolutionScale = (section, key = "target_size") => ({
+            section, key, label: "resolution scale", type: "resolution_scale", wide: true,
         });
         const textarea = (section, key, label, extra = {}) => ({
             section, key, label, type: "textarea", wide: true, ...extra,
@@ -1272,9 +1400,12 @@ class CharacterGeneratorWidget {
         if (!this.isEmotions) {
             const poseTargetSection = this.isClone ? "common" : "pose_generation";
             groups.push({
-                title: "VNCCS QWEN Encoder · Pose Generation",
-                fields: [
-                    number(poseTargetSection, "target_size", "target_size", 512, 4096, 8),
+                title: isQI2 ? "Text Encode Qwen Image 2.1 · Pose Generation" : "Encoder · Pose Generation",
+                fields: isQI2 ? [
+                    resolutionScale(poseTargetSection),
+                    select("pose_generation", "background_color", "background_color", ["from_generator", "White", "Green", "Blue"]),
+                ] : [
+                    resolutionScale(poseTargetSection),
                     select("pose_generation", "upscale_method", "upscale_method", ["lanczos", "bicubic", "area"]),
                     select("pose_generation", "crop_method", "crop_method", ["disabled", "pad", "center"]),
                     number("pose_generation", "latent_image_index", "latent_image_index", 1, 3, 1),
@@ -1286,7 +1417,6 @@ class CharacterGeneratorWidget {
                     text("pose_generation", "image1_name", "image1_name"),
                     text("pose_generation", "image2_name", "image2_name"),
                     text("pose_generation", "image3_name", "image3_name"),
-                    check("pose_generation", "qwen_2511", "qwen_2511"),
                     textarea("pose_generation", "instruction", "instruction"),
                 ],
             });
@@ -1314,8 +1444,11 @@ class CharacterGeneratorWidget {
             });
             if (this.isClone) {
                 groups.push({
-                    title: "VNCCS QWEN Encoder · Remove Clothes",
-                    fields: [
+                    title: isQI2 ? "Text Encode Qwen Image 2.1 · Remove Clothes" : "Encoder · Remove Clothes",
+                    fields: isQI2 ? [
+                        textarea("remove_clothes", "prompt", "prompt"),
+                        select("remove_clothes", "background_color", "background_color", ["White", "Green", "Blue"]),
+                    ] : [
                         textarea("remove_clothes", "prompt", "prompt"),
                         select("remove_clothes", "upscale_method", "upscale_method", ["lanczos", "bicubic", "area"]),
                         select("remove_clothes", "crop_method", "crop_method", ["disabled", "pad", "center"]),
@@ -1328,7 +1461,6 @@ class CharacterGeneratorWidget {
                         text("remove_clothes", "image1_name", "image1_name"),
                         text("remove_clothes", "image2_name", "image2_name"),
                         text("remove_clothes", "image3_name", "image3_name"),
-                        check("remove_clothes", "qwen_2511", "qwen_2511"),
                         textarea("remove_clothes", "instruction", "instruction"),
                     ],
                     note: "target_size is shared with the clone pose-generation encoder.",
@@ -1375,64 +1507,89 @@ class CharacterGeneratorWidget {
         } else {
             groups.push({
                 title: "UltralyticsDetectorProvider",
-                fields: [
+                fields: isQI2 ? [
+                    select("emotion_generation", "bbox_model", "bbox detector model", [], { nodeName: "UltralyticsDetectorProvider", inputName: "model_name", wide: true }),
+                ] : [
                     select("emotion_generation", "bbox_model", "bbox detector model", [], { nodeName: "UltralyticsDetectorProvider", inputName: "model_name", wide: true }),
                     select("emotion_generation", "segm_model", "segmentation detector model", [], { nodeName: "UltralyticsDetectorProvider", inputName: "model_name", wide: true }),
                 ],
             });
+            if (isQI2) {
+                groups.push({
+                    title: "VNCCS BBox Extractor · QI2 Face Generation",
+                    fields: [
+                        resolutionScale("emotion_generation", "target_size"),
+                        number("emotion_generation", "bbox_threshold", "threshold", 0, 1, 0.01),
+                        number("emotion_generation", "bbox_dilation", "dilation", 0, 1024, 1),
+                        number("emotion_generation", "feather", "feather", 0, 1024, 1),
+                        number("emotion_generation", "drop_size", "drop_size", 1, 4096, 1),
+                    ],
+                    note: "The crop is encoded by Text Encode Qwen Image 2.1, generated at the selected megapixel scale, resized to the original crop bounds, and pasted back at the same coordinates. Feather controls the blend at the paste boundary.",
+                });
+                groups.push({
+                    title: "Text Encode Qwen Image 2.1 · Emotion Prompt",
+                    fields: [
+                        textarea("emotion_generation", "qi2_prompt_template", "prompt template"),
+                    ],
+                    note: "Use {emotion} where the selected card's natural prompt and description tags should be inserted.",
+                });
+            } else {
+                groups.push({
+                    title: "SAMLoader",
+                    fields: [
+                        check("emotion_generation", "use_sam", "Connect SAM and segmentation detector to FaceDetailer"),
+                        select("emotion_generation", "sam_model", "model_name", [], { nodeName: "SAMLoader", inputName: "model_name", wide: true }),
+                        select("emotion_generation", "sam_device_mode", "device_mode", ["AUTO", "Prefer GPU", "CPU"], { nodeName: "SAMLoader", inputName: "device_mode" }),
+                    ],
+                });
+                groups.push({
+                    title: "FaceDetailer",
+                    fields: [
+                        number("emotion_generation", "guide_size", "guide_size", 64, 16384, 8),
+                        check("emotion_generation", "guide_size_for", "guide_size_for"),
+                        number("emotion_generation", "max_size", "max_size", 64, 16384, 8),
+                        check("emotion_generation", "inherit_pipe_sampler", "Use sampler and scheduler from connected pipe"),
+                        select("emotion_generation", "sampler_name", "sampler_name", [], { nodeName: "FaceDetailer", inputName: "sampler_name" }),
+                        select("emotion_generation", "scheduler", "scheduler", [], { nodeName: "FaceDetailer", inputName: "scheduler" }),
+                        number("emotion_generation", "feather", "feather", 0, 1024, 1),
+                        check("emotion_generation", "noise_mask", "noise_mask"),
+                        check("emotion_generation", "force_inpaint", "force_inpaint"),
+                        number("emotion_generation", "bbox_threshold", "bbox_threshold", 0, 1, 0.01),
+                        number("emotion_generation", "bbox_dilation", "bbox_dilation", 0, 1024, 1),
+                        number("emotion_generation", "bbox_crop_factor", "bbox_crop_factor", 1, 100, 0.01),
+                        select("emotion_generation", "sam_detection_hint", "sam_detection_hint", ["center-1", "horizontal-2", "vertical-2", "rect-4", "diamond-4", "mask-area", "mask-points", "mask-point-bbox", "none"], { nodeName: "FaceDetailer", inputName: "sam_detection_hint" }),
+                        number("emotion_generation", "sam_dilation", "sam_dilation", 0, 1024, 1),
+                        number("emotion_generation", "sam_threshold", "sam_threshold", 0, 1, 0.01),
+                        number("emotion_generation", "sam_bbox_expansion", "sam_bbox_expansion", 0, 1024, 1),
+                        number("emotion_generation", "sam_mask_hint_threshold", "sam_mask_hint_threshold", 0, 1, 0.01),
+                        select("emotion_generation", "sam_mask_hint_use_negative", "sam_mask_hint_use_negative", ["False", "True"], { nodeName: "FaceDetailer", inputName: "sam_mask_hint_use_negative" }),
+                        number("emotion_generation", "drop_size", "drop_size", 0, 4096, 1),
+                        number("emotion_generation", "cycle", "cycle", 1, 100, 1),
+                        check("emotion_generation", "inpaint_model", "inpaint_model"),
+                        number("emotion_generation", "noise_mask_feather", "noise_mask_feather", 0, 1024, 1),
+                        check("emotion_generation", "tiled_encode", "tiled_encode"),
+                        check("emotion_generation", "tiled_decode", "tiled_decode"),
+                    ],
+                    note: "Steps and CFG come from the connected pipe. Face Detailer denoise is controlled in the main panel. Sampler and scheduler can optionally be overridden here. Seed remains per emotion item.",
+                });
+            }
             groups.push({
-                title: "SAMLoader",
-                fields: [
-                    check("emotion_generation", "use_sam", "Connect SAM and segmentation detector to FaceDetailer"),
-                    select("emotion_generation", "sam_model", "model_name", [], { nodeName: "SAMLoader", inputName: "model_name", wide: true }),
-                    select("emotion_generation", "sam_device_mode", "device_mode", ["AUTO", "Prefer GPU", "CPU"], { nodeName: "SAMLoader", inputName: "device_mode" }),
-                ],
-            });
-            groups.push({
-                title: "FaceDetailer",
-                fields: [
-                    number("emotion_generation", "guide_size", "guide_size", 64, 16384, 8),
-                    check("emotion_generation", "guide_size_for", "guide_size_for"),
-                    number("emotion_generation", "max_size", "max_size", 64, 16384, 8),
-                    check("emotion_generation", "inherit_pipe_sampler", "Use sampler and scheduler from connected pipe"),
-                    select("emotion_generation", "sampler_name", "sampler_name", [], { nodeName: "FaceDetailer", inputName: "sampler_name" }),
-                    select("emotion_generation", "scheduler", "scheduler", [], { nodeName: "FaceDetailer", inputName: "scheduler" }),
-                    number("emotion_generation", "feather", "feather", 0, 1024, 1),
-                    check("emotion_generation", "noise_mask", "noise_mask"),
-                    check("emotion_generation", "force_inpaint", "force_inpaint"),
-                    number("emotion_generation", "bbox_threshold", "bbox_threshold", 0, 1, 0.01),
-                    number("emotion_generation", "bbox_dilation", "bbox_dilation", 0, 1024, 1),
-                    number("emotion_generation", "bbox_crop_factor", "bbox_crop_factor", 1, 100, 0.01),
-                    select("emotion_generation", "sam_detection_hint", "sam_detection_hint", ["center-1", "horizontal-2", "vertical-2", "rect-4", "diamond-4", "mask-area", "mask-points", "mask-point-bbox", "none"], { nodeName: "FaceDetailer", inputName: "sam_detection_hint" }),
-                    number("emotion_generation", "sam_dilation", "sam_dilation", 0, 1024, 1),
-                    number("emotion_generation", "sam_threshold", "sam_threshold", 0, 1, 0.01),
-                    number("emotion_generation", "sam_bbox_expansion", "sam_bbox_expansion", 0, 1024, 1),
-                    number("emotion_generation", "sam_mask_hint_threshold", "sam_mask_hint_threshold", 0, 1, 0.01),
-                    select("emotion_generation", "sam_mask_hint_use_negative", "sam_mask_hint_use_negative", ["False", "True"], { nodeName: "FaceDetailer", inputName: "sam_mask_hint_use_negative" }),
-                    number("emotion_generation", "drop_size", "drop_size", 0, 4096, 1),
-                    number("emotion_generation", "cycle", "cycle", 1, 100, 1),
-                    check("emotion_generation", "inpaint_model", "inpaint_model"),
-                    number("emotion_generation", "noise_mask_feather", "noise_mask_feather", 0, 1024, 1),
-                    check("emotion_generation", "tiled_encode", "tiled_encode"),
-                    check("emotion_generation", "tiled_decode", "tiled_decode"),
-                ],
-                note: "Steps and CFG come from the connected pipe. Face Detailer denoise is controlled in the main panel. Sampler and scheduler can optionally be overridden here. Seed remains per emotion item.",
-            });
-            groups.push({
-                title: "VNCCS Emotion Matte Merge",
+                title: isQI2 ? "VNCCS Emotion Crop Merge" : "VNCCS Emotion Matte Merge",
                 fields: [
                     number("emotion_generation", "matte_expand_radius", "matte_expand_radius", 0, 256, 1),
                     number("emotion_generation", "matte_feather_radius", "matte_feather_radius", 0, 256, 1),
                     number("emotion_generation", "chroma_context", "chroma_context", 0, 1024, 1),
                 ],
-                note: "These parameters affect only the FaceDetailer region. The original sprite alpha remains untouched elsewhere.",
+                note: isQI2
+                    ? "The generated QI2 face crop is returned to its original coordinates before background processing."
+                    : "These parameters affect only the FaceDetailer region. The original sprite alpha remains untouched elsewhere.",
             });
         }
 
         groups.push({
             title: "VNCCS Chroma Key",
             fields: [
-                select("bg_remove", "preset", "preset", ["disabled", "ultra_light", "light", "balanced", "strong", "aggressive"]),
+                select("bg_remove", "preset", "preset", BG_REMOVE_MODES),
                 check("bg_remove", "use_preset_values", "Use values from selected preset"),
                 number("bg_remove", "tolerance", "tolerance", 0, 1, 0.01),
                 number("bg_remove", "softness", "softness", 0.001, 1, 0.01),
@@ -1445,30 +1602,32 @@ class CharacterGeneratorWidget {
                 select("bg_remove", "matte_method", "matte_method", ["chroma_soft", "guided_edge", "pymatting_if_available"]),
                 select("bg_remove", "screen_mode", "screen_mode", ["from_background", "auto", "green", "blue", "red"]),
                 select("bg_remove", "output_mode", "output_mode", ["straight_rgba", "premultiplied_rgba"]),
-                check("bg_remove", "use_sam3_details_recovery", "Use SAM3 recovery mask"),
+                ...(!isNativeBgRemove ? [check("bg_remove", "use_sam3_details_recovery", "Use SAM3 recovery mask")] : []),
             ],
             note: "When preset values are enabled, the individual chroma parameters are retained but the preset controls processing.",
         });
-        groups.push({
-            title: "Easy SAM3 · Model Loader",
-            fields: [
-                text("bg_remove", "sam3_model", "model (blank = managed VNCCS model)", { wide: true }),
-                select("bg_remove", "sam3_segmentor", "segmentor", ["image"], { nodeName: "LoadSam3Model", inputName: "segmentor" }),
-                select("bg_remove", "sam3_device", "device", ["auto", "cuda", "cpu", "mps"], { nodeName: "LoadSam3Model", inputName: "device" }),
-                select("bg_remove", "sam3_precision", "precision", ["bf16", "fp16", "fp32"], { nodeName: "LoadSam3Model", inputName: "precision" }),
-            ],
-        });
-        groups.push({
-            title: "Easy SAM3 · Image Segmentation / Recovery",
-            fields: [
-                textarea("bg_remove", "sam3_prompt", "prompt"),
-                number("bg_remove", "sam3_threshold", "threshold", 0, 1, 0.01),
-                select("bg_remove", "sam3_add_background", "add_background", ["none", "black", "white", "green", "blue"], { nodeName: "Sam3ImageSegmentation", inputName: "add_background" }),
-                number("bg_remove", "sam3_detection_limit", "detection_limit", -1, 10000, 1),
-                number("bg_remove", "sam3_erode_radius", "recovery erode radius", 0, 256, 1),
-                number("bg_remove", "sam3_min_foreground_overlap", "minimum foreground overlap", 0, 1, 0.01),
-            ],
-        });
+        if (!isNativeBgRemove) {
+            groups.push({
+                title: "Easy SAM3 · Model Loader",
+                fields: [
+                    text("bg_remove", "sam3_model", "model (blank = managed VNCCS model)", { wide: true }),
+                    select("bg_remove", "sam3_segmentor", "segmentor", ["image"], { nodeName: "LoadSam3Model", inputName: "segmentor" }),
+                    select("bg_remove", "sam3_device", "device", ["auto", "cuda", "cpu", "mps"], { nodeName: "LoadSam3Model", inputName: "device" }),
+                    select("bg_remove", "sam3_precision", "precision", ["bf16", "fp16", "fp32"], { nodeName: "LoadSam3Model", inputName: "precision" }),
+                ],
+            });
+            groups.push({
+                title: "Easy SAM3 · Image Segmentation / Recovery",
+                fields: [
+                    textarea("bg_remove", "sam3_prompt", "prompt"),
+                    number("bg_remove", "sam3_threshold", "threshold", 0, 1, 0.01),
+                    select("bg_remove", "sam3_add_background", "add_background", ["none", "black", "white", "green", "blue"], { nodeName: "Sam3ImageSegmentation", inputName: "add_background" }),
+                    number("bg_remove", "sam3_detection_limit", "detection_limit", -1, 10000, 1),
+                    number("bg_remove", "sam3_erode_radius", "recovery erode radius", 0, 256, 1),
+                    number("bg_remove", "sam3_min_foreground_overlap", "minimum foreground overlap", 0, 1, 0.01),
+                ],
+            });
+        }
         return groups;
     }
 
@@ -1497,6 +1656,22 @@ class CharacterGeneratorWidget {
                 draft[field.section][field.key] = input.checked;
             };
             wrap.append(input, caption);
+        } else if (field.type === "resolution_scale") {
+            wrap.classList.add("is-wide");
+            const value = document.createElement("span");
+            value.className = "vnccs-pipe-settings-field-label";
+            value.textContent = resolutionScaleText(current);
+            input = document.createElement("input");
+            input.type = "range";
+            input.min = String(RESOLUTION_SCALE_MIN_MP);
+            input.max = String(RESOLUTION_SCALE_MAX_MP);
+            input.step = String(RESOLUTION_SCALE_STEP_MP);
+            input.value = resolutionScaleMegapixels(current).toFixed(1);
+            input.oninput = () => {
+                draft[field.section][field.key] = resolutionScaleValue(input.value);
+                value.textContent = resolutionScaleText(draft[field.section][field.key]);
+            };
+            wrap.append(caption, value, input);
         } else if (field.type === "select") {
             input = document.createElement("select");
             for (const value of this.settingsFieldOptions(field, current)) {
@@ -1747,7 +1922,7 @@ class CharacterGeneratorWidget {
         if (!this.data.ui) this.data.ui = {};
         this.data.ui.selected_preview = stageKey;
         this.data.ui.user_selected_preview = false;
-        this.resetStagesFrom(stageKey);
+        this.resetStagesFrom(stageKey, { preserveImages: Number.isInteger(imageIndex) });
         this.startRegenerate(stageKey, imageIndex);
         writeData(this.node, this.data);
         this.renderPreview();
@@ -1801,37 +1976,73 @@ class CharacterGeneratorWidget {
     }
 
     syncModelResolution(sourceId = null) {
-        if (this.isEmotions) return false;
         const source = this.controlCenterWidgetNode();
-        if (!source || (sourceId != null && String(source.id) !== String(sourceId))) return false;
-        const stateWidget = source.widgets?.find(widget => widget.name === "node_state");
-        let state;
-        try { state = JSON.parse(stateWidget?.value || "{}"); } catch { return false; }
-        const kind = String(state.active_kind || "QIE2511").trim().toLowerCase();
-        if (!["qie2511", "klein9b", "minimaxh3"].includes(kind)) return false;
-        const previousKind = this.data.ui?.resolution_model_kind;
-        if (previousKind === kind) return false;
-        const section = this.isClone ? "common" : "pose_generation";
-        const settings = this.data[section];
-        // Keep custom sizes from legacy workflows on their first synchronization.
-        // A family switch selects its default; later edits remain until the next switch.
-        if (previousKind || Number(settings.target_size) === 1024) {
-            settings.target_size = kind === "minimaxh3" ? 1536 : 1024;
+        let kind = "";
+        if (source) {
+            if (sourceId != null && String(source.id) !== String(sourceId)) return false;
+            const stateWidget = source.widgets?.find(widget => widget.name === "node_state");
+            let state;
+            try { state = JSON.parse(stateWidget?.value || "{}"); } catch { return false; }
+            kind = String(state.active_kind || "QI2").trim().toLowerCase();
+        } else if (this.isEmotions && sourceId == null) {
+            kind = this.connectedEmotionStudioMode();
+        } else {
+            return false;
         }
-        if (this.isClone) {
-            this.data.pose_generation.target_size = settings.target_size;
-            this.data.remove_clothes.target_size = settings.target_size;
+        if (!["qi2", "klein9b", "minimaxh3", "anima", "illustrious"].includes(kind)) return false;
+        const previousKind = this.data.ui?.resolution_model_kind;
+        const previousBgKind = this.data.ui?.bg_remove_model_kind;
+        let changed = false;
+        if (kind === "qi2" && this.qi2EmotionDefaultsPending) {
+            this.data.emotion_generation = {
+                ...(this.data.emotion_generation || {}),
+                ...QI2_EMOTION_BBOX_DEFAULTS,
+            };
+            this.qi2EmotionDefaultsPending = false;
+            changed = true;
+        }
+        if (!this.isEmotions && previousKind !== kind) {
+            const section = this.isClone ? "common" : "pose_generation";
+            const settings = this.data[section];
+            // Keep custom sizes from legacy workflows on their first synchronization.
+            // A family switch selects its default; later edits remain until the next switch.
+            if (previousKind || Number(settings.target_size) === 1024) {
+                settings.target_size = kind === "minimaxh3" ? 1536 : 1024;
+            }
+            if (this.isClone) {
+                this.data.pose_generation.target_size = settings.target_size;
+                this.data.remove_clothes.target_size = settings.target_size;
+            }
+            changed = true;
+        }
+
+        if (previousBgKind !== kind) {
+            const preset = String(this.data.bg_remove?.preset || "balanced");
+            if (kind === "qi2") {
+                if (preset.toLowerCase() !== "native") {
+                    this.data.ui.bg_remove_previous_preset = preset;
+                }
+                this.data.bg_remove.preset = "Native";
+            } else if (preset.toLowerCase() === "native") {
+                this.data.bg_remove.preset = this.data.ui.bg_remove_previous_preset || "balanced";
+            }
+            this.data.ui.bg_remove_model_kind = kind;
+            changed = true;
         }
         this.data.ui = { ...this.data.ui, resolution_model_kind: kind };
-        return true;
+        return changed;
     }
 
     bindModelResolutionSync() {
-        if (this.isEmotions) return;
         const sync = event => {
-            if (!this.syncModelResolution(event?.detail?.node_id)) return;
+            const sourceChanged = this.syncCharacterSourceData();
+            const modelChanged = this.syncModelResolution(event?.detail?.node_id);
+            if (!sourceChanged && !modelChanged) return;
+            this.syncStagesFromData();
             writeData(this.node, this.data);
             this.renderSettings();
+            this.renderPreview();
+            this.renderChain();
         };
         window.addEventListener("vnccs-control-center-model-changed", sync);
         // Also cover graph reconnection and loading saved workflows in any node order.
@@ -1880,11 +2091,7 @@ class CharacterGeneratorWidget {
     }
 
     syncEmotionStudioSourceData() {
-        const matchesType = (node, type, displayName = "") => {
-            const title = typeof node?.getTitle === "function" ? node.getTitle() : node?.title;
-            return node?.type === type || node?.comfyClass === type || node?.constructor?.type === type || title === displayName;
-        };
-        const source = app.graph?._nodes?.find(n => matchesType(n, "EmotionGeneratorV2", "VNCCS Emotion Studio"));
+        const source = this.connectedEmotionStudioNode();
         if (!source) return false;
         const character = source.widgets?.find(w => w.name === "character")?.value || "";
         const costumesRaw = source.widgets?.find(w => w.name === "costumes_data")?.value || "[]";
@@ -1921,13 +2128,10 @@ class CharacterGeneratorWidget {
         if (this.isEmotions) {
             const pairs = Array.isArray(this.data.emotion_pairs) ? this.data.emotion_pairs : [];
             if (!pairs.length) return DEFAULT_EMOTION_STAGES;
-            return pairs.flatMap((pair, index) => {
+            return pairs.map((pair, index) => {
                 const key = `emotion_${String(index + 1).padStart(4, "0")}`;
                 const label = `${pair.costume || "Costume"} / ${pair.emotion || "Emotion"}`;
-                return [
-                    [key, label],
-                    [`${key}_bg_remove`, `${label} BG`],
-                ];
+                return [`${key}_bg_remove`, label];
             });
         }
         return this.isClothes ? CLOTHES_STAGES : STAGES;
@@ -1935,12 +2139,18 @@ class CharacterGeneratorWidget {
 
     defaultPreviewStage() {
         if (this.isClone) return "original_pose_generation";
-        if (this.isEmotions) return this.currentStages()[0]?.[0] || "emotion_0001";
+        if (this.isEmotions) return this.currentStages()[0]?.[0] || "emotion_0001_bg_remove";
         return this.isClothes ? "source_upscaler" : "pose_generation";
     }
 
     syncStagesFromData() {
         const nextStages = this.currentStages();
+        const stageCount = Math.max(1, nextStages.length);
+        const stageScale = this.isEmotions
+            ? Math.max(0.5, Math.min(1, 6 / stageCount))
+            : 1;
+        this.root?.style.setProperty("--vnccs-stage-count", String(stageCount));
+        this.root?.style.setProperty("--vnccs-stage-scale", String(stageScale));
         const nextKeys = new Set(nextStages.map(([key]) => key));
         this.stages = nextStages;
         if (!this.stageState) this.stageState = {};
@@ -2143,6 +2353,8 @@ class CharacterGeneratorWidget {
     async loadNodeDefs() {
         const names = [
             "VNCCS_QWEN_Encoder",
+            "TextEncodeQwenImage21",
+            "QwenImage21Cache",
             "KSampler",
             "VAEDecodeTiled",
             "UNETLoader",
@@ -2300,7 +2512,7 @@ class CharacterGeneratorWidget {
         const wrap = document.createElement("label");
         wrap.className = "vnccs-pipe-field";
         const help = {
-            target_size: "Model defaults: QIE2511 and Klein 1024, MiniMaxH3 1536. You can change this value manually until the next model-family switch.",
+            target_size: "Sets the generated image area from 1.0 to 4.0 megapixels while preserving aspect ratio.",
             prompt: "Prompt text used for the remove-clothes/preparation stage.",
             gan_model: "Upscale model used when GAN upscaling is selected.",
             model: "SeedVR diffusion model used for the upscaler stage.",
@@ -2378,6 +2590,40 @@ class CharacterGeneratorWidget {
             this.set(section, key, raw);
         };
         wrap.append(caption, input);
+        return wrap;
+    }
+
+    resolutionScaleSlider(section, key = "target_size") {
+        const wrap = document.createElement("label");
+        wrap.className = "vnccs-pipe-slider-field";
+        setHelpText(wrap, "Sets the generated image area from 1.0 to 4.0 megapixels while preserving aspect ratio.");
+        const head = document.createElement("div");
+        head.className = "vnccs-pipe-slider-head";
+        const caption = document.createElement("div");
+        caption.className = "vnccs-pipe-label";
+        caption.textContent = "resolution scale";
+        const value = document.createElement("div");
+        value.className = "vnccs-pipe-slider-value";
+        value.textContent = resolutionScaleText(this.data[section][key]);
+        head.append(caption, value);
+
+        const slider = document.createElement("input");
+        slider.className = "vnccs-pipe-slider";
+        slider.type = "range";
+        slider.min = String(RESOLUTION_SCALE_MIN_MP);
+        slider.max = String(RESOLUTION_SCALE_MAX_MP);
+        slider.step = String(RESOLUTION_SCALE_STEP_MP);
+        slider.value = resolutionScaleMegapixels(this.data[section][key]).toFixed(1);
+        slider.style.setProperty("--fill", `${((Number(slider.value) - 1) / 3) * 100}%`);
+        slider.setAttribute("aria-label", "Resolution scale in megapixels");
+        this.protectNativeControl(slider);
+        slider.oninput = () => {
+            const targetSize = resolutionScaleValue(slider.value);
+            value.textContent = resolutionScaleText(targetSize);
+            slider.style.setProperty("--fill", `${((Number(slider.value) - 1) / 3) * 100}%`);
+            this.set(section, key, targetSize);
+        };
+        wrap.append(head, slider);
         return wrap;
     }
 
@@ -2520,25 +2766,49 @@ class CharacterGeneratorWidget {
         return wrap;
     }
 
-    connectedEmotionStudioIsAnima() {
-        if (!this.isEmotions) return false;
-        const pipeInput = (this.node.inputs || []).find(input => input.name === "pipe");
-        if (!pipeInput?.link) return false;
-        const link = app.graph?.links?.[pipeInput.link];
-        const sourceNode = app.graph?.getNodeById?.(link?.origin_id);
-        if (!sourceNode || sourceNode.type !== "EmotionGeneratorV2") return false;
+    bgRemoveFields() {
+        const fields = [
+            this.field("bg_remove", "preset", "mode", "select", BG_REMOVE_MODES),
+        ];
+        if (!this.isNativeBgRemove()) {
+            fields.push(this.field("bg_remove", "use_sam3_details_recovery", "Use SAM3 Details Recovery", "checkbox"));
+        }
+        return fields;
+    }
+
+    connectedEmotionStudioMode() {
+        const sourceNode = this.connectedEmotionStudioNode();
+        if (!sourceNode) return false;
 
         const settingsWidget = sourceNode.widgets?.find(widget => widget.name === "generation_settings");
         try {
             const settings = settingsWidget?.value ? JSON.parse(settingsWidget.value) : {};
             const settingsMode = String(settings?.generation_mode || "").toLowerCase();
-            if (settingsMode === "anima") return true;
-            if (settingsMode === "illustrious") return false;
+            if (["qi2", "anima", "illustrious"].includes(settingsMode)) return settingsMode;
         } catch (_) {
             // Fall back to the hidden mode widget below.
         }
         const modeWidget = sourceNode.widgets?.find(widget => widget.name === "generation_model");
-        return String(modeWidget?.value || "").toLowerCase() === "anima";
+        const mode = String(modeWidget?.value || "").toLowerCase();
+        return ["qi2", "anima", "illustrious"].includes(mode) ? mode : "";
+    }
+
+    connectedEmotionStudioNode() {
+        if (!this.isEmotions) return null;
+        const pipeInput = (this.node.inputs || []).find(input => input.name === "pipe");
+        if (!pipeInput || pipeInput.link == null) return null;
+        const link = app.graph?.links?.[pipeInput.link];
+        const sourceNode = app.graph?.getNodeById?.(link?.origin_id);
+        if (!sourceNode || (sourceNode.type !== "EmotionGeneratorV2" && sourceNode.comfyClass !== "EmotionGeneratorV2")) return null;
+        return sourceNode;
+    }
+
+    connectedEmotionStudioIsAnima() {
+        return this.connectedEmotionStudioMode() === "anima";
+    }
+
+    shouldShowEmotionDenoiseControl() {
+        return this.connectedEmotionStudioMode() !== "qi2";
     }
 
     async loadSeedvrAssets(force = false) {
@@ -2653,6 +2923,7 @@ class CharacterGeneratorWidget {
         title.textContent = this.title;
         this.settingsEl.appendChild(title);
         if (this.isEmotions) {
+            const qi2Emotion = this.connectedEmotionStudioMode() === "qi2";
             const count = Array.isArray(this.data.emotion_pairs) ? this.data.emotion_pairs.length : 0;
             const info = document.createElement("div");
             info.className = "vnccs-pipe-block";
@@ -2665,28 +2936,39 @@ class CharacterGeneratorWidget {
                     <div class="vnccs-pipe-empty" style="min-height:auto;padding:8px;">${count} costume / emotion pair(s)</div>
                 </div>`;
             this.settingsEl.appendChild(info);
-            this.settingsEl.appendChild(this.block("Emotion Strength", [
-                this.faceDenoiseSlider(),
-            ]));
-            const faceDetailerFields = [
-                this.faceDetailerNumberField("task_batch_size", "task_batch_size (0 = auto)", { min: 0, max: 32, step: 1 }),
-                this.field("emotion_generation", "use_sam", "Use SAM", "checkbox"),
-                this.faceDetailerNumberField("bbox_threshold", "bbox_threshold", { min: 0, max: 1, step: 0.01 }),
-                this.faceDetailerNumberField("bbox_dilation", "bbox_dilation", { min: 0, max: 128, step: 1 }),
-                this.faceDetailerNumberField("sam_dilation", "sam_dilation", { min: 0, max: 128, step: 1 }),
-                this.faceDetailerNumberField("sam_threshold", "sam_threshold", { min: 0, max: 1, step: 0.01 }),
-                this.faceDetailerNumberField("sam_bbox_expansion", "sam_bbox_expansion", { min: 0, max: 128, step: 1 }),
-            ];
-            this.settingsEl.appendChild(this.block("Face Detailer", faceDetailerFields));
-            this.settingsEl.appendChild(this.block("BG Remove", [
-                this.field("bg_remove", "preset", "chroma preset", "select", ["disabled", "ultra_light", "light", "balanced", "strong", "aggressive"]),
-                this.field("bg_remove", "use_sam3_details_recovery", "Use SAM3 Details Recovery", "checkbox"),
-            ]));
+            if (qi2Emotion) {
+                this.settingsEl.appendChild(this.block("QI2 Face Generation", [
+                    this.resolutionScaleSlider("emotion_generation", "target_size"),
+                ]));
+                this.settingsEl.appendChild(this.block("VNCCS BBox Extractor", [
+                    this.faceDetailerNumberField("bbox_threshold", "threshold", { min: 0, max: 1, step: 0.01 }),
+                    this.faceDetailerNumberField("bbox_dilation", "dilation", { min: 0, max: 1024, step: 1 }),
+                    this.faceDetailerNumberField("feather", "feather", { min: 0, max: 1024, step: 1 }),
+                    this.faceDetailerNumberField("drop_size", "drop_size", { min: 1, max: 4096, step: 1 }),
+                ]));
+            } else if (this.shouldShowEmotionDenoiseControl()) {
+                this.settingsEl.appendChild(this.block("Emotion Strength", [
+                    this.faceDenoiseSlider(),
+                ]));
+            }
+            if (!qi2Emotion) {
+                const faceDetailerFields = [
+                    this.faceDetailerNumberField("task_batch_size", "task_batch_size (0 = auto)", { min: 0, max: 32, step: 1 }),
+                    this.field("emotion_generation", "use_sam", "Use SAM", "checkbox"),
+                    this.faceDetailerNumberField("bbox_threshold", "bbox_threshold", { min: 0, max: 1, step: 0.01 }),
+                    this.faceDetailerNumberField("bbox_dilation", "bbox_dilation", { min: 0, max: 128, step: 1 }),
+                    this.faceDetailerNumberField("sam_dilation", "sam_dilation", { min: 0, max: 128, step: 1 }),
+                    this.faceDetailerNumberField("sam_threshold", "sam_threshold", { min: 0, max: 1, step: 0.01 }),
+                    this.faceDetailerNumberField("sam_bbox_expansion", "sam_bbox_expansion", { min: 0, max: 128, step: 1 }),
+                ];
+                this.settingsEl.appendChild(this.block("Face Detailer", faceDetailerFields));
+            }
+            this.settingsEl.appendChild(this.block("BG Remove", this.bgRemoveFields()));
             return;
         }
         if (this.isClone) {
             this.settingsEl.appendChild(this.block("Common", [
-                this.field("common", "target_size", "resolution scale", "select", [1024, 1344, 1536, 2048, 768, 512]),
+                this.resolutionScaleSlider("common"),
             ]));
             if (this.isCloneNsfwEnabled()) {
                 this.settingsEl.appendChild(this.block("Remove Clothes", [
@@ -2695,7 +2977,7 @@ class CharacterGeneratorWidget {
             }
         } else {
             this.settingsEl.appendChild(this.block("Pose Generation", [
-                this.field("pose_generation", "target_size", "resolution scale", "select", [1024, 1344, 1536, 2048, 768, 512]),
+                this.resolutionScaleSlider("pose_generation"),
             ]));
         }
         const upscalerFields = [
@@ -2724,11 +3006,7 @@ class CharacterGeneratorWidget {
             );
         }
         this.settingsEl.appendChild(this.block("Upscaler", upscalerFields));
-        this.settingsEl.appendChild(this.block("BG Remove", [
-            // TODO: Decide what to do with internal RMBG later.
-            this.field("bg_remove", "preset", "chroma preset", "select", ["disabled", "ultra_light", "light", "balanced", "strong", "aggressive"]),
-            this.field("bg_remove", "use_sam3_details_recovery", "Use SAM3 Details Recovery", "checkbox"),
-        ]));
+        this.settingsEl.appendChild(this.block("BG Remove", this.bgRemoveFields()));
     }
 
     renderPreview() {
@@ -2737,6 +3015,7 @@ class CharacterGeneratorWidget {
         const head = document.createElement("div");
         head.className = "vnccs-pipe-preview-head";
         const label = document.createElement("div");
+        label.className = "vnccs-pipe-preview-label";
         label.textContent = this.stages.find(([key]) => key === this.selectedPreview)?.[1] || "Results";
         const tabs = document.createElement("div");
         tabs.className = "vnccs-pipe-tabs";
@@ -2932,6 +3211,7 @@ class CharacterGeneratorWidget {
         this.syncStagesFromData();
         this.chainEl.innerHTML = "";
         this.updateModeClasses();
+        this.chainEl.style.setProperty("--vnccs-stage-count", String(Math.max(1, this.stages.length)));
         for (const [key, name] of this.stages) {
             const stage = document.createElement("div");
             const status = this.stageState[key]?.status || "waiting";
@@ -2972,10 +3252,12 @@ class CharacterGeneratorWidget {
             if (key === "pose_generation" || key === "original_pose_generation" || key === "naked_pose_generation") {
                 const l = document.createElement("div");
                 l.className = "vnccs-pipe-stage-lora";
-                l.textContent = `LoRA: ${POSE_GENERATION_LORA_LABEL}`;
+                const poseLora = this.data.ui?.resolution_model_kind === "klein9b"
+                    ? "VNCCS Pose Studio Klein9b" : "VNCCS Pose Studio QI2";
+                l.textContent = `LoRA: ${poseLora}`;
                 stage.appendChild(l);
             }
-            if (key === "remove_clothes") {
+            if (key === "remove_clothes" && this.data.ui?.resolution_model_kind !== "qi2") {
                 const l = document.createElement("div");
                 l.className = "vnccs-pipe-stage-lora";
                 l.textContent = `LoRA: ${CLOTHES_CORE_LORA_LABEL}`;
@@ -3318,6 +3600,8 @@ app.registerExtension({
         nodeType.prototype.onConfigure = function () {
             onConfigure?.apply(this, arguments);
             if (this._vnccsCharacterGeneratorWidget) {
+                // Loading a saved workflow must preserve its explicit values.
+                this._vnccsCharacterGeneratorWidget.qi2EmotionDefaultsPending = false;
                 this._vnccsCharacterGeneratorWidget.data = readData(this);
                 this._vnccsCharacterGeneratorWidget.syncCharacterSourceData();
                 this._vnccsCharacterGeneratorWidget.syncStagesFromData();

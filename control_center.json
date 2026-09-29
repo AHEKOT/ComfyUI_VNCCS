@@ -2,84 +2,14 @@
   "name": "VNCCS Core Models",
   "models": [
     {
-      "name": "Qwen-Image-Edit-2511-int8-convrot",
+      "name": "Qwen Image 2.1 INT8 ConvRot",
       "type": "unet",
-      "hf_repo": "MIUProject/Qwen-Image-Edit-2511-int8-convrot",
-      "hf_path": "qwen_image_edit_2511_int8_convrot.safetensors",
-      "local_path": "models/diffusion_models/qwen_image_edit_2511_int8_convrot.safetensors",
+      "hf_repo": "Comfy-Org/Qwen-Image-2.1",
+      "hf_path": "diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
+      "local_path": "models/diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
       "version": "1.0",
-      "description": "int8-convrot Native UNet — full quality at reduced VRAM.",
-      "kind": "QIE2511"
-    },
-    {
-      "name": "Qwen-Image-Edit-2511-nunchaku-balance-fp4",
-      "type": "nunchaku",
-      "hf_repo": "QuantFunc/Nunchaku-Qwen-Image-EDIT-2511",
-      "hf_path": "nunchaku_qwen_image_edit_2511_balance_fp4.safetensors",
-      "local_path": "models/diffusion_models/nunchaku_qwen_image_edit_2511_balance_fp4.safetensors",
-      "version": "1.0",
-      "description": "(NVIDIA 5xxx series ONLY) Nunchaku Balance FP4 — balanced quality/speed.",
-      "kind": "QIE2511"
-    },
-    {
-      "name": "Qwen-Image-Edit-2511-nunchaku-balance-int4",
-      "type": "nunchaku",
-      "hf_repo": "QuantFunc/Nunchaku-Qwen-Image-EDIT-2511",
-      "hf_path": "nunchaku_qwen_image_edit_2511_balance_int4.safetensors",
-      "local_path": "models/diffusion_models/nunchaku_qwen_image_edit_2511_balance_int4.safetensors",
-      "version": "1.0",
-      "description": "(NVIDIA 4xxx and lower) Nunchaku Balance INT4 — balanced quality/speed.",
-      "kind": "QIE2511"
-    },
-    {
-      "name": "Qwen-Image-Edit-2511-nunchaku-best-quality-fp4",
-      "type": "nunchaku",
-      "hf_repo": "QuantFunc/Nunchaku-Qwen-Image-EDIT-2511",
-      "hf_path": "nunchaku_qwen_image_edit_2511_best_quality_fp4.safetensors",
-      "local_path": "models/diffusion_models/nunchaku_qwen_image_edit_2511_best_quality_fp4.safetensors",
-      "version": "1.0",
-      "description": "(NVIDIA 5xxx series ONLY) Nunchaku Best Quality FP4 — highest quality, higher VRAM.",
-      "kind": "QIE2511"
-    },
-    {
-      "name": "Qwen-Image-Edit-2511-nunchaku-best-quality-int4",
-      "type": "nunchaku",
-      "hf_repo": "QuantFunc/Nunchaku-Qwen-Image-EDIT-2511",
-      "hf_path": "nunchaku_qwen_image_edit_2511_best_quality_int4.safetensors",
-      "local_path": "models/diffusion_models/nunchaku_qwen_image_edit_2511_best_quality_int4.safetensors",
-      "version": "1.0",
-      "description": "(NVIDIA 4xxx and lower) Nunchaku Best Quality INT4 — highest quality, higher VRAM.",
-      "kind": "QIE2511"
-    },
-    {
-      "name": "Qwen-Image-Edit-2511-nunchaku-ultimate-speed-fp4",
-      "type": "nunchaku",
-      "hf_repo": "QuantFunc/Nunchaku-Qwen-Image-EDIT-2511",
-      "hf_path": "nunchaku_qwen_image_edit_2511_ultimate_speed_fp4.safetensors",
-      "local_path": "models/diffusion_models/nunchaku_qwen_image_edit_2511_ultimate_speed_fp4.safetensors",
-      "version": "1.0",
-      "description": "(NVIDIA 5xxx series ONLY) Nunchaku Ultimate Speed FP4 — fastest inference, lower VRAM.",
-      "kind": "QIE2511"
-    },
-    {
-      "name": "Qwen-Image-Edit-2511-nunchaku-ultimate-speed-int4",
-      "type": "nunchaku",
-      "hf_repo": "QuantFunc/Nunchaku-Qwen-Image-EDIT-2511",
-      "hf_path": "nunchaku_qwen_image_edit_2511_ultimate_speed_int4.safetensors",
-      "local_path": "models/diffusion_models/nunchaku_qwen_image_edit_2511_ultimate_speed_int4.safetensors",
-      "version": "1.0",
-      "description": "(NVIDIA 4xxx and lower) Nunchaku Ultimate Speed INT4 — fastest inference, lower VRAM.",
-      "kind": "QIE2511"
-    },
-    {
-      "name": "Qwen-Image-Edit-2511-NVFP4",
-      "type": "unet",
-      "hf_repo": "Bedovyy/Qwen-Image-Edit-2511-NVFP4",
-      "hf_path": "qwen_image_edit_2511_nvfp4.safetensors",
-      "local_path": "models/diffusion_models/qwen_image_edit_2511_nvfp4.safetensors",
-      "version": "1.0",
-      "description": "(NVIDIA 5xxx series ONLY) Native NVFP4 UNet — full quality at reduced VRAM.",
-      "kind": "QIE2511"
+      "description": "Qwen Image 2.1 INT8 ConvRot diffusion model.",
+      "kind": "QI2"
     },
     {
       "name": "Flux Klein 9B FP8",
@@ -154,15 +84,15 @@
   ],
   "clip": [
     {
-      "name": "QIE2511_Text_Encoder",
-      "clip_type": "qwen_image",
-      "hf_repo": "f5aiteam/CLIP",
-      "hf_path": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
-      "local_path": "models/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
-      "version": "1.0",
-      "description": "Text encoder for Qwen Image Edit 2511.",
+      "name": "QI2 Qwen3-VL 8B Text Encoder",
       "type": "TextEncoder",
-      "kind": "QIE2511"
+      "clip_type": "qwen_image",
+      "hf_repo": "Comfy-Org/Qwen-Image-2.1",
+      "hf_path": "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+      "local_path": "models/text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+      "version": "1.0",
+      "description": "Qwen3-VL 8B text encoder for Qwen Image 2.1.",
+      "kind": "QI2"
     },
     {
       "name": "Flux Klein Qwen 3 8B Text Encoder",
@@ -200,14 +130,14 @@
   ],
   "vae": [
     {
-      "name": "QIE2511 VAE",
-      "hf_repo": "Comfy-Org/Qwen-Image_ComfyUI",
-      "hf_path": "split_files/vae/qwen_image_vae.safetensors",
-      "local_path": "models/vae/qwen_image_vae.safetensors",
-      "version": "1.0",
-      "description": "Official VAE for Qwen Image Edit 2511.",
+      "name": "QI2 VAE",
       "type": "VAE",
-      "kind": "QIE2511"
+      "hf_repo": "Comfy-Org/Qwen-Image-2.1",
+      "hf_path": "vae/qwen_image_2.1_vae_bf16.safetensors",
+      "local_path": "models/vae/qwen_image_2.1_vae_bf16.safetensors",
+      "version": "1.0",
+      "description": "Qwen Image 2.1 VAE.",
+      "kind": "QI2"
     },
     {
       "name": "Flux 2 VAE",
@@ -252,54 +182,24 @@
   ],
   "lora": [
     {
-      "name": "VNCCS Clothes Core",
-      "hf_repo": "MIUProject/VNCCS_v3.0",
-      "hf_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.safetensors",
-      "local_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.safetensors",
-      "version": "0.3.0",
-      "description": "Helps maintain clothing consistency.",
+      "name": "VNCCS Pose Studio QI2",
       "type": "Helper",
-      "kind": "QIE2511"
+      "hf_repo": "MIUProject/VNCCS_PoseStudio_QI2.1",
+      "hf_path": "VNCCS_QI2_PoseStudioV1.safetensors",
+      "local_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_PoseStudioV1.safetensors",
+      "version": "1.0",
+      "description": "Pose Studio LoRA for Qwen Image 2.1.",
+      "kind": "QI2"
     },
     {
-      "name": "VNCCS Clothes Core",
-      "hf_repo": "MIUProject/VNCCS_v3.0",
-      "hf_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.5.safetensors",
-      "local_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.5.safetensors",
-      "version": "0.3.5",
-      "description": "Helps maintain clothing consistency.",
-      "type": "Helper",
-      "kind": "QIE2511"
-    },
-    {
-      "name": "VNCCS Clothes Core",
-      "hf_repo": "MIUProject/VNCCS_v3.0",
-      "hf_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.6.safetensors",
-      "local_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.6.safetensors",
-      "version": "0.3.6",
-      "description": "Helps maintain clothing consistency.",
-      "type": "Helper",
-      "kind": "QIE2511"
-    },
-    {
-      "name": "VNCCS Clothes Core",
-      "hf_repo": "MIUProject/VNCCS_v3.0",
-      "hf_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.7.safetensors",
-      "local_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_ClothesCore-RC3.7.safetensors",
-      "version": "0.3.7",
-      "description": "Helps maintain clothing consistency.",
-      "type": "Helper",
-      "kind": "QIE2511"
-    },
-    {
-      "name": "VNCCS Pose Studio QIE2511",
-      "hf_repo": "MIUProject/VNCCS_PoseStudio",
-      "hf_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_PoseStudio_ART_V5.9.5.safetensors",
-      "local_path": "models/loras/qwen/VNCCS/VNCCS_QIE2511_PoseStudio_ART_V5.9.5.safetensors",
-      "version": "5.9.5",
-      "description": "LoRA for VNCCS Pose Studio node.",
-      "type": "Helper",
-      "kind": "QIE2511"
+      "name": "Qwen Image 2.1 Viggle Turbo",
+      "type": "TurboLora",
+      "hf_repo": "Viggle/Qwen-Image-2.1-viggle-turbo",
+      "hf_path": "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
+      "local_path": "models/loras/QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
+      "version": "0.2.1",
+      "description": "Six-step Viggle Turbo LoRA for Qwen Image 2.1; runtime adapter and sigma shift are provided by VNCCS.",
+      "kind": "QI2"
     },
     {
       "name": "VNCCS Clothes Core Klein9b",
@@ -340,16 +240,6 @@
       "description": "Eight-step 768p Ref2V Turbo LoRA for the VNCCS MiniMax H3 workflow.",
       "type": "TurboLora",
       "kind": "minimaxh3"
-    },
-    {
-      "name": "Qwen Image Edit 2511 Lightning",
-      "hf_repo": "MIUProject/VNCCS_v3.0",
-      "hf_path": "models/loras/qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
-      "local_path": "models/loras/qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
-      "version": "1.0.0",
-      "description": "4-Step Lightning LoRA for Qwen Image Edit.",
-      "type": "TurboLora",
-      "kind": "QIE2511"
     },
     {
       "name": "DMD2 SDXL Lightning",

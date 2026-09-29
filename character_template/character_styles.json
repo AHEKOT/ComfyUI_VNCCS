@@ -1,0 +1,242 @@
+{
+  "version": 1,
+  "default_style": "classic_anime",
+  "aliases": {
+    "shoujo_anime": "soft_pastel_anime",
+    "shonen_anime": "bold_cel_anime",
+    "seinen_anime": "cinematic_anime",
+    "monochrome_manga": "manga_ink"
+  },
+  "groups": [
+    {
+      "label": "Anime & Manga",
+      "styles": [
+        {
+          "id": "classic_anime",
+          "label": "Classic Cel Anime",
+          "prompt": "classic hand-drawn Japanese cel character art, clean expressive linework, flat cel shadows, restrained highlights, balanced vivid colours"
+        },
+        {
+          "id": "modern_clean_anime",
+          "label": "Modern Clean Anime",
+          "prompt": "modern clean anime character illustration, precise thin linework, polished flat colours, soft two-step cel shading, crisp readable details"
+        },
+        {
+          "id": "soft_pastel_anime",
+          "label": "Soft Pastel Anime",
+          "prompt": "soft pastel anime character illustration, delicate flowing linework, luminous eyes, gentle colour transitions, airy highlights, harmonious pastel palette"
+        },
+        {
+          "id": "bold_cel_anime",
+          "label": "Bold Cel Anime",
+          "prompt": "bold cel-shaded anime character art, strong variable-weight contours, graphic shadow shapes, energetic silhouette, saturated controlled colours"
+        },
+        {
+          "id": "cinematic_anime",
+          "label": "Cinematic Anime",
+          "prompt": "cinematic anime character illustration, natural anatomy, refined linework, dimensional cel shading, dramatic rim light, restrained filmic colours"
+        },
+        {
+          "id": "anime_key_visual",
+          "label": "Detailed Anime Key Visual",
+          "prompt": "detailed anime key visual character art, production-ready linework, layered cel shading, polished material rendering, strong silhouette, premium finish"
+        },
+        {
+          "id": "light_novel_illustration",
+          "label": "Light Novel Character Art",
+          "prompt": "light novel character illustration, elegant clean lines, softly painted cel shading, detailed hair and eyes, refined costume materials, luminous finish"
+        },
+        {
+          "id": "visual_novel_character",
+          "label": "Visual Novel Character Art",
+          "prompt": "visual novel character art, clean consistent outlines, front-facing readable silhouette, smooth cel shading, carefully rendered face and costume details"
+        },
+        {
+          "id": "game_character_illustration",
+          "label": "Anime Game Character Art",
+          "prompt": "anime game character illustration, confident silhouette, intricate costume design, crisp line art, layered cel shading, polished promotional rendering"
+        },
+        {
+          "id": "painterly_anime",
+          "label": "Painterly Anime",
+          "prompt": "painterly anime character illustration, controlled sketch lines, blended brush shading, soft edge variation, rich colour modelling, detailed expressive face"
+        },
+        {
+          "id": "manga_ink",
+          "label": "Manga Ink & Screentone",
+          "prompt": "black-and-white manga character art, expressive ink line weight, solid black shapes, cut-edge screentone shading, clean white highlights"
+        },
+        {
+          "id": "chibi_anime",
+          "label": "Chibi Character",
+          "prompt": "chibi anime character art, oversized head, compact simplified body, rounded readable silhouette, highly expressive face, crisp flat cel colours"
+        },
+        {
+          "id": "retro_80s_anime",
+          "label": "Retro 80s Cel Anime",
+          "prompt": "1980s Japanese cel character art, hand-inked contours, simple painted shadows, warm analogue colours, restrained highlights, subtle film grain"
+        },
+        {
+          "id": "retro_90s_anime",
+          "label": "Retro 90s Cel Anime",
+          "prompt": "1990s Japanese cel character art, hand-inked outlines, painted cel shadows, slightly muted analogue colours, detailed eyes, subtle broadcast grain"
+        },
+        {
+          "id": "digital_2000s_anime",
+          "label": "Early 2000s Digital Anime",
+          "prompt": "early-2000s digital anime character art, crisp coloured outlines, bright digital cel shading, compact highlights, clean saturated palette"
+        },
+        {
+          "id": "glossy_anime",
+          "label": "Glossy Anime Illustration",
+          "prompt": "glossy anime character illustration, smooth precise linework, luminous hair and eye highlights, clean gradient accents, polished vibrant finish"
+        },
+        {
+          "id": "fashion_anime",
+          "label": "Anime Fashion Illustration",
+          "prompt": "anime fashion character illustration, elegant elongated silhouette, confident clean linework, refined garment folds, editorial colour styling, polished cel shading"
+        },
+        {
+          "id": "anime_3d_cel",
+          "label": "3D Cel-shaded Anime",
+          "prompt": "3D cel-shaded anime character, sculpted anime proportions, crisp toon outlines, stepped cel lighting, clean material separation, production-quality render"
+        }
+      ]
+    },
+    {
+      "label": "Comics & Animation",
+      "styles": [
+        {
+          "id": "american_superhero_comic",
+          "label": "American Superhero Comic",
+          "prompt": "American superhero comic character art, powerful anatomy, bold ink contours, dramatic foreshortening, saturated colours, hard graphic shadows"
+        },
+        {
+          "id": "ligne_claire_comic",
+          "label": "European Ligne Claire",
+          "prompt": "European ligne claire character illustration, uniform precise outlines, flat clean colours, minimal hatching, readable anatomy, carefully observed costume details"
+        },
+        {
+          "id": "noir_graphic_novel",
+          "label": "Noir Graphic Novel",
+          "prompt": "noir graphic novel character art, stark black-and-white inks, deep angular shadows, selective rim light, gritty paper texture, clear silhouette"
+        },
+        {
+          "id": "pulp_comic",
+          "label": "Vintage Pulp Comic",
+          "prompt": "vintage pulp comic character illustration, vigorous painted brushwork, dramatic pose, warm limited palette, aged paper, printed colour texture"
+        },
+        {
+          "id": "pop_art_comic",
+          "label": "Pop Art Comic",
+          "prompt": "Pop Art comic character illustration, thick black outlines, flat primary colours, Ben-Day dots, sharp graphic contrast, clean readable anatomy"
+        },
+        {
+          "id": "classic_western_cel",
+          "label": "Classic Western Cel",
+          "prompt": "classic Western cel-animation character art, rounded expressive forms, clean ink outlines, painted flat colours, simple readable shading"
+        },
+        {
+          "id": "modern_tv_cartoon",
+          "label": "Modern TV Cartoon",
+          "prompt": "modern television cartoon character design, simplified geometric anatomy, confident outlines, flat bright colours, compact readable silhouette"
+        },
+        {
+          "id": "rubber_hose_cartoon",
+          "label": "Rubber Hose Cartoon",
+          "prompt": "1920s rubber-hose cartoon character art, pie-cut eyes, flexible curved limbs, rhythmic black contours, limited vintage palette, film-grain texture"
+        },
+        {
+          "id": "storybook_animation",
+          "label": "Storybook Character",
+          "prompt": "storybook character illustration, soft pencil contours, gentle painted colours, warm paper texture, expressive readable features, handcrafted finish"
+        },
+        {
+          "id": "clay_animation",
+          "label": "Clay Character",
+          "prompt": "clay-animation character, hand-modelled forms, subtle fingerprints, readable stylized anatomy, miniature studio lighting, tactile stop-motion finish"
+        },
+        {
+          "id": "feature_3d_animation",
+          "label": "Feature 3D Character",
+          "prompt": "feature-animation 3D character, appealing stylized proportions, smooth sculpted forms, expressive face, soft global illumination, detailed materials"
+        },
+        {
+          "id": "flat_vector_cartoon",
+          "label": "Flat Vector Character",
+          "prompt": "flat vector character illustration, precise geometric shapes, uniform curves, minimal shading, harmonious limited palette, clear readable silhouette"
+        }
+      ]
+    },
+    {
+      "label": "Illustration & Print",
+      "styles": [
+        {
+          "id": "ukiyoe_woodblock",
+          "label": "Ukiyo-e Character Print",
+          "prompt": "ukiyo-e inspired character print, strong carved contours, flat mineral colours, patterned clothing, stylized anatomy, visible handmade paper grain"
+        },
+        {
+          "id": "watercolor_storybook",
+          "label": "Watercolour Character",
+          "prompt": "watercolour character illustration, translucent colour washes, softly bleeding edges, delicate pencil underdrawing, luminous paper, readable facial details"
+        },
+        {
+          "id": "gouache_editorial",
+          "label": "Gouache Character",
+          "prompt": "gouache character illustration, opaque matte colour blocks, visible brush edges, simplified anatomy, restrained palette, strong readable silhouette"
+        },
+        {
+          "id": "art_nouveau_poster",
+          "label": "Art Nouveau Character Poster",
+          "prompt": "Art Nouveau character poster, flowing organic contours, elegant silhouette, muted jewel colours, decorative flat rendering"
+        },
+        {
+          "id": "pixel_art",
+          "label": "Pixel Art Character",
+          "prompt": "detailed pixel-art character, deliberate pixel clusters, crisp hard edges, limited colour palette, selective dithering, readable game-character silhouette"
+        },
+        {
+          "id": "ink_wash",
+          "label": "Ink Wash Character",
+          "prompt": "ink-wash character painting, expressive black brush contours, diluted grey modelling, absorbent paper texture, restrained accent colour"
+        },
+        {
+          "id": "linocut_print",
+          "label": "Linocut Character Print",
+          "prompt": "linocut character print, bold carved black shapes, rough hand-cut marks, strong positive-negative contrast, limited spot colours, fibrous print texture"
+        }
+      ]
+    },
+    {
+      "label": "Realistic",
+      "styles": [
+        {
+          "id": "photoreal_studio",
+          "label": "Studio Character Photo",
+          "prompt": "photorealistic studio character photography, natural skin texture, precise anatomy, controlled softbox lighting, realistic fabric materials, clean lens detail"
+        },
+        {
+          "id": "cinematic_live_action",
+          "label": "Cinematic Character Photo",
+          "prompt": "cinematic live-action character photography, realistic anatomy and materials, motivated dramatic lighting, natural colour grading, subtle film grain"
+        },
+        {
+          "id": "editorial_fashion_photo",
+          "label": "Editorial Fashion Character",
+          "prompt": "editorial fashion character photography, confident full-body pose, sculpted studio light, refined wardrobe textures, polished colour grading"
+        },
+        {
+          "id": "documentary_photo",
+          "label": "Natural Documentary Character",
+          "prompt": "natural documentary character photography, relaxed posture, available light, truthful skin and fabric texture, restrained colour"
+        },
+        {
+          "id": "realist_oil_portrait",
+          "label": "Classical Oil Character",
+          "prompt": "classical realist oil character painting, accurate anatomy, layered natural skin tones, carefully modelled light, fine visible brushwork, rich material detail"
+        }
+      ]
+    }
+  ]
+}

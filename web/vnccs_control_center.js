@@ -25,9 +25,9 @@ const DEFAULT_MODEL_STEPS = 4;
 const DEFAULT_MODEL_CFG = 1.0;
 const DEFAULT_MODEL_SCHEDULER = "simple";
 const PENDING_DEPENDENCY_INSTALLS_KEY = "vnccs-control-center-pending-dependency-installs";
-const DEFAULT_QIE_MODEL = "Qwen-Image-Edit-2511-int8-convrot";
+const DEFAULT_QI2_MODEL = "Qwen Image 2.1 INT8 ConvRot";
 const MODEL_FAMILIES = [
-    { kind: "QIE2511", label: "QIE2511", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 4, sampler: "euler" },
+    { kind: "QI2", label: "Qwen Image 2.1", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 25, cfg: 3, sampler: "euler" },
     { kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 4, sampler: "euler" },
     { kind: "MiniMaxH3", label: "MiniMax H3", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 20, sampler: "res_multistep" },
 ];
@@ -512,6 +512,18 @@ function _injectVNCCSControlCenterStyles() {
     text-transform: uppercase;
     color: #ff8fa3;
     padding: 0 2px;
+}
+.vnccs-cc-cache-strip {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    padding: 9px 12px 10px;
+    border-radius: 10px;
+    border: 1px solid rgba(184,169,232,0.18);
+    background: linear-gradient(135deg, rgba(184,169,232,0.08) 0%, rgba(18,18,26,0.8) 100%);
+}
+.vnccs-cc-cache-strip .vnccs-cc-select {
+    min-height: 28px;
 }
 .vnccs-cc-turbo-strip {
     display: flex;
@@ -1319,7 +1331,7 @@ class VNCCSControlCenterWidget {
             .map(entry => entry.type)
             .filter(Boolean));
         available.add("custom");
-        if (activeKind === "QIE2511") available.add("unet");
+        if (activeKind === "QI2") available.add("unet");
         const preferredTabs = preferred.filter(type => available.has(type));
         return preferredTabs.length ? preferredTabs : Array.from(available);
     }
@@ -1344,7 +1356,7 @@ class VNCCSControlCenterWidget {
         const kind = this._activeKind();
         const selectedForKind = this.state.selected_types_by_kind?.[kind];
         if (selectedForKind) return selectedForKind;
-        return kind === "QIE2511" ? (this.state.selected_type || "") : "";
+        return kind === "QI2" ? (this.state.selected_type || "") : "";
     }
 
     _syncCustomModelInput() {
@@ -1431,10 +1443,10 @@ class VNCCSControlCenterWidget {
     _getRepoId()     { return (this.node.widgets?.find(w => w.name === "repo_id")?.value ?? "").trim(); }
     _getStateWidget(){ return this.node.widgets?.find(w => w.name === "node_state"); }
     _activeKind() {
-        const rawKind = String(this.state.active_kind || "QIE2511");
+        const rawKind = String(this.state.active_kind || "QI2");
         const compactKind = rawKind.toLowerCase().replace(/[^a-z0-9]/g, "");
         const kind = compactKind === "h3" || compactKind === "minimaxh3" ? "MiniMaxH3" : rawKind;
-        return MODEL_FAMILIES.some(entry => entry.kind === kind) ? kind : "QIE2511";
+        return MODEL_FAMILIES.some(entry => entry.kind === kind) ? kind : "QI2";
     }
 
     _familyDefinition(kind = this._activeKind()) {
@@ -1444,7 +1456,7 @@ class VNCCSControlCenterWidget {
     _getSelectedType(){
         const visibleTabs = this._getModelTypeTabs();
         const selected = this.state.selected_types_by_kind?.[this._activeKind()]
-            ?? (this._activeKind() === "QIE2511" ? this.state.selected_type : "");
+            ?? (this._activeKind() === "QI2" ? this.state.selected_type : "");
         if (selected && visibleTabs.includes(selected)) return selected;
         const preferred = this._familyDefinition().defaultType;
         return visibleTabs.includes(preferred) ? preferred : (visibleTabs[0] || "");
@@ -1454,11 +1466,10 @@ class VNCCSControlCenterWidget {
         const selectedByType = this.state.selected_models ?? {};
         const familyKey = `${this._activeKind()}:${type}`;
         if (selectedByType[familyKey]) return selectedByType[familyKey];
-        if (this._activeKind() === "QIE2511") {
-            if (selectedByType[type]) return selectedByType[type];
+        if (this._activeKind() === "QI2") {
             const legacy = this.state.selected_model;
             if (legacy && this._visibleModelsByType(type).some(entry => entry.name === legacy)) return legacy;
-            return type === "unet" ? (this._visibleModelsByType(type)[0]?.name || DEFAULT_QIE_MODEL) : "";
+            return type === "unet" ? (this._visibleModelsByType(type)[0]?.name || DEFAULT_QI2_MODEL) : "";
         }
         return "";
     }
@@ -1467,7 +1478,6 @@ class VNCCSControlCenterWidget {
         if (!type || !modelName) return;
         if (!this.state.selected_models) this.state.selected_models = {};
         this.state.selected_models[`${this._activeKind()}:${type}`] = modelName;
-        if (this._activeKind() === "QIE2511") this.state.selected_models[type] = modelName;
         if (type === this._getSelectedType()) {
             this.state.selected_model = modelName;
         }
@@ -1499,7 +1509,7 @@ class VNCCSControlCenterWidget {
         const activeKind = this._activeKind().toLowerCase();
         return (this.config?.models || []).filter(m =>
             (!m.type || m.type === type) && this._metaKind(m).toLowerCase() === activeKind
-        ).sort((a, b) => Number(b.name === DEFAULT_QIE_MODEL) - Number(a.name === DEFAULT_QIE_MODEL));
+        ).sort((a, b) => Number(b.name === DEFAULT_QI2_MODEL) - Number(a.name === DEFAULT_QI2_MODEL));
     }
 
     _metaKind(entry) {
@@ -1539,16 +1549,12 @@ class VNCCSControlCenterWidget {
         if (!this.state.model_params_by_kind) this.state.model_params_by_kind = {};
         const kind = this._activeKind();
         if (!this.state.model_params_by_kind[kind]) {
-            const legacy = kind === "QIE2511" && this.state.model_params
-                ? this.state.model_params
-                : {};
             const family = this._familyDefinition(kind);
             this.state.model_params_by_kind[kind] = {
                 steps: family.steps ?? DEFAULT_MODEL_STEPS,
-                cfg: DEFAULT_MODEL_CFG,
+                cfg: family.cfg ?? DEFAULT_MODEL_CFG,
                 sampler: family.sampler ?? "euler",
                 scheduler: DEFAULT_MODEL_SCHEDULER,
-                ...legacy,
             };
         }
         return this.state.model_params_by_kind[kind];
@@ -1608,7 +1614,7 @@ class VNCCSControlCenterWidget {
                 steps: params.steps ?? DEFAULT_MODEL_STEPS,
                 cfg: params.cfg ?? DEFAULT_MODEL_CFG,
             };
-            params.steps = this._activeKind() === "MiniMaxH3" ? 8 : 4;
+            params.steps = this._activeKind() === "MiniMaxH3" ? 8 : this._activeKind() === "QI2" ? 6 : 4;
             params.cfg = 1.0;
             return;
         }
@@ -1661,23 +1667,6 @@ class VNCCSControlCenterWidget {
         window.dispatchEvent(new CustomEvent("vnccs-lora-options-updated", { detail: { options } }));
     }
 
-    _migrateQieModelState() {
-        const types = this.state.selected_types_by_kind ?? {};
-        const activeQie = this._activeKind() === "QIE2511";
-        if (types.QIE2511 !== "gguf" && !(activeQie && this.state.selected_type === "gguf")) return false;
-        const models = this.state.selected_models ?? {};
-        const model = models["QIE2511:unet"] || models.unet || DEFAULT_QIE_MODEL;
-        this.state.selected_types_by_kind = { ...types, QIE2511: "unet" };
-        this.state.selected_models = { ...models, "QIE2511:unet": model, unet: model };
-        delete this.state.selected_models["QIE2511:gguf"];
-        delete this.state.selected_models.gguf;
-        if (activeQie) {
-            this.state.selected_type = "unet";
-            this.state.selected_model = model;
-        }
-        return true;
-    }
-
     restoreState() {
         const w = this._getStateWidget();
         if (w?.value && w.value !== "{}") {
@@ -1695,12 +1684,18 @@ class VNCCSControlCenterWidget {
             const selectedType = this.state.selected_type;
             this.state.selected_models = selectedType ? { [selectedType]: this.state.selected_model } : {};
         }
+        if (this.state.active_kind === "QIE2511" ||
+            (!this.state.active_kind && String(this.state.selected_model || "").includes("2511"))) {
+            this.state.unsupported_model_kind = "QIE2511";
+            this.state.active_kind = "QI2";
+            this.state.selected_type = "unet";
+            this.state.selected_model = DEFAULT_QI2_MODEL;
+        }
         this.state.active_kind = this._activeKind();
         if (!this.state.selected_types_by_kind) this.state.selected_types_by_kind = {};
-        if (!this.state.selected_types_by_kind.QIE2511 && this.state.selected_type) {
-            this.state.selected_types_by_kind.QIE2511 = this.state.selected_type;
+        if (!this.state.selected_types_by_kind.QI2 && this.state.selected_type) {
+            this.state.selected_types_by_kind.QI2 = this.state.selected_type;
         }
-        if (this._migrateQieModelState() && w) w.value = JSON.stringify(this.state);
         // Control Center now exposes a single pipe output.
         this.state.output_slot_names = [];
         this._syncOutputSlots();
@@ -2799,6 +2794,19 @@ class VNCCSControlCenterWidget {
         }
 
         this.scrollArea.appendChild(this._renderFamilyTabs());
+        if (this.state.unsupported_model_kind === "QIE2511") {
+            const notice = document.createElement("div");
+            notice.className = "vnccs-cc-params";
+            const message = document.createElement("span");
+            message.textContent = "QIE2511 is no longer supported. Choose QI2 to run this workflow.";
+            const choose = this._btn("Use QI2", () => {
+                delete this.state.unsupported_model_kind;
+                this._saveState();
+                this._renderAll();
+            });
+            notice.append(message, choose);
+            this.scrollArea.appendChild(notice);
+        }
 
         // MODEL — 2-column block: one big card for the selected type's variants
         this._renderTwoColBlockSingle(
@@ -2820,10 +2828,11 @@ class VNCCSControlCenterWidget {
         this._renderLoraBlock();
         this._renderCustomLoraBlock();
 
+        const modelBlock = this.scrollArea?.querySelector(`.vnccs-cc-block[data-block-key="models"]`);
+        const cacheInline = this._buildQI2CacheInlineSection();
+        if (cacheInline) modelBlock?.appendChild(cacheInline);
         const turboInline = this._buildModelTurboInlineSection();
-        if (turboInline) {
-            this.scrollArea?.querySelector(`.vnccs-cc-block[data-block-key="models"]`)?.appendChild(turboInline);
-        }
+        if (turboInline) modelBlock?.appendChild(turboInline);
 
         // CONTROLNET / OTHER
         this._renderBlock("CONTROLNET", this.config.controlnet, "controlnet",
@@ -3536,6 +3545,57 @@ class VNCCSControlCenterWidget {
         Object.assign(this._currentModelParams(), patch);
         this._saveState();
         if (this._isQwenFamily()) this._renderAll();
+    }
+
+    _qi2CacheSettings() {
+        const cache = this.state.qi2_cache ?? {};
+        return {
+            device: ["auto", "gpu", "cpu", "off"].includes(cache.device) ? cache.device : "gpu",
+            dtype: ["default", "int8", "int4"].includes(cache.dtype) ? cache.dtype : "int8",
+        };
+    }
+
+    _qi2CacheSave(patch) {
+        this.state.qi2_cache = { ...this._qi2CacheSettings(), ...patch };
+        this._saveState();
+    }
+
+    _buildQI2CacheInlineSection() {
+        if (this._activeKind() !== "QI2") return null;
+
+        const cache = this._qi2CacheSettings();
+        const section = document.createElement("div");
+        section.className = "vnccs-cc-model-inline-section vnccs-cc-qi2-cache-section";
+
+        const label = document.createElement("div");
+        label.className = "vnccs-cc-model-inline-label";
+        label.textContent = "Qwen Image 2.1 Cache";
+
+        const strip = document.createElement("div");
+        strip.className = "vnccs-cc-cache-strip";
+        const field = (labelText, control, help) => {
+            const wrap = document.createElement("div");
+            wrap.className = "vnccs-cc-param-field";
+            setHelpText(wrap, help);
+            wrap.append(this._label(labelText), control);
+            return wrap;
+        };
+        strip.append(
+            field(
+                "Device",
+                this._sel("vnccs-cc-qi2-cache-device", ["auto", "gpu", "cpu", "off"], cache.device,
+                    value => this._qi2CacheSave({ device: value })),
+                "KV cache location. Auto uses spare VRAM then RAM; CPU uses prefetched RAM; Off recomputes the prefix every step."
+            ),
+            field(
+                "Dtype",
+                this._sel("vnccs-cc-qi2-cache-dtype", ["default", "int8", "int4"], cache.dtype,
+                    value => this._qi2CacheSave({ dtype: value })),
+                "KV cache storage precision. Default is lossless; int8 halves its size; int4 uses about one quarter."
+            ),
+        );
+        section.append(label, strip);
+        return section;
     }
 
     _buildModelTurboInlineSection() {

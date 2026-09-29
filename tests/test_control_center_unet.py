@@ -1,4 +1,4 @@
-"""QIE2511 defaults, legacy state migration, and native diffusion model loading."""
+"""QI2 catalog selection and native diffusion model loading."""
 
 import asyncio
 import json
@@ -12,33 +12,26 @@ from nodes import vnccs_control_center as cc
 
 
 MODEL = {
-    "name": cc.DEFAULT_QIE_MODEL,
+    "name": cc.DEFAULT_QI2_MODEL,
     "type": "unet",
-    "kind": "QIE2511",
-    "local_path": "models/diffusion_models/qwen_image_edit_2511_int8_convrot.safetensors",
+    "kind": "QI2",
+    "local_path": "models/diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
 }
 ALTERNATE = {**MODEL, "name": "Other native Qwen", "local_path": "models/unet/other.safetensors"}
-LEGACY = {**MODEL, "name": "Qwen-Image-Edit-2511-GGUF-Q5", "type": "gguf"}
+LEGACY = {**MODEL, "name": "Qwen-Image-Edit-2511-GGUF-Q5", "type": "gguf", "kind": "QIE2511"}
 
 
 @pytest.mark.parametrize("state,expected", [
     ({}, MODEL["name"]),
-    ({"selected_type": "gguf", "selected_model": LEGACY["name"]}, MODEL["name"]),
-    ({"active_kind": "QIE2511", "selected_types_by_kind": {"QIE2511": "gguf"},
-      "selected_models": {"QIE2511:gguf": LEGACY["name"]}}, MODEL["name"]),
-    ({"selected_type": "unet", "selected_model": ALTERNATE["name"]}, ALTERNATE["name"]),
-    ({"selected_type": "gguf", "selected_model": LEGACY["name"],
-      "selected_models": {"QIE2511:unet": ALTERNATE["name"]}}, ALTERNATE["name"]),
-    ({"selected_type": "gguf", "selected_model": MODEL["name"]}, MODEL["name"]),
+    ({"active_kind": "QI2", "selected_type": "unet", "selected_model": ALTERNATE["name"]}, ALTERNATE["name"]),
+    ({"active_kind": "QI2", "selected_type": "gguf", "selected_model": LEGACY["name"]}, MODEL["name"]),
 ])
-def test_qie_loads_native_unet_without_gguf(monkeypatch, state, expected):
-    # The default dtype path imports torch but does not use tensor operations.
-    # Keep this loader-routing test runnable in the lightweight CI environment.
+def test_qi2_loads_native_unet(monkeypatch, state, expected):
     monkeypatch.setitem(sys.modules, "torch", ModuleType("torch"))
     config = {
         "models": [LEGACY, ALTERNATE, MODEL],
-        "clip": [{"name": "QIE clip", "kind": "QIE2511"}],
-        "vae": [{"name": "QIE vae", "kind": "QIE2511"}],
+        "clip": [{"name": "QI2 clip", "kind": "QI2"}],
+        "vae": [{"name": "QI2 vae", "kind": "QI2"}],
         "lora": [],
     }
     monkeypatch.setattr(cc, "_get_cc_config", lambda repo: config)
@@ -48,28 +41,33 @@ def test_qie_loads_native_unet_without_gguf(monkeypatch, state, expected):
     monkeypatch.setattr(cc, "_apply_loras", lambda model, clip, *args, **kwargs: (model, clip))
     loaded = []
     monkeypatch.setattr(cc.comfy.sd, "load_diffusion_model", lambda path, model_options: loaded.append((path, model_options)) or "model", raising=False)
+    monkeypatch.setattr(cc, "_load_gguf", lambda *args: pytest.fail("QI2 must not call a GGUF loader"))
 
-    def forbidden(*args):
-        raise AssertionError("QIE2511 must not call a GGUF loader")
-
-    monkeypatch.setattr(cc, "_load_gguf", forbidden)
     pipe = cc._build_control_center_pipe("test/repo", json.dumps(state))
     assert (pipe.model, pipe.clip, pipe.vae) == ("model", "clip", "vae")
     assert pipe.model_entry["name"] == expected
     assert pipe.model_entry["type"] == "unet"
     assert loaded == [(pipe.model_entry["local_path"], {})]
+    assert pipe.sample_steps == 25
+    assert pipe.cfg == 3
 
 
-def test_legacy_only_catalog_reports_missing_unet_instead_of_loading_gguf(monkeypatch):
+def test_legacy_selection_requires_explicit_qi2_choice(monkeypatch):
+    monkeypatch.setattr(cc, "_get_cc_config", lambda repo: {"models": [MODEL]})
+    with pytest.raises(RuntimeError, match="QIE2511 is no longer supported"):
+        cc._build_control_center_pipe("test/repo", {"active_kind": "QIE2511"})
+
+
+def test_catalog_without_qi2_native_model_reports_missing_unet(monkeypatch):
     monkeypatch.setattr(cc, "_get_cc_config", lambda repo: {"models": [LEGACY]})
-    with pytest.raises(RuntimeError, match="No native QIE2511 UNet model"):
-        cc._build_control_center_pipe("test/repo", {"selected_type": "gguf", "selected_model": LEGACY["name"]})
+    with pytest.raises(RuntimeError, match="No native QI2 UNet model"):
+        cc._build_control_center_pipe("test/repo", {"active_kind": "QI2"})
 
 
-def test_custom_qie_context_prefers_native_default_over_stale_gguf():
+def test_custom_qi2_context_prefers_native_default():
     context = cc._custom_context_model_entry(
         {"models": [LEGACY, ALTERNATE, MODEL]},
-        {"selected_type": "custom", "selected_model": LEGACY["name"]},
+        {"selected_type": "custom", "active_kind": "QI2", "selected_model": LEGACY["name"]},
     )
     assert context == MODEL
 
@@ -95,11 +93,22 @@ def test_module_status_no_longer_tracks_or_installs_comfyui_gguf(monkeypatch):
     assert "impact_pack" in dependencies
 
 
-def test_packaged_catalog_uses_native_qie_models():
+def test_packaged_catalog_has_qi2_and_viggle_without_qie():
     root = Path(__file__).resolve().parents[1]
     catalog = json.loads((root / "control_center.json").read_text())
-    qie = [entry for entry in catalog["models"] if entry.get("kind") == "QIE2511"]
-    assert qie[0]["name"] == MODEL["name"]
-    assert qie[0]["local_path"] == MODEL["local_path"]
-    assert qie[0]["hf_repo"] == "MIUProject/Qwen-Image-Edit-2511-int8-convrot"
-    assert all(entry["type"] != "gguf" for entry in qie)
+    assert not any(entry.get("kind") == "QIE2511" for entries in catalog.values() if isinstance(entries, list) for entry in entries if isinstance(entry, dict))
+    qi2 = [entry for entry in catalog["models"] if entry.get("kind") == "QI2"]
+    assert qi2[0]["name"] == MODEL["name"]
+    assert qi2[0]["local_path"] == MODEL["local_path"]
+    assert qi2[0]["hf_repo"] == "Comfy-Org/Qwen-Image-2.1"
+    turbo = next(entry for entry in catalog["lora"] if entry.get("type") == "TurboLora" and entry.get("kind") == "QI2")
+    assert turbo["hf_repo"] == "Viggle/Qwen-Image-2.1-viggle-turbo"
+    assert turbo["hf_path"].endswith("v0.2.1-6step-lora-r128.safetensors")
+
+
+def test_qi2_six_step_preset_selects_viggle_lora():
+    turbo = {"name": "Qwen Image 2.1 Viggle Turbo", "type": "TurboLora", "kind": "QI2"}
+    config = {"lora": [turbo]}
+    assert cc._ensure_required_turbo_lora_state([], config, MODEL, {"steps": 25, "cfg": 3}) == []
+    selected = cc._ensure_required_turbo_lora_state([], config, MODEL, {"steps": 6, "cfg": 1})
+    assert selected == [{"name": turbo["name"], "auto_apply": True, "strength": 1.0}]

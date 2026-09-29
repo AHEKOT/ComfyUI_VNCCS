@@ -684,11 +684,12 @@ class TestPackagedConfigSync:
 
         clothes_core = next(
             entry for entry in config["lora"]
-            if entry["name"] == "VNCCS Clothes Core"
+            if entry["name"] == "VNCCS Clothes Core Klein9b"
         )
 
-        assert clothes_core["version"] == "0.3.7"
-        assert clothes_core["local_path"].endswith("VNCCS_QIE2511_ClothesCore-RC3.7.safetensors")
+        assert clothes_core["version"] == "1.0"
+        assert clothes_core["local_path"].endswith("VNCCS_ClothesCoreKlein9b_V1.safetensors")
+        assert all(entry.get("kind") != "QIE2511" for section in ("models", "clip", "vae", "lora") for entry in config[section])
         assert all(entry["name"] != "VNCCS Emotion Core" for entry in config["lora"])
 
     def test_packaged_catalog_contains_complete_klein_family(self):
@@ -959,7 +960,7 @@ class TestControlCenterFrontendFamilies:
         with open(path, "r", encoding="utf-8") as handle:
             source = handle.read()
 
-        assert '{ kind: "QIE2511", label: "QIE2511", defaultType: "unet", preferredTypes: ["unet", "custom"]' in source
+        assert '{ kind: "QI2", label: "Qwen Image 2.1", defaultType: "unet", preferredTypes: ["unet", "custom"]' in source
         assert '{ kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet", preferredTypes: ["unet", "custom"]' in source
         assert '{ kind: "MiniMaxH3", label: "MiniMax H3", defaultType: "unet", preferredTypes: ["unet", "custom"]' in source
         assert "const preferred = this._familyDefinition(activeKind).preferredTypes;" in source
@@ -1202,12 +1203,12 @@ class TestControlCenterCustomModel:
         custom_model = object()
         custom_clip = object()
         custom_vae = object()
-        context_model = {"name": "Qwen Native UNet", "type": "unet", "kind": "QIE2511"}
+        context_model = {"name": "Qwen Image 2.1 INT8 ConvRot", "type": "unet", "kind": "QI2"}
 
         monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
             "models": [context_model],
-            "clip": [{"name": "clip_a", "kind": "QIE2511"}],
-            "vae": [{"name": "vae_a", "kind": "QIE2511"}],
+            "clip": [{"name": "clip_a", "kind": "QI2"}],
+            "vae": [{"name": "vae_a", "kind": "QI2"}],
             "lora": [],
         })
 
@@ -1245,7 +1246,7 @@ class TestControlCenterCustomModel:
             "demo/repo",
             {
                 "selected_type": "custom",
-                "selected_models": {"unet": "Qwen Native UNet"},
+                "selected_models": {"unet": "Qwen Image 2.1 INT8 ConvRot"},
                 "loras": [],
                 "type_settings": {},
                 "model_params": {},
@@ -1263,25 +1264,25 @@ class TestControlCenterCustomModel:
         assert pipe.nunchaku_settings is None
         assert pipe.model_entry == context_model
         assert captured["model_entry"] == context_model
-        assert pipe.sample_steps == 4
-        assert pipe.cfg == 1.0
+        assert pipe.sample_steps == 25
+        assert pipe.cfg == 3.0
         assert pipe.scheduler == "simple"
 
     def test_custom_type_requires_external_clip_and_vae_inputs(self, monkeypatch):
         custom_model = object()
         custom_clip = object()
-        context_model = {"name": "Qwen Native UNet", "type": "unet", "kind": "QIE2511"}
+        context_model = {"name": "Qwen Image 2.1 INT8 ConvRot", "type": "unet", "kind": "QI2"}
 
         monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
             "models": [context_model],
-            "clip": [{"name": "clip_a", "kind": "QIE2511"}],
-            "vae": [{"name": "vae_a", "kind": "QIE2511"}],
+            "clip": [{"name": "clip_a", "kind": "QI2"}],
+            "vae": [{"name": "vae_a", "kind": "QI2"}],
             "lora": [],
         })
 
         base_state = {
             "selected_type": "custom",
-            "selected_models": {"unet": "Qwen Native UNet"},
+            "selected_models": {"unet": "Qwen Image 2.1 INT8 ConvRot"},
             "loras": [],
             "type_settings": {},
             "model_params": {},
@@ -1304,23 +1305,23 @@ class TestControlCenterCustomModel:
 
 
 class TestControlCenterRequiredTurboLora:
-    def test_qwen_four_step_cfg_one_forces_lightning_lora_for_process(self, monkeypatch):
+    def test_qi2_six_step_cfg_one_forces_viggle_lora_for_process(self, monkeypatch):
         model = object()
         clip = object()
         vae = object()
-        model_entry = {"name": "Qwen-Image-Edit-2511-int8-convrot", "type": "unet", "kind": "QIE2511"}
-        lightning_entry = {
-            "name": "Qwen Image Edit 2511 Lightning",
+        model_entry = {"name": "Qwen Image 2.1 INT8 ConvRot", "type": "unet", "kind": "QI2"}
+        turbo_entry = {
+            "name": "Qwen Image 2.1 Viggle Turbo",
             "type": "TurboLora",
-            "kind": "QIE2511",
-            "local_path": "models/loras/qwen/Qwen-Image-Edit-2511-Lightning.safetensors",
+            "kind": "QI2",
+            "local_path": "models/loras/QI2/Viggle/Qwen-Image-2.1-viggle-turbo.safetensors",
         }
 
         monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
             "models": [model_entry],
-            "clip": [{"name": "clip_a", "kind": "QIE2511"}],
-            "vae": [{"name": "vae_a", "kind": "QIE2511"}],
-            "lora": [lightning_entry],
+            "clip": [{"name": "clip_a", "kind": "QI2"}],
+            "vae": [{"name": "vae_a", "kind": "QI2"}],
+            "lora": [turbo_entry],
         })
         monkeypatch.setattr(
             "nodes.vnccs_control_center._load_model_block",
@@ -1338,35 +1339,36 @@ class TestControlCenterRequiredTurboLora:
             "demo/repo",
             {
                 "selected_type": "unet",
-                "selected_model": "Qwen-Image-Edit-2511-int8-convrot",
+                "active_kind": "QI2",
+                "selected_model": "Qwen Image 2.1 INT8 ConvRot",
                 "loras": [],
-                "model_params": {"steps": 4, "cfg": 1},
+                "model_params": {"steps": 6, "cfg": 1},
             },
         )
 
         assert pipe.model is model
         assert captured["lora_states"] == [
-            {"name": "Qwen Image Edit 2511 Lightning", "auto_apply": True, "strength": 1.0}
+            {"name": "Qwen Image 2.1 Viggle Turbo", "auto_apply": True, "strength": 1.0}
         ]
         assert pipe.lora_states == captured["lora_states"]
 
-    def test_qwen_non_four_step_does_not_force_lightning_lora(self, monkeypatch):
+    def test_qi2_non_turbo_settings_do_not_force_viggle_lora(self, monkeypatch):
         model = object()
         clip = object()
         vae = object()
-        model_entry = {"name": "Qwen-Image-Edit-2511-int8-convrot", "type": "unet", "kind": "QIE2511"}
-        lightning_entry = {
-            "name": "Qwen Image Edit 2511 Lightning",
+        model_entry = {"name": "Qwen Image 2.1 INT8 ConvRot", "type": "unet", "kind": "QI2"}
+        turbo_entry = {
+            "name": "Qwen Image 2.1 Viggle Turbo",
             "type": "TurboLora",
-            "kind": "QIE2511",
-            "local_path": "models/loras/qwen/Qwen-Image-Edit-2511-Lightning.safetensors",
+            "kind": "QI2",
+            "local_path": "models/loras/QI2/Viggle/Qwen-Image-2.1-viggle-turbo.safetensors",
         }
 
         monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
             "models": [model_entry],
-            "clip": [{"name": "clip_a", "kind": "QIE2511"}],
-            "vae": [{"name": "vae_a", "kind": "QIE2511"}],
-            "lora": [lightning_entry],
+            "clip": [{"name": "clip_a", "kind": "QI2"}],
+            "vae": [{"name": "vae_a", "kind": "QI2"}],
+            "lora": [turbo_entry],
         })
         monkeypatch.setattr(
             "nodes.vnccs_control_center._load_model_block",
@@ -1384,9 +1386,10 @@ class TestControlCenterRequiredTurboLora:
             "demo/repo",
             {
                 "selected_type": "unet",
-                "selected_model": "Qwen-Image-Edit-2511-int8-convrot",
+                "active_kind": "QI2",
+                "selected_model": "Qwen Image 2.1 INT8 ConvRot",
                 "loras": [],
-                "model_params": {"steps": 8, "cfg": 1},
+                "model_params": {"steps": 25, "cfg": 3},
             },
         )
 

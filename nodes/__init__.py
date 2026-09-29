@@ -11,6 +11,7 @@ try:
     from .sheet_manager import NODE_CLASS_MAPPINGS as SHEET_MANAGER_MAPPINGS
     from .sprite_generator import NODE_CLASS_MAPPINGS as SPRITE_GENERATOR_MAPPINGS
     from .vnccs_pipe import NODE_CLASS_MAPPINGS as VNCCS_PIPE_MAPPINGS
+    # Keep the standalone encoder registered for existing workflows.
     from .vnccs_qwen_encoder import NODE_CLASS_MAPPINGS as VNCCS_QWEN_ENCODER_MAPPINGS
     from .vnccs_flux_klein_encoder import NODE_CLASS_MAPPINGS as VNCCS_FLUX_KLEIN_ENCODER_MAPPINGS
     from .sampler_scheduler_picker import NODE_CLASS_MAPPINGS as SAMPLER_SCHEDULER_PICKER_MAPPINGS
@@ -115,8 +116,7 @@ except Exception as e:
     import traceback
     print(f"❌ [VNCCS] CRITICAL REGISTRATION ERROR in nodes/__init__.py: {e}")
     traceback.print_exc()
-    NODE_CLASS_MAPPINGS = {}
-    NODE_DISPLAY_NAME_MAPPINGS = {}
+    raise RuntimeError(f"[VNCCS] Node registration failed: {e}") from e
 
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
