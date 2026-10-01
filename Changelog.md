@@ -47,6 +47,10 @@ It adds Qwen Image 2.1 and MiniMax H3 generation, expands Character Creator, and
 
 ## Native Transparency and Background Handling
 
+- Accelerated CPU chroma-key morphology with equivalent OpenCV erosion and dilation while preserving the PyTorch path for accelerator tensors and autograd.
+- Balanced chroma key now separates screen similarity from foreground color, protects solid green or blue character details, and removes screen contamination between thin hair strands. Standalone defaults and generator preset values use the same Balanced mode; selecting it also synchronizes the displayed controls.
+- Chroma-key output now clears RGB in fully transparent pixels and reconstructs locally supported foreground/screen mixtures at soft edges, reducing old-background halos when compositing onto another color.
+- Fixed double alpha multiplication during SAM3 recovery for premultiplied chroma-key output.
 - Added an `Alpha` background option to Character Creator and Clothes Designer for QI2, and a `Native` background-removal mode in the generators.
 - Native mode requests transparent output directly from QI2 and bypasses chroma-key removal. Alpha is preserved through clothing references, cached previews, emotion editing, and final images.
 - Upscaling in Native mode processes RGB and restores the resized source alpha afterward, preserving transparency through SeedVR2 and GAN upscaling.

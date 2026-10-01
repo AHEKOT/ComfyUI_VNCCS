@@ -182,7 +182,7 @@ const DEFAULT_DATA = {
         foreground_recover: 0.35,
         edge_decontaminate: 0.75,
         edge_choke: 0.08,
-        matte_method: "guided_edge",
+        matte_method: "balanced",
         screen_mode: "from_background",
         output_mode: "straight_rgba",
         sam3_model: "",
@@ -1020,6 +1020,15 @@ function deepMerge(base, patch) {
     return out;
 }
 
+function syncBalancedChromaPreset(data) {
+    const bg = data.bg_remove;
+    if (bg?.preset !== "balanced" || bg.use_preset_values === false) return;
+    for (const key of ["tolerance", "softness", "despill_strength", "edge_width", "matte_cleanup",
+        "foreground_recover", "edge_decontaminate", "edge_choke", "matte_method", "output_mode"]) {
+        bg[key] = DEFAULT_DATA.bg_remove[key];
+    }
+}
+
 function readData(node) {
     const widget = node.widgets?.find(w => w.name === "widget_data");
     try {
@@ -1041,6 +1050,7 @@ function readData(node) {
         for (const section of ["common", "pose_generation", "remove_clothes"]) {
             data[section].target_size = resolutionScaleValue(resolutionScaleMegapixels(data[section].target_size));
         }
+        syncBalancedChromaPreset(data);
         return data;
     } catch {
         return JSON.parse(JSON.stringify(DEFAULT_DATA));
@@ -1050,6 +1060,7 @@ function readData(node) {
 function writeData(node, data, { notify = true } = {}) {
     const widget = node.widgets?.find(w => w.name === "widget_data");
     if (!widget) return;
+    syncBalancedChromaPreset(data);
     widget.value = JSON.stringify(data);
     if (notify) widget.callback?.(widget.value);
     app.graph?.setDirtyCanvas(true, true);
@@ -1360,8 +1371,8 @@ class CharacterGeneratorWidget {
         this.syncModelResolution();
         if (!this.data[section] || typeof this.data[section] !== "object") this.data[section] = {};
         const rerenderBgRemove = section === "bg_remove"
-            && key === "preset"
-            && this.data.bg_remove.preset !== value;
+            && (key === "preset" || key === "use_preset_values")
+            && this.data.bg_remove[key] !== value;
         this.data[section][key] = value;
         if (section === "bg_remove" && key === "preset") {
             if (String(value).trim().toLowerCase() === "native" && !this.bgRemoveModes().includes("Native")) {
@@ -1614,12 +1625,12 @@ class CharacterGeneratorWidget {
                 number("bg_remove", "foreground_recover", "foreground_recover", 0, 1, 0.01),
                 number("bg_remove", "edge_decontaminate", "edge_decontaminate", 0, 1, 0.01),
                 number("bg_remove", "edge_choke", "edge_choke", 0, 1, 0.01),
-                select("bg_remove", "matte_method", "matte_method", ["chroma_soft", "guided_edge", "pymatting_if_available"]),
+                select("bg_remove", "matte_method", "matte_method", ["balanced", "chroma_soft", "guided_edge", "pymatting_if_available"]),
                 select("bg_remove", "screen_mode", "screen_mode", ["from_background", "auto", "green", "blue", "red"]),
                 select("bg_remove", "output_mode", "output_mode", ["straight_rgba", "premultiplied_rgba"]),
                 ...(!isNativeBgRemove ? [check("bg_remove", "use_sam3_details_recovery", "Use SAM3 recovery mask")] : []),
             ],
-            note: "When preset values are enabled, the individual chroma parameters are retained but the preset controls processing.",
+            note: "Balanced synchronizes the controls with its preset values. Disable preset values to use manual chroma settings.",
         });
         if (!isNativeBgRemove) {
             groups.push({

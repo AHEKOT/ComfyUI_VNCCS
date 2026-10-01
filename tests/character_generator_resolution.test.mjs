@@ -83,6 +83,39 @@ function setupEmotionStudio(mode = "qi2") {
     return { widget, studio, settings, serialized, timers };
 }
 
+const balancedChroma = {
+    tolerance: 0.15, softness: 0.12, despill_strength: 0.65, edge_width: 3,
+    matte_cleanup: 0.1, foreground_recover: 0.35, edge_decontaminate: 0.75,
+    edge_choke: 0.08, matte_method: "balanced", output_mode: "straight_rgba",
+};
+
+for (const mode of [{}, { clone: true }, { clothes: true }, { emotions: true }]) {
+    test(`Balanced migrates stale values and matches displayed/serialized controls (${JSON.stringify(mode)})`, () => {
+        const { widget, serialized, reload } = setup({ ...mode, kind: "Klein9b", saved: {
+            bg_remove: { preset: "balanced", tolerance: 0.9, matte_method: "guided_edge" },
+        } });
+        for (const [key, value] of Object.entries(balancedChroma)) {
+            assert.equal(widget.data.bg_remove[key], value);
+        }
+        widget.set("bg_remove", "use_preset_values", false);
+        widget.set("bg_remove", "tolerance", 0.09);
+        widget.set("bg_remove", "matte_method", "guided_edge");
+        reload();
+        assert.equal(widget.data.bg_remove.tolerance, 0.09);
+        assert.equal(widget.data.bg_remove.matte_method, "guided_edge");
+        const renders = widget.renders;
+        widget.set("bg_remove", "use_preset_values", true);
+        assert.ok(widget.renders > renders);
+        for (const [key, value] of Object.entries(balancedChroma)) {
+            assert.equal(widget.data.bg_remove[key], value);
+            assert.equal(JSON.parse(serialized.value).bg_remove[key], value);
+        }
+        widget.set("bg_remove", "preset", "light");
+        widget.set("bg_remove", "preset", "balanced");
+        assert.equal(JSON.parse(serialized.value).bg_remove.matte_method, "balanced");
+    });
+}
+
 for (const mode of [{}, { clone: true }, { clothes: true }, { emotions: true }]) {
     test(`QI2 selects Native BG Remove for every generator (${JSON.stringify(mode)})`, () => {
         const { widget, timers, switchTo, serialized } = setup(mode);

@@ -88,7 +88,7 @@ def test_chroma_key_defaults_match_balanced_profile_and_expose_sam3_checkbox():
         "foreground_recover": 0.35,
         "edge_decontaminate": 0.75,
         "edge_choke": 0.08,
-        "matte_method": "guided_edge",
+        "matte_method": "balanced",
         "output_mode": "straight_rgba",
     }
 
