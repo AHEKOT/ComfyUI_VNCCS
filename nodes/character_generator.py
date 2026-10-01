@@ -964,11 +964,6 @@ CLOTHES_CORE_LORA_NAME = "VNCCS Clothes Core"
 KLEIN_POSE_GENERATION_LORA_NAME = "VNCCS Pose Studio Klein9b"
 KLEIN_CLOTHES_CORE_LORA_NAME = "VNCCS Clothes Core Klein9b"
 H3_POSE_GENERATION_LORA_NAME = "PoseStudio"
-H3_POSE_PROMPT_SOURCE = "Draw character from image2"
-H3_POSE_PROMPT = (
-    "Draw character from image2"
-    "keep emotion. Do not draw shadow. Solid vibrant green background. 4k quality, sharp lines, detailed eyes"
-)
 NATIVE_BACKGROUND_PROMPT = "Transparent background with alpha channel."
 # The generator keeps only the first decoded frame. The reference workflow's
 # zero-second duration expression resolves to H3's minimum valid clip: 5 frames.
@@ -1369,7 +1364,7 @@ class VNCCS_CharacterGenerator:
                 image2=image2,
                 image3=image3,
                 upscale_method="lanczos",
-                megapixels=1.0,
+                megapixels=_resolution_scale_megapixels((qwen_settings or {}).get("target_size", 1024)),
                 resolution_steps=1,
             )
         raise RuntimeError(f"Unsupported generator model family: {pipe_values.get('model_kind') or 'unknown'}")
@@ -2027,12 +2022,6 @@ class VNCCS_CharacterGenerator:
                 progress_callback(index + 1, count)
         return tuple(outputs or [])
 
-    def _h3_pose_prompt(self, prompt):
-        normalized = " ".join(str(prompt or "").split()).lower()
-        if H3_POSE_PROMPT_SOURCE in normalized:
-            return H3_POSE_PROMPT
-        return str(prompt or "").strip()
-
     def _resolution_scale_dimensions(self, image, target_size, multiple=32):
         image = _first_tensor(image)
         if not torch.is_tensor(image) or image.ndim not in {3, 4}:
@@ -2089,7 +2078,6 @@ class VNCCS_CharacterGenerator:
             steps=sampler["steps"],
             denoise=sampler["denoise"],
         )[0]
-        h3_prompt = self._h3_pose_prompt(prompt)
         target_size = _resolution_scale_value(
             settings.get("target_size", DEFAULT_WIDGET_DATA["pose_generation"]["target_size"])
         )
@@ -2118,7 +2106,7 @@ class VNCCS_CharacterGenerator:
                     clip=pipe_values["clip"],
                     vae=pipe_values["vae"],
                     audio_vae=audio_vae,
-                    prompt=h3_prompt,
+                    prompt=str(prompt or ""),
                     width=width,
                     height=height,
                     length=H3_FRAME_COUNT,
@@ -2308,12 +2296,23 @@ class VNCCS_CharacterGenerator:
         sampling_progress = self._stage_progress_callback(unique_id, "remove_clothes", "Sampling source character", lora_info)
         decoding_progress = self._stage_progress_callback(unique_id, "remove_clothes", "Decoding source character", lora_info)
         encoding_progress(0, 1)
-        positive, negative, latent = self._encoder_call(
-            pipe_values,
-            settings.get("prompt", DEFAULT_WIDGET_DATA["remove_clothes"]["prompt"]),
-            image1=character_rgb,
-            qwen_settings=qwen_settings,
-        )
+        prompt = settings.get("prompt", DEFAULT_WIDGET_DATA["remove_clothes"]["prompt"])
+        is_h3 = self._is_h3_pipe(pipe_values)
+        if is_h3:
+            if pipe_values.get("audio_vae") is None:
+                raise RuntimeError("MiniMax H3 generation requires the audio VAE from VNCCS Control Center.")
+            width, height = self._resolution_scale_dimensions(character_rgb, qwen_settings["target_size"])
+            positive, latent = _call_comfy_node(
+                "MiniMaxH3ReferenceToVideo",
+                clip=pipe_values["clip"], vae=pipe_values["vae"], audio_vae=pipe_values["audio_vae"],
+                prompt=prompt, width=width, height=height, length=H3_FRAME_COUNT,
+                ref_image_size="match", ref_images={"ref_image_1": character_rgb},
+            )
+            negative = None
+        else:
+            positive, negative, latent = self._encoder_call(
+                pipe_values, prompt, image1=character_rgb, qwen_settings=qwen_settings,
+            )
         encoding_progress(1, 1)
 
         if self._is_qi2_pipe(pipe_values) and not (lora_info or {}).get("exists"):
@@ -2328,7 +2327,19 @@ class VNCCS_CharacterGenerator:
             sampler_model, turbo = self._qi2_prepare_model(sampler_model, pipe, pipe_values)
         self._validate_conditioning_for_model(pipe_values, positive, negative, "Remove Clothes")
         sampling_progress(0, 1)
-        if self._is_qi2_pipe(pipe_values):
+        if is_h3:
+            sampler_node = _call_comfy_node("KSamplerSelect", sampler_name=sampler["sampler_name"])[0]
+            sigmas = _call_comfy_node(
+                "BasicScheduler", model=sampler_model, scheduler=sampler["scheduler"],
+                steps=sampler["steps"], denoise=sampler["denoise"],
+            )[0]
+            guider = _call_comfy_node("BasicGuider", model=sampler_model, conditioning=positive)[0]
+            noise = _call_comfy_node("RandomNoise", noise_seed=sampler["seed"])[0]
+            sampled = _call_comfy_node(
+                "SamplerCustomAdvanced", noise=noise, guider=guider, sampler=sampler_node,
+                sigmas=sigmas, latent_image=latent,
+            )[0]
+        elif self._is_qi2_pipe(pipe_values):
             sampled = self._qi2_sample(
                 sampler_model, positive, negative, latent, sampler, turbo=turbo,
             )
@@ -2350,7 +2361,7 @@ class VNCCS_CharacterGenerator:
                 **vae_decode,
             )[0]
         decoding_progress(1, 1)
-        return decoded
+        return self._h3_first_frame_to_cpu(decoded) if is_h3 else decoded
 
     def _run_upscaler_models(self, settings, node_id=None):
         defaults = DEFAULT_WIDGET_DATA["upscaler"]

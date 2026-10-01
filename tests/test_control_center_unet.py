@@ -50,6 +50,9 @@ def test_qi2_loads_native_unet(monkeypatch, state, expected):
     assert loaded == [(pipe.model_entry["local_path"], {})]
     assert pipe.sample_steps == 25
     assert pipe.cfg == 3
+    assert pipe.model_cache_key["model"] == pipe.model_entry
+    assert pipe.model_cache_key["clips"] == config["clip"]
+    assert pipe.model_cache_key["vaes"] == config["vae"]
 
 
 def test_legacy_selection_requires_explicit_qi2_choice(monkeypatch):

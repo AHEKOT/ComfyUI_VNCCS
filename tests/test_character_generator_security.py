@@ -1086,9 +1086,9 @@ def test_h3_pose_generation_follows_reference_workflow_and_returns_first_frame(m
     h3_calls = [kwargs for name, kwargs in calls if name == "MiniMaxH3ReferenceToVideo"]
     assert len(h3_calls) == 2
     for index, h3_kwargs in enumerate(h3_calls):
-        assert h3_kwargs["prompt"] == cg.H3_POSE_PROMPT
-        assert h3_kwargs["width"] == 2048
-        assert h3_kwargs["height"] == 2048
+        assert h3_kwargs["prompt"] == "Draw character from image2\n<lighting>"
+        assert h3_kwargs["width"] == h3_kwargs["height"]
+        assert h3_kwargs["width"] * h3_kwargs["height"] == pytest.approx(2048 * 1024, rel=0.025)
         assert h3_kwargs["length"] == 5
         assert h3_kwargs["ref_image_size"] == "match"
         assert list(h3_kwargs["ref_images"]) == ["ref_image_1", "ref_image_2"]

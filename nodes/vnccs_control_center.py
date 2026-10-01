@@ -1913,6 +1913,16 @@ def _build_control_center_pipe(
     pipe.nunchaku_settings = None
     pipe.model_entry = model_entry
     pipe.model_kind = model_kind
+    # Persist only catalog-backed identities. Custom input objects may change
+    # without changing their catalog context, so their previews must be regenerated.
+    pipe.model_cache_key = None if selected_type == "custom" else {
+        "model": model_entry,
+        "clips": [entry for entry in config.get("clip", []) if entry.get("name") in all_clip_names],
+        "vaes": [entry for entry in config.get("vae", []) if entry.get("name") in {first_vae_name, selected_audio_vae_name}],
+        "type_settings": type_settings,
+        "lora_entries": pipe.lora_entries,
+        "lora_states": pipe.lora_states,
+    }
     cache_settings = state.get("qi2_cache", {})
     if not isinstance(cache_settings, dict):
         cache_settings = {}

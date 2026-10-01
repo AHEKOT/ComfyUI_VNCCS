@@ -439,7 +439,10 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
         return (object(),)
     monkeypatch.setattr(cd, "_call_comfy_node", call)
     monkeypatch.setattr(cg, "_call_comfy_node", call)
-    pipe = types.SimpleNamespace(model=object(), clip=object(), vae=object(), audio_vae=object(), model_entry={"kind": kind})
+    pipe = types.SimpleNamespace(
+        model=object(), clip=object(), vae=object(), audio_vae=object(), model_entry={"kind": kind},
+        model_cache_key={"model": {"kind": kind, "name": "Test catalog model"}},
+    )
     data = {"character": "Alice", "costume": "Dress", "gen_settings": {
                 "target_size": size,
                 "background_color": "Transparent" if kind == "QI2" else "Green",

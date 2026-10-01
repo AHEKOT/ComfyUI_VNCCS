@@ -615,7 +615,10 @@ class ClothesDesigner:
 
         default_steps = 25 if model_kind == "qi2" else WORKFLOW_SAMPLER_DEFAULTS["steps"]
         default_cfg = 3.0 if model_kind == "qi2" else WORKFLOW_SAMPLER_DEFAULTS["cfg"]
-        seed_int = int(getattr(pipe, "seed_int", getattr(pipe, "seed", 0)) or WORKFLOW_SAMPLER_DEFAULTS["seed"])
+        seed_value = gen_settings.get("seed")
+        if seed_value is None or seed_value == "":
+            seed_value = getattr(pipe, "seed_int", getattr(pipe, "seed", None))
+        seed_int = int(WORKFLOW_SAMPLER_DEFAULTS["seed"] if seed_value is None else seed_value)
         sample_steps = int(getattr(pipe, "sample_steps", getattr(pipe, "steps", 0)) or default_steps)
         cfg = float(getattr(pipe, "cfg", 0.0) or default_cfg)
         denoise = float(getattr(pipe, "denoise", 0.0) or WORKFLOW_SAMPLER_DEFAULTS["denoise"])
@@ -632,6 +635,7 @@ class ClothesDesigner:
         c_img_path, c_info_path = self.get_cache_paths(character_name, costume_name)
         try:
             cache_payload = {
+                "model_cache_key": getattr(pipe, "model_cache_key", None),
                 "widget_data": data,
                 "prompts": {"positive": positive_prompt, "negative": negative_prompt},
                 "clone_reference_sha256": clone_reference_hash,
@@ -662,6 +666,9 @@ class ClothesDesigner:
                 )
             canonical_str = json.dumps(cache_payload, sort_keys=True, separators=(',', ':'))
             input_hash = hashlib.sha256(canonical_str.encode('utf-8')).hexdigest()
+            # Custom or externally modified pipes cannot provide a stable asset identity.
+            if cache_payload["model_cache_key"] is None:
+                input_hash = "INVALID"
         except Exception:
              input_hash = "INVALID"
 

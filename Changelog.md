@@ -1,3 +1,106 @@
+# VNCCS 3.2.0 Changelog
+
+This release describes the final changes compared with `main` (`3.1.2`).
+It adds Qwen Image 2.1 and MiniMax H3 generation, expands Character Creator, and improves clothing, emotion editing, transparency, and model management.
+
+## Qwen Image 2.1
+
+- Replaced QIE2511 with the `QI2` family in Control Center and the main generation pipeline. Qwen Image 2.1 is the default Control Center family and uses native ComfyUI diffusion-model loading.
+- Added the Qwen Image 2.1 INT8 ConvRot diffusion model, Qwen3-VL 8B INT8 ConvRot text encoder, QI2 VAE, and VNCCS Pose Studio QI2 LoRA to the model catalog.
+- Added QI2 support to Character Creator V2, pose generation, character clothing preparation, Clothes Designer, and Emotion Studio.
+- Added Viggle Turbo generation at 6 steps and CFG 1, alongside standard QI2 generation at 25 steps and CFG 3. VNCCS handles the adapter and resolution-dependent sampling schedule directly; separate Viggle custom nodes are not required.
+- Added QI2 cache controls in Control Center, Character Creator, and Emotion Studio, with `auto`, `gpu`, `cpu`, and `off` device choices and `default`, `int8`, and `int4` storage precision.
+- QI2 reference conditioning and output resolution are handled separately, so generation follows the requested output area and reference aspect ratio.
+- QI2 clothing edits and character preparation can run without the retired QIE2511 Clothes Core LoRA.
+
+## MiniMax H3
+
+- Added a MiniMax H3 family to Control Center, with FP8 Scaled and INT8 ConvRot diffusion models, a Qwen3-VL 32B NVFP4 text encoder, video and audio VAEs, Pose Studio LoRA, and an 8-step Turbo LoRA.
+- H3 Turbo uses a 4-step sampling preset with CFG 1.
+- Added H3 pose generation and Clothes Designer generation and cloning through ComfyUI's native reference-to-video nodes. VNCCS keeps the first frame as the resulting character image.
+- Added H3 body preparation for Character Cloner's Naked set, using the family-specific Clothes Core LoRA, selected resolution, and standard input prompt.
+- Added an optional `audio_vae` input to Control Center for custom H3 setups. Model-family identity, audio VAE, and QI2 cache settings are preserved through VNCCS pipes.
+- H3 pose jobs encode, sample, and decode their pose lists in separate phases, reducing repeated model switching. Only the required first decoded frame is retained for each pose.
+- Added family-specific Pose Studio LoRA selection, including recognition of H3 helper LoRAs supplied through custom catalog entries.
+- Updated the Klein9b Pose Studio catalog asset to `VNCCS_PoseStudioKlein9b_V2.2.safetensors`.
+
+## Character Creator V2
+
+- Added a persistent framing selector with `Cowboy shot` and `Full body` options, used consistently by previews and workflow generation.
+- Added 40 visual style presets across Anime Meta Styles, Anime, Animation, Artistic, and Realistic groups, plus a free-form custom style field. Styles are shared between the UI and backend through a single catalog.
+- Replaced Creator's legacy tag picker with curated descriptive presets for species, skin tone, body, face, hair, eyes, and distinguishing details. The new catalog includes 61 species presets and supports multiple selections for hybrids.
+- Species presets automatically contribute their visual anatomy to prompts in Illustrious, Anima, and QI2. Explicit character traits take priority over preset defaults; custom text and existing breast-size tags remain supported.
+- Updated Character Wizard to use the new descriptive preset vocabulary. Character Cloner retains its separate legacy tag catalog.
+- Added QI2 prompt expansion through the native `TextGenerate` node. Character fields are expanded individually, original values are retained when an expansion is missing, and application-owned framing, clothing, background, and species details are preserved.
+- Visual style references are appended after QI2 prompt expansion so artist names, work references, and custom style text remain intact. Prompt construction removes redundant unit weights and reinforces a single character in a single view.
+- Added a dedicated downloadable QI2 Character Overhaul LoRA control, adjustable from 0 to 1 in increments of 0.25, with a default of 0.5. It is independent of Viggle Turbo and is excluded from ordinary LoRA slots to prevent duplicate application.
+- Improved repeated QI2 previews by reloading the text encoder for each request while retaining reusable diffusion-model and VAE assets.
+- Added prompt logging for preview and workflow generation, including rewritten QI2 prompts and framing.
+
+## Resolution Controls
+
+- Added a consistent `Resolution scale` slider from 1.0 to 4.0 MP in 0.1 MP increments across Character Creator, character and clothing generators, Clothes Designer, and QI2 face generation.
+- Character Creator now uses a 9:16 canvas for all generation profiles. Legacy Anima resolution presets are converted to the new area-based setting, which is saved independently for each profile.
+- Pose and clothing generation preserve the source aspect ratio and align dimensions to the active model's requirements. A scale value representing 2 MP sets total image area rather than a 2048-pixel square.
+- Model changes select appropriate generation defaults, including 1.5 MP for H3 pose generation and automatic H3 clothing previews, and 1.0 MP for other pose and clothing families. QI2 face generation defaults to 2.0 MP.
+- Manual resolution choices survive UI refreshes and workflow reloads. Generator synchronization follows the connected Control Center, including rerouted connections, and updates serialized state before queueing.
+
+## Native Transparency and Background Handling
+
+- Added an `Alpha` background option to Character Creator and Clothes Designer for QI2, and a `Native` background-removal mode in the generators.
+- Native mode requests transparent output directly from QI2 and bypasses chroma-key removal. Alpha is preserved through clothing references, cached previews, emotion editing, and final images.
+- Upscaling in Native mode processes RGB and restores the resized source alpha afterward, preserving transparency through SeedVR2 and GAN upscaling.
+- Switching to QI2 selects native transparency; switching to another model restores the previous compatible background choice. Manual choices remain stable while the model family is unchanged.
+- Transparent references for solid-background clothing edits are composited onto the selected green or blue background. Blue background prompts explicitly request pure blue and discourage purple, gradients, and background patterns.
+- SAM analysis and SAM3 detail recovery are now disabled by default. Recovery controls are hidden when Native background mode is active.
+
+## Clothes Designer
+
+- Added model-aware QI2 and H3 clothing previews alongside Klein9b, with output resolution included in preview caching.
+- QI2 text-based outfit generation uses an image-aware edit prompt rewriter with instructions to preserve character identity, pose, framing, rendering style, and the requested background.
+- Clone Clothes uses the uploaded outfit reference directly and validates its presence before generation in both the UI and backend.
+- Preview caching now accounts for the clothing reference's file contents, effective prompts, resolution, QI2 cache and Turbo settings, and edit-template changes, preventing reuse of stale outfit previews.
+- Preview cache identity also includes the selected model, text encoders, VAEs, loader settings, and LoRA configuration. Custom model inputs and externally replaced pipe assets regenerate previews instead of reusing an unverifiable disk cache.
+- Fixed seed handling so the selected or randomized Clothes Designer seed reaches the sampler, including seed 0. Older state without a seed inherits the pipe value.
+- Restored workflow state now correctly refreshes clothing generation controls, including background and resolution, when workflows load or the connected model changes.
+
+## Emotion Studio and Step 3
+
+- Added a QI2 generation profile with model, text encoder, VAE, user LoRAs, Viggle Turbo, and cache settings.
+- QI2 edits emotions by detecting and cropping the face, aligning the crop, generating the expression with Qwen Image 2.1, and merging it back into the exact source region with feathered edges.
+- Added QI2-specific face resolution and bounding-box controls, plus an editable emotion prompt template with an `{emotion}` placeholder. The QI2 path performs a full edit pass and uses its own controls instead of FaceDetailer denoise settings.
+- QI2 face crops preserve source alpha and support both standard and Viggle Turbo sampling. Illustrious and Anima continue to use the FaceDetailer path.
+- Emotion previews now show final results at full resolution with alpha preserved. Intermediate raw-result tabs and their duplicate previews have been removed.
+- Emotion controls and stage tabs refresh when the connected Emotion Studio profile is restored or changed, while retaining saved bounding-box settings.
+
+## Wizards and Image Analysis
+
+- Replaced the Qwen2.5-VL wizard and analysis model with `Qwen3.5-4B-Q8_0.gguf` and its matching vision projector.
+- Character and Clothes Wizards use text-only, non-thinking inference and no longer require a vision projector. Character Cloner and VL Analyzer use the Qwen3.5 vision handler with thinking disabled.
+- Wizard and Cloner interfaces check model readiness before inference and offer an explicit download action for missing or invalid assets. Downloads can repair invalid GGUF files.
+- Added model-specific projector discovery to avoid accidentally pairing Qwen3.5 with an unrelated projector. New downloads use `models/llm/Qwen3.5-4B`.
+
+## Control Center and Progress
+
+- Control Center now exposes native UNet and custom-model choices for QI2, Klein9b, and MiniMax H3. Removed obsolete GGUF settings and the ComfyUI-GGUF setup dependency from the main UI.
+- Custom LoRAs are associated with the selected model family and filtered accordingly; existing generic custom entries remain shared.
+- Catalog refreshes retain packaged QI2 entries when a remote catalog is older and filter retired QIE2511 assets. Catalog paths resolve correctly for linked installations and do not recreate a removed installation directory.
+- Model downloads report measured transfer progress and downloaded bytes, followed by a separate installation phase. Removed simulated progress based on elapsed time and added compatibility with multiple Hugging Face Hub progress APIs.
+- Download status updates preserve focused inputs, open controls, and scroll position. Model-family tabs support keyboard navigation.
+- Pose generation and character preparation report encoding, sampling, and decoding progress per image. Counts reflect the actual work being performed, including individual-image regeneration.
+
+## Workflows, Compatibility, and Maintenance
+
+- Added updated 3.2 workflows for Character Creator, Character Cloner, Character Clothes, and Character Emotions. Previous 3.0 workflows are retained under `workflows/Old`.
+- Added the `VNCCS Style Preview Test` output node, which generates named preview PNGs for every catalog style using Anima or QI2.
+- Package discovery can read VNCCS metadata without a complete ComfyUI runtime. Runtime registration now reports import failures explicitly and handles pre-registered namespace placeholders instead of silently exposing an empty node list.
+- Updated native ComfyUI node invocation to handle `NodeOutput` results and execution-blocking errors.
+- Added regression coverage for model-family selection, QI2 and H3 generation, prompt construction, styles and presets, resolution persistence, native alpha, clothing references, emotion crops, progress reporting, downloads, wizard models, and package loading.
+- Updated package version to `3.2.0`.
+- **QIE2511 workflows require migration:** select a QI2 model and its matching assets in Control Center, or use a compatible Klein9b setup. Retired QIE2511 selections produce an explicit unsupported-model error. The standalone legacy Qwen encoder remains registered for existing independent workflows.
+- **Runtime requirements:** QI2 requires ComfyUI's native Qwen Image 2.1 nodes, including text generation, conditioning, and cache support. H3 requires native MiniMax H3 reference-to-video support and both video and audio VAEs. Qwen3.5 image analysis requires a `llama-cpp-python` build exposing `Qwen35ChatHandler`.
+- **Character Overhaul:** QI2 Creator's default strength requires its LoRA to be installed; set the strength to 0 to generate without it. Native Alpha backgrounds are supported only by QI2.
+
 # VNCCS 3.1.1 Changelog
 
 This changelog describes the final user-visible and release-level changes in version `3.1.1` compared with `main` (`3.1.0`).

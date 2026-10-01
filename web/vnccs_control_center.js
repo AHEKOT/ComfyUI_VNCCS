@@ -1614,7 +1614,7 @@ class VNCCSControlCenterWidget {
                 steps: params.steps ?? DEFAULT_MODEL_STEPS,
                 cfg: params.cfg ?? DEFAULT_MODEL_CFG,
             };
-            params.steps = this._activeKind() === "MiniMaxH3" ? 8 : this._activeKind() === "QI2" ? 6 : 4;
+            params.steps = this._activeKind() === "QI2" ? 6 : 4;
             params.cfg = 1.0;
             return;
         }
