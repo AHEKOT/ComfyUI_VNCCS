@@ -679,7 +679,11 @@ const STYLE = `
     transition: all var(--transition);
 }
 
-.vnccs-segmented-btn:hover {
+.vnccs-segmented-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+.vnccs-segmented-btn:hover:not(:disabled) {
     color: var(--text-primary);
     background: rgba(255,255,255,0.045);
 }
@@ -1358,6 +1362,7 @@ app.registerExtension({
                 const origSerialize = node.onSerialize;
                 node.onSerialize = function (o) {
                     if (origSerialize) origSerialize.apply(this, arguments);
+                    syncBackgroundForGenerationMode();
 
                     // Critical Sync: Ensure widget_data receives latest state
                     const w = node.widgets ? node.widgets.find(w => w.name === "widget_data") : null;
@@ -1369,6 +1374,10 @@ app.registerExtension({
                         console.warn("[VNCCS] widget_data missing on serialize, creating...");
                         saveCurrentGenerationModeValues();
                         node.addWidget("text", "widget_data", JSON.stringify(state), (v) => { }, { serialize: true });
+                    }
+                    const index = node.widgets?.findIndex(widget => widget.name === "widget_data") ?? -1;
+                    if (index >= 0 && Array.isArray(o?.widgets_values)) {
+                        o.widgets_values[index] = node.widgets[index].value;
                     }
                 };
 
@@ -1904,6 +1913,7 @@ app.registerExtension({
                 };
 
                 const saveState = (isValid = false) => {
+                    syncBackgroundForGenerationMode();
                     saveCurrentGenerationModeValues();
                     state.character_info.name = state.character || state.character_info.name || "";
                     const persistData = {
@@ -1976,20 +1986,21 @@ app.registerExtension({
 
                 const syncBackgroundForGenerationMode = (force = false) => {
                     const mode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
-                    if (!force && state.gen_settings.background_model_kind === mode) return false;
+                    const modelChanged = force || state.gen_settings.background_model_kind !== mode;
                     const current = String(state.character_info.background_color || "Green");
-                    if (mode === "qi2") {
-                        if (current !== "Transparent") {
+                    const isAlpha = ["alpha", "transparent"].includes(current.trim().toLowerCase());
+                    if (mode === "qi2" && modelChanged) {
+                        if (!isAlpha) {
                             state.gen_settings.previous_background_color = current;
                         }
                         state.character_info.background_color = "Transparent";
-                    } else if (current === "Transparent") {
+                    } else if (mode !== "qi2" && isAlpha) {
                         const previous = String(state.gen_settings.previous_background_color || "Green");
                         state.character_info.background_color = ["Green", "Blue"].includes(previous) ? previous : "Green";
                     }
                     state.gen_settings.background_model_kind = mode;
                     els.background_color?.setValue?.(state.character_info.background_color || "Green");
-                    return true;
+                    return modelChanged || current !== state.character_info.background_color;
                 };
 
                 const clearCharacterSelection = () => {
@@ -2460,7 +2471,12 @@ app.registerExtension({
                     if (options.length === 3) segmented.classList.add("is-three");
                     const buttons = [];
                     const setValue = (value, persist = false) => {
-                        const normalized = String(value || options[0]?.value || "");
+                        let normalized = String(value || options[0]?.value || "");
+                        const supportsAlpha = (state.gen_settings.generation_mode || "").toLowerCase() === "qi2";
+                        if (key === "background_color" && ["alpha", "transparent"].includes(normalized.trim().toLowerCase())) {
+                            const previous = state.gen_settings.previous_background_color;
+                            normalized = supportsAlpha ? "Transparent" : ["Green", "Blue"].includes(previous) ? previous : "Green";
+                        }
                         targetObj[key] = normalized;
                         if (
                             persist
@@ -2471,6 +2487,10 @@ app.registerExtension({
                             state.gen_settings.previous_background_color = normalized;
                         }
                         buttons.forEach(({ btn, value: btnValue }) => {
+                            if (key === "background_color" && btnValue === "Transparent") {
+                                btn.disabled = !supportsAlpha;
+                                btn.title = supportsAlpha ? "Native transparency" : "Native transparency requires Qwen Image 2.1";
+                            }
                             btn.classList.toggle("is-active", btnValue === normalized);
                             btn.setAttribute("aria-pressed", btnValue === normalized ? "true" : "false");
                         });

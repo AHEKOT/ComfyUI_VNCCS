@@ -113,6 +113,105 @@ test("Native is exposed as a BG Remove mode", () => {
     assert.match(source, /const BG_REMOVE_MODES = \["Native", "disabled"/);
 });
 
+function connectCreator(harness, mode = "anima") {
+    const settings = { name: "widget_data", value: JSON.stringify({ gen_settings: { generation_mode: mode } }) };
+    const creator = { id: 5, type: "CharacterCreatorV2", widgets: [settings] };
+    harness.graph._nodes.push(creator);
+    harness.widget.node.inputs.push({ name: "character", link: 5 });
+    harness.graph.links[5] = { origin_id: 5 };
+    return {
+        creator, settings,
+        switchTo(mode) {
+            settings.value = JSON.stringify({ gen_settings: { generation_mode: mode } });
+            harness.timers.get(1)();
+        },
+    };
+}
+
+test("QI2 Control Center allows Native with every Creator profile", () => {
+    const harness = setup({ kind: "QI2", saved: { bg_remove: { preset: "strong" } } });
+    const creator = connectCreator(harness);
+    harness.timers.get(1)();
+    assert.equal(harness.widget.data.bg_remove.preset, "Native");
+    assert.equal(JSON.parse(harness.serialized.value).bg_remove.preset, "Native");
+    assert.equal(harness.widget.bgRemoveModes().includes("Native"), true);
+    assert.equal(harness.listeners.has("vnccs-character-creator-model-changed"), false);
+    for (const mode of ["qi2", "illustrious", "anima"]) {
+        creator.switchTo(mode);
+        assert.equal(harness.widget.data.bg_remove.preset, "Native");
+        assert.equal(harness.widget.data.ui.bg_remove_model_kind, "qi2");
+    }
+    harness.widget.set("bg_remove", "preset", "strong");
+    creator.switchTo("qi2");
+    creator.switchTo("anima");
+    assert.equal(harness.widget.data.bg_remove.preset, "strong");
+    harness.widget.set("bg_remove", "preset", "Native");
+    assert.equal(harness.widget.data.bg_remove.preset, "Native");
+});
+
+test("Control Center switches restore BG Remove without following Creator changes", () => {
+    const harness = setup({ kind: "QI2", saved: { bg_remove: { preset: "light" } } });
+    const creator = connectCreator(harness, "anima");
+    harness.timers.get(1)();
+    harness.switchTo("Klein9b");
+    assert.equal(harness.widget.data.bg_remove.preset, "light");
+    assert.equal(harness.widget.bgRemoveModes().includes("Native"), false);
+    creator.switchTo("qi2");
+    assert.equal(harness.widget.data.bg_remove.preset, "light");
+    harness.switchTo("QI2");
+    assert.equal(harness.widget.data.bg_remove.preset, "Native");
+    creator.switchTo("anima");
+    assert.equal(harness.widget.data.bg_remove.preset, "Native");
+});
+
+test("Creator alone cannot select the Generator model or Native mode", () => {
+    const harness = setup();
+    const creator = connectCreator(harness, "qi2");
+    harness.widget.node.inputs[0].link = null;
+    harness.timers.get(1)();
+    assert.equal(harness.widget.data.bg_remove.preset, "balanced");
+    assert.equal(harness.widget.bgRemoveModes().includes("Native"), false);
+    creator.switchTo("anima");
+    creator.switchTo("qi2");
+    assert.equal(harness.widget.data.bg_remove.preset, "balanced");
+});
+
+test("non-QI2 workflows repair Native even with an unchanged saved model marker", () => {
+    const harness = setup({ kind: "Anima", saved: {
+        bg_remove: { preset: "Native" },
+        ui: { bg_remove_model_kind: "anima", bg_remove_previous_preset: "light" },
+    } });
+    harness.timers.get(1)();
+    assert.equal(harness.widget.data.bg_remove.preset, "light");
+    harness.widget.set("bg_remove", "preset", "Native");
+    assert.equal(harness.widget.data.bg_remove.preset, "light");
+    const options = harness.widget.generatorSettingsGroups().flatMap(group => group.fields)
+        .find(field => field.section === "bg_remove" && field.key === "preset").options;
+    assert.equal(options.includes("Native"), false);
+});
+
+test("invalid saved restoration presets fall back to balanced", () => {
+    const harness = setup({ kind: "Anima", saved: {
+        bg_remove: { preset: "Native" }, ui: { bg_remove_previous_preset: "Native" },
+    } });
+    harness.timers.get(1)();
+    assert.equal(harness.widget.data.bg_remove.preset, "balanced");
+});
+
+test("serialization preserves Native with a non-QI2 Creator and QI2 Control Center", async () => {
+    const harness = setup();
+    const { widget, app } = harness;
+    const creator = connectCreator(harness, "qi2");
+    harness.timers.get(1)();
+    class Node {}
+    await app.extension.beforeRegisterNodeDef(Node, { name: "VNCCS_CharacterGenerator" });
+    creator.settings.value = '{"gen_settings":{"generation_mode":"anima"}}';
+    const node = Object.assign(new Node(), widget.node, { _vnccsCharacterGeneratorWidget: widget });
+    const serialized = { widgets_values: ["{}"] };
+    node.onSerialize(serialized);
+    assert.equal(JSON.parse(serialized.widgets_values[0]).bg_remove.preset, "Native");
+});
+
 test("Native BG Remove is detected for conditional SAM recovery controls", () => {
     const { widget } = setup({ kind: "QI2" });
     widget.data.bg_remove.preset = "Native";

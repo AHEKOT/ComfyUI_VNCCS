@@ -38,3 +38,13 @@ def test_qi2_background_defaults_to_transparent_without_wrapping_controls():
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in SOURCE
     assert "white-space: nowrap" in SOURCE
     assert 'btn.setAttribute("aria-pressed", String(selected))' in SOURCE
+
+
+def test_clone_preview_requires_reference_before_queue_or_api_execution():
+    handler = SOURCE.split("btnGen.onclick = async () => {", 1)[1].split("// Show loading overlay", 1)[0]
+    assert 'state.activeTab === "clone" && !state.clone_image' in handler
+    assert 'showInfo("Reference Required"' in handler
+
+
+def test_serialization_updates_workflow_widget_values_with_latest_clone_state():
+    assert 'o.widgets_values[index] = node.widgets[index].value' in SOURCE
