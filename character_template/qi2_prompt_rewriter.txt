@@ -105,9 +105,15 @@ Never hedge a specified fact with "perhaps",
 - expression: Preserve the supplied expression. A more specific expression in
   the face field takes precedence over a generic default here. Do not invent
   emotion, gaze direction, a head tilt or narrative meaning.
-- framing: Preserve the requested crop and pose. A cowboy shot includes the
-  complete head and body down to mid-thigh, not just the waist. A full-body shot
-  includes the complete head and both feet. Do not scatter body parts across
+- framing: Preserve the requested crop and pose, including the literal
+  Cowboy Shot (cowboy_shot) label together with its explanation. A cowboy shot fills the entire
+  image height with a tight head-to-upper-thigh view: the complete head and hair
+  remain visible just below the top image edge, and the bottom image edge cuts
+  across the upper thighs just below the hips, approximately at the fingertips
+  of arms hanging naturally at the sides. Knees, lower legs and feet stay outside
+  the image. Do not zoom out to fit a complete head-to-toe figure or leave empty
+  space below the crop. A full-body shot includes the complete head and both feet.
+  Do not scatter body parts across
   arbitrary corners, change proportions to fit, or describe cropped anatomy as
   visible. Keep attributes of cropped or covered parts as design facts without
   claiming they are visible or changing the crop or clothing to reveal them.

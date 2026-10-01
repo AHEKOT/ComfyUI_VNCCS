@@ -1357,12 +1357,16 @@ class CharacterGeneratorWidget {
 
     set(section, key, value) {
         this.syncCharacterSourceData();
+        this.syncModelResolution();
         if (!this.data[section] || typeof this.data[section] !== "object") this.data[section] = {};
         const rerenderBgRemove = section === "bg_remove"
             && key === "preset"
             && this.data.bg_remove.preset !== value;
         this.data[section][key] = value;
         if (section === "bg_remove" && key === "preset") {
+            if (String(value).trim().toLowerCase() === "native" && !this.bgRemoveModes().includes("Native")) {
+                this.data.bg_remove.preset = this.previousBgRemovePreset();
+            }
             this.data.bg_remove.use_preset_values = true;
         }
         if (this.isClone && section === "common" && key === "target_size") {
@@ -1376,6 +1380,17 @@ class CharacterGeneratorWidget {
 
     isNativeBgRemove() {
         return String(this.data.bg_remove?.preset || "").trim().toLowerCase() === "native";
+    }
+
+    previousBgRemovePreset() {
+        const previous = this.data.ui?.bg_remove_previous_preset;
+        return BG_REMOVE_MODES.includes(previous) && previous !== "Native" ? previous : "balanced";
+    }
+
+    bgRemoveModes() {
+        return this.data.ui?.bg_remove_model_kind === "qi2"
+            ? BG_REMOVE_MODES
+            : BG_REMOVE_MODES.filter(mode => mode !== "Native");
     }
 
     generatorSettingsGroups() {
@@ -1589,7 +1604,7 @@ class CharacterGeneratorWidget {
         groups.push({
             title: "VNCCS Chroma Key",
             fields: [
-                select("bg_remove", "preset", "preset", BG_REMOVE_MODES),
+                select("bg_remove", "preset", "preset", this.bgRemoveModes()),
                 check("bg_remove", "use_preset_values", "Use values from selected preset"),
                 number("bg_remove", "tolerance", "tolerance", 0, 1, 0.01),
                 number("bg_remove", "softness", "softness", 0.001, 1, 0.01),
@@ -1792,6 +1807,7 @@ class CharacterGeneratorWidget {
         apply.textContent = "Apply";
         apply.onclick = () => {
             this.data = deepMerge(DEFAULT_DATA, draft);
+            this.syncModelResolution();
             this.data.bg_remove.use_internal_rmbg = false;
             writeData(this.node, this.data);
             this.saveBrowserState();
@@ -1911,6 +1927,7 @@ class CharacterGeneratorWidget {
     async regenerateFrom(stageKey, imageIndex = null) {
         if (!this.stages.some(([key]) => key === stageKey)) return;
         this.syncCharacterSourceData();
+        this.syncModelResolution();
         this.syncStagesFromData();
         const beforeRegenerate = this.snapshotStageState();
         this.data.regenerate_from = stageKey;
@@ -2016,7 +2033,7 @@ class CharacterGeneratorWidget {
             changed = true;
         }
 
-        if (previousBgKind !== kind) {
+        if (previousBgKind !== kind || (kind !== "qi2" && this.isNativeBgRemove())) {
             const preset = String(this.data.bg_remove?.preset || "balanced");
             if (kind === "qi2") {
                 if (preset.toLowerCase() !== "native") {
@@ -2024,7 +2041,7 @@ class CharacterGeneratorWidget {
                 }
                 this.data.bg_remove.preset = "Native";
             } else if (preset.toLowerCase() === "native") {
-                this.data.bg_remove.preset = this.data.ui.bg_remove_previous_preset || "balanced";
+                this.data.bg_remove.preset = this.previousBgRemovePreset();
             }
             this.data.ui.bg_remove_model_kind = kind;
             changed = true;
@@ -2768,7 +2785,7 @@ class CharacterGeneratorWidget {
 
     bgRemoveFields() {
         const fields = [
-            this.field("bg_remove", "preset", "mode", "select", BG_REMOVE_MODES),
+            this.field("bg_remove", "preset", "mode", "select", this.bgRemoveModes()),
         ];
         if (!this.isNativeBgRemove()) {
             fields.push(this.field("bg_remove", "use_sam3_details_recovery", "Use SAM3 Details Recovery", "checkbox"));

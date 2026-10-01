@@ -205,7 +205,15 @@ props, scenery or facial markings. Do not recolor, simplify away or hide
 specified details. A short request may have a short description; do not invent
 content to meet a word count. Return the same JSON output format as above."""
 QI2_NATURAL_FRAMING = {
-    "cowboy_shot": "show the complete head and body down to mid-thigh",
+    "cowboy_shot": (
+        "Cowboy Shot (cowboy_shot): use a tight head-to-upper-thigh crop. Keep the complete head and hair visible, "
+        "with the top of the hair just below the top image edge. "
+        "Fill the entire image height with this cropped view of the character. "
+        "The bottom image edge must cut across the upper thighs, just below the hips, "
+        "approximately at the fingertips of arms hanging naturally at the sides. "
+        "Show only the upper portions of the thighs; knees, lower legs and feet stay outside the image. "
+        "Do not zoom out to fit the complete head-to-toe figure or leave empty space below the crop."
+    ),
     "full_body": "show the character's complete body from head to toe",
 }
 QI2_PROMPT_REWRITER_FALLBACK = """# VNCCS Character Field Expansion
@@ -232,7 +240,11 @@ to explicit exceptions; do not replace species anatomy with costume accessories.
 Tan lines mean lighter swimsuit-covered skin contrasting with darker exposed skin,
 not drawn stripes, scars or shadows. Do not add a swimsuit. Heterochromia retains
 each specified iris color; two-tone hair retains both named colors without adding
-other hues. A cowboy shot extends from the complete head to mid-thigh.
+other hues. Preserve the Cowboy Shot (cowboy_shot) label together with its crop
+description. A cowboy shot fills the entire image height from the complete head
+to upper thighs, with the bottom edge just below the hips at relaxed fingertip
+height. Knees, lower legs and feet stay outside the image. Do not zoom out to
+reveal cropped anatomy or to fit a complete head-to-toe figure.
 Do not invent missing details, clothes, lighting, setting, style, artists, materials,
 aspect ratio or narrative. Visual style references are appended externally.
 Return only {"fields":{"<input key>":"<visual expansion>"}} with string values

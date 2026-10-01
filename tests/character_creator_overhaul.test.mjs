@@ -37,6 +37,7 @@ function setup(saved) {
     const downloads = [];
     const ctx = vm.createContext({
         window: { innerWidth: 1024, innerHeight: 768 },
+        els: {},
         state, node: { id: 42, widgets: [widget] }, localStorage: { setItem() {} },
         document: { createElement: tag => new Element(tag) },
         ccConfig: { lora: [
@@ -57,6 +58,7 @@ function setup(saved) {
         block("const ANIMA_TURBO_LORA_NAME", "const MODE_PROMPT_DEFAULTS") +
         block("const cloneSettingsValue", "const syncGenerationControls") +
         block("const migrateGenerationModeSettings", "const clearPreviewHandlers") +
+        block("const syncBackgroundForGenerationMode", "const clearCharacterSelection") +
         block("const buildAssetCard", "const selectCcAsset") +
         block("const renderModeLoraCards", "const renderCardSection") +
         `this.render = renderModeLoraCards; this.makeCard = buildOverhaulCard;

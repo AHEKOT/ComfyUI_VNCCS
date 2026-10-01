@@ -755,6 +755,10 @@ app.registerExtension({
                 node.onSerialize = function (o) {
                     onSerialize?.apply(this, arguments);
                     if (dataWidget) dataWidget.value = JSON.stringify(state);
+                    const index = node.widgets?.findIndex(widget => widget.name === "widget_data") ?? -1;
+                    if (index >= 0 && Array.isArray(o?.widgets_values)) {
+                        o.widgets_values[index] = node.widgets[index].value;
+                    }
                 };
 
                 const saveCostumeToBackend = async () => {
@@ -1807,6 +1811,10 @@ app.registerExtension({
                 btnGen.onclick = async () => {
                     if (!state.character) { showInfo("Error", "Select Character"); return; }
                     if (!hasSelectedEditableCostume()) { showCreateCostumeRequired(); return; }
+                    if (state.activeTab === "clone" && !state.clone_image) {
+                        showInfo("Reference Required", "Upload a clothing reference image before using Clone Clothes.");
+                        return;
+                    }
                     if (btnGen.disabled) return;
 
                     setClothesCoreLora();

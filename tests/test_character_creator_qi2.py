@@ -182,8 +182,11 @@ def test_qi2_character_prompt_uses_alpha_and_natural_framing():
     }, "qi2")
 
     assert "transparent background with alpha channel" in positive
-    assert "show the complete head and body down to mid-thigh" in positive
-    assert "cowboy_shot" not in positive
+    assert "Cowboy Shot (cowboy_shot)" in positive
+    assert "tight head-to-upper-thigh crop" in positive
+    assert "Fill the entire image height" in positive
+    assert "bottom image edge must cut across the upper thighs" in positive
+    assert "cowboy_shot" in positive
 
 
 def test_character_prompt_removes_unit_weights_for_every_model():
@@ -296,6 +299,9 @@ def test_non_qi2_conditioning_keeps_direct_style_prompt(monkeypatch, mode):
     assert encoded == [positive, negative]
     assert result == (positive, negative, positive)
     assert positive.count("Style: Fortiche / Arcane.") == 1
+    assert "cowboy_shot" in positive
+    assert "head-to-upper-thigh" not in positive
+    assert "image edge" not in positive
 
 
 def _cat_character_info(**changes):
@@ -331,7 +337,9 @@ def test_qi2_structured_character_reaches_encoder_with_sources_and_expansions(mo
             assert fields["age"] == "18 years old"
             assert fields["skin_color"] == ""
             assert fields["background"] == "solid Green background"
-            assert "mid-thigh" in fields["framing"]
+            assert "head-to-upper-thigh" in fields["framing"]
+            assert "Cowboy Shot (cowboy_shot)" in fields["framing"]
+            assert "bottom image edge must cut across the upper thighs" in fields["framing"]
             assert reference not in kwargs["prompt"]
             assert "exact_model_trigger" not in kwargs["prompt"]
             assert "quality_marker" not in kwargs["prompt"]
@@ -483,7 +491,12 @@ def test_qi2_portrait_composition_and_coverage_reach_positive_encoder_for_every_
     assert "exactly one character in a single continuous view" in composition
     assert "occupies most of the image height" in composition
     assert "No character sheet, collage, panels, insets" in composition
-    assert "complete head and body down to mid-thigh" in composition
+    assert "Fill the entire image height" in composition
+    assert "Cowboy Shot (cowboy_shot)" in composition
+    assert "top of the hair just below the top image edge" in composition
+    assert "bottom image edge must cut across the upper thighs, just below the hips" in composition
+    assert "fingertips of arms hanging naturally at the sides" in composition
+    assert "knees, lower legs and feet stay outside the image" in composition
     assert "wear white bra and panties" in appearance
     assert "transparent background with alpha channel" in appearance
     assert "18 years old" in appearance
@@ -512,3 +525,69 @@ def test_qi2_pe_cannot_replace_composition_clothing_or_background(framing, sex, 
     assert fields["background"] in prompt
     assert f"The character is {sex}, 30 years old" in prompt
     assert "invented" not in prompt
+
+
+@pytest.mark.parametrize("turbo", [False, True])
+@pytest.mark.parametrize("generated", [
+    '{"fields":{"framing":"Zoom out to show the full body, including both feet."}}',
+    '{"fields":{}}',
+    'not a structured response',
+])
+def test_qi2_cowboy_crop_reaches_positive_encoder_despite_pe_output(monkeypatch, turbo, generated):
+    info = _cat_character_info(framing="cowboy_shot", negative_prompt="")
+    requests = {}
+
+    def fake_node(name, **kwargs):
+        requests[name] = kwargs
+        if name == "TextGenerate":
+            return (generated,)
+        assert name == "TextEncodeQwenImage21"
+        return "positive", "negative", "latent"
+
+    monkeypatch.setattr(generator, "_call_comfy_node", fake_node)
+    positive, _negative = creator.CharacterCreatorV2.construct_prompt(info, "qi2", include_style=False)
+    creator.encode_generation_conditioning(
+        "clip", "vae", positive, "", {"generation_mode": "qi2", "turbo_enabled": turbo},
+        character_info=info,
+    )
+    pe_fields = json.loads(requests["TextGenerate"]["prompt"].rsplit("character_fields:\n", 1)[1])
+    crop = pe_fields["framing"]
+    composition = requests["TextEncodeQwenImage21"]["prompt"].split("\n\n", 1)[0]
+    assert crop in composition
+    assert "Cowboy Shot (cowboy_shot)" in crop
+    assert "Cowboy Shot (cowboy_shot)" in composition
+    assert "Fill the entire image height" in composition
+    assert "top of the hair just below the top image edge" in composition
+    assert "bottom image edge must cut across the upper thighs, just below the hips" in composition
+    assert "fingertips of arms hanging naturally at the sides" in composition
+    assert "knees, lower legs and feet stay outside the image" in composition
+    assert "Do not zoom out" in composition
+    assert "Zoom out to show the full body, including both feet" not in composition
+    assert requests["TextEncodeQwenImage21"]["negative_prompt"] == ""
+
+
+def test_qi2_full_body_keeps_head_to_toe_framing():
+    info = _cat_character_info(framing="Full_body")
+    positive, _negative = creator.CharacterCreatorV2.construct_prompt(info, "qi2", include_style=False)
+    fields = creator._qi2_character_fields(info)
+    compiled = creator._qi2_expanded_field_prompt(
+        '{"fields":{"framing":"Crop the image at the waist."}}', fields,
+    )
+    for prompt in (positive, compiled):
+        assert "show the character's complete body from head to toe" in prompt
+        assert "head-to-upper-thigh" not in prompt
+        assert "feet stay outside" not in prompt
+        assert "Crop the image at the waist" not in prompt
+
+
+@pytest.mark.parametrize("missing_system_file", [False, True])
+def test_qi2_rewriter_instructions_match_the_tight_cowboy_crop(monkeypatch, missing_system_file):
+    if missing_system_file:
+        monkeypatch.setattr(creator.os.path, "isfile", lambda _path: False)
+    system_prompt = " ".join(creator._qi2_prompt_rewriter_system_prompt().split())
+    assert "Cowboy Shot (cowboy_shot)" in system_prompt
+    assert "entire image height" in system_prompt
+    assert "upper thighs" in system_prompt
+    assert "fingertip" in system_prompt
+    assert "feet stay outside" in system_prompt
+    assert "mid-thigh" not in system_prompt

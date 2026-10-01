@@ -42,12 +42,16 @@ def test_generation_prompt_log_prints_exact_positive_and_negative(capsys):
 
 
 @pytest.mark.parametrize("framing", [None, "", "portrait", "cowboy_shot"])
-def test_missing_or_invalid_framing_keeps_legacy_cowboy_shot(framing):
+@pytest.mark.parametrize("mode", ["illustrious", "anima"])
+def test_missing_or_invalid_framing_keeps_legacy_cowboy_shot(framing, mode):
     info = _base_info()
     if framing is not None:
         info["framing"] = framing
 
-    positive, _ = CharacterCreatorV2.construct_prompt(info)
+    positive, _ = CharacterCreatorV2.construct_prompt(info, mode)
 
     assert "cowboy_shot" in positive
     assert "Full_body" not in positive
+    assert "head-to-upper-thigh" not in positive
+    assert "image edge" not in positive
+    assert "fingertips" not in positive

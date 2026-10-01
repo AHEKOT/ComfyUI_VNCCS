@@ -1,6 +1,7 @@
 
 import os
 import json
+import hashlib
 import torch
 import folder_paths
 import server
@@ -49,6 +50,90 @@ BACKGROUND_RGB = {
     "Blue": (0.0, 0.0, 1.0),
 }
 TRANSPARENT_BACKGROUND = "Transparent"
+
+
+def _qi2_edit_system_prompt():
+    # Keep the official Qwen edit template separate from Creator's T2I template.
+    roots = dict.fromkeys(
+        os.path.dirname(os.path.dirname(path))
+        for path in (os.path.abspath(__file__), os.path.realpath(__file__))
+    )
+    for root in roots:
+        path = os.path.join(root, "character_template", "qi2_edit_prompt_rewriter.txt")
+        try:
+            with open(path, "r", encoding="utf-8") as prompt_file:
+                prompt = prompt_file.read().strip()
+            if prompt:
+                return prompt
+        except OSError:
+            continue
+    raise RuntimeError("QI2 edit prompt template is missing. Restore character_template/qi2_edit_prompt_rewriter.txt.")
+
+
+def _qi2_edit_image_batch(references):
+    """Fit prepared references into TextGenerate's RGB batch in encoder order."""
+    target = references[0]
+    height, width = target.shape[1:3]
+    scale = min(1.0, 1024 / max(height, width))
+    height, width = max(1, round(height * scale)), max(1, round(width * scale))
+    batch = []
+    for reference in references:
+        if reference.ndim != 4 or reference.shape[0] != 1 or reference.shape[-1] not in (3, 4):
+            raise ValueError("QI2 edit references must contain exactly one RGB or RGBA image each.")
+        # Prepared RGBA references already have their RGB composited over white.
+        rgb = reference[..., :3].to(device=target.device, dtype=target.dtype)
+        ref_height, ref_width = rgb.shape[1:3]
+        fit = min(height / ref_height, width / ref_width)
+        fit_height = max(1, min(height, round(ref_height * fit)))
+        fit_width = max(1, min(width, round(ref_width * fit)))
+        if (ref_height, ref_width) != (fit_height, fit_width):
+            rgb = torch.nn.functional.interpolate(
+                rgb.movedim(-1, 1), size=(fit_height, fit_width),
+                mode="bilinear", align_corners=False,
+            ).movedim(1, -1)
+        canvas = rgb.new_ones((1, height, width, 3))
+        top, left = (height - fit_height) // 2, (width - fit_width) // 2
+        canvas[:, top:top + fit_height, left:left + fit_width] = rgb
+        batch.append(canvas)
+    return torch.cat(batch, dim=0)
+
+
+def _clothes_background_prompt(background_color):
+    if background_color == TRANSPARENT_BACKGROUND:
+        return NATIVE_BACKGROUND_PROMPT
+    if background_color == "Blue":
+        return (
+            "flat uniform pure blue background, exact RGB (0, 0, 255), "
+            "hex #0000FF, no purple, no violet, no gradient"
+        )
+    return (
+        "flat uniform pure green background, exact RGB (0, 255, 0), "
+        "hex #00FF00, no gradient"
+    )
+
+
+def _rewrite_qi2_clothes_prompt(clip, prompt, references, background_color, system_prompt):
+    from .character_creator_v2 import QI2_TEXT_GENERATION_DEFAULTS, _qi2_rewritten_prompt
+
+    constraints = (
+        "Edit the outfit of the character in the image using the requested clothing. "
+        "Preserve the identity, face, hair, body proportions, pose, framing and rendering medium of the image. "
+        f"{_clothes_background_prompt(background_color)} No background scenery, patterns, or shapes."
+    )
+    request = (
+        f"{prompt}\n{constraints}\n"
+        "This is an outfit edit of the target canvas, preserving its framing and aspect ratio."
+    )
+    print("[ClothesDesigner] Rewriting QI2 edit prompt...")
+    generated_text = _call_comfy_node(
+        "TextGenerate", clip=clip,
+        prompt=f"{system_prompt}\n\n{request}",
+        image=_qi2_edit_image_batch(references),
+        **QI2_TEXT_GENERATION_DEFAULTS,
+    )[0]
+    rewritten = _qi2_rewritten_prompt(generated_text, prompt)
+    # Keep application-owned identity and background after PE too.
+    return f"{rewritten}\n{constraints}"
 
 
 def _clothes_target_size(settings, model_kind):
@@ -161,6 +246,14 @@ def resolve_comfy_image_path(image_info):
         f"Clone image '{image_name}' was not found in ComfyUI input folder. "
         "Upload the clone reference image again in VNCCS Clothes Designer."
     )
+
+
+def _clone_reference_digest(image_path):
+    digest = hashlib.sha256()
+    with open(image_path, "rb") as reference_file:
+        for chunk in iter(lambda: reference_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _validate_clothes_wizard_gguf(path, file_label="File"):
@@ -306,6 +399,13 @@ class ClothesDesigner:
     FUNCTION = "process"
     CATEGORY = "VNCCS"
 
+    @classmethod
+    def IS_CHANGED(cls, widget_data="{}", **kwargs):
+        data = json.loads(widget_data) if isinstance(widget_data, str) else widget_data
+        if not isinstance(data, dict) or data.get("activeTab") != "clone" or not data.get("clone_image"):
+            return ""
+        return _clone_reference_digest(resolve_comfy_image_path(data["clone_image"]))
+
     @staticmethod
     def _normalize_background_color(value):
         bg_col = str(value or "Green").strip().capitalize()
@@ -381,29 +481,18 @@ class ClothesDesigner:
     @staticmethod
     def construct_prompt(data, model_kind=""):
         active_tab = data.get("activeTab", "generate")
-        is_clone = active_tab == "clone" and bool(data.get("clone_image"))
+        is_clone = active_tab == "clone"
+        if is_clone and not data.get("clone_image"):
+            raise ValueError("Upload a clothing reference image before using Clone Clothes.")
         bg_col = ClothesDesigner._effective_background_color(
             data.get("gen_settings", {}).get("background_color"), model_kind,
         )
-        if bg_col == TRANSPARENT_BACKGROUND:
-            background_prompt = NATIVE_BACKGROUND_PROMPT
-        elif bg_col == "Blue":
-            background_prompt = (
-                "flat uniform pure blue background, exact RGB (0, 0, 255), "
-                "hex #0000FF, no purple, no violet, no gradient"
-            )
-        else:
-            background_prompt = (
-                "flat uniform pure green background, exact RGB (0, 255, 0), "
-                "hex #00FF00, no gradient"
-            )
+        background_prompt = _clothes_background_prompt(bg_col)
 
         if is_clone:
             positive_prompt = (
-                "Dress character: clothes, footwear and accessories from Picture 2\n"
-                f"{background_prompt}\n"
-                "Do not copy the background from Picture 2. "
-                "No background scenery, patterns, or shapes."
+                "Dress character to clothes from image 2\n"
+                f"{background_prompt}"
             )
         else:
             info = data.get("costume_info", {})
@@ -534,13 +623,18 @@ class ClothesDesigner:
         scheduler = getattr(pipe, "scheduler", None) or WORKFLOW_SAMPLER_DEFAULTS["scheduler"]
         clothes_core_lora = _resolve_pipe_clothes_core_lora(pipe)
         target_size = _clothes_target_size(gen_settings, model_kind)
+        clone_image_path = resolve_comfy_image_path(data["clone_image"]) if active_tab == "clone" else None
+        clone_reference_hash = _clone_reference_digest(clone_image_path) if clone_image_path else None
+        use_qi2_rewriter = is_qi2 and active_tab != "clone"
+        edit_system_prompt = _qi2_edit_system_prompt() if use_qi2_rewriter else None
 
         # 3. Cache check
-        import hashlib
         c_img_path, c_info_path = self.get_cache_paths(character_name, costume_name)
         try:
             cache_payload = {
                 "widget_data": data,
+                "prompts": {"positive": positive_prompt, "negative": negative_prompt},
+                "clone_reference_sha256": clone_reference_hash,
                 "sampler": {
                     "seed": seed_int,
                     "steps": sample_steps,
@@ -552,6 +646,14 @@ class ClothesDesigner:
                 "clothes_core_lora": clothes_core_lora,
                 "resolution": {"model_kind": model_kind, "target_size": target_size},
             }
+            if use_qi2_rewriter:
+                from .character_creator_v2 import QI2_TEXT_GENERATION_DEFAULTS
+
+                cache_payload["qi2_edit_rewriter"] = {
+                    "version": 1,
+                    "system_prompt_sha256": hashlib.sha256(edit_system_prompt.encode("utf-8")).hexdigest(),
+                    "text_generation": QI2_TEXT_GENERATION_DEFAULTS,
+                }
             if is_qi2:
                 cache_payload["qi2_cache"] = getattr(pipe, "qi2_cache", {})
                 cache_payload["qi2_turbo"] = sorted(
@@ -587,11 +689,9 @@ class ClothesDesigner:
         clone_image_tensor = None
         if active_tab == "clone" and data.get("clone_image"):
              try:
-                 c_info = data["clone_image"]
-                 image_path = resolve_comfy_image_path(c_info)
-                 print(f"[ClothesDesigner] Clone reference image resolved: {image_path}")
+                 print(f"[ClothesDesigner] Clone reference image resolved: {clone_image_path}")
                  
-                 with Image.open(image_path) as source_image:
+                 with Image.open(clone_image_path) as source_image:
                      i = self._pil_image_tensor(source_image)
                  i = self._prepare_reference_background(
                      i, background_color, preserve_transparency=is_qi2,
@@ -603,6 +703,11 @@ class ClothesDesigner:
                  raise
 
         image2 = clone_image_tensor if active_tab == "clone" and clone_image_tensor is not None else None
+        if use_qi2_rewriter:
+            positive_prompt = _rewrite_qi2_clothes_prompt(
+                clip, positive_prompt, (ref_image,),
+                background_color, edit_system_prompt,
+            )
         print(
             "[ClothesDesigner] Encoder inputs: "
             f"mode={active_tab}, image1=reference sprite, "
