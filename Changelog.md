@@ -1,7 +1,7 @@
 # VNCCS 3.2.0 Changelog
 
-This release describes the final changes compared with `main` (`3.1.2`).
-It adds Qwen Image 2.1 and MiniMax H3 generation, expands Character Creator, and improves clothing, emotion editing, transparency, and model management.
+This changelog describes the final user-visible and release-level changes in version `3.2.0` compared with `main` (`3.1.2`).
+The release adds Qwen Image 2.1 and MiniMax H3 generation, expands character editing, and improves transparency, clothing, emotions, storage safety, and remote ComfyUI sessions.
 
 ## Qwen Image 2.1
 
@@ -22,22 +22,33 @@ It adds Qwen Image 2.1 and MiniMax H3 generation, expands Character Creator, and
 - Added an optional `audio_vae` input to Control Center for custom H3 setups. Model-family identity, audio VAE, and QI2 cache settings are preserved through VNCCS pipes.
 - H3 pose jobs encode, sample, and decode their pose lists in separate phases, reducing repeated model switching. Only the required first decoded frame is retained for each pose.
 - H3 pose generation, character preparation, and clothing previews use standard VAE decoding instead of tiled decoding.
-- Internal generation stages now perform ComfyUI's dynamic VRAM cleanup for all model families, including character previews, clothing, emotions, and SeedVR upscaling. Cleanup also runs on failure without unloading reusable model weights. Klein and QI2 release consumed pose conditioning and latents between stages. H3 per-pose logs include sampling time, dimensions, and CUDA memory usage.
+- H3 per-pose logs include sampling time, dimensions, and CUDA memory usage.
 - Added family-specific Pose Studio LoRA selection, including recognition of H3 helper LoRAs supplied through custom catalog entries.
-- Updated the Klein9b Pose Studio catalog asset to `VNCCS_PoseStudioKlein9b_V2.2.safetensors`.
 
 ## Character Creator V2
 
 - Added a persistent framing selector with `Cowboy shot` and `Full body` options, used consistently by previews and workflow generation.
 - Added 40 visual style presets across Anime Meta Styles, Anime, Animation, Artistic, and Realistic groups, plus a free-form custom style field. Styles are shared between the UI and backend through a single catalog.
 - Replaced Creator's legacy tag picker with curated descriptive presets for species, skin tone, body, face, hair, eyes, and distinguishing details. The new catalog includes 61 species presets and supports multiple selections for hybrids.
+- Reworked the seven character-trait fields into labeled rows with editable tag chips and a `+` preset button. Manual text, Wizard results, and preset selections update the same serialized fields immediately, including edits made before focus leaves the field.
 - Species presets automatically contribute their visual anatomy to prompts in Illustrious, Anima, and QI2. Explicit character traits take priority over preset defaults; custom text and existing breast-size tags remain supported.
+- Preset selection recognizes legacy aliases and combined default hair tags without rewriting saved custom text. New-character hair defaults match the descriptive catalog.
 - Updated Character Wizard to use the new descriptive preset vocabulary. Character Cloner retains its separate legacy tag catalog.
 - Added QI2 prompt expansion through the native `TextGenerate` node. Character fields are expanded individually, original values are retained when an expansion is missing, and application-owned framing, clothing, background, and species details are preserved.
-- Visual style references are appended after QI2 prompt expansion so artist names, work references, and custom style text remain intact. Prompt construction removes redundant unit weights and reinforces a single character in a single view.
+- Visual style references are appended after QI2 prompt expansion so artist names, work references, and custom style text remain intact. Prompt construction removes redundant unit weights and reinforces a single character in a single view with an expressionless base face.
+- QI2 Cowboy shot instructions specify a tight crop from the complete head to the upper thighs, with knees and feet outside the image. Prompt expansion cannot replace that framing with a full-body view or derive the base expression from other character fields.
 - Added a dedicated downloadable QI2 Character Overhaul LoRA control, adjustable from 0 to 1 in increments of 0.25, with a default of 0.5. It is independent of Viggle Turbo and is excluded from ordinary LoRA slots to prevent duplicate application.
 - Improved repeated QI2 previews by reloading the text encoder for each request while retaining reusable diffusion-model and VAE assets.
+- Workflow execution reuses a valid saved preview or selected pose without loading generation models unnecessarily. Generation failures report the failing stage, character, node, and model family with a traceback.
 - Added prompt logging for preview and workflow generation, including rewritten QI2 prompts and framing.
+
+## Character Cloner
+
+- Reworked race, skin, body, face, hair, eyes, and detail fields into editable tag rows with `+` buttons while retaining Cloner's existing tag catalog and skin choices.
+- After a successful upload batch, Cloner offers either image analysis through the existing Wizard or manual character description. The dialog explains the importance of accurate face and eye descriptions for later emotion generation.
+- Uploads and analysis results are tied to the current character and selected references; late responses cannot update a different selection or a removed node.
+- Cloning preserves saved costumes and unedited character metadata, refuses to overwrite unreadable configurations, and rejects metadata belonging to another character.
+- Reference input is limited to 16 images and 16,777,216 pixels for both the combined source images and the assembled grid, preventing oversized allocations.
 
 ## Resolution Controls
 
@@ -45,12 +56,13 @@ It adds Qwen Image 2.1 and MiniMax H3 generation, expands Character Creator, and
 - Character Creator now uses a 9:16 canvas for all generation profiles. Legacy Anima resolution presets are converted to the new area-based setting, which is saved independently for each profile.
 - Pose and clothing generation preserve the source aspect ratio and align dimensions to the active model's requirements. A scale value representing 2 MP sets total image area rather than a 2048-pixel square.
 - Model changes select appropriate generation defaults, including 1.5 MP for H3 pose generation and automatic H3 clothing previews, and 1.0 MP for other pose and clothing families. QI2 face generation defaults to 2.0 MP.
-- Manual resolution choices survive UI refreshes and workflow reloads. Generator synchronization follows the connected Control Center, including rerouted connections, and updates serialized state before queueing.
+- Manual resolution choices are retained separately for each model family and survive switching away and back, UI refreshes, and workflow reloads. Saved workflow settings take priority over browser backups.
+- Generator synchronization follows the connected Control Center or Emotion Studio, including rerouted connections, and updates serialized state before queueing. Creator's selected profile does not override the generator's connected model family.
+- SeedVR model selections and other generator settings are persisted as soon as they change, without waiting for a subsequent mouse release.
 
 ## Native Transparency and Background Handling
 
 - Added opt-in `screen_matte` chroma keying with device-resident color matting, connected-detail cleanup, zero RGB under transparent pixels, and a local corpus benchmark. Legacy methods and Balanced defaults remain available unchanged.
-
 - Added an `Alpha` background option to Character Creator and Clothes Designer for QI2, and a `Native` background-removal mode in the generators.
 - Native mode requests transparent output directly from QI2 and bypasses chroma-key removal. Alpha is preserved through clothing references, cached previews, emotion editing, and final images.
 - Upscaling in Native mode processes RGB and restores the resized source alpha afterward, preserving transparency through SeedVR2 upscaling.
@@ -58,6 +70,7 @@ It adds Qwen Image 2.1 and MiniMax H3 generation, expands Character Creator, and
 - Switching to QI2 selects native transparency; switching to another model restores the previous compatible background choice. Manual choices remain stable while the model family is unchanged.
 - Transparent references for solid-background clothing edits are composited onto the selected green or blue background. Blue background prompts explicitly request pure blue and discourage purple, gradients, and background patterns.
 - SAM analysis and SAM3 detail recovery are now disabled by default. Recovery controls are hidden when Native background mode is active.
+- Native and disabled background-removal paths reuse normalized image batches and show previews from saved sprite files when available, avoiding duplicate normalization and preview encoding while still publishing final outputs.
 
 ## Clothes Designer
 
@@ -68,6 +81,9 @@ It adds Qwen Image 2.1 and MiniMax H3 generation, expands Character Creator, and
 - Preview cache identity also includes the selected model, text encoders, VAEs, loader settings, and LoRA configuration. Custom model inputs and externally replaced pipe assets regenerate previews instead of reusing an unverifiable disk cache.
 - Fixed seed handling so the selected or randomized Clothes Designer seed reaches the sampler, including seed 0. Older state without a seed inherits the pipe value.
 - Restored workflow state now correctly refreshes clothing generation controls, including background and resolution, when workflows load or the connected model changes.
+- Added costume deletion with confirmation. It removes the costume's metadata, generated asset directories, version archives, and unshared preview cache; `Naked` and `Original` remain protected. Failed deletion restores the previous state, and cleanup failures report where temporary files remain.
+- Deletion waits for pending field saves, blocks conflicting preview operations, and refreshes the serialized selection. Late Wizard or preview responses cannot restore a deleted costume or change a newer selection.
+- Custom-model previews reuse an available matching Control Center pipe. If required custom inputs are unavailable, the preview reports that explicitly instead of trying to build an incomplete setup.
 
 ## Emotion Studio and Step 3
 
@@ -77,6 +93,8 @@ It adds Qwen Image 2.1 and MiniMax H3 generation, expands Character Creator, and
 - QI2 face crops preserve source alpha and support both standard and Viggle Turbo sampling. Illustrious and Anima continue to use the FaceDetailer path.
 - Emotion previews now show final results at full resolution with alpha preserved. Intermediate raw-result tabs and their duplicate previews have been removed.
 - Emotion controls and stage tabs refresh when the connected Emotion Studio profile is restored or changed, while retaining saved bounding-box settings.
+- Default face bounding-box dilation and merge feather are now 50 pixels. These defaults fill only missing settings; saved explicit values remain unchanged.
+- Emotion Studio reloads changed emotion definitions and source sprite contents from disk, validates character profiles before model loading, and preserves per-pose prompts and shifted seeds during regeneration.
 
 ## Wizards and Image Analysis
 
@@ -84,23 +102,54 @@ It adds Qwen Image 2.1 and MiniMax H3 generation, expands Character Creator, and
 - Character and Clothes Wizards use text-only, non-thinking inference and no longer require a vision projector. Character Cloner and VL Analyzer use the Qwen3.5 vision handler with thinking disabled.
 - Wizard and Cloner interfaces check model readiness before inference and offer an explicit download action for missing or invalid assets. Downloads can repair invalid GGUF files.
 - Added model-specific projector discovery to avoid accidentally pairing Qwen3.5 with an unrelated projector. New downloads use `models/llm/Qwen3.5-4B`.
+- Wizard inference, standalone previews, and regeneration run through a shared background worker, keeping HTTP and progress handling responsive without submitting the whole workflow. Wizard stages identify their node and request so stale results can be ignored.
 
 ## Control Center and Progress
 
 - Control Center now exposes native UNet and custom-model choices for QI2, Klein9b, and MiniMax H3. Removed obsolete GGUF settings and the ComfyUI-GGUF setup dependency from the main UI.
 - Custom LoRAs are associated with the selected model family and filtered accordingly; existing generic custom entries remain shared.
-- Catalog refreshes retain packaged QI2 entries when a remote catalog is older and filter retired QIE2511 assets. Catalog paths resolve correctly for linked installations and do not recreate a removed installation directory.
+- Catalog refreshes retain packaged QI2 entries when a remote catalog is older and filter retired QIE2511 assets. The standard VNCCS catalog falls back to its packaged copy when a remote refresh fails. Catalog paths resolve correctly for linked installations and do not recreate a removed installation directory.
+- Updated the Klein9b Pose Studio catalog asset to `VNCCS_PoseStudioKlein9b_V2.2.safetensors`.
 - Model downloads report measured transfer progress and downloaded bytes, followed by a separate installation phase. Removed simulated progress based on elapsed time and added compatibility with multiple Hugging Face Hub progress APIs.
 - Download status updates preserve focused inputs, open controls, and scroll position. Model-family tabs support keyboard navigation.
 - Pose generation and character preparation report encoding, sampling, and decoding progress per image. Counts reflect the actual work being performed, including individual-image regeneration.
+
+## Remote Sessions and Progress Recovery
+
+- Active workflow widgets use ComfyUI's API transport for requests and media URLs, preserving launcher and reverse-proxy path prefixes. Mutable VNCCS responses are not reused from browser or proxy caches.
+- Privileged requests validate browser origin metadata before parsing bodies or performing expensive work. Same-origin requests remain compatible with reverse proxies that rewrite the backend Host header.
+- Browser preferences, model registries, and pending dependency installations are scoped to the backend and ComfyUI user. Generator previews, cached inputs, live pipes, and progress are also isolated by workflow and node.
+- Generator stage snapshots restore missed progress and previews after reconnecting or returning to the app. Superseded responses, old runs, and snapshots from a previous server instance cannot overwrite a newer execution; terminal errors remain visible.
+- Single-image regeneration retains sibling previews, per-pose prompts, and the selected preview. Normal execution and regeneration sharing a cache are serialized to avoid mixing results.
+- Inactive live contexts and transient workflow caches have bounded retention. Expired results request a new generator run; final character outputs and legacy caches are preserved.
+
+## Storage Safety and Migration
+
+- Character configurations, preview images, and cached tensors are written through temporary files before replacement. Failed writes preserve the previous files and are reported instead of appearing successful; unreadable configurations are not treated as new characters.
+- Sprite batches are prepared before publication, with rollback on failure. Full runs archive previous images into version directories, while regeneration preserves unaffected current sprites and existing archives. Post-publication cleanup failures produce warnings without discarding successfully saved output.
+- Character storage updates coordinate generation, costume edits, deletion, migration, and canvas repair to prevent conflicting writes or restoration of deleted metadata.
+- Added stricter request, costume-field, image-path, and LoRA validation. Filesystem checks reject traversal and symbolic links that escape the allowed storage roots; costume deletion also rejects aliases to protected sprite sets.
+- Legacy migration selects the newest sheet for each costume and emotion and preserves existing character configurations, including forced sprite conversion.
+- Migration reports partial failures and can retry only failed sheets. Failed status requests offer reconnection without starting a duplicate job; migration and canvas repair cannot run concurrently, and retained job history and logs are bounded.
+
+## Widget Interaction
+
+- Widget styles, palettes, and animation names are scoped to their owning widgets, preventing layout and color collisions between Creator, Cloner, Clothes Designer, generators, Emotion Studio, Control Center, Sprite Manager, and Pose Editor. Hover rules preserve selected-control styling.
+- Shared dialogs provide accessible names, keyboard focus containment, Escape handling, and focus restoration, including nested dialogs. Preset controls and help tooltips expose accessible labels and selected states.
+- Character and costume loaders ignore stale metadata and preview responses, retain the previous valid selection on load failure, and clean up listeners and polling when nodes are removed.
+- Middle-mouse canvas navigation handles pointer cancellation, lost capture, focus changes, and node removal without leaving a stuck drag or interfering with embedded viewers and scrollable controls.
+
+## Runtime and Memory
+
+- Internal generation stages perform ComfyUI's dynamic VRAM cleanup for all model families, including character previews, clothing, emotions, and SeedVR upscaling. Cleanup also runs on failure without unloading reusable model weights; Klein and QI2 release consumed pose conditioning and latents between stages.
+- Package discovery can read VNCCS metadata without a complete ComfyUI runtime. Runtime registration reports import failures explicitly and handles pre-registered namespace placeholders instead of silently exposing an empty node list.
+- Native ComfyUI node invocation handles `NodeOutput` results and execution-blocking errors.
 
 ## Workflows, Compatibility, and Maintenance
 
 - Added updated 3.2 workflows for Character Creator, Character Cloner, Character Clothes, and Character Emotions. Previous 3.0 workflows are retained under `workflows/Old`.
 - Added the `VNCCS Style Preview Test` output node, which generates named preview PNGs for every catalog style using Anima or QI2.
-- Package discovery can read VNCCS metadata without a complete ComfyUI runtime. Runtime registration now reports import failures explicitly and handles pre-registered namespace placeholders instead of silently exposing an empty node list.
-- Updated native ComfyUI node invocation to handle `NodeOutput` results and execution-blocking errors.
-- Added regression coverage for model-family selection, QI2 and H3 generation, prompt construction, styles and presets, resolution persistence, native alpha, clothing references, emotion crops, progress reporting, downloads, wizard models, and package loading.
+- Added regression coverage for model-family selection, QI2 and H3 generation, prompts and presets, trait editing, resolution and settings persistence, native alpha, clothing references and deletion, emotion crops, runtime cleanup, progress recovery, proxy transport, safe storage, migration, downloads, wizard models, widget isolation, accessibility, and package loading. CI now runs the Node.js widget tests in addition to the Python suite.
 - Updated package version to `3.2.0`.
 - **QIE2511 workflows require migration:** select a QI2 model and its matching assets in Control Center, or use a compatible Klein9b setup. Retired QIE2511 selections produce an explicit unsupported-model error. The standalone legacy Qwen encoder remains registered for existing independent workflows.
 - **Runtime requirements:** QI2 requires ComfyUI's native Qwen Image 2.1 nodes, including text generation, conditioning, and cache support. H3 requires native MiniMax H3 reference-to-video support and both video and audio VAEs. Qwen3.5 image analysis requires a `llama-cpp-python` build exposing `Qwen35ChatHandler`.

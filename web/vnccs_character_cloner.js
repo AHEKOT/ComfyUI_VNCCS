@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { vnccsApi as api, mediaURL, checkedJSON } from "./vnccs_transport.js";
-import { showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard } from "./vnccs_common.js";
+import { presetSelection } from "./character_presets.mjs";
+import { showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, registerCleanup } from "./vnccs_common.js";
 
 // --- STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -39,6 +40,7 @@ const STYLE = `
 
 /* ── Container ── */
 .vnccs-cloner-container {
+    position: relative;
     display: flex;
     flex-direction: column;
     background: var(--bg-primary);
@@ -360,7 +362,7 @@ const STYLE = `
     cursor: pointer;
     transition: all var(--transition);
 }
-.vnccs-cloner-thumb:hover { border-color: var(--accent); box-shadow: 0 0 8px var(--accent-subtle); }
+:where(.vnccs-cloner-thumb-wrap:not(.is-selected)) .vnccs-cloner-thumb:hover { border-color: var(--accent); box-shadow: 0 0 8px var(--accent-subtle); }
 .vnccs-cloner-thumb.generating {
     border: 2px solid var(--accent);
     animation: clonerPulse 1s infinite alternate;
@@ -453,6 +455,9 @@ const STYLE = `
     min-height: 48px;
     box-sizing: border-box;
 }
+.vnccs-cloner-segmented-field.is-three {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
 .vnccs-cloner-segmented-btn {
     border: 0;
     border-radius: var(--radius-md);
@@ -464,7 +469,11 @@ const STYLE = `
     cursor: pointer;
     transition: all var(--transition);
 }
-.vnccs-cloner-segmented-btn:hover {
+.vnccs-cloner-segmented-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+.vnccs-cloner-segmented-btn:hover:not(.is-active):not(:disabled) {
     color: var(--text-primary);
     background: rgba(255, 255, 255, 0.045);
 }
@@ -489,7 +498,7 @@ const STYLE = `
     cursor: pointer;
     transition: all var(--transition);
 }
-.vnccs-cloner-graphic-toggle:hover {
+.vnccs-cloner-graphic-toggle:hover:not(.is-active) {
     border-color: var(--border-hover);
     color: var(--text-primary);
 }
@@ -878,27 +887,89 @@ const STYLE = `
     color: var(--error);
 }
 
-/* ── Tag Constructor ── */
-.vnccs-cloner-tag-btn {
-    width: 20px;
-    height: 20px;
-    margin-left: auto;
+/* Character traits */
+.vnccs-cloner-trait-list {
+    border-top: 1px solid var(--accent-border);
     flex-shrink: 0;
-    display: flex;
+}
+.vnccs-cloner-trait-row {
+    display: grid;
+    grid-template-columns: minmax(56px, 18%) minmax(0, 1fr) 44px;
     align-items: center;
-    justify-content: center;
-    border: 1px solid var(--accent-border);
-    border-radius: 6px;
-    background: rgba(255, 143, 163, 0.1);
-    color: var(--accent);
+    gap: 12px;
+    min-height: 64px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--accent-border);
+    box-sizing: border-box;
+}
+.vnccs-cloner-trait-label {
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 400;
+}
+.vnccs-cloner-trait-editor { min-width: 0; }
+.vnccs-cloner-trait-values {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    min-height: 44px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-primary);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
     cursor: pointer;
-    font-size: 12px;
-    transition: all var(--transition);
 }
-.vnccs-cloner-tag-btn:hover {
-    background: rgba(255, 143, 163, 0.2);
-    box-shadow: 0 0 8px var(--accent-glow);
+.vnccs-cloner-trait-token {
+    max-width: 100%;
+    padding: 5px 8px;
+    border: 1px solid rgba(255,182,200,0.22);
+    border-radius: 7px;
+    background: rgba(184,169,232,0.14);
+    line-height: 1.4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
+.vnccs-cloner-trait-empty { color: var(--text-secondary); }
+.vnccs-cloner-trait-input { min-height: 44px; font-size: 13px; }
+.vnccs-cloner-trait-values[hidden], .vnccs-cloner-trait-input[hidden] { display: none; }
+.vnccs-cloner-trait-add {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    background: rgba(255,255,255,0.06);
+    color: var(--text-primary);
+    border: 1px solid rgba(255,182,200,0.22);
+    border-radius: 10px;
+    font: inherit;
+    font-size: 20px;
+    cursor: pointer;
+    transition: background var(--transition), border-color var(--transition);
+}
+.vnccs-cloner-trait-add:hover { background: var(--bg-hover); border-color: var(--accent); }
+.vnccs-cloner-trait-values:hover .vnccs-cloner-trait-token { border-color: var(--accent-border); }
+
+.vnccs-cloner-trait-add:focus-visible, .vnccs-cloner-trait-values:focus-visible, .vnccs-cloner-tag-chip:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.vnccs-cloner-analysis-notice { line-height: 1.5; }
+.vnccs-cloner-analysis-warning {
+    margin-top: 14px;
+    padding: 12px;
+    border: 1px solid var(--warning);
+    border-radius: var(--radius-sm);
+    background: rgba(255,170,0,0.08);
+}
+.vnccs-cloner-analysis-warning strong { color: var(--warning); }
+
+/* ── Tag Constructor ── */
 .vnccs-cloner-tag-grid {
     display: flex;
     flex-wrap: wrap;
@@ -910,6 +981,8 @@ const STYLE = `
     border-radius: var(--radius-sm);
 }
 .vnccs-cloner-tag-chip {
+    font-family: inherit;
+    text-align: left;
     padding: 4px 10px;
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid var(--border);
@@ -920,7 +993,7 @@ const STYLE = `
     user-select: none;
     transition: all var(--transition);
 }
-.vnccs-cloner-tag-chip:hover {
+.vnccs-cloner-tag-chip:hover:not(.selected) {
     background: rgba(255, 143, 163, 0.1);
     border-color: var(--accent-border);
     color: var(--accent-hover);
@@ -1177,6 +1250,7 @@ app.registerExtension({
                             if (Object.prototype.hasOwnProperty.call(parsed, "selected_idx")) {
                                 state.selected_idx = parsed.selected_idx;
                             }
+                            state.previous_background_color = parsed.previous_background_color || "Green";
                             if (parsed.character_info && typeof parsed.character_info === "object") {
                                 Object.assign(state.character_info, parsed.character_info);
                                 restoredInfoCharacter = parsed.character || null;
@@ -1184,6 +1258,7 @@ app.registerExtension({
                             node._vnccsGetClonerState = () => state;
                             // Update UI
                             updateUIFromState();
+                            dataWidget.value = JSON.stringify(state);
                             console.log("[VNCCS] State loaded successfully.");
                         } catch (e) {
                             console.error("[VNCCS] Failed to load state:", e);
@@ -1205,7 +1280,7 @@ app.registerExtension({
                 };
 
                 const FIELD_HELP = {
-                    background_color: "Sets the chroma key background color for generated clone sheets.",
+                    background_color: "Sets the background for generated clone sheets. Alpha requires Qwen Image 2.1 in Control Center.",
                     sex: "Character gender profile used for prompt defaults and pose/body synchronization.",
                     nsfw: "Allows adult-oriented prompt details and clone generation behavior.",
                     age: "Controls the cloned character age used for prompt building and pose/body synchronization.",
@@ -1221,7 +1296,79 @@ app.registerExtension({
                 const helpFor = (key, fallback = "") => FIELD_HELP[key] || fallback;
 
                 // UI Builders
+                const createTraitField = (lbl, key, targetObj = state.character_info) => {
+                    const wrap = document.createElement("div");
+                    wrap.className = "vnccs-cloner-trait-row";
+                    setHelpText(wrap, helpFor(key));
+                    const label = document.createElement("span");
+                    label.className = "vnccs-cloner-trait-label";
+                    label.textContent = lbl;
+                    const editor = document.createElement("div");
+                    editor.className = "vnccs-cloner-trait-editor";
+                    const values = document.createElement("button");
+                    values.type = "button";
+                    values.className = "vnccs-cloner-trait-values";
+                    const inp = document.createElement("input");
+                    inp.type = "text";
+                    inp.className = "vnccs-cloner-input vnccs-cloner-trait-input";
+                    inp.setAttribute("aria-label", lbl);
+                    inp.placeholder = "Add tags";
+                    inp.hidden = true;
+                    const renderTags = () => {
+                        values.replaceChildren();
+                        const tokens = inp.value.split(",").map(token => token.trim()).filter(Boolean);
+                        for (const token of tokens.length ? tokens : ["Add tags"]) {
+                            const chip = document.createElement("span");
+                            chip.className = tokens.length ? "vnccs-cloner-trait-token" : "vnccs-cloner-trait-empty";
+                            chip.textContent = token;
+                            values.appendChild(chip);
+                        }
+                        values.setAttribute("aria-label", `Edit ${lbl.toLowerCase()} tags: ${inp.value || "Add tags"}`);
+                    };
+                    inp.setValue = value => {
+                        inp.value = value ?? "";
+                        renderTags();
+                    };
+                    inp.setValue(targetObj[key]);
+                    inp.oninput = (e) => {
+                        targetObj[key] = e.target.value;
+                        renderTags();
+                        saveState();
+                    };
+                    inp.startEditing = () => {
+                        values.hidden = true;
+                        inp.hidden = false;
+                        inp.focus({ preventScroll: true });
+                    };
+                    values.onclick = inp.startEditing;
+                    inp.onblur = () => {
+                        inp.hidden = true;
+                        values.hidden = false;
+                    };
+                    inp.onkeydown = e => {
+                        if (e.key === "Enter") {
+                            e.preventDefault();
+                            inp.blur();
+                            values.focus({ preventScroll: true });
+                        }
+                    };
+                    const add = document.createElement("button");
+                    add.type = "button";
+                    add.className = "vnccs-cloner-trait-add";
+                    add.textContent = "+";
+                    add.setAttribute("aria-label", `Choose ${lbl.toLowerCase()} presets`);
+                    add.title = "Choose Presets";
+                    add.onclick = () => openTagConstructor(key, inp, targetObj);
+                    editor.append(values, inp);
+                    wrap.append(label, editor, add);
+                    els[key] = inp;
+                    return wrap;
+                };
+
                 const createField = (lbl, key, type = "text", opts = [], targetObj = state.character_info) => {
+                    if (type === "text" && ["hair", "eyes", "race", "skin_color", "body", "face", "additional_details"].includes(key)) {
+                        return createTraitField(lbl, key, targetObj);
+                    }
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-cloner-field";
                     setHelpText(wrap, helpFor(key));
@@ -1263,15 +1410,6 @@ app.registerExtension({
                     header.style.justifyContent = "space-between";
                     header.innerHTML = `<div class="vnccs-cloner-label">${lbl}</div>`;
 
-                    const tagSupported = ["hair", "eyes", "race", "body", "face", "additional_details"].includes(key);
-                    if (tagSupported && type === "text") {
-                        const btn = document.createElement("div");
-                        btn.className = "vnccs-cloner-tag-btn";
-                        btn.innerHTML = "✎";
-                        btn.title = "Open Tag Constructor";
-                        btn.onclick = () => openTagConstructor(key, inp, targetObj);
-                        header.appendChild(btn);
-                    }
                     wrap.appendChild(header);
 
                     let inp;
@@ -1295,6 +1433,48 @@ app.registerExtension({
                     return wrap;
                 };
 
+                const getConnectedModelKind = () => {
+                    const graph = node.graph || app.graph;
+                    const centers = new Set();
+                    const pending = [node];
+                    const visited = new Set();
+                    while (pending.length) {
+                        const current = pending.shift();
+                        if (!current || visited.has(current)) continue;
+                        visited.add(current);
+                        if (current.type === "VNCCS_CharacterCloneGenerator" || current.comfyClass === "VNCCS_CharacterCloneGenerator") {
+                            const center = current._vnccsCharacterGeneratorWidget?.controlCenterWidgetNode?.();
+                            if (center) centers.add(center);
+                            continue;
+                        }
+                        for (const output of current.outputs || []) {
+                            for (const linkId of output.links || []) {
+                                const target = graph?.getNodeById?.(graph.links?.[linkId]?.target_id);
+                                if (target) pending.push(target);
+                            }
+                        }
+                    }
+                    if (!centers.size) {
+                        for (const candidate of graph?._nodes || []) {
+                            if (candidate.type === "VNCCS_ControlCenter" || candidate.comfyClass === "VNCCS_ControlCenter") centers.add(candidate);
+                        }
+                    }
+                    if (centers.size !== 1) return "";
+                    const center = [...centers][0];
+                    const widget = center._cc_widget;
+                    try {
+                        const kind = widget?._selectedKind?.() || widget?._activeKind?.() || widget?.state?.active_kind;
+                        if (kind) return String(kind).trim().toLowerCase();
+                    } catch {
+                        // Fall through to the serialized Control Center state.
+                    }
+                    try {
+                        return String(JSON.parse(center.widgets?.find(w => w.name === "node_state")?.value || "{}").active_kind || "").trim().toLowerCase();
+                    } catch {
+                        return "";
+                    }
+                };
+
                 const createSegmentedField = (lbl, key, options, targetObj = state.character_info) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-cloner-field";
@@ -1303,12 +1483,28 @@ app.registerExtension({
 
                     const segmented = document.createElement("div");
                     segmented.className = "vnccs-cloner-segmented-field";
+                    segmented.classList.toggle("is-three", options.length === 3);
+                    segmented.setAttribute("role", "group");
+                    segmented.setAttribute("aria-label", lbl);
                     const buttons = [];
 
-                    const setValue = (value, persist = false) => {
-                        const normalized = String(value || options[0]?.value || "");
+                    const setValue = (value, persist = false, enforce = false) => {
+                        let normalized = String(value || options[0]?.value || "");
+                        const kind = key === "background_color" ? getConnectedModelKind() : "";
+                        if (key === "background_color") {
+                            const lower = normalized.trim().toLowerCase();
+                            normalized = ["alpha", "transparent"].includes(lower) ? "Transparent" : lower === "blue" ? "Blue" : "Green";
+                            // Restoration can run before the connected generator and its model are configured.
+                            if (normalized === "Transparent" && kind !== "qi2" && (persist || enforce)) {
+                                normalized = state.previous_background_color === "Blue" ? "Blue" : "Green";
+                            }
+                            if (normalized !== "Transparent") state.previous_background_color = normalized;
+                        }
                         targetObj[key] = normalized;
                         buttons.forEach(({ btn, value: btnValue }) => {
+                            const disabled = key === "background_color" && btnValue === "Transparent" && kind !== "qi2";
+                            btn.disabled = disabled;
+                            btn.title = disabled ? "Native transparency requires Qwen Image 2.1 in Control Center" : "";
                             btn.classList.toggle("is-active", btnValue === normalized);
                             btn.setAttribute("aria-pressed", btnValue === normalized ? "true" : "false");
                         });
@@ -1323,7 +1519,16 @@ app.registerExtension({
                         btn.type = "button";
                         btn.className = "vnccs-cloner-segmented-btn";
                         btn.textContent = option.label;
-                        btn.onclick = () => setValue(option.value, true);
+                        btn.onclick = () => {
+                            if (key === "background_color" && option.value === "Transparent" && getConnectedModelKind() !== "qi2") return;
+                            const canvas = key === "background_color" ? app.canvas : null;
+                            canvas?.emitEvent?.({ subType: "before-change" });
+                            try {
+                                setValue(option.value, true);
+                            } finally {
+                                canvas?.emitEvent?.({ subType: "after-change" });
+                            }
+                        };
                         buttons.push({ btn, value: option.value });
                         segmented.appendChild(btn);
                     });
@@ -1472,6 +1677,50 @@ app.registerExtension({
                     }));
                     return showCommonModal(container, title, contentFunc, mappedButtons);
                 };
+                const showCharacterDescriptionPrompt = () => {
+                    const currentRequest = beginCaptionRequest();
+                    const character = state.character;
+                    const sources = JSON.stringify(state.source_images);
+                    const selectedIndex = state.selected_idx || 0;
+                    const isCurrent = () => currentRequest() && state.character === character &&
+                        JSON.stringify(state.source_images) === sources && (state.selected_idx || 0) === selectedIndex;
+                    showModal("Describe Your Character", modal => {
+                        modal.style.maxHeight = "calc(100% - 32px)";
+                        modal.style.overflowY = "auto";
+                        modal.style.boxSizing = "border-box";
+                        const content = document.createElement("div");
+                        content.className = "vnccs-cloner-analysis-notice";
+                        const text = document.createElement("p");
+                        text.textContent = "Use the existing image wizard to analyze the selected source image and fill in character tags automatically, then review the results. If you choose manual entry, you must describe the character in the attribute fields yourself.";
+                        const warning = document.createElement("div");
+                        warning.className = "vnccs-cloner-analysis-warning";
+                        const heading = document.createElement("strong");
+                        heading.textContent = "Face and eye descriptions are essential for consistent emotions.";
+                        const details = document.createElement("p");
+                        details.textContent = "Missing or inaccurate face and eye descriptions can cause inconsistent facial features and eyes when generating emotions later. Enter these details accurately, even after automatic analysis.";
+                        warning.append(heading, details);
+                        content.append(text, warning);
+                        return content;
+                    }, [
+                        {
+                            text: "Enter Manually",
+                            action: overlay => {
+                                overlay.remove();
+                                if (isCurrent()) els.face?.startEditing?.();
+                                return false;
+                            },
+                        },
+                        {
+                            text: "Analyze Tags", class: "vnccs-cloner-btn-primary",
+                            action: async overlay => {
+                                if (isCurrent() && autoGenBtn.disabled) return true;
+                                overlay.remove();
+                                if (isCurrent()) await autoGenBtn.onclick();
+                                return false;
+                            },
+                        },
+                    ]);
+                };
                 const showSourceImageRequiredModal = (message) => {
                     showModal("Source Image Required", () => {
                         const d = document.createElement("div");
@@ -1494,11 +1743,18 @@ app.registerExtension({
                 };
 
                 const openTagConstructor = async (fieldKey, inputEl, targetObj = state.character_info) => {
-                    if (!TAG_DATA) {
+                    if (!TAG_DATA || (fieldKey === "skin_color" && !TAG_DATA.tags?.skin_color)) {
                         try {
-                            const r = await api.fetchApi("/vnccs/get_tags");
-                            if (r.ok) TAG_DATA = await r.json();
-                            else throw new Error("Failed to load tags");
+                            if (!TAG_DATA) {
+                                const r = await api.fetchApi("/vnccs/get_tags");
+                                if (r.ok) TAG_DATA = await r.json();
+                                else throw new Error("Failed to load tags");
+                            }
+                            if (fieldKey === "skin_color" && !TAG_DATA.tags?.skin_color) {
+                                const r = await api.fetchApi("/vnccs/get_tags?catalog=creator_v2");
+                                if (!r.ok) throw new Error("Failed to load skin presets");
+                                TAG_DATA.tags.skin_color = (await r.json()).tags.skin_color;
+                            }
                         } catch (e) {
                             showModal("Error", () => {
                                 const d = document.createElement("div");
@@ -1514,6 +1770,7 @@ app.registerExtension({
                         eyes: ["eyes"],
                         face: ["eyes"],
                         race: ["races"],
+                        skin_color: ["skin_color"],
                         body: ["breast_size"],
                         additional_details: ["details"],
                     };
@@ -1544,8 +1801,7 @@ app.registerExtension({
                         return;
                     }
 
-                    const currentVals = String(inputEl.value || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
-                    const selected = new Set(currentVals);
+                    const selected = presetSelection(inputEl.value, allTags);
 
                     showModal(`Tag Constructor: ${fieldKey}`, (modal) => {
                         const tagGrid = document.createElement("div");
@@ -1562,19 +1818,19 @@ app.registerExtension({
 
                             group.items.forEach(item => {
                                 const tag = item.tag;
-                                const useTag = tag.replace(/_/g, " ");
-                                const chip = document.createElement("div");
+                                const chip = document.createElement("button");
+                                chip.type = "button";
                                 chip.className = "vnccs-cloner-tag-chip";
                                 chip.innerText = item.label || tag;
-                                if (selected.has(useTag)) chip.classList.add("selected");
+                                const updateChip = () => {
+                                    const active = selected.has(item);
+                                    chip.classList.toggle("selected", active);
+                                    chip.setAttribute("aria-pressed", String(active));
+                                };
+                                updateChip();
                                 chip.onclick = () => {
-                                    if (selected.has(useTag)) {
-                                        selected.delete(useTag);
-                                        chip.classList.remove("selected");
-                                    } else {
-                                        selected.add(useTag);
-                                        chip.classList.add("selected");
-                                    }
+                                    selected.toggle(item);
+                                    updateChip();
                                 };
                                 tagGrid.appendChild(chip);
                             });
@@ -1587,8 +1843,9 @@ app.registerExtension({
                             text: "APPLY",
                             class: "vnccs-btn-primary",
                             action: () => {
-                                const final = Array.from(selected).join(", ");
-                                inputEl.value = final;
+                                const final = selected.value();
+                                if (inputEl.setValue) inputEl.setValue(final);
+                                else inputEl.value = final;
                                 targetObj[fieldKey] = final;
                                 saveState();
                                 return false;
@@ -1599,6 +1856,7 @@ app.registerExtension({
 
                 const beginCharacterRequest = createRequestGuard(node);
                 const beginCaptionRequest = createRequestGuard(node);
+                const beginUploadRequest = createRequestGuard(node);
                 const loadChar = async (name, skipInfoLoad = false, { clearSources = false } = {}) => {
                     beginCaptionRequest();
                     const currentRequest = beginCharacterRequest();
@@ -1785,7 +2043,7 @@ app.registerExtension({
                 // --- SOURCE IMAGES SECTION ---
                 const srcHeader = document.createElement("div");
                 srcHeader.className = "vnccs-cloner-section-title";
-                srcHeader.innerText = "Source Images";
+                srcHeader.innerText = "Source Image";
                 srcHeader.style.marginTop = "15px";
                 colSrc.appendChild(srcHeader);
 
@@ -1832,40 +2090,60 @@ app.registerExtension({
                 // Let's replicate the Button look but centered
                 const uploadBtn = document.createElement("button");
                 uploadBtn.className = "vnccs-cloner-btn vnccs-cloner-btn-upload";
-                uploadBtn.innerText = "+ UPLOAD IMAGES";
+                uploadBtn.innerText = "+ UPLOAD IMAGE";
                 uploadOverlay.appendChild(uploadBtn);
 
                 const fileInput = document.createElement("input");
                 fileInput.type = "file";
-                fileInput.multiple = true;
+                fileInput.multiple = false;
                 fileInput.accept = "image/*";
                 fileInput.style.display = "none";
                 fileInput.onchange = async (e) => {
-                    if (e.target.files.length) {
-                        uploadBtn.innerText = "UPLOADING...";
-                        for (const file of e.target.files) {
-                            try {
-                                const uploadFile = normalizeUploadFile(file, "clone_source");
-                                const body = new FormData();
-                                body.append("image", uploadFile, uploadFile.name);
-                                const resp = await api.fetchApi("/upload/image", { method: "POST", body });
-                                const json = await resp.json();
-                                if (json.name) {
-                                    beginCaptionRequest();
-                                    state.source_images.push({
-                                        name: json.name,
-                                        type: json.type || "input",
-                                        subfolder: json.subfolder || ""
-                                    });
-                                    state.source_images_character = state.character || "";
-                                }
-                            } catch (err) {
-                                showModal("Upload Error", () => { const d = document.createElement("div"); d.innerText = "Upload Failed: " + err; return d; }, [{ text: "Close" }]);
-                            }
-                        }
-                        uploadBtn.innerText = "+ UPLOAD IMAGES";
+                    const files = Array.from(e.target.files || []);
+                    if (!files.length) return;
+                    if (files.length > 1) {
+                        fileInput.value = "";
+                        showModal("One Image Only", () => {
+                            const message = document.createElement("div");
+                            message.textContent = "Character Cloner accepts only one reference image. Select a single file; it will replace the current reference.";
+                            return message;
+                        }, [{ text: "Close" }]);
+                        return;
+                    }
+                    const currentRequest = beginUploadRequest();
+                    const character = state.character;
+                    const sources = state.source_images;
+                    const isCurrent = () => currentRequest() && state.character === character && state.source_images === sources;
+                    uploadBtn.innerText = "UPLOADING...";
+                    uploadBtn.disabled = true;
+                    try {
+                        const uploadFile = normalizeUploadFile(files[0], "clone_source");
+                        const body = new FormData();
+                        body.append("image", uploadFile, uploadFile.name);
+                        const resp = await api.fetchApi("/upload/image", { method: "POST", body });
+                        const json = await resp.json();
+                        if (!isCurrent()) return;
+                        if (!resp.ok || !json.name) throw new Error(json.error || "Upload failed");
+                        beginCaptionRequest();
+                        sources.splice(0, sources.length, {
+                            name: json.name,
+                            type: json.type || "input",
+                            subfolder: json.subfolder || ""
+                        });
+                        state.selected_idx = 0;
+                        state.source_images_character = state.character || "";
                         saveState();
                         renderThumbs();
+                        showCharacterDescriptionPrompt();
+                    } catch (err) {
+                        if (!isCurrent()) return;
+                        showModal("Upload Error", () => { const d = document.createElement("div"); d.innerText = "Upload Failed: " + err; return d; }, [{ text: "Close" }]);
+                    } finally {
+                        if (currentRequest()) {
+                            uploadBtn.innerText = "+ UPLOAD IMAGE";
+                            uploadBtn.disabled = false;
+                            fileInput.value = "";
+                        }
                     }
                 };
 
@@ -1956,7 +2234,7 @@ app.registerExtension({
                     if (!state.source_images.length) {
                         showModal("No Images", (m) => {
                             const d = document.createElement("div");
-                            d.innerText = "Please upload at least one source image to analyze.";
+                            d.innerText = "Please upload a source image to analyze.";
                             return d;
                         }, [{ text: "OK", class: "vnccs-btn-primary" }]);
                         return;
@@ -2202,19 +2480,23 @@ app.registerExtension({
                 colAttr.appendChild(createSegmentedField("Background", "background_color", [
                     { label: "Green", value: "Green" },
                     { label: "Blue", value: "Blue" },
+                    { label: "Alpha", value: "Transparent" },
                 ]));
                 colAttr.appendChild(createSegmentedField("Gender", "sex", [
                     { label: "Male", value: "male" },
                     { label: "Female", value: "female" },
                 ]));
                 colAttr.appendChild(createSlider("Age", "age", 1, 100, 1, state.character_info));
-                colAttr.appendChild(createField("Race", "race", "text"));
-                colAttr.appendChild(createField("Skin Color", "skin_color", "text"));
-                colAttr.appendChild(createField("Hair", "hair", "text"));
-                colAttr.appendChild(createField("Eyes", "eyes", "text"));
-                colAttr.appendChild(createField("Face", "face", "text"));
-                colAttr.appendChild(createField("Body", "body", "text"));
-                colAttr.appendChild(createField("Details", "additional_details", "text"));
+                const traitList = document.createElement("div");
+                traitList.className = "vnccs-cloner-trait-list";
+                traitList.appendChild(createField("Race", "race"));
+                traitList.appendChild(createField("Skin", "skin_color"));
+                traitList.appendChild(createField("Body", "body"));
+                traitList.appendChild(createField("Face", "face"));
+                traitList.appendChild(createField("Hair", "hair"));
+                traitList.appendChild(createField("Eyes", "eyes"));
+                traitList.appendChild(createField("Details", "additional_details"));
+                colAttr.appendChild(traitList);
                 colAttr.appendChild(createField("Aesthetics", "aesthetics", "text"));
                 colAttr.appendChild(createGraphicToggle("NSFW Mode", "nsfw"));
 
@@ -2373,6 +2655,31 @@ app.registerExtension({
                         wrap.appendChild(delBtn);
                         imgList.appendChild(wrap);
                     });
+                };
+
+                const syncBackgroundControl = () => {
+                    const previous = state.character_info.background_color;
+                    els.background_color?.setValue?.(previous, false, true);
+                    if (previous !== state.character_info.background_color) saveState();
+                };
+                let backgroundDisposed = false;
+                const onBackgroundModelChanged = () => queueMicrotask(() => {
+                    if (!backgroundDisposed) syncBackgroundControl();
+                });
+                window.addEventListener("vnccs-control-center-model-changed", onBackgroundModelChanged);
+                const backgroundTimer = setInterval(syncBackgroundControl, 500);
+                registerCleanup(node, () => {
+                    backgroundDisposed = true;
+                    clearInterval(backgroundTimer);
+                    window.removeEventListener("vnccs-control-center-model-changed", onBackgroundModelChanged);
+                });
+                const origSerialize = node.onSerialize;
+                node.onSerialize = function (o) {
+                    origSerialize?.apply(this, arguments);
+                    syncBackgroundControl();
+                    dataWidget.value = JSON.stringify(state);
+                    const index = node.widgets?.indexOf(dataWidget) ?? -1;
+                    if (index >= 0 && Array.isArray(o?.widgets_values)) o.widgets_values[index] = dataWidget.value;
                 };
 
                 // Initialize

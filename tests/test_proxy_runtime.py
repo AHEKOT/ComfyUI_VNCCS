@@ -177,9 +177,16 @@ def test_create_route_accepts_checked_post_and_rejects_invalid_or_cross_site_req
         req = SimpleNamespace(method='POST', headers=headers, json=body)
         return await handlers['POST', '/vnccs/create'](req)
     headers = {'Host': 'localhost:8188', 'Origin': 'https://comfy.example', 'Sec-Fetch-Site': 'same-origin', 'X-VNCCS-CSRF': '1'}
-    result = asyncio.run(invoke({'name': 'Alice'}, headers))
+    result = asyncio.run(invoke({'name': 'Alice', 'catalog': 'creator_v2'}, headers))
     assert result.status == 200 and result.data['name'] == 'Alice'
     config = Path(utils.config_path('Alice'))
+    saved = json.loads(config.read_text())
+    assert saved['character_info']['hair'] == 'black hair, waist-length hair'
+    assert saved['character_info']['eyes'] == 'blue eyes'
+    saved['character_info']['hair'] = 'My Custom Hair'
+    config.write_text(json.dumps(saved))
+    assert asyncio.run(invoke({'name': 'Alice'}, headers)).data['existing'] is True
+    assert json.loads(config.read_text()) == saved
     config.write_text('broken JSON')
     assert asyncio.run(invoke({'name': 'Alice'}, headers)).status == 500
     assert config.read_text() == 'broken JSON'
@@ -197,6 +204,9 @@ def test_create_route_accepts_checked_post_and_rejects_invalid_or_cross_site_req
         return await handlers['GET', '/vnccs/create'](req)
     trusted = {'Host': 'comfy.example', 'Referer': 'https://comfy.example/comfy/', 'Sec-Fetch-Site': 'same-origin'}
     assert asyncio.run(legacy_get(trusted)).status == 200
+    assert json.loads(Path(utils.config_path('Legacy')).read_text())['character_info']['hair'] == 'black long hair'
+    assert asyncio.run(invoke({'name': 'Cloner'}, headers)).status == 200
+    assert json.loads(Path(utils.config_path('Cloner')).read_text())['character_info']['hair'] == 'black long hair'
     hostile = {**trusted, 'Origin': 'https://evil.example', 'Referer': 'https://evil.example/', 'Sec-Fetch-Site': 'same-site'}
     assert asyncio.run(legacy_get(hostile)).status == 403
     assert asyncio.run(legacy_get({**hostile, 'Sec-Fetch-Site': 'cross-site'})).status == 403

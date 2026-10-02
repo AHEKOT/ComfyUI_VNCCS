@@ -657,25 +657,39 @@ class TestPackagedConfigSync:
         assert json.loads(target.read_text(encoding="utf-8")) == remote_data
         assert download_args["force_download"] is True
 
-    def test_remote_refresh_failure_does_not_return_stale_local_config(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("local_available", [True, False])
+    def test_remote_refresh_failure_uses_local_catalog_when_available(self, tmp_path, monkeypatch, local_available):
         target = tmp_path / "control_center.json"
         local_data = {"name": "stale", "lora": [{"name": "Removed LoRA", "version": "3.0"}]}
-        target.write_text(json.dumps(local_data), encoding="utf-8")
+        if local_available:
+            target.write_text(json.dumps(local_data), encoding="utf-8")
         monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_get_packaged_cc_path", lambda: str(target))
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_load_custom_loras", lambda: [])
+        download_args = {}
 
         def fail_hf_download(**kwargs):
-            raise RuntimeError("HF unavailable")
+            download_args.update(kwargs)
+            raise OSError("HF unavailable")
 
         monkeypatch.setattr(_CONTROL_CENTER_MODULE, "hf_hub_download", fail_hf_download)
         _CC_CONFIG_CACHE.clear()
 
         try:
-            with pytest.raises(RuntimeError, match="HF unavailable"):
-                _get_cc_config("MIUProject/VNCCS_v3.0", prefer_remote=True)
+            if local_available:
+                loaded = _get_cc_config("MIUProject/VNCCS_v3.0", prefer_remote=True)
+                assert loaded["name"] == local_data["name"]
+                assert loaded["lora"] == local_data["lora"]
+                assert _CONTROL_CENTER_MODULE._get_cc_config_source("MIUProject/VNCCS_v3.0") == "packaged"
+            else:
+                with pytest.raises(OSError, match="HF unavailable"):
+                    _get_cc_config("MIUProject/VNCCS_v3.0", prefer_remote=True)
         finally:
             _CC_CONFIG_CACHE.clear()
 
-        assert json.loads(target.read_text(encoding="utf-8")) == local_data
+        assert download_args["force_download"] is True
+        assert download_args["token"] is False
+        if local_available:
+            assert json.loads(target.read_text(encoding="utf-8")) == local_data
 
     def test_packaged_catalog_uses_current_clothes_core(self):
         path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "control_center.json")

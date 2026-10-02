@@ -240,6 +240,12 @@ class TestBuildFaceDetails:
         result = U.build_face_details({"sex": "female", "eyes": "blue"})
         assert "blue eyes" in result
 
+    @pytest.mark.parametrize("eyes", ["blue eyes", "BLUE EYES", "blue eyes, luminous irises"])
+    def test_complete_eye_tags_do_not_get_a_duplicate_suffix(self, eyes):
+        info = {"sex": "female", "eyes": eyes}
+        assert U.build_face_details(info) == f"1girl,{eyes}"
+        assert info["eyes"] == eyes
+
     def test_hair_appended(self):
         result = U.build_face_details({"sex": "female", "hair": "long black"})
         assert "long black hair" in result

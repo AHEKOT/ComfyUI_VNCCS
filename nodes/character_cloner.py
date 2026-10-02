@@ -18,7 +18,7 @@ from ..utils import (
 )
 from .preview_runtime import run_wizard_job
 
-MAX_SOURCE_IMAGES = 16
+MAX_SOURCE_IMAGES = 1
 MAX_GRID_PIXELS = 16 * 1024 * 1024
 
 
@@ -40,19 +40,6 @@ try:
 except Exception:
     from nodes.qwen_vl import get_qwen_vl_chat_handler
     from nodes.vnccs_utils import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME
-
-SKIN_COLOR_OPTIONS = [
-    "light skin",
-    "fair skin",
-    "pale skin",
-    "tan skin",
-    "dark skin",
-    "brown skin",
-    "olive skin",
-    "blue skin",
-    "green skin",
-    "grey skin",
-]
 
 # VNCCS Installer (REMOVED: User requested Qwen2)
 # Reverted to manual update instructions if needed.
@@ -138,7 +125,7 @@ class CharacterCloner:
             )
         source_images = data.get("source_images", []) # List of filenames in input dir
         if not isinstance(source_images, list) or len(source_images) > MAX_SOURCE_IMAGES:
-            raise ValueError(f"Upload at most {MAX_SOURCE_IMAGES} character reference images.")
+            raise ValueError("Character Cloner accepts only one reference image. Remove extra images or upload a replacement.")
         background_color = info.get("background_color", "White")
 
         # 4. Process Images
@@ -388,26 +375,6 @@ if server:
                     "model_name": QWEN_VL_MODEL_FILENAME
                 }, status=500)
             
-            # 4. Inference
-            system_prompt = "You are a character description assistant. Analyze the image and extract the character's physical attributes into a JSON format."
-            
-            # Convert formatted image to base64 data URI
-            with open(image_path, "rb") as f:
-                import base64
-                b64 = base64.b64encode(f.read()).decode("utf-8")
-                img_uri = f"data:image/png;base64,{b64}"
-
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": [
-                    {
-                        "type": "text",
-                        "text": f"Analyze the character. Output JSON with keys: sex, age (int), race, skin_color, hair, eyes, face, body, additional_details, aesthetics (style tags), nsfw (boolean). For skin_color, choose only a clearly visible value from this list: {', '.join(SKIN_COLOR_OPTIONS)}. If the skin tone is obscured or uncertain, use an empty string. Do not use pale skin as a default.",
-                    },
-                    {"type": "image_url", "image_url": {"url": img_uri}},
-                ]},
-            ]
-
              # 4. Initialize Llama
             try:
                 print(f"[VNCCS] Using {HandlerCls.__name__}")
@@ -430,30 +397,35 @@ if server:
                     raise RuntimeError("Failed to initialize Llama model.")
 
                 # 5. Run Inference
-                # 5. Run Inference
-                # Explicit Instruction for JSON
-                prompt_instruction = """Analyze the image and strictly output valid JSON. 
-Use Danbooru-style tags for descriptions.
+                prompt_instruction = """Analyze the character in the image and strictly output valid JSON.
+Extract visible physical character traits using concise comma-separated tags.
+Describe colors and physical traits in your own words; do not choose from presets or a closed list.
 
 Keys:
 - sex (string: 'male' or 'female')
 - age (int: estimated number)
 - race (string: e.g. 'human', 'elf', 'cyborg')
-- skin_color (string: choose only one clearly visible value from: light skin, fair skin, pale skin, tan skin, dark skin, brown skin, olive skin, blue skin, green skin, grey skin)
+- skin_color (string: describe the actual visible skin color, including unusual or multiple colors)
 - hair (string: comma-separated tags for color and style, e.g. 'blue hair, long hair, ponytail')
 - eyes (string: comma-separated tags for color and shape, e.g. 'green eyes, tsurime')
-- face (string: tags for features, e.g. 'blush', 'scars', 'makeup')
+- face (string: clearly visible facial features, e.g. 'freckles', 'facial scar', 'makeup')
 - body (string: tags for build, e.g. 'slim', 'muscular', 'tall')
-- additional_details (string: tags for clothing, accessories, pose, e.g. 'wearing suit, sitting, holding sword')
-- aesthetics (string: high quality tags e.g. 'masterpiece, best quality, anime style')
+- additional_details (string: physical character traits not covered by the other fields, e.g. 'monster arm', 'extra limbs', 'tail', 'wings', 'body markings')
+- aesthetics (string: visible art style, e.g. 'anime style, illustration, flat color')
 - nsfw (boolean)
 
 Rules:
-- Determine skin_color from visible skin only.
+- Describe only features clearly visible in the image. Do not invent traits or copy the examples.
+- Use an empty string for absent, hidden, or uncertain traits. Do not fill a field just to avoid an empty value.
+- Determine skin_color from exposed skin, not clothing, background, or assumed human skin tones.
+- Preserve unusual skin colors as drawn. Red or pink skin across the face or body is skin_color, not blush.
 - Use "pale skin" only for unusually pale/very light skin, never as a generic default.
-- If skin is hidden, heavily stylized by lighting, or uncertain, set skin_color to "".
+- Add blush only when distinct localized cheek blush is visible against the surrounding skin color.
+- Different colors on exposed body parts can be character traits; do not assume they are gloves or tights.
+- additional_details contains only physical character features that do not fit race, skin_color, hair, eyes, face, or body.
+- Do not include clothing, footwear, wearable accessories, held objects, pose, actions, facial expressions, camera framing, or background in character trait fields.
 
-Structure the response as a raw JSON object. Do not output the word 'tag' as a value. DESCRIBE the character."""
+Return all keys in a raw JSON object. Do not output the word 'tag' as a value."""
 
                 # Helper for Base64 with Resizing (Max 512px)
                 import base64
@@ -484,7 +456,7 @@ Structure the response as a raw JSON object. Do not output the word 'tag' as a v
                     b64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
 
                 messages = [
-                    {"role": "system", "content": "You are a character description specialist. Analyze the image and output valid JSON only."},
+                    {"role": "system", "content": "You extract visible physical character identity, with no outfit or pose descriptions. Output valid JSON only."},
                     {"role": "user", "content": [
                         {"type": "text", "text": prompt_instruction},
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}} 
@@ -505,7 +477,7 @@ Structure the response as a raw JSON object. Do not output the word 'tag' as a v
                 # 6. Robust JSON Extraction
                 if not content or not content.strip():
                      print("[VNCCS] Error: Empty response from LLM")
-                     return web.json_response({"additional_details": "Error: Empty response from LLM. check console."})
+                     return web.json_response({"error": "INVALID_RESPONSE", "message": "The image wizard returned an empty response. Please try again."}, status=502)
 
                 data = None
 
@@ -539,14 +511,14 @@ Structure the response as a raw JSON object. Do not output the word 'tag' as a v
                     except Exception as e:
                         print(f"[VNCCS] Standard JSON parse failed: {e}")
 
-                # Final Check: If valid dict, return it. Else, raw content.
+                # Only structured character traits may reach the character fields.
                 if isinstance(data, dict):
                     # Ensure keys exist? Frontend handles missing keys.
                     print(f"[VNCCS] Final JSON Keys: {list(data.keys())}")
                     return web.json_response(data)
                 else:
-                    print("[VNCCS] Failed to extract JSON. Returning raw content.")
-                    return web.json_response({"additional_details": content})
+                    print("[VNCCS] Failed to extract character JSON.")
+                    return web.json_response({"error": "INVALID_RESPONSE", "message": "The image wizard did not return a character JSON object. Please try again."}, status=502)
 
             except Exception as e:
                 import traceback

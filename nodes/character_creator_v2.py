@@ -232,6 +232,7 @@ already clear phrases unchanged; otherwise use a concise sentence including the
 original terms. Copy gender, clothing, framing, expression, background and
 race_features unchanged: the application manages these values directly. Species
 defaults are context for the same subject, not a second race description.
+Expression is always expressionless; never derive an emotion from other fields.
 Keep the exact numeric age, gender, species, anatomy, breast size, colors, patterns,
 markings, clothing, expression, crop and background. Explicit traits override
 stereotypes. Adults aged 18 and above retain adult proportions; use restrained
@@ -1009,7 +1010,7 @@ def _qi2_character_fields(info):
         )},
         "race_features": race_features(info.get("race", "")),
         "clothing": _character_clothing_prompt(info),
-        "expression": "expressionless unless a specific expression is supplied in facial features",
+        "expression": "expressionless",
         "framing": f"single character; {QI2_NATURAL_FRAMING[framing_key]}",
         "background": QI2_ALPHA_BACKGROUND_PROMPT if background == "Transparent" else (
             f"solid {background} background" if background else "simple background"

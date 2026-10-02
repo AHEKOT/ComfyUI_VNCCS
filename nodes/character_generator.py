@@ -866,11 +866,11 @@ DEFAULT_WIDGET_DATA = {
         "inherit_pipe_sampler": True,
         "sampler_name": "euler",
         "scheduler": "simple",
-        "feather": 5,
+        "feather": 50,
         "noise_mask": True,
         "force_inpaint": True,
         "bbox_threshold": 0.5,
-        "bbox_dilation": 10,
+        "bbox_dilation": 50,
         "qi2_prompt_template": QI2_EMOTION_PROMPT_TEMPLATE,
         "bbox_crop_factor": 3.0,
         "sam_detection_hint": "center-1",
@@ -1145,6 +1145,7 @@ class VNCCS_CharacterGenerator:
         preview_start=0,
         append_images=False,
         replace_images=False,
+        preview_paths=None,
     ):
         if server is None or not unique_id:
             return
@@ -1161,7 +1162,8 @@ class VNCCS_CharacterGenerator:
         if lora_info is not None:
             payload["lora_info"] = lora_info
         if images is not None:
-            payload["images"] = _tensor_to_preview_urls(
+            preview_urls = [_view_url_for_output_path(path) for path in preview_paths[:12]] if preview_paths else None
+            payload["images"] = preview_urls if preview_urls and all(preview_urls) else _tensor_to_preview_urls(
                 images,
                 unique_id,
                 stage,
@@ -1196,7 +1198,7 @@ class VNCCS_CharacterGenerator:
         )
 
     def _batch_shape_label(self, images):
-        batch = self._list_to_batch(images)
+        batch = images if torch.is_tensor(images) and images.ndim == 4 else self._list_to_batch(images)
         if torch.is_tensor(batch) and batch.ndim == 4:
             return f"{int(batch.shape[0])} image(s), {int(batch.shape[2])}x{int(batch.shape[1])}, {int(batch.shape[3])}ch"
         return "unknown shape"
@@ -1264,8 +1266,8 @@ class VNCCS_CharacterGenerator:
             self._emit(unique_id, stage, "done", cached, message, total, total, cache_dir=cache_dir)
         return cached
 
-    def _save_stage(self, cache_dir, stage, images):
-        _save_cached_tensor(cache_dir, stage, self._list_to_batch(images))
+    def _save_stage(self, cache_dir, stage, images, normalized=False):
+        _save_cached_tensor(cache_dir, stage, images if normalized else self._list_to_batch(images))
 
     def _extract_pipe(self, pipe):
         out = VNCCS_Pipe().process_pipe(pipe=pipe)
@@ -1763,13 +1765,13 @@ class VNCCS_CharacterGenerator:
         except (TypeError, ValueError):
             drop_size = 10
         try:
-            bbox_dilation = max(0, min(1024, int(configured.get("bbox_dilation", 10))))
+            bbox_dilation = max(0, min(1024, int(configured.get("bbox_dilation", 50))))
         except (TypeError, ValueError):
-            bbox_dilation = 10
+            bbox_dilation = 50
         try:
-            feather = max(0, min(1024, int(configured.get("feather", 5))))
+            feather = max(0, min(1024, int(configured.get("feather", 50))))
         except (TypeError, ValueError):
-            feather = 5
+            feather = 50
         crop, crop_region = self._vnccs_bbox_extract_face(
             image,
             bbox_detector,
@@ -2804,11 +2806,11 @@ class VNCCS_CharacterGenerator:
     def _bg_remove_disabled(self, settings):
         return str(settings.get("preset", "") or "").strip().lower() in {"disabled", "native"}
 
-    def _run_bg_remove(self, images, settings, background="Green", unique_id=None, cache_dir=None, stage="bg_remove"):
+    def _run_bg_remove(self, images, settings, background="Green", unique_id=None, cache_dir=None, stage="bg_remove", normalized=False):
         if self._bg_remove_disabled(settings):
-            batch = self._list_to_batch(images)
+            batch = images if normalized else self._list_to_batch(images)
             total = int(batch.shape[0]) if torch.is_tensor(batch) and batch.ndim == 4 else 0
-            self._log_stage(unique_id, stage, f"Chroma key disabled; passing through {self._batch_shape_label(batch)}", current=total, total=total, cache_dir=cache_dir)
+            self._log_stage(unique_id, stage, f"Chroma key disabled; preparing sprite output for {self._batch_shape_label(batch)}", current=total, total=total, cache_dir=cache_dir)
             return batch
         preset = self._chroma_preset(settings)
         batch = self._list_to_batch(images)
@@ -2854,12 +2856,12 @@ class VNCCS_CharacterGenerator:
                 return candidate
             version += 1
 
-    def _save_final_sprites(self, images, sheets_path, character_name="", sprite_set="Naked", version_existing=True):
+    def _save_final_sprites(self, images, sheets_path, character_name="", sprite_set="Naked", version_existing=True, normalized=False):
         character_root = _character_root_from_sheets_path(sheets_path, character_name)
         if not character_root:
             return []
 
-        images = self._list_to_batch(images)
+        images = images if normalized else self._list_to_batch(images)
         if images is None or not torch.is_tensor(images):
             return []
         if images.ndim == 3:
@@ -2977,8 +2979,8 @@ class VNCCS_CharacterGenerator:
             bg_input = self._slice_batch_item(upscaled, regenerate_index) if regenerate_index is not None else upscaled
             bg_run_total = 1 if regenerate_index is not None else bg_total
             bg_disabled = self._bg_remove_disabled(settings["bg_remove"])
-            bg_action = "Skipping chroma key for" if bg_disabled else "Removing background for"
-            self._emit(unique_id, "bg_remove", "running", bg_input, f"{bg_action} {bg_run_total} images", 0, bg_run_total, cache_dir=cache_dir)
+            bg_action = "Chroma key skipped; saving output for" if bg_disabled else "Removing background for"
+            self._emit(unique_id, "bg_remove", "running", None if bg_disabled else bg_input, f"{bg_action} {bg_run_total} images", 0, bg_run_total, cache_dir=cache_dir)
             final_images = self._run_bg_remove(
                 bg_input,
                 settings["bg_remove"],
@@ -2986,14 +2988,15 @@ class VNCCS_CharacterGenerator:
                 unique_id=unique_id,
                 cache_dir=cache_dir,
                 stage="bg_remove",
+                normalized=bg_disabled,
             )
             if regenerate_index is not None:
                 final_images = self._replace_batch_item(_load_cached_tensor(cache_dir, "bg_remove"), regenerate_index, final_images)
-            self._save_stage(cache_dir, "bg_remove", final_images)
-            saved_paths = self._save_final_sprites(final_images, sheets_path, character_name, version_existing=not regenerate_from)
+            self._save_stage(cache_dir, "bg_remove", final_images, normalized=bg_disabled)
+            saved_paths = self._save_final_sprites(final_images, sheets_path, character_name, version_existing=not regenerate_from, normalized=bg_disabled)
             saved_suffix = f"; saved {len(saved_paths)} sprites" if saved_paths else ""
             bg_done = "Chroma key skipped for" if bg_disabled else "Background removed from"
-            self._emit(unique_id, "bg_remove", "done", final_images, f"{bg_done} {bg_total} images{saved_suffix}", bg_total, bg_total, cache_dir=cache_dir)
+            self._emit(unique_id, "bg_remove", "done", final_images, f"{bg_done} {bg_total} images{saved_suffix}", bg_total, bg_total, cache_dir=cache_dir, preview_paths=saved_paths if bg_disabled else None)
             return final_images, final_images, pose_images, upscaled
         except Exception as exc:
             print("[VNCCS Character Generator] Failed:", exc)
@@ -3121,16 +3124,19 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
             self._save_stage(cache_dir, up_stage, upscaled)
 
         bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
+        bg_disabled = self._bg_remove_disabled(settings["bg_remove"])
         if not self._should_regenerate_stage(order, regenerate_from, bg_stage):
-            final_images = self._load_cached_stage(cache_dir, bg_stage, unique_id, f"Using cached {bg_stage}")
+            final_images = (
+                _load_cached_tensor(cache_dir, bg_stage) if bg_disabled
+                else self._load_cached_stage(cache_dir, bg_stage, unique_id, f"Using cached {bg_stage}")
+            )
         else:
             final_images = None
         if final_images is None:
             bg_input = self._slice_batch_item(upscaled, regenerate_index) if regenerate_index is not None else upscaled
             bg_run_total = 1 if regenerate_index is not None else bg_total
-            bg_disabled = self._bg_remove_disabled(settings["bg_remove"])
-            bg_action = "Skipping chroma key for" if bg_disabled else "Removing background for"
-            self._emit(unique_id, bg_stage, "running", bg_input, f"{bg_action} {bg_run_total} images", 0, bg_run_total, cache_dir=cache_dir)
+            bg_action = "Chroma key skipped; saving output for" if bg_disabled else "Removing background for"
+            self._emit(unique_id, bg_stage, "running", None if bg_disabled else bg_input, f"{bg_action} {bg_run_total} images", 0, bg_run_total, cache_dir=cache_dir)
             final_images = self._run_bg_remove(
                 bg_input,
                 settings["bg_remove"],
@@ -3138,12 +3144,14 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 unique_id=unique_id,
                 cache_dir=cache_dir,
                 stage=bg_stage,
+                normalized=bg_disabled,
             )
             if regenerate_index is not None:
                 final_images = self._replace_batch_item(_load_cached_tensor(cache_dir, bg_stage), regenerate_index, final_images)
-            self._save_stage(cache_dir, bg_stage, final_images)
+            self._save_stage(cache_dir, bg_stage, final_images, normalized=bg_disabled)
             bg_done = "Chroma key skipped for" if bg_disabled else "Background removed from"
-            self._emit(unique_id, bg_stage, "done", final_images, f"{bg_done} {bg_total} images", bg_total, bg_total, cache_dir=cache_dir)
+            if not bg_disabled:
+                self._emit(unique_id, bg_stage, "done", final_images, f"{bg_done} {bg_total} images", bg_total, bg_total, cache_dir=cache_dir)
         return final_images, pose_images, upscaled
 
     @serialized_generator
@@ -3187,6 +3195,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
             )
             pose_lora_info = self._find_pose_lora(pipe)
 
+            bg_disabled = self._bg_remove_disabled(settings["bg_remove"])
             original_final, original_pose, original_upscaled = self._run_sprite_branch(
                 poses,
                 character,
@@ -3201,9 +3210,9 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 regenerate_from=regenerate_from,
                 regenerate_index=regenerate_index,
             )
-            original_saved = self._save_final_sprites(original_final, sheets_path, character_name, "Original", version_existing=not regenerate_from)
-            if original_saved:
-                self._emit(unique_id, "original_bg_remove", "done", original_final, f"Saved {len(original_saved)} original sprites", cache_dir=cache_dir)
+            original_saved = self._save_final_sprites(original_final, sheets_path, character_name, "Original", version_existing=not regenerate_from, normalized=bg_disabled)
+            if original_saved or bg_disabled:
+                self._emit(unique_id, "original_bg_remove", "done", original_final, f"Saved {len(original_saved)} original sprites", cache_dir=cache_dir, preview_paths=original_saved if bg_disabled else None)
 
             if not nsfw_enabled:
                 return original_final, original_final, original_final, original_pose, original_upscaled, character, original_pose
@@ -3271,9 +3280,9 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 regenerate_from=regenerate_from,
                 regenerate_index=regenerate_index,
             )
-            naked_saved = self._save_final_sprites(naked_final, sheets_path, character_name, "Naked", version_existing=not regenerate_from)
-            if naked_saved:
-                self._emit(unique_id, "naked_bg_remove", "done", naked_final, f"Saved {len(naked_saved)} naked sprites", cache_dir=cache_dir)
+            naked_saved = self._save_final_sprites(naked_final, sheets_path, character_name, "Naked", version_existing=not regenerate_from, normalized=bg_disabled)
+            if naked_saved or bg_disabled:
+                self._emit(unique_id, "naked_bg_remove", "done", naked_final, f"Saved {len(naked_saved)} naked sprites", cache_dir=cache_dir, preview_paths=naked_saved if bg_disabled else None)
 
             return original_final, original_final, naked_final, original_pose, original_upscaled, naked_character, naked_pose
         except Exception as exc:
@@ -3486,8 +3495,8 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
             bg_input = self._slice_batch_item(upscaled, regenerate_index) if regenerate_index is not None else upscaled
             bg_run_total = 1 if regenerate_index is not None else bg_total
             bg_disabled = self._bg_remove_disabled(settings["bg_remove"])
-            bg_action = "Skipping chroma key for" if bg_disabled else "Removing background for"
-            self._emit(unique_id, "bg_remove", "running", bg_input, f"{bg_action} {bg_run_total} images", 0, bg_run_total, cache_dir=cache_dir)
+            bg_action = "Chroma key skipped; saving output for" if bg_disabled else "Removing background for"
+            self._emit(unique_id, "bg_remove", "running", None if bg_disabled else bg_input, f"{bg_action} {bg_run_total} images", 0, bg_run_total, cache_dir=cache_dir)
             final_images = self._run_bg_remove(
                 bg_input,
                 settings["bg_remove"],
@@ -3495,14 +3504,15 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                 unique_id=unique_id,
                 cache_dir=cache_dir,
                 stage="bg_remove",
+                normalized=bg_disabled,
             )
             if regenerate_index is not None:
                 final_images = self._replace_batch_item(_load_cached_tensor(cache_dir, "bg_remove"), regenerate_index, final_images)
-            self._save_stage(cache_dir, "bg_remove", final_images)
-            saved_paths = self._save_final_sprites(final_images, sheets_path, character_name, costume_name, version_existing=not regenerate_from)
+            self._save_stage(cache_dir, "bg_remove", final_images, normalized=bg_disabled)
+            saved_paths = self._save_final_sprites(final_images, sheets_path, character_name, costume_name, version_existing=not regenerate_from, normalized=bg_disabled)
             saved_suffix = f"; saved {len(saved_paths)} sprites to {costume_name}" if saved_paths else ""
             bg_done = "Chroma key skipped for" if bg_disabled else "Background removed from"
-            self._emit(unique_id, "bg_remove", "done", final_images, f"{bg_done} {bg_total} images{saved_suffix}", bg_total, bg_total, cache_dir=cache_dir)
+            self._emit(unique_id, "bg_remove", "done", final_images, f"{bg_done} {bg_total} images{saved_suffix}", bg_total, bg_total, cache_dir=cache_dir, preview_paths=saved_paths if bg_disabled else None)
             return final_images, final_images, source_upscaled, pose_images, upscaled
         except Exception as exc:
             print("[VNCCS Clothes Generator] Failed:", exc)
@@ -3912,9 +3922,10 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         cache_dir=None,
         stage="bg_remove",
         emotion_settings=None,
+        normalized=False,
     ):
         emotion_settings = emotion_settings if isinstance(emotion_settings, dict) else {}
-        raw = self._safe_image_batch(images, stage=f"{stage} emotion raw")
+        raw = images if normalized else self._safe_image_batch(images, stage=f"{stage} emotion raw")
         if self._bg_remove_disabled(settings):
             return raw
 
@@ -4481,6 +4492,8 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             regenerate_index = self._regenerate_index(widget_payload)
             emotion_settings = widget_payload.get("emotion_generation", {}) if isinstance(widget_payload, dict) else {}
             emotion_defaults = DEFAULT_WIDGET_DATA["emotion_generation"]
+            for key in ("bbox_dilation", "feather"):
+                emotion_settings.setdefault(key, emotion_defaults[key])
 
             def _clamp_float(key, min_value, max_value):
                 try:
@@ -4798,6 +4811,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                             cache_dir=cache_dir,
                             stage=bg_stage_key,
                             emotion_settings=emotion_settings,
+                            normalized=self._bg_remove_disabled(bg_settings),
                         )
                         cleaned_items = self._split_batch(cleaned)
                         for cleaned_index, record in enumerate(bg_records):

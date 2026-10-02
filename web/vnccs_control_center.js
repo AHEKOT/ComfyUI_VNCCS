@@ -87,7 +87,7 @@ function _injectVNCCSControlCenterStyles() {
     transition: all 0.18s ease;
     line-height: 1.4;
 }
-.vnccs-cc-btn:hover {
+.vnccs-cc-btn:hover:where(:not(.vnccs-cc-btn--active):not(.vnccs-cc-btn--clip-active):not(.vnccs-cc-btn--cnet-active)) {
     background: rgba(255,143,163,0.1);
     border-color: rgba(255,143,163,0.3);
     color: #ff8fa3;
@@ -290,7 +290,7 @@ function _injectVNCCSControlCenterStyles() {
     position: relative;
     overflow: hidden;
 }
-.vnccs-cc-row:hover {
+.vnccs-cc-row:hover:not(.vnccs-cc-row--model-sel):not(.vnccs-cc-row--clip-sel):not(.vnccs-cc-row--cnet-sel) {
     background: rgba(34,34,46,0.7);
 }
 .vnccs-cc-row-bg {
@@ -402,7 +402,7 @@ function _injectVNCCSControlCenterStyles() {
     letter-spacing: 0;
     cursor: pointer;
 }
-.vnccs-cc-family-tab:hover {
+.vnccs-cc-family-tab:hover:not(.vnccs-cc-family-tab--active) {
     border-color: rgba(255,143,163,0.3);
     color: #f4c2ce;
 }
@@ -432,7 +432,7 @@ function _injectVNCCSControlCenterStyles() {
     cursor: pointer;
     transition: all 0.18s ease;
 }
-.vnccs-cc-model-tab:hover {
+.vnccs-cc-model-tab:hover:not(.vnccs-cc-model-tab--active) {
     border-color: rgba(255,143,163,0.28);
     color: #f4c2ce;
 }
@@ -537,7 +537,7 @@ function _injectVNCCSControlCenterStyles() {
     position: relative;
 }
 .vnccs-cc-turbo-strip.is-installed { cursor: pointer; }
-.vnccs-cc-turbo-strip.is-installed:hover {
+.vnccs-cc-turbo-strip.is-installed:hover:not(.is-active) {
     border-color: rgba(255,143,163,0.28);
 }
 .vnccs-cc-turbo-strip.is-active {
@@ -681,7 +681,7 @@ function _injectVNCCSControlCenterStyles() {
     cursor: pointer;
     transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
 }
-.vnccs-cc-lora-card:hover {
+.vnccs-cc-lora-card:hover:not(.vnccs-cc-lora-card--active) {
     border-color: rgba(255,143,163,0.32);
     transform: translateY(-1px);
 }

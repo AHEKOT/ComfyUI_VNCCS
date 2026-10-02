@@ -795,14 +795,20 @@ def _get_cc_config(repo_id, prefer_remote=False):
     if _uses_packaged_cc_config(repo_id) and not prefer_remote:
         path = _get_packaged_cc_path()
     else:
-        path = hf_hub_download(
-            repo_id=repo_id,
-            filename="control_center.json",
-            local_files_only=False,
-            force_download=bool(prefer_remote),
-            token=False,
-        )
-        source = "huggingface"
+        try:
+            path = hf_hub_download(
+                repo_id=repo_id,
+                filename="control_center.json",
+                local_files_only=False,
+                force_download=bool(prefer_remote),
+                token=False,
+            )
+            source = "huggingface"
+        except Exception as exc:
+            if not _uses_packaged_cc_config(repo_id):
+                raise
+            print(f"[VNCCS Control Center] Remote catalog unavailable; using local catalog: {exc}")
+            path = _get_packaged_cc_path()
     with open(path, "r", encoding="utf-8") as handle:
         data = _without_gan_upscalers(json.load(handle))
     if source == "huggingface":

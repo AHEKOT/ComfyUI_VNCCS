@@ -34,7 +34,7 @@ def test_qi2_background_defaults_to_transparent_without_wrapping_controls():
     assert '{ label: "Alpha", value: "Transparent" }' in SOURCE
     assert 'state.gen_settings.background_color = "Transparent"' in SOURCE
     assert 'kind === "qi2"' in SOURCE
-    assert ".vnccs-segmented-field.is-three" in SOURCE
+    assert ".vnccs-clothes-segmented-field.is-three" in SOURCE
     assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in SOURCE
     assert "white-space: nowrap" in SOURCE
     assert 'btn.setAttribute("aria-pressed", String(selected))' in SOURCE

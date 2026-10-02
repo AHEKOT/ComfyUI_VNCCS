@@ -169,6 +169,8 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             lora_prompt="",
             new_character_name=name,
         )
+        if getattr(request, "method", "GET") == "POST" and data.get("catalog") == "creator_v2":
+            defaults["hair"] = "black hair, waist-length hair"
         try:
             from .nodes.character_creator import CharacterCreator
             from .utils import base_output_dir, load_config

@@ -15,6 +15,7 @@ function domHarness() {
         constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.style = {}; this.attrs = {}; this.handlers = {}; this.tabIndex = -1; }
         appendChild(child) { this.children.push(child); child.parentNode = this; return child; }
         append(...children) { children.forEach(child => this.appendChild(child)); }
+        replaceChildren(...children) { this.children = []; this.append(...children); }
         setAttribute(key, value) { this.attrs[key] = value; }
         addEventListener(key, callback) { this.handlers[key] = callback; }
         remove() { if (!this.parentNode) return; this.parentNode.children = this.parentNode.children.filter(child => child !== this); this.parentNode = null; }
@@ -175,7 +176,7 @@ test('Cloner serializes text and prompts before blur', () => {
     Object.assign(h.context, { state, els, helpFor: () => '', setHelpText() {},
         saveState() { saved = JSON.stringify(state); } });
     const text = source('vnccs_character_cloner');
-    vm.runInContext(`${between(text, 'const createField =', 'const createSegmentedField =')}\ncreateField('Hair', 'hair');`, h.context);
+    vm.runInContext(`${between(text, 'const createTraitField =', 'const createSegmentedField =')}\ncreateField('Hair', 'hair');`, h.context);
     els.hair.value = 'blue hair'; els.hair.oninput({ target: els.hair });
     assert.equal(JSON.parse(saved).character_info.hair, 'blue hair');
     vm.runInContext(`${between(text, 'const createTA =', 'botRow.appendChild')}\nglobalThis.promptField = createTA('Prompt', 'negative_prompt');`, h.context);

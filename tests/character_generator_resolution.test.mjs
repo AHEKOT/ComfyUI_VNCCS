@@ -42,11 +42,11 @@ function setup({ kind = "QI2", saved = {}, clone = false, clothes = false, emoti
     };
 }
 
-function setupEmotionStudio(mode = "qi2") {
+function setupEmotionStudio(mode = "qi2", saved = {}) {
     const timers = new Map();
     const settings = { name: "generation_settings", value: JSON.stringify({ generation_mode: mode }) };
     const studio = { id: 10, type: "EmotionGeneratorV2", widgets: [settings] };
-    const serialized = { name: "widget_data", value: "{}" };
+    const serialized = { name: "widget_data", value: JSON.stringify(saved) };
     const node = { id: 11, inputs: [{ name: "pipe", link: 10 }], widgets: [serialized] };
     const graph = {
         links: { 10: { origin_id: 10 } },
@@ -62,6 +62,7 @@ function setupEmotionStudio(mode = "qi2") {
         setInterval: fn => { timers.set(1, fn); return 1; },
         clearInterval: id => timers.delete(id),
         registerCleanup() {},
+        syncDOMWidgetWidthSoon() {},
         localStorage: { getItem: () => null },
     });
     vm.runInContext(source.replace(/^import .*;\n/gm, "") + "\nthis.Widget = CharacterGeneratorWidget; this.readData = readData;", context);
@@ -81,7 +82,7 @@ function setupEmotionStudio(mode = "qi2") {
         saveBrowserState() {},
     });
     widget.bindModelResolutionSync();
-    return { widget, studio, settings, serialized, timers };
+    return { widget, studio, settings, serialized, timers, app };
 }
 
 for (const mode of [{}, { clone: true }, { clothes: true }, { emotions: true }]) {
@@ -301,6 +302,44 @@ test("saved QI2 bbox values are preserved after workflow configuration", () => {
     assert.equal(widget.data.emotion_generation.feather, 9);
     assert.equal(widget.data.emotion_generation.drop_size, 23);
 });
+
+for (const saved of [{}, { bbox_dilation: 17, feather: 9 }, { bbox_dilation: 10, feather: 5 },
+    { bbox_dilation: 0, feather: 0 }, { bbox_dilation: 23 }, { feather: 7 }]) {
+    test(`emotion bbox defaults fill only missing values through sync and workflow restore (${JSON.stringify(saved)})`, async () => {
+        const { widget, timers, settings, serialized, app } = setupEmotionStudio("qi2", { emotion_generation: saved });
+        const expected = { bbox_dilation: saved.bbox_dilation ?? 50, feather: saved.feather ?? 50 };
+        const check = () => {
+            for (const [key, value] of Object.entries(expected)) {
+                assert.equal(widget.data.emotion_generation[key], value);
+                assert.equal(JSON.parse(serialized.value).emotion_generation[key], value);
+            }
+        };
+        timers.get(1)();
+        check();
+        class Node {}
+        await app.extension.beforeRegisterNodeDef(Node, { name: "VNCCS_EmotionsGenerator" });
+        widget.node._vnccsCharacterGeneratorWidget = widget;
+        serialized.value = JSON.stringify({ emotion_generation: saved });
+        Node.prototype.onConfigure.call(widget.node);
+        check();
+        for (const mode of ["anima", "qi2"]) {
+            settings.value = JSON.stringify({ generation_mode: mode });
+            timers.get(1)();
+            check();
+        }
+        widget.set("emotion_generation", "bbox_dilation", 37);
+        widget.set("emotion_generation", "feather", 19);
+        Object.assign(expected, { bbox_dilation: 37, feather: 19 });
+        timers.get(1)();
+        Node.prototype.onConfigure.call(widget.node);
+        const workflow = { widgets_values: ["{}"] };
+        Node.prototype.onSerialize.call(widget.node, workflow);
+        check();
+        for (const [key, value] of Object.entries(expected)) {
+            assert.equal(JSON.parse(workflow.widgets_values[0]).emotion_generation[key], value);
+        }
+    });
+}
 
 test("late Emotion Studio restore rebuilds emotion tabs without a click", () => {
     const { widget, studio, timers } = setupEmotionStudio("qi2");

@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -119,6 +120,37 @@ def test_emotion_output_prefix_must_stay_under_character_sprites(tmp_path, monke
 
     assert cg._safe_emotion_output_prefix(str(safe_prefix), "Alice") == str(safe_prefix)
     assert cg._safe_emotion_output_prefix(str(unsafe_prefix), "Alice") == ""
+
+
+@pytest.mark.parametrize("root_name", ["Sprites", "Faces"])
+def test_emotion_image_save_preserves_previous_png_on_failure(tmp_path, monkeypatch, root_name):
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(cg, "base_output_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(cg, "character_dir", lambda name: str(tmp_path / name))
+    prefix = tmp_path / "Alice" / root_name / "Coat" / "happy" / "sprite_happy_"
+    prefix.parent.mkdir(parents=True)
+    target = prefix.parent / "sprite_happy_0001.png"
+    cg.Image.new("RGBA", (2, 2), "blue").save(target)
+    previous = target.read_bytes()
+    image = torch.ones(1, 2, 2, 4)
+    generator = cg.VNCCS_EmotionsGenerator()
+
+    def fail_save(self, destination, **kwargs):
+        Path(destination).write_bytes(b"partial image")
+        raise OSError("Simulated disk-full error")
+
+    with monkeypatch.context() as failure:
+        failure.setattr(cg.Image.Image, "save", fail_save)
+        with pytest.raises(OSError, match="disk-full"):
+            generator._save_rgba_image(image, None, str(prefix), 1, "Alice", root_name)
+
+    assert target.read_bytes() == previous
+    assert list(prefix.parent.iterdir()) == [target]
+    assert generator._save_rgba_image(image, None, str(prefix), 1, "Alice", root_name) == str(target)
+    with cg.Image.open(target) as saved:
+        assert saved.mode == "RGBA"
+        assert saved.getpixel((0, 0)) == (255, 255, 255, 255)
+    assert list(prefix.parent.iterdir()) == [target]
 
 
 def test_bg_remove_disabled_skips_chroma_key(monkeypatch):
@@ -573,11 +605,11 @@ def test_emotion_detailer_defaults_match_face_detailer_and_step3_workflow():
         "guide_size": 1536,
         "guide_size_for": True,
         "max_size": 1536,
-        "feather": 5,
+        "feather": 50,
         "noise_mask": True,
         "force_inpaint": True,
         "bbox_threshold": 0.5,
-        "bbox_dilation": 10,
+        "bbox_dilation": 50,
         "bbox_crop_factor": 3.0,
         "sam_detection_hint": "center-1",
         "sam_dilation": 0,
@@ -603,7 +635,7 @@ def test_emotion_detailer_defaults_match_face_detailer_and_step3_workflow():
         workflow = json.load(handle)
     node = next(item for item in workflow["nodes"] if item["type"] == "VNCCS_EmotionsGenerator")
     workflow_settings = json.loads(node["widgets_values"][0])["emotion_generation"]
-    assert {key: workflow_settings[key] for key in expected} == {**expected, "bbox_dilation": 50, "feather": 50}
+    assert {key: workflow_settings[key] for key in expected} == expected
     assert workflow_settings["use_sam"] is False
     assert "steps" not in workflow_settings
     assert "cfg" not in workflow_settings
@@ -659,7 +691,9 @@ def test_emotions_generator_bg_remove_uses_character_background_color(tmp_path, 
     assert seen["background"] == "Green"
 
 
-def test_emotions_generator_qi2_passes_source_alpha_into_generation(tmp_path, monkeypatch):
+@pytest.mark.parametrize("emotion_settings", [{}, {"bbox_dilation": 10, "feather": 5},
+                                             {"bbox_dilation": 0, "feather": 0}])
+def test_emotions_generator_qi2_passes_source_alpha_into_generation(tmp_path, monkeypatch, emotion_settings):
     torch = pytest.importorskip("torch")
     seen = {}
 
@@ -675,6 +709,8 @@ def test_emotions_generator_qi2_passes_source_alpha_into_generation(tmp_path, mo
 
     def capture_generation(image, *args, **kwargs):
         seen["encoder_input"] = image.clone()
+        seen["settings"] = kwargs["detailer_settings"]
+        seen["dilation"] = kwargs["bbox_dilation"]
         return image, image, torch.ones((image.shape[0], image.shape[1], image.shape[2]))
 
     monkeypatch.setattr(node, "_run_emotion_generation_one", capture_generation)
@@ -691,6 +727,7 @@ def test_emotions_generator_qi2_passes_source_alpha_into_generation(tmp_path, mo
     }])
     widget_data = json.dumps({
         "character_name": "Alice",
+        "emotion_generation": emotion_settings,
         "bg_remove": {"preset": "Native", "use_sam3_details_recovery": False},
     })
 
@@ -700,6 +737,9 @@ def test_emotions_generator_qi2_passes_source_alpha_into_generation(tmp_path, mo
     assert encoder_input.shape == (1, 4, 4, 4)
     assert torch.allclose(encoder_input[..., :3], images[..., :3])
     assert torch.allclose(encoder_input[..., 3], images[..., 3])
+    assert seen["dilation"] == emotion_settings.get("bbox_dilation", 50)
+    for key in ("bbox_dilation", "feather"):
+        assert seen["settings"][key] == emotion_settings.get(key, 50)
 
 
 def test_emotions_generator_single_bg_regenerate_slices_cached_raw_batch(tmp_path, monkeypatch):

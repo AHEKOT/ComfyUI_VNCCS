@@ -6,8 +6,6 @@ const GENERATOR_QWEN_INSTRUCTION = "Describe the character and their key feature
 const QI2_EMOTION_PROMPT_TEMPLATE = "Upscale face image.\nMake character's face emotion {emotion}\nChange only face. Keep original neck colour, clothes and hairs\nkeep character's clothes";
 const QI2_EMOTION_BBOX_DEFAULTS = Object.freeze({
     bbox_threshold: 0.3,
-    bbox_dilation: 50,
-    feather: 50,
     drop_size: 10,
 });
 const RESOLUTION_SCALE_BASE = 1024;
@@ -87,11 +85,11 @@ const DEFAULT_DATA = {
         inherit_pipe_sampler: true,
         sampler_name: "euler",
         scheduler: "simple",
-        feather: 5,
+        feather: 50,
         noise_mask: true,
         force_inpaint: true,
         bbox_threshold: 0.5,
-        bbox_dilation: 10,
+        bbox_dilation: 50,
         qi2_prompt_template: QI2_EMOTION_PROMPT_TEMPLATE,
         bbox_crop_factor: 3,
         sam_detection_hint: "center-1",
@@ -281,7 +279,7 @@ const CSS = `
 .vnccs-seedvr-card { display:flex; flex-direction:column; gap:5px; padding:10px 12px 8px; border:1px solid rgba(0,214,143,.25); border-radius:10px; background:rgba(0,214,143,.05); cursor:default; position:relative; overflow:hidden; transition:all .16s ease; }
 .vnccs-seedvr-card.is-picker-head { min-height:58px; cursor:pointer; }
 .vnccs-seedvr-card.is-installed { cursor:pointer; }
-.vnccs-seedvr-card.is-installed:hover, .vnccs-seedvr-card.is-picker-head:hover { border-color:rgba(0,214,143,.42); background:rgba(0,214,143,.08); }
+.vnccs-seedvr-card.is-installed:hover:not(.is-selected), .vnccs-seedvr-card.is-picker-head:hover:not(.is-selected) { border-color:rgba(0,214,143,.42); background:rgba(0,214,143,.08); }
 .vnccs-seedvr-card.is-selected { border-color:#ff8fa3; background:rgba(255,143,163,.12); box-shadow:0 0 0 1px rgba(255,143,163,.12) inset; }
 .vnccs-seedvr-card.is-missing { opacity:.92; }
 .vnccs-seedvr-card-head { display:flex; align-items:center; gap:7px; min-width:0; }
@@ -1065,13 +1063,21 @@ function readData(node) {
     }
 }
 
-function writeData(node, data, { notify = true } = {}) {
+function writeData(node, data, { notify = true, trackChange = false } = {}) {
     const widget = node.widgets?.find(w => w.name === "widget_data");
     if (!widget) return;
     normalizeUpscalerSettings(data);
-    widget.value = JSON.stringify(data);
-    if (notify) widget.callback?.(widget.value);
-    app.graph?.setDirtyCanvas(true, true);
+    const value = JSON.stringify(data);
+    // DOM clicks run after ComfyUI's mouseup snapshot; explicitly track user edits.
+    const canvas = trackChange ? app.canvas : null;
+    canvas?.emitEvent?.({ subType: "before-change" });
+    try {
+        widget.value = value;
+        if (notify) widget.callback?.(widget.value);
+        app.graph?.setDirtyCanvas(true, true);
+    } finally {
+        canvas?.emitEvent?.({ subType: "after-change" });
+    }
 }
 
 function uniqueOptions(values) {
@@ -1414,7 +1420,7 @@ class CharacterGeneratorWidget {
             this.data.remove_clothes.target_size = value;
         }
         this.rememberModelResolution(key === "target_size" && section === (this.isClone ? "common" : "pose_generation"));
-        writeData(this.node, this.data, { notify: false });
+        writeData(this.node, this.data, { notify: false, trackChange: true });
         this.saveBrowserState();
         if (rerenderBgRemove) this.renderSettings();
     }
@@ -1848,7 +1854,7 @@ class CharacterGeneratorWidget {
             this.data = deepMerge(DEFAULT_DATA, draft);
             this.syncModelResolution();
             this.data.bg_remove.use_internal_rmbg = false;
-            writeData(this.node, this.data);
+            writeData(this.node, this.data, { trackChange: true });
             this.saveBrowserState();
             this.renderSettings();
             this.closeModal();

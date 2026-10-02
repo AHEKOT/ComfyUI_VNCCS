@@ -843,7 +843,8 @@ def build_face_details(char_info: Dict[str, Any]) -> str:
         details_parts.append(f"{char_info['race']} race")
     
     if char_info.get("eyes"):
-        details_parts.append(f"{char_info['eyes']} eyes")
+        eyes = str(char_info["eyes"])
+        details_parts.append(eyes if re.search(r"\beyes\b", eyes, re.IGNORECASE) else f"{eyes} eyes")
     
     hair = normalize_hair_tags(char_info.get("hair", ""))
     if hair:

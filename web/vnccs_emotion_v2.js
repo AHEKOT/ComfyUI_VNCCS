@@ -7,7 +7,7 @@ const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
 
 /* ── Variables ── */
-:root {
+.ems-container {
     --bg-primary: #0a0a0f;
     --bg-secondary: #12121a;
     --bg-elevated: #1a1a26;
@@ -441,7 +441,7 @@ const STYLE = `
     box-sizing: border-box;
     background: transparent;
 }
-.ems-emotion-item:hover {
+.ems-emotion-item:hover:not(.selected) {
     background: rgba(255, 143, 163, 0.06);
     border-color: var(--accent-border);
 }
@@ -497,7 +497,7 @@ const STYLE = `
     border: 1px dashed var(--accent-border);
     background: rgba(255, 143, 163, 0.05);
 }
-.ems-emotion-item.add-custom:hover {
+.ems-emotion-item.add-custom:hover:not(.selected) {
     background: rgba(255, 143, 163, 0.1);
 }
 .ems-emotion-add-box {
@@ -686,7 +686,7 @@ const STYLE = `
     min-height: 34px;
     font-size: 11px;
 }
-.ems-tab:hover,
+.ems-tab:hover:not(.active),
 .ems-tab:focus,
 .ems-tab:focus-visible,
 .ems-tab:active {

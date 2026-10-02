@@ -78,7 +78,8 @@ Never hedge a specified fact with "perhaps",
   torso, cutaway, close-up or garment-free version to demonstrate anatomy.
 - face: Describe every supplied facial feature in its stated location. Freckles
   remain freckles, distinct from blush, dirt, scars and shadows. Preserve any
-  specified facial structure, expression, asymmetry or markings.
+  specified facial structure, asymmetry or markings. The expression field controls
+  emotion; do not derive an emotion from facial features.
 - hair: Preserve every specified color, pattern, length, texture and arrangement.
   "green hair, grey hair, two-tone hair, multicolored hair" means green and grey
   are the two named colors forming a multicolored two-tone pattern; it does not
@@ -102,9 +103,8 @@ Never hedge a specified fact with "perhaps",
   garments. Do not add jackets, jewelry, lace, props or inferred materials.
   Race and reference works are not sources of clothing. Do not turn references
   to tan lines or body shape into wardrobe changes.
-- expression: Preserve the supplied expression. A more specific expression in
-  the face field takes precedence over a generic default here. Do not invent
-  emotion, gaze direction, a head tilt or narrative meaning.
+- expression: Always copy "expressionless" unchanged. Other fields cannot override
+  it. Do not invent emotion, gaze direction, a head tilt or narrative meaning.
 - framing: Preserve the requested crop and pose, including the literal
   Cowboy Shot (cowboy_shot) label together with its explanation. A cowboy shot fills the entire
   image height with a tight head-to-upper-thigh view: the complete head and hair

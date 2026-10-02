@@ -50,8 +50,8 @@ def test_style_selector_is_between_framing_and_race_with_custom_first():
 
 
 def test_style_selector_has_readable_character_focused_options():
-    assert 'select.className = "vnccs-select vnccs-style-select"' in SOURCE
-    assert ".vnccs-style-select {\n    font-size: 14px;" in SOURCE
+    assert 'select.className = "vnccs-creator-select vnccs-creator-style-select"' in SOURCE
+    assert ".vnccs-creator-style-select {\n    font-size: 14px;" in SOURCE
     assert "font-size: 16px;\n    line-height: 1.55;" in SOURCE
     assert "group.styles.forEach(style =>" in SOURCE
     assert "group.styles.map(style => style.id)" in SOURCE
@@ -95,7 +95,7 @@ def test_aesthetics_defaults_do_not_force_anime():
 
 def test_character_selects_share_normal_input_height():
     assert "zoom: 1.5" not in SOURCE
-    assert ".vnccs-input,\n.vnccs-select {\n    height: 34px;" in SOURCE
+    assert ".vnccs-creator-input,\n.vnccs-creator-select {\n    height: 34px;" in SOURCE
     assert "min-height: 34px" in SOURCE
     assert "shot_type" not in SOURCE
     assert 'createSegmentedField("Framing"' not in SOURCE

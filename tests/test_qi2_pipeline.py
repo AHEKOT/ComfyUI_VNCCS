@@ -206,8 +206,12 @@ def test_qi2_emotion_crop_alignment_is_square_symmetric_and_reversible():
     assert torch.equal(restored, crop)
 
 
-def test_qi2_emotion_uses_bbox_crop_qwen_encoder_and_exact_paste_region(monkeypatch):
+@pytest.mark.parametrize("bbox_settings", [{}, {"bbox_dilation": 10, "feather": 5},
+                                         {"bbox_dilation": 0, "feather": 0}])
+def test_qi2_emotion_uses_bbox_crop_qwen_encoder_and_exact_paste_region(monkeypatch, bbox_settings):
     calls = []
+    dilation = bbox_settings.get("bbox_dilation", 50)
+    feather = bbox_settings.get("feather", 50)
     image = torch.zeros(1, 512, 384, 4)
     image[..., :3] = 0.2
     image[..., 3] = 0.35
@@ -217,8 +221,8 @@ def test_qi2_emotion_uses_bbox_crop_qwen_encoder_and_exact_paste_region(monkeypa
         crop_region = (100, 50, 200, 150)
 
     class Detector:
-        def detect(self, _image, threshold, dilation, crop_factor, drop_size):
-            assert (threshold, dilation, crop_factor, drop_size) == (0.5, 10, 1.0, 10)
+        def detect(self, _image, threshold, actual_dilation, crop_factor, drop_size):
+            assert (threshold, actual_dilation, crop_factor, drop_size) == (0.5, dilation, 1.0, 10)
             return ((512, 384), [Segment()])
 
     detector = Detector()
@@ -258,7 +262,7 @@ def test_qi2_emotion_uses_bbox_crop_qwen_encoder_and_exact_paste_region(monkeypa
     monkeypatch.setattr(cg, "_call_comfy_node", fake_node)
     full_image, generated_crop, detailer_mask = Generator()._run_emotion_generation_one(
         image, mask, object(), "warm happy smile", "ignored face tags", "", 42,
-        detailer_settings={"face_denoise": 0.25, "target_size": 2048},
+        detailer_settings={"face_denoise": 0.25, "target_size": 2048, **bbox_settings},
         bg_remove_settings={"preset": "Native"},
     )
 
@@ -280,10 +284,11 @@ def test_qi2_emotion_uses_bbox_crop_qwen_encoder_and_exact_paste_region(monkeypa
         "Transparent background with alpha channel."
     )
     assert encoder["resolution"] == 1024
-    assert encoder["images"]["image_1"].shape == (1, 128, 128, 4)
+    aligned_side = ((100 + 2 * dilation + 31) // 32) * 32
+    assert encoder["images"]["image_1"].shape == (1, aligned_side, aligned_side, 4)
     assert torch.allclose(
         encoder["images"]["image_1"][..., 3],
-        torch.full((1, 128, 128), 0.35),
+        torch.full((1, aligned_side, aligned_side), 0.35),
     )
     assert scale["image"] is encoder["images"]["image_1"]
     assert scale["resolution_steps"] == 32
@@ -296,12 +301,15 @@ def test_qi2_emotion_uses_bbox_crop_qwen_encoder_and_exact_paste_region(monkeypa
     assert generated_crop.shape == (1, 256, 256, 4)
     assert full_image.shape == image.shape
     assert full_image[0, 100, 150, :].tolist() == pytest.approx([1.0, 1.0, 1.0, 0.75])
-    assert full_image[0, 40, 150, :].tolist() == pytest.approx([0.2, 0.2, 0.2, 0.35])
-    assert full_image[0, 42, 150, :].tolist() == pytest.approx([0.52, 0.52, 0.52, 0.51])
-    assert torch.allclose(full_image[:, :40, :, :3], torch.full((1, 40, 384, 3), 0.2))
-    assert torch.allclose(full_image[:, :40, :, 3], torch.full((1, 40, 384), 0.35))
-    assert torch.all(detailer_mask[:, 40:160, 90:210] == 1)
-    assert torch.all(detailer_mask[:, :40, :] == 0)
+    x1, y1, x2, y2 = (100 - dilation, 50 - dilation, 200 + dilation, 150 + dilation)
+    blend = min(1.0, 2 / feather) if feather else 1.0
+    assert full_image[0, y1 + 2, 150, :].tolist() == pytest.approx(
+        [0.2 + 0.8 * blend] * 3 + [0.35 + 0.4 * blend],
+    )
+    assert torch.allclose(full_image[:, :, :x1, :3], torch.full((1, 512, x1, 3), 0.2))
+    assert torch.allclose(full_image[:, :, :x1, 3], torch.full((1, 512, x1), 0.35))
+    assert torch.all(detailer_mask[:, y1:y2, x1:x2] == 1)
+    assert torch.all(detailer_mask[:, :, :x1] == 0)
     assert "FaceDetailer" not in names
     assert "VNCCS_BBox_Extractor" not in names
 

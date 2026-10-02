@@ -55,3 +55,50 @@ test("hair patterns are selected once and face presets never enter the eye picke
     assert.equal(selection.value(), "drill_hair, Silver Hair");
     assert.equal(presetGroups(catalog, "eyes").flatMap(group => group.items).some(item => item.tag === "oval face"), false);
 });
+
+test("legacy default hair selects both traits without rewriting saved text", () => {
+    const groups = presetGroups(catalog, "hair");
+    const black = catalog.tags.hair_color.find(item => item.tag === "black hair");
+    const long = catalog.tags.hair_length.find(item => item.synonyms?.includes("long_hair"));
+    const selection = presetSelection("black long hair, My Custom Trait", groups);
+    assert.equal(selection.has(black), true);
+    assert.equal(selection.has(long), true);
+    assert.equal(selection.value(), "black long hair, My Custom Trait");
+    selection.toggle(black);
+    assert.equal(selection.has(black), false);
+    assert.equal(selection.has(long), true);
+    assert.equal(selection.value(), `My Custom Trait, ${long.tag}`);
+    selection.toggle(long);
+    assert.equal(selection.value(), "My Custom Trait");
+    selection.toggle(black);
+    assert.equal(selection.value(), "My Custom Trait, black hair");
+    assert.equal(presetSelection("a black long hair ornament", groups).has(black), false);
+});
+
+test("new character defaults and eye color tags resolve to active presets", () => {
+    const source = fs.readFileSync(new URL("../web/vnccs_character_creator_v2.js", import.meta.url), "utf8");
+    assert.match(source, /checkedJSON\("\/vnccs\/create", \{ method: "POST", body: JSON\.stringify\(\{ name: n, catalog: "creator_v2" \}\)/);
+    const defaults = [...source.matchAll(/hair: "([^"]+)", eyes:/g)];
+    assert.equal(defaults.length, 2);
+    for (const [, hair] of defaults) {
+        assert.equal(hair, "black hair, waist-length hair");
+        const selection = presetSelection(hair, presetGroups(catalog, "hair"));
+        for (const token of hair.split(", ")) {
+            const item = [...catalog.tags.hair_color, ...catalog.tags.hair_length].find(item => item.tag === token);
+            assert.ok(item, token);
+            assert.equal(selection.has(item), true);
+        }
+    }
+    for (const [field, value, category] of [
+        ["race", "human", "races"], ["face", "freckles", "face_details"],
+        ["body", "medium breasts", "breast_size"], ["eyes", "blue eyes", "eye_color"],
+    ]) {
+        const selection = presetSelection(value, presetGroups(catalog, field));
+        assert.equal(catalog.tags[category].filter(item => selection.has(item)).length, 1);
+        assert.equal(selection.value(), value);
+    }
+    const blue = catalog.tags.eye_color.find(item => item.label === "Blue");
+    const eyes = presetSelection("", presetGroups(catalog, "eyes"));
+    eyes.toggle(blue);
+    assert.equal(eyes.value(), "blue eyes");
+});
