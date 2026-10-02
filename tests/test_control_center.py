@@ -1006,8 +1006,8 @@ class TestControlCenterFrontendFamilies:
         assert 'api.fetchApi("/vnccs/manager/enable_personal_cloud"' in source
         assert 'confirmation: "enable_personal_cloud"' in source
         assert '"X-VNCCS-CSRF": "1"' in source
-        assert 'sessionStorage.setItem(PENDING_DEPENDENCY_INSTALLS_KEY' in source
-        assert 'sessionStorage.removeItem(PENDING_DEPENDENCY_INSTALLS_KEY)' in source
+        assert 'sessionStore.setItem(PENDING_DEPENDENCY_INSTALLS_KEY' in source
+        assert 'sessionStore.removeItem(PENDING_DEPENDENCY_INSTALLS_KEY)' in source
         assert "window.location.reload();" in source
         assert 'this._btn("Enable & restart"' in source
         assert "security_level will not be changed" in source

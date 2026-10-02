@@ -15,7 +15,7 @@ from ..utils import (
     character_dir, save_costume_info,
     load_costume_info, list_costumes, ensure_costume_structure,
     sheets_dir,
-    ensure_safe_name, safe_join_under, safe_relative_path
+    ensure_safe_name, safe_join_under, safe_relative_path, atomic_output_path
 )
 from .character_generator import (
     _call_comfy_node,
@@ -50,6 +50,21 @@ BACKGROUND_RGB = {
     "Blue": (0.0, 0.0, 1.0),
 }
 TRANSPARENT_BACKGROUND = "Transparent"
+
+
+def _save_preview_cache(image, image_path, info_path, info):
+    # Invalidate the old image/metadata pair before publishing either new file.
+    # Failure preserves the previous image but cannot authorize its reuse with
+    # a different prompt or reference. A later normal run can rebuild the cache.
+    try:
+        os.unlink(info_path)
+    except FileNotFoundError:
+        pass
+    with atomic_output_path(image_path) as temporary:
+        image.save(temporary, format="PNG")
+    with atomic_output_path(info_path) as temporary:
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(info, handle)
 
 
 def _qi2_edit_system_prompt():
@@ -858,18 +873,10 @@ class ClothesDesigner:
         if is_h3:
             image = VNCCS_CharacterGenerator()._h3_first_frame_to_cpu(image)
 
-        # Cache for UI preview
+        # Publish the preview before reporting success to the widget.
+        i_pil = Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
+        _save_preview_cache(i_pil, c_img_path, c_info_path, {"hash": input_hash, "widget_data": data})
         try:
-             i_pil = Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
-             i_pil.save(c_img_path)
-             
-             # Save Cache Info
-             with open(c_info_path, "w") as f:
-                 json.dump({
-                     "hash": input_hash,
-                     "widget_data": data # Save parsed data or original string
-                 }, f)
-                 
              print(f"[ClothesDesigner] Sending Preview Update Event: ID={unique_id}, Char={character_name}")
              server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": str(unique_id), "character": character_name})
         except Exception as e:
@@ -915,7 +922,8 @@ async def vnccs_save_costume(request):
         character = ensure_safe_name(character, "character")
         costume = ensure_safe_name(costume, "costume")
         ensure_costume_structure(character, costume)
-        save_costume_info(character, costume, info)
+        if not save_costume_info(character, costume, info):
+            return web.json_response({"error": f"Could not save costume '{costume}'. Check storage permissions and free space."}, status=500)
         return web.json_response({"status": "ok"})
     except Exception as e:
         return web.Response(status=500, text=str(e))

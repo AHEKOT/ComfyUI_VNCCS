@@ -27,7 +27,7 @@ from ..utils import (
     apply_sex, append_age, load_config, age_strength,
     list_characters, character_dir, base_output_dir,
     sheets_dir, faces_dir, normalize_hair_tags, ensure_safe_name,
-    get_full_path_agnostic,
+    get_full_path_agnostic, atomic_output_path,
 )
 from .vnccs_utils import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
 from .runtime_cleanup import inference_stage
@@ -1352,7 +1352,9 @@ if server:
                 return web.json_response({})
             name = ensure_safe_name(name, "character")
                 
-            config = load_config(name)
+            config = load_config(name, strict=True)
+            if config is None:
+                return web.json_response({"error": "Character not found"}, status=404)
             if config and "character_info" in config:
                 return web.json_response(config["character_info"])
             return web.json_response({})
@@ -1712,13 +1714,9 @@ Example:
                 img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8)[0])
 
             # Save Smart Cache
-            try:
-                c_dir = os.path.join(character_dir(character_name), "cache")
-                os.makedirs(c_dir, exist_ok=True)
-                c_path = os.path.join(c_dir, "preview.png")
-                img.save(c_path)
-            except Exception as e:
-                print(f"[VNCCS] Failed to save preview cache: {e}")
+            c_path = os.path.join(character_dir(character_name), "cache", "preview.png")
+            with atomic_output_path(c_path) as temporary:
+                img.save(temporary, format="PNG")
 
             buffered = io.BytesIO()
             img.save(buffered, format="PNG")
@@ -1887,7 +1885,7 @@ class CharacterCreatorV2:
 
         ensure_character_structure(character_name)
 
-        config = load_config(character_name) or {
+        config = load_config(character_name, strict=True) or {
             "character_info": {},
             "folder_structure": {
                 "main_directories": MAIN_DIRS,
@@ -1903,7 +1901,8 @@ class CharacterCreatorV2:
         config["character_path"] = character_path
         if "costumes" not in config:
             config["costumes"] = {}
-        save_config(character_name, config)
+        if not save_config(character_name, config):
+            raise OSError(f"Could not save character configuration for '{character_name}'. Check storage permissions and free space.")
 
 
         generation_mode = str(gen_settings.get("generation_mode", "illustrious")).lower()
@@ -1949,12 +1948,9 @@ class CharacterCreatorV2:
                   image, _selected_index, _count = get_pose_preview(character_name, index=selected_index)
                   if image is not None:
                        print("[VNCCS] Pose preview loaded successfully. Overwriting Cache.")
-                       try:
-                           c_img = tensor2pil(image)
-                           os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-                           c_img.save(cache_path)
-                       except Exception as exc:
-                           print(f"[VNCCS] Failed to save pose preview cache '{cache_path}': {exc}")
+                       c_img = tensor2pil(image)
+                       with atomic_output_path(cache_path) as temporary:
+                           c_img.save(temporary, format="PNG")
                   else:
                        print("[VNCCS] Pose preview load failed. Will try cache/regen.")
 
@@ -1974,14 +1970,14 @@ class CharacterCreatorV2:
                  image = get_random_pose_preview(character_name)
                  if image is not None:
                      print(f"[VNCCS] Pose Preview Fallback Successful. Updating Cache.")
+                     c_img = tensor2pil(image)
+                     with atomic_output_path(cache_path) as temporary:
+                        c_img.save(temporary, format="PNG")
                      try:
-                        c_img = tensor2pil(image)
-                        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-                        c_img.save(cache_path)
                         # Notify Frontend
                         server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": unique_id, "character": character_name})
                      except Exception as e:
-                        print(f"[VNCCS] Failed to save/notify on pose preview fallback: {e}")
+                        print(f"[VNCCS] Failed to notify on pose preview fallback: {e}")
                  else:
                      print(f"[VNCCS] Pose Preview Fallback Failed. Regenerating...")
 
@@ -2084,15 +2080,16 @@ class CharacterCreatorV2:
                 image = decode_generation_samples(vae, sampled, gen_settings)
                 
                 # Update Cache
+                stage = "saving the preview cache"
+                c_img = tensor2pil(image)
+                with atomic_output_path(cache_path) as temporary:
+                    c_img.save(temporary, format="PNG")
+                print(f"[VNCCS] Saved new preview cache to {cache_path}")
                 try:
-                    # Tensor [1,H,W,3] -> PIL
-                    c_img = tensor2pil(image)
-                    c_img.save(cache_path)
-                    print(f"[VNCCS] Saved new preview cache to {cache_path}")
                     # Notify Frontend
                     server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": unique_id, "character": character_name})
                 except Exception as e:
-                    print(f"[VNCCS] Failed to save cache: {e}")
+                    print(f"[VNCCS] Failed to notify preview update: {e}")
 
             except Exception as e:
                 message = (

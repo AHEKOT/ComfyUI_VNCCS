@@ -1,5 +1,5 @@
 import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
+import { vnccsApi as api } from "./vnccs_transport.js";
 import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "./vnccs_common.js";
 
 const STYLE_ID = "vnccs-migration-assistant-style";

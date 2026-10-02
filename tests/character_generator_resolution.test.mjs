@@ -1,3 +1,4 @@
+import { createWidgetContext } from './widget_context.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -18,7 +19,7 @@ function setup({ kind = "QI2", saved = {}, clone = false, clothes = false, emoti
     node.graph = graph;
     let browserState = null;
     const app = { graph, registerExtension(extension) { this.extension = extension; } };
-    const context = vm.createContext({
+    const context = createWidgetContext({
         app,
         window: { addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: name => listeners.delete(name) },
         setInterval: fn => { timers.set(1, fn); return 1; },
@@ -55,7 +56,7 @@ function setupEmotionStudio(mode = "qi2") {
     };
     node.graph = graph;
     const app = { graph, registerExtension(extension) { this.extension = extension; } };
-    const context = vm.createContext({
+    const context = createWidgetContext({
         app,
         window: { addEventListener() {}, removeEventListener() {} },
         setInterval: fn => { timers.set(1, fn); return 1; },
@@ -459,7 +460,7 @@ for (const mode of [{}, { clone: true }, { clothes: true }]) {
     });
 }
 
-test("browser backup restores per-model values when the page starts from defaults", () => {
+test("unscoped browser backup cannot replace a new workflow's model defaults", () => {
     const original = setup();
     original.switchTo("QI2", 1, "Model A");
     original.widget.set("pose_generation", "target_size", 2560);
@@ -469,9 +470,9 @@ test("browser backup restores per-model values when the page starts from default
     fresh.cache(JSON.parse(original.serialized.value));
     fresh.widget.restoreBrowserState();
     fresh.switchTo("QI2", 1, "Model A");
-    assert.equal(fresh.widget.data.pose_generation.target_size, 2560);
+    assert.equal(fresh.widget.data.pose_generation.target_size, 1024);
     fresh.switchTo("MiniMaxH3", 1, "Model B");
-    assert.equal(fresh.widget.data.pose_generation.target_size, 3072);
+    assert.equal(fresh.widget.data.pose_generation.target_size, 1536);
 });
 
 test("explicit workflow model preferences win over an older browser backup", () => {
@@ -499,7 +500,7 @@ test("settings dialog edits are remembered by the same model profile", () => {
     assert.equal(widget.data.pose_generation.target_size, 2048);
 });
 
-test("refresh recovers the latest slider edit even when workflow autosave is older", () => {
+test("opening a saved workflow preserves its slider values over a browser backup", () => {
     const live = setup();
     live.switchTo("QI2", 1, "Model A");
     live.widget.set("pose_generation", "target_size", 1536);
@@ -509,6 +510,6 @@ test("refresh recovers the latest slider edit even when workflow autosave is old
     refreshed.cache(JSON.parse(live.serialized.value));
     refreshed.widget.restoreBrowserState();
     refreshed.switchTo("QI2", 1, "Model A");
-    assert.equal(refreshed.widget.data.pose_generation.target_size, 2560);
-    assert.equal(JSON.parse(refreshed.serialized.value).pose_generation.target_size, 2560);
+    assert.equal(refreshed.widget.data.pose_generation.target_size, 1536);
+    assert.equal(JSON.parse(refreshed.serialized.value).pose_generation.target_size, 1536);
 });

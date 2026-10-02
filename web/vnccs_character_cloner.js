@@ -1,5 +1,5 @@
 import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
+import { vnccsApi as api, mediaURL, checkedJSON } from "./vnccs_transport.js";
 import { showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard } from "./vnccs_common.js";
 
 // --- STYLES: Sakura Archive Design System ---
@@ -992,6 +992,8 @@ app.registerExtension({
                         lora_prompt: "", background_color: "Green"
                     }
                 };
+                const defaultCharacterInfo = { ...state.character_info };
+                let restoredInfoCharacter = null;
                 node._vnccsGetClonerState = () => state;
                 let TAG_DATA = null;
 
@@ -1154,6 +1156,8 @@ app.registerExtension({
                 };
 
                 const loadState = () => {
+                    beginCharacterRequest();
+                    restoredInfoCharacter = null;
                     if (dataWidget && dataWidget.value && dataWidget.value !== "{}") {
                         try {
                             console.log("[VNCCS] Loading State from widget_data:", dataWidget.value);
@@ -1174,6 +1178,7 @@ app.registerExtension({
                             }
                             if (parsed.character_info && typeof parsed.character_info === "object") {
                                 Object.assign(state.character_info, parsed.character_info);
+                                restoredInfoCharacter = parsed.character || null;
                             }
                             node._vnccsGetClonerState = () => state;
                             // Update UI
@@ -1429,15 +1434,7 @@ app.registerExtension({
                 };
 
                 const setCharacter = async (name, { clearSources = false, skipInfoLoad = false } = {}) => {
-                    const nextName = name || "";
-                    const changed = state.character !== nextName;
-                    state.character = nextName;
-                    if (els.charSelect) els.charSelect.value = nextName;
-                    if (clearSources && changed) {
-                        clearSourceImages();
-                    }
-                    await loadChar(state.character, skipInfoLoad);
-                    saveState();
+                    return loadChar(name || "", skipInfoLoad, { clearSources });
                 };
 
                 const updateUIFromState = () => {
@@ -1599,42 +1596,51 @@ app.registerExtension({
                 };
 
                 const beginCharacterRequest = createRequestGuard(node);
-                const loadChar = async (name, skipInfoLoad = false) => {
+                const loadChar = async (name, skipInfoLoad = false, { clearSources = false } = {}) => {
                     const currentRequest = beginCharacterRequest();
-                    spritePreviewNavigator?.invalidate?.();
-                    const isCurrent = () => currentRequest() && state.character === name;
-                    if (!name || name === "None") {
-                        state.char_preview_url = null;
-                        spritePreviewNavigator?.hideNav();
-                        updateUIFromState();
-                        return;
-                    }
+                    const originalCharacter = state.character;
+                    const isCurrent = () => currentRequest() && (state.character === originalCharacter || state.character === name);
                     try {
-                        // Skip loading character_info if restoring from widget_data
-                        if (!skipInfoLoad) {
-                            const r = await api.fetchApi(`/vnccs/config?name=${encodeURIComponent(name)}`);
-                            if (r.ok) {
-                                const d = await r.json();
-                                if (!isCurrent()) return;
-                                if (d.character_info) {
-                                    Object.assign(state.character_info, d.character_info);
-                                    updateUIFromState();
-                                }
+                        let info = null;
+                        if (name && name !== "None" && !skipInfoLoad) {
+                            const data = await checkedJSON(`/vnccs/config?name=${encodeURIComponent(name)}`);
+                            if (!isCurrent()) return false;
+                            info = data?.character_info;
+                            if (!info || typeof info !== "object" || Array.isArray(info) || (info.name && info.name !== name)) {
+                                throw new Error(`Invalid character metadata for '${name}'`);
                             }
-                        } else {
-                            // Still update UI from current state
-                            updateUIFromState();
                         }
-
-                        if (!isCurrent()) return;
-                        const cacheUrl = `/vnccs/get_cached_preview?character=${encodeURIComponent(name)}&t=${Date.now()}`;
-                        await spritePreviewNavigator?.load(name, { fallbackUrl: cacheUrl });
-
-                    } catch (e) {
-                        if (!isCurrent()) return;
-                        console.error(e);
-                        state.char_preview_url = null;
+                        if (!isCurrent()) return false;
+                        const changed = state.character !== name;
+                        state.character = name;
+                        if (els.charSelect) els.charSelect.value = name;
+                        if (info || !name || name === "None") {
+                            for (const key of Object.keys(state.character_info)) delete state.character_info[key];
+                            Object.assign(state.character_info, defaultCharacterInfo, { name }, info || {});
+                            restoredInfoCharacter = null;
+                        }
+                        if (changed && clearSources) clearSourceImages();
+                        spritePreviewNavigator?.invalidate?.();
+                        if (!name || name === "None") {
+                            state.char_preview_url = null;
+                            spritePreviewNavigator?.hideNav();
+                        }
                         updateUIFromState();
+                        saveState();
+                        if (name && name !== "None") {
+                            const cacheUrl = mediaURL(`/vnccs/get_cached_preview?character=${encodeURIComponent(name)}&t=${Date.now()}`);
+                            await spritePreviewNavigator?.load(name, { fallbackUrl: cacheUrl });
+                        }
+                        return isCurrent();
+                    } catch (error) {
+                        if (!isCurrent()) return false;
+                        if (els.charSelect) els.charSelect.value = state.character;
+                        showModal("Character Load Failed", () => {
+                            const message = document.createElement("div");
+                            message.textContent = String(error.message || error);
+                            return message;
+                        }, [{ text: "Close" }]);
+                        return false;
                     }
                 };
 
@@ -1648,19 +1654,10 @@ app.registerExtension({
                         if (!d.characters || !d.characters.length) els.charSelect.add(new Option("None", ""));
                         else d.characters.forEach(c => els.charSelect.add(new Option(c, c)));
 
-                        // Set Value
-                        if (state.character && Array.from(els.charSelect.options).some(o => o.value === state.character)) {
-                            els.charSelect.value = state.character;
-                        } else if (els.charSelect.options.length > 0) {
-                            state.character = els.charSelect.options[0].value;
-                            els.charSelect.value = state.character;
-                            saveState();
-                        }
-
-                        // Wait for loadChar to finish so preview updates
-                        // Skip loading info if we already have widget_data (restoring session)
-                        const hasWidgetData = state.character_info && state.character_info.hair !== undefined;
-                        if (state.character) await loadChar(state.character, hasWidgetData);
+                        const available = Array.from(els.charSelect.options).map(option => option.value);
+                        const selected = available.includes(state.character) ? state.character : available[0] || "";
+                        const hasWidgetData = restoredInfoCharacter === selected && Boolean(selected);
+                        await setCharacter(selected, { clearSources: true, skipInfoLoad: hasWidgetData });
 
                     } catch (e) { console.error(e); }
                 };
@@ -1681,11 +1678,10 @@ app.registerExtension({
                                 const n = inpRef.value.trim();
                                 if (!n) return true;
                                 try {
-                                    await api.fetchApi(`/vnccs/create?name=${encodeURIComponent(n)}`);
+                                    await checkedJSON("/vnccs/create", { method: "POST", body: JSON.stringify({ name: n }) });
                                     const exists = Array.from(els.charSelect.options).some(o => o.value === n);
                                     if (!exists) els.charSelect.add(new Option(n, n));
-                                    await setCharacter(n, { clearSources: true });
-                                    return false;
+                                    return !await setCharacter(n, { clearSources: true });
                                 } catch (e) {
                                     showModal("Error", () => { const d = document.createElement("div"); d.innerText = "Create Failed: " + e; return d; }, [{ text: "Close" }]);
                                     return true;
@@ -1722,6 +1718,7 @@ app.registerExtension({
                                         const idx = Array.from(els.charSelect.options).findIndex(o => o.value === charName);
                                         if (idx > -1) els.charSelect.remove(idx);
                                         const nextCharacter = els.charSelect.options.length > 0 ? els.charSelect.options[0].value : "";
+                                        await setCharacter("", { clearSources: true });
                                         await setCharacter(nextCharacter, { clearSources: true });
                                         return false;
                                     }
@@ -2263,7 +2260,7 @@ app.registerExtension({
                     // Preview Logic
                     if (images.length === 0) {
                         if (state.char_preview_url) {
-                            previewImg.src = state.char_preview_url;
+                            previewImg.src = mediaURL(state.char_preview_url);
                             previewImg.style.display = "block";
                             previewPlaceholder.style.display = "none";
                             uploadOverlay.style.opacity = "0";

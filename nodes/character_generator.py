@@ -5,6 +5,8 @@ subgraph chain. It executes the same processing stages internally and exposes a
 DOM widget for stage previews/settings.
 """
 
+from .generator_context import _LIVE_GENERATOR_CONTEXTS, _generator_context_key, _remember_generator_context, _get_generator_context, scoped_cache_dir, _forget_generator_context, generator_execution_lock, serialized_generator
+from .progress_state import begin_progress, record_progress, progress_snapshot, PROGRESS_EPOCH
 from .preview_runtime import run_preview_job
 
 import base64
@@ -18,6 +20,7 @@ import random
 import shutil
 import threading
 import traceback
+import uuid
 import time
 from types import SimpleNamespace
 from urllib.parse import urlencode
@@ -60,6 +63,7 @@ from .vnccs_flux_klein_encoder import VNCCS_Flux_Klein_Encoder
 from .qi2_viggle import apply_viggle_turbo_lora, viggle_turbo_sigmas
 from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, VNCCS_RMBG2
 from ..utils import (
+    atomic_output_path,
     basename_agnostic,
     base_output_dir,
     character_dir,
@@ -70,7 +74,6 @@ from ..utils import (
 )
 
 
-_LIVE_GENERATOR_CONTEXTS = {}
 SEEDVR_ATTENTION_MODES = ("sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3")
 SEEDVR_HF_REPO = "Comfy-Org/SeedVR2"
 SEEDVR_HF_REVISION = "a457bf495efbd40ea92f699f7d2b5d2febeca176"
@@ -397,13 +400,13 @@ def _safe_character_root(character_name=""):
         return None
 
 
-def _character_cache_dir_from_sheets_path(sheets_path, character_name="", unique_id=None):
+def _character_cache_dir_from_sheets_path(sheets_path, character_name="", unique_id=None, scope=None):
     character_root = _character_root_from_sheets_path(sheets_path, character_name)
     if not character_root:
         return None
     if unique_id:
-        return os.path.join(character_root, "cache", "poses", _safe_cache_part(unique_id))
-    return os.path.join(character_root, "cache", "poses", "shared")
+        return scoped_cache_dir(os.path.join(character_root, "cache", "poses", _safe_cache_part(unique_id)), scope)
+    return scoped_cache_dir(os.path.join(character_root, "cache", "poses", "shared"), scope)
 
 
 def _character_root_from_sheets_path(sheets_path, character_name=""):
@@ -511,7 +514,7 @@ def _view_url_for_output_path(path):
             "filename": os.path.basename(rel),
             "subfolder": subfolder,
             "type": "output",
-            "t": int(os.path.getmtime(abs_path)),
+            "t": os.stat(abs_path).st_mtime_ns,
         })
         return f"/view?{query}"
     except Exception:
@@ -584,13 +587,13 @@ def _cache_tensor_path(cache_dir, key):
 
 def _save_cached_tensor(cache_dir, key, tensor):
     if not cache_dir or tensor is None or not torch.is_tensor(tensor):
-        return
-    try:
-        path = _cache_tensor_path(cache_dir, key)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        torch.save(tensor.detach().cpu(), path)
-    except Exception as exc:
-        print(f"[VNCCS Character Generator] Failed to cache tensor '{key}': {exc}")
+        return False
+    path = _cache_tensor_path(cache_dir, key)
+    if not path:
+        raise OSError("No writable generator cache path")
+    with atomic_output_path(path) as temporary:
+        torch.save(tensor.detach().cpu(), temporary)
+    return True
 
 
 def _load_cached_tensor(cache_dir, key):
@@ -608,21 +611,44 @@ def _load_cached_tensor(cache_dir, key):
 def _save_run_inputs(cache_dir, **items):
     cache_dir = _safe_cache_dir(cache_dir)
     if not cache_dir:
-        return
+        return False
+    base = os.path.join(cache_dir, "_stage_cache")
+    revision = uuid.uuid4().hex
+    created = set()
+    committed = False
     try:
-        base = os.path.join(cache_dir, "_stage_cache")
-        os.makedirs(base, exist_ok=True)
         meta = {"created_at": time.time(), "items": {}}
         for key, value in items.items():
             if torch.is_tensor(value):
-                _save_cached_tensor(cache_dir, f"input_{key}", value)
-                meta["items"][key] = {"type": "tensor", "shape": list(value.shape)}
+                tensor_key = f"input_{key}_{revision}"
+                path = _cache_tensor_path(cache_dir, tensor_key)
+                created.add(path)
+                if not _save_cached_tensor(cache_dir, tensor_key, value):
+                    raise OSError(f"Could not cache required input '{key}'")
+                meta["items"][key] = {"type": "tensor", "shape": list(value.shape), "tensor_key": tensor_key}
             else:
                 meta["items"][key] = {"type": "json", "value": value}
-        with open(os.path.join(base, "inputs.json"), "w", encoding="utf-8") as handle:
-            json.dump(meta, handle, ensure_ascii=False, indent=2)
-    except Exception as exc:
-        print(f"[VNCCS Character Generator] Failed to cache run inputs: {exc}")
+        with atomic_output_path(os.path.join(base, "inputs.json")) as temporary:
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(meta, handle, ensure_ascii=False, indent=2)
+        committed = True
+        return True
+    finally:
+        # A failed transaction never publishes new metadata with old tensors.
+        # Cleanup is optional; only files referenced by inputs.json are usable.
+        try:
+            names = os.listdir(base) if committed else []
+        except OSError:
+            names = []
+        obsolete = created if not committed else {
+            os.path.join(base, name) for name in names
+            if name.startswith("input_") and name.endswith(".pt") and os.path.join(base, name) not in created
+        }
+        for path in obsolete:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 def _load_run_inputs(cache_dir, keys=None):
@@ -630,8 +656,6 @@ def _load_run_inputs(cache_dir, keys=None):
     if not cache_dir:
         return {}
     path = os.path.join(cache_dir, "_stage_cache", "inputs.json")
-    if not os.path.exists(path):
-        return {}
     try:
         with open(path, "r", encoding="utf-8") as handle:
             meta = json.load(handle)
@@ -641,27 +665,18 @@ def _load_run_inputs(cache_dir, keys=None):
             if requested is not None and key not in requested:
                 continue
             if item.get("type") == "tensor":
-                value = _load_cached_tensor(cache_dir, f"input_{key}")
-                if value is not None:
-                    result[key] = value
+                value = _load_cached_tensor(cache_dir, item.get("tensor_key") or f"input_{key}")
+                if value is None or list(value.shape) != item.get("shape", list(value.shape)):
+                    return {}
+                result[key] = value
             elif item.get("type") == "json":
                 result[key] = item.get("value")
         return result
+    except FileNotFoundError:
+        return {}
     except Exception as exc:
         print(f"[VNCCS Character Generator] Failed to load cached run inputs: {exc}")
         return {}
-
-
-def _remember_generator_context(unique_id, generator_type, cache_dir, pipe):
-    key = str(unique_id or "").strip()
-    if not key or pipe is None:
-        return
-    _LIVE_GENERATOR_CONTEXTS[key] = {
-        "generator_type": generator_type,
-        "cache_dir": cache_dir,
-        "pipe": pipe,
-        "updated_at": time.time(),
-    }
 
 
 def _shift_seed_value(seed, shift):
@@ -1101,6 +1116,18 @@ class VNCCS_CharacterGenerator:
             return value[0] if value else None
         return value
 
+    def _begin_progress(self, payload, unique_id):
+        ui = payload.get("ui") if isinstance(payload, dict) else None
+        self._progress_run = uuid.uuid4().hex
+        request_id = ui.get("progress_request_id") if isinstance(ui, dict) else None
+        self._progress_request = request_id if isinstance(request_id, str) and len(request_id) <= 100 else None
+        self._progress_scope = begin_progress(
+            ui.get("progress_scope") if isinstance(ui, dict) else None,
+            self._unwrap_scalar(unique_id), self._progress_run,
+            self._regenerate_from(payload), self._regenerate_index(payload) is not None,
+            request_id=self._progress_request,
+        )
+
     def _emit(
         self,
         unique_id,
@@ -1141,6 +1168,12 @@ class VNCCS_CharacterGenerator:
             payload["append_images"] = bool(append_images)
             payload["preview_start"] = int(preview_start)
             payload["replace_images"] = bool(replace_images)
+        scope = getattr(self, "_progress_scope", None)
+        revision = record_progress(scope, payload, getattr(self, "_progress_run", None))
+        if scope and revision is None:
+            return
+        if scope and revision is not None:
+            payload.update(scope=scope, revision=revision, epoch=PROGRESS_EPOCH, request_id=getattr(self, "_progress_request", None), run_id=getattr(self, "_progress_run", None))
         try:
             server.PromptServer.instance.send_sync("vnccs.character_generator.stage", payload)
         except Exception as exc:
@@ -2863,20 +2896,22 @@ class VNCCS_CharacterGenerator:
             saved.append(path)
         return saved
 
+    @serialized_generator
     def process(self, poses, character, pipe, prompt, background="Green", widget_data="{}", sheets_path="", unique_id=None):
         settings = self._settings(widget_data)
         widget_payload = self._widget_data(widget_data)
-        regenerate_from = self._regenerate_from(widget_payload)
-        regenerate_index = self._regenerate_index(widget_payload)
-        character_name = widget_payload.get("character_name", "")
-        character = self._unwrap_scalar(character)
-        pipe = self._unwrap_scalar(pipe)
-        background = self._unwrap_scalar(background)
-        sheets_path = self._unwrap_scalar(sheets_path)
         unique_id = self._unwrap_scalar(unique_id)
-        cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""), unique_id)
+        self._begin_progress(widget_payload, unique_id)
         try:
-            _remember_generator_context(unique_id, "VNCCS_CharacterGenerator", cache_dir, pipe)
+            regenerate_from = self._regenerate_from(widget_payload)
+            regenerate_index = self._regenerate_index(widget_payload)
+            character_name = widget_payload.get("character_name", "")
+            character = self._unwrap_scalar(character)
+            pipe = self._unwrap_scalar(pipe)
+            background = self._unwrap_scalar(background)
+            sheets_path = self._unwrap_scalar(sheets_path)
+            cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""), unique_id, self._progress_scope)
+            _remember_generator_context(unique_id, "VNCCS_CharacterGenerator", cache_dir, pipe, self._progress_scope)
             if regenerate_from:
                 cached_inputs = _load_run_inputs(cache_dir)
                 poses = cached_inputs.get("poses", poses)
@@ -2979,6 +3014,7 @@ class VNCCS_CharacterGenerator:
         except Exception as exc:
             print("[VNCCS Character Generator] Failed:", exc)
             traceback.print_exc()
+            _forget_generator_context(unique_id, getattr(self, "_progress_scope", None))
             self._emit(unique_id, "error", "error", message=str(exc))
             raise
 
@@ -3126,25 +3162,27 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
             self._emit(unique_id, bg_stage, "done", final_images, f"{bg_done} {bg_total} images", bg_total, bg_total, cache_dir=cache_dir)
         return final_images, pose_images, upscaled
 
+    @serialized_generator
     def process(self, poses, character, pipe, prompt, background="Green", widget_data="{}", sheets_path="", unique_id=None):
         settings = self._clone_settings(widget_data)
         widget_payload = self._widget_data(widget_data)
-        regenerate_from = self._regenerate_from(widget_payload)
-        regenerate_index = self._regenerate_index(widget_payload)
-        character_name = widget_payload.get("character_name", "")
-        nsfw_value = widget_payload.get("nsfw_enabled", True)
-        if isinstance(nsfw_value, str):
-            nsfw_enabled = nsfw_value.strip().lower() in ("true", "1", "yes", "on")
-        else:
-            nsfw_enabled = bool(nsfw_value)
-        character = self._unwrap_scalar(character)
-        pipe = self._unwrap_scalar(pipe)
-        background = self._unwrap_scalar(background)
-        sheets_path = self._unwrap_scalar(sheets_path)
         unique_id = self._unwrap_scalar(unique_id)
-        cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""), unique_id)
+        self._begin_progress(widget_payload, unique_id)
         try:
-            _remember_generator_context(unique_id, "VNCCS_CharacterCloneGenerator", cache_dir, pipe)
+            regenerate_from = self._regenerate_from(widget_payload)
+            regenerate_index = self._regenerate_index(widget_payload)
+            character_name = widget_payload.get("character_name", "")
+            nsfw_value = widget_payload.get("nsfw_enabled", True)
+            if isinstance(nsfw_value, str):
+                nsfw_enabled = nsfw_value.strip().lower() in ("true", "1", "yes", "on")
+            else:
+                nsfw_enabled = bool(nsfw_value)
+            character = self._unwrap_scalar(character)
+            pipe = self._unwrap_scalar(pipe)
+            background = self._unwrap_scalar(background)
+            sheets_path = self._unwrap_scalar(sheets_path)
+            cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""), unique_id, self._progress_scope)
+            _remember_generator_context(unique_id, "VNCCS_CharacterCloneGenerator", cache_dir, pipe, self._progress_scope)
             if regenerate_from:
                 cached_inputs = _load_run_inputs(cache_dir)
                 poses = cached_inputs.get("poses", poses)
@@ -3257,6 +3295,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
         except Exception as exc:
             print("[VNCCS Character Clone Generator] Failed:", exc)
             traceback.print_exc()
+            _forget_generator_context(unique_id, getattr(self, "_progress_scope", None))
             self._emit(unique_id, "error", "error", message=str(exc))
             raise
 
@@ -3334,24 +3373,26 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
             background=str(background or "Green"),
         )[0]
 
+    @serialized_generator
     def process(self, poses, character, pipe, prompt, background="Green", widget_data="{}", sheets_path="", unique_id=None):
         settings = self._settings(widget_data)
         widget_payload = self._widget_data(widget_data)
-        regenerate_from = self._regenerate_from(widget_payload)
-        regenerate_index = self._regenerate_index(widget_payload)
-        character_name = widget_payload.get("character_name", "")
-        character = self._unwrap_scalar(character)
-        pipe = self._unwrap_scalar(pipe)
-        background = self._unwrap_scalar(background)
-        sheets_path = self._unwrap_scalar(sheets_path)
         unique_id = self._unwrap_scalar(unique_id)
-        costume_name = _costume_name_from_sheets_path(
-            sheets_path,
-            widget_payload.get("costume") or widget_payload.get("costume_name") or "Naked",
-        )
-        cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""), unique_id)
+        self._begin_progress(widget_payload, unique_id)
         try:
-            _remember_generator_context(unique_id, "VNCCS_ClothesGenerator", cache_dir, pipe)
+            regenerate_from = self._regenerate_from(widget_payload)
+            regenerate_index = self._regenerate_index(widget_payload)
+            character_name = widget_payload.get("character_name", "")
+            character = self._unwrap_scalar(character)
+            pipe = self._unwrap_scalar(pipe)
+            background = self._unwrap_scalar(background)
+            sheets_path = self._unwrap_scalar(sheets_path)
+            costume_name = _costume_name_from_sheets_path(
+                sheets_path,
+                widget_payload.get("costume") or widget_payload.get("costume_name") or "Naked",
+            )
+            cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""), unique_id, self._progress_scope)
+            _remember_generator_context(unique_id, "VNCCS_ClothesGenerator", cache_dir, pipe, self._progress_scope)
             if regenerate_from:
                 cached_inputs = _load_run_inputs(cache_dir)
                 poses = cached_inputs.get("poses", poses)
@@ -3482,6 +3523,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
         except Exception as exc:
             print("[VNCCS Clothes Generator] Failed:", exc)
             traceback.print_exc()
+            _forget_generator_context(unique_id, getattr(self, "_progress_scope", None))
             self._emit(unique_id, "error", "error", message=str(exc))
             raise
 
@@ -4436,6 +4478,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         detailer_mask = self._detailer_mask_from_result(detailed, image, full_image)
         return full_image, face_crop, detailer_mask
 
+    @serialized_generator
     def process(
         self,
         images,
@@ -4447,166 +4490,167 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         extra_pnginfo=None,
     ):
         widget_payload = self._widget_data(widget_data)
-        regenerate_from = self._regenerate_from(widget_payload)
-        regenerate_index = self._regenerate_index(widget_payload)
-        emotion_settings = widget_payload.get("emotion_generation", {}) if isinstance(widget_payload, dict) else {}
-        emotion_defaults = DEFAULT_WIDGET_DATA["emotion_generation"]
-
-        def _clamp_float(key, min_value, max_value):
-            try:
-                value = float(emotion_settings.get(key, emotion_defaults[key]))
-            except Exception:
-                value = float(emotion_defaults[key])
-            return max(min_value, min(max_value, value))
-
-        def _clamp_int(key, min_value, max_value):
-            try:
-                value = int(float(emotion_settings.get(key, emotion_defaults[key])))
-            except Exception:
-                value = int(emotion_defaults[key])
-            return max(min_value, min(max_value, value))
-
-        use_sam = _as_bool(
-            emotion_settings.get(
-                "use_sam",
-                emotion_settings.get("use_sam_model", emotion_defaults.get("use_sam", False)),
-            ),
-            False,
-        )
-        bbox_threshold = _clamp_float("bbox_threshold", 0.0, 1.0)
-        bbox_dilation = _clamp_int("bbox_dilation", 0, 128)
-        sam_dilation = _clamp_int("sam_dilation", 0, 128)
-        sam_threshold = _clamp_float("sam_threshold", 0.0, 1.0)
-        sam_bbox_expansion = _clamp_int("sam_bbox_expansion", 0, 128)
-        bg_settings = widget_payload.get("bg_remove", {}) if isinstance(widget_payload, dict) else {}
-        if not isinstance(bg_settings, dict):
-            bg_settings = {}
-        bg_settings = {
-            **DEFAULT_WIDGET_DATA["bg_remove"],
-            **bg_settings,
-        }
-        pipe = self._unwrap_scalar(pipe)
-        pipe_model_kind = (
-            _entry_kind(getattr(pipe, "model_entry", None))
-            or str(getattr(pipe, "model_kind", "") or "").strip().lower()
-        )
-        emotion_is_qi2 = pipe_model_kind == "qi2"
         unique_id = self._unwrap_scalar(unique_id)
-        prompt = self._unwrap_scalar(prompt)
-        extra_pnginfo = self._unwrap_scalar(extra_pnginfo)
-        cache_dir = _character_cache_dir_from_sheets_path("", widget_payload.get("character_name", ""), unique_id)
-        output_connections, connections_known = self._emotion_output_connections(
-            prompt,
-            extra_pnginfo,
-            unique_id,
-        )
-        previous_context = _LIVE_GENERATOR_CONTEXTS.get(str(unique_id or "").strip()) or {}
-        if not connections_known:
-            previous_connections = previous_context.get("emotion_output_connections")
-            if isinstance(previous_connections, (list, tuple)) and len(previous_connections) >= 2:
-                output_connections = [bool(previous_connections[0]), bool(previous_connections[1])]
-        _remember_generator_context(unique_id, "VNCCS_EmotionsGenerator", cache_dir, pipe)
-        live_context = _LIVE_GENERATOR_CONTEXTS.get(str(unique_id or "").strip())
-        if isinstance(live_context, dict):
-            live_context["emotion_output_connections"] = list(output_connections)
-        collect_sprites, collect_faces = output_connections
-        if regenerate_from and not emotion_data:
-            cached_inputs = _load_run_inputs(cache_dir, keys={"emotion_data"})
-            emotion_data = cached_inputs.get("emotion_data", emotion_data)
-        image_items = self._image_list(images)
-        data_items = self._parse_emotion_data(emotion_data)
-        previous_run_inputs = _load_run_inputs(cache_dir, keys={"emotion_data"}) if not regenerate_from else {}
-        emotion_inputs_changed = False if regenerate_from else previous_run_inputs.get("emotion_data") != data_items
-        if emotion_inputs_changed:
-            print(
-                "[VNCCS Emotions Generator] Pose/emotion input list changed; "
-                "ignoring prior stage cache for this run."
-            )
-        background_color = self._emotion_background_color(widget_payload, data_items)
-        emotion_items = [str(item.get("emotion_prompt", "")) for item in data_items]
-        sprite_paths = [str(item.get("sprite_output_path", "")) for item in data_items]
-        total = len(data_items)
-        if total <= 0:
-            raise RuntimeError("No emotion tasks to generate. Select at least one costume, pose, and emotion.")
-
-        source_shapes = []
-        character_name = str(widget_payload.get("character_name", "") or "").strip()
-        if not character_name:
-            character_name = next(
-                (
-                    str(item.get("character", "") or "").strip()
-                    for item in data_items
-                    if isinstance(item, dict) and str(item.get("character", "") or "").strip()
-                ),
-                "",
-            )
-        for index, meta in enumerate(data_items):
-            task_character = meta.get("character", character_name) if isinstance(meta, dict) else character_name
-            shape = self._source_sprite_hw(
-                meta.get("source_path") if isinstance(meta, dict) else "",
-                task_character,
-            )
-            if shape is None and index < len(image_items):
-                fallback = self._list_to_batch(image_items[index])
-                if torch.is_tensor(fallback) and fallback.ndim == 4:
-                    shape = (int(fallback.shape[1]), int(fallback.shape[2]))
-            if shape is not None:
-                source_shapes.append(shape)
-        if not source_shapes:
-            raise RuntimeError("No readable source pose images were found for the selected emotion tasks.")
-        emotion_target_hw = (
-            max(shape[0] for shape in source_shapes),
-            max(shape[1] for shape in source_shapes),
-        )
-
-        groups = []
-        for index in range(total):
-            key = sprite_paths[index] if index < len(sprite_paths) and sprite_paths[index] else emotion_items[index]
-            if not groups or groups[-1]["key"] != key:
-                groups.append({"key": key, "indices": []})
-            groups[-1]["indices"].append(index)
-        stage_labels = self._emotion_pairs(widget_payload, emotion_items, len(groups))
-        order = []
-        for key, _label in stage_labels:
-            order.extend([key, f"{key}_bg_remove"])
-        if not regenerate_from:
-            _rotate_preview_cache(cache_dir)
-        _save_run_inputs(
-            cache_dir,
-            emotion_data=data_items,
-            widget_payload=widget_payload,
-        )
-
-        unique_poses = {
-            (
-                str(item.get("costume", "") or ""),
-                str(item.get("source_path", "") or ""),
-            )
-            for item in data_items
-            if isinstance(item, dict)
-        }
-        batch_plan = self._emotion_batch_plan(total, emotion_target_hw, emotion_settings)
-        batch_size = int(batch_plan["batch_size"])
-        plan_message = (
-            f"{total} task(s) queued from {len(unique_poses)} selected pose source(s) "
-            f"across {len(groups)} selected emotion/costume pair(s); "
-            f"task batch {batch_size}, GPU limit {batch_plan['gpu_limit']}, RAM limit {batch_plan['ram_limit']}"
-        )
-        if batch_plan["total_vram_gib"]:
-            plan_message += (
-                f", VRAM {batch_plan['free_vram_gib']:.1f}/{batch_plan['total_vram_gib']:.1f} GiB free"
-            )
-        if batch_plan["requested"] > batch_size:
-            plan_message += f"; requested {batch_plan['requested']} was capped for safety"
-        if collect_sprites or collect_faces:
-            plan_message += "; connected IMAGE outputs will retain full-resolution tensors"
-        print(f"[VNCCS Emotions Generator] {plan_message}", flush=True)
-
-        results = []
-        faces = []
-        face_version_dirs = {}
-        completed_tasks = 0
+        self._begin_progress(widget_payload, unique_id)
         try:
+            regenerate_from = self._regenerate_from(widget_payload)
+            regenerate_index = self._regenerate_index(widget_payload)
+            emotion_settings = widget_payload.get("emotion_generation", {}) if isinstance(widget_payload, dict) else {}
+            emotion_defaults = DEFAULT_WIDGET_DATA["emotion_generation"]
+
+            def _clamp_float(key, min_value, max_value):
+                try:
+                    value = float(emotion_settings.get(key, emotion_defaults[key]))
+                except Exception:
+                    value = float(emotion_defaults[key])
+                return max(min_value, min(max_value, value))
+
+            def _clamp_int(key, min_value, max_value):
+                try:
+                    value = int(float(emotion_settings.get(key, emotion_defaults[key])))
+                except Exception:
+                    value = int(emotion_defaults[key])
+                return max(min_value, min(max_value, value))
+
+            use_sam = _as_bool(
+                emotion_settings.get(
+                    "use_sam",
+                    emotion_settings.get("use_sam_model", emotion_defaults.get("use_sam", False)),
+                ),
+                False,
+            )
+            bbox_threshold = _clamp_float("bbox_threshold", 0.0, 1.0)
+            bbox_dilation = _clamp_int("bbox_dilation", 0, 128)
+            sam_dilation = _clamp_int("sam_dilation", 0, 128)
+            sam_threshold = _clamp_float("sam_threshold", 0.0, 1.0)
+            sam_bbox_expansion = _clamp_int("sam_bbox_expansion", 0, 128)
+            bg_settings = widget_payload.get("bg_remove", {}) if isinstance(widget_payload, dict) else {}
+            if not isinstance(bg_settings, dict):
+                bg_settings = {}
+            bg_settings = {
+                **DEFAULT_WIDGET_DATA["bg_remove"],
+                **bg_settings,
+            }
+            pipe = self._unwrap_scalar(pipe)
+            pipe_model_kind = (
+                _entry_kind(getattr(pipe, "model_entry", None))
+                or str(getattr(pipe, "model_kind", "") or "").strip().lower()
+            )
+            emotion_is_qi2 = pipe_model_kind == "qi2"
+            prompt = self._unwrap_scalar(prompt)
+            extra_pnginfo = self._unwrap_scalar(extra_pnginfo)
+            cache_dir = _character_cache_dir_from_sheets_path("", widget_payload.get("character_name", ""), unique_id, self._progress_scope)
+            output_connections, connections_known = self._emotion_output_connections(
+                prompt,
+                extra_pnginfo,
+                unique_id,
+            )
+            previous_context = _get_generator_context(unique_id, self._progress_scope) or {}
+            if not connections_known:
+                previous_connections = previous_context.get("emotion_output_connections")
+                if isinstance(previous_connections, (list, tuple)) and len(previous_connections) >= 2:
+                    output_connections = [bool(previous_connections[0]), bool(previous_connections[1])]
+            _remember_generator_context(unique_id, "VNCCS_EmotionsGenerator", cache_dir, pipe, self._progress_scope)
+            live_context = _get_generator_context(unique_id, self._progress_scope)
+            if isinstance(live_context, dict):
+                live_context["emotion_output_connections"] = list(output_connections)
+            collect_sprites, collect_faces = output_connections
+            if regenerate_from and not emotion_data:
+                cached_inputs = _load_run_inputs(cache_dir, keys={"emotion_data"})
+                emotion_data = cached_inputs.get("emotion_data", emotion_data)
+            image_items = self._image_list(images)
+            data_items = self._parse_emotion_data(emotion_data)
+            previous_run_inputs = _load_run_inputs(cache_dir, keys={"emotion_data"}) if not regenerate_from else {}
+            emotion_inputs_changed = False if regenerate_from else previous_run_inputs.get("emotion_data") != data_items
+            if emotion_inputs_changed:
+                print(
+                    "[VNCCS Emotions Generator] Pose/emotion input list changed; "
+                    "ignoring prior stage cache for this run."
+                )
+            background_color = self._emotion_background_color(widget_payload, data_items)
+            emotion_items = [str(item.get("emotion_prompt", "")) for item in data_items]
+            sprite_paths = [str(item.get("sprite_output_path", "")) for item in data_items]
+            total = len(data_items)
+            if total <= 0:
+                raise RuntimeError("No emotion tasks to generate. Select at least one costume, pose, and emotion.")
+
+            source_shapes = []
+            character_name = str(widget_payload.get("character_name", "") or "").strip()
+            if not character_name:
+                character_name = next(
+                    (
+                        str(item.get("character", "") or "").strip()
+                        for item in data_items
+                        if isinstance(item, dict) and str(item.get("character", "") or "").strip()
+                    ),
+                    "",
+                )
+            for index, meta in enumerate(data_items):
+                task_character = meta.get("character", character_name) if isinstance(meta, dict) else character_name
+                shape = self._source_sprite_hw(
+                    meta.get("source_path") if isinstance(meta, dict) else "",
+                    task_character,
+                )
+                if shape is None and index < len(image_items):
+                    fallback = self._list_to_batch(image_items[index])
+                    if torch.is_tensor(fallback) and fallback.ndim == 4:
+                        shape = (int(fallback.shape[1]), int(fallback.shape[2]))
+                if shape is not None:
+                    source_shapes.append(shape)
+            if not source_shapes:
+                raise RuntimeError("No readable source pose images were found for the selected emotion tasks.")
+            emotion_target_hw = (
+                max(shape[0] for shape in source_shapes),
+                max(shape[1] for shape in source_shapes),
+            )
+
+            groups = []
+            for index in range(total):
+                key = sprite_paths[index] if index < len(sprite_paths) and sprite_paths[index] else emotion_items[index]
+                if not groups or groups[-1]["key"] != key:
+                    groups.append({"key": key, "indices": []})
+                groups[-1]["indices"].append(index)
+            stage_labels = self._emotion_pairs(widget_payload, emotion_items, len(groups))
+            order = []
+            for key, _label in stage_labels:
+                order.extend([key, f"{key}_bg_remove"])
+            if not regenerate_from:
+                _rotate_preview_cache(cache_dir)
+            _save_run_inputs(
+                cache_dir,
+                emotion_data=data_items,
+                widget_payload=widget_payload,
+            )
+
+            unique_poses = {
+                (
+                    str(item.get("costume", "") or ""),
+                    str(item.get("source_path", "") or ""),
+                )
+                for item in data_items
+                if isinstance(item, dict)
+            }
+            batch_plan = self._emotion_batch_plan(total, emotion_target_hw, emotion_settings)
+            batch_size = int(batch_plan["batch_size"])
+            plan_message = (
+                f"{total} task(s) queued from {len(unique_poses)} selected pose source(s) "
+                f"across {len(groups)} selected emotion/costume pair(s); "
+                f"task batch {batch_size}, GPU limit {batch_plan['gpu_limit']}, RAM limit {batch_plan['ram_limit']}"
+            )
+            if batch_plan["total_vram_gib"]:
+                plan_message += (
+                    f", VRAM {batch_plan['free_vram_gib']:.1f}/{batch_plan['total_vram_gib']:.1f} GiB free"
+                )
+            if batch_plan["requested"] > batch_size:
+                plan_message += f"; requested {batch_plan['requested']} was capped for safety"
+            if collect_sprites or collect_faces:
+                plan_message += "; connected IMAGE outputs will retain full-resolution tensors"
+            print(f"[VNCCS Emotions Generator] {plan_message}", flush=True)
+
+            results = []
+            faces = []
+            face_version_dirs = {}
+            completed_tasks = 0
             for group_index, group in enumerate(groups):
                 stage_key, stage_label = stage_labels[group_index]
                 bg_stage_key = f"{stage_key}_bg_remove"
@@ -4894,6 +4938,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         except Exception as exc:
             print("[VNCCS Emotions Generator] Failed:", exc)
             traceback.print_exc()
+            _forget_generator_context(unique_id, getattr(self, "_progress_scope", None))
             self._emit(unique_id, "error", "error", message=str(exc))
             raise
 
@@ -4981,6 +5026,11 @@ def _seedvr_download_worker(category, name):
 
 
 if server is not None:
+    @server.PromptServer.instance.routes.get("/vnccs/character_generator/progress")
+    async def vnccs_character_generator_progress(request):
+        snapshot = progress_snapshot(request.rel_url.query.get("scope", ""))
+        return web.json_response({"snapshot": snapshot}, headers={"Cache-Control": "no-store, private"})
+
     @server.PromptServer.instance.routes.get("/vnccs/character_generator/seedvr_models")
     async def vnccs_character_generator_seedvr_models(request):
         return web.json_response(_seedvr_catalog())
@@ -5026,16 +5076,27 @@ if server is not None:
         })
 
     def _regenerate_response(data):
+        payload = data.get("widget_data") if isinstance(data, dict) else None
+        ui = payload.get("ui") if isinstance(payload, dict) else None
+        scope = ui.get("progress_scope") if isinstance(ui, dict) else None
+        unique_id = data.get("unique_id") if isinstance(data, dict) else None
+        with generator_execution_lock(unique_id, scope):
+            return _regenerate_with_context(data)
+
+    def _regenerate_with_context(data):
         try:
             unique_id = str(data.get("unique_id") or "").strip()
             stage = str(data.get("stage") or "").strip()
             if not unique_id or not stage:
                 return web.json_response({"error": "Missing unique_id or stage"}, status=400)
 
-            ctx = _LIVE_GENERATOR_CONTEXTS.get(unique_id)
+            widget_payload = data.get("widget_data") if isinstance(data.get("widget_data"), dict) else {}
+            ui = widget_payload.get("ui")
+            scope = ui.get("progress_scope") if isinstance(ui, dict) else None
+            ctx = _get_generator_context(unique_id, scope)
             if not ctx or ctx.get("pipe") is None:
                 return web.json_response({
-                    "error": "Regenerate needs the live generator context from the last normal run. Run this generator once normally after server restart/reload, then Regenerate will work from the cached stages.",
+                    "error": "Regenerate needs the live generator context from the last normal run. Run this generator once normally after server restart/reload or cache expiry, then Regenerate will work from the cached stages.",
                 }, status=409)
 
             cache_dir = ctx.get("cache_dir")

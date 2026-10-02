@@ -1,3 +1,4 @@
+import { createWidgetContext } from './widget_context.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -26,7 +27,7 @@ function setup({ mode = "anima", background = "Blue", previous = "Blue", marker 
     const state = { character_info: { background_color: background },
         gen_settings: { generation_mode: mode, previous_background_color: previous, background_model_kind: marker } };
     const serialized = { name: "widget_data", value: JSON.stringify(state) };
-    const context = vm.createContext({
+    const context = createWidgetContext({
         state, els: {}, node: { id: 42, widgets: [serialized] },
         document: { createElement: () => new Element() },
         setHelpText() {}, helpFor() {}, saveCurrentGenerationModeValues() {},

@@ -1,3 +1,4 @@
+import { createWidgetContext } from './widget_context.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
@@ -11,7 +12,7 @@ for (const name of ['vnccs_clothes_designer', 'vnccs_character_creator_v2', 'vnc
     for (const choice of ['local', 'cancel', 'escape', 'download']) {
         test(`${name}: ${choice} model preparation`, async () => {
             const calls = [];
-            const context = vm.createContext({
+            const context = createWidgetContext({
                 document: { createElement: () => ({}) },
                 setTimeout: callback => callback(),
                 showModal: (title, build, buttons) => {
@@ -51,7 +52,7 @@ test('resolution follows the model in Auto and preserves restored manual sizes',
     const label = { textContent: '' };
     const state = { gen_settings: { target_size: null } };
     let kind = 'QI2';
-    const context = vm.createContext({
+    const context = createWidgetContext({
         state, els: { target_size: slider, target_size_value: label }, getConnectedModelKind: () => kind,
     });
     assert.ok(scaleStart >= 0 && scaleEnd > scaleStart);
@@ -87,7 +88,7 @@ test('workflow restoration merges generation defaults and preserves manual resol
     const dataWidget = { value: JSON.stringify({ gen_settings: { target_size: 2048 } }) };
     const node = {};
     let synchronized = 0;
-    const context = vm.createContext({
+    const context = createWidgetContext({
         node, state, dataWidget,
         defaultState: { gen_settings: { target_size: null, seed: 0 }, character_info: {}, costume_info: {} },
         syncGenerationControls: () => synchronized++,
@@ -110,7 +111,7 @@ test('workflow serialization saves resolution and preserves the original callbac
     const node = { onSerialize() { assert.equal(this, node); called++; } };
     const dataWidget = {};
     const state = { gen_settings: { target_size: 1536 } };
-    const context = vm.createContext({ node, dataWidget, state });
+    const context = createWidgetContext({ node, dataWidget, state });
     const start = designer.indexOf('const onSerialize = node.onSerialize;');
     const end = designer.indexOf('const saveCostumeToBackend =', start);
     new vm.Script(designer.slice(start, end)).runInContext(context);

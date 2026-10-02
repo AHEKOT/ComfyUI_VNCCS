@@ -1,3 +1,4 @@
+import { createWidgetContext } from './widget_context.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -20,7 +21,7 @@ function setup(selectedType = "unet") {
     const queued = [];
     const node = { widgets: [dataWidget], _randomizeSeedIfNeeded() {},
         onSerialize(result) { result.originalCallbackCalled = true; } };
-    const context = vm.createContext({
+    const context = createWidgetContext({
         state, dataWidget, node,
         beginPreviewRequest: () => () => true,
         spritePreviewNavigator: null,

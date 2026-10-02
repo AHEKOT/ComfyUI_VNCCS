@@ -1,5 +1,5 @@
 import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
+import { vnccsApi as api, mediaURL, checkedJSON, storage, serverRegistry, refreshPreviewImage, watchConnection } from "./vnccs_transport.js";
 import { presetGroups, presetSelection } from "./character_presets.mjs";
 import { debounce, registerCleanup, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard } from "./vnccs_common.js";
 
@@ -1712,15 +1712,15 @@ app.registerExtension({
                     }
                 };
                 const fetchCcConfig = async (force = false) => {
-                    if (!force && window.VNCCS_CC_REGISTRY?.[CC_REPO_ID] && ccHasRequiredFamilies(window.VNCCS_CC_REGISTRY[CC_REPO_ID])) {
-                        ccConfig = window.VNCCS_CC_REGISTRY[CC_REPO_ID];
+                    if (!force && serverRegistry("VNCCS_CC_REGISTRY")?.[CC_REPO_ID] && ccHasRequiredFamilies(serverRegistry("VNCCS_CC_REGISTRY")[CC_REPO_ID])) {
+                        ccConfig = serverRegistry("VNCCS_CC_REGISTRY")[CC_REPO_ID];
                         renderControlCenterCards();
                         return ccConfig;
                     }
                     if (!force && ccConfig && ccHasRequiredFamilies(ccConfig)) return ccConfig;
                     if (!force) {
                         try {
-                            const cached = localStorage.getItem(CC_CACHE_KEY);
+                            const cached = storage.getItem(CC_CACHE_KEY);
                             if (cached) {
                                 ccConfig = JSON.parse(cached);
                                 if (ccHasRequiredFamilies(ccConfig)) renderControlCenterCards();
@@ -1734,9 +1734,9 @@ app.registerExtension({
                     const payload = await response.json();
                     if (!response.ok || payload.error) throw new Error(payload.error || "Failed to load Control Center config");
                     ccConfig = payload;
-                    window.VNCCS_CC_REGISTRY = window.VNCCS_CC_REGISTRY || {};
-                    window.VNCCS_CC_REGISTRY[CC_REPO_ID] = payload;
-                    localStorage.setItem(CC_CACHE_KEY, JSON.stringify(payload));
+
+                    serverRegistry("VNCCS_CC_REGISTRY")[CC_REPO_ID] = payload;
+                    storage.setItem(CC_CACHE_KEY, JSON.stringify(payload));
                     renderControlCenterCards();
                     return payload;
                 };
@@ -1927,7 +1927,7 @@ app.registerExtension({
                         gen_settings: state.gen_settings,
                         character: state.character
                     };
-                    localStorage.setItem("VNCCS_V2_Settings", JSON.stringify(persistData));
+                    storage.setItem("VNCCS_V2_Settings", JSON.stringify(persistData));
 
                     // Mark cache validity
                     state.preview_valid = isValid;
@@ -2011,6 +2011,7 @@ app.registerExtension({
                 };
 
                 const clearCharacterSelection = () => {
+                    beginCharacterRequest();
                     beginPreviewRequest();
                     state.character = "";
                     restoredWidgetInfoCharacter = null;
@@ -2036,7 +2037,7 @@ app.registerExtension({
                     const currentRequest = beginPreviewRequest();
                     const isCurrent = () => currentRequest() && state.character === character;
                     console.log("[VNCCS] Trying to load cached preview...");
-                    const cacheUrl = `/vnccs/get_cached_preview?character=${encodeURIComponent(character)}&t=${Date.now()}`;
+                    const cacheUrl = mediaURL(`/vnccs/get_cached_preview?character=${encodeURIComponent(character)}&t=${Date.now()}`);
                     clearPreviewHandlers();
                     hideSpriteNav();
                     setPreviewLoading(true);
@@ -2072,7 +2073,7 @@ app.registerExtension({
 
                 const spritePreviewUrl = (character, index) => {
                     const cacheBust = state.sprite_preview_cache_bust || "current";
-                    return `/vnccs/get_character_pose_preview?character=${encodeURIComponent(character)}&index=${index}&v=${encodeURIComponent(cacheBust)}`;
+                    return mediaURL(`/vnccs/get_character_pose_preview?character=${encodeURIComponent(character)}&index=${index}&v=${encodeURIComponent(cacheBust)}`);
                 };
 
                 const prefetchSpritePreview = (character, index) => {
@@ -2124,7 +2125,7 @@ app.registerExtension({
 
                 const applyStoredPrefs = (characterOnly = false) => {
                     try {
-                        const s = localStorage.getItem("VNCCS_V2_Settings");
+                        const s = storage.getItem("VNCCS_V2_Settings");
                         if (!s) return false;
                         const parsed = JSON.parse(s);
                         let changedCharacter = false;
@@ -2150,6 +2151,7 @@ app.registerExtension({
                 };
 
                 const loadState = () => {
+                    beginCharacterRequest();
                     // 1. Try Widget Data (Graph Persistence)
                     const w = node.widgets.find(x => x.name === "widget_data");
                     if (w && w.value && w.value !== "{}") {
@@ -2175,8 +2177,7 @@ app.registerExtension({
                             }
                             if (parsed.preview_valid !== undefined) state.preview_valid = parsed.preview_valid;
 
-                            const overridden = applyStoredPrefs(true);
-                            console.log("[VNCCS V2] Loaded state from graph widget. Character:", state.character, overridden ? "(last active override)" : "");
+                            console.log("[VNCCS V2] Loaded state from graph widget. Character:", state.character);
                             return;
                         } catch (e) { console.error("Error loading widget data", e); }
                     }
@@ -3346,10 +3347,7 @@ app.registerExtension({
 
                 const charSel = document.createElement("select"); charSel.className = "vnccs-select";
                 charSel.onchange = async (e) => {
-                    state.character = e.target.value;
-                    restoredWidgetInfoCharacter = null;
-                    await loadChar(state.character);
-                    saveState(true);
+                    await loadChar(e.target.value);
                 };
                 els.charSelect = charSel;
                 colLeft.appendChild(charSel);
@@ -3575,15 +3573,11 @@ app.registerExtension({
                                 const n = inpRef.value.trim();
                                 if (!n) return true; // Keep open
                                 try {
-                                    await api.fetchApi(`/vnccs/create?name=${encodeURIComponent(n)}`);
+                                    await checkedJSON("/vnccs/create", { method: "POST", body: JSON.stringify({ name: n }) });
                                     const exists = Array.from(els.charSelect.options).some(o => o.value === n);
                                     if (!exists) els.charSelect.add(new Option(n, n));
 
-                                    state.character = n; // Updates internal state immediately
-                                    els.charSelect.value = n; // Update UI
-                                    await loadChar(n);
-                                    saveState();
-                                    return false; // Close
+                                    return !await loadChar(n);
                                 } catch (e) {
                                     showAlertModal("Create Failed", e);
                                     return true;
@@ -3644,9 +3638,8 @@ app.registerExtension({
                                         if (idx > -1) els.charSelect.remove(idx);
 
                                         if (els.charSelect.options.length > 0) {
-                                            state.character = els.charSelect.options[0].value;
-                                            els.charSelect.value = state.character;
-                                            await loadChar(state.character);
+                                            clearCharacterSelection();
+                                            await loadChar(els.charSelect.options[0].value);
                                         } else {
                                             clearCharacterSelection();
                                         }
@@ -4222,6 +4215,7 @@ app.registerExtension({
                 };
                 api.addEventListener("vnccs.preview.updated", previewUpdateHandler);
                 registerCleanup(node, () => api.removeEventListener("vnccs.preview.updated", previewUpdateHandler));
+                watchConnection(node, () => { if (state.character && !els.btnGen?.disabled) refreshPreviewImage(els.previewImg); }, registerCleanup);
                 registerCleanup(node, () => stopCcPolling());
 
                 const init = async () => {
@@ -4302,23 +4296,10 @@ app.registerExtension({
                         syncGenerationControls();
                         refreshGenerationModeUI();
 
-                        if (characters.length) {
-                            if (!characters.includes(state.character)) {
-                                if (state.character) {
-                                    console.warn("[VNCCS V2] Saved character is missing on disk, selecting first available:", state.character);
-                                }
-                                state.character = characters[0];
-                                restoredWidgetInfoCharacter = null;
-                            }
-                            els.charSelect.value = state.character;
-                        } else {
-                            clearCharacterSelection();
-                        }
-
-                        // Only skip disk load when widget_data explicitly belongs to this character.
-                        // Default state also has hair/eyes fields, so field presence is not proof of valid restored data.
-                        const hasWidgetData = restoredWidgetInfoCharacter && restoredWidgetInfoCharacter === state.character;
-                        if (state.character) await loadChar(state.character, hasWidgetData);
+                        const selected = characters.includes(state.character) ? state.character : characters[0] || "";
+                        const hasWidgetData = restoredWidgetInfoCharacter && restoredWidgetInfoCharacter === selected;
+                        if (selected) await loadChar(selected, hasWidgetData);
+                        else clearCharacterSelection();
 
                         // Sync widget state. Preview validity is set by image onload handler, not preemptively.
                         saveState();
@@ -4330,19 +4311,21 @@ app.registerExtension({
                 const loadChar = async (n, skipInfoLoad = false) => {
                     const currentRequest = beginCharacterRequest();
                     const currentPreview = beginPreviewRequest();
-                    const isCurrent = () => currentRequest() && state.character === n;
-                    if (!n) return;
+                    const originalCharacter = state.character;
+                    const isCurrent = () => currentRequest() && (state.character === originalCharacter || state.character === n);
+                    if (!n) return false;
                     try {
                         // 1. Fetch Info (skip if restoring from widget_data)
                         if (!skipInfoLoad) {
-                            const r = await api.fetchApi(`/vnccs/character_info?character=${encodeURIComponent(n)}`);
-                            if (!r.ok) throw new Error(`Character '${n}' is not available`);
-                            const i = await r.json();
-                            if (!isCurrent()) return;
-
-                            // Reset & Assign
-                            Object.assign(state.character_info, getDefaultCharacterInfo());
-                            Object.assign(state.character_info, i);
+                            const i = await checkedJSON(`/vnccs/character_info?character=${encodeURIComponent(n)}`);
+                            if (!isCurrent()) return false;
+                            if (!i || typeof i !== "object" || Array.isArray(i) || (i.name && i.name !== n)) {
+                                throw new Error(`Invalid character metadata for '${n}'`);
+                            }
+                            state.character = n;
+                            restoredWidgetInfoCharacter = null;
+                            for (const key of Object.keys(state.character_info)) delete state.character_info[key];
+                            Object.assign(state.character_info, getDefaultCharacterInfo(), { name: n }, i);
                             syncBackgroundForGenerationMode(true);
                             state.prompt_modes = {
                                 illustrious: {
@@ -4362,9 +4345,12 @@ app.registerExtension({
                             applyPromptModeToFields((state.gen_settings.generation_mode || "illustrious").toLowerCase());
                         }
 
-                        // Update Fields from current state
-                        if (!isCurrent()) return;
+                        // Commit selection only after metadata has been read successfully.
+                        if (!isCurrent()) return false;
+                        state.character = n;
+                        if (els.charSelect) els.charSelect.value = n;
                         syncCharacterFields();
+                        saveState();
 
                         // 2. Fetch Preview Image
                         if (!currentPreview()) return;
@@ -4390,7 +4376,13 @@ app.registerExtension({
                             tryCachePreview(n);
                         }
 
-                    } catch (e) { console.error(e); }
+                        return isCurrent();
+                    } catch (error) {
+                        if (!isCurrent()) return false;
+                        if (els.charSelect) els.charSelect.value = state.character;
+                        showAlertModal("Character Load Failed", error.message || error);
+                        return false;
+                    }
                 };
 
                 const doGenerate = async () => {

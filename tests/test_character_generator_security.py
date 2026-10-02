@@ -622,7 +622,8 @@ def test_emotions_generator_bg_remove_uses_character_background_color(tmp_path, 
     torch = pytest.importorskip("torch")
     seen = {}
 
-    monkeypatch.setattr(cg, "_character_cache_dir_from_sheets_path", lambda *args, **kwargs: str(tmp_path))
+    monkeypatch.setattr(cg, "base_output_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(cg, "_character_cache_dir_from_sheets_path", lambda *args, **kwargs: str(tmp_path / "cache"))
     monkeypatch.setattr(cg, "_rotate_preview_cache", lambda *args, **kwargs: None)
     monkeypatch.setattr(cg, "_save_run_inputs", lambda *args, **kwargs: None)
 
@@ -659,7 +660,8 @@ def test_emotions_generator_qi2_passes_source_alpha_into_generation(tmp_path, mo
     torch = pytest.importorskip("torch")
     seen = {}
 
-    monkeypatch.setattr(cg, "_character_cache_dir_from_sheets_path", lambda *args, **kwargs: str(tmp_path))
+    monkeypatch.setattr(cg, "base_output_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(cg, "_character_cache_dir_from_sheets_path", lambda *args, **kwargs: str(tmp_path / "cache"))
     monkeypatch.setattr(cg, "_rotate_preview_cache", lambda *args, **kwargs: None)
     monkeypatch.setattr(cg, "_save_run_inputs", lambda *args, **kwargs: None)
 

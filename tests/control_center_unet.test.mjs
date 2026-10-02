@@ -1,3 +1,4 @@
+import { createWidgetContext } from './widget_context.mjs';
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
@@ -14,7 +15,7 @@ const turbo = { name: "Qwen Image 2.1 Viggle Turbo", type: "TurboLora", kind: "Q
 
 function setup(state = {}, config = { models, lora: [turbo] }) {
     const events = [];
-    const context = vm.createContext({
+    const context = createWidgetContext({
         window: { dispatchEvent: event => events.push(event) },
         CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
     });

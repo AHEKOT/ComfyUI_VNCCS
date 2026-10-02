@@ -51,6 +51,10 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
     except Exception:
         return
 
+    if getattr(PromptServer.instance, "app", None) is not None:
+        from .nodes.http_state import install_cache_policy
+        install_cache_policy(PromptServer.instance)
+
     @PromptServer.instance.routes.get("/vnccs/config")
     async def vnccs_get_config(request):
         name = request.rel_url.query.get("name")
@@ -122,9 +126,23 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
                 "detail": str(e),
             }, status=500)
 
+    @PromptServer.instance.routes.post("/vnccs/create")
     @PromptServer.instance.routes.get("/vnccs/create")
     async def vnccs_create_character(request):
-        name = request.rel_url.query.get("name", "").strip()
+        try:
+            from .utils import validate_privileged_request
+            validate_privileged_request(request)
+        except ValueError as error:
+            return web.json_response({"error": str(error)}, status=403)
+        if getattr(request, "method", "GET") == "POST":
+            try:
+                data = await request.json()
+                name = str(data.get("name", "")).strip()
+            except (ValueError, TypeError, AttributeError):
+                return web.json_response({"error": "Invalid create request"}, status=400)
+        else:
+            # Compatibility for older extensions; responses are explicitly no-store.
+            name = request.rel_url.query.get("name", "").strip()
         if not name:
             return web.json_response({"error": "name required"}, status=400)
         try:
@@ -153,18 +171,12 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         )
         try:
             from .nodes.character_creator import CharacterCreator
-            from .utils import base_output_dir, safe_join_under
+            from .utils import base_output_dir, load_config
             cc = CharacterCreator()
             base_path = base_output_dir()
             os.makedirs(base_path, exist_ok=True)
-            base_char_dir = safe_join_under(base_path, name)
-            config_path = os.path.join(base_char_dir, f"{name}_config.json")
-            if os.path.exists(config_path):
-                try:
-                    with open(config_path, 'r', encoding='utf-8') as f:
-                        existing_data = json.load(f)
-                except Exception:
-                    existing_data = None
+            existing_data = load_config(name, strict=True)
+            if existing_data is not None:
                 return web.json_response({
                     "ok": True,
                     "name": name,

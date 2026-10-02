@@ -1,3 +1,4 @@
+import { createWidgetContext } from './widget_context.mjs';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
@@ -35,7 +36,7 @@ function setup(saved) {
         gen_settings: { generation_mode: "qi2", mode_settings: {} } };
     const widget = { name: "widget_data", value: "" };
     const downloads = [];
-    const ctx = vm.createContext({
+    const ctx = createWidgetContext({
         window: { innerWidth: 1024, innerHeight: 768 },
         els: {},
         state, node: { id: 42, widgets: [widget] }, localStorage: { setItem() {} },

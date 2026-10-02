@@ -5,6 +5,8 @@ import ntpath
 import json
 import random
 import re
+import tempfile
+from contextlib import contextmanager
 from urllib.parse import urlparse
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
@@ -204,22 +206,33 @@ def safe_relative_path(value: str, field: str = "path") -> str:
 def validate_privileged_request(request) -> None:
     """Validate state-changing VNCCS API calls from the same ComfyUI origin."""
     host = (request.headers.get("Host") or "").lower()
+    sec_fetch_site = (request.headers.get("Sec-Fetch-Site") or "").lower()
+    has_marker = request.headers.get(PRIVILEGED_REQUEST_HEADER) == PRIVILEGED_REQUEST_VALUE
+    if sec_fetch_site == "cross-site":
+        raise ValueError("cross-site privileged request rejected")
+    # Fetch Metadata describes the browser-facing origin, before a reverse proxy
+    # rewrites Host. Web pages cannot forge Sec-Fetch-* headers. Require our
+    # non-simple header as well; never trust arbitrary forwarded host headers.
+    proxy_same_origin = sec_fetch_site == "same-origin" and has_marker
     same_origin = False
+    browser_origin = None
     for header_name in ("Origin", "Referer"):
         raw = request.headers.get(header_name)
         if not raw:
             continue
         parsed = urlparse(raw)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("invalid privileged request origin")
+        origin = (parsed.scheme.lower(), parsed.netloc.lower())
+        if browser_origin is not None and origin != browser_origin:
+            raise ValueError("inconsistent privileged request origins")
+        browser_origin = origin
         if parsed.netloc and host and parsed.netloc.lower() == host:
             same_origin = True
-        elif parsed.netloc and host:
+        elif parsed.netloc and host and not proxy_same_origin:
             raise ValueError("cross-origin privileged request rejected")
 
-    sec_fetch_site = (request.headers.get("Sec-Fetch-Site") or "").lower()
-    if sec_fetch_site == "cross-site":
-        raise ValueError("cross-site privileged request rejected")
-
-    if request.headers.get(PRIVILEGED_REQUEST_HEADER) == PRIVILEGED_REQUEST_VALUE:
+    if has_marker:
         return
 
     if same_origin and sec_fetch_site in {"", "same-origin", "same-site", "none"}:
@@ -607,16 +620,41 @@ def config_path(character_name: str) -> str:
     return os.path.join(character_dir(character_name), f"{character_name}_config.json")
 
 
-def load_config(character_name: str) -> Optional[Dict[str, Any]]:
+def load_config(character_name: str, *, strict=False) -> Optional[Dict[str, Any]]:
     """Load character configuration."""
     config_file = config_path(character_name)
-    if os.path.exists(config_file):
-        try:
-            with open(config_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"[VNCCS Utils] Error loading configuration {character_name}: {e}")
+    try:
+        with open(config_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if strict and (not isinstance(data, dict) or any(
+            key in data and not isinstance(data[key], dict) for key in ("character_info", "costumes")
+        )):
+            raise ValueError("Invalid character configuration structure")
+        return data
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        if strict:
+            raise OSError(f"Cannot read configuration for '{character_name}': {e}") from e
+        print(f"[VNCCS Utils] Error loading configuration {character_name}: {e}")
     return None
+
+
+@contextmanager
+def atomic_output_path(path):
+    """Publish a completed file without truncating the previous version."""
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=directory)
+    os.close(descriptor)
+    try:
+        yield temporary
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def save_config(character_name: str, data: Dict[str, Any]) -> str:
@@ -627,8 +665,9 @@ def save_config(character_name: str, data: Dict[str, Any]) -> str:
     
     config_file = config_path(character_name)
     try:
-        with open(config_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
+        with atomic_output_path(config_file) as temporary:
+            with open(temporary, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
         return config_file
     except Exception as e:
         print(f"[VNCCS Utils] Error saving configuration {character_name}: {e}")
@@ -718,7 +757,7 @@ def dedupe_tokens(line: str) -> str:
 
 def load_costume_info(character_name: str, costume_name: str) -> Dict[str, Any]:
     """Load character costume info."""
-    config = load_config(character_name)
+    config = load_config(character_name, strict=True)
     if not config:
         return {}
     costumes = config.get("costumes", {})
@@ -727,7 +766,7 @@ def load_costume_info(character_name: str, costume_name: str) -> Dict[str, Any]:
 
 def save_costume_info(character_name: str, costume_name: str, costume_data: Dict[str, Any]) -> bool:
     """Save character costume info."""
-    config = load_config(character_name)
+    config = load_config(character_name, strict=True)
     if not config:
         config = {"character_info": {}, "costumes": {}}
     if "costumes" not in config:

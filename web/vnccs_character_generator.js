@@ -1,5 +1,5 @@
 import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
+import { vnccsApi as api, mediaURL, checkedJSON, storage, workflowScope, cacheIdentity, watchConnection } from "./vnccs_transport.js";
 import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
 
 const GENERATOR_QWEN_INSTRUCTION = "Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.";
@@ -1131,6 +1131,8 @@ class CharacterGeneratorWidget {
         this.restoreBrowserState();
         this.build();
         this.bindEvents();
+        const refreshTimer = setTimeout(() => this.refreshProgress().catch(error => console.warn("[VNCCS] Progress refresh failed", error)), 0);
+        registerCleanup(this.node, () => clearTimeout(refreshTimer));
         this.loadNodeDefs();
         this.loadSeedvrAssets();
     }
@@ -1230,13 +1232,20 @@ class CharacterGeneratorWidget {
         this.onStage = (event) => {
             const detail = event.detail || {};
             if (String(detail.node_id) !== String(this.node.id)) return;
+            const scope = this.progressScope();
+            if (detail.scope && detail.scope !== scope) return;
+            if (!this.acceptsProgressRequest(detail.request_id)) return;
+            if (detail.scope) {
+                if (this._progressScope === scope && this._progressEpoch === detail.epoch && detail.revision <= (this._progressRevision || 0)) return;
+                this._progressScope = scope;
+                this._progressRevision = detail.revision;
+                this._progressEpoch = detail.epoch;
+            }
+            this.observeProgressRequest(detail.request_id, detail.run_id);
             const stage = detail.stage;
             if (!this.stageState[stage] && stage !== "error") return;
             if (stage === "error") {
-                for (const key of Object.keys(this.stageState)) {
-                    if (this.stageState[key].status === "running") this.stageState[key].status = "error";
-                }
-                this.finishRegenerate();
+                this.applyProgressError(detail.message);
             } else {
                 const status = detail.status || "waiting";
                 const previousStageState = this.stageState[stage] || {};
@@ -1287,6 +1296,13 @@ class CharacterGeneratorWidget {
         };
         api.addEventListener("vnccs.character_generator.stage", this.onStage);
         registerCleanup(this.node, () => api.removeEventListener("vnccs.character_generator.stage", this.onStage));
+        watchConnection(this.node, () => this.refreshProgress(), registerCleanup);
+        const timer = setInterval(() => {
+            if (document.visibilityState !== "hidden") {
+                this.refreshProgress().catch(error => console.warn("[VNCCS] Progress refresh failed", error));
+            }
+        }, 10000);
+        registerCleanup(this.node, () => { this._disposed = true; clearInterval(timer); });
 
         if (this.isClone) {
             this.onClonerUpdated = () => {
@@ -1347,15 +1363,15 @@ class CharacterGeneratorWidget {
         }, 500);
     }
 
-    finishRegenerate() {
+    finishRegenerate({ render = true } = {}) {
         clearInterval(this.regenerateTimer);
         this.regenerateTimer = null;
         this.regenerateState = null;
-        this.renderPreview();
-        this.renderChain();
+        this._regenerateRequestPending = false;
+        if (render) { this.renderPreview(); this.renderChain(); }
     }
 
-    updateRegenerateProgress(stage, status) {
+    updateRegenerateProgress(stage, status, { render = true } = {}) {
         if (!this.regenerateState) return;
         this.regenerateState.sawStageEvent = true;
         if (this.regenerateState.targetStages.includes(stage) && status === "running") {
@@ -1363,7 +1379,7 @@ class CharacterGeneratorWidget {
         }
         const lastStage = this.regenerateState.targetStages[this.regenerateState.targetStages.length - 1];
         if (stage === lastStage && status === "done") {
-            this.finishRegenerate();
+            this.finishRegenerate({ render });
         }
     }
 
@@ -1961,14 +1977,19 @@ class CharacterGeneratorWidget {
         this.selectedPreview = stageKey;
         this.userSelectedPreview = false;
         if (!this.data.ui) this.data.ui = {};
+        this.data.ui.progress_scope = this.progressScope();
+        const requestId = cacheIdentity();
+        this.data.ui.progress_request_id = requestId;
         this.data.ui.selected_preview = stageKey;
         this.data.ui.user_selected_preview = false;
         this.resetStagesFrom(stageKey, { preserveImages: Number.isInteger(imageIndex) });
         this.startRegenerate(stageKey, imageIndex);
+        this.regenerateState.requestId = requestId;
         writeData(this.node, this.data);
         this.renderPreview();
         this.renderChain();
         try {
+            this._regenerateRequestPending = requestId;
             const response = await api.fetchApi("/vnccs/character_generator/regenerate", {
                 method: "POST",
                 body: JSON.stringify({
@@ -1982,14 +2003,20 @@ class CharacterGeneratorWidget {
             if (!response.ok) {
                 throw new Error(await this.responseErrorMessage(response));
             }
-            this.finishRegenerate();
+            if (this._regenerateRequestPending === requestId) this.finishRegenerate();
         } catch (error) {
+            if (this._regenerateRequestPending !== requestId) return;
             const hadStageEvent = Boolean(this.regenerateState?.sawStageEvent);
             this.finishRegenerate();
-            if (!hadStageEvent) this.restoreStageSnapshot(beforeRegenerate);
+            if (!hadStageEvent) {
+                beforeRegenerate.ui = { ...beforeRegenerate.ui, progress_scope: this.progressScope(),
+                    progress_request_id: this.data.ui.progress_request_id };
+                this.restoreStageSnapshot(beforeRegenerate);
+            }
             throw error;
         } finally {
-            if (this.data.regenerate_from === stageKey) {
+            if (this._regenerateRequestPending === requestId) this._regenerateRequestPending = false;
+            if (this.data.ui.progress_request_id === requestId && this.data.regenerate_from === stageKey) {
                 delete this.data.regenerate_from;
                 delete this.data.regenerate_index;
                 writeData(this.node, this.data);
@@ -2253,54 +2280,133 @@ class CharacterGeneratorWidget {
         this.chainEl?.classList.toggle("is-emotions", this.isEmotions);
     }
 
+    progressScope() {
+        return workflowScope(this.node);
+    }
+
+    prepareQueuedRun() {
+        // Normal execution identity comes from server events. A per-submission
+        // nonce in widget_data would invalidate ComfyUI's execution cache.
+        this.data.ui ||= {};
+        this.data.ui.progress_scope = this.progressScope();
+        delete this.data.ui.progress_request_id;
+        delete this.data.ui.progress_request_kind;
+        delete this.data.regenerate_from;
+        delete this.data.regenerate_index;
+        writeData(this.node, this.data);
+    }
+
+    acceptsProgressRequest(requestId) {
+        // Only an outstanding Regenerate needs a temporary request filter.
+        // A completed request must not hide normal jobs already in the queue.
+        const pending = this.regenerateState?.requestId || this._regenerateRequestPending;
+        return !pending || requestId === pending;
+    }
+
+    observeProgressRequest(requestId, runId) {
+        this._activeProgressRequestId = requestId;
+        this._activeProgressRunId = runId;
+    }
+
+    progressViewKey() {
+        return JSON.stringify([
+            this.stages.map(([key]) => {
+                const stage = this.stageState[key] || {};
+                return [key, stage.status || "waiting", stage.images || null, stage.message || "", stage.current ?? null, stage.total ?? null];
+            }),
+            this.selectedPreview,
+            this.regenerateState ? [this.regenerateState.from, this.regenerateState.activeStage, this.regenerateState.imageIndex] : null,
+        ]);
+    }
+
+    applyProgressError(message, failedStage = null, { render = true } = {}) {
+        let targets = this.stages.map(([key]) => key).filter(key => this.stageState[key]?.status === "running");
+        if (!targets.length) {
+            const lastDone = this.stages.map(([key]) => key).reverse().find(key => this.stageState[key]?.status === "done");
+            const fallback = this.stages.some(([key]) => key === failedStage) ? failedStage : lastDone || this.stages[0]?.[0];
+            if (fallback) targets = [fallback];
+        }
+        for (const key of targets) this.stageState[key] = {
+            ...this.stageState[key], status: "error", message: message || "Generation failed. Check the server log.",
+        };
+        if (!this.userSelectedPreview && targets.length && this.selectedPreview !== targets[targets.length - 1]) {
+            this.selectedPreview = targets[targets.length - 1];
+            this.persistUI();
+        }
+        this.finishRegenerate({ render });
+    }
+
+    async refreshProgress() {
+        const scope = this.progressScope();
+        if (!scope || this._progressPending || this._disposed) return;
+        this._progressPending = true;
+        const requestId = this.data.ui?.progress_request_id;
+        const epoch = this._progressEpoch;
+        const revision = this._progressRevision;
+        try {
+            const { snapshot } = await checkedJSON(`/vnccs/character_generator/progress?scope=${encodeURIComponent(scope)}`);
+            if (this._disposed || scope !== this.progressScope() || requestId !== this.data.ui?.progress_request_id) return;
+            if (this._progressEpoch !== epoch && snapshot?.epoch !== this._progressEpoch) return;
+            if (!snapshot) {
+                if (this._regenerateRequestPending || revision !== this._progressRevision) return;
+                let changed = false;
+                for (const state of Object.values(this.stageState)) {
+                    if (state.status === "running") {
+                        state.status = "error";
+                        state.message = "Server progress is unavailable. Check the queue before retrying.";
+                        changed = true;
+                    }
+                }
+                if (this.regenerateState) this.finishRegenerate();
+                else if (changed) { this.renderPreview(); this.renderChain(); }
+                if (changed) this.saveBrowserState();
+                return;
+            }
+            if (snapshot.scope !== scope || String(snapshot.node_id) !== String(this.node.id)) return;
+            if (!this.acceptsProgressRequest(snapshot.request_id)) return;
+            if (this._progressScope === scope && this._progressEpoch === snapshot.epoch && snapshot.revision < (this._progressRevision || 0)) return;
+            const previousView = this.progressViewKey();
+            this._progressScope = scope;
+            this._progressRevision = snapshot.revision;
+            this._progressEpoch = snapshot.epoch;
+            this.observeProgressRequest(snapshot.request_id, snapshot.run_id);
+            let followedStage = null;
+            for (const [key] of this.stages) {
+                this.stageState[key] = snapshot.stages[key] || { status: "waiting", images: null, message: "" };
+                if (["running", "done"].includes(this.stageState[key].status)) followedStage = key;
+                this.updateRegenerateProgress(key, this.stageState[key].status, { render: false });
+            }
+            if (!snapshot.error && !this.userSelectedPreview && followedStage && this.selectedPreview !== followedStage) {
+                this.selectedPreview = followedStage;
+                this.persistUI();
+            }
+            if (snapshot.error) this.applyProgressError(snapshot.error.message, snapshot.error.stage, { render: false });
+            else if (Object.values(this.stageState).some(stage => stage.status === "error")) this.finishRegenerate({ render: false });
+            if (previousView === this.progressViewKey()) return;
+            if (this.viewer?.open) this.syncViewerImage();
+            this.renderPreview();
+            this.renderChain();
+            this.saveBrowserState();
+        } finally { this._progressPending = false; }
+    }
+
     storageKey() {
-        return `vnccs:character-generator:${this.node.type || "node"}:${this.node.id}`;
+        const scope = workflowScope(this.node);
+        return scope ? `character-generator:${scope}` : null;
     }
 
     restoreBrowserState() {
+        if (!this.storageKey()) return;
         let saved = null;
         try {
-            saved = JSON.parse(localStorage.getItem(this.storageKey()) || "null");
+            saved = JSON.parse(storage.getItem(this.storageKey()) || "null");
         } catch {
             saved = null;
         }
-        if (!saved || saved.version !== 1) return;
+        if (!saved || saved.version !== 2) return;
 
-        let restoredData = false;
-        if (saved.data) {
-            const resolutionSections = ["common", "pose_generation", "remove_clothes"];
-            const resolutions = resolutionSections.map(section => this.data[section]?.target_size);
-            const modelKind = this.data.ui?.resolution_model_kind;
-            const modelKey = this.data.ui?.resolution_model_key;
-            const modelResolutions = {
-                ...(saved.data.ui?.resolution_by_model || {}),
-                ...(this.data.ui?.resolution_by_model || {}),
-            };
-            // A refresh may load an older workflow autosave than the last slider edit.
-            // Compare each model independently; equal revisions keep workflow values.
-            for (const [key, profile] of Object.entries(saved.data.ui?.resolution_by_model || {})) {
-                if ((profile?.updated_at || 0) > (modelResolutions[key]?.updated_at || 0)) {
-                    modelResolutions[key] = profile;
-                }
-            }
-            this.data = deepMerge(this.data, saved.data);
-            resolutionSections.forEach((section, index) => {
-                this.data[section].target_size = resolutions[index];
-            });
-            this.data.ui.resolution_model_kind = modelKind;
-            this.data.ui.resolution_model_key = modelKey;
-            this.data.ui.resolution_by_model = modelResolutions;
-            const restoredSize = modelResolutions[modelKey]?.target_size;
-            if (!this.isEmotions && Number.isFinite(restoredSize)) {
-                const section = this.isClone ? "common" : "pose_generation";
-                this.data[section].target_size = resolutionScaleValue(resolutionScaleMegapixels(restoredSize));
-                if (this.isClone) {
-                    this.data.pose_generation.target_size = this.data[section].target_size;
-                    this.data.remove_clothes.target_size = this.data[section].target_size;
-                }
-            }
-            restoredData = true;
-        }
+        // Workflow settings are authoritative; browser data is only a matching UI cache.
+        if (saved.settings !== JSON.stringify(this.data)) return;
         if (this.stages.some(([key]) => key === saved.selectedPreview)) {
             this.selectedPreview = saved.selectedPreview;
         }
@@ -2333,10 +2439,10 @@ class CharacterGeneratorWidget {
             }
             this.restoredViewer = saved.viewer;
         }
-        if (restoredData) writeData(this.node, this.data);
     }
 
     saveBrowserState(includeImages = true) {
+        if (!this.storageKey()) return;
         this.syncCharacterSourceData();
         this.syncStagesFromData();
         const stageState = {};
@@ -2351,15 +2457,15 @@ class CharacterGeneratorWidget {
             };
         }
         const payload = {
-            version: 1,
-            data: this.data,
+            version: 2,
+            settings: JSON.stringify(this.data),
             selectedPreview: this.selectedPreview,
             userSelectedPreview: this.userSelectedPreview,
             stageState,
             viewer: this.serializableViewerState(),
         };
         try {
-            localStorage.setItem(this.storageKey(), JSON.stringify(payload));
+            if (!storage.setItem(this.storageKey(), JSON.stringify(payload))) throw new Error("Cache unavailable");
         } catch {
             if (!includeImages) return;
             const compactState = {};
@@ -2377,7 +2483,7 @@ class CharacterGeneratorWidget {
                 };
             }
             try {
-                localStorage.setItem(this.storageKey(), JSON.stringify({ ...payload, stageState: compactState }));
+                if (!storage.setItem(this.storageKey(), JSON.stringify({ ...payload, stageState: compactState }))) throw new Error("Cache unavailable");
             } catch {
                 this.saveBrowserState(false);
             }
@@ -3126,7 +3232,8 @@ class CharacterGeneratorWidget {
         grid.className = "vnccs-pipe-grid";
         const selectedState = this.stageState[this.selectedPreview] || {};
         const canRegenerateImages = selectedState.status === "done" && !this.regenerateState;
-        images.forEach((src, index) => {
+        images.forEach((source, index) => {
+            const src = mediaURL(source);
             const tile = document.createElement("div");
             tile.tabIndex = 0;
             tile.role = "button";
@@ -3194,7 +3301,7 @@ class CharacterGeneratorWidget {
             this.imageMetrics.set(src, { width: 1, height: 1, loading: false });
             callbacks.forEach(callback => callback?.());
         };
-        img.src = src;
+        img.src = mediaURL(src);
     }
 
     layoutPreviewGrid(grid, images) {
@@ -3482,7 +3589,7 @@ class CharacterGeneratorWidget {
         img.onload = scheduleFit;
         img.onerror = () => img.classList.remove("is-ready");
         img.decoding = "async";
-        img.src = this.currentImages()[this.viewer.index] || "";
+        img.src = mediaURL(this.currentImages()[this.viewer.index] || "");
         if (img.complete && img.naturalWidth) scheduleFit();
         canvas.onwheel = (event) => {
             event.preventDefault();
@@ -3589,7 +3696,7 @@ class CharacterGeneratorWidget {
         this.viewer.restored = { open: true, ...this.currentViewerFocus() };
         this.viewer.fitApplied = false;
         this.viewer.img.classList.remove("is-ready");
-        if (src) this.viewer.img.src = src;
+        if (src) this.viewer.img.src = mediaURL(src);
         else this.viewer.img.removeAttribute("src");
     }
 
@@ -3733,10 +3840,11 @@ app.registerExtension({
         if (typeof queuePrompt !== "function") return;
         const originalQueuePrompt = (...args) => queuePrompt.apply(app, args);
         app.queuePrompt = async function (...args) {
-            for (const node of app.graph?._nodes || []) {
-                if (node.mode === 2 || node.mode === 4) continue;
+            const nodes = (app.graph?._nodes || []).filter(node => node.mode !== 2 && node.mode !== 4);
+            for (const node of nodes) {
                 if (node._vnccsCharacterGeneratorSyncBeforeQueue?.() === false) return;
             }
+            for (const node of nodes) node._vnccsCharacterGeneratorWidget?.prepareQueuedRun();
             return originalQueuePrompt(...args);
         };
     },

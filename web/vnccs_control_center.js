@@ -1,11 +1,10 @@
 // web/vnccs_control_center.js
 import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
+import { vnccsApi as api, storage, sessionStore, serverRegistry } from "./vnccs_transport.js";
 import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
 
 // Global registry cache — prevents API storms when multiple CC nodes exist
-window.VNCCS_CC_REGISTRY = window.VNCCS_CC_REGISTRY || {};
-window.VNCCS_CC_FETCH_PROMISES = window.VNCCS_CC_FETCH_PROMISES || {};
+
 
 const INITIAL_NODE_W = 300;
 const INITIAL_NODE_H = 700;
@@ -1308,8 +1307,8 @@ class VNCCSControlCenterWidget {
             }
             const repoId = e.detail?.repo_id;
             const myRepo = this._getRepoId();
-            if (repoId && repoId === myRepo && window.VNCCS_CC_REGISTRY[repoId]) {
-                this.config = window.VNCCS_CC_REGISTRY[repoId];
+            if (repoId && repoId === myRepo && serverRegistry("VNCCS_CC_REGISTRY")[repoId]) {
+                this.config = serverRegistry("VNCCS_CC_REGISTRY")[repoId];
                 this._syncCustomModelInput();
                 if (!this._isUserInteracting()) this._renderAll();
             }
@@ -2052,19 +2051,17 @@ class VNCCSControlCenterWidget {
     _storePendingDependencyInstalls(items) {
         const keys = this._pendingDependencyKeys(items);
         if (!keys.length) return;
-        try {
-            sessionStorage.setItem(PENDING_DEPENDENCY_INSTALLS_KEY, JSON.stringify(keys));
-        } catch { /* private browsing may disable session storage */ }
+        sessionStore.setItem(PENDING_DEPENDENCY_INSTALLS_KEY, JSON.stringify(keys));
     }
 
     async _resumePendingDependencyInstalls(items) {
         let keys = [];
         try {
-            keys = JSON.parse(sessionStorage.getItem(PENDING_DEPENDENCY_INSTALLS_KEY) || "[]");
-            sessionStorage.removeItem(PENDING_DEPENDENCY_INSTALLS_KEY);
+            keys = JSON.parse(sessionStore.getItem(PENDING_DEPENDENCY_INSTALLS_KEY) || "[]");
         } catch {
-            try { sessionStorage.removeItem(PENDING_DEPENDENCY_INSTALLS_KEY); } catch { /* ignored */ }
+            keys = [];
         }
+        sessionStore.removeItem(PENDING_DEPENDENCY_INSTALLS_KEY);
         if (!Array.isArray(keys) || !keys.length) return false;
 
         const allowedKeys = new Set(keys.filter(key => typeof key === "string"));
@@ -2662,13 +2659,13 @@ class VNCCSControlCenterWidget {
         const cacheKey = `vnccs_cc_cache_${repoId}`;
 
         if (force) {
-            delete window.VNCCS_CC_REGISTRY[repoId];
-            localStorage.removeItem(cacheKey);
+            delete serverRegistry("VNCCS_CC_REGISTRY")[repoId];
+            storage.removeItem(cacheKey);
         }
 
         // Show cached data immediately while fetching fresh
-        if (!force && window.VNCCS_CC_REGISTRY[repoId]) {
-            this.config = window.VNCCS_CC_REGISTRY[repoId];
+        if (!force && serverRegistry("VNCCS_CC_REGISTRY")[repoId]) {
+            this.config = serverRegistry("VNCCS_CC_REGISTRY")[repoId];
             this.statusText.textContent = this.config.name || "Control Center";
             if (!this.state.output_slot_names) this.state.output_slot_names = [];
             this._syncCustomModelInput();
@@ -2677,9 +2674,9 @@ class VNCCSControlCenterWidget {
         }
 
         // Debounce: reuse in-flight fetch for same repo
-        if (!force && window.VNCCS_CC_FETCH_PROMISES[repoId]) {
+        if (!force && serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId]) {
             try {
-                const data = await window.VNCCS_CC_FETCH_PROMISES[repoId];
+                const data = await serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId];
                 this.config = data;
                 this.statusText.textContent = data.name || "Control Center";
                 if (!this.state.output_slot_names) this.state.output_slot_names = [];
@@ -2696,20 +2693,20 @@ class VNCCSControlCenterWidget {
                 const r = await api.fetchApi(url);
                 const data = await r.json();
                 if (data.error) throw new Error(data.error);
-                window.VNCCS_CC_REGISTRY[repoId] = data;
+                serverRegistry("VNCCS_CC_REGISTRY")[repoId] = data;
                 return data;
             } finally {
-                delete window.VNCCS_CC_FETCH_PROMISES[repoId];
+                delete serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId];
             }
         })();
 
-        window.VNCCS_CC_FETCH_PROMISES[repoId] = fetchPromise;
+        serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId] = fetchPromise;
 
         try {
             const data = await fetchPromise;
             this.config = data;
             this.statusText.textContent = data.name || "Control Center";
-            localStorage.setItem(cacheKey, JSON.stringify(data));
+            storage.setItem(cacheKey, JSON.stringify(data));
             this._syncCnetSlots(data);
             this._syncCustomModelInput();
             await this._refreshDependencyStatus(true);
@@ -3131,7 +3128,7 @@ class VNCCSControlCenterWidget {
 
                 this.state.loras = (this.state.loras || []).filter(lora => lora.name !== entry.name);
                 this._saveState();
-                delete window.VNCCS_CC_REGISTRY[repoId];
+                delete serverRegistry("VNCCS_CC_REGISTRY")[repoId];
                 await this.fetchConfig(repoId, true);
                 this._refreshLoraBlock();
             } catch (error) {
@@ -3213,7 +3210,7 @@ class VNCCSControlCenterWidget {
                 if (!response.ok || result.error) throw new Error(result.error || "Failed to add custom LoRA");
 
                 ov.remove();
-                delete window.VNCCS_CC_REGISTRY[repoId];
+                delete serverRegistry("VNCCS_CC_REGISTRY")[repoId];
                 await this.fetchConfig(repoId, true);
                 this._refreshLoraBlock();
             } catch (error) {

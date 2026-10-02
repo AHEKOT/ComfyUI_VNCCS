@@ -1,3 +1,4 @@
+import { createWidgetContext } from './widget_context.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -16,7 +17,7 @@ const response = data => ({ ok: true, json: async () => data });
 test('request guards reject superseded and removed-node responses, preserving cleanup', () => {
     let originalCleanup = 0;
     const node = { onRemoved() { originalCleanup++; } };
-    const context = vm.createContext({ node, console });
+    const context = createWidgetContext({ node, console });
     vm.runInContext(`${guardCode}; globalThis.begin = createRequestGuard(node)`, context);
     const first = context.begin();
     const second = context.begin();
@@ -34,8 +35,11 @@ for (const widget of ['clothes', 'cloner', 'creator']) {
         const previews = [];
         const state = { character: 'Alice', costume: 'Dress', character_info: {}, gen_settings: {} };
         const node = {};
-        const context = vm.createContext({
+        const context = createWidgetContext({
             state, node, console, els: {},
+            defaultCharacterInfo: {}, restoredInfoCharacter: null, restoredWidgetInfoCharacter: null,
+            saveState() {}, showModal() { assert.fail('Unexpected load error'); },
+            showAlertModal() { assert.fail('Unexpected load error'); },
             api: { fetchApi() { const task = deferred(); requests.push(task); return task.promise; } },
             showInfo() { assert.fail('Unexpected current-request error'); },
             updateUIFromState() {},
@@ -81,7 +85,7 @@ function migrationHarness() {
     const events = [], errors = [], timers = new Map(), requests = [];
     const state = { runId: 'job', running: true, selected: new Set(['Alice']), scan: { characters: [{ legacy_name: 'Alice' }] } };
     const node = {};
-    const context = vm.createContext({
+    const context = createWidgetContext({
         state, node, AbortController,
         console: { error: (...args) => errors.push(args), warn() {} },
         setTimeout: fn => { const key = Symbol(); timers.set(key, fn); return key; },
@@ -165,7 +169,7 @@ for (const oldResult of ['success', 'missing', 'error', 'removed']) {
     test(`clothes preview ignores stale ${oldResult} after a selection change`, async () => {
         const requests = [], navigated = [], saved = [];
         const state = { character: 'Alice', costume: 'Dress' }, node = {};
-        const context = vm.createContext({
+        const context = createWidgetContext({
             state, node, console,
             hasSelectedEditableCostume: () => true,
             saveState: () => saved.push(state.selected_preview_sprite),
@@ -199,7 +203,7 @@ function creatorImageHarness() {
         gen_settings: { ckpt_name: 'model', lora_stack: [] } };
     const node = { _randomizeSeedIfNeeded() {} };
     const els = { previewImg: { style: {}, removeAttribute(name) { delete this[name]; } }, placeholder: { style: {} }, btnGen: {} };
-    const context = vm.createContext({
+    const context = createWidgetContext({
         state, node, els, console, container: {},
         Image: class { constructor() { images.push(this); } },
         clearPreviewHandlers() {}, setPreviewLoading() {}, updateSpriteNav() {},
@@ -286,7 +290,7 @@ for (const operation of ['character', 'costume', 'initialization']) {
         const metadata = deferred();
         const state = { character: 'Alice', costume: 'Dress' }, node = {};
         let previewUpdates = 0, costumeLoads = 0;
-        const context = vm.createContext({
+        const context = createWidgetContext({
             state, node, console, charSel: {}, costSel: {},
             els: { charSelect: { innerHTML: '', add() {} } }, Option: class {},
             spritePreviewNavigator: { invalidate() {} },
@@ -322,10 +326,10 @@ test('new clothes cache preview does not cancel delayed context and selector ini
     const contextRequest = deferred(), options = [], shown = [];
     const state = { character: 'Alice', costume: 'Dress', selected_preview_sprite: { index: 3 } }, node = {};
     let metadataLoads = 0;
-    const context = vm.createContext({
+    const context = createWidgetContext({
         state, node, console, Option: class { constructor(label, value) { this.value = value; } },
         els: { charSelect: { innerHTML: '', add: value => options.push(value.value) }, previewImg: { style: {} }, placeholder: { style: {} } },
-        api: { fetchApi: () => contextRequest.promise }, fetch: async () => ({ ok: true }),
+        api: { fetchApi: route => route.startsWith('/vnccs/get_preview?') ? Promise.resolve({ ok: true }) : contextRequest.promise },
         spritePreviewNavigator: { invalidate() {}, showFallback: url => shown.push(url) },
         hasSelectedEditableCostume: () => true, setClothesCoreLora() {}, syncGenerationControls() {}, saveState() {},
         loadCharacterInfo: async () => { metadataLoads++; return true; },
@@ -350,7 +354,7 @@ test('delayed clothes initialization cannot take ownership from a newer characte
     const contextRequest = deferred(), metadataRequest = deferred(), shown = [], options = [];
     const state = { character: 'Alice', costume: 'AliceDress' }, node = {};
     let metadataLoads = 0;
-    const context = vm.createContext({
+    const context = createWidgetContext({
         state, node, console, charSel: {}, Option: class { constructor(label, value) { this.value = value; } },
         els: { charSelect: { innerHTML: '', add: option => options.push(option.value) } },
         api: { fetchApi: () => contextRequest.promise }, spritePreviewNavigator: { invalidate() {} },
@@ -375,7 +379,7 @@ test('delayed clothes initialization cannot take ownership from a newer characte
 test('shared preview navigator ignores stale metadata errors and images after selection changes or removal', async () => {
     const requests = [], images = [], loaded = [], missing = [];
     const node = {}, selection = { character: 'Alice', costume: 'Dress' };
-    const context = vm.createContext({
+    const context = createWidgetContext({
         node, selection, console, URLSearchParams,
         Image: class { constructor() { images.push(this); } },
         api: { fetchApi: () => { const task = deferred(); requests.push(task); return task.promise; } },
@@ -407,11 +411,13 @@ for (const previousSelection of [false, true]) {
         const requests = [], images = [];
         const state = { character: 'Bob', costume: 'Suit' }, node = {};
         const els = { previewImg: { style: {} }, placeholder: { style: {} } };
-        const context = vm.createContext({
+        const context = createWidgetContext({
             state, node, els, console, URLSearchParams,
             Image: class { constructor() { images.push(this); } },
-            api: { fetchApi: async () => response({ count: 1 }) },
-            fetch: () => { const task = deferred(); requests.push(task); return task.promise; },
+            api: { fetchApi: route => {
+                if (!route.startsWith('/vnccs/get_preview?')) return Promise.resolve(response({ count: 1 }));
+                const task = deferred(); requests.push(task); return task.promise;
+            } },
             saveState() {}, hasSelectedEditableCostume: () => true,
         });
         const navigatorCode = between(source('vnccs_common'), 'export function createSpritePreviewNavigator', '// ── DOM Widget Canvas Navigation').replace('export ', '');
@@ -443,5 +449,65 @@ for (const previousSelection of [false, true]) {
         assert.equal(context.navigator.state.character, 'Bob');
         assert.equal(context.navigator.state.costume, 'Suit');
         assert.equal(images.length, previousSelection ? 2 : 1);
+    });
+}
+
+for (const widget of ['creator', 'cloner']) {
+    for (const failure of ['http', 'json', 'network', 'schema']) {
+        test(`${widget} keeps the previous character and reports ${failure} metadata failure`, async () => {
+            const state = { character: 'Alice', character_info: { name: 'Alice', hair: 'Alice hair' }, source_images: ['alice.png'] };
+            const original = JSON.stringify(state), saved = [], errors = [];
+            const context = createWidgetContext({
+                state, node: {}, els: { charSelect: { value: 'Bob' } },
+                document: { createElement: () => ({}) },
+                saveState: () => saved.push(JSON.stringify(state)),
+                showModal: title => errors.push(title), showAlertModal: title => errors.push(title),
+                api: { fetchApi: async () => {
+                    if (failure === 'network') throw new Error('Offline');
+                    if (failure === 'json') return { ok: true, status: 200, json: async () => { throw new Error('HTML'); } };
+                    return { ok: failure !== 'http', status: failure === 'http' ? 502 : 200, json: async () => failure === 'http' ? { error: 'Gateway unavailable' } : [] };
+                } },
+            });
+            const name = widget === 'creator' ? 'vnccs_character_creator_v2' : 'vnccs_character_cloner';
+            const load = between(source(name), 'const beginCharacterRequest', widget === 'creator' ? 'const doGenerate' : 'const loadCharList');
+            const select = widget === 'creator'
+                ? between(source(name), 'const charSel = document.createElement("select");', 'els.charSelect = charSel;') + '\nthis.select = () => charSel.onchange({ target: { value: "Bob" } });'
+                : between(source(name), 'const setCharacter =', 'const updateUIFromState =') + '\nthis.select = () => setCharacter("Bob", { clearSources: true });';
+            vm.runInContext(guardCode + '\nconst beginPreviewRequest = createRequestGuard(node);\n' + load + '\n' + select, context);
+            await context.select();
+            assert.equal(JSON.stringify(state), original);
+            assert.deepEqual(saved, []);
+            assert.deepEqual(errors, ['Character Load Failed']);
+            assert.equal(context.els.charSelect.value, 'Alice');
+        });
+    }
+    test(`${widget} keeps workflow ownership until successful metadata arrival`, async () => {
+        const pending = deferred(), saved = [];
+        const state = { character: 'Alice', character_info: { name: 'Alice', hair: 'old', extra: 'only Alice' }, gen_settings: {} };
+        const context = createWidgetContext({
+            state, node: {}, els: { charSelect: { value: 'Bob' } },
+            defaultCharacterInfo: {}, restoredInfoCharacter: null, restoredWidgetInfoCharacter: null,
+            updateUIFromState() {}, saveState: () => saved.push(JSON.parse(JSON.stringify(state))),
+            spritePreviewNavigator: { invalidate() {}, load: async () => {} },
+            getDefaultCharacterInfo: () => ({}), syncBackgroundForGenerationMode() {},
+            MODE_PROMPT_DEFAULTS: { illustrious: {}, anima: {}, qi2: {} }, PROMPT_DEFAULTS_VERSION: 1,
+            applyPromptModeToFields() {}, syncCharacterFields() {}, hideSpriteNav() {}, tryCachePreview() {},
+            showModal() { assert.fail('Unexpected error'); }, showAlertModal() { assert.fail('Unexpected error'); },
+            api: { fetchApi: route => route.includes('preview_meta') ? Promise.resolve(response({ count: 0 })) : pending.promise },
+        });
+        const name = widget === 'creator' ? 'vnccs_character_creator_v2' : 'vnccs_character_cloner';
+        vm.runInContext(guardCode + '\nconst beginPreviewRequest = createRequestGuard(node);\n'
+            + between(source(name), 'const beginCharacterRequest', widget === 'creator' ? 'const doGenerate' : 'const loadCharList')
+            + '\nthis.load = loadChar;', context);
+        const work = context.load('Bob');
+        assert.equal(state.character, 'Alice');
+        assert.equal(saved.length, 0);
+        pending.resolve(response(widget === 'cloner' ? { character_info: { hair: 'Bob hair' } } : { hair: 'Bob hair' }));
+        await work;
+        assert.equal(state.character, 'Bob');
+        assert.equal(state.character_info.name, 'Bob');
+        assert.equal(state.character_info.hair, 'Bob hair');
+        assert.equal(state.character_info.extra, undefined);
+        assert.equal(saved[0].character_info.name, 'Bob');
     });
 }

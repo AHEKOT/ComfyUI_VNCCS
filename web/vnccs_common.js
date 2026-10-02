@@ -2,7 +2,7 @@
  * VNCCS Common Utilities — shared patterns for all VNCCS widgets.
  * Import: import { debounce, showModal, ... } from "./vnccs_common.js";
  */
-import { api } from "../../scripts/api.js";
+import { vnccsApi as api, mediaURL } from "./vnccs_transport.js";
 import { app } from "../../scripts/app.js";
 
 // ── Debounce ──────────────────────────────────────────────────────────────────
@@ -140,7 +140,7 @@ export function createSpritePreviewNavigator({
             v: state.cacheBust || "current",
         });
         if (costume) params.set("costume", costume);
-        return `/vnccs/get_character_pose_preview?${params.toString()}`;
+        return mediaURL(`/vnccs/get_character_pose_preview?${params.toString()}`);
     };
 
     const applyImage = (url) => {
@@ -167,6 +167,7 @@ export function createSpritePreviewNavigator({
     };
 
     const showFallback = (url, { character = state.character, costume = state.costume } = {}) => {
+        url = mediaURL(url);
         if (disposed || !isSelectionCurrent({ ...state, character, costume })) return;
         state.character = character;
         state.costume = costume;
@@ -225,7 +226,7 @@ export function createSpritePreviewNavigator({
         if (disposed) return;
         state.character = character || "";
         state.costume = costume || "";
-        state.fallbackUrl = fallbackUrl || "";
+        state.fallbackUrl = mediaURL(fallbackUrl || "");
         state.cacheBust = `${state.character}:${state.costume}:${Date.now()}`;
         const loadRequestId = state.requestId + 1;
         state.requestId = loadRequestId;
@@ -756,8 +757,14 @@ export function showModal(container, title, contentFunc, buttons) {
         btn.innerText = b.text;
         btn.onclick = async () => {
             if (b.action) {
-                const keepOpen = await b.action(overlay, btn);
-                if (!keepOpen) overlay.remove();
+                if (btn.disabled) return;
+                btn.disabled = true;
+                try {
+                    const keepOpen = await b.action(overlay, btn);
+                    if (!keepOpen) overlay.remove();
+                } catch (error) {
+                    showMessage(m, error.message || String(error), true);
+                } finally { btn.disabled = false; }
             } else {
                 overlay.remove();
             }

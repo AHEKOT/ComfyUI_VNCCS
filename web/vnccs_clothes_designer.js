@@ -1,5 +1,5 @@
 import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
+import { vnccsApi as api, mediaURL, checkedJSON, storage, refreshPreviewImage, watchConnection } from "./vnccs_transport.js";
 import { registerCleanup, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard } from "./vnccs_common.js";
 
 const RESOLUTION_SCALE_BASE = 1024;
@@ -694,7 +694,7 @@ app.registerExtension({
                         saved = JSON.parse(dataWidget.value);
                     } else {
                         // Priority 2: LocalStorage (Session)
-                        const ls = localStorage.getItem("VNCCS_ClothesDesigner_State");
+                        const ls = storage.getItem("VNCCS_ClothesDesigner_State");
                         if (ls) saved = JSON.parse(ls);
                     }
                 } catch (e) { console.warn("[VNCCS] ClothesDesigner: Error loading state", e); }
@@ -741,7 +741,7 @@ app.registerExtension({
                 const saveState = () => {
                     if (dataWidget) dataWidget.value = JSON.stringify(state);
                     try {
-                        localStorage.setItem("VNCCS_ClothesDesigner_State", JSON.stringify(state));
+                        storage.setItem("VNCCS_ClothesDesigner_State", JSON.stringify(state));
                     } catch (e) { console.warn("[VNCCS] ClothesDesigner: Error saving to localStorage", e); }
                 };
 
@@ -765,16 +765,10 @@ app.registerExtension({
 
                 const saveCostumeToBackend = async () => {
                     if (!state.character || !state.costume) return;
-                    try {
-                        await api.fetchApi("/vnccs/save_costume", {
-                            method: "POST",
-                            body: JSON.stringify({
-                                character: state.character,
-                                costume: state.costume,
-                                info: state.costume_info
-                            })
-                        });
-                    } catch (e) { console.error("Save failed", e); }
+                    return checkedJSON("/vnccs/save_costume", {
+                        method: "POST",
+                        body: JSON.stringify({ character: state.character, costume: state.costume, info: state.costume_info })
+                    });
                 };
 
                 // Modal Helper — delegates to vnccs_common showModal
@@ -1341,7 +1335,7 @@ app.registerExtension({
                     inp.onchange = (e) => {
                         state.costume_info[key] = e.target.value;
                         saveState();
-                        saveCostumeToBackend();
+                        saveCostumeToBackend().catch(error => showInfo("Save Failed", error.message));
                     };
                     els[key] = inp;
                     wrap.appendChild(inp);
@@ -1735,7 +1729,7 @@ app.registerExtension({
                         text: "CREATE", class: "vnccs-btn-primary", action: async (ol, btn) => {
                             const n = ol.querySelector("input").value.trim();
                             if (n) {
-                                await api.fetchApi("/vnccs/save_costume", {
+                                await checkedJSON("/vnccs/save_costume", {
                                     method: "POST", body: JSON.stringify({ character: state.character, costume: n, info: {} })
                                 });
                                 await loadCostumes();
@@ -2110,7 +2104,7 @@ app.registerExtension({
 
                     // Check validity first to show message
                     try {
-                        const r = await fetch(url);
+                        const r = await api.fetchApi(url);
                         if (!isCurrent()) return;
                         if (!r.ok) {
                             els.previewImg.style.display = "none";
@@ -2126,11 +2120,11 @@ app.registerExtension({
                     }
 
                     if (forceCache) {
-                        spritePreviewNavigator?.showFallback(url, { character, costume: previewCostume });
+                        spritePreviewNavigator?.showFallback(mediaURL(url), { character, costume: previewCostume });
                     } else {
                         await spritePreviewNavigator?.load(character, {
                             costume: previewCostume,
-                            fallbackUrl: url,
+                            fallbackUrl: mediaURL(url),
                         });
                     }
                 };
@@ -2145,6 +2139,7 @@ app.registerExtension({
                 };
                 api.addEventListener("vnccs.preview.updated", onPreviewUpdated);
                 registerCleanup(node, () => api.removeEventListener("vnccs.preview.updated", onPreviewUpdated));
+                watchConnection(node, () => { if (!btnGen.disabled) refreshPreviewImage(els.previewImg); }, registerCleanup);
 
                 enableMiddleMouseCanvasPan(container);
                 attachHelpTooltips(container);

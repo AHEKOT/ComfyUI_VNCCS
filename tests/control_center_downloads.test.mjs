@@ -1,3 +1,4 @@
+import { createWidgetContext } from './widget_context.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -29,7 +30,7 @@ function setup() {
         activeElement: input,
         createElement: () => ({ style: {}, dataset: {} }),
     };
-    const context = vm.createContext({
+    const context = createWidgetContext({
         document,
         api: { fetchApi: async () => ({ ok: true, json: async () => statuses }) },
         setInterval: callback => { poll = callback; return 1; },
