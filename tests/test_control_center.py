@@ -1047,7 +1047,7 @@ class TestControlCenterFrontendFamilies:
         assert source.count("this._syncCustomModelInput();") >= 7
 
 class TestClothesPreviewFrontendContract:
-    def test_custom_preview_uses_partial_graph_execution(self):
+    def test_custom_preview_never_submits_graph_execution(self):
         path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
             "web",
@@ -1056,11 +1056,10 @@ class TestClothesPreviewFrontendContract:
         with open(path, "r", encoding="utf-8") as handle:
             source = handle.read()
 
-        assert 'controlCenter.selected_type === "custom"' in source
-        assert "app.queuePrompt(0, 1, [targetId])" in source
-        assert 'api.addEventListener("vnccs.preview.updated", onPreview)' in source
-        assert 'api.addEventListener("execution_cached", onCached)' in source
-        assert "cachedNodes.some(nodeId => String(nodeId) === targetId)" in source
+        assert 'api.fetchApi("/vnccs/control_center/clothes_preview"' in source
+        assert "control_center_id: String(upstream.id)" in source
+        assert "queueConnectedPreview" not in source
+        assert "app.queuePrompt(0, 1, [targetId])" not in source
 
     def test_clothes_designer_is_partial_execution_output(self):
         path = os.path.join(
@@ -1086,12 +1085,9 @@ class TestClothesPreviewFrontendContract:
         assert 'if (url.includes("force_cache=true")) return;' in source
         force_cache_branch = source.split("if (forceCache) {", 1)[1].split("} else {", 1)[0]
         assert "selected_preview_sprite = null" not in force_cache_branch
-        custom_preview_branch = source.split(
-            'if (controlCenter.selected_type === "custom") {',
-            1,
-        )[1].split("} else {", 1)[0]
-        assert "if (previewResult?.cached)" in custom_preview_branch
-        assert custom_preview_branch.count("updatePreviewImage(true)") == 1
+        preview_handler = source.split("btnGen.onclick = async () => {", 1)[1].split("els.btnGen = btnGen;", 1)[0]
+        assert "selected_preview_sprite = null" not in preview_handler
+        assert "clothes_state: state" in preview_handler
 
 
 # ── custom LoRA helpers ──────────────────────────────────────────────────────

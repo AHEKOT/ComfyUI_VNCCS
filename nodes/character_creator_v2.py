@@ -1,3 +1,4 @@
+from .preview_runtime import run_preview_job
 
 import os
 import json
@@ -1580,10 +1581,8 @@ Example:
                 "model_name": QWEN_VL_MODEL_FILENAME,
             }, status=500)
 
-    @server.PromptServer.instance.routes.post("/vnccs/preview_generate")
-    async def preview_generate(request):
+    def _generate_preview_response(data):
         try:
-            data = await request.json()
             gen_settings = normalize_gen_settings(data.get("gen_settings", {}))
             char_info = data.get("character_info", {})
             character_name = data.get("character", "Unknown")
@@ -1731,6 +1730,16 @@ Example:
             traceback.print_exc()
             return web.Response(status=500, text=str(e))
 
+
+
+    @server.PromptServer.instance.routes.post("/vnccs/preview_generate")
+    async def preview_generate(request):
+        try:
+            data = await request.json()
+            return await run_preview_job(_generate_preview_response, data)
+        except Exception as exc:
+            traceback.print_exc()
+            return web.json_response({"error": str(exc)}, status=500)
 
 class CharacterCreatorV2:
     """
@@ -1897,112 +1906,7 @@ class CharacterCreatorV2:
         save_config(character_name, config)
 
 
-        # 3. Load Models & Construct Pipe
-        # ----------------------------------------------------------------
-        _, model, clip, vae = load_generation_assets(gen_settings)
-
-        # Helper to apply LoRA
-        def apply_lora_safe(m, c, l_name, l_strength, clip_strength=None):
-            if not l_name or l_name == "None": return m, c
-            l_path = get_lora_full_path(l_name)
-            if l_path:
-                lora = comfy.utils.load_torch_file(l_path, safe_load=True)
-                return comfy.sd.load_lora_for_models(m, c, lora, l_strength, l_strength if clip_strength is None else clip_strength)
-            return m, c
-
-        # Apply DMD2
         generation_mode = str(gen_settings.get("generation_mode", "illustrious")).lower()
-        if generation_mode == "anima":
-            if gen_settings.get("turbo_enabled"):
-                dmd_name = gen_settings.get("dmd_lora_name")
-                dmd_str = float(gen_settings.get("dmd_lora_strength", 1.0))
-                model, clip = apply_lora_safe(model, clip, dmd_name, dmd_str, 0.0)
-
-            stack = gen_settings.get("lora_stack", [])
-            for item in stack:
-                model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
-        elif generation_mode == "qi2":
-            # The Viggle adapter is applied by prepare_qi2_model so its custom
-            # execution wrapper and sigma schedule remain intact.
-            stack = gen_settings.get("lora_stack", [])
-            for item in stack:
-                model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
-            model, clip = apply_creator_overhaul(model, clip, gen_settings, apply_lora_safe)
-        else:
-            dmd_name = gen_settings.get("dmd_lora_name")
-            dmd_str = float(gen_settings.get("dmd_lora_strength", 1.0))
-            model, clip = apply_lora_safe(model, clip, dmd_name, dmd_str)
-
-            # Apply Age LoRA
-            age_name = gen_settings.get("age_lora_name")
-            if age_name:
-                age = int(info.get("age", 18))
-                age_str = age_strength(age)
-                model, clip = apply_lora_safe(model, clip, age_name, age_str)
-
-            # Apply Stack
-            stack = gen_settings.get("lora_stack", [])
-            for item in stack:
-                model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
-
-        qi2_turbo = False
-        if generation_mode == "qi2":
-            model, qi2_turbo = prepare_qi2_model(model, gen_settings)
-
-        # Encode Conditioning
-        conditioning_pos, conditioning_neg, encoded_positive_prompt = encode_generation_conditioning(
-            clip,
-            vae,
-            positive_prompt,
-            negative_prompt,
-            gen_settings,
-            style_reference=_character_style_prompt(info),
-            character_info=info,
-        )
-        if generation_mode == "qi2":
-            self.log_generation_prompts(
-                "QI2 rewritten workflow",
-                encoded_positive_prompt,
-                negative_prompt,
-                framing=info.get("framing"),
-            )
-        if generation_mode == "anima":
-            validate_anima_conditioning(conditioning_pos, conditioning_neg, gen_settings.get("clip_name", ""))
-
-        # Construct Pipe Object
-        class PipeContext:
-            def __init__(self, **kwargs):
-                for k, v in kwargs.items():
-                    setattr(self, k, v)
-
-        pipe = PipeContext(
-            model=model,
-            clip=clip,
-            vae=vae,
-            pos=conditioning_pos,
-            neg=conditioning_neg,
-            seed_int=resolve_generation_seed(gen_settings),
-            sample_steps=int(gen_settings.get("steps", ILLUSTRIOUS_DEFAULTS["steps"])),
-            cfg=float(gen_settings.get("cfg", ILLUSTRIOUS_DEFAULTS["cfg"])),
-            denoise=1.0,
-            sampler_name=gen_settings.get("sampler", ILLUSTRIOUS_DEFAULTS["sampler"]),
-            scheduler=gen_settings.get("scheduler", ILLUSTRIOUS_DEFAULTS["scheduler"])
-        )
-        if generation_mode == "qi2":
-            pipe.model_kind = "qi2"
-            pipe.model_entry = {
-                "name": "Qwen Image 2.1",
-                "type": "unet",
-                "kind": "QI2",
-                "local_path": f"models/diffusion_models/{gen_settings.get('diffusion_model_name', '')}",
-            }
-            pipe.qi2_cache = dict(gen_settings.get("qi2_cache", {}))
-            pipe.lora_entries = [dict(QI2_TURBO_ENTRY)]
-            pipe.lora_states = [{
-                "name": QI2_TURBO_ENTRY["name"],
-                "auto_apply": bool(gen_settings.get("turbo_enabled")),
-                "strength": float(gen_settings.get("dmd_lora_strength", 1.0) or 1.0),
-            }]
 
         # 4. Generate Image (Smart Cache Logic)
         
@@ -2082,12 +1986,86 @@ class CharacterCreatorV2:
                      print(f"[VNCCS] Pose Preview Fallback Failed. Regenerating...")
 
         if image is None:
-            print(f"[VNCCS] Regenerating Preview...")
-            
-            width, height = get_generation_resolution(gen_settings)
-            latent = create_generation_latent(model, width, height, gen_settings)
-            
+            print(f"[VNCCS] Regenerating preview for '{character_name}' ({generation_mode}).")
+            stage = "preparing generation"
             try:
+                stage = "loading generation models"
+                _, model, clip, vae = load_generation_assets(gen_settings)
+
+                # Helper to apply LoRA
+                def apply_lora_safe(m, c, l_name, l_strength, clip_strength=None):
+                    if not l_name or l_name == "None": return m, c
+                    l_path = get_lora_full_path(l_name)
+                    if l_path:
+                        lora = comfy.utils.load_torch_file(l_path, safe_load=True)
+                        return comfy.sd.load_lora_for_models(m, c, lora, l_strength, l_strength if clip_strength is None else clip_strength)
+                    return m, c
+
+                stage = "applying generation adapters"
+                # Apply DMD2
+                generation_mode = str(gen_settings.get("generation_mode", "illustrious")).lower()
+                if generation_mode == "anima":
+                    if gen_settings.get("turbo_enabled"):
+                        dmd_name = gen_settings.get("dmd_lora_name")
+                        dmd_str = float(gen_settings.get("dmd_lora_strength", 1.0))
+                        model, clip = apply_lora_safe(model, clip, dmd_name, dmd_str, 0.0)
+
+                    stack = gen_settings.get("lora_stack", [])
+                    for item in stack:
+                        model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
+                elif generation_mode == "qi2":
+                    # The Viggle adapter is applied by prepare_qi2_model so its custom
+                    # execution wrapper and sigma schedule remain intact.
+                    stack = gen_settings.get("lora_stack", [])
+                    for item in stack:
+                        model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
+                    model, clip = apply_creator_overhaul(model, clip, gen_settings, apply_lora_safe)
+                else:
+                    dmd_name = gen_settings.get("dmd_lora_name")
+                    dmd_str = float(gen_settings.get("dmd_lora_strength", 1.0))
+                    model, clip = apply_lora_safe(model, clip, dmd_name, dmd_str)
+
+                    # Apply Age LoRA
+                    age_name = gen_settings.get("age_lora_name")
+                    if age_name:
+                        age = int(info.get("age", 18))
+                        age_str = age_strength(age)
+                        model, clip = apply_lora_safe(model, clip, age_name, age_str)
+
+                    # Apply Stack
+                    stack = gen_settings.get("lora_stack", [])
+                    for item in stack:
+                        model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
+
+                qi2_turbo = False
+                if generation_mode == "qi2":
+                    model, qi2_turbo = prepare_qi2_model(model, gen_settings)
+
+                stage = "encoding the character prompt"
+                # Encode Conditioning
+                conditioning_pos, conditioning_neg, encoded_positive_prompt = encode_generation_conditioning(
+                    clip,
+                    vae,
+                    positive_prompt,
+                    negative_prompt,
+                    gen_settings,
+                    style_reference=_character_style_prompt(info),
+                    character_info=info,
+                )
+                if generation_mode == "qi2":
+                    self.log_generation_prompts(
+                        "QI2 rewritten workflow",
+                        encoded_positive_prompt,
+                        negative_prompt,
+                        framing=info.get("framing"),
+                    )
+                if generation_mode == "anima":
+                    validate_anima_conditioning(conditioning_pos, conditioning_neg, gen_settings.get("clip_name", ""))
+
+                stage = "creating the generation latent"
+                width, height = get_generation_resolution(gen_settings)
+                latent = create_generation_latent(model, width, height, gen_settings)
+                stage = "sampling the character image"
                 sampled = sample_generation_latent(
                     model=model,
                     seed=resolve_generation_seed(gen_settings),
@@ -2102,6 +2080,7 @@ class CharacterCreatorV2:
                     qi2_turbo=qi2_turbo,
                 )
                 
+                stage = "decoding the character image"
                 image = decode_generation_samples(vae, sampled, gen_settings)
                 
                 # Update Cache
@@ -2116,8 +2095,13 @@ class CharacterCreatorV2:
                     print(f"[VNCCS] Failed to save cache: {e}")
 
             except Exception as e:
-                print(f"[VNCCS] Generation failed in process: {e}")
-                image = torch.zeros((1, 512, 512, 3))
+                message = (
+                    f"Character Creator V2 failed while {stage} for '{character_name}' "
+                    f"(node {unique_id}, model family {generation_mode}): {type(e).__name__}: {e}"
+                )
+                print(f"[VNCCS] ERROR: {message}", flush=True)
+                traceback.print_exc()
+                raise RuntimeError(message) from e
 
         # Get background color
         background_color = _effective_character_background(

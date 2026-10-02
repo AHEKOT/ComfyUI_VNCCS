@@ -11,7 +11,7 @@ import numpy as np
 import traceback
 
 from ..utils import (
-    load_character_info, save_config,
+    load_character_info, load_config, config_path, save_config,
     character_dir, sheets_dir, MAIN_DIRS, EMOTIONS,
     safe_join_under, safe_relative_path
 )
@@ -105,6 +105,12 @@ class CharacterCloner:
         # 1. Parse Data
         character_name = data.get("character", "Unknown")
         info = data.get("character_info", {})
+        info_owner = str(info.get("name", "") or "").strip()
+        if info_owner and info_owner != str(character_name):
+            raise ValueError(
+                f"Character Cloner received metadata for '{info_owner}' while '{character_name}' is selected. "
+                "Reload the selected character before generating."
+            )
         source_images = data.get("source_images", []) # List of filenames in input dir
         background_color = info.get("background_color", "White")
 
@@ -219,15 +225,19 @@ class CharacterCloner:
         if character_name and character_name != "Unknown":
             # Just ensure folder exists
             os.makedirs(character_path, exist_ok=True)
-            # We don't necessarily overwrite config unless user explicitly saved?
-            # CharacterCreatorV2 saves on process. We stick to that pattern.
-            config = {
-                "character_info": info,
-                "folder_structure": { "main_directories": MAIN_DIRS, "emotions": EMOTIONS },
+            config = load_config(character_name)
+            if not isinstance(config, dict):
+                if os.path.exists(config_path(character_name)):
+                    raise ValueError(f"Cannot read the existing configuration for '{character_name}'; refusing to overwrite it.")
+                config = {}
+            config.setdefault("folder_structure", {"main_directories": MAIN_DIRS, "emotions": EMOTIONS})
+            config.setdefault("config_version", "2.0")
+            config.update({
+                "character_info": {**config.get("character_info", {}), **info, "name": character_name},
                 "character_path": character_path,
-                "config_version": "2.0"
-            }
-            save_config(character_name, config)
+            })
+            if not save_config(character_name, config):
+                raise OSError(f"Character Cloner could not save the configuration for '{character_name}'.")
 
         # Get background color
         background_color = info.get("background_color", "Green")

@@ -5,6 +5,8 @@ subgraph chain. It executes the same processing stages internally and exposes a
 DOM widget for stage previews/settings.
 """
 
+from .preview_runtime import run_preview_job
+
 import base64
 import gc
 import inspect
@@ -1184,6 +1186,16 @@ class VNCCS_CharacterGenerator:
             return batch[index:index + 1]
         return values
 
+    def _pose_prompts(self, prompt, count):
+        values = prompt if isinstance(prompt, list) else [prompt]
+        values = values or [""]
+        return [str(values[min(index, len(values) - 1)] or "") for index in range(count)]
+
+    def _slice_pose_prompt(self, prompt, index):
+        if index is None or not isinstance(prompt, list):
+            return prompt
+        return self._pose_prompts(prompt, index + 1)[index]
+
     def _replace_batch_item(self, cached, index, item):
         item = self._list_to_batch(item)
         if index is None or cached is None or item is None:
@@ -2122,7 +2134,8 @@ class VNCCS_CharacterGenerator:
         decoding_progress = self._stage_progress_callback(unique_id, stage, "Decoding poses", lora_info)
         try:
             encoding_progress(0, total)
-            for pose in pose_parts:
+            prompts = self._pose_prompts(prompt, total)
+            for pose_index, pose in enumerate(pose_parts):
                 pose_reference = self._image_list(pose)[0]
                 width, height = self._resolution_scale_dimensions(pose_reference, target_size, multiple=32)
                 positive, latent = _call_comfy_node(
@@ -2130,7 +2143,7 @@ class VNCCS_CharacterGenerator:
                     clip=pipe_values["clip"],
                     vae=pipe_values["vae"],
                     audio_vae=audio_vae,
-                    prompt=str(prompt or ""),
+                    prompt=prompts[pose_index],
                     width=width,
                     height=height,
                     length=H3_FRAME_COUNT,
@@ -2228,7 +2241,10 @@ class VNCCS_CharacterGenerator:
                 unique_id=unique_id,
                 stage=stage,
             )
-        prompt = self._prompt_with_solid_background(prompt, background, bg_remove_settings)
+        prompts = [
+            self._prompt_with_solid_background(value, background, bg_remove_settings)
+            for value in self._pose_prompts(prompt, len(pose_parts))
+        ]
 
         if self._is_qi2_pipe(pipe_values):
             encode_progress = self._stage_progress_callback(unique_id, stage, "Encoding poses", lora_info)
@@ -2236,14 +2252,13 @@ class VNCCS_CharacterGenerator:
             decode_progress = self._stage_progress_callback(unique_id, stage, "Decoding poses", lora_info)
             total = len(pose_parts)
             conditioning = []
-            qi2_prompt = (
-                "Replace the pose of <image 2> with the pose of <image 1>. "
-                "Keep the character of <image 2>. " + prompt
-            )
             encode_progress(0, total)
             for index, pose in enumerate(pose_parts, start=1):
                 conditioning.append(self._qi2_encode(
-                    pipe_values, qi2_prompt, (pose, character_rgb),
+                    pipe_values,
+                    "Replace the pose of <image 2> with the pose of <image 1>. "
+                    "Keep the character of <image 2>. " + prompts[index - 1],
+                    (pose, character_rgb),
                     target_size=qwen_settings["target_size"],
                 ))
                 encode_progress(index, total)
@@ -2279,7 +2294,6 @@ class VNCCS_CharacterGenerator:
         encoder_kwargs = {
             "clip": pipe_values["clip"],
             "vae": pipe_values["vae"],
-            "prompt": prompt,
             "image2": character_rgb,
         }
         if self._is_klein_pipe(pipe_values):
@@ -2292,7 +2306,7 @@ class VNCCS_CharacterGenerator:
             encoder_kwargs.update(qwen_settings)
         positive_list, negative_list, latent_list = self._run_list_mapped(
             encoder_class,
-            {"image1": pose_parts},
+            {"image1": pose_parts, "prompt": prompts},
             progress_callback=self._stage_progress_callback(unique_id, stage, "Encoding poses", lora_info),
             _vnccs_node_id=unique_id,
             **encoder_kwargs,
@@ -2857,7 +2871,6 @@ class VNCCS_CharacterGenerator:
         character_name = widget_payload.get("character_name", "")
         character = self._unwrap_scalar(character)
         pipe = self._unwrap_scalar(pipe)
-        prompt = self._unwrap_scalar(prompt)
         background = self._unwrap_scalar(background)
         sheets_path = self._unwrap_scalar(sheets_path)
         unique_id = self._unwrap_scalar(unique_id)
@@ -2877,7 +2890,7 @@ class VNCCS_CharacterGenerator:
                 cache_dir,
                 poses=self._list_to_batch(poses),
                 character=self._list_to_batch(character),
-                prompt=str(prompt or ""),
+                prompt=prompt if isinstance(prompt, list) else str(prompt or ""),
                 background=str(background or ""),
                 sheets_path=str(sheets_path or ""),
                 widget_payload=widget_payload,
@@ -2904,7 +2917,7 @@ class VNCCS_CharacterGenerator:
                     pose_input,
                     character,
                     pipe,
-                    prompt,
+                    self._slice_pose_prompt(prompt, regenerate_index),
                     settings["pose_generation"],
                     lora_info=pose_lora_info,
                     background=background,
@@ -3048,7 +3061,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 pose_input,
                 character,
                 pipe,
-                prompt,
+                self._slice_pose_prompt(prompt, regenerate_index),
                 settings["pose_generation"],
                 lora_info=pose_lora_info,
                 background=background,
@@ -3126,7 +3139,6 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
             nsfw_enabled = bool(nsfw_value)
         character = self._unwrap_scalar(character)
         pipe = self._unwrap_scalar(pipe)
-        prompt = self._unwrap_scalar(prompt)
         background = self._unwrap_scalar(background)
         sheets_path = self._unwrap_scalar(sheets_path)
         unique_id = self._unwrap_scalar(unique_id)
@@ -3146,7 +3158,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 cache_dir,
                 poses=self._list_to_batch(poses),
                 character=self._list_to_batch(character),
-                prompt=str(prompt or ""),
+                prompt=prompt if isinstance(prompt, list) else str(prompt or ""),
                 background=str(background or ""),
                 sheets_path=str(sheets_path or ""),
                 widget_payload=widget_payload,
@@ -3330,7 +3342,6 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
         character_name = widget_payload.get("character_name", "")
         character = self._unwrap_scalar(character)
         pipe = self._unwrap_scalar(pipe)
-        prompt = self._unwrap_scalar(prompt)
         background = self._unwrap_scalar(background)
         sheets_path = self._unwrap_scalar(sheets_path)
         unique_id = self._unwrap_scalar(unique_id)
@@ -3354,7 +3365,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                 cache_dir,
                 poses=self._list_to_batch(poses),
                 character=self._list_to_batch(character),
-                prompt=str(prompt or ""),
+                prompt=prompt if isinstance(prompt, list) else str(prompt or ""),
                 background=str(background or ""),
                 sheets_path=str(sheets_path or ""),
                 widget_payload=widget_payload,
@@ -3408,7 +3419,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                     pose_input,
                     source_upscaled,
                     pipe,
-                    prompt,
+                    self._slice_pose_prompt(prompt, regenerate_index),
                     background,
                     settings["pose_generation"],
                     lora_info=pose_lora_info,
@@ -4499,7 +4510,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         if isinstance(live_context, dict):
             live_context["emotion_output_connections"] = list(output_connections)
         collect_sprites, collect_faces = output_connections
-        if regenerate_from:
+        if regenerate_from and not emotion_data:
             cached_inputs = _load_run_inputs(cache_dir, keys={"emotion_data"})
             emotion_data = cached_inputs.get("emotion_data", emotion_data)
         image_items = self._image_list(images)
@@ -5014,10 +5025,8 @@ if server is not None:
             "models": [],
         })
 
-    @server.PromptServer.instance.routes.post("/vnccs/character_generator/regenerate")
-    async def vnccs_character_generator_regenerate(request):
+    def _regenerate_response(data):
         try:
-            data = await request.json()
             unique_id = str(data.get("unique_id") or "").strip()
             stage = str(data.get("stage") or "").strip()
             if not unique_id or not stage:
@@ -5086,6 +5095,16 @@ if server is not None:
             traceback.print_exc()
             return web.json_response({"error": str(exc)}, status=500)
 
+
+
+    @server.PromptServer.instance.routes.post("/vnccs/character_generator/regenerate")
+    async def vnccs_character_generator_regenerate(request):
+        try:
+            data = await request.json()
+            return await run_preview_job(_regenerate_response, data)
+        except Exception as exc:
+            traceback.print_exc()
+            return web.json_response({"error": str(exc)}, status=500)
 
 NODE_CLASS_MAPPINGS = {
     "VNCCS_CharacterGenerator": VNCCS_CharacterGenerator,

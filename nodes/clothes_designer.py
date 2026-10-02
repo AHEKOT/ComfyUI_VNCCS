@@ -402,9 +402,13 @@ class ClothesDesigner:
     @classmethod
     def IS_CHANGED(cls, widget_data="{}", **kwargs):
         data = json.loads(widget_data) if isinstance(widget_data, str) else widget_data
-        if not isinstance(data, dict) or data.get("activeTab") != "clone" or not data.get("clone_image"):
+        if not isinstance(data, dict):
             return ""
-        return _clone_reference_digest(resolve_comfy_image_path(data["clone_image"]))
+        source_path = cls.reference_sprite_path(data.get("character", ""), data)
+        identity = {"source": _clone_reference_digest(source_path) if source_path else None}
+        if data.get("activeTab") == "clone" and data.get("clone_image"):
+            identity["donor"] = _clone_reference_digest(resolve_comfy_image_path(data["clone_image"]))
+        return json.dumps(identity, sort_keys=True)
 
     @staticmethod
     def _normalize_background_color(value):
@@ -529,7 +533,10 @@ class ClothesDesigner:
         info_path = os.path.join(cache_dir, f"preview_info_{safe_costume}.json")
         return img_path, info_path
 
-    def get_reference_sprite(self, character_name, data=None):
+    @staticmethod
+    def reference_sprite_path(character_name, data=None):
+        if not character_name:
+            return None
         try:
             selected = data.get("selected_preview_sprite") if isinstance(data, dict) else None
             if isinstance(selected, dict) and selected.get("character") == character_name:
@@ -541,23 +548,22 @@ class ClothesDesigner:
                     files = list_preview_sprite_files(character_name, costume)
                     if files:
                         sprite_path = files[index % len(files)]
-                        with Image.open(sprite_path) as img:
-                            sprite_tensor = self._pil_image_tensor(img)
-                        print(f"[ClothesDesigner] Using selected preview sprite for Picture 1: {sprite_path} (index={index})")
-                        return sprite_tensor
+                        return sprite_path
                     print(f"[ClothesDesigner] Selected preview sprite list is empty for {character_name}/{costume}; falling back to latest base sprite.")
                 except Exception as exc:
                     print(f"[ClothesDesigner] Failed to load selected preview sprite {selected}: {exc}. Falling back to latest base sprite.")
 
             sprite_path = get_latest_sprite_path(character_name, "Naked") or get_latest_sprite_path(character_name, "Original")
-            if sprite_path:
-                with Image.open(sprite_path) as img:
-                    sprite_tensor = self._pil_image_tensor(img)
-                return sprite_tensor
-            print(f"[ClothesDesigner] No Naked/Original sprites found for {character_name}. Run migration or generate sprites first.")
+            return sprite_path
+        except (ValueError, OSError):
             return None
-        except:
+
+    def get_reference_sprite(self, character_name, data=None):
+        sprite_path = self.reference_sprite_path(character_name, data)
+        if not sprite_path:
             return None
+        with Image.open(sprite_path) as img:
+            return self._pil_image_tensor(img)
 
     def process(self, pipe=None, widget_data="{}", unique_id=None):
         # CRITICAL FIX: Ensure PromptServer has last_prompt_id for preview system
@@ -628,6 +634,13 @@ class ClothesDesigner:
         target_size = _clothes_target_size(gen_settings, model_kind)
         clone_image_path = resolve_comfy_image_path(data["clone_image"]) if active_tab == "clone" else None
         clone_reference_hash = _clone_reference_digest(clone_image_path) if clone_image_path else None
+        # Resolve the actual selected image before consulting the persistent cache.
+        ref_image = self.get_reference_sprite(character_name, data)
+        if ref_image is None:
+            raise ValueError(f"Character '{character_name}' is incomplete. Missing 'Naked' or 'Original' sprites.")
+        source_reference_hash = hashlib.sha256(
+            ref_image.detach().cpu().contiguous().numpy().tobytes()
+        ).hexdigest()
         use_qi2_rewriter = is_qi2 and active_tab != "clone"
         edit_system_prompt = _qi2_edit_system_prompt() if use_qi2_rewriter else None
 
@@ -639,6 +652,7 @@ class ClothesDesigner:
                 "widget_data": data,
                 "prompts": {"positive": positive_prompt, "negative": negative_prompt},
                 "clone_reference_sha256": clone_reference_hash,
+                "source_reference": {"sha256": source_reference_hash, "shape": list(ref_image.shape)},
                 "sampler": {
                     "seed": seed_int,
                     "steps": sample_steps,
@@ -685,9 +699,6 @@ class ClothesDesigner:
             except Exception as exc:
                 print(f"[ClothesDesigner] Cache read failed, regenerating preview: {exc}")
 
-        ref_image = self.get_reference_sprite(character_name, data)
-        if ref_image is None:
-            raise ValueError(f"Character '{character_name}' is incomplete. Missing 'Naked' or 'Original' sprites.")
         ref_image = self._prepare_reference_background(
             ref_image, background_color, preserve_transparency=is_qi2,
         )

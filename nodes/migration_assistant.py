@@ -247,7 +247,15 @@ def _scan_sheet_files(character_dir: str) -> List[dict]:
                 "costume": _safe_legacy_name(costume),
                 "emotion": _safe_legacy_name(emotion),
             })
-    return sorted(files, key=lambda item: item["relative"].lower())
+    # Legacy generation kept only the latest sheet per costume/emotion valid.
+    latest = {}
+    for sheet in files:
+        key = (sheet["costume"], sheet["emotion"])
+        rank = (os.path.getmtime(sheet["path"]), sheet["relative"].lower())
+        previous = latest.get(key)
+        if previous is None or rank > previous[0]:
+            latest[key] = (rank, sheet)
+    return sorted((item[1] for item in latest.values()), key=lambda item: item["relative"].lower())
 
 
 def _sprite_files(path: str) -> List[str]:
@@ -395,6 +403,10 @@ def _ensure_sprite_alpha(path: str) -> bool:
 
 
 def _copy_config(legacy_char_dir: str, new_char_dir: str, old_name: str, new_name: str) -> bool:
+    dst = os.path.join(new_char_dir, f"{new_name}_config.json")
+    # force applies to sprite conversion, never to an existing character profile.
+    if os.path.exists(dst):
+        return False
     candidates = [
         os.path.join(legacy_char_dir, f"{old_name}_config.json"),
         os.path.join(legacy_char_dir, f"{new_name}_config.json"),
@@ -408,7 +420,6 @@ def _copy_config(legacy_char_dir: str, new_char_dir: str, old_name: str, new_nam
         if not os.path.isfile(src):
             continue
         os.makedirs(new_char_dir, exist_ok=True)
-        dst = os.path.join(new_char_dir, f"{new_name}_config.json")
         with open(src, "r", encoding="utf-8") as handle:
             try:
                 data = json.load(handle)
@@ -418,11 +429,17 @@ def _copy_config(legacy_char_dir: str, new_char_dir: str, old_name: str, new_nam
             info = data.setdefault("character_info", {})
             if isinstance(info, dict):
                 info["name"] = new_name
-            with open(dst, "w", encoding="utf-8") as handle:
-                json.dump(data, handle, ensure_ascii=False, indent=4)
+            try:
+                with open(dst, "x", encoding="utf-8") as handle:
+                    json.dump(data, handle, ensure_ascii=False, indent=4)
+            except FileExistsError:
+                return False
         else:
-            with open(src, "rb") as in_handle, open(dst, "wb") as out_handle:
-                out_handle.write(in_handle.read())
+            try:
+                with open(src, "rb") as in_handle, open(dst, "xb") as out_handle:
+                    out_handle.write(in_handle.read())
+            except FileExistsError:
+                return False
         return True
     return False
 

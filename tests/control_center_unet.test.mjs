@@ -99,7 +99,13 @@ test("packaged workflows select QI2 without legacy model state", () => {
             const saved = JSON.parse(value.widgets_values[1]);
             assert.equal(saved.active_kind, "QI2");
             assert.equal(saved.selected_model, defaultName);
-            assert.equal(saved.model_params.steps, 25);
+            const turboEnabled = saved.loras.some(lora => lora.name === turbo.name && lora.auto_apply);
+            assert.equal(saved.model_params.steps, turboEnabled ? 6 : 25);
+            assert.equal(saved.model_params.cfg, turboEnabled ? 1 : 3);
+            assert.deepEqual(saved.model_params_by_kind.QI2, saved.model_params);
+            if (turboEnabled) {
+                assert.deepEqual(saved.model_params.turbo_previous_settings, { steps: 25, cfg: 3 });
+            }
             count++;
         }
         Object.values(value).forEach(inspect);

@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { registerCleanup, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator } from "./vnccs_common.js";
+import { registerCleanup, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard } from "./vnccs_common.js";
 
 const RESOLUTION_SCALE_BASE = 1024;
 const RESOLUTION_SCALE_MIN_MP = 1;
@@ -715,6 +715,8 @@ app.registerExtension({
 
                 const els = {};
                 let spritePreviewNavigator = null;
+                const beginPreviewRequest = createRequestGuard(node);
+                const beginSelectionRequest = createRequestGuard(node);
 
                 const normalizeUploadFile = (file, prefix = "vnccs_upload") => {
                     const originalName = String(file?.name || "").trim();
@@ -1054,55 +1056,9 @@ app.registerExtension({
                     } catch {
                         selected_type = "";
                     }
-                    return { repo_id, node_state, selected_type };
+                    return { repo_id, node_state, selected_type, control_center_id: String(upstream.id) };
                 };
 
-                const queueConnectedPreview = () => new Promise((resolve, reject) => {
-                    const targetId = String(node.id);
-                    let settled = false;
-                    const cleanup = () => {
-                        clearTimeout(timeout);
-                        api.removeEventListener("vnccs.preview.updated", onPreview);
-                        api.removeEventListener("execution_cached", onCached);
-                        api.removeEventListener("execution_error", onError);
-                        api.removeEventListener("execution_interrupted", onInterrupted);
-                    };
-                    const finish = (callback, value) => {
-                        if (settled) return;
-                        settled = true;
-                        cleanup();
-                        callback(value);
-                    };
-                    const onPreview = (event) => {
-                        if (String(event.detail?.node_id) === targetId) {
-                            finish(resolve, { cached: false });
-                        }
-                    };
-                    const onCached = (event) => {
-                        const cachedNodes = Array.isArray(event.detail?.nodes) ? event.detail.nodes : [];
-                        if (cachedNodes.some(nodeId => String(nodeId) === targetId)) {
-                            finish(resolve, { cached: true });
-                        }
-                    };
-                    const onError = (event) => {
-                        const detail = event.detail || {};
-                        const message = detail.exception_message || detail.error || detail.message || "Preview execution failed.";
-                        finish(reject, new Error(String(message)));
-                    };
-                    const onInterrupted = () => {
-                        finish(reject, new Error("Preview execution was interrupted."));
-                    };
-                    const timeout = setTimeout(
-                        () => finish(reject, new Error("Preview execution timed out.")),
-                        15 * 60 * 1000,
-                    );
-
-                    api.addEventListener("vnccs.preview.updated", onPreview);
-                    api.addEventListener("execution_cached", onCached);
-                    api.addEventListener("execution_error", onError);
-                    api.addEventListener("execution_interrupted", onInterrupted);
-                    Promise.resolve(app.queuePrompt(0, 1, [targetId])).catch(error => finish(reject, error));
-                });
 
                 const getConnectedControlCenterWidget = () => {
                     let currentNode = node;
@@ -1316,11 +1272,16 @@ app.registerExtension({
                         setTimeout(() => applyPoseStudioValues(options), 250);
                     }
                 };
+                const beginCharacterInfoRequest = createRequestGuard(node);
                 const loadCharacterInfo = async () => {
-                    if (!state.character) return;
+                    const currentRequest = beginCharacterInfoRequest();
+                    const character = state.character;
+                    if (!character) return false;
                     try {
-                        const r = await api.fetchApi(`/vnccs/character_info?character=${encodeURIComponent(state.character)}`);
+                        const r = await api.fetchApi(`/vnccs/character_info?character=${encodeURIComponent(character)}`);
+                        if (!r.ok) throw new Error(`Character metadata request failed (${r.status})`);
                         const info = await r.json();
+                        if (!currentRequest() || state.character !== character) return false;
                         state.character_info = {
                             ...state.character_info,
                             ...info,
@@ -1329,8 +1290,10 @@ app.registerExtension({
                         };
                         saveState();
                         applyPoseStudioValues({ force: true });
+                        return true;
                     } catch (e) {
                         console.warn("[VNCCS] ClothesDesigner: Failed to load character info", e);
+                        return false;
                     }
                 };
 
@@ -1726,9 +1689,12 @@ app.registerExtension({
                 const charSel = document.createElement("select"); charSel.className = "vnccs-select";
                 charSel.onchange = async (e) => {
                     state.character = e.target.value;
-                    await loadCharacterInfo();
-                    await loadCostumes();
-                    updatePreviewImage();
+                    const currentSelection = beginSelectionRequest();
+                    const currentPreview = beginPreviewRequest();
+                    spritePreviewNavigator?.invalidate?.();
+                    if (!await loadCharacterInfo() || !currentSelection()) return;
+                    if (!await loadCostumes() || !currentSelection()) return;
+                    if (currentPreview()) updatePreviewImage();
                     saveState();
                 };
                 charRow.appendChild(charSel);
@@ -1742,9 +1708,11 @@ app.registerExtension({
                 const costSel = document.createElement("select"); costSel.className = "vnccs-select";
                 costSel.onchange = async (e) => {
                     state.costume = e.target.value;
-                    await loadCostumeInfo();
+                    const currentPreview = beginPreviewRequest();
+                    spritePreviewNavigator?.invalidate?.();
+                    if (!await loadCostumeInfo()) return false;
                     syncCostumeEditControls();
-                    updatePreviewImage();
+                    if (currentPreview()) updatePreviewImage();
                     saveState();
                 };
                 els.costSel = costSel;
@@ -1835,36 +1803,37 @@ app.registerExtension({
                     `;
                     container.appendChild(loadingOverlay);
 
-                    await saveCostumeToBackend();
-                    saveState();
+                    const character = state.character;
+                    const costume = state.costume;
+                    const currentRequest = beginPreviewRequest();
+                    const isCurrent = () => currentRequest() && state.character === character && state.costume === costume;
+                    spritePreviewNavigator?.invalidate?.();
                     btnGen.innerText = "GENERATING..."; btnGen.disabled = true;
                     try {
-                        if (controlCenter.selected_type === "custom") {
-                            const previewResult = await queueConnectedPreview();
-                            if (previewResult?.cached) {
-                                await updatePreviewImage(true);
+                        await saveCostumeToBackend();
+                        if (!isCurrent()) return;
+                        saveState();
+                        const r = await api.fetchApi("/vnccs/control_center/clothes_preview", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                ...controlCenter,
+                                clothes_state: state,
+                            })
+                        });
+                        if (r.ok) {
+                            const d = await r.json();
+                            if (!isCurrent()) return;
+                            if (d.image) {
+                                els.previewImg.src = "data:image/png;base64," + d.image;
+                                els.previewImg.style.display = "block";
+                                els.placeholder.style.display = "none";
                             }
                         } else {
-                            const r = await api.fetchApi("/vnccs/control_center/clothes_preview", {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({
-                                    ...controlCenter,
-                                    clothes_state: state,
-                                })
-                            });
-                            if (r.ok) {
-                                const d = await r.json();
-                                if (d.image) {
-                                    els.previewImg.src = "data:image/png;base64," + d.image;
-                                    els.previewImg.style.display = "block";
-                                    els.placeholder.style.display = "none";
-                                }
-                            } else {
-                                showInfo("Error", await r.text() || "Failed");
-                            }
+                            const message = await r.text();
+                            if (isCurrent()) showInfo("Error", message || "Failed");
                         }
-                    } catch (e) { showInfo("Error", e.toString()); }
+                    } catch (e) { if (isCurrent()) showInfo("Error", e.toString()); }
                     finally {
                         loadingOverlay.remove();
                         btnGen.innerText = "GENERATE PREVIEW / SAVE"; btnGen.disabled = false;
@@ -1908,6 +1877,9 @@ app.registerExtension({
                 spriteNav.append(spritePrevBtn, spriteCount, spriteNextBtn);
                 colLeft.appendChild(spriteNav);
                 spritePreviewNavigator = createSpritePreviewNavigator({
+                    node,
+                    isSelectionCurrent: preview => preview.character === state.character
+                        && preview.costume === (hasSelectedEditableCostume() ? state.costume : "Naked"),
                     image: pImg,
                     placeholder: els.placeholder,
                     loading: previewLoading,
@@ -1999,8 +1971,12 @@ app.registerExtension({
 
                 // Initial Load
                 (async () => {
+                    const isMounted = createRequestGuard(node)();
+                    const currentSelection = beginSelectionRequest();
+                    const currentPreview = beginPreviewRequest();
                     const r = await api.fetchApi("/vnccs/context_lists");
                     const d = await r.json();
+                    if (!isMounted()) return;
                     setClothesCoreLora();
                     syncGenerationControls();
                     saveState(); // Ensure defaults are persisted immediately
@@ -2011,9 +1987,11 @@ app.registerExtension({
                     if (state.character) els.charSelect.value = state.character;
                     else if (d.characters.length) { state.character = d.characters[0]; els.charSelect.value = state.character; }
 
-                    await loadCharacterInfo();
-                    await loadCostumes();
-                    updatePreviewImage();
+                    if (!currentSelection()) return;
+                    if (!await loadCharacterInfo() || !currentSelection()) return;
+                    if (!await loadCostumes() || !currentSelection()) return;
+                    if (currentPreview()) updatePreviewImage();
+                    saveState();
                 })();
                 container.appendChild(topRow);
 
@@ -2035,70 +2013,95 @@ app.registerExtension({
                 registerCleanup(node, () => window.removeEventListener("vnccs-control-center-model-changed", _onControlCenterModelChanged));
 
                 // Functions
+                const beginCostumesRequest = createRequestGuard(node);
                 const loadCostumes = async () => {
+                    const currentRequest = beginCostumesRequest();
                     const c = state.character;
                     if (!c) return;
-                    const r = await api.fetchApi(`/vnccs/list_costumes?character=${encodeURIComponent(c)}`);
-                    let list = await r.json();
+                    try {
+                        const r = await api.fetchApi(`/vnccs/list_costumes?character=${encodeURIComponent(c)}`);
+                        let list = await r.json();
+                        if (!currentRequest() || state.character !== c) return false;
+                        if (!r.ok || !Array.isArray(list)) throw new Error("Failed to load character costumes.");
 
-                    // Filter base sprite sets from display list.
-                    const displayList = list.filter(i => i !== "Naked" && i !== "Original");
+                        // Filter base sprite sets from display list.
+                        const displayList = list.filter(i => i !== "Naked" && i !== "Original");
 
-                    els.costSel.innerHTML = "";
-                    displayList.forEach(i => els.costSel.add(new Option(i, i)));
+                        els.costSel.innerHTML = "";
+                        displayList.forEach(i => els.costSel.add(new Option(i, i)));
 
-                    // Logic: If only Naked exists (displayList empty), prevent generation/deletion
-                    if (displayList.length === 0) {
-                        state.costume = "";
-                        if (els.btnGen) els.btnGen.disabled = false;
-                        if (els.btnDel) els.btnDel.disabled = true;
-                        if (els.costSel) els.costSel.disabled = true;
-                    } else {
-                        if (els.btnGen) els.btnGen.disabled = false;
-                        if (els.btnDel) els.btnDel.disabled = false;
-                        if (els.costSel) els.costSel.disabled = false;
+                        // Logic: If only Naked exists (displayList empty), prevent generation/deletion
+                        if (displayList.length === 0) {
+                            state.costume = "";
+                            if (els.btnGen) els.btnGen.disabled = false;
+                            if (els.btnDel) els.btnDel.disabled = true;
+                            if (els.costSel) els.costSel.disabled = true;
+                        } else {
+                            if (els.btnGen) els.btnGen.disabled = false;
+                            if (els.btnDel) els.btnDel.disabled = false;
+                            if (els.costSel) els.costSel.disabled = false;
 
-                        // Select default if current is Naked or invalid
-                        if (state.costume === "Naked" || !displayList.includes(state.costume)) {
-                            state.costume = displayList[0];
+                            // Select default if current is Naked or invalid
+                            if (state.costume === "Naked" || !displayList.includes(state.costume)) {
+                                state.costume = displayList[0];
+                            }
                         }
-                    }
 
-                    if (els.costSel.options.length > 0) {
-                        els.costSel.value = state.costume;
-                    }
+                        if (els.costSel.options.length > 0) {
+                            els.costSel.value = state.costume;
+                        }
 
-                    await loadCostumeInfo();
-                    syncCostumeEditControls();
+                        if (!await loadCostumeInfo()) return false;
+                        syncCostumeEditControls();
+                        return true;
+                    } catch (error) {
+                        if (currentRequest() && !(state.character !== c)) showInfo("Error", error.message || String(error));
+                        return false;
+                    }
                 };
 
+                const beginCostumeInfoRequest = createRequestGuard(node);
                 const loadCostumeInfo = async () => {
+                    const currentRequest = beginCostumeInfoRequest();
                     const c = state.character;
                     const cos = state.costume;
-                    const r = await api.fetchApi(`/vnccs/get_costume?character=${encodeURIComponent(c)}&costume=${encodeURIComponent(cos)}`);
-                    const info = await r.json();
+                    try {
+                        const r = await api.fetchApi(`/vnccs/get_costume?character=${encodeURIComponent(c)}&costume=${encodeURIComponent(cos)}`);
+                        const info = await r.json();
+                        if (!currentRequest() || state.character !== c || state.costume !== cos) return false;
+                        if (!r.ok) throw new Error("Failed to load costume metadata.");
 
-                    state.costume_info = {
-                        top: info.top || "",
-                        bottom: info.bottom || "",
-                        head: info.head || "",
-                        face: info.face || "",
-                        shoes: info.shoes || ""
-                    };
+                        state.costume_info = {
+                            top: info.top || "",
+                            bottom: info.bottom || "",
+                            head: info.head || "",
+                            face: info.face || "",
+                            shoes: info.shoes || ""
+                        };
 
-                    for (const k in state.costume_info) {
-                        if (els[k]) {
-                            els[k].value = state.costume_info[k];
-                            if (els[k].autoResize) els[k].autoResize();
+                        for (const k in state.costume_info) {
+                            if (els[k]) {
+                                els[k].value = state.costume_info[k];
+                                if (els[k].autoResize) els[k].autoResize();
+                            }
                         }
+                        return true;
+                    } catch (error) {
+                        if (currentRequest() && !(state.character !== c || state.costume !== cos)) showInfo("Error", error.message || String(error));
+                        return false;
                     }
                 };
 
                 const updatePreviewImage = async (forceCache = false) => {
+                    const currentRequest = beginPreviewRequest();
+                    const character = state.character;
+                    const costume = state.costume;
+                    const isCurrent = () => currentRequest() && state.character === character && state.costume === costume;
+                    spritePreviewNavigator?.invalidate?.();
                     if (!state.character) return;
                     const ts = Date.now();
                     const previewCostume = hasSelectedEditableCostume() ? state.costume : "Naked";
-                    let url = `/vnccs/get_preview?character=${encodeURIComponent(state.character)}&costume=${encodeURIComponent(previewCostume)}&ts=${ts}`;
+                    let url = `/vnccs/get_preview?character=${encodeURIComponent(character)}&costume=${encodeURIComponent(previewCostume)}&ts=${ts}`;
                     if (forceCache) url += "&force_cache=true";
                     if (!forceCache) {
                         state.selected_preview_sprite = null;
@@ -2108,6 +2111,7 @@ app.registerExtension({
                     // Check validity first to show message
                     try {
                         const r = await fetch(url);
+                        if (!isCurrent()) return;
                         if (!r.ok) {
                             els.previewImg.style.display = "none";
                             els.placeholder.style.display = "block";
@@ -2116,12 +2120,15 @@ app.registerExtension({
                             saveState();
                             return;
                         }
-                    } catch (e) { console.warn("[VNCCS] ClothesDesigner: Error in preview update", e); }
+                    } catch (e) {
+                        if (!isCurrent()) return;
+                        console.warn("[VNCCS] ClothesDesigner: Error in preview update", e);
+                    }
 
                     if (forceCache) {
-                        spritePreviewNavigator?.showFallback(url);
+                        spritePreviewNavigator?.showFallback(url, { character, costume: previewCostume });
                     } else {
-                        await spritePreviewNavigator?.load(state.character, {
+                        await spritePreviewNavigator?.load(character, {
                             costume: previewCostume,
                             fallbackUrl: url,
                         });

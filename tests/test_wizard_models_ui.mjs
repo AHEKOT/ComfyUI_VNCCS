@@ -41,31 +41,45 @@ for (const name of ['vnccs_clothes_designer', 'vnccs_character_creator_v2', 'vnc
 }
 
 const designer = readFileSync(new URL('../web/vnccs_clothes_designer.js', import.meta.url), 'utf8');
+const scaleStart = designer.indexOf('const RESOLUTION_SCALE_BASE');
+const scaleEnd = designer.indexOf('const STYLE', scaleStart);
 const syncStart = designer.indexOf('const syncResolutionControl =');
-const syncEnd = designer.indexOf('const syncGenerationControls =', syncStart);
+const syncEnd = designer.indexOf('const syncBackgroundForModel =', syncStart);
 
 test('resolution follows the model in Auto and preserves restored manual sizes', () => {
-    const select = { options: [{ value: '', textContent: '' }], value: '', add(option) { this.options.push(option); } };
+    const slider = { value: '' };
+    const label = { textContent: '' };
     const state = { gen_settings: { target_size: null } };
-    let kind = 'QIE2511';
+    let kind = 'QI2';
     const context = vm.createContext({
-        state, els: { target_size: select }, getConnectedModelKind: () => kind,
-        Option: function (text, value) { this.textContent = text; this.value = value; },
+        state, els: { target_size: slider, target_size_value: label }, getConnectedModelKind: () => kind,
     });
-    const sync = new vm.Script(`${designer.slice(syncStart, syncEnd)}\nsyncResolutionControl`).runInContext(context);
+    assert.ok(scaleStart >= 0 && scaleEnd > scaleStart);
+    assert.ok(syncStart >= 0 && syncEnd > syncStart);
+    const sync = new vm.Script(`${designer.slice(scaleStart, scaleEnd)}\n${designer.slice(syncStart, syncEnd)}\nsyncResolutionControl`).runInContext(context);
     sync();
-    assert.equal(select.options[0].textContent, 'Auto (1024)');
+    assert.equal(slider.value, '1.0');
+    assert.equal(label.textContent, '1.0 MP · Auto');
     kind = 'MiniMaxH3';
     sync();
-    assert.equal(select.options[0].textContent, 'Auto (1536)');
+    assert.equal(slider.value, '1.5');
+    assert.equal(label.textContent, '1.5 MP · Auto');
     assert.equal(state.gen_settings.target_size, null);
     state.gen_settings.target_size = 1408;
     sync();
-    assert.equal(select.value, '1408');
+    assert.equal(slider.value, '1.4');
+    assert.equal(label.textContent, '1.4 MP');
+    assert.equal(state.gen_settings.target_size, 1408);
     kind = 'Klein9b';
     sync();
-    assert.equal(select.value, '1408');
-    assert.equal(select.options[0].textContent, 'Auto (1024)');
+    assert.equal(slider.value, '1.4');
+    assert.equal(label.textContent, '1.4 MP');
+    assert.equal(state.gen_settings.target_size, 1408);
+    state.gen_settings.target_size = null;
+    sync();
+    assert.equal(slider.value, '1.0');
+    assert.equal(label.textContent, '1.0 MP · Auto');
+    assert.equal(state.gen_settings.target_size, null);
 });
 
 test('workflow restoration merges generation defaults and preserves manual resolution', () => {

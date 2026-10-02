@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator } from "./vnccs_common.js";
+import { showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard } from "./vnccs_common.js";
 
 // --- STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -1598,7 +1598,11 @@ app.registerExtension({
                     ]);
                 };
 
+                const beginCharacterRequest = createRequestGuard(node);
                 const loadChar = async (name, skipInfoLoad = false) => {
+                    const currentRequest = beginCharacterRequest();
+                    spritePreviewNavigator?.invalidate?.();
+                    const isCurrent = () => currentRequest() && state.character === name;
                     if (!name || name === "None") {
                         state.char_preview_url = null;
                         spritePreviewNavigator?.hideNav();
@@ -1611,6 +1615,7 @@ app.registerExtension({
                             const r = await api.fetchApi(`/vnccs/config?name=${encodeURIComponent(name)}`);
                             if (r.ok) {
                                 const d = await r.json();
+                                if (!isCurrent()) return;
                                 if (d.character_info) {
                                     Object.assign(state.character_info, d.character_info);
                                     updateUIFromState();
@@ -1621,10 +1626,12 @@ app.registerExtension({
                             updateUIFromState();
                         }
 
+                        if (!isCurrent()) return;
                         const cacheUrl = `/vnccs/get_cached_preview?character=${encodeURIComponent(name)}&t=${Date.now()}`;
                         await spritePreviewNavigator?.load(name, { fallbackUrl: cacheUrl });
 
                     } catch (e) {
+                        if (!isCurrent()) return;
                         console.error(e);
                         state.char_preview_url = null;
                         updateUIFromState();
@@ -1898,6 +1905,8 @@ app.registerExtension({
                 spriteNav.append(spritePrevBtn, spriteCount, spriteNextBtn);
                 colSrc.appendChild(spriteNav);
                 spritePreviewNavigator = createSpritePreviewNavigator({
+                    node,
+                    isSelectionCurrent: preview => preview.character === state.character,
                     image: previewImg,
                     placeholder: previewPlaceholder,
                     loading: previewLoading,

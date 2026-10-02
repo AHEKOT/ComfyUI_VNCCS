@@ -940,16 +940,24 @@ const CSS = `
 }
 .vnccs-pipe-viewer-bar {
     display: flex;
+    min-width: 0;
     align-items: center;
     gap: 8px;
     padding: 7px 10px;
     background: #101018;
     border-bottom: 1px solid rgba(255,143,163,0.16);
 }
-.vnccs-pipe-viewer-spacer {
-    flex: 1;
+.vnccs-pipe-viewer-stages {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1 1 0;
+    min-width: 0;
+    overflow-x: auto;
 }
 .vnccs-pipe-viewer-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
     border: 1px solid rgba(255,255,255,0.1);
     background: rgba(255,255,255,0.055);
     color: #e8e8f0;
@@ -977,6 +985,8 @@ const CSS = `
     overflow: hidden;
     cursor: grab;
     min-height: 0;
+    min-width: 0;
+    touch-action: none;
 }
 .vnccs-pipe-viewer-canvas.is-dragging {
     cursor: grabbing;
@@ -989,6 +999,7 @@ const CSS = `
     transform-origin: 0 0;
     user-select: none;
     -webkit-user-drag: none;
+    pointer-events: none;
     opacity: 0;
     visibility: hidden;
     transform: translate(-100000px, -100000px) scale(1);
@@ -1129,7 +1140,7 @@ class CharacterGeneratorWidget {
         const root = document.createElement("div");
         root.className = "vnccs-pipe-root";
         this.root = root;
-        enableMiddleMouseCanvasPan(root);
+        enableMiddleMouseCanvasPan(root, this.node);
         attachHelpTooltips(root);
         this.updateModeClasses();
 
@@ -1190,6 +1201,12 @@ class CharacterGeneratorWidget {
         registerCleanup(this.node, () => this.previewResizeObserver?.disconnect());
         registerCleanup(this.node, () => clearInterval(this.regenerateTimer));
         registerCleanup(this.node, () => clearInterval(this.seedvrPollTimer));
+        registerCleanup(this.node, () => {
+            this.closeViewer();
+            this.viewer = null;
+            clearTimeout(this._saveBrowserStateTimer);
+            cancelAnimationFrame(this.previewLayoutFrame);
+        });
         this.bindModelResolutionSync();
         if (this.isClone) {
             this.sourceSyncTimer = setInterval(() => {
@@ -1726,10 +1743,14 @@ class CharacterGeneratorWidget {
                     draft[field.section][field.key] = input.value;
                     return;
                 }
-                const value = Number(String(input.value).replace(",", "."));
-                if (!Number.isFinite(value)) return;
+                const text = String(input.value).trim().replace(",", ".");
+                const value = Number(text);
+                if (!text || !Number.isFinite(value)) return;
                 draft[field.section][field.key] = Math.max(field.min, Math.min(field.max, value));
             };
+            if (field.type === "number") {
+                input.onblur = () => { input.value = String(draft[field.section][field.key] ?? ""); };
+            }
             wrap.append(caption, input);
         }
         this.protectNativeControl(input);
@@ -1825,12 +1846,13 @@ class CharacterGeneratorWidget {
         backdrop.onclick = event => {
             if (event.target === backdrop) this.closeModal();
         };
-        modal.onkeydown = event => {
+        modal.addEventListener("keydown", event => {
             if (event.key === "Escape") {
                 event.preventDefault();
+                event.stopPropagation();
                 this.closeModal();
             }
-        };
+        }, true);
         this.root.appendChild(backdrop);
         this.modalEl = backdrop;
         requestAnimationFrame(() => modal.querySelector("input, select, textarea")?.focus({ preventScroll: true }));
@@ -2529,7 +2551,8 @@ class CharacterGeneratorWidget {
         if (!input || input._vnccsNativeControlProtected) return input;
         input._vnccsNativeControlProtected = true;
         for (const eventName of ["pointerdown", "mousedown", "mouseup", "dblclick", "touchstart", "touchend", "keydown"]) {
-            input.addEventListener(eventName, event => event.stopPropagation(), true);
+            // Let target handlers run before isolating the event from the graph.
+            input.addEventListener(eventName, event => event.stopPropagation());
         }
         // Keep the click inside the DOM widget without cancelling the control's
         // own target-phase handler (for example the settings modal opener).
@@ -2600,7 +2623,7 @@ class CharacterGeneratorWidget {
             input.checked = Boolean(this.data[section][key]);
             input.onchange = () => this.set(section, key, input.checked);
             for (const eventName of ["pointerdown", "mousedown", "mouseup", "dblclick", "touchstart", "touchend", "keydown"]) {
-                wrap.addEventListener(eventName, event => event.stopPropagation(), true);
+                wrap.addEventListener(eventName, event => event.stopPropagation());
             }
             wrap.onclick = (event) => {
                 event.stopPropagation();
@@ -2628,12 +2651,20 @@ class CharacterGeneratorWidget {
         }
         input.value = this.data[section][key];
         input.oninput = () => {
-            const raw = type === "number" ? Number(input.value) : input.value;
+            let raw = input.value;
+            if (type === "number") {
+                if (!input.value.trim()) return;
+                raw = Number(input.value);
+                if (!Number.isFinite(raw)) return;
+                if (options?.min !== undefined) raw = Math.max(options.min, raw);
+                if (options?.max !== undefined) raw = Math.min(options.max, raw);
+            }
             if (section === "upscaler" && key === "attention_mode") {
                 this.data.upscaler.attention_mode_manual = true;
             }
             this.set(section, key, raw);
         };
+        if (type === "number") input.onblur = () => { input.value = String(this.data[section][key]); };
         wrap.append(caption, input);
         return wrap;
     }
@@ -2775,7 +2806,7 @@ class CharacterGeneratorWidget {
         const commit = () => {
             const normalized = String(input.value).trim().replace(",", ".");
             const raw = Number(normalized);
-            if (!Number.isFinite(raw)) {
+            if (!normalized || !Number.isFinite(raw)) {
                 input.value = String(this.data.emotion_generation?.[key] ?? DEFAULT_DATA.emotion_generation[key]);
                 this.fieldDrafts.delete(draftKey);
                 return;
@@ -3104,6 +3135,7 @@ class CharacterGeneratorWidget {
             tile.dataset.src = src;
             tile.onclick = () => this.openViewer(index);
             tile.onkeydown = (event) => {
+                if (event.target !== tile) return;
                 if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
                     this.openViewer(index);
@@ -3327,6 +3359,8 @@ class CharacterGeneratorWidget {
     openViewer(index = 0, restored = null) {
         const images = this.currentImages();
         if (!images.length) return;
+        const returnFocus = this.viewer?.returnFocus || document.activeElement;
+        this.closeViewer();
         if (!restored) {
             this.userSelectedPreview = true;
             this.persistUI();
@@ -3339,6 +3373,7 @@ class CharacterGeneratorWidget {
             x: 0,
             y: 0,
             dragging: false,
+            returnFocus,
             restored,
         };
         if (restored?.open && Number.isFinite(restored.centerNormX) && Number.isFinite(restored.centerNormY)) {
@@ -3355,18 +3390,37 @@ class CharacterGeneratorWidget {
     }
 
     renderViewer() {
+        const stageScrollLeft = this.viewer?.stageTabs?.scrollLeft || 0;
         this.closeViewer();
         const overlay = document.createElement("div");
         overlay.className = "vnccs-pipe-viewer";
+        overlay.tabIndex = -1;
+        overlay.setAttribute("aria-label", "Image viewer. Press Escape to close.");
+        overlay.onkeydown = (event) => {
+            if (event.key !== "Escape") return;
+            event.preventDefault();
+            event.stopPropagation();
+            this.closeViewer(true);
+        };
+        for (const type of ["pointerdown", "mousedown", "click", "dblclick"]) {
+            overlay.addEventListener(type, (event) => {
+                if (event.button !== 1) event.stopPropagation();
+            });
+        }
         const bar = document.createElement("div");
         bar.className = "vnccs-pipe-viewer-bar";
         const back = document.createElement("button");
+        back.type = "button";
         back.className = "vnccs-pipe-viewer-btn";
         back.textContent = "BACK";
+        back.title = "Close viewer (Escape)";
         back.onclick = () => this.closeViewer(true);
         bar.appendChild(back);
+        const stageTabs = document.createElement("div");
+        stageTabs.className = "vnccs-pipe-viewer-stages";
         for (const [key, name] of this.stages) {
             const btn = document.createElement("button");
+            btn.type = "button";
             btn.className = "vnccs-pipe-viewer-btn" + (key === this.selectedPreview ? " is-selected" : "");
             btn.textContent = name;
             btn.onclick = () => {
@@ -3385,85 +3439,158 @@ class CharacterGeneratorWidget {
                 this.renderViewer();
                 this.renderPreview();
             };
-            bar.appendChild(btn);
+            stageTabs.appendChild(btn);
         }
-        const spacer = document.createElement("div");
-        spacer.className = "vnccs-pipe-viewer-spacer";
         const zoomOut = document.createElement("button");
+        zoomOut.type = "button";
         zoomOut.className = "vnccs-pipe-viewer-btn";
         zoomOut.textContent = "-";
+        zoomOut.setAttribute("aria-label", "Zoom out");
         zoomOut.onclick = () => this.zoomViewer(0.8);
         const zoomIn = document.createElement("button");
+        zoomIn.type = "button";
         zoomIn.className = "vnccs-pipe-viewer-btn";
         zoomIn.textContent = "+";
+        zoomIn.setAttribute("aria-label", "Zoom in");
         zoomIn.onclick = () => this.zoomViewer(1.25);
-        bar.append(spacer, zoomOut, zoomIn);
+        bar.append(stageTabs, zoomOut, zoomIn);
 
         const canvas = document.createElement("div");
         canvas.className = "vnccs-pipe-viewer-canvas";
         const img = document.createElement("img");
         img.className = "vnccs-pipe-viewer-img";
+        img.draggable = false;
         canvas.appendChild(img);
         overlay.append(bar, canvas);
         this.root.appendChild(overlay);
         this.viewer.overlay = overlay;
         this.viewer.canvas = canvas;
         this.viewer.img = img;
+        this.viewer.stageTabs = stageTabs;
+        stageTabs.scrollLeft = stageScrollLeft;
         this.viewer.fitApplied = false;
 
-        const scheduleFit = () => requestAnimationFrame(() => this.fitViewer());
+        const viewer = this.viewer;
+        let fitFrame = null;
+        const scheduleFit = () => {
+            cancelAnimationFrame(fitFrame);
+            fitFrame = requestAnimationFrame(() => {
+                fitFrame = null;
+                if (this.viewer === viewer && viewer.canvas === canvas) this.fitViewer();
+            });
+        };
         img.onload = scheduleFit;
+        img.onerror = () => img.classList.remove("is-ready");
         img.decoding = "async";
         img.src = this.currentImages()[this.viewer.index] || "";
         if (img.complete && img.naturalWidth) scheduleFit();
         canvas.onwheel = (event) => {
             event.preventDefault();
+            event.stopPropagation();
+            if (!event.deltaY) return;
             const factor = event.deltaY < 0 ? 1.12 : 0.88;
             this.zoomViewer(factor, event);
         };
+        const finishDrag = (event) => {
+            if (this.viewer !== viewer || viewer.canvas !== canvas) return;
+            if (!viewer.dragging) return;
+            if (event?.pointerId !== undefined && event.pointerId !== viewer.pointerId) return;
+            const pointerId = viewer.pointerId;
+            viewer.dragging = false;
+            viewer.pointerId = null;
+            canvas.classList.remove("is-dragging");
+            if (canvas.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId);
+            if (this.viewer === viewer) {
+                this.updateViewerFocus();
+                this.saveBrowserState();
+            }
+        };
         canvas.onpointerdown = (event) => {
+            if (event.button !== 0 || event.isPrimary === false || !viewer.fitApplied) return;
+            event.preventDefault();
+            event.stopPropagation();
+            overlay.focus({ preventScroll: true });
             const point = this.viewerEventPoint(event);
-            this.viewer.dragging = true;
-            this.viewer.dragX = point.x;
-            this.viewer.dragY = point.y;
+            viewer.dragging = true;
+            viewer.pointerId = event.pointerId;
+            viewer.dragX = point.x;
+            viewer.dragY = point.y;
             canvas.classList.add("is-dragging");
             canvas.setPointerCapture(event.pointerId);
         };
         canvas.onpointermove = (event) => {
-            if (!this.viewer?.dragging) return;
+            if (this.viewer !== viewer || viewer.canvas !== canvas) return;
+            if (!viewer.dragging || event.pointerId !== viewer.pointerId) return;
+            if (!(event.buttons & 1)) {
+                finishDrag(event);
+                return;
+            }
+            event.stopPropagation();
             const point = this.viewerEventPoint(event);
-            this.viewer.x += point.x - this.viewer.dragX;
-            this.viewer.y += point.y - this.viewer.dragY;
-            this.viewer.dragX = point.x;
-            this.viewer.dragY = point.y;
+            viewer.x += point.x - viewer.dragX;
+            viewer.y += point.y - viewer.dragY;
+            viewer.dragX = point.x;
+            viewer.dragY = point.y;
             this.applyViewerTransform();
             this.updateViewerFocus();
             this.scheduleBrowserStateSave();
         };
-        canvas.onpointerup = (event) => {
-            if (!this.viewer) return;
-            this.viewer.dragging = false;
-            canvas.classList.remove("is-dragging");
-            canvas.releasePointerCapture(event.pointerId);
-            this.updateViewerFocus();
-            this.saveBrowserState();
+        canvas.onpointerup = finishDrag;
+        canvas.onpointercancel = finishDrag;
+        canvas.onlostpointercapture = finishDrag;
+        const onVisibilityChange = () => {
+            if (document.hidden) finishDrag();
         };
+        window.addEventListener("pointerup", finishDrag, true);
+        window.addEventListener("blur", finishDrag);
+        document.addEventListener("visibilitychange", onVisibilityChange);
+        const resizeObserver = new ResizeObserver(() => {
+            if (this.viewer !== viewer || viewer.canvas !== canvas || !canvas.isConnected) return;
+            if (!viewer.fitApplied) {
+                scheduleFit();
+                return;
+            }
+            viewer.restored = { open: true, ...this.currentViewerFocus() };
+            viewer.fitApplied = false;
+            scheduleFit();
+        });
+        resizeObserver.observe(canvas);
+        viewer.dispose = () => {
+            finishDrag();
+            cancelAnimationFrame(fitFrame);
+            img.onload = null;
+            img.onerror = null;
+            resizeObserver.disconnect();
+            window.removeEventListener("pointerup", finishDrag, true);
+            window.removeEventListener("blur", finishDrag);
+            document.removeEventListener("visibilitychange", onVisibilityChange);
+        };
+        overlay.focus({ preventScroll: true });
     }
 
     closeViewer(clear = false) {
+        this.viewer?.dispose?.();
+        if (this.viewer) this.viewer.dispose = null;
         this.viewer?.overlay?.remove();
         if (clear) {
+            const returnFocus = this.viewer?.returnFocus;
             this.viewer = null;
             this.saveBrowserState();
+            if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
         }
     }
 
     syncViewerImage() {
         const images = this.currentImages();
-        if (!this.viewer?.img || !images.length) return;
+        if (!this.viewer?.img) return;
         this.viewer.index = this.clampedViewerIndex();
+        const src = images[this.viewer.index] || "";
+        if ((this.viewer.img.getAttribute("src") || "") === src) return;
+        this.viewer.restored = { open: true, ...this.currentViewerFocus() };
+        this.viewer.fitApplied = false;
         this.viewer.img.classList.remove("is-ready");
-        this.viewer.img.src = images[this.viewer.index];
+        if (src) this.viewer.img.src = src;
+        else this.viewer.img.removeAttribute("src");
     }
 
     clampedViewerIndex() {
@@ -3475,10 +3602,12 @@ class CharacterGeneratorWidget {
     fitViewer() {
         if (!this.viewer?.img || !this.viewer?.canvas) return;
         if (this.viewer.fitApplied) return;
+        if (!this.viewer.img.complete || !this.viewer.img.naturalWidth || !this.viewer.img.naturalHeight) return;
+        if (!this.viewer.canvas.clientWidth || !this.viewer.canvas.clientHeight) return;
         const rect = this.viewerCanvasRect();
         const iw = this.viewer.img.naturalWidth || 1;
         const ih = this.viewer.img.naturalHeight || 1;
-        const fit = rect.height / ih;
+        const fit = Math.min(rect.width / iw, rect.height / ih);
         this.viewer.fitScale = fit;
         const restored = this.viewer.restored;
         if (restored?.open && Number.isFinite(restored.scaleRatio)) {
@@ -3490,8 +3619,8 @@ class CharacterGeneratorWidget {
             const centerNormY = Number.isFinite(restored.centerNormY)
                 ? restored.centerNormY
                 : (Number.isFinite(restored.centerImageY) ? restored.centerImageY / ih : 0.5);
-            const centerImageX = Math.max(0, Math.min(1, centerNormX)) * iw;
-            const centerImageY = Math.max(0, Math.min(1, centerNormY)) * ih;
+            const centerImageX = Math.max(-2, Math.min(3, centerNormX)) * iw;
+            const centerImageY = Math.max(-2, Math.min(3, centerNormY)) * ih;
             this.viewer.x = rect.width / 2 - centerImageX * this.viewer.scale;
             this.viewer.y = rect.height / 2 - centerImageY * this.viewer.scale;
             this.viewer.restored = null;
@@ -3499,7 +3628,7 @@ class CharacterGeneratorWidget {
             this.viewerFocus = { scaleRatio, centerNormX, centerNormY };
         } else {
             this.viewer.scale = fit;
-            this.centerViewerImage(rect, iw, ih, true);
+            this.centerViewerImage(rect, iw, ih);
             this.viewerFocus = { scaleRatio: 1, centerNormX: 0.5, centerNormY: 0.5 };
         }
         this.viewer.fitApplied = true;
@@ -3554,6 +3683,7 @@ class CharacterGeneratorWidget {
 
     zoomViewer(factor, event = null) {
         if (!this.viewer?.canvas || !this.viewer?.img) return;
+        if (!this.viewer.fitApplied) return;
         const rect = this.viewerCanvasRect();
         const oldScale = this.viewer.scale;
         const fitScale = this.viewer.fitScale || 1;

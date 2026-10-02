@@ -31,6 +31,18 @@ export function registerCleanup(node, cleanupFn) {
     node._vnccsCleanups.push(cleanupFn);
 }
 
+// Each loader owns a guard. Starting a newer request or removing the node
+// invalidates every older response, including requests for the same selection.
+export function createRequestGuard(node) {
+    let sequence = 0;
+    let removed = false;
+    registerCleanup(node, () => { removed = true; sequence += 1; });
+    return () => {
+        const request = ++sequence;
+        return () => !removed && request === sequence;
+    };
+}
+
 // ── Widget Data Sync ──────────────────────────────────────────────────────────
 // Sets widget value, triggers callback, marks canvas dirty.
 export function syncWidgetData(node, widgetName, data) {
@@ -77,6 +89,8 @@ export function syncDOMWidgetWidthSoon(node, widgetName, delay = 100) {
 
 // ── Character Sprite Preview Navigation ──────────────────────────────────────
 export function createSpritePreviewNavigator({
+    node,
+    isSelectionCurrent = () => true,
     image,
     placeholder,
     loading,
@@ -96,6 +110,10 @@ export function createSpritePreviewNavigator({
         cacheBust: "",
         requestId: 0,
     };
+    let disposed = false;
+    const isCurrent = (requestId) => !disposed && requestId === state.requestId && isSelectionCurrent(state);
+    const invalidate = () => { state.requestId += 1; };
+    if (node) registerCleanup(node, () => { disposed = true; invalidate(); });
 
     const setLoading = (value) => {
         loading?.classList.toggle("is-visible", !!value);
@@ -148,23 +166,26 @@ export function createSpritePreviewNavigator({
         img.src = spriteUrl(state.character, normalized, state.costume);
     };
 
-    const showFallback = (url) => {
+    const showFallback = (url, { character = state.character, costume = state.costume } = {}) => {
+        if (disposed || !isSelectionCurrent({ ...state, character, costume })) return;
+        state.character = character;
+        state.costume = costume;
+        const requestId = state.requestId + 1;
+        state.requestId = requestId;
         if (!url) {
             applyMissing();
             return;
         }
-        const requestId = state.requestId + 1;
-        state.requestId = requestId;
         hideNav();
         setLoading(true);
         const loader = new Image();
         loader.onerror = () => {
-            if (requestId !== state.requestId) return;
+            if (!isCurrent(requestId)) return;
             setLoading(false);
             applyMissing();
         };
         loader.onload = () => {
-            if (requestId !== state.requestId) return;
+            if (!isCurrent(requestId)) return;
             setLoading(false);
             applyImage(url);
         };
@@ -172,6 +193,7 @@ export function createSpritePreviewNavigator({
     };
 
     const show = (index) => {
+        if (disposed || !isSelectionCurrent(state)) return;
         if (!state.character || state.count <= 0) return;
         const normalized = ((Number(index || 0) % state.count) + state.count) % state.count;
         const requestId = state.requestId + 1;
@@ -183,13 +205,13 @@ export function createSpritePreviewNavigator({
 
         const loader = new Image();
         loader.onerror = () => {
-            if (requestId !== state.requestId) return;
+            if (!isCurrent(requestId)) return;
             setLoading(false);
             showFallback(state.fallbackUrl);
             onError?.({ ...state });
         };
         loader.onload = () => {
-            if (requestId !== state.requestId) return;
+            if (!isCurrent(requestId)) return;
             setLoading(false);
             applyImage(url);
             updateNav();
@@ -200,6 +222,7 @@ export function createSpritePreviewNavigator({
     };
 
     const load = async (character, { costume = "", random = true, index = 0, fallbackUrl = "" } = {}) => {
+        if (disposed) return;
         state.character = character || "";
         state.costume = costume || "";
         state.fallbackUrl = fallbackUrl || "";
@@ -218,9 +241,9 @@ export function createSpritePreviewNavigator({
             const params = new URLSearchParams({ character: state.character, t: String(Date.now()) });
             if (state.costume) params.set("costume", state.costume);
             const response = await api.fetchApi(`/vnccs/get_character_pose_preview_meta?${params.toString()}`);
-            if (loadRequestId !== state.requestId) return;
+            if (!isCurrent(loadRequestId)) return;
             const meta = response.ok ? await response.json() : {};
-            if (loadRequestId !== state.requestId) return;
+            if (!isCurrent(loadRequestId)) return;
             state.count = Number(meta.count || 0);
             if (state.count <= 0) {
                 setLoading(false);
@@ -230,6 +253,7 @@ export function createSpritePreviewNavigator({
             const nextIndex = random ? Math.floor(Math.random() * state.count) : index;
             show(nextIndex);
         } catch (error) {
+            if (!isCurrent(loadRequestId)) return;
             console.warn("[VNCCS] Failed to load sprite preview metadata:", error);
             setLoading(false);
             showFallback(state.fallbackUrl);
@@ -243,6 +267,7 @@ export function createSpritePreviewNavigator({
 
     return {
         load,
+        invalidate,
         show,
         showFallback,
         hideNav,
@@ -255,12 +280,19 @@ export function createSpritePreviewNavigator({
 // DOM widgets sit above LiteGraph's canvas, so MMB events can never reach the
 // canvas naturally. Forward canvas navigation gestures while leaving normal
 // widget interaction and real scroll containers untouched.
-export function enableMiddleMouseCanvasPan(root) {
+export function enableMiddleMouseCanvasPan(root, node = root?._node) {
     if (!root || root._vnccsMiddleMouseCanvasPan) return;
     root._vnccsMiddleMouseCanvasPan = true;
 
     const canvas = () => app.canvasEl || app.canvas?.canvas || document.querySelector("canvas.litegraph");
+    const pointerEvents = typeof window.PointerEvent === "function";
+    const downEvent = pointerEvents ? "pointerdown" : "mousedown";
+    const moveEvent = pointerEvents ? "pointermove" : "mousemove";
+    const upEvent = pointerEvents ? "pointerup" : "mouseup";
     let panning = false;
+    let pointerId = null;
+    let lastEvent = null;
+    let panCanvas = null;
 
     const markForwarded = (event) => {
         Object.defineProperty(event, "_vnccsForwardedCanvasInput", { value: true });
@@ -280,7 +312,7 @@ export function enableMiddleMouseCanvasPan(root) {
         altKey: source.altKey,
         shiftKey: source.shiftKey,
         metaKey: source.metaKey,
-        button: source.button,
+        button: type === "mousemove" ? 0 : 1,
         buttons,
     }));
 
@@ -299,19 +331,19 @@ export function enableMiddleMouseCanvasPan(root) {
             altKey: source.altKey,
             shiftKey: source.shiftKey,
             metaKey: source.metaKey,
-            button: 1,
+            button: type === "pointermove" ? -1 : 1,
             buttons,
-            pointerId: 1,
-            pointerType: "mouse",
+            pointerId: source.pointerId ?? 1,
+            pointerType: source.pointerType || "mouse",
             isPrimary: true,
         }));
     };
 
     const forward = (type, event, buttons) => {
-        const canvasEl = canvas();
+        const canvasEl = panCanvas;
         if (!canvasEl) return;
         const pointerType = type === "mousedown" ? "pointerdown" : type === "mousemove" ? "pointermove" : "pointerup";
-        canvasEl.dispatchEvent(clonePointerEvent(pointerType, event, buttons));
+        if (pointerEvents) canvasEl.dispatchEvent(clonePointerEvent(pointerType, event, buttons));
         canvasEl.dispatchEvent(cloneMouseEvent(type, event, buttons));
     };
 
@@ -352,43 +384,103 @@ export function enableMiddleMouseCanvasPan(root) {
         return false;
     };
 
-    const finishPan = (event) => {
-        if (event._vnccsForwardedCanvasInput) return;
+    const stopPan = () => {
         if (!panning) return;
         panning = false;
+        window.removeEventListener(moveEvent, movePan, true);
+        window.removeEventListener(upEvent, finishPan, true);
+        window.removeEventListener("pointercancel", cancelPan, true);
+        panCanvas?.removeEventListener("lostpointercapture", cancelPan);
+        window.removeEventListener("blur", stopPan);
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+        if (pointerEvents) {
+            window.removeEventListener("mousedown", suppressCompatibilityMouse, true);
+            window.removeEventListener("mousemove", suppressCompatibilityMouse, true);
+            window.removeEventListener("mouseup", suppressCompatibilityMouse, true);
+        }
+        forward("mouseup", lastEvent, 0);
+        if (pointerId !== null && panCanvas?.hasPointerCapture?.(pointerId)) {
+            panCanvas.releasePointerCapture(pointerId);
+        }
+        pointerId = null;
+        lastEvent = null;
+        panCanvas = null;
+    };
+
+    const ownsEvent = (event) => !event._vnccsForwardedCanvasInput
+        && panning && (pointerId === null || event.pointerId === pointerId);
+
+    const finishPan = (event) => {
+        if (!ownsEvent(event) || (event.buttons & 4)) return;
         event.preventDefault();
         event.stopPropagation();
-        forward("mouseup", event, 0);
-        window.removeEventListener("mousemove", movePan, true);
-        window.removeEventListener("mouseup", finishPan, true);
+        lastEvent = event;
+        stopPan();
+    };
+
+    const cancelPan = (event) => {
+        if (!ownsEvent(event)) return;
+        event.stopPropagation();
+        stopPan();
+    };
+
+    const onVisibilityChange = () => {
+        if (document.hidden) stopPan();
+    };
+
+    const suppressCompatibilityMouse = (event) => {
+        if (!panning || event._vnccsForwardedCanvasInput) return;
+        event.preventDefault();
+        event.stopPropagation();
     };
 
     const movePan = (event) => {
-        if (event._vnccsForwardedCanvasInput) return;
-        if (!panning) return;
+        if (!ownsEvent(event)) return;
         event.preventDefault();
         event.stopPropagation();
-        forward("mousemove", event, event.buttons || 4);
+        lastEvent = event;
+        if (!(event.buttons & 4) || !root.isConnected) {
+            stopPan();
+            return;
+        }
+        forward("mousemove", event, event.buttons);
     };
 
-    root.addEventListener("mousedown", (event) => {
+    const startPan = (event) => {
         if (event._vnccsForwardedCanvasInput) return;
         if (event.button !== 1) return;
+        if (panning) stopPan();
+        panCanvas = canvas();
+        if (!panCanvas) return;
         panning = true;
+        pointerId = pointerEvents ? event.pointerId : null;
+        lastEvent = event;
         event.preventDefault();
         event.stopPropagation();
-        forward("mousedown", event, 4);
-        window.addEventListener("mousemove", movePan, true);
-        window.addEventListener("mouseup", finishPan, true);
-    }, true);
+        window.addEventListener(moveEvent, movePan, true);
+        window.addEventListener(upEvent, finishPan, true);
+        window.addEventListener("pointercancel", cancelPan, true);
+        panCanvas.addEventListener("lostpointercapture", cancelPan);
+        window.addEventListener("blur", stopPan);
+        document.addEventListener("visibilitychange", onVisibilityChange);
+        if (pointerEvents) {
+            window.addEventListener("mousedown", suppressCompatibilityMouse, true);
+            window.addEventListener("mousemove", suppressCompatibilityMouse, true);
+            window.addEventListener("mouseup", suppressCompatibilityMouse, true);
+        }
+        // Claim the pointer before an embedded viewer can start its own drag.
+        forward("mousedown", event, event.buttons);
+    };
+    root.addEventListener(downEvent, startPan, true);
 
-    root.addEventListener("auxclick", (event) => {
+    const suppressAuxClick = (event) => {
         if (event.button !== 1) return;
         event.preventDefault();
         event.stopPropagation();
-    }, true);
+    };
+    root.addEventListener("auxclick", suppressAuxClick, true);
 
-    root.addEventListener("wheel", (event) => {
+    const forwardWheel = (event) => {
         if (event._vnccsForwardedCanvasInput) return;
         if (hasOwnWheelHandler(event.target) || hasScrollableAncestor(event.target)) return;
         const canvasEl = canvas();
@@ -396,7 +488,16 @@ export function enableMiddleMouseCanvasPan(root) {
         canvasEl.dispatchEvent(cloneWheelEvent(event));
         event.preventDefault();
         event.stopPropagation();
-    }, { capture: true, passive: false });
+    };
+    root.addEventListener("wheel", forwardWheel, { capture: true, passive: false });
+
+    if (node) registerCleanup(node, () => {
+        stopPan();
+        root.removeEventListener(downEvent, startPan, true);
+        root.removeEventListener("auxclick", suppressAuxClick, true);
+        root.removeEventListener("wheel", forwardWheel, true);
+        delete root._vnccsMiddleMouseCanvasPan;
+    });
 }
 
 // ── CSS Injection (once per class prefix) ─────────────────────────────────────

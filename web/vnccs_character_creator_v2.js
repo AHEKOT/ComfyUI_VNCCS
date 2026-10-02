@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { presetGroups, presetSelection } from "./character_presets.mjs";
-import { debounce, registerCleanup, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
+import { debounce, registerCleanup, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard } from "./vnccs_common.js";
 
 const QI2_OVERHAUL_LORA_NAME = "QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.safetensors";
 const QI2_OVERHAUL_TITLE = "Qwen Image2.1 Character Overhaul";
@@ -1399,6 +1399,7 @@ app.registerExtension({
                 // Ensure it's hidden (cleanup hides everything else, but let's be explicit)
                 if (dataWidget) dataWidget.hidden = true;
 
+                const beginPreviewRequest = createRequestGuard(node);
                 const state = {
                     preview_valid: false, // Smart Cache Flag
                     preview_source: "gen", // "gen" or "pose" - tracks what user sees
@@ -2010,6 +2011,7 @@ app.registerExtension({
                 };
 
                 const clearCharacterSelection = () => {
+                    beginPreviewRequest();
                     state.character = "";
                     restoredWidgetInfoCharacter = null;
                     Object.assign(state.character_info, getDefaultCharacterInfo(), { name: "" });
@@ -2031,13 +2033,17 @@ app.registerExtension({
                 };
 
                 const tryCachePreview = (character) => {
+                    const currentRequest = beginPreviewRequest();
+                    const isCurrent = () => currentRequest() && state.character === character;
                     console.log("[VNCCS] Trying to load cached preview...");
                     const cacheUrl = `/vnccs/get_cached_preview?character=${encodeURIComponent(character)}&t=${Date.now()}`;
                     clearPreviewHandlers();
                     hideSpriteNav();
                     setPreviewLoading(true);
 
-                    els.previewImg.onerror = () => {
+                    const loader = new Image();
+                    loader.onerror = () => {
+                        if (!isCurrent()) return;
                         console.warn("[VNCCS] Both pose and cache preview failed.");
                         setPreviewLoading(false);
                         els.previewImg.style.display = "none";
@@ -2049,15 +2055,19 @@ app.registerExtension({
                         hideSpriteNav();
                         saveState(false);
                     };
-                    els.previewImg.onload = () => {
+                    loader.onload = () => {
+                        if (!isCurrent()) return;
                         setPreviewLoading(false);
+                        els.previewImg.src = cacheUrl;
+                        els.previewImg.style.display = "block";
+                        els.placeholder.style.display = "none";
                         state.preview_valid = true;
                         state.preview_source = "gen";
                         hideSpriteNav();
                         saveState(true);
                     };
 
-                    els.previewImg.src = cacheUrl;
+                    loader.src = cacheUrl;
                 };
 
                 const spritePreviewUrl = (character, index) => {
@@ -2076,6 +2086,8 @@ app.registerExtension({
                 const showSpritePreview = (character, index) => {
                     const count = Number(state.sprite_preview_count || 0);
                     if (!character || count <= 0) return;
+                    const currentRequest = beginPreviewRequest();
+                    const isCurrent = () => currentRequest() && state.character === character;
                     const normalized = ((Number(index || 0) % count) + count) % count;
                     const requestId = Number(state.sprite_preview_request_id || 0) + 1;
                     const url = spritePreviewUrl(character, normalized);
@@ -2086,14 +2098,14 @@ app.registerExtension({
 
                     const loader = new Image();
                     loader.onerror = () => {
-                        if (requestId !== state.sprite_preview_request_id) return;
+                        if (!isCurrent()) return;
                         console.warn("[VNCCS] Pose preview load failed. Fallback to cache.");
                         setPreviewLoading(false);
                         hideSpriteNav();
                         tryCachePreview(character);
                     };
                     loader.onload = () => {
-                        if (requestId !== state.sprite_preview_request_id) return;
+                        if (!isCurrent()) return;
                         clearPreviewHandlers();
                         els.previewImg.src = url;
                         els.previewImg.style.display = "block";
@@ -4204,15 +4216,7 @@ app.registerExtension({
                         console.log(`[VNCCS] Preview Update Event received for '${charName}' (Node ${node.id})`);
                         if (charName === state.character) {
                             console.log("[VNCCS] Character matches. Refreshing local preview...");
-                            clearPreviewHandlers();
-                            setPreviewLoading(false);
-                            els.previewImg.src = `/vnccs/get_cached_preview?character=${encodeURIComponent(charName)}&t=${Date.now()}`;
-                            els.previewImg.style.display = "block";
-                            els.placeholder.style.display = "none";
-                            state.preview_valid = true;
-                            state.preview_source = "gen";
-                            hideSpriteNav();
-                            saveState(true);
+                            tryCachePreview(charName);
                         }
                     }
                 };
@@ -4322,7 +4326,11 @@ app.registerExtension({
                     } catch (e) { console.error(e); }
                 };
 
+                const beginCharacterRequest = createRequestGuard(node);
                 const loadChar = async (n, skipInfoLoad = false) => {
+                    const currentRequest = beginCharacterRequest();
+                    const currentPreview = beginPreviewRequest();
+                    const isCurrent = () => currentRequest() && state.character === n;
                     if (!n) return;
                     try {
                         // 1. Fetch Info (skip if restoring from widget_data)
@@ -4330,6 +4338,7 @@ app.registerExtension({
                             const r = await api.fetchApi(`/vnccs/character_info?character=${encodeURIComponent(n)}`);
                             if (!r.ok) throw new Error(`Character '${n}' is not available`);
                             const i = await r.json();
+                            if (!isCurrent()) return;
 
                             // Reset & Assign
                             Object.assign(state.character_info, getDefaultCharacterInfo());
@@ -4354,12 +4363,15 @@ app.registerExtension({
                         }
 
                         // Update Fields from current state
+                        if (!isCurrent()) return;
                         syncCharacterFields();
 
                         // 2. Fetch Preview Image
+                        if (!currentPreview()) return;
                         try {
                             const metaResponse = await api.fetchApi(`/vnccs/get_character_pose_preview_meta?character=${encodeURIComponent(n)}&t=${Date.now()}`);
                             const meta = metaResponse.ok ? await metaResponse.json() : {};
+                            if (!isCurrent() || !currentPreview()) return;
                             const count = Number(meta.count || 0);
                             state.sprite_preview_count = count;
                             state.sprite_preview_cache_bust = `${n}:${Date.now()}`;
@@ -4372,6 +4384,7 @@ app.registerExtension({
                                 tryCachePreview(n);
                             }
                         } catch (previewError) {
+                            if (!isCurrent() || !currentPreview()) return;
                             console.warn("[VNCCS] Failed to load pose preview metadata. Fallback to cache.", previewError);
                             hideSpriteNav();
                             tryCachePreview(n);
@@ -4425,6 +4438,9 @@ app.registerExtension({
                     els.btnGen.disabled = true;
                     saveState();
 
+                    const character = state.character;
+                    const currentPreview = beginPreviewRequest();
+                    const isCurrent = () => currentPreview() && state.character === character;
                     try {
                         const payload = {
                             character: state.character,
@@ -4442,6 +4458,7 @@ app.registerExtension({
                         }
 
                         const d = await r.json();
+                        if (!isCurrent()) return;
                         if (d.image) {
                             clearPreviewHandlers();
                             setPreviewLoading(false);
@@ -4453,7 +4470,7 @@ app.registerExtension({
                             hideSpriteNav();
                             saveState(true);
                         }
-                    } catch (e) { showMessage(container, "Error: " + e, true); }
+                    } catch (e) { if (isCurrent()) showMessage(container, "Error: " + e, true); }
                     finally {
                         loading.remove();
                         els.btnGen.innerText = "GENERATE PREVIEW";

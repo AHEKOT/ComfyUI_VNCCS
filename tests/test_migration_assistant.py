@@ -1,8 +1,48 @@
 import os
+import json
 
 from PIL import Image, ImageDraw
 
 from nodes import migration_assistant as ma
+
+
+def test_existing_character_config_is_preserved_even_with_force(tmp_path, monkeypatch):
+    legacy = tmp_path / "legacy"
+    current = tmp_path / "current"
+    (legacy / "Alice").mkdir(parents=True)
+    (current / "Alice").mkdir(parents=True)
+    (legacy / "Alice" / "Alice_config.json").write_text(json.dumps({"character_info": {"hair": "old"}}))
+    target = current / "Alice" / "Alice_config.json"
+    original = json.dumps({"character_info": {"hair": "new"}, "costumes": {"Dress": {"top": "silk"}}})
+    target.write_text(original)
+    monkeypatch.setattr(ma, "get_legacy_output_dir", lambda: str(legacy))
+    monkeypatch.setattr(ma, "base_output_dir", lambda: str(current))
+    for force in (False, True):
+        result = ma._migrate_character({"log": []}, "Alice", "Alice", force)
+        assert result["config_copied"] is False
+        assert target.read_text() == original
+
+
+def test_only_latest_legacy_sheet_per_costume_emotion_is_migrated(tmp_path, monkeypatch):
+    legacy = tmp_path / "legacy"
+    current = tmp_path / "current"
+    sheets = legacy / "Alice" / "Sheets" / "Naked" / "neutral"
+    sheets.mkdir(parents=True)
+    old = sheets / "sheet_0001.png"
+    latest = sheets / "sheet_0002.png"
+    Image.new("RGBA", (16, 32), "red").save(old)
+    Image.new("RGBA", (16, 32), "blue").save(latest)
+    os.utime(old, (100, 100))
+    os.utime(latest, (200, 200))
+    monkeypatch.setattr(ma, "get_legacy_output_dir", lambda: str(legacy))
+    monkeypatch.setattr(ma, "base_output_dir", lambda: str(current))
+    monkeypatch.setattr(ma, "_crop_sprites", lambda image: [image.convert("RGBA")])
+    assert ma.scan_legacy_characters()["characters"][0]["sheet_count"] == 1
+    result = ma._migrate_character({"log": []}, "Alice", "Alice", False)
+    assert result["sprites_saved"] == 1
+    target = current / "Alice" / "Sprites" / "Naked" / "neutral" / "sprite_neutral_0000.png"
+    with Image.open(target) as image:
+        assert image.getpixel((0, 0)) == (0, 0, 255, 255)
 
 
 def test_safe_legacy_name_removes_disallowed_characters():
