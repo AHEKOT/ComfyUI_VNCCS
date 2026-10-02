@@ -2416,9 +2416,9 @@ app.registerExtension({
                 generationEls.tabIllustrious = tabIllustrious;
                 generationEls.tabAnima = tabAnima;
                 generationEls.tabQi2 = tabQi2;
-                tabRow.appendChild(tabIllustrious);
-                tabRow.appendChild(tabAnima);
                 tabRow.appendChild(tabQi2);
+                tabRow.appendChild(tabAnima);
+                tabRow.appendChild(tabIllustrious);
                 generationSection.appendChild(tabRow);
 
                 const illustriousModelCards = document.createElement("div");
