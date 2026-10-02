@@ -13,8 +13,26 @@ import traceback
 from ..utils import (
     load_character_info, load_config, config_path, save_config,
     character_dir, sheets_dir, MAIN_DIRS, EMOTIONS,
-    safe_join_under, safe_relative_path
+    safe_join_under, safe_relative_path, privileged_route, file_fingerprint,
+    character_storage_lock,
 )
+from .preview_runtime import run_wizard_job
+
+MAX_SOURCE_IMAGES = 16
+MAX_GRID_PIXELS = 16 * 1024 * 1024
+
+
+def _source_image_path(image):
+    data = image if isinstance(image, dict) else {"name": image}
+    kind = data.get("type", "input")
+    if kind not in {"input", "temp", "output"}:
+        raise ValueError("Unknown source image type")
+    directory = getattr(folder_paths, f"get_{kind}_directory")()
+    parts = []
+    if data.get("subfolder"):
+        parts.append(safe_relative_path(data["subfolder"], "subfolder"))
+    parts.append(safe_relative_path(data.get("name"), "image_name"))
+    return safe_join_under(directory, *parts)
 
 try:
     from .qwen_vl import get_qwen_vl_chat_handler
@@ -82,6 +100,13 @@ def _emit_cloner_validation_error(unique_id, message):
 
 class CharacterCloner:
     @classmethod
+    def IS_CHANGED(cls, widget_data="{}", **kwargs):
+        data = json.loads(widget_data)
+        paths = [config_path(data.get("character", "Unknown"))]
+        paths.extend(_source_image_path(image) for image in data.get("source_images", []))
+        return json.dumps([file_fingerprint(path) for path in paths])
+
+    @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {},
@@ -112,48 +137,40 @@ class CharacterCloner:
                 "Reload the selected character before generating."
             )
         source_images = data.get("source_images", []) # List of filenames in input dir
+        if not isinstance(source_images, list) or len(source_images) > MAX_SOURCE_IMAGES:
+            raise ValueError(f"Upload at most {MAX_SOURCE_IMAGES} character reference images.")
         background_color = info.get("background_color", "White")
 
         # 4. Process Images
         # Load all source images, make a grid
         images_tensors = []
+        source_pixels = 0
         if source_images:
             for img_obj in source_images:
                 # Handle both string (filename only) and dict (name, subfolder, type)
                 if isinstance(img_obj, dict):
                     img_name = img_obj.get("name")
-                    subfolder = img_obj.get("subfolder", "")
-                    img_type = img_obj.get("type", "input")
                 else:
                     img_name = img_obj
-                    subfolder = ""
-                    img_type = "input"
 
                 if not img_name: continue
 
-                # Manuall resolve path to avoid TypeError
-                if img_type == "input":
-                    base_dir = folder_paths.get_input_directory()
-                elif img_type == "temp":
-                    base_dir = folder_paths.get_temp_directory()
-                else:
-                    base_dir = folder_paths.get_output_directory()
-                
                 try:
-                    image_parts = []
-                    if subfolder:
-                        image_parts.append(safe_relative_path(subfolder, "subfolder"))
-                    image_parts.append(safe_relative_path(img_name, "image_name"))
-                    img_path = safe_join_under(base_dir, *image_parts)
+                    img_path = _source_image_path(img_obj)
                 except ValueError:
                     continue
 
                 if img_path and os.path.exists(img_path):
                     try:
                         with Image.open(img_path) as opened:
+                            source_pixels += opened.width * opened.height
+                            if source_pixels > MAX_GRID_PIXELS:
+                                raise ValueError(f"Character references exceed {MAX_GRID_PIXELS:,} source pixels. Use fewer or smaller images.")
                             i = ImageOps.exif_transpose(opened)
                             i = _composite_pil_alpha(i, background_color)
                             images_tensors.append(i)
+                    except ValueError:
+                        raise
                     except Exception as exc:
                         print(f"[CharacterCloner] Failed to load source image '{img_name}': {exc}")
         
@@ -199,6 +216,8 @@ class CharacterCloner:
             
             grid_w = cols * max_w
             grid_h = rows * max_h
+            if grid_w * grid_h > MAX_GRID_PIXELS:
+                raise ValueError(f"Character reference grid exceeds {MAX_GRID_PIXELS:,} pixels. Use fewer or smaller images.")
             grid = Image.new("RGB", (grid_w, grid_h), "black")
             
             for idx, img in enumerate(images_tensors):
@@ -224,20 +243,21 @@ class CharacterCloner:
         # 6. Save Config (if character name is valid)
         if character_name and character_name != "Unknown":
             # Just ensure folder exists
-            os.makedirs(character_path, exist_ok=True)
-            config = load_config(character_name)
-            if not isinstance(config, dict):
-                if os.path.exists(config_path(character_name)):
-                    raise ValueError(f"Cannot read the existing configuration for '{character_name}'; refusing to overwrite it.")
-                config = {}
-            config.setdefault("folder_structure", {"main_directories": MAIN_DIRS, "emotions": EMOTIONS})
-            config.setdefault("config_version", "2.0")
-            config.update({
-                "character_info": {**config.get("character_info", {}), **info, "name": character_name},
-                "character_path": character_path,
-            })
-            if not save_config(character_name, config):
-                raise OSError(f"Character Cloner could not save the configuration for '{character_name}'.")
+            with character_storage_lock(character_path):
+                os.makedirs(character_path, exist_ok=True)
+                config = load_config(character_name)
+                if not isinstance(config, dict):
+                    if os.path.exists(config_path(character_name)):
+                        raise ValueError(f"Cannot read the existing configuration for '{character_name}'; refusing to overwrite it.")
+                    config = {}
+                config.setdefault("folder_structure", {"main_directories": MAIN_DIRS, "emotions": EMOTIONS})
+                config.setdefault("config_version", "2.0")
+                config.update({
+                    "character_info": {**config.get("character_info", {}), **info, "name": character_name},
+                    "character_path": character_path,
+                })
+                if not save_config(character_name, config):
+                    raise OSError(f"Character Cloner could not save the configuration for '{character_name}'.")
 
         # Get background color
         background_color = info.get("background_color", "Green")
@@ -287,6 +307,7 @@ if server:
         return web.json_response(DOWNLOAD_STATUS)
 
     @server.PromptServer.instance.routes.post("/vnccs/cloner_download_model")
+    @privileged_route
     async def cloner_download_model(request):
         global DOWNLOAD_STATUS
         if DOWNLOAD_STATUS["status"] == "downloading":
@@ -298,11 +319,13 @@ if server:
         return web.json_response({"status": "started"})
 
 
-    @server.PromptServer.instance.routes.post("/vnccs/cloner_auto_generate")
-    async def cloner_auto_generate(request):
+    def _cloner_auto_generate_response(post):
         import sys
-        import llama_cpp
-        import llama_cpp.llama_chat_format
+        try:
+            import llama_cpp
+            import llama_cpp.llama_chat_format
+        except ImportError as error:
+            return web.json_response({"error": "DEPENDENCY_MISSING", "message": str(error), "model_name": "llama-cpp-python"}, status=500)
         
         # DEBUG INFO
         lib_ver = getattr(llama_cpp, "__version__", "unknown")
@@ -324,7 +347,6 @@ if server:
             # Proceed with HandlerCls...
 
             
-            post = await request.json()
             image_data = post.get("image_name")
             
             if not image_data:
@@ -548,6 +570,18 @@ Structure the response as a raw JSON object. Do not output the word 'tag' as a v
         except Exception as e:
             traceback.print_exc()
             return web.Response(status=500, text=str(e))
+
+
+    @server.PromptServer.instance.routes.post("/vnccs/cloner_auto_generate")
+    @privileged_route
+    async def cloner_auto_generate(request):
+        try:
+            post = await request.json()
+        except (ValueError, TypeError):
+            return web.json_response({"error": "Invalid JSON request"}, status=400)
+        if not isinstance(post, dict):
+            return web.json_response({"error": "Request must be an object"}, status=400)
+        return await run_wizard_job(_cloner_auto_generate_response, post, "cloner")
 
 
 NODE_CLASS_MAPPINGS = {

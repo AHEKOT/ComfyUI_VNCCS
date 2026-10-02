@@ -1,4 +1,4 @@
-from .preview_runtime import run_preview_job
+from .preview_runtime import run_preview_job, run_wizard_job
 
 import os
 import json
@@ -27,7 +27,9 @@ from ..utils import (
     apply_sex, append_age, load_config, age_strength,
     list_characters, character_dir, base_output_dir,
     sheets_dir, faces_dir, normalize_hair_tags, ensure_safe_name,
-    get_full_path_agnostic, atomic_output_path,
+    get_full_path_agnostic, atomic_output_path, safe_join_under,
+    privileged_route, file_fingerprint, config_path,
+    character_storage_lock,
 )
 from .vnccs_utils import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
 from .runtime_cleanup import inference_stage
@@ -48,15 +50,16 @@ def list_pose_preview_files(character_name, costume=None):
         base_char_path = character_dir(character_name)
         sprite_roots = []
         if costume:
+            costume = ensure_safe_name(costume, "costume")
             sprite_roots.extend([
-                os.path.join(base_char_path, "Sprites", costume, "Neutral"),
-                os.path.join(base_char_path, "Sprites", costume),
+                safe_join_under(base_char_path, "Sprites", costume, "Neutral"),
+                safe_join_under(base_char_path, "Sprites", costume),
             ])
         sprite_roots.extend([
-            os.path.join(base_char_path, "Sprites", "Naked", "Neutral"),
-            os.path.join(base_char_path, "Sprites", "Original", "Neutral"),
-            os.path.join(base_char_path, "Sprites", "Naked"),
-            os.path.join(base_char_path, "Sprites", "Original"),
+            safe_join_under(base_char_path, "Sprites", "Naked", "Neutral"),
+            safe_join_under(base_char_path, "Sprites", "Original", "Neutral"),
+            safe_join_under(base_char_path, "Sprites", "Naked"),
+            safe_join_under(base_char_path, "Sprites", "Original"),
         ])
         print(f"[VNCCS Debug] Checking Pose Preview Paths: {sprite_roots}")
 
@@ -66,7 +69,7 @@ def list_pose_preview_files(character_name, costume=None):
             if not os.path.isdir(poses_dir):
                 continue
             root_files = [
-                os.path.join(poses_dir, filename)
+                safe_join_under(base_char_path, os.path.relpath(os.path.join(poses_dir, filename), base_char_path))
                 for filename in os.listdir(poses_dir)
                 if os.path.isfile(os.path.join(poses_dir, filename))
                 and os.path.splitext(filename)[1].lower() in image_exts
@@ -1452,8 +1455,7 @@ if server:
         except Exception as e:
             return web.Response(status=500, text=str(e))
 
-    @server.PromptServer.instance.routes.post("/vnccs/character_wizard")
-    async def vnccs_character_wizard(request):
+    def _character_wizard_response(post):
         try:
             try:
                 import llama_cpp
@@ -1464,7 +1466,6 @@ if server:
                     "model_name": "llama-cpp-python",
                 }, status=500)
 
-            post = await request.json()
             user_description = str(post.get("description", "")).strip()
             if not user_description:
                 return web.Response(status=400, text="No character description provided")
@@ -1582,6 +1583,18 @@ Example:
                 "message": f"Engine Error: {e}",
                 "model_name": QWEN_VL_MODEL_FILENAME,
             }, status=500)
+
+
+    @server.PromptServer.instance.routes.post("/vnccs/character_wizard")
+    @privileged_route
+    async def vnccs_character_wizard(request):
+        try:
+            post = await request.json()
+        except (ValueError, TypeError):
+            return web.json_response({"error": "Invalid JSON request"}, status=400)
+        if not isinstance(post, dict):
+            return web.json_response({"error": "Request must be an object"}, status=400)
+        return await run_wizard_job(_character_wizard_response, post, "character")
 
     def _generate_preview_response(data):
         try:
@@ -1731,6 +1744,7 @@ Example:
 
 
     @server.PromptServer.instance.routes.post("/vnccs/preview_generate")
+    @privileged_route
     async def preview_generate(request):
         try:
             data = await request.json()
@@ -1835,6 +1849,15 @@ class CharacterCreatorV2:
         print(f"[VNCCS Character Creator V2] {label} positive generation prompt: {positive_prompt}")
         print(f"[VNCCS Character Creator V2] {label} negative generation prompt: {negative_prompt}")
 
+    @classmethod
+    def IS_CHANGED(cls, widget_data="{}", **kwargs):
+        data = json.loads(widget_data)
+        character = data.get("character", "Unknown")
+        root = character_dir(character)
+        paths = [config_path(character), safe_join_under(root, "cache", "preview.png")]
+        paths.extend(list_pose_preview_files(character))
+        return json.dumps([file_fingerprint(path) for path in paths])
+
     def process(self, widget_data="{}", unique_id=None):
         # Clear Preview Cache to free memory for workflow run
         global PREVIEW_CACHE
@@ -1885,24 +1908,25 @@ class CharacterCreatorV2:
 
         ensure_character_structure(character_name)
 
-        config = load_config(character_name, strict=True) or {
-            "character_info": {},
-            "folder_structure": {
-                "main_directories": MAIN_DIRS,
-                "emotions": EMOTIONS
-            },
-            "character_path": character_path,
-            "config_version": "2.0"
-        }
+        with character_storage_lock(character_path):
+            config = load_config(character_name, strict=True) or {
+                "character_info": {},
+                "folder_structure": {
+                    "main_directories": MAIN_DIRS,
+                    "emotions": EMOTIONS
+                },
+                "character_path": character_path,
+                "config_version": "2.0"
+            }
 
-        info["name"] = character_name
-        info["seed"] = gen_settings.get("seed", 0)
-        config["character_info"] = info
-        config["character_path"] = character_path
-        if "costumes" not in config:
-            config["costumes"] = {}
-        if not save_config(character_name, config):
-            raise OSError(f"Could not save character configuration for '{character_name}'. Check storage permissions and free space.")
+            info["name"] = character_name
+            info["seed"] = gen_settings.get("seed", 0)
+            config["character_info"] = info
+            config["character_path"] = character_path
+            if "costumes" not in config:
+                config["costumes"] = {}
+            if not save_config(character_name, config):
+                raise OSError(f"Could not save character configuration for '{character_name}'. Check storage permissions and free space.")
 
 
         generation_mode = str(gen_settings.get("generation_mode", "illustrious")).lower()

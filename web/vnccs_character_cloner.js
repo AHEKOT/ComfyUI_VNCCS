@@ -1157,6 +1157,7 @@ app.registerExtension({
 
                 const loadState = () => {
                     beginCharacterRequest();
+                    beginCaptionRequest();
                     restoredInfoCharacter = null;
                     if (dataWidget && dataWidget.value && dataWidget.value !== "{}") {
                         try {
@@ -1287,7 +1288,7 @@ app.registerExtension({
                     } else {
                         inp = document.createElement("input"); inp.className = "vnccs-cloner-input";
                         inp.value = targetObj[key] || "";
-                        inp.onchange = (e) => { targetObj[key] = e.target.value; saveState(); };
+                        inp.oninput = (e) => { targetObj[key] = e.target.value; saveState(); };
                     }
                     els[key] = inp;
                     wrap.appendChild(inp);
@@ -1424,6 +1425,7 @@ app.registerExtension({
                 let spritePreviewNavigator = null;
 
                 const clearSourceImages = () => {
+                    beginCaptionRequest();
                     state.source_images = [];
                     state.selected_idx = 0;
                     state.source_images_character = state.character || "";
@@ -1596,7 +1598,9 @@ app.registerExtension({
                 };
 
                 const beginCharacterRequest = createRequestGuard(node);
+                const beginCaptionRequest = createRequestGuard(node);
                 const loadChar = async (name, skipInfoLoad = false, { clearSources = false } = {}) => {
+                    beginCaptionRequest();
                     const currentRequest = beginCharacterRequest();
                     const originalCharacter = state.character;
                     const isCurrent = () => currentRequest() && (state.character === originalCharacter || state.character === name);
@@ -1847,6 +1851,7 @@ app.registerExtension({
                                 const resp = await api.fetchApi("/upload/image", { method: "POST", body });
                                 const json = await resp.json();
                                 if (json.name) {
+                                    beginCaptionRequest();
                                     state.source_images.push({
                                         name: json.name,
                                         type: json.type || "input",
@@ -1960,6 +1965,11 @@ app.registerExtension({
                     // USE SELECTED IMAGE
                     const selIdx = (typeof state.selected_idx === 'number') ? state.selected_idx : 0;
                     const imgName = state.source_images[selIdx];
+                    const character = state.character;
+                    const sources = JSON.stringify(state.source_images);
+                    const currentRequest = beginCaptionRequest();
+                    const isCurrent = () => currentRequest() && state.character === character &&
+                        JSON.stringify(state.source_images) === sources && (state.selected_idx || 0) === selIdx;
 
                     // Show loading overlay
                     const loading = createLoadingOverlay(container, "Analyzing image");
@@ -1978,14 +1988,17 @@ app.registerExtension({
                     try {
                         autoGenBtn.innerText = "CHECKING MODEL...";
                         if (!await ensureQwenVLReady()) return true;
+                        if (!isCurrent()) return;
                         autoGenBtn.innerText = "ANALYZING...";
                         const r = await api.fetchApi("/vnccs/cloner_auto_generate", {
                             method: "POST",
-                            body: JSON.stringify({ image_name: imgName })
+                            body: JSON.stringify({ image_name: imgName, node_id: node.id })
                         });
 
+                        if (!isCurrent()) return;
                         if (r.ok) {
                             const data = await r.json();
+                            if (!isCurrent()) return;
                             console.log("[VNCCS] Auto-Gen Success. Data:", data);
 
                             // Merge into state
@@ -2000,6 +2013,7 @@ app.registerExtension({
                             // Check for structured errors (404 for model, 500 for mmproj/other)
                             let err = null;
                             try { err = await r.json(); } catch (e) { }
+                            if (!isCurrent()) return;
 
                             if (err && (err.error === "MODEL_MISSING" || err.error === "MODEL_INVALID" || err.error === "MMPROJ_MISSING" || err.error === "MMPROJ_INVALID" || err.error === "DEPENDENCY_MISSING")) {
 
@@ -2061,6 +2075,7 @@ app.registerExtension({
                                                     return false;
                                                 }
                                             } catch (e) {
+                        if (!isCurrent()) return;
                                                 showModal("Error", () => { const d = document.createElement("div"); d.innerText = "Download trigger failed: " + e; return d; }, [{ text: "Close" }]);
                                             }
                                             return true;
@@ -2080,6 +2095,7 @@ app.registerExtension({
                             }, [{ text: "Close" }]);
                         }
                     } catch (e) {
+                        if (!isCurrent()) return;
                         showModal("Error", (m) => {
                             const d = document.createElement("div"); d.innerText = "Script Error: " + e; return d;
                         }, [{ text: "Close" }]);
@@ -2225,10 +2241,10 @@ app.registerExtension({
                     // For now, let's bind to lora_prompt or neg_prompt
                     if (key === "lora_prompt") {
                         t.value = state.character_info.lora_prompt;
-                        t.onchange = (e) => { state.character_info.lora_prompt = e.target.value; saveState(); }
+                        t.oninput = (e) => { state.character_info.lora_prompt = e.target.value; saveState(); }
                     } else if (key === "negative_prompt") {
                         t.value = state.character_info.negative_prompt;
-                        t.onchange = (e) => { state.character_info.negative_prompt = e.target.value; saveState(); }
+                        t.oninput = (e) => { state.character_info.negative_prompt = e.target.value; saveState(); }
                     }
                     // If positive, it's auto-generated... maybe just show extra prompt field?
                     // Let's stick to "LoRA Trigger / Manual Prompt" and "Negative"
@@ -2320,6 +2336,7 @@ app.registerExtension({
                         img.className = "vnccs-cloner-thumb";
 
                         img.onclick = () => {
+                            beginCaptionRequest();
                             state.selected_idx = idx;
                             saveState();
                             renderThumbs();
@@ -2341,6 +2358,7 @@ app.registerExtension({
                                     text: "Remove",
                                     class: "vnccs-btn-danger",
                                     action: () => {
+                                        beginCaptionRequest();
                                         state.source_images.splice(idx, 1);
                                         if (state.selected_idx >= state.source_images.length) state.selected_idx = Math.max(0, state.source_images.length - 1);
                                         saveState();

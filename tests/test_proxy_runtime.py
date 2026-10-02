@@ -562,9 +562,63 @@ def test_creator_and_clothes_routes_report_failed_configuration_saves(creative_m
     monkeypatch.setattr(m.clothes, 'save_costume_info', lambda *args: False)
     async def payload():
         return {'character': 'Alice', 'costume': 'Dress', 'info': {'top': 'silk'}}
-    response = asyncio.run(m.clothes.vnccs_save_costume(SimpleNamespace(json=payload)))
+    response = asyncio.run(m.clothes.vnccs_save_costume(SimpleNamespace(json=payload, headers={'X-VNCCS-CSRF': '1'})))
     assert response.status == 500
     assert 'Could not save costume' in response.data['error']
+
+
+@pytest.mark.parametrize('payload,status', [
+    ({'character': 'Alice', 'costume': 'Dress'}, 200),
+    ({'character': 'Alice', 'costume': 'Missing'}, 404),
+    ({'character': 'Alice', 'costume': 'Naked'}, 400),
+    ({'character': 'Alice', 'costume': 'Original'}, 400),
+    ({'character': '../Alice', 'costume': 'Dress'}, 400),
+    ({'character': 'Alice', 'costume': '../Dress'}, 400),
+    ({'character': 'Alice'}, 400), ({'costume': 'Dress'}, 400),
+    ({'character': [], 'costume': 'Dress'}, 400), ([], 400),
+])
+def test_costume_delete_route_validates_requests(creative_modules, payload, status):
+    m = creative_modules
+    m.utils.save_costume_info('Alice', 'Dress', {'top': 'silk'})
+    async def body():
+        return payload
+    response = asyncio.run(m.clothes.vnccs_delete_costume(SimpleNamespace(
+        json=body, headers={'X-VNCCS-CSRF': '1'},
+    )))
+    assert response.status == status
+    assert ('Dress' in m.utils.list_costumes('Alice')) == (status != 200)
+
+
+@pytest.mark.parametrize('headers', [{}, {'X-VNCCS-CSRF': '1', 'Sec-Fetch-Site': 'cross-site'}])
+def test_costume_delete_route_rejects_untrusted_requests_before_reading_body(creative_modules, headers):
+    async def body():
+        pytest.fail('Rejected request must not read its body')
+    response = asyncio.run(creative_modules.clothes.vnccs_delete_costume(SimpleNamespace(json=body, headers=headers)))
+    assert response.status == 403
+
+
+def test_costume_delete_route_reports_storage_failure(creative_modules, monkeypatch):
+    def denied(*args):
+        raise PermissionError('Delete denied')
+    monkeypatch.setattr(creative_modules.clothes, 'delete_costume', denied)
+    async def body():
+        return {'character': 'Alice', 'costume': 'Dress'}
+    response = asyncio.run(creative_modules.clothes.vnccs_delete_costume(SimpleNamespace(
+        json=body, headers={'X-VNCCS-CSRF': '1'},
+    )))
+    assert response.status == 500
+    assert response.data['error'] == 'Delete denied'
+
+
+def test_costume_delete_route_reports_cleanup_warning_as_success(creative_modules, monkeypatch):
+    monkeypatch.setattr(creative_modules.clothes, 'delete_costume', lambda *args: 'Cleanup pending')
+    async def body():
+        return {'character': 'Alice', 'costume': 'Dress'}
+    response = asyncio.run(creative_modules.clothes.vnccs_delete_costume(SimpleNamespace(
+        json=body, headers={'X-VNCCS-CSRF': '1'},
+    )))
+    assert response.status == 200
+    assert response.data == {'status': 'ok', 'warning': 'Cleanup pending'}
 
 
 @pytest.mark.parametrize('failure', ['image', 'metadata'])

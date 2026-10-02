@@ -71,6 +71,9 @@ from ..utils import (
     is_path_under,
     load_character_info,
     normalize_filesystem_path,
+    safe_join_under,
+    staged_image_batch,
+    privileged_route,
 )
 
 
@@ -2284,41 +2287,32 @@ class VNCCS_CharacterGenerator:
             sample_progress = self._stage_progress_callback(unique_id, stage, "Sampling poses", lora_info)
             decode_progress = self._stage_progress_callback(unique_id, stage, "Decoding poses", lora_info)
             total = len(pose_parts)
-            conditioning = []
+            decoded = []
             encode_progress(0, total)
-            for index, pose in enumerate(pose_parts, start=1):
-                conditioning.append(self._qi2_encode(
-                    pipe_values,
-                    "Replace the pose of <image 2> with the pose of <image 1>. "
-                    "Keep the character of <image 2>. " + prompts[index - 1],
-                    (pose, character_rgb),
-                    target_size=qwen_settings["target_size"],
-                ))
-                encode_progress(index, total)
             sampler_model = self._apply_pose_lora_to_model(
                 pipe_values["model"], pipe_values["clip"], pipe, lora_info,
             )
             sampler_model, turbo = self._qi2_prepare_model(sampler_model, pipe, pipe_values)
-            sampled = []
-            decoded = []
-            try:
-                sample_progress(0, total)
-                for index, (positive, negative, latent) in enumerate(conditioning):
-                    sampled.append(self._qi2_sample(
+            sample_progress(0, total)
+            decode_progress(0, total)
+            for index, pose in enumerate(pose_parts, start=1):
+                positive = negative = latent = samples = None
+                try:
+                    positive, negative, latent = self._qi2_encode(
+                        pipe_values,
+                        "Replace the pose of <image 2> with the pose of <image 1>. "
+                        "Keep the character of <image 2>. " + prompts[index - 1],
+                        (pose, character_rgb), target_size=qwen_settings["target_size"],
+                    )
+                    encode_progress(index, total)
+                    samples = self._qi2_sample(
                         sampler_model, positive, negative, latent, sampler, turbo=turbo,
-                    ))
-                    conditioning[index] = None
-                    del positive, negative, latent
-                    sample_progress(index + 1, total)
-                decode_progress(0, total)
-                for index, samples in enumerate(sampled):
-                    decoded.append(self._qi2_decode(samples, pipe_values["vae"]))
-                    sampled[index] = None
-                    del samples
-                    decode_progress(index + 1, total)
-            finally:
-                conditioning.clear()
-                sampled.clear()
+                    )
+                    sample_progress(index, total)
+                    decoded.append(self._qi2_decode(samples, pipe_values["vae"]).detach().cpu())
+                    decode_progress(index, total)
+                finally:
+                    del positive, negative, latent, samples
             return self._safe_image_batch(decoded, stage="QI2 pose generation decode")
 
         if not self._is_klein_pipe(pipe_values):
@@ -2870,30 +2864,20 @@ class VNCCS_CharacterGenerator:
             return []
         if images.ndim == 3:
             images = images.unsqueeze(0)
+        if not images.shape[0]:
+            raise ValueError("No sprite images to publish")
 
         sprite_set = _safe_sprite_set(sprite_set, "Naked")
-        target_dir = os.path.join(character_root, "Sprites", sprite_set, "Neutral")
-        os.makedirs(target_dir, exist_ok=True)
-
-        image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-        existing_images = [
-            filename for filename in os.listdir(target_dir)
-            if os.path.isfile(os.path.join(target_dir, filename))
-            and os.path.splitext(filename)[1].lower() in image_exts
-        ]
-        if version_existing and existing_images:
-            version_dir = self._version_dir(target_dir)
-            os.makedirs(version_dir, exist_ok=True)
-            for filename in existing_images:
-                src = os.path.join(target_dir, filename)
-                os.replace(src, os.path.join(version_dir, filename))
-
+        target_dir = safe_join_under(character_root, "Sprites", sprite_set, "Neutral")
         saved = []
-        for index, image in enumerate(images, start=1):
-            filename = f"sprite_pose_{index:04d}.png"
-            path = os.path.join(target_dir, filename)
-            self._tensor_item_to_pil(image).save(path, format="PNG")
-            saved.append(path)
+        with staged_image_batch(target_dir, version_existing=version_existing, lock_root=character_root) as stage:
+            for index, image in enumerate(images, start=1):
+                filename = f"sprite_pose_{index:04d}.png"
+                path = os.path.join(stage, filename)
+                self._tensor_item_to_pil(image).save(path, format="PNG")
+                with Image.open(path) as verification:
+                    verification.verify()
+                saved.append(os.path.join(target_dir, filename))
         return saved
 
     @serialized_generator
@@ -5040,6 +5024,7 @@ if server is not None:
         return web.json_response(_SEEDVR_DOWNLOAD_STATUS)
 
     @server.PromptServer.instance.routes.post("/vnccs/character_generator/seedvr_download")
+    @privileged_route
     async def vnccs_character_generator_seedvr_download(request):
         if request.headers.get("X-VNCCS-CSRF") != "1":
             return web.json_response({"error": "Missing VNCCS request token"}, status=403)
@@ -5159,6 +5144,7 @@ if server is not None:
 
 
     @server.PromptServer.instance.routes.post("/vnccs/character_generator/regenerate")
+    @privileged_route
     async def vnccs_character_generator_regenerate(request):
         try:
             data = await request.json()

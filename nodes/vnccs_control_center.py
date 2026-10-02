@@ -37,6 +37,7 @@ try:
         is_absolute_path_any_os,
         normalize_filesystem_path,
         validate_privileged_request,
+        privileged_route,
     )
 except Exception:
     from utils import (
@@ -45,6 +46,7 @@ except Exception:
         is_absolute_path_any_os,
         normalize_filesystem_path,
         validate_privileged_request,
+        privileged_route,
     )
 
 
@@ -2060,6 +2062,7 @@ def _clothes_preview_response(data):
 
 
 @server.PromptServer.instance.routes.post("/vnccs/control_center/clothes_preview")
+@privileged_route
 async def cc_clothes_preview(request):
     try:
         data = await request.json()
@@ -2145,12 +2148,15 @@ async def cc_lora_files(request):
 
 
 @server.PromptServer.instance.routes.post("/vnccs/control_center/custom_lora")
+@privileged_route
 async def cc_add_custom_lora(request):
     try:
         data = await request.json()
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
+    if not isinstance(data, dict) or any(data.get(field) is not None and not isinstance(data[field], str) for field in ("repo_id", "path", "kind")):
+        return web.json_response({"error": "Custom LoRA fields must be strings in an object"}, status=400)
     repo_id = (data.get("repo_id") or "").strip()
     rel_path = (data.get("path") or "").strip().replace("\\", "/")
     kind = str(data.get("kind") or "Custom").strip() or "Custom"
@@ -2188,12 +2194,15 @@ async def cc_add_custom_lora(request):
 
 
 @server.PromptServer.instance.routes.post("/vnccs/control_center/custom_lora/delete")
+@privileged_route
 async def cc_delete_custom_lora(request):
     try:
         data = await request.json()
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
+    if not isinstance(data, dict) or any(data.get(field) is not None and not isinstance(data[field], str) for field in ("repo_id", "local_path", "name")):
+        return web.json_response({"error": "Custom LoRA fields must be strings in an object"}, status=400)
     repo_id = (data.get("repo_id") or "").strip()
     local_path = (data.get("local_path") or "").strip().replace("\\", "/")
     name = (data.get("name") or "").strip()

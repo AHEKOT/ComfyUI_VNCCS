@@ -35,7 +35,7 @@ def test_h3_body_preparation_uses_clothes_lora_and_returns_one_frame(monkeypatch
         calls.append((name, kwargs))
         if name == "MiniMaxH3ReferenceToVideo":
             return "conditioning", "latent"
-        if name == "VAEDecodeTiled":
+        if name == "VAEDecode":
             return (decoded,)
         assert name != "KSampler"
         return (name,)

@@ -6,7 +6,11 @@ import json
 import random
 import re
 import tempfile
+import hashlib
+import shutil
+import threading
 from contextlib import contextmanager
+from functools import wraps
 from urllib.parse import urlparse
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
@@ -19,6 +23,8 @@ MAIN_DIRS = ["Sprites", "Faces", "Sheets"]
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,120}$")
 PRIVILEGED_REQUEST_HEADER = "X-VNCCS-CSRF"
 PRIVILEGED_REQUEST_VALUE = "1"
+_STORAGE_LOCKS = tuple(threading.RLock() for _ in range(64))
+COSTUME_TEXT_FIELDS = {"top", "bottom", "shoes", "head", "face", "negative_prompt"}
 AGE_CONTROL_POINTS = [
     (0, -5.0),
     (3, -4.0),
@@ -183,7 +189,109 @@ def safe_join_under(base: str, *parts: str) -> str:
     target = os.path.abspath(os.path.join(base_abs, *normalized_parts))
     if not is_path_under(base_abs, target):
         raise ValueError("path escapes allowed directory")
+    if os.path.commonpath([os.path.realpath(base_abs), os.path.realpath(target)]) != os.path.realpath(base_abs):
+        raise ValueError("path resolves outside allowed directory")
     return target
+
+
+def file_fingerprint(path: str) -> str:
+    """Hash disk inputs so unchanged widget values cannot reuse stale files."""
+    digest = hashlib.sha256()
+    digest.update(os.path.abspath(path).encode("utf-8"))
+    try:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except FileNotFoundError:
+        digest.update(b"missing")
+    except OSError as error:
+        digest.update(f"unreadable:{error.errno}".encode("ascii"))
+    return digest.hexdigest()
+
+
+@contextmanager
+def character_storage_lock(path):
+    """Coordinate publication and maintenance with a bounded lock registry."""
+    key = os.path.normcase(os.path.realpath(path))
+    index = int(hashlib.sha256(key.encode("utf-8")).hexdigest(), 16) % len(_STORAGE_LOCKS)
+    with _STORAGE_LOCKS[index]:
+        yield
+
+
+def _link_or_copy(source, target):
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copy2(source, target)
+
+
+@contextmanager
+def staged_image_batch(target_dir, *, version_existing=True, lock_root=None):
+    """Publish a complete image directory and restore the old one on failure."""
+    parent = os.path.dirname(os.path.abspath(target_dir))
+    os.makedirs(parent, exist_ok=True)
+    with character_storage_lock(lock_root or target_dir):
+        stage = tempfile.mkdtemp(prefix=".vnccs-sprites-", dir=parent)
+        backup = None
+        try:
+            yield stage
+            image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+            existing = os.listdir(target_dir) if os.path.isdir(target_dir) else []
+            old_images = [name for name in existing if os.path.isfile(os.path.join(target_dir, name))
+                          and os.path.splitext(name)[1].lower() in image_exts]
+            version_dir = None
+            if version_existing and old_images:
+                number = 1
+                while f"V{number}" in existing:
+                    number += 1
+                version_dir = os.path.join(stage, f"V{number}")
+                os.makedirs(version_dir)
+            for name in existing:
+                source = os.path.join(target_dir, name)
+                destination = os.path.join(stage, name)
+                if name in old_images and version_dir:
+                    destination = os.path.join(version_dir, name)
+                elif os.path.exists(destination):
+                    continue
+                if os.path.islink(source):
+                    os.symlink(os.readlink(source), destination)
+                elif os.path.isdir(source):
+                    shutil.copytree(source, destination, copy_function=_link_or_copy, symlinks=True)
+                else:
+                    _link_or_copy(source, destination)
+            if os.path.exists(target_dir):
+                backup = tempfile.mkdtemp(prefix=".vnccs-rollback-", dir=parent)
+                os.rmdir(backup)
+                os.replace(target_dir, backup)
+            try:
+                os.replace(stage, target_dir)
+            except BaseException:
+                if backup:
+                    os.replace(backup, target_dir)
+                    backup = None
+                raise
+            if backup:
+                try:
+                    shutil.rmtree(backup)
+                    backup = None
+                except OSError as error:
+                    print(f"[VNCCS Storage] Sprites published; could not remove rollback directory '{backup}': {error}")
+        finally:
+            if os.path.exists(stage):
+                shutil.rmtree(stage)
+            # A failed rollback leaves its backup in place for recovery.
+
+
+def validate_costume_info(info):
+    """Validate supported costume fields while preserving extension metadata."""
+    if not isinstance(info, dict):
+        raise ValueError("Costume info must be an object")
+    if any(not isinstance(key, str) for key in info):
+        raise ValueError("Costume info keys must be strings")
+    for field in COSTUME_TEXT_FIELDS:
+        if field in info and not isinstance(info[field], str):
+            raise ValueError(f"Costume field '{field}' must be a string")
+    return dict(info)
 
 
 def safe_relative_path(value: str, field: str = "path") -> str:
@@ -239,6 +347,19 @@ def validate_privileged_request(request) -> None:
         return
 
     raise ValueError(f"missing {PRIVILEGED_REQUEST_HEADER} header")
+
+
+def privileged_route(handler):
+    """Apply the same origin check before any expensive or mutating handler."""
+    @wraps(handler)
+    async def guarded(request):
+        try:
+            validate_privileged_request(request)
+        except ValueError as error:
+            from aiohttp import web
+            return web.json_response({"error": str(error)}, status=403)
+        return await handler(request)
+    return guarded
 
 
 def get_legacy_output_dir() -> str:
@@ -423,6 +544,8 @@ def ensure_character_structure(name: str, emotions: List[str] = None, main_dirs:
     
     char_path = character_dir(name)
     base_path = base_output_dir()
+    group_paths = [safe_join_under(char_path, main_dir) for main_dir in main_dirs]
+    naked_paths = [safe_join_under(char_path, main_dir, "Naked") for main_dir in main_dirs]
     
     if not os.path.exists(base_path):
         os.makedirs(base_path)
@@ -430,12 +553,10 @@ def ensure_character_structure(name: str, emotions: List[str] = None, main_dirs:
     if not os.path.exists(char_path):
         os.makedirs(char_path)
     
-    for main_dir in main_dirs:
-        main_dir_path = os.path.join(char_path, main_dir)
+    for main_dir_path, naked_path in zip(group_paths, naked_paths):
         if not os.path.exists(main_dir_path):
             os.makedirs(main_dir_path)
         
-        naked_path = os.path.join(main_dir_path, "Naked")
         if not os.path.exists(naked_path):
             os.makedirs(naked_path)
 
@@ -448,13 +569,14 @@ def ensure_costume_structure(name: str, costume: str, emotions: List[str] = None
     when images are actually saved.
     """
     char_path = character_dir(name)
+    costume = ensure_safe_name(costume, "costume")
+    group_paths = [safe_join_under(char_path, main_dir) for main_dir in MAIN_DIRS]
+    costume_paths = [safe_join_under(char_path, main_dir, costume) for main_dir in MAIN_DIRS]
     
-    for main_dir in MAIN_DIRS:
-        main_dir_path = os.path.join(char_path, main_dir)
+    for main_dir_path, costume_path in zip(group_paths, costume_paths):
         if not os.path.exists(main_dir_path):
             os.makedirs(main_dir_path)
         
-        costume_path = safe_join_under(main_dir_path, ensure_safe_name(costume, "costume"))
         if not os.path.exists(costume_path):
             os.makedirs(costume_path)
 
@@ -680,7 +802,11 @@ def load_character_info(character_name: str) -> Optional[Dict[str, Any]]:
     if not config:
         return None
     
+    if not isinstance(config, dict):
+        raise ValueError("Character config must be an object")
     char_info = config.get("character_info", {})
+    if not isinstance(char_info, dict):
+        raise ValueError("Character profile must be an object")
     
     sex = char_info.get("sex") or char_info.get("gender")
     if sex:
@@ -761,18 +887,79 @@ def load_costume_info(character_name: str, costume_name: str) -> Dict[str, Any]:
     if not config:
         return {}
     costumes = config.get("costumes", {})
-    return costumes.get(costume_name, {})
+    return validate_costume_info(costumes.get(costume_name, {}))
 
 
 def save_costume_info(character_name: str, costume_name: str, costume_data: Dict[str, Any]) -> bool:
     """Save character costume info."""
-    config = load_config(character_name, strict=True)
-    if not config:
-        config = {"character_info": {}, "costumes": {}}
-    if "costumes" not in config:
-        config["costumes"] = {}
-    config["costumes"][costume_name] = costume_data
-    return save_config(character_name, config) != ""
+    costume_data = validate_costume_info(costume_data)
+    with character_storage_lock(character_dir(character_name)):
+        config = load_config(character_name, strict=True)
+        if not config:
+            config = {"character_info": {}, "costumes": {}}
+        if "costumes" not in config:
+            config["costumes"] = {}
+        config["costumes"][costume_name] = costume_data
+        return save_config(character_name, config) != ""
+
+
+def delete_costume(character_name: str, costume_name: str) -> Optional[str]:
+    """Remove an editable costume, restoring its files if publication fails."""
+    character_name = ensure_safe_name(character_name, "character")
+    costume_name = ensure_safe_name(costume_name, "costume")
+    if costume_name.casefold() in {"naked", "original"}:
+        raise ValueError("Cannot delete base sprite set.")
+    root = character_dir(character_name)
+    with character_storage_lock(root):
+        config = load_config(character_name, strict=True)
+        costumes = config.get("costumes", {}) if config is not None else {}
+        cache_name = costume_name.replace(" ", "_")
+        # Legacy preview names can be shared by costumes such as "Red Dress"
+        # and "Red_Dress". Keep that cache while another costume uses it.
+        shared_cache = any(
+            name != costume_name and name.replace(" ", "_").casefold() == cache_name.casefold()
+            for name in list_costumes(character_name)
+        )
+        paths = [safe_join_under(root, group, costume_name) for group in MAIN_DIRS]
+        if not shared_cache:
+            paths.extend([
+                safe_join_under(root, "cache", f"preview_{cache_name}.png"),
+                safe_join_under(root, "cache", f"preview_info_{cache_name}.json"),
+            ])
+        # Reject aliases even when their resolved destination is inside the root.
+        # A costume symlink must never let deletion touch a protected base set.
+        if any(os.path.islink(path) for path in [root, config_path(character_name), *paths,
+                                                *(os.path.dirname(path) for path in paths)]):
+            raise ValueError("Cannot delete a costume through symbolic links.")
+        existing = [path for path in paths if os.path.lexists(path)]
+        if costume_name not in costumes and not existing:
+            raise FileNotFoundError(f"Costume '{costume_name}' was not found.")
+        staging = tempfile.mkdtemp(prefix=".vnccs-delete-", dir=root)
+        moved = []
+        try:
+            for index, path in enumerate(existing):
+                backup = os.path.join(staging, str(index))
+                os.replace(path, backup)
+                moved.append((path, backup))
+            if costume_name in costumes:
+                del costumes[costume_name]
+                if not save_config(character_name, config):
+                    raise OSError(f"Could not save configuration after deleting '{costume_name}'.")
+        except BaseException:
+            for path, backup in reversed(moved):
+                os.replace(backup, path)
+            os.rmdir(staging)
+            raise
+        try:
+            shutil.rmtree(staging)
+        except OSError as error:
+            warning = (
+                f"Costume '{costume_name}' was deleted. Some removed files remain at '{staging}': {error}. "
+                "Check storage permissions, then remove that temporary directory."
+            )
+            print(f"[VNCCS] {warning}")
+            return warning
+        return None
 
 
 def load_character_sheet(character: str, costume: str = "Naked", emotion: str = "neutral", with_mask: bool = False) -> Optional["torch.Tensor"]:

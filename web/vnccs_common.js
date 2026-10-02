@@ -546,6 +546,8 @@ function getHelpTooltip() {
     if (_helpTooltipEl?.isConnected) return _helpTooltipEl;
     _helpTooltipEl = document.createElement("div");
     _helpTooltipEl.className = "vnccs-help-tooltip";
+    _helpTooltipEl.id = "vnccs-field-help-tooltip";
+    _helpTooltipEl.setAttribute("role", "tooltip");
     document.body.appendChild(_helpTooltipEl);
     return _helpTooltipEl;
 }
@@ -728,18 +730,30 @@ const COMMON_CSS = `
 // showModal(container, title, contentFunc, buttons)
 // buttons: [{ text, class?: "primary"|"danger", action?: async (overlay, btn) => keepOpen? }]
 // Returns { overlay, modal, content }
+let _modalSequence = 0;
+const _modalStack = [];
+const _modalOpeners = new WeakMap();
+
 export function showModal(container, title, contentFunc, buttons) {
     injectStyles(COMMON_CSS, "vnccs-common");
+    const parentModal = _modalStack.at(-1);
+    const openers = [document.activeElement, ...(_modalOpeners.get(parentModal) || [])];
 
     const overlay = document.createElement("div");
     overlay.className = "vnccs-common-modal-overlay";
 
     const m = document.createElement("div");
     m.className = "vnccs-common-modal";
+    m.tabIndex = -1;
+    m.setAttribute("role", "dialog");
+    m.setAttribute("aria-modal", "true");
+    _modalOpeners.set(m, openers);
 
     const titleEl = document.createElement("div");
     titleEl.className = "vnccs-common-modal-title";
     titleEl.textContent = title;
+    titleEl.id = `vnccs-modal-title-${++_modalSequence}`;
+    m.setAttribute("aria-labelledby", titleEl.id);
     m.appendChild(titleEl);
 
     const content = contentFunc(m);
@@ -774,7 +788,43 @@ export function showModal(container, title, contentFunc, buttons) {
     });
     m.appendChild(row);
 
+    const focusable = () => [...m.querySelectorAll("button, input:not([type='hidden']), textarea, select, a[href], [tabindex]:not([tabindex='-1'])")]
+        .filter(element => !element.disabled && !element.hidden && !element.closest("[inert]")
+            && element.getClientRects().length > 0);
+    const focusFirst = () => (focusable()[0] || m).focus({ preventScroll: true });
+    const containFocus = event => {
+        if (_modalStack.at(-1) === m && !m.contains(event.target)) focusFirst();
+    };
+    let closed = false;
+    let observer = null;
+    const remove = overlay.remove;
+    const cleanup = () => {
+        if (closed) return;
+        closed = true;
+        const wasTop = _modalStack.at(-1) === m;
+        const index = _modalStack.indexOf(m);
+        if (index >= 0) _modalStack.splice(index, 1);
+        document.removeEventListener("focusin", containFocus, true);
+        observer?.disconnect();
+        if (wasTop) openers.find(element => element?.isConnected)?.focus({ preventScroll: true });
+    };
+    overlay.remove = function () {
+        remove.apply(this, arguments);
+        cleanup();
+    };
+
     m.addEventListener("keydown", (event) => {
+        if (_modalStack.at(-1) !== m) return;
+        if (event.key === "Tab") {
+            const fields = focusable();
+            const index = fields.indexOf(document.activeElement);
+            if (!fields.length || (event.shiftKey && index <= 0) || (!event.shiftKey && (index < 0 || index === fields.length - 1))) {
+                event.preventDefault();
+                event.stopPropagation();
+                (event.shiftKey ? fields.at(-1) || m : fields[0] || m).focus({ preventScroll: true });
+            }
+            return;
+        }
         if (event.key === "Escape") {
             event.preventDefault();
             event.stopPropagation();
@@ -794,9 +844,16 @@ export function showModal(container, title, contentFunc, buttons) {
 
     overlay.appendChild(m);
     container.appendChild(overlay);
+    _modalStack.push(m);
+    document.addEventListener("focusin", containFocus, true);
+    if (typeof MutationObserver !== "undefined") {
+        observer = new MutationObserver(() => { if (!overlay.isConnected) cleanup(); });
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
     requestAnimationFrame(() => {
-        const field = m.querySelector("input:not([type='hidden']):not([disabled]), textarea:not([disabled]), select:not([disabled])");
-        if (!field) return;
+        if (closed || _modalStack.at(-1) !== m) return;
+        const field = focusable().find(element => ["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName));
+        if (!field) { focusFirst(); return; }
         field.focus({ preventScroll: true });
         if (typeof field.select === "function" && (field.tagName === "INPUT" || field.tagName === "TEXTAREA")) {
             field.select();

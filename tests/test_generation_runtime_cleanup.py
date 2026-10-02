@@ -125,6 +125,8 @@ def test_other_pose_families_release_resources_and_consumed_tensors(dynamic_runt
 
     def encode(**kwargs):
         assert not pending
+        if kind == "qi2":
+            assert all(ref() is None for ref in refs + sampled_refs)
         pending.append(object())
         positive = torch.ones(1)
         refs.append(weakref.ref(positive))
@@ -134,7 +136,7 @@ def test_other_pose_families_release_resources_and_consumed_tensors(dynamic_runt
         nonlocal sample_count
         assert not pending
         pending.append(object())
-        assert sum(ref() is not None for ref in refs) == count - sample_count
+        assert sum(ref() is not None for ref in refs) == (1 if kind == "qi2" else count - sample_count)
         sample_count += 1
         samples = torch.ones(1)
         sampled_refs.append(weakref.ref(samples))
@@ -144,8 +146,8 @@ def test_other_pose_families_release_resources_and_consumed_tensors(dynamic_runt
         assert not pending
         pending.append(object())
         nonlocal decode_count
-        assert all(ref() is None for ref in refs)
-        assert sum(ref() is not None for ref in sampled_refs) == count - decode_count
+        assert sum(ref() is not None for ref in refs) == (1 if kind == "qi2" else 0)
+        assert sum(ref() is not None for ref in sampled_refs) == (1 if kind == "qi2" else count - decode_count)
         decode_count += 1
         return (torch.ones(1, 8, 8, 3),)
 

@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, serverRegistry, refreshPreviewImage, watchConnection } from "./vnccs_transport.js";
 import { presetGroups, presetSelection } from "./character_presets.mjs";
-import { debounce, registerCleanup, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard } from "./vnccs_common.js";
+import { debounce, registerCleanup, injectStyles, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard } from "./vnccs_common.js";
 
 const QI2_OVERHAUL_LORA_NAME = "QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.safetensors";
 const QI2_OVERHAUL_TITLE = "Qwen Image2.1 Character Overhaul";
@@ -1333,9 +1333,7 @@ app.registerExtension({
                 syncDOMWidgetWidthSoon(node, "ui");
 
                 // 1. Setup CSS
-                const style = document.createElement("style");
-                style.innerHTML = STYLE;
-                document.head.appendChild(style);
+                injectStyles(STYLE, "vnccs-character-creator-v2");
 
                 // 2. Strict Widget Cleanup
                 const cleanup = () => {
@@ -2012,6 +2010,7 @@ app.registerExtension({
 
                 const clearCharacterSelection = () => {
                     beginCharacterRequest();
+                    beginCharacterWizardRequest();
                     beginPreviewRequest();
                     state.character = "";
                     restoredWidgetInfoCharacter = null;
@@ -2152,6 +2151,7 @@ app.registerExtension({
 
                 const loadState = () => {
                     beginCharacterRequest();
+                    beginCharacterWizardRequest();
                     // 1. Try Widget Data (Graph Persistence)
                     const w = node.widgets.find(x => x.name === "widget_data");
                     if (w && w.value && w.value !== "{}") {
@@ -3501,6 +3501,8 @@ app.registerExtension({
                 };
 
                 const openCharacterWizard = () => {
+                    const character = state.character;
+                    const currentRequest = beginCharacterWizardRequest();
                     let input;
                     showModal("Character Wizzard", () => {
                         const wrap = document.createElement("div");
@@ -3520,6 +3522,8 @@ app.registerExtension({
                             text: "FILL FIELDS",
                             class: "vnccs-btn-primary",
                             action: async (_overlay, btn) => {
+                                const isCurrent = () => currentRequest() && _overlay.isConnected && state.character === character;
+                                if (!isCurrent()) return false;
                                 const description = input.value.trim();
                                 if (!description) {
                                     input.focus();
@@ -3529,22 +3533,27 @@ app.registerExtension({
                                 btn.innerText = "CHECKING MODEL...";
                                 try {
                                     if (!await ensureQwenVLReady()) return true;
+                                    if (!isCurrent()) return false;
                                     btn.innerText = "THINKING...";
                                     const r = await api.fetchApi("/vnccs/character_wizard", {
                                         method: "POST",
                                         headers: { "Content-Type": "application/json" },
-                                        body: JSON.stringify({ description })
+                                        body: JSON.stringify({ description, node_id: node.id })
                                     });
+                                    if (!isCurrent()) return false;
                                     if (!r.ok) {
                                         let err = null;
                                         try { err = await r.json(); } catch (e) { err = { message: await r.text() }; }
+                                        if (!isCurrent()) return false;
                                         showCharacterWizardError(err);
                                         return false;
                                     }
                                     const data = await r.json();
+                                    if (!isCurrent()) return false;
                                     applyCharacterWizardData(data);
                                     return false;
                                 } catch (e) {
+                                    if (!isCurrent()) return false;
                                     showCharacterWizardError({ message: e.toString() });
                                     return true;
                                 } finally {
@@ -4308,7 +4317,9 @@ app.registerExtension({
                 };
 
                 const beginCharacterRequest = createRequestGuard(node);
+                const beginCharacterWizardRequest = createRequestGuard(node);
                 const loadChar = async (n, skipInfoLoad = false) => {
+                    beginCharacterWizardRequest();
                     const currentRequest = beginCharacterRequest();
                     const currentPreview = beginPreviewRequest();
                     const originalCharacter = state.character;

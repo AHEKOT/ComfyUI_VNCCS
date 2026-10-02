@@ -1,3 +1,4 @@
+from .preview_runtime import run_wizard_job
 
 import os
 import json
@@ -12,10 +13,11 @@ import traceback
 import re
 
 from ..utils import (
-    character_dir, save_costume_info,
+    character_dir, save_costume_info, delete_costume,
     load_costume_info, list_costumes, ensure_costume_structure,
     sheets_dir,
-    ensure_safe_name, safe_join_under, safe_relative_path, atomic_output_path
+    ensure_safe_name, safe_join_under, safe_relative_path, atomic_output_path,
+    validate_costume_info, privileged_route
 )
 from .character_generator import (
     _call_comfy_node,
@@ -912,12 +914,15 @@ async def vnccs_get_costume(request):
         return web.Response(status=500, text=str(e))
 
 @server.PromptServer.instance.routes.post("/vnccs/save_costume")
+@privileged_route
 async def vnccs_save_costume(request):
     try:
         data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("Costume request must be an object")
         character = data.get("character")
         costume = data.get("costume")
-        info = data.get("info", {})
+        info = validate_costume_info(data.get("info", {}))
         if not character or not costume: return web.Response(status=400)
         character = ensure_safe_name(character, "character")
         costume = ensure_safe_name(costume, "costume")
@@ -925,12 +930,35 @@ async def vnccs_save_costume(request):
         if not save_costume_info(character, costume, info):
             return web.json_response({"error": f"Could not save costume '{costume}'. Check storage permissions and free space."}, status=500)
         return web.json_response({"status": "ok"})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
     except Exception as e:
         return web.Response(status=500, text=str(e))
 
 
-@server.PromptServer.instance.routes.post("/vnccs/clothes_wizard")
-async def vnccs_clothes_wizard(request):
+@server.PromptServer.instance.routes.post("/vnccs/delete_costume")
+@privileged_route
+async def vnccs_delete_costume(request):
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("Costume request must be an object")
+        if not isinstance(data.get("character"), str) or not isinstance(data.get("costume"), str):
+            raise ValueError("Character and costume must be names.")
+        warning = delete_costume(data["character"], data["costume"])
+        result = {"status": "ok"}
+        if warning:
+            result["warning"] = warning
+        return web.json_response(result)
+    except ValueError as error:
+        return web.json_response({"error": str(error)}, status=400)
+    except FileNotFoundError as error:
+        return web.json_response({"error": str(error)}, status=404)
+    except Exception as error:
+        return web.json_response({"error": str(error)}, status=500)
+
+
+def _clothes_wizard_response(post):
     try:
         try:
             import llama_cpp
@@ -941,7 +969,6 @@ async def vnccs_clothes_wizard(request):
                 "model_name": "llama-cpp-python",
             }, status=500)
 
-        post = await request.json()
         user_description = str(post.get("description", "")).strip()
         if not user_description:
             return web.Response(status=400, text="No clothes description provided")
@@ -1037,6 +1064,18 @@ Example for "Santa Claus costume":
             "message": f"Engine Error: {e}",
             "model_name": QWEN_VL_MODEL_FILENAME,
         }, status=500)
+
+
+@server.PromptServer.instance.routes.post("/vnccs/clothes_wizard")
+@privileged_route
+async def vnccs_clothes_wizard(request):
+    try:
+        post = await request.json()
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid JSON request"}, status=400)
+    if not isinstance(post, dict):
+        return web.json_response({"error": "Request must be an object"}, status=400)
+    return await run_wizard_job(_clothes_wizard_response, post, "clothes")
 
 
 @server.PromptServer.instance.routes.get("/vnccs/get_preview")

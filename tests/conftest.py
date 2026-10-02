@@ -1,6 +1,7 @@
 """Stubs for ComfyUI runtime modules not available outside of ComfyUI."""
 
 import importlib.util
+import importlib.abc
 import os
 import sys
 import types
@@ -92,21 +93,49 @@ def _preload_node(basename):
     """
     file_path = os.path.join(_PROJECT_ROOT, "nodes", f"{basename}.py")
     full_name = f"_vnccs.nodes.{basename}"
+    existing = sys.modules.get(full_name)
+    if existing is not None:
+        sys.modules[f"nodes.{basename}"] = existing
+        setattr(_nodes_ns, basename, existing)
+        return existing
     spec = importlib.util.spec_from_file_location(full_name, file_path)
     mod = importlib.util.module_from_spec(spec)
     mod.__package__ = "_vnccs.nodes"
     sys.modules[full_name] = mod
     sys.modules[f"nodes.{basename}"] = mod
     spec.loader.exec_module(mod)
+    setattr(_nodes_ns, basename, mod)
     return mod
+
+
+class _NodeAliasLoader(importlib.abc.Loader):
+    def __init__(self, basename):
+        self.basename = basename
+
+    def create_module(self, spec):
+        module = _preload_node(self.basename)
+        self.canonical_spec = module.__spec__
+        return module
+
+    def exec_module(self, module):
+        # The canonical package loader already initialized this shared module.
+        module.__spec__ = self.canonical_spec
+
+
+class _NodeAliasFinder(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.startswith("nodes.") and fullname.count(".") == 1:
+            basename = fullname.split(".")[1]
+            if os.path.isfile(os.path.join(_PROJECT_ROOT, "nodes", f"{basename}.py")):
+                return importlib.util.spec_from_loader(fullname, _NodeAliasLoader(basename))
+        return None
+
+
+sys.meta_path.insert(0, _NodeAliasFinder())
 
 
 # Pre-load node files that use `from ..utils import` (relative double-dot imports).
 # Other node files use absolute imports and load fine on demand.
-for _basename in ("character_creator", "dataset_generator"):
-    try:
+if importlib.util.find_spec("torch") is not None:
+    for _basename in ("character_creator", "dataset_generator"):
         _preload_node(_basename)
-    except Exception:
-        # If the file itself fails (e.g., missing optional dep), tests importing
-        # it will also fail — that's the expected behaviour (or importorskip).
-        pass

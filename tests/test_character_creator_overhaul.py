@@ -105,7 +105,7 @@ def test_both_generation_paths_apply_overhaul_before_turbo_and_sampling(monkeypa
     if route == "preview":
         async def payload():
             return data
-        result = asyncio.run(creator.preview_generate(SimpleNamespace(json=payload)))
+        result = asyncio.run(creator.preview_generate(SimpleNamespace(json=payload, headers={"Host": "localhost", "X-VNCCS-CSRF": "1"})))
         assert result["image"]
     else:
         result = creator.CharacterCreatorV2().process(json.dumps(data))

@@ -51,7 +51,8 @@ for (const widget of ['clothes', 'cloner', 'creator']) {
         });
         let code;
         if (widget === 'clothes') {
-            code = between(source('vnccs_clothes_designer'), 'const beginCostumeInfoRequest', 'const updatePreviewImage');
+            code = between(source('vnccs_clothes_designer'), 'const hasSelectedEditableCostume =', 'const onValidationError =');
+            code += between(source('vnccs_clothes_designer'), 'const beginCostumeInfoRequest', 'const updatePreviewImage');
             code += '\nglobalThis.load = loadCostumeInfo;';
         } else {
             const name = widget === 'cloner' ? 'vnccs_character_cloner' : 'vnccs_character_creator_v2';
@@ -90,9 +91,9 @@ function migrationHarness() {
         console: { error: (...args) => errors.push(args), warn() {} },
         setTimeout: fn => { const key = Symbol(); timers.set(key, fn); return key; },
         clearTimeout: key => timers.delete(key),
-        api: { fetchApi: () => { const task = deferred(); requests.push(task); return task.promise; } },
+        api: { fetchApi: (route, options) => { const task = deferred(); task.route = route; task.options = options; requests.push(task); return task.promise; } },
         fill: { style: {} }, progressText: {},
-        scanBtn: {}, selectedBtn: {}, allBtn: {}, repairBtn: {}, log: {},
+        scanBtn: {}, selectedBtn: {}, allBtn: {}, repairBtn: {}, retryBtn: {}, log: {},
         window: { dispatchEvent: event => events.push(event.type) },
         CustomEvent: class { constructor(type) { this.type = type; } },
     });
@@ -214,7 +215,7 @@ function creatorImageHarness() {
         isSelectedCcAssetInstalled: () => true,
         saveCurrentGenerationModeValues() {}, createLoadingOverlay: () => ({ remove() {} }),
         showMessage() { assert.fail('Stale generation error surfaced'); },
-        api: { fetchApi: () => { const task = deferred(); requests.push(task); return task.promise; } },
+        api: { fetchApi: (route, options) => { const task = deferred(); task.route = route; task.options = options; requests.push(task); return task.promise; } },
     });
     const text = source('vnccs_character_creator_v2');
     vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\n${between(text, 'const clearCharacterSelection =', 'const applyStoredPrefs =')}\n${between(text, 'const beginCharacterRequest =', 'const doGenerate = async')}\n${between(text, 'const doGenerate = async', '// 7. Graph Restore Hook')}\nglobalThis.preview = { showSpritePreview, tryCachePreview, clearCharacterSelection, doGenerate, loadChar };`, context);
@@ -306,7 +307,7 @@ for (const operation of ['character', 'costume', 'initialization']) {
         if (operation === 'character') code = between(text, 'charSel.onchange =', 'charRow.appendChild(charSel)');
         else if (operation === 'costume') code = between(text, 'costSel.onchange =', 'els.costSel = costSel;');
         else code = between(text, '// Initial Load', 'container.appendChild(topRow)').replace('(async () => {', 'globalThis.initialization = (async () => {');
-        vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\nconst beginSelectionRequest = createRequestGuard(node);\nglobalThis.supersede = beginPreviewRequest;\n${code}`, context);
+        vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\nconst beginSelectionRequest = createRequestGuard(node);\nconst beginClothesWizardRequest = createRequestGuard(node);\nglobalThis.supersede = beginPreviewRequest;\n${code}`, context);
         const pending = operation === 'initialization' ? context.initialization : context[operation === 'character' ? 'charSel' : 'costSel'].onchange({ target: { value: operation === 'character' ? 'Alice' : 'Dress' } });
         await new Promise(resolve => setImmediate(resolve));
         context.supersede(); // A newer generated/cache preview now owns the display.
@@ -356,6 +357,7 @@ test('delayed clothes initialization cannot take ownership from a newer characte
     let metadataLoads = 0;
     const context = createWidgetContext({
         state, node, console, charSel: {}, Option: class { constructor(label, value) { this.value = value; } },
+        beginClothesWizardRequest: () => () => true,
         els: { charSelect: { innerHTML: '', add: option => options.push(option.value) } },
         api: { fetchApi: () => contextRequest.promise }, spritePreviewNavigator: { invalidate() {} },
         loadCharacterInfo: () => { metadataLoads++; return metadataRequest.promise; },
@@ -365,7 +367,7 @@ test('delayed clothes initialization cannot take ownership from a newer characte
     });
     const text = source('vnccs_clothes_designer');
     const initialCode = between(text, '// Initial Load', 'container.appendChild(topRow)').replace('(async () => {', 'globalThis.initialization = (async () => {');
-    vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\nconst beginSelectionRequest = createRequestGuard(node);\n${between(text, 'charSel.onchange =', 'charRow.appendChild(charSel)')}\n${initialCode}`, context);
+    vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\nconst beginSelectionRequest = createRequestGuard(node);\nconst beginClothesWizardRequest = createRequestGuard(node);\n${between(text, 'charSel.onchange =', 'charRow.appendChild(charSel)')}\n${initialCode}`, context);
     const selection = context.charSel.onchange({ target: { value: 'Bob' } });
     contextRequest.resolve(response({ characters: ['Alice', 'Bob'] }));
     await context.initialization;
@@ -382,7 +384,7 @@ test('shared preview navigator ignores stale metadata errors and images after se
     const context = createWidgetContext({
         node, selection, console, URLSearchParams,
         Image: class { constructor() { images.push(this); } },
-        api: { fetchApi: () => { const task = deferred(); requests.push(task); return task.promise; } },
+        api: { fetchApi: (route, options) => { const task = deferred(); task.route = route; task.options = options; requests.push(task); return task.promise; } },
         onLoaded: (...args) => loaded.push(args), onMissing: () => missing.push(true),
     });
     const navigatorCode = between(source('vnccs_common'), 'export function createSpritePreviewNavigator', '// ── DOM Widget Canvas Navigation').replace('export ', '');
@@ -511,3 +513,40 @@ for (const widget of ['creator', 'cloner']) {
         assert.equal(saved[0].character_info.name, 'Bob');
     });
 }
+
+
+test('partial migration shows failures and retries only failed sheets', async () => {
+    const h = migrationHarness();
+    const poll = h.context.poll();
+    h.requests[0].resolve(response({ status: 'partial', current: 1, total: 1, failed_sheets: 1,
+        failed_characters: ['Alice'], results: [{ legacy_name: 'Alice', failed_sheet_paths: ['Sheets/Coat/neutral/broken.png'] }] }));
+    await poll;
+    assert.equal(h.state.running, false);
+    assert.equal(h.context.retryBtn.hidden, false);
+    assert.match(h.context.progressText.textContent, /1 sheet\(s\) failed/);
+    assert.deepEqual(h.events, ['vnccs.characters.updated']);
+    const retry = h.context.start(false, true);
+    assert.deepEqual(JSON.parse(h.requests[1].options.body), { characters: ['Alice'], force: true,
+        retry_sheets: { Alice: ['Sheets/Coat/neutral/broken.png'] } });
+    h.requests[1].resolve(response({ run_id: 'retry' }));
+    await new Promise(resolve => setImmediate(resolve));
+    h.requests[2].resolve(response({ status: 'done' }));
+    await retry;
+    assert.equal(h.context.retryBtn.hidden, true);
+});
+
+test('migration retry preserves earlier partial failures after a later character errors', async () => {
+    const h = migrationHarness();
+    const poll = h.context.poll();
+    h.requests[0].resolve(response({ status: 'error', error: 'Disk full', failed_sheets: 1,
+        failed_characters: ['Alice', 'Bob'], results: [{ legacy_name: 'Alice', failed_sheet_paths: ['Sheets/Coat/neutral/broken.png'] }] }));
+    await poll;
+    assert.equal(h.context.retryBtn.hidden, false);
+    const retry = h.context.start(false, true);
+    assert.deepEqual(JSON.parse(h.requests[1].options.body), { characters: ['Alice', 'Bob'], force: true,
+        retry_sheets: { Alice: ['Sheets/Coat/neutral/broken.png'] } });
+    h.requests[1].resolve(response({ run_id: 'retry' }));
+    await new Promise(resolve => setImmediate(resolve));
+    h.requests[2].resolve(response({ status: 'done' }));
+    await retry;
+});

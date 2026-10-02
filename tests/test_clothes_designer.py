@@ -138,12 +138,12 @@ class TestClothesDesignerConstructPrompt:
             costume_info={"top": "unused costume description"},
         )
         pos, neg = ClothesDesigner.construct_prompt(data)
-        assert pos.startswith("Dress character: clothes, footwear and accessories from Picture 2")
+        assert pos.startswith("Dress character to clothes from image 2")
         assert "unused costume description" not in pos
-        assert "Do not copy the background from Picture 2." in pos
+        assert "hex #00FF00" in pos
         assert "Transfer the outfit" not in pos
         assert "Preserve the identity" not in pos
-        assert "No background scenery, patterns, or shapes." in pos
+        assert "no gradient" in pos
         for constraint in (
             "background scenery", "patterned background", "shapes in background",
             "multicolored background", "textured background", "gradient background",
@@ -178,9 +178,8 @@ class TestClothesDesignerConstructPrompt:
         else:
             assert "Transparent background" not in pos
         assert pos == (
-            "Dress character: clothes, footwear and accessories from Picture 2\n"
-            f"{_clothes_background_prompt(ClothesDesigner._effective_background_color(background, model_kind))}\n"
-            "Do not copy the background from Picture 2. No background scenery, patterns, or shapes."
+            "Dress character to clothes from image 2\n"
+            f"{_clothes_background_prompt(ClothesDesigner._effective_background_color(background, model_kind))}"
         )
 
 
@@ -391,7 +390,9 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
         reference[..., 3] = 1.0
     clone_path = tmp_path / "clone.png"
     Image.new("RGB", (64, 96), (255, 0, 0)).save(clone_path)
-    monkeypatch.setattr(cd, "get_latest_sprite_path", lambda *args: "reference.png")
+    reference_path = tmp_path / "reference.png"
+    Image.new("RGB", (64, 96), "blue").save(reference_path)
+    monkeypatch.setattr(cd, "get_latest_sprite_path", lambda *args: str(reference_path))
     monkeypatch.setattr(cd, "sheets_dir", lambda *args: str(tmp_path))
     monkeypatch.setattr(cd, "_resolve_pipe_clothes_core_lora", lambda pipe: "" if kind == "QI2" else "clothes.safetensors")
     monkeypatch.setattr(cd, "resolve_comfy_image_path", lambda info: str(clone_path))
@@ -518,7 +519,7 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
     if clone:
         assert references[donor_key][0, 0, 0, :3].tolist() == pytest.approx([1, 0, 0])
         assert calls[encoder_name]["prompt"] == node.construct_prompt(data, model_kind=kind.lower())[0]
-        assert calls[encoder_name]["prompt"].startswith("Dress character: clothes, footwear and accessories from Picture 2\n")
+        assert calls[encoder_name]["prompt"].startswith("Dress character to clothes from image 2\n")
 
     sampler_name = "SamplerCustomAdvanced" if kind == "MiniMaxH3" else "KSampler"
     if kind == "MiniMaxH3":
@@ -531,6 +532,7 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
     assert call_names.count(encoder_name) == 1
     assert call_names.count("TextGenerate") == (1 if kind == "QI2" and not clone else 0)
     if clone:
+        monkeypatch.setattr(cd, "resolve_comfy_image_path", lambda *args, **kwargs: str(clone_path))
         old_signature = node.IS_CHANGED(widget_data=json.dumps(data))
         Image.new("RGB", (64, 96), (0, 255, 0)).save(clone_path)
         assert node.IS_CHANGED(widget_data=json.dumps(data)) != old_signature

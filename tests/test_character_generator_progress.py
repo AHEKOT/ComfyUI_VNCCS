@@ -16,7 +16,7 @@ def generator(monkeypatch):
     values = {
         "clip": "clip", "vae": "vae", "audio_vae": "audio_vae", "model": "model",
         "seed": 42, "steps": 4, "cfg": 1.0, "sampler": "euler", "scheduler": "simple",
-        "model_kind": "qie2511",
+        "model_kind": "qi2",
     }
     monkeypatch.setattr(node, "_extract_pipe", lambda pipe: values)
     monkeypatch.setattr(node, "_apply_pose_lora_to_model", lambda model, *args: model)
@@ -33,7 +33,7 @@ def generator(monkeypatch):
     return node, values, events
 
 
-@pytest.mark.parametrize("kind", ["qie2511", "klein9b", "minimaxh3"])
+@pytest.mark.parametrize("kind", ["qi2", "klein9b", "minimaxh3"])
 @pytest.mark.parametrize("stage,count", [("pose_generation", 12), ("original_pose_generation", 2), ("naked_pose_generation", 1)])
 def test_pose_progress_tracks_each_phase_and_item(generator, monkeypatch, kind, stage, count):
     node, values, events = generator
@@ -46,6 +46,10 @@ def test_pose_progress_tracks_each_phase_and_item(generator, monkeypatch, kind, 
         "KSampler": "Sampling poses",
         "SamplerCustomAdvanced": "Sampling poses",
         "VAEDecodeTiled": "Decoding poses",
+        "VAEDecode": "Decoding poses",
+        "ProbeEncode": "Encoding poses",
+        "ProbeSample": "Sampling poses",
+        "ProbeDecode": "Decoding poses",
     }
     completed = dict.fromkeys(phases.values(), 0)
     image = torch.zeros(1, 8, 8, 3)
@@ -56,33 +60,43 @@ def test_pose_progress_tracks_each_phase_and_item(generator, monkeypatch, kind, 
         if phase:
             # The event must arrive before this expensive operation. Counts
             # advance only after its successful return, never optimistically.
-            assert events[-1]["message"] == phase
-            assert events[-1]["current"] == completed[phase]
+            event = next(event for event in reversed(events) if event["message"] == phase)
+            assert event["current"] == completed[phase]
             assert events[-1]["total"] == count
             completed[phase] += 1
             calls.append(class_name)
-        if class_name in {"VNCCS_QWEN_Encoder", "VNCCS_Flux_Klein_Encoder"}:
+        if class_name in {"VNCCS_QWEN_Encoder", "VNCCS_Flux_Klein_Encoder", "ProbeEncode"}:
             return "positive", "negative", "latent"
         if class_name == "MiniMaxH3ReferenceToVideo":
             return "positive", "latent"
-        if class_name == "VAEDecodeTiled":
+        if class_name in {"VAEDecodeTiled", "VAEDecode", "ProbeDecode"}:
             return (image,)
         return ("result",)
 
     monkeypatch.setattr(cg, "_call_comfy_node", call)
+    monkeypatch.setattr(node, "_qi2_prepare_model", lambda model, *args: (model, False))
+    monkeypatch.setattr(node, "_qi2_encode", lambda *args, **kwargs: call("ProbeEncode"))
+    monkeypatch.setattr(node, "_qi2_sample", lambda *args, **kwargs: call("ProbeSample")[0])
+    monkeypatch.setattr(node, "_qi2_decode", lambda *args, **kwargs: call("ProbeDecode")[0])
     result = node._run_pose_generation(
         image.repeat(count, 1, 1, 1), image, object(), "Pose prompt", {},
         unique_id="node-17", stage=stage, lora_info={"name": "Pose LoRA"},
     )
     expected = [(phase, index) for phase in completed for index in range(count + 1)]
-    assert [(event["message"], event["current"]) for event in events] == expected
-    for event in events:
+    progress_events = [event for event in events if event["message"] in completed]
+    actual = [(event["message"], event["current"]) for event in progress_events]
+    if kind == "qi2":
+        expected = [(phase, 0) for phase in completed] + [(phase, index) for index in range(1, count + 1) for phase in completed]
+    assert actual == expected
+    for event in progress_events:
         assert event["node_id"] == "node-17"
         assert event["stage"] == stage
         assert event["status"] == "running"
         assert event["lora_info"] == {"name": "Pose LoRA"}
         assert "images" not in event
-    assert [phases[name] for name in calls] == [phase for phase in completed for _ in range(count)]
+    expected_calls = ([phase for _ in range(count) for phase in completed] if kind == "qi2"
+                      else [phase for phase in completed for _ in range(count)])
+    assert [phases[name] for name in calls] == expected_calls
     assert result.shape == (count, 8, 8, 3)
 
 
@@ -108,7 +122,8 @@ def test_failed_item_does_not_advance_progress_or_run_decode(generator, monkeypa
 
 
 def test_remove_clothes_reports_encoding_sampling_and_decoding(generator, monkeypatch):
-    node, _, events = generator
+    node, values, events = generator
+    values["model_kind"] = "klein9b"
     image = torch.zeros(1, 8, 8, 3)
 
     def encode(*args, **kwargs):

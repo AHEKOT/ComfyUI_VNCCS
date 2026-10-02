@@ -139,7 +139,7 @@
         }
       ],
       "properties": {
-        "cnr_id": "vnccs-utils",
+        "cnr_id": "vnccs",
         "ver": "488460aecb7306d2ef6ef3891be68a58d3cccb8d",
         "Node name for S&R": "VNCCS_ControlCenter"
       },

@@ -407,16 +407,16 @@ def test_qi2_pose_pipeline_matches_reference_encoder_and_decode_nodes(monkeypatc
 
     assert torch.equal(result, decoded)
     assert [name for name, _ in calls] == [
+        "QwenImage21Cache",
         "ImageScaleToTotalPixels",
         "TextEncodeQwenImage21",
         "EmptyLatentImage",
-        "QwenImage21Cache",
         "KSampler",
         "VAEDecode",
     ]
-    encoder = calls[1][1]
+    encoder = calls[2][1]
     assert encoder["resolution"] == 1024
     assert torch.equal(encoder["images"]["image_1"], pose)
     assert torch.equal(encoder["images"]["image_2"], character)
-    assert calls[0][1]["megapixels"] == 1.0
+    assert calls[1][1]["megapixels"] == 1.0
     assert calls[-1][1] == {"samples": "sampled latent", "vae": "vae"}

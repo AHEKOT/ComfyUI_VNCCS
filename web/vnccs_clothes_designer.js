@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, refreshPreviewImage, watchConnection } from "./vnccs_transport.js";
-import { registerCleanup, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard } from "./vnccs_common.js";
+import { registerCleanup, injectStyles, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard } from "./vnccs_common.js";
 
 const RESOLUTION_SCALE_BASE = 1024;
 const RESOLUTION_SCALE_MIN_MP = 1;
@@ -641,9 +641,7 @@ app.registerExtension({
                 syncDOMWidgetWidthSoon(node, "clothes_designer_ui");
 
                 // CSS Injections
-                const style = document.createElement("style");
-                style.innerHTML = STYLE;
-                document.head.appendChild(style);
+                injectStyles(STYLE, "vnccs-clothes-designer");
 
                 const cleanup = () => {
                     if (!node.widgets) return;
@@ -717,6 +715,8 @@ app.registerExtension({
                 let spritePreviewNavigator = null;
                 const beginPreviewRequest = createRequestGuard(node);
                 const beginSelectionRequest = createRequestGuard(node);
+                const beginDeleteRequest = createRequestGuard(node);
+                const beginClothesWizardRequest = createRequestGuard(node);
 
                 const normalizeUploadFile = (file, prefix = "vnccs_upload") => {
                     const originalName = String(file?.name || "").trim();
@@ -763,12 +763,16 @@ app.registerExtension({
                     }
                 };
 
+                const pendingCostumeSaves = new Set();
                 const saveCostumeToBackend = async () => {
                     if (!state.character || !state.costume) return;
-                    return checkedJSON("/vnccs/save_costume", {
+                    const request = checkedJSON("/vnccs/save_costume", {
                         method: "POST",
                         body: JSON.stringify({ character: state.character, costume: state.costume, info: state.costume_info })
                     });
+                    pendingCostumeSaves.add(request);
+                    try { return await request; }
+                    finally { pendingCostumeSaves.delete(request); }
                 };
 
                 // Modal Helper — delegates to vnccs_common showModal
@@ -942,6 +946,9 @@ app.registerExtension({
                         showCreateCostumeRequired();
                         return;
                     }
+                    const character = state.character;
+                    const costume = state.costume;
+                    const currentRequest = beginClothesWizardRequest();
                     let input;
                     showModal("Clothes Wizzard", () => {
                         const wrap = document.createElement("div");
@@ -960,7 +967,10 @@ app.registerExtension({
                         {
                             text: "FILL FIELDS",
                             class: "vnccs-btn-primary",
-                            action: async (_overlay, btn) => {
+                            action: async (overlay, btn) => {
+                                const isCurrent = () => currentRequest() && overlay.isConnected &&
+                                    state.character === character && state.costume === costume;
+                                if (!isCurrent()) return false;
                                 const description = input.value.trim();
                                 if (!description) {
                                     input.focus();
@@ -969,13 +979,15 @@ app.registerExtension({
                                 btn.disabled = true;
                                 btn.innerText = "CHECKING MODEL...";
                                 try {
-                                    if (!await ensureQwenVLReady()) return true;
+                                    if (!await ensureQwenVLReady()) return isCurrent();
+                                    if (!isCurrent()) return false;
                                     btn.innerText = "THINKING...";
                                     const r = await api.fetchApi("/vnccs/clothes_wizard", {
                                         method: "POST",
                                         headers: { "Content-Type": "application/json" },
-                                        body: JSON.stringify({ description })
+                                        body: JSON.stringify({ description, node_id: node.id })
                                     });
+                                    if (!isCurrent()) return false;
                                     if (!r.ok) {
                                         let err = null;
                                         try { err = await r.json(); } catch (e) { err = { message: await r.text() }; }
@@ -983,6 +995,7 @@ app.registerExtension({
                                         return false;
                                     }
                                     const data = await r.json();
+                                    if (!isCurrent()) return false;
                                     ["top", "bottom", "shoes", "head", "face"].forEach((key) => {
                                         state.costume_info[key] = data[key] || "";
                                         if (els[key]) {
@@ -994,6 +1007,7 @@ app.registerExtension({
                                     await saveCostumeToBackend();
                                     return false;
                                 } catch (e) {
+                                    if (!isCurrent()) return false;
                                     showInfo("Clothes Wizard Error", e.toString());
                                     return true;
                                 } finally {
@@ -1332,9 +1346,12 @@ app.registerExtension({
                         inp.autoResize = autoResize;
                     }
 
-                    inp.onchange = (e) => {
+                    inp.oninput = (e) => {
                         state.costume_info[key] = e.target.value;
                         saveState();
+                    };
+                    inp.onchange = (e) => {
+                        inp.oninput(e);
                         saveCostumeToBackend().catch(error => showInfo("Save Failed", error.message));
                     };
                     els[key] = inp;
@@ -1683,6 +1700,7 @@ app.registerExtension({
                 const charSel = document.createElement("select"); charSel.className = "vnccs-select";
                 charSel.onchange = async (e) => {
                     state.character = e.target.value;
+                    beginClothesWizardRequest();
                     const currentSelection = beginSelectionRequest();
                     const currentPreview = beginPreviewRequest();
                     spritePreviewNavigator?.invalidate?.();
@@ -1702,6 +1720,8 @@ app.registerExtension({
                 const costSel = document.createElement("select"); costSel.className = "vnccs-select";
                 costSel.onchange = async (e) => {
                     state.costume = e.target.value;
+                    beginClothesWizardRequest();
+                    beginSelectionRequest();
                     const currentPreview = beginPreviewRequest();
                     spritePreviewNavigator?.invalidate?.();
                     if (!await loadCostumeInfo()) return false;
@@ -1752,13 +1772,67 @@ app.registerExtension({
                 btnDelCostume.innerText = "DELETE";
                 btnDelCostume.style.fontSize = "10px";
                 btnDelCostume.onclick = () => {
-                    if (state.costume === "Naked" || state.costume === "Original") { showInfo("Warning", "Cannot delete base sprite set."); return; }
+                    if (!state.character || !hasSelectedEditableCostume()) {
+                        showInfo("Warning", "Select an editable costume first. Base sprite sets cannot be deleted.");
+                        return;
+                    }
+                    if (els.btnGen?.disabled) {
+                        showInfo("Warning", "Wait for preview generation to finish before deleting a costume.");
+                        return;
+                    }
+                    const character = state.character;
+                    const costume = state.costume;
+                    const currentRequest = beginDeleteRequest();
+                    const isCurrent = () => currentRequest() && state.character === character && state.costume === costume;
                     showModal("Delete", () => {
                         const d = document.createElement("div");
-                        d.innerText = "Delete " + state.costume + "?";
+                        d.innerText = `Delete "${costume}" for ${character}? This removes its settings, generated images, and preview.`;
                         return d;
                     },
-                        [{ text: "Cancel" }, { text: "DELETE", class: "vnccs-btn-danger", action: async () => { showInfo("Not Implemented", "Manual fix required."); return false; } }]);
+                        [{ text: "Cancel" }, {
+                            text: "DELETE", class: "vnccs-btn-danger", action: async () => {
+                                if (!isCurrent()) return false;
+                                if (els.btnGen?.disabled) {
+                                    showInfo("Warning", "Wait for preview generation to finish before deleting a costume.");
+                                    return true;
+                                }
+                                beginClothesWizardRequest();
+                                let deletion;
+                                const controls = [charSel, costSel, btnNewCostume, btnDelCostume, els.btnGen, els.wizardBtn,
+                                    ...["top", "bottom", "head", "face", "shoes"].map(key => els[key])].filter(Boolean);
+                                const disabled = controls.map(control => control.disabled);
+                                controls.forEach(control => { control.disabled = true; });
+                                try {
+                                    // Finish any earlier field saves before deleting their costume.
+                                    await Promise.allSettled([...pendingCostumeSaves]);
+                                    if (!isCurrent()) return false;
+                                    deletion = await checkedJSON("/vnccs/delete_costume", {
+                                        method: "POST",
+                                        body: JSON.stringify({ character, costume })
+                                    });
+                                } finally {
+                                    controls.forEach((control, index) => { control.disabled = disabled[index]; });
+                                }
+                                if (!isCurrent()) return false;
+                                const currentSelection = beginSelectionRequest();
+                                beginPreviewRequest();
+                                beginCostumesRequest();
+                                beginCostumeInfoRequest();
+                                spritePreviewNavigator?.invalidate?.();
+                                spritePreviewNavigator?.hideNav();
+                                els.costSel.innerHTML = "";
+                                els.costSel.disabled = true;
+                                resetCostumeSelection();
+                                if (await loadCostumes() && currentSelection() && currentRequest()) {
+                                    saveState();
+                                    updatePreviewImage();
+                                }
+                                if (deletion.warning && currentRequest()) {
+                                    showInfo("Costume Deleted", deletion.warning);
+                                }
+                                return false;
+                            }
+                        }]);
                 };
                 actionRow.appendChild(btnDelCostume);
                 els.btnDel = btnDelCostume;
@@ -2008,6 +2082,23 @@ app.registerExtension({
 
                 // Functions
                 const beginCostumesRequest = createRequestGuard(node);
+                const resetCostumeSelection = () => {
+                    state.costume = "";
+                    state.costume_info = { ...defaultState.costume_info };
+                    state.selected_preview_sprite = null;
+                    if (els.costSel) els.costSel.value = "";
+                    if (els.btnGen) els.btnGen.disabled = true;
+                    if (els.btnDel) els.btnDel.disabled = true;
+                    for (const key in state.costume_info) {
+                        if (els[key]) els[key].value = state.costume_info[key];
+                    }
+                    if (els.previewImg) els.previewImg.style.display = "none";
+                    if (els.placeholder) els.placeholder.style.display = "block";
+                    spritePreviewNavigator?.invalidate?.();
+                    spritePreviewNavigator?.hideNav();
+                    syncCostumeEditControls();
+                    saveState();
+                };
                 const loadCostumes = async () => {
                     const currentRequest = beginCostumesRequest();
                     const c = state.character;
@@ -2027,12 +2118,12 @@ app.registerExtension({
                         // Logic: If only Naked exists (displayList empty), prevent generation/deletion
                         if (displayList.length === 0) {
                             state.costume = "";
-                            if (els.btnGen) els.btnGen.disabled = false;
+                            if (els.btnGen) els.btnGen.disabled = true;
                             if (els.btnDel) els.btnDel.disabled = true;
                             if (els.costSel) els.costSel.disabled = true;
                         } else {
-                            if (els.btnGen) els.btnGen.disabled = false;
-                            if (els.btnDel) els.btnDel.disabled = false;
+                            if (els.btnGen) els.btnGen.disabled = true;
+                            if (els.btnDel) els.btnDel.disabled = true;
                             if (els.costSel) els.costSel.disabled = false;
 
                             // Select default if current is Naked or invalid
@@ -2059,11 +2150,20 @@ app.registerExtension({
                     const currentRequest = beginCostumeInfoRequest();
                     const c = state.character;
                     const cos = state.costume;
+                    if (els.btnGen) els.btnGen.disabled = true;
+                    if (els.btnDel) els.btnDel.disabled = true;
+                    ["top", "bottom", "head", "face", "shoes"].forEach(key => {
+                        if (els[key]) els[key].disabled = true;
+                    });
+                    if (els.wizardBtn) els.wizardBtn.disabled = true;
                     try {
                         const r = await api.fetchApi(`/vnccs/get_costume?character=${encodeURIComponent(c)}&costume=${encodeURIComponent(cos)}`);
                         const info = await r.json();
                         if (!currentRequest() || state.character !== c || state.costume !== cos) return false;
                         if (!r.ok) throw new Error("Failed to load costume metadata.");
+                        if (!info || typeof info !== "object" || Array.isArray(info)) {
+                            throw new Error("Invalid costume metadata.");
+                        }
 
                         state.costume_info = {
                             top: info.top || "",
@@ -2079,9 +2179,17 @@ app.registerExtension({
                                 if (els[k].autoResize) els[k].autoResize();
                             }
                         }
+                        const canEdit = hasSelectedEditableCostume();
+                        if (els.btnGen) els.btnGen.disabled = !canEdit;
+                        if (els.btnDel) els.btnDel.disabled = !canEdit;
+                        syncCostumeEditControls();
+                        saveState();
                         return true;
                     } catch (error) {
-                        if (currentRequest() && !(state.character !== c || state.costume !== cos)) showInfo("Error", error.message || String(error));
+                        if (currentRequest() && state.character === c && state.costume === cos) {
+                            resetCostumeSelection();
+                            showInfo("Error", error.message || String(error));
+                        }
                         return false;
                     }
                 };

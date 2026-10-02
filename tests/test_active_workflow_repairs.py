@@ -195,6 +195,8 @@ def test_each_pose_encoder_receives_its_own_prompt(runtime, monkeypatch, kind):
             return 'positive', 'negative', 'latent'
         if name == 'ImageScaleToTotalPixels':
             return (kwargs['image'],)
+        if name == 'VAEDecode':
+            return (torch.ones(1, 32, 32, 3),)
         return ('result',)
     monkeypatch.setattr(cg, '_call_comfy_node', capture)
     with pytest.raises(EncodingVerified):

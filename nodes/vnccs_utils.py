@@ -35,9 +35,9 @@ except Exception:
     server = None
 
 try:
-    from ..utils import get_full_path_agnostic
+    from ..utils import get_full_path_agnostic, privileged_route
 except Exception:
-    from utils import get_full_path_agnostic
+    from utils import get_full_path_agnostic, privileged_route
 
 try:
     from .qwen_vl import get_qwen_vl_chat_handler
@@ -381,6 +381,7 @@ if server is not None and web is not None:
         return web.json_response(dict(_QWEN_VL_DOWNLOAD_STATUS))
 
     @server.PromptServer.instance.routes.post("/vnccs/qwen_vl_download_model")
+    @privileged_route
     async def qwen_vl_download_model(request):
         require_mmproj = request.rel_url.query.get("vision") != "false"
         if _QWEN_VL_DOWNLOAD_STATUS.get("status") == "downloading":

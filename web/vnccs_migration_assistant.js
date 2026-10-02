@@ -138,7 +138,9 @@ app.registerExtension({
             const repairBtn = el("button", "vnccs-ma-btn", "Repair Sprites");
             const selectedBtn = el("button", "vnccs-ma-btn primary", "Migrate Selected");
             const allBtn = el("button", "vnccs-ma-btn", "Migrate All");
-            actions.append(scanBtn, repairBtn, selectedBtn, allBtn);
+            const retryBtn = el("button", "vnccs-ma-btn", "Retry Failed");
+            retryBtn.hidden = true;
+            actions.append(scanBtn, repairBtn, selectedBtn, allBtn, retryBtn);
             top.append(titleWrap, actions);
 
             const progress = el("div", "vnccs-ma-progress");
@@ -216,6 +218,7 @@ app.registerExtension({
                 const pct = total ? Math.min(100, Math.round((current / total) * 100)) : 0;
                 fill.style.width = `${pct}%`;
                 progressText.textContent = `${status.status || "idle"} ${current}/${total}`;
+                if (status.failed_sheets) progressText.textContent += ` — ${status.failed_sheets} sheet(s) failed`;
                 log.textContent = (status.log || []).join("\n") || status.message || status.error || "";
             };
 
@@ -226,6 +229,8 @@ app.registerExtension({
                 allBtn.disabled = mutationBlocked || !(state.scan?.characters || []).length;
                 scanBtn.disabled = busy;
                 repairBtn.disabled = mutationBlocked;
+                retryBtn.disabled = mutationBlocked;
+                retryBtn.hidden = !(state.status?.failed_characters?.length);
             };
 
             const scan = async () => {
@@ -259,23 +264,25 @@ app.registerExtension({
                     const response = await api.fetchApi(`/vnccs/migration/status/${runId}`, { signal: controller.signal });
                     const data = await response.json();
                     if (removed || state.runId !== runId || controller.signal.aborted) return;
-                    if (!response.ok || (data.error && data.status !== "error") || !["queued", "running", "done", "error"].includes(data.status)) {
+                    if (!response.ok || (data.error && data.status !== "error") || !["queued", "running", "done", "partial", "error"].includes(data.status)) {
                         if (response.status === 404) state.runId = "";
                         throw new Error(data.error || `Invalid migration status (${response.status})`);
                     }
                     scanBtn.textContent = "Scan";
                     state.status = data;
                     renderStatus();
-                    if (data.status === "done" || data.status === "error") {
+                    if (["done", "partial", "error"].includes(data.status)) {
                         state.runId = "";
                         setBusy(false);
-                        if (data.status === "error") {
+                        if (data.status === "error" || data.status === "partial") {
                             const message = data.error || data.message || "Migration job failed";
                             console.error("[VNCCS Migration Assistant] Job failed:", message);
                             if (!log.textContent.includes(message)) log.textContent += `\n${message}`;
                         }
-                        if (data.status === "done") {
+                        if (data.status === "done" || data.status === "partial") {
                             window.dispatchEvent(new CustomEvent("vnccs.characters.updated"));
+                        }
+                        if (data.status === "done") {
                             window.dispatchEvent(new CustomEvent("vnccs.migration.complete"));
                         }
                         return;
@@ -292,9 +299,9 @@ app.registerExtension({
                 }
             };
 
-            const start = async (all) => {
+            const start = async (all, retry = false) => {
                 if (state.running || state.runId || removed) return;
-                const chars = all ? (state.scan?.characters || []).map(c => c.legacy_name) : Array.from(state.selected);
+                const chars = retry ? state.status?.failed_characters || [] : all ? (state.scan?.characters || []).map(c => c.legacy_name) : Array.from(state.selected);
                 if (!chars.length) return;
                 setBusy(true);
                 log.textContent = "Starting migration...";
@@ -302,7 +309,10 @@ app.registerExtension({
                     const response = await api.fetchApi("/vnccs/migration/start", {
                         method: "POST",
                         headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
-                        body: JSON.stringify({ characters: chars }),
+                        body: JSON.stringify({ characters: chars, force: retry,
+                            retry_sheets: retry ? Object.fromEntries((state.status?.results || [])
+                                .filter(item => item.failed_sheet_paths?.length)
+                                .map(item => [item.legacy_name, item.failed_sheet_paths])) : {} }),
                     });
                     const data = await response.json();
                     if (removed) return;
@@ -346,6 +356,7 @@ app.registerExtension({
             repairBtn.onclick = repairSprites;
             selectedBtn.onclick = () => start(false);
             allBtn.onclick = () => start(true);
+            retryBtn.onclick = () => start(false, true);
 
             enableMiddleMouseCanvasPan(root);
             node.addDOMWidget("migration_assistant_ui", "ui", root, { serialize: false, hideOnZoom: false });
