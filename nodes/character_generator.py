@@ -46,6 +46,7 @@ try:
 except Exception:  # pragma: no cover
     model_management = None
 
+from .runtime_cleanup import inference_stage
 from .vnccs_pipe import VNCCS_Pipe
 from .vnccs_control_center import (
     _apply_lora_standard,
@@ -285,6 +286,7 @@ def _as_bool(value, default=False):
     return bool(value)
 
 
+@inference_stage()
 def _call_comfy_node(class_name, **kwargs):
     vnccs_node_id = kwargs.pop("_vnccs_node_id", None)
     mappings = getattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {}) if comfy_nodes else {}
@@ -334,6 +336,22 @@ def _call_comfy_node(class_name, **kwargs):
             raise RuntimeError(str(block_execution))
         result = result.result
     return result if isinstance(result, tuple) else (result,)
+
+
+def _h3_memory_label(model):
+    device = getattr(model, "load_device", None)
+    if device is None or not torch.cuda.is_available():
+        return ""
+    device = torch.device(device)
+    if device.type != "cuda":
+        return ""
+    free, total = torch.cuda.mem_get_info(device)
+    mib = 1024 ** 2
+    return (
+        f"; CUDA allocated {torch.cuda.memory_allocated(device) / mib:.0f} MiB"
+        f", reserved {torch.cuda.memory_reserved(device) / mib:.0f} MiB"
+        f", device free {free / mib:.0f}/{total / mib:.0f} MiB"
+    )
 
 
 def _tensor_to_png_data_url(image, max_items=12):
@@ -727,7 +745,6 @@ DEFAULT_WIDGET_DATA = {
         "mode": "seedvr",
         "model": "seedvr2_3b_fp8_e4m3fn.safetensors",
         "vae": "ema_vae_fp16.safetensors",
-        "gan_model": "",
         "device": "cuda:0",
         "offload_device": "cpu",
         "seed": 42,
@@ -770,7 +787,7 @@ DEFAULT_WIDGET_DATA = {
         "foreground_recover": 0.35,
         "edge_decontaminate": 0.75,
         "edge_choke": 0.08,
-        "matte_method": "balanced",
+        "matte_method": "guided_edge",
         "screen_mode": "from_background",
         "output_mode": "straight_rgba",
         "sam3_model": "",
@@ -880,19 +897,17 @@ DEFAULT_WIDGET_DATA = {
 }
 
 
-def _available_gan_upscale_models():
-    return _folder_list("upscale_models", [])
+def _upscaler_mode(settings):
+    mode = str(settings.get("mode", "seedvr") or "seedvr").strip().lower()
+    # Old workflows must not silently start the heavier SeedVR replacement.
+    return "off" if mode == "gan" else mode
 
 
-def _normalize_gan_upscaler_settings(settings):
+def _normalize_upscaler_settings(settings):
     upscaler = settings.get("upscaler") if isinstance(settings, dict) else None
-    if not isinstance(upscaler, dict):
-        return settings
-    if str(upscaler.get("mode", "") or "").lower() != "gan":
-        return settings
-    available = _available_gan_upscale_models()
-    if available and upscaler.get("gan_model") not in available:
-        upscaler["gan_model"] = available[0]
+    if isinstance(upscaler, dict):
+        upscaler["mode"] = _upscaler_mode(upscaler)
+        upscaler.pop("gan_model", None)
     return settings
 
 
@@ -930,7 +945,7 @@ CHROMA_KEY_PRESETS = {
         "foreground_recover": 0.35,
         "edge_decontaminate": 0.75,
         "edge_choke": 0.08,
-        "matte_method": "balanced",
+        "matte_method": "guided_edge",
         "output_mode": "straight_rgba",
     },
     "strong": {
@@ -1025,7 +1040,7 @@ class VNCCS_CharacterGenerator:
         if merged["upscaler"].get("color_correction") not in {"lab", "wavelet", "adain", "none"}:
             merged["upscaler"]["color_correction"] = "lab"
         merged["bg_remove"]["use_internal_rmbg"] = INTERNAL_RMBG_PROCESSING_ENABLED
-        return _normalize_gan_upscaler_settings(merged)
+        return _normalize_upscaler_settings(merged)
 
     def _sampler_settings(self, pipe_values, settings):
         settings = settings if isinstance(settings, dict) else {}
@@ -2004,22 +2019,31 @@ class VNCCS_CharacterGenerator:
 
         return report
 
-    def _run_list_mapped(self, class_name, list_kwargs, progress_callback=None, **kwargs):
+    def _run_list_mapped(self, class_name, list_kwargs, progress_callback=None, consume_inputs=False, **kwargs):
         count = max((len(v) for v in list_kwargs.values()), default=0)
         outputs = None
         if progress_callback is not None:
             progress_callback(0, count)
-        for index in range(count):
-            call_kwargs = dict(kwargs)
-            for key, values in list_kwargs.items():
-                call_kwargs[key] = values[index]
-            result = _call_comfy_node(class_name, **call_kwargs)
-            if outputs is None:
-                outputs = [[] for _ in result]
-            for out_index, value in enumerate(result):
-                outputs[out_index].append(value)
-            if progress_callback is not None:
-                progress_callback(index + 1, count)
+        try:
+            for index in range(count):
+                call_kwargs = dict(kwargs)
+                for key, values in list_kwargs.items():
+                    call_kwargs[key] = values[index]
+                result = _call_comfy_node(class_name, **call_kwargs)
+                if consume_inputs:
+                    for values in list_kwargs.values():
+                        values[index] = None
+                call_kwargs.clear()
+                if outputs is None:
+                    outputs = [[] for _ in result]
+                for out_index, value in enumerate(result):
+                    outputs[out_index].append(value)
+                if progress_callback is not None:
+                    progress_callback(index + 1, count)
+        finally:
+            if consume_inputs:
+                for values in list_kwargs.values():
+                    values.clear()
         return tuple(outputs or [])
 
     def _resolution_scale_dimensions(self, image, target_size, multiple=32):
@@ -2114,10 +2138,19 @@ class VNCCS_CharacterGenerator:
                     ref_images={"ref_image_1": pose_reference, "ref_image_2": character_reference},
                 )
                 encoded_items.append((positive, latent))
+                del positive, latent
                 encoding_progress(len(encoded_items), total)
 
             sampling_progress(0, total)
             for index, (positive, latent) in enumerate(encoded_items):
+                width, height = self._resolution_scale_dimensions(pose_parts[index], target_size, multiple=32)
+                self._log_stage(
+                    unique_id, stage,
+                    f"H3 pose {index + 1}/{total}: {width}x{height}, {sampler['steps']} steps"
+                    + _h3_memory_label(sampler_model),
+                    current=index, total=total,
+                )
+                started_at = time.perf_counter()
                 guider = _call_comfy_node(
                     "BasicGuider",
                     model=sampler_model,
@@ -2134,18 +2167,25 @@ class VNCCS_CharacterGenerator:
                 )[0]
                 sampled_items.append(sampled)
                 encoded_items[index] = None
+                del positive, latent, guider, noise, sampled
+                self._log_stage(
+                    unique_id, stage,
+                    f"H3 pose {index + 1}/{total} sampled in {time.perf_counter() - started_at:.2f}s"
+                    + _h3_memory_label(sampler_model),
+                    current=index + 1, total=total,
+                )
                 sampling_progress(index + 1, total)
 
             decoding_progress(0, total)
             for index, sampled in enumerate(sampled_items):
                 decoded = _call_comfy_node(
-                    "VAEDecodeTiled",
+                    "VAEDecode",
                     samples=sampled,
                     vae=pipe_values["vae"],
-                    **vae_decode,
                 )[0]
                 decoded_first_frames.append(self._h3_first_frame_to_cpu(decoded))
                 sampled_items[index] = None
+                del sampled, decoded
                 decoding_progress(index + 1, total)
         finally:
             encoded_items.clear()
@@ -2212,17 +2252,25 @@ class VNCCS_CharacterGenerator:
             )
             sampler_model, turbo = self._qi2_prepare_model(sampler_model, pipe, pipe_values)
             sampled = []
-            sample_progress(0, total)
-            for index, (positive, negative, latent) in enumerate(conditioning, start=1):
-                sampled.append(self._qi2_sample(
-                    sampler_model, positive, negative, latent, sampler, turbo=turbo,
-                ))
-                sample_progress(index, total)
             decoded = []
-            decode_progress(0, total)
-            for index, samples in enumerate(sampled, start=1):
-                decoded.append(self._qi2_decode(samples, pipe_values["vae"]))
-                decode_progress(index, total)
+            try:
+                sample_progress(0, total)
+                for index, (positive, negative, latent) in enumerate(conditioning):
+                    sampled.append(self._qi2_sample(
+                        sampler_model, positive, negative, latent, sampler, turbo=turbo,
+                    ))
+                    conditioning[index] = None
+                    del positive, negative, latent
+                    sample_progress(index + 1, total)
+                decode_progress(0, total)
+                for index, samples in enumerate(sampled):
+                    decoded.append(self._qi2_decode(samples, pipe_values["vae"]))
+                    sampled[index] = None
+                    del samples
+                    decode_progress(index + 1, total)
+            finally:
+                conditioning.clear()
+                sampled.clear()
             return self._safe_image_batch(decoded, stage="QI2 pose generation decode")
 
         if not self._is_klein_pipe(pipe_values):
@@ -2253,10 +2301,13 @@ class VNCCS_CharacterGenerator:
         sampler_model = self._apply_pose_lora_to_model(pipe_values["model"], pipe_values["clip"], pipe, lora_info)
         for index, (positive, negative) in enumerate(zip(positive_list, negative_list), start=1):
             self._validate_conditioning_for_model(pipe_values, positive, negative, f"Pose Generation item {index}")
+        if positive_list:
+            del positive, negative
         sampled_list = self._run_list_mapped(
             "KSampler",
             {"positive": positive_list, "negative": negative_list, "latent_image": latent_list},
             progress_callback=self._stage_progress_callback(unique_id, stage, "Sampling poses", lora_info),
+            consume_inputs=True,
             _vnccs_node_id=unique_id,
             model=sampler_model,
             **sampler,
@@ -2266,6 +2317,7 @@ class VNCCS_CharacterGenerator:
             "VAEDecodeTiled",
             {"samples": sampled_list},
             progress_callback=self._stage_progress_callback(unique_id, stage, "Decoding poses", lora_info),
+            consume_inputs=True,
             _vnccs_node_id=unique_id,
             vae=pipe_values["vae"],
             **vae_decode,
@@ -2351,7 +2403,9 @@ class VNCCS_CharacterGenerator:
         sampling_progress(1, 1)
 
         decoding_progress(0, 1)
-        if self._is_qi2_pipe(pipe_values):
+        if is_h3:
+            decoded = _call_comfy_node("VAEDecode", samples=sampled, vae=pipe_values["vae"])[0]
+        elif self._is_qi2_pipe(pipe_values):
             decoded = self._qi2_decode(sampled, pipe_values["vae"])
         else:
             decoded = _call_comfy_node(
@@ -2409,14 +2463,6 @@ class VNCCS_CharacterGenerator:
             model_management.soft_empty_cache()
         elif torch.cuda.is_available():
             torch.cuda.empty_cache()
-
-    def _run_gan_upscaler_model(self, settings):
-        if not settings.get("gan_model"):
-            raise RuntimeError("No GAN upscale models found. Install an upscale model visible to ComfyUI UpscaleModelLoader.")
-        return _call_comfy_node(
-            "UpscaleModelLoader",
-            model_name=settings["gan_model"],
-        )[0]
 
     def _run_upscale_one(self, image, dit, vae, background, settings, seed, use_internal_rmbg=False):
         upscaled = self._run_seedvr_upscale_one(image, dit, vae, settings, seed)
@@ -2548,13 +2594,6 @@ class VNCCS_CharacterGenerator:
             return int(pipe_seed)
         return int(settings.get("seed", DEFAULT_WIDGET_DATA["upscaler"]["seed"]))
 
-    def _run_gan_upscale_one(self, image, upscale_model):
-        return _call_comfy_node(
-            "ImageUpscaleWithModel",
-            upscale_model=upscale_model,
-            image=image,
-        )[0]
-
     def _restore_native_alpha(self, source, result):
         source = self._list_to_batch(source)
         result = self._list_to_batch(result)
@@ -2584,7 +2623,7 @@ class VNCCS_CharacterGenerator:
         images = self._split_batch(model_image)
         total = len(images)
         seed = self._upscaler_seed(settings, seed)
-        mode = str(settings.get("mode", "seedvr") or "seedvr").lower()
+        mode = _upscaler_mode(settings)
         if mode == "off":
             result = self._list_to_batch(image)
             self._emit(
@@ -2598,26 +2637,6 @@ class VNCCS_CharacterGenerator:
                 cache_dir=cache_dir,
             )
             return result
-
-        if mode == "gan":
-            model = self._run_gan_upscaler_model(settings)
-            results = []
-            for index, item in enumerate(images, start=1):
-                result = self._run_gan_upscale_one(item, model)
-                results.append(self._list_to_batch(result))
-                partial = self._safe_image_batch(results, stage=f"{stage} partial")
-                self._emit(
-                    unique_id,
-                    stage,
-                    "running" if index < total else "done",
-                    partial,
-                    f"GAN upscaled image {index} of {total}",
-                    index,
-                    total,
-                    cache_dir=cache_dir,
-                )
-            result_batch = self._safe_image_batch(results, stage=stage) if results else model_image
-            return self._restore_native_alpha(source_image, result_batch) if native_bg_remove else result_batch
 
         self._log_stage(unique_id, stage, f"Loading SeedVR models for {total} image(s)", current=0, total=total, cache_dir=cache_dir)
         dit, vae = self._run_upscaler_models(settings, node_id=unique_id)
@@ -2673,7 +2692,7 @@ class VNCCS_CharacterGenerator:
         images = self._split_batch(image)
         total = len(images)
         seed = self._upscaler_seed(settings, seed)
-        mode = str(settings.get("mode", "seedvr") or "seedvr").lower()
+        mode = _upscaler_mode(settings)
         if mode == "off":
             result = self._list_to_batch(image)
             self._emit(
@@ -2687,25 +2706,6 @@ class VNCCS_CharacterGenerator:
                 cache_dir=cache_dir,
             )
             return result
-
-        if mode == "gan":
-            model = self._run_gan_upscaler_model(settings)
-            results = []
-            for index, item in enumerate(images, start=1):
-                result = self._run_gan_upscale_one(item, model)
-                results.append(self._list_to_batch(result))
-                partial = self._safe_image_batch(results, stage=f"{stage} partial")
-                self._emit(
-                    unique_id,
-                    stage,
-                    "running" if index < total else "done",
-                    partial,
-                    f"GAN upscaled source image {index} of {total}",
-                    index,
-                    total,
-                    cache_dir=cache_dir,
-                )
-            return self._safe_image_batch(results, stage=stage) if results else image
 
         self._log_stage(unique_id, stage, f"Loading SeedVR models for {total} source image(s)", current=0, total=total, cache_dir=cache_dir)
         dit, vae = self._run_upscaler_models(settings, node_id=unique_id)
@@ -5011,7 +5011,7 @@ if server is not None:
     @server.PromptServer.instance.routes.get("/vnccs/character_generator/gan_upscale_models")
     async def vnccs_character_generator_gan_upscale_models(request):
         return web.json_response({
-            "models": _available_gan_upscale_models(),
+            "models": [],
         })
 
     @server.PromptServer.instance.routes.post("/vnccs/character_generator/regenerate")

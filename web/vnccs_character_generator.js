@@ -139,7 +139,6 @@ const DEFAULT_DATA = {
         mode: "seedvr",
         model: "seedvr2_3b_fp8_e4m3fn.safetensors",
         vae: "ema_vae_fp16.safetensors",
-        gan_model: "",
         device: "cuda:0",
         offload_device: "cpu",
         seed: 42,
@@ -182,7 +181,7 @@ const DEFAULT_DATA = {
         foreground_recover: 0.35,
         edge_decontaminate: 0.75,
         edge_choke: 0.08,
-        matte_method: "balanced",
+        matte_method: "guided_edge",
         screen_mode: "from_background",
         output_mode: "straight_rgba",
         sam3_model: "",
@@ -1020,13 +1019,11 @@ function deepMerge(base, patch) {
     return out;
 }
 
-function syncBalancedChromaPreset(data) {
-    const bg = data.bg_remove;
-    if (bg?.preset !== "balanced" || bg.use_preset_values === false) return;
-    for (const key of ["tolerance", "softness", "despill_strength", "edge_width", "matte_cleanup",
-        "foreground_recover", "edge_decontaminate", "edge_choke", "matte_method", "output_mode"]) {
-        bg[key] = DEFAULT_DATA.bg_remove[key];
-    }
+function normalizeUpscalerSettings(data) {
+    const upscaler = data.upscaler;
+    if (!upscaler || typeof upscaler !== "object") return;
+    if (String(upscaler.mode || "").trim().toLowerCase() === "gan") upscaler.mode = "off";
+    delete upscaler.gan_model;
 }
 
 function readData(node) {
@@ -1050,7 +1047,7 @@ function readData(node) {
         for (const section of ["common", "pose_generation", "remove_clothes"]) {
             data[section].target_size = resolutionScaleValue(resolutionScaleMegapixels(data[section].target_size));
         }
-        syncBalancedChromaPreset(data);
+        normalizeUpscalerSettings(data);
         return data;
     } catch {
         return JSON.parse(JSON.stringify(DEFAULT_DATA));
@@ -1060,7 +1057,7 @@ function readData(node) {
 function writeData(node, data, { notify = true } = {}) {
     const widget = node.widgets?.find(w => w.name === "widget_data");
     if (!widget) return;
-    syncBalancedChromaPreset(data);
+    normalizeUpscalerSettings(data);
     widget.value = JSON.stringify(data);
     if (notify) widget.callback?.(widget.value);
     app.graph?.setDirtyCanvas(true, true);
@@ -1091,7 +1088,6 @@ class CharacterGeneratorWidget {
         this.title = options.title || "VNCCS Character Generator";
         this.data = readData(node);
         this.seedvrAttention = { current: null, available: SEEDVR_ATTENTION_MODES };
-        this.ganUpscaleModels = [];
         this.seedvrAssets = null;
         this.seedvrDownloads = {};
         this.seedvrPollTimer = null;
@@ -1371,8 +1367,8 @@ class CharacterGeneratorWidget {
         this.syncModelResolution();
         if (!this.data[section] || typeof this.data[section] !== "object") this.data[section] = {};
         const rerenderBgRemove = section === "bg_remove"
-            && (key === "preset" || key === "use_preset_values")
-            && this.data.bg_remove[key] !== value;
+            && key === "preset"
+            && this.data.bg_remove.preset !== value;
         this.data[section][key] = value;
         if (section === "bg_remove" && key === "preset") {
             if (String(value).trim().toLowerCase() === "native" && !this.bgRemoveModes().includes("Native")) {
@@ -1384,6 +1380,7 @@ class CharacterGeneratorWidget {
             this.data.pose_generation.target_size = value;
             this.data.remove_clothes.target_size = value;
         }
+        this.rememberModelResolution(key === "target_size" && section === (this.isClone ? "common" : "pose_generation"));
         writeData(this.node, this.data, { notify: false });
         this.saveBrowserState();
         if (rerenderBgRemove) this.renderSettings();
@@ -1509,7 +1506,7 @@ class CharacterGeneratorWidget {
             groups.push({
                 title: "Generator Upscaler",
                 fields: [
-                    select("upscaler", "mode", "mode", ["seedvr", "gan", "off"]),
+                    select("upscaler", "mode", "mode", ["seedvr", "off"]),
                     check("upscaler", "inherit_pipe_seed", "Use seed from connected pipe"),
                     number("upscaler", "seed", "seed", 0, Number.MAX_SAFE_INTEGER, 1),
                 ],
@@ -1522,12 +1519,6 @@ class CharacterGeneratorWidget {
                     number("upscaler", "resolution", "target short edge", 16, 16384, 2),
                     number("upscaler", "max_resolution", "maximum edge (0 = unlimited)", 0, 16384, 2),
                     select("upscaler", "color_correction", "color correction", SEEDVR_COLOR_CORRECTION_MODES, { nodeName: "SeedVR2PostProcessing", inputName: "color_correction_method" }),
-                ],
-            });
-            groups.push({
-                title: "UpscaleModelLoader · GAN",
-                fields: [
-                    select("upscaler", "gan_model", "model_name", this.ganUpscaleModels, { nodeName: "UpscaleModelLoader", inputName: "model_name", wide: true }),
                 ],
             });
         } else {
@@ -1625,12 +1616,12 @@ class CharacterGeneratorWidget {
                 number("bg_remove", "foreground_recover", "foreground_recover", 0, 1, 0.01),
                 number("bg_remove", "edge_decontaminate", "edge_decontaminate", 0, 1, 0.01),
                 number("bg_remove", "edge_choke", "edge_choke", 0, 1, 0.01),
-                select("bg_remove", "matte_method", "matte_method", ["balanced", "chroma_soft", "guided_edge", "pymatting_if_available"]),
+                select("bg_remove", "matte_method", "matte_method", ["chroma_soft", "guided_edge", "pymatting_if_available", "screen_matte"]),
                 select("bg_remove", "screen_mode", "screen_mode", ["from_background", "auto", "green", "blue", "red"]),
                 select("bg_remove", "output_mode", "output_mode", ["straight_rgba", "premultiplied_rgba"]),
                 ...(!isNativeBgRemove ? [check("bg_remove", "use_sam3_details_recovery", "Use SAM3 recovery mask")] : []),
             ],
-            note: "Balanced synchronizes the controls with its preset values. Disable preset values to use manual chroma settings.",
+            note: "When preset values are enabled, the individual chroma parameters are retained but the preset controls processing.",
         });
         if (!isNativeBgRemove) {
             groups.push({
@@ -2003,15 +1994,36 @@ class CharacterGeneratorWidget {
         return null;
     }
 
+    rememberModelResolution(edited = false) {
+        if (this.isEmotions || !this.data.ui?.resolution_model_key) return;
+        const section = this.isClone ? "common" : "pose_generation";
+        const key = this.data.ui.resolution_model_key;
+        const previous = this.data.ui.resolution_by_model?.[key];
+        const size = this.data[section].target_size;
+        const changed = previous && (previous.target_size ?? previous) !== size;
+        const updatedAt = edited || changed
+            ? Math.max(Date.now(), (previous?.updated_at || 0) + 1)
+            : previous?.updated_at || 0;
+        this.data.ui.resolution_by_model = {
+            ...(this.data.ui.resolution_by_model || {}),
+            [key]: { target_size: size, updated_at: updatedAt },
+        };
+    }
+
     syncModelResolution(sourceId = null) {
         const source = this.controlCenterWidgetNode();
         let kind = "";
+        let modelKey = "";
         if (source) {
             if (sourceId != null && String(source.id) !== String(sourceId)) return false;
             const stateWidget = source.widgets?.find(widget => widget.name === "node_state");
             let state;
             try { state = JSON.parse(stateWidget?.value || "{}"); } catch { return false; }
             kind = String(state.active_kind || "QI2").trim().toLowerCase();
+            const family = state.active_kind || "QI2";
+            const type = state.selected_types_by_kind?.[family] || (kind === "qi2" && state.selected_type) || "unet";
+            const model = state.selected_models?.[`${family}:${type}`] || state.selected_model || "";
+            modelKey = JSON.stringify([kind, type, model]);
         } else if (this.isEmotions && sourceId == null) {
             kind = this.connectedEmotionStudioMode();
         } else {
@@ -2029,20 +2041,27 @@ class CharacterGeneratorWidget {
             this.qi2EmotionDefaultsPending = false;
             changed = true;
         }
-        if (!this.isEmotions && previousKind !== kind) {
+        if (!this.isEmotions && this.data.ui?.resolution_model_key !== modelKey) {
             const section = this.isClone ? "common" : "pose_generation";
             const settings = this.data[section];
-            // Keep custom sizes from legacy workflows on their first synchronization.
-            // A family switch selects its default; later edits remain until the next switch.
-            if (previousKind || Number(settings.target_size) === 1024) {
+            const previousKey = this.data.ui?.resolution_model_key;
+            this.rememberModelResolution();
+            const saved = this.data.ui?.resolution_by_model?.[modelKey];
+            const savedSize = saved?.target_size ?? saved;
+            if (Number.isFinite(savedSize)) {
+                settings.target_size = resolutionScaleValue(resolutionScaleMegapixels(savedSize));
+            } else if (previousKey || (previousKind && previousKind !== kind) || (!previousKind && Number(settings.target_size) === 1024)) {
+                // Use family defaults only for a model without a saved choice.
                 settings.target_size = kind === "minimaxh3" ? 1536 : 1024;
             }
+            this.data.ui = { ...this.data.ui, resolution_model_key: modelKey };
             if (this.isClone) {
                 this.data.pose_generation.target_size = settings.target_size;
                 this.data.remove_clothes.target_size = settings.target_size;
             }
             changed = true;
         }
+        this.rememberModelResolution();
 
         if (previousBgKind !== kind || (kind !== "qi2" && this.isNativeBgRemove())) {
             const preset = String(this.data.bg_remove?.preset || "balanced");
@@ -2230,11 +2249,34 @@ class CharacterGeneratorWidget {
             const resolutionSections = ["common", "pose_generation", "remove_clothes"];
             const resolutions = resolutionSections.map(section => this.data[section]?.target_size);
             const modelKind = this.data.ui?.resolution_model_kind;
+            const modelKey = this.data.ui?.resolution_model_key;
+            const modelResolutions = {
+                ...(saved.data.ui?.resolution_by_model || {}),
+                ...(this.data.ui?.resolution_by_model || {}),
+            };
+            // A refresh may load an older workflow autosave than the last slider edit.
+            // Compare each model independently; equal revisions keep workflow values.
+            for (const [key, profile] of Object.entries(saved.data.ui?.resolution_by_model || {})) {
+                if ((profile?.updated_at || 0) > (modelResolutions[key]?.updated_at || 0)) {
+                    modelResolutions[key] = profile;
+                }
+            }
             this.data = deepMerge(this.data, saved.data);
             resolutionSections.forEach((section, index) => {
                 this.data[section].target_size = resolutions[index];
             });
             this.data.ui.resolution_model_kind = modelKind;
+            this.data.ui.resolution_model_key = modelKey;
+            this.data.ui.resolution_by_model = modelResolutions;
+            const restoredSize = modelResolutions[modelKey]?.target_size;
+            if (!this.isEmotions && Number.isFinite(restoredSize)) {
+                const section = this.isClone ? "common" : "pose_generation";
+                this.data[section].target_size = resolutionScaleValue(resolutionScaleMegapixels(restoredSize));
+                if (this.isClone) {
+                    this.data.pose_generation.target_size = this.data[section].target_size;
+                    this.data.remove_clothes.target_size = this.data[section].target_size;
+                }
+            }
             restoredData = true;
         }
         if (this.stages.some(([key]) => key === saved.selectedPreview)) {
@@ -2388,7 +2430,6 @@ class CharacterGeneratorWidget {
             "UNETLoader",
             "VAELoader",
             ...NATIVE_SEEDVR_NODE_NAMES,
-            "UpscaleModelLoader",
             "VNCCSChromaKey",
             "UltralyticsDetectorProvider",
             "SAMLoader",
@@ -2432,26 +2473,8 @@ class CharacterGeneratorWidget {
             this.seedvrUpdateModalShown = true;
             this.validateNativeSeedvr(true);
         }
-        await Promise.all([
-            this.loadSeedvrAttentionInfo(),
-            this.loadGanUpscaleModels(),
-        ]);
+        await this.loadSeedvrAttentionInfo();
         this.renderSettings();
-    }
-
-    async loadGanUpscaleModels() {
-        try {
-            const r = await api.fetchApi("/vnccs/character_generator/gan_upscale_models");
-            if (r.ok) {
-                const data = await r.json();
-                this.ganUpscaleModels = uniqueOptions(Array.isArray(data?.models) ? data.models : []);
-            }
-        } catch {
-            this.ganUpscaleModels = [];
-        }
-        if (!this.ganUpscaleModels.length) {
-            this.ganUpscaleModels = this.getLoaderModelOptions("UpscaleModelLoader", "model_name");
-        }
     }
 
     async loadSeedvrAttentionInfo() {
@@ -2490,11 +2513,6 @@ class CharacterGeneratorWidget {
         const spec = this.getInputSpec(nodeName, inputName);
         const nodeOptions = Array.isArray(spec?.[0]) ? spec[0] : [];
         return uniqueOptions([currentValue, ...workflowOptions, ...nodeOptions]);
-    }
-
-    getLoaderModelOptions(nodeName, inputName) {
-        const spec = this.getInputSpec(nodeName, inputName);
-        return uniqueOptions(Array.isArray(spec?.[0]) ? spec[0] : []);
     }
 
     syncSelectToOptions(section, key, options) {
@@ -2542,7 +2560,6 @@ class CharacterGeneratorWidget {
         const help = {
             target_size: "Sets the generated image area from 1.0 to 4.0 megapixels while preserving aspect ratio.",
             prompt: "Prompt text used for the remove-clothes/preparation stage.",
-            gan_model: "Upscale model used when GAN upscaling is selected.",
             model: "SeedVR diffusion model used for the upscaler stage.",
             resolution: "Target size of the shortest output edge in pixels.",
             max_resolution: "Maximum size of either output edge in pixels. Set to 0 to disable the limit.",
@@ -3009,18 +3026,9 @@ class CharacterGeneratorWidget {
             ]));
         }
         const upscalerFields = [
-            this.modeTabs("upscaler", "mode", [["seedvr", "SeedVR"], ["gan", "GAN"], ["off", "OFF"]]),
+            this.modeTabs("upscaler", "mode", [["seedvr", "SeedVR"], ["off", "OFF"]]),
         ];
-        if (this.data.upscaler.mode === "gan") {
-            const ganOptions = this.syncSelectToOptions(
-                "upscaler",
-                "gan_model",
-                this.ganUpscaleModels,
-            );
-            upscalerFields.push(
-                this.field("upscaler", "gan_model", "model", "select", ganOptions),
-            );
-        } else if (this.data.upscaler.mode !== "off") {
+        if (this.data.upscaler.mode !== "off") {
             const resolutionFields = document.createElement("div");
             resolutionFields.className = "vnccs-pipe-field-row";
             resolutionFields.append(

@@ -21,6 +21,8 @@ It adds Qwen Image 2.1 and MiniMax H3 generation, expands Character Creator, and
 - Added H3 body preparation for Character Cloner's Naked set, using the family-specific Clothes Core LoRA, selected resolution, and standard input prompt.
 - Added an optional `audio_vae` input to Control Center for custom H3 setups. Model-family identity, audio VAE, and QI2 cache settings are preserved through VNCCS pipes.
 - H3 pose jobs encode, sample, and decode their pose lists in separate phases, reducing repeated model switching. Only the required first decoded frame is retained for each pose.
+- H3 pose generation, character preparation, and clothing previews use standard VAE decoding instead of tiled decoding.
+- Internal generation stages now perform ComfyUI's dynamic VRAM cleanup for all model families, including character previews, clothing, emotions, and SeedVR upscaling. Cleanup also runs on failure without unloading reusable model weights. Klein and QI2 release consumed pose conditioning and latents between stages. H3 per-pose logs include sampling time, dimensions, and CUDA memory usage.
 - Added family-specific Pose Studio LoRA selection, including recognition of H3 helper LoRAs supplied through custom catalog entries.
 - Updated the Klein9b Pose Studio catalog asset to `VNCCS_PoseStudioKlein9b_V2.2.safetensors`.
 
@@ -47,13 +49,12 @@ It adds Qwen Image 2.1 and MiniMax H3 generation, expands Character Creator, and
 
 ## Native Transparency and Background Handling
 
-- Accelerated CPU chroma-key morphology with equivalent OpenCV erosion and dilation while preserving the PyTorch path for accelerator tensors and autograd.
-- Balanced chroma key now separates screen similarity from foreground color, protects solid green or blue character details, and removes screen contamination between thin hair strands. Standalone defaults and generator preset values use the same Balanced mode; selecting it also synchronizes the displayed controls.
-- Chroma-key output now clears RGB in fully transparent pixels and reconstructs locally supported foreground/screen mixtures at soft edges, reducing old-background halos when compositing onto another color.
-- Fixed double alpha multiplication during SAM3 recovery for premultiplied chroma-key output.
+- Added opt-in `screen_matte` chroma keying with device-resident color matting, connected-detail cleanup, zero RGB under transparent pixels, and a local corpus benchmark. Legacy methods and Balanced defaults remain available unchanged.
+
 - Added an `Alpha` background option to Character Creator and Clothes Designer for QI2, and a `Native` background-removal mode in the generators.
 - Native mode requests transparent output directly from QI2 and bypasses chroma-key removal. Alpha is preserved through clothing references, cached previews, emotion editing, and final images.
-- Upscaling in Native mode processes RGB and restores the resized source alpha afterward, preserving transparency through SeedVR2 and GAN upscaling.
+- Upscaling in Native mode processes RGB and restores the resized source alpha afterward, preserving transparency through SeedVR2 upscaling.
+- Removed GAN upscaling from all generators and GAN model display/downloads from Control Center. Upscalers now offer SeedVR and Off; workflows saved with GAN selected migrate to Off.
 - Switching to QI2 selects native transparency; switching to another model restores the previous compatible background choice. Manual choices remain stable while the model family is unchanged.
 - Transparent references for solid-background clothing edits are composited onto the selected green or blue background. Blue background prompts explicitly request pure blue and discourage purple, gradients, and background patterns.
 - SAM analysis and SAM3 detail recovery are now disabled by default. Recovery controls are hidden when Native background mode is active.

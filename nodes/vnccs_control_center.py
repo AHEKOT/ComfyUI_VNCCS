@@ -765,11 +765,27 @@ def _sync_packaged_cc_config(repo_id, data):
         return False
 
 
+def _without_gan_upscalers(config):
+    """Retire generic GAN upscalers even in cached or older remote catalogs."""
+    result = dict(config)
+    for category in ("models", "clip", "vae", "lora", "controlnet", "other"):
+        if category not in config:
+            continue
+        result[category] = [
+            entry for entry in config[category]
+            if isinstance(entry, dict) and not any(
+                "upscale_models" in str(entry.get(key, "")).replace("\\", "/").lower().split("/")
+                for key in ("local_path", "hf_path")
+            )
+        ]
+    return result
+
+
 def _get_cc_config(repo_id, prefer_remote=False):
     cached = _CC_CONFIG_CACHE.get(repo_id)
     now = time.time()
     if not prefer_remote and cached and now - cached.get("ts", 0) < 300:
-        return _dedupe_config_by_name(_merge_custom_loras(cached["data"]))
+        return _dedupe_config_by_name(_without_gan_upscalers(_merge_custom_loras(cached["data"])))
 
     source = "packaged"
     if _uses_packaged_cc_config(repo_id) and not prefer_remote:
@@ -784,7 +800,7 @@ def _get_cc_config(repo_id, prefer_remote=False):
         )
         source = "huggingface"
     with open(path, "r", encoding="utf-8") as handle:
-        data = json.load(handle)
+        data = _without_gan_upscalers(json.load(handle))
     if source == "huggingface":
         if _uses_packaged_cc_config(repo_id):
             with open(_get_packaged_cc_path(), "r", encoding="utf-8") as handle:

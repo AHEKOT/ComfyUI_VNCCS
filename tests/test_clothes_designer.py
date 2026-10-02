@@ -459,6 +459,9 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
         assert encoder["length"] == 5
         assert len(encoder["ref_images"]) == (2 if clone else 1)
         assert "SamplerCustomAdvanced" in calls and "KSampler" not in calls
+        assert "VAEDecode" in calls
+        assert "VAEDecodeTiled" not in calls
+        assert set(calls["VAEDecode"]) == {"samples", "vae"}
     elif kind == "Klein9b":
         assert calls[cd.KLEIN_ENCODER_CLASS]["megapixels"] == expected / 1024
     else:

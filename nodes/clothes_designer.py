@@ -827,7 +827,7 @@ class ClothesDesigner:
 
         # 5. Decode
         print("[ClothesDesigner] VAE Decoding...")
-        if is_qi2:
+        if is_qi2 or is_h3:
             with torch.inference_mode():
                 image, = _call_comfy_node("VAEDecode", vae=vae, samples=latent_for_decode)
         else:

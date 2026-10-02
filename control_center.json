@@ -272,16 +272,5 @@
       "kind": "SDXL"
     }
   ],
-  "other": [
-    {
-      "name": "4x_APISR_GRL_GAN",
-      "hf_repo": "MIUProject/VNCCS_v3.0",
-      "hf_path": "models/upscale_models/4x_APISR_GRL_GAN_generator.pth",
-      "local_path": "models/upscale_models/4x_APISR_GRL_GAN_generator.pth",
-      "version": "1.0.0",
-      "description": "4x Anime Production Inspired GRL GAN Super-Resolution.",
-      "type": "Upscaler",
-      "kind": "UTILITY"
-    }
-  ]
+  "other": []
 }

@@ -32,8 +32,8 @@ function setup({ kind = "QI2", saved = {}, clone = false, clothes = false, emoti
         stages: [], renders: 0, renderSettings() { this.renders++; }, renderPreview() {}, renderChain() {}, syncCharacterSourceData() {}, saveBrowserState() {} });
     widget.bindModelResolutionSync();
     return { widget, graph, serialized, cleanups, listeners, timers, app,
-        switchTo(nextKind, sourceId = 1) {
-            cc.widgets[0].value = JSON.stringify({ active_kind: nextKind });
+        switchTo(nextKind, sourceId = 1, model = "") {
+            cc.widgets[0].value = JSON.stringify({ active_kind: nextKind, selected_model: model });
             listeners.get("vnccs-control-center-model-changed")({ detail: { node_id: sourceId } });
         },
         reload() { widget.data = context.readData(node); },
@@ -83,36 +83,26 @@ function setupEmotionStudio(mode = "qi2") {
     return { widget, studio, settings, serialized, timers };
 }
 
-const balancedChroma = {
-    tolerance: 0.15, softness: 0.12, despill_strength: 0.65, edge_width: 3,
-    matte_cleanup: 0.1, foreground_recover: 0.35, edge_decontaminate: 0.75,
-    edge_choke: 0.08, matte_method: "balanced", output_mode: "straight_rgba",
-};
-
 for (const mode of [{}, { clone: true }, { clothes: true }, { emotions: true }]) {
-    test(`Balanced migrates stale values and matches displayed/serialized controls (${JSON.stringify(mode)})`, () => {
+    test(`retired GAN settings migrate to OFF and stay retired on save (${JSON.stringify(mode)})`, () => {
         const { widget, serialized, reload } = setup({ ...mode, kind: "Klein9b", saved: {
-            bg_remove: { preset: "balanced", tolerance: 0.9, matte_method: "guided_edge" },
+            upscaler: { mode: "gan", gan_model: "old.pth", resolution: 3072 },
         } });
-        for (const [key, value] of Object.entries(balancedChroma)) {
-            assert.equal(widget.data.bg_remove[key], value);
+        assert.equal(widget.data.upscaler.mode, "off");
+        assert.equal(widget.data.upscaler.gan_model, undefined);
+        assert.equal(widget.data.upscaler.resolution, 3072);
+        const fields = widget.generatorSettingsGroups().flatMap(group => group.fields);
+        assert.ok(fields.every(field => field.key !== "gan_model"));
+        if (!mode.emotions) {
+            const modes = fields.find(field => field.section === "upscaler" && field.key === "mode");
+            assert.equal(JSON.stringify(modes.options), JSON.stringify(["seedvr", "off"]));
         }
-        widget.set("bg_remove", "use_preset_values", false);
-        widget.set("bg_remove", "tolerance", 0.09);
-        widget.set("bg_remove", "matte_method", "guided_edge");
+        widget.set("upscaler", "mode", "off");
+        assert.equal(JSON.parse(serialized.value).upscaler.mode, "off");
+        assert.equal(JSON.parse(serialized.value).upscaler.gan_model, undefined);
+        widget.set("upscaler", "mode", "seedvr");
         reload();
-        assert.equal(widget.data.bg_remove.tolerance, 0.09);
-        assert.equal(widget.data.bg_remove.matte_method, "guided_edge");
-        const renders = widget.renders;
-        widget.set("bg_remove", "use_preset_values", true);
-        assert.ok(widget.renders > renders);
-        for (const [key, value] of Object.entries(balancedChroma)) {
-            assert.equal(widget.data.bg_remove[key], value);
-            assert.equal(JSON.parse(serialized.value).bg_remove[key], value);
-        }
-        widget.set("bg_remove", "preset", "light");
-        widget.set("bg_remove", "preset", "balanced");
-        assert.equal(JSON.parse(serialized.value).bg_remove.matte_method, "balanced");
+        assert.equal(widget.data.upscaler.mode, "seedvr");
     });
 }
 
@@ -365,7 +355,7 @@ for (const mode of [{}, { clone: true }, { clothes: true }]) {
     });
 }
 
-test("manual choice survives updates, polling, and workflow reload until a family switch", () => {
+test("manual choice survives polling, workflow reload, and switching back to a family", () => {
     const { widget, switchTo, timers, reload } = setup();
     switchTo("MiniMaxH3");
     widget.set("pose_generation", "target_size", 1024);
@@ -376,7 +366,7 @@ test("manual choice survives updates, polling, and workflow reload until a famil
     assert.equal(widget.data.pose_generation.target_size, 1024);
     switchTo("QI2");
     switchTo("MiniMaxH3");
-    assert.equal(widget.data.pose_generation.target_size, 1536);
+    assert.equal(widget.data.pose_generation.target_size, 1024);
 });
 
 test("legacy defaults adapt on load while a saved custom size is preserved", () => {
@@ -442,4 +432,83 @@ test("serialization synchronizes resolution even before the next UI poll", async
     node.onSerialize(serialized);
     assert.equal(serialized.originalHookCalled, true);
     assert.equal(JSON.parse(serialized.widgets_values[0]).pose_generation.target_size, 1536);
+});
+
+for (const mode of [{}, { clone: true }, { clothes: true }]) {
+    test(`each model retains its resolution across changes and reload (${JSON.stringify(mode)})`, () => {
+        const { widget, switchTo, serialized, reload, timers } = setup(mode);
+        const section = mode.clone ? "common" : "pose_generation";
+        switchTo("QI2", 1, "Model A");
+        widget.set(section, "target_size", 2560);
+        switchTo("QI2", 1, "Model B");
+        assert.equal(widget.data[section].target_size, 1024);
+        widget.set(section, "target_size", 3072);
+        switchTo("MiniMaxH3", 1, "Model C");
+        widget.set(section, "target_size", 2048);
+        for (const [kind, model, size] of [["QI2", "Model A", 2560], ["QI2", "Model B", 3072], ["MiniMaxH3", "Model C", 2048]]) {
+            switchTo(kind, 1, model);
+            reload();
+            timers.get(1)();
+            assert.equal(widget.data[section].target_size, size);
+            assert.equal(JSON.parse(serialized.value)[section].target_size, size);
+            if (mode.clone) {
+                assert.equal(widget.data.pose_generation.target_size, size);
+                assert.equal(widget.data.remove_clothes.target_size, size);
+            }
+        }
+    });
+}
+
+test("browser backup restores per-model values when the page starts from defaults", () => {
+    const original = setup();
+    original.switchTo("QI2", 1, "Model A");
+    original.widget.set("pose_generation", "target_size", 2560);
+    original.switchTo("MiniMaxH3", 1, "Model B");
+    original.widget.set("pose_generation", "target_size", 3072);
+    const fresh = setup();
+    fresh.cache(JSON.parse(original.serialized.value));
+    fresh.widget.restoreBrowserState();
+    fresh.switchTo("QI2", 1, "Model A");
+    assert.equal(fresh.widget.data.pose_generation.target_size, 2560);
+    fresh.switchTo("MiniMaxH3", 1, "Model B");
+    assert.equal(fresh.widget.data.pose_generation.target_size, 3072);
+});
+
+test("explicit workflow model preferences win over an older browser backup", () => {
+    const harness = setup();
+    harness.switchTo("QI2", 1, "Model A");
+    harness.widget.set("pose_generation", "target_size", 1536);
+    const older = JSON.parse(harness.serialized.value);
+    harness.widget.set("pose_generation", "target_size", 3072);
+    harness.cache(older);
+    harness.reload();
+    harness.widget.restoreBrowserState();
+    harness.switchTo("QI2", 1, "Model B");
+    harness.switchTo("QI2", 1, "Model A");
+    assert.equal(harness.widget.data.pose_generation.target_size, 3072);
+});
+
+test("settings dialog edits are remembered by the same model profile", () => {
+    const { widget, switchTo } = setup();
+    switchTo("QI2", 1, "Model A");
+    // The dialog applies a complete draft, then synchronizes model settings.
+    widget.data.pose_generation.target_size = 2048;
+    widget.syncModelResolution();
+    switchTo("QI2", 1, "Model B");
+    switchTo("QI2", 1, "Model A");
+    assert.equal(widget.data.pose_generation.target_size, 2048);
+});
+
+test("refresh recovers the latest slider edit even when workflow autosave is older", () => {
+    const live = setup();
+    live.switchTo("QI2", 1, "Model A");
+    live.widget.set("pose_generation", "target_size", 1536);
+    const autosave = JSON.parse(live.serialized.value);
+    live.widget.set("pose_generation", "target_size", 2560);
+    const refreshed = setup({ saved: autosave });
+    refreshed.cache(JSON.parse(live.serialized.value));
+    refreshed.widget.restoreBrowserState();
+    refreshed.switchTo("QI2", 1, "Model A");
+    assert.equal(refreshed.widget.data.pose_generation.target_size, 2560);
+    assert.equal(JSON.parse(refreshed.serialized.value).pose_generation.target_size, 2560);
 });

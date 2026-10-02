@@ -299,6 +299,12 @@ const STYLE = `
     object-fit: contain;
     animation: vnccs-fadein 0.4s ease;
 }
+.vnccs-preview-img.vnccs-character-preview {
+    width: auto;
+    max-width: none;
+    height: 100%;
+    flex: 0 0 auto;
+}
 .vnccs-preview-loading {
     position: absolute;
     inset: 0;
@@ -3754,7 +3760,7 @@ app.registerExtension({
                     No Preview
                 </div>`;
                 const img = document.createElement("img");
-                img.className = "vnccs-preview-img"; img.style.display = "none";
+                img.className = "vnccs-preview-img vnccs-character-preview"; img.style.display = "none";
                 frame.appendChild(img);
                 const previewLoading = document.createElement("div");
                 previewLoading.className = "vnccs-preview-loading";

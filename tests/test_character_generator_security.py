@@ -36,31 +36,9 @@ def test_chroma_key_presets_use_edge_safe_tolerance_scale():
         "foreground_recover": 0.35,
         "edge_decontaminate": 0.75,
         "edge_choke": 0.08,
-        "matte_method": "balanced",
+        "matte_method": "guided_edge",
         "output_mode": "straight_rgba",
     }
-
-
-def test_balanced_preset_matches_standalone_and_generator_defaults():
-    inputs = cg.VNCCSChromaKey.INPUT_TYPES()["required"]
-    balanced = cg.CHROMA_KEY_PRESETS["balanced"]
-    for name, value in balanced.items():
-        assert inputs[name][1]["default"] == value
-        assert cg.DEFAULT_WIDGET_DATA["bg_remove"][name] == value
-    assert inputs["matte_method"][0][0] == "balanced"
-    assert inputs["screen_mode"][1]["default"] == "auto"
-    assert inputs["use_sam3_recovery_mask"][1]["default"] is False
-    generator = cg.VNCCS_CharacterGenerator()
-    assert generator._chroma_preset({
-        "preset": "balanced", "use_preset_values": True,
-        "matte_method": "guided_edge", "tolerance": 0.9,
-    }) == balanced
-    manual = generator._chroma_preset({
-        "preset": "balanced", "use_preset_values": False,
-        "matte_method": "guided_edge", "tolerance": 0.09,
-    })
-    assert manual["matte_method"] == "guided_edge"
-    assert manual["tolerance"] == 0.09
 
 
 def test_klein_pipe_selects_klein_encoder_and_helper_loras(monkeypatch):
@@ -1070,7 +1048,7 @@ def test_h3_pose_generation_follows_reference_workflow_and_returns_first_frame(m
             "BasicGuider": ("guider",),
             "RandomNoise": ("noise",),
             "SamplerCustomAdvanced": ("sampled", "denoised"),
-            "VAEDecodeTiled": (decoded,),
+            "VAEDecode": (decoded,),
         }
         return outputs[class_name]
 
@@ -1100,8 +1078,8 @@ def test_h3_pose_generation_follows_reference_workflow_and_returns_first_frame(m
         "BasicGuider",
         "RandomNoise",
         "SamplerCustomAdvanced",
-        "VAEDecodeTiled",
-        "VAEDecodeTiled",
+        "VAEDecode",
+        "VAEDecode",
     ]
     scheduler_call = next(kwargs for name, kwargs in calls if name == "BasicScheduler")
     assert scheduler_call["model"] == "pose_model"

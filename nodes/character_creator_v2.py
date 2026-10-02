@@ -29,6 +29,7 @@ from ..utils import (
     get_full_path_agnostic,
 )
 from .vnccs_utils import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
+from .runtime_cleanup import inference_stage
 from .qwen_vl import configure_qwen_text_chat
 from .character_presets import CHARACTER_PRESETS, RACE_PRESETS, preset_key, race_features, race_prompt
 
@@ -731,6 +732,7 @@ def _call_loader_node(class_names, method_names, **kwargs):
     return None
 
 
+@inference_stage()
 def _call_node_method(class_names, method_names, **kwargs):
     mappings = getattr(nodes, "NODE_CLASS_MAPPINGS", {}) or {}
     for class_name in class_names:
@@ -877,6 +879,7 @@ def load_generation_assets(gen_settings):
     return (generation_mode, ckpt_name), model, clip, vae
 
 
+@inference_stage()
 def acquire_preview_assets(gen_settings):
     """Return request-local preview assets while retaining only reusable state."""
     generation_mode = str(gen_settings.get("generation_mode", "illustrious") or "illustrious").lower()
@@ -1176,6 +1179,7 @@ def create_generation_latent(model, width, height, gen_settings, batch_size=1):
     return {"samples": torch.zeros([batch_size, 4, height // 8, width // 8], device=model.load_device)}
 
 
+@inference_stage()
 def sample_generation_latent(model, positive, negative, latent, seed, steps, cfg, sampler_name, scheduler, gen_settings, qi2_turbo=False):
     if str(gen_settings.get("generation_mode", "illustrious")).lower() == "qi2":
         from .character_generator import VNCCS_CharacterGenerator
@@ -1230,6 +1234,7 @@ def sample_generation_latent(model, positive, negative, latent, seed, steps, cfg
     )[0]
 
 
+@inference_stage()
 def encode_generation_prompt(clip, text, gen_settings):
     if str(gen_settings.get("generation_mode", "illustrious")).lower() == "anima":
         encoded = _call_node_method(
@@ -1267,6 +1272,7 @@ def validate_anima_conditioning(positive, negative, clip_name):
         )
 
 
+@inference_stage()
 def decode_generation_samples(vae, samples, gen_settings):
     def unwrap_latent_samples(value):
         while isinstance(value, (list, tuple)) and value:

@@ -625,24 +625,13 @@ def _morph(mask: torch.Tensor, radius: int, mode: str) -> torch.Tensor:
     if radius <= 0:
         return mask
     kernel_size = radius * 2 + 1
-    if mode not in {"dilate", "erode"}:
-        raise ValueError(f"Unsupported morph mode: {mode}")
-    # Rectangular CPU morphology has the same extrema and neutral border as
-    # max pooling, without scanning a full 2D window for every output pixel.
-    # Keep autograd, accelerator tensors and unsupported dtypes on PyTorch.
-    if mask.device.type == "cpu" and mask.dtype in {torch.float32, torch.float64} and not mask.requires_grad:
-        kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
-        operation = cv2.dilate if mode == "dilate" else cv2.erode
-        result = operation(
-            mask.numpy(), kernel, borderType=cv2.BORDER_CONSTANT,
-            borderValue=-float("inf") if mode == "dilate" else float("inf"),
-        )
-        return torch.from_numpy(result)
     src = mask.unsqueeze(0).unsqueeze(0)
     if mode == "dilate":
         out = F.max_pool2d(src, kernel_size=kernel_size, stride=1, padding=radius)
     elif mode == "erode":
         out = -F.max_pool2d(-src, kernel_size=kernel_size, stride=1, padding=radius)
+    else:
+        raise ValueError(f"Unsupported morph mode: {mode}")
     return out.squeeze(0).squeeze(0)
 
 
@@ -1695,7 +1684,7 @@ class VNCCSChromaKey:
                 "foreground_recover": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "edge_decontaminate": ("FLOAT", {"default": 0.75, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "edge_choke": ("FLOAT", {"default": 0.08, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "matte_method": (["balanced", "chroma_soft", "guided_edge", "pymatting_if_available"], {"default": "balanced"}),
+                "matte_method": (["chroma_soft", "guided_edge", "pymatting_if_available", "screen_matte"], {"default": "guided_edge"}),
                 "screen_mode": (["auto", "green", "blue", "red"], {"default": "auto"}),
                 "output_mode": (["straight_rgba", "premultiplied_rgba"], {"default": "straight_rgba"}),
                 "use_sam3_recovery_mask": (
@@ -1713,6 +1702,10 @@ class VNCCSChromaKey:
     VNCCS Chroma Key - automatically detects background color from image borders.
     Uses soft chroma keying, edge-guided matte cleanup, foreground recovery, and
     edge-only decontamination for cleaner hair and outlines.
+    The opt-in screen_matte method runs on the selected GPU, estimates the actual
+    plate color automatically, and removes isolated screen artifacts. Its color
+    unmixing is controlled jointly by despill, foreground recovery and edge
+    decontamination; screen_mode is used only by the legacy methods.
     """
 
     def chroma_key(
@@ -2052,16 +2045,14 @@ class VNCCSChromaKey:
 
         original_rgb = _ensure_float01(original)[..., :3]
         restored_alpha = torch.maximum(alpha, shrunk).clamp(0.0, 1.0)
-        base_rgb = rgba[..., :3]
-        if output_mode == "premultiplied_rgba":
-            denominator = torch.where(alpha > 0, alpha, torch.ones_like(alpha))
-            base_rgb = base_rgb / denominator.unsqueeze(-1)
         restored_rgb = torch.lerp(
-            base_rgb,
+            rgba[..., :3],
             original_rgb,
             shrunk.unsqueeze(-1),
         ).clamp(0.0, 1.0)
-        restored_rgba = self._pack_rgba(restored_rgb, restored_alpha, output_mode)
+        if output_mode == "premultiplied_rgba":
+            restored_rgb = restored_rgb * restored_alpha.unsqueeze(-1)
+        restored_rgba = torch.cat([restored_rgb, restored_alpha.unsqueeze(-1)], dim=-1)
         restored_debug = torch.stack([debug[..., 0], restored_alpha, 1.0 - restored_alpha], dim=-1).clamp(0.0, 1.0)
         return restored_rgba, restored_alpha, restored_debug
 
@@ -2080,14 +2071,23 @@ class VNCCSChromaKey:
         screen_mode,
         output_mode,
     ):
+        if matte_method == "screen_matte":
+            from .chroma_screen_matte import screen_matte
+
+            return screen_matte(
+                _ensure_float01(image), tolerance=tolerance, softness=softness,
+                despill_strength=despill_strength, edge_width=edge_width,
+                matte_cleanup=matte_cleanup, foreground_recover=foreground_recover,
+                edge_decontaminate=edge_decontaminate, edge_choke=edge_choke,
+                output_mode=output_mode,
+            )
         image = _ensure_float01(image)[..., :3]
         height, width, _ = image.shape
         key_color = self._detect_key_color(image)
         dominant_idx = self._dominant_channel(key_color, screen_mode)
         other_indices = [idx for idx in range(3) if idx != dominant_idx]
 
-        build_alpha = self._build_balanced_alpha if matte_method == "balanced" else self._build_soft_alpha
-        alpha = build_alpha(
+        alpha = self._build_soft_alpha(
             image=image,
             key_color=key_color,
             dominant_idx=dominant_idx,
@@ -2097,7 +2097,7 @@ class VNCCSChromaKey:
         )
         alpha = self._cleanup_alpha(alpha, int(edge_width), float(matte_cleanup))
 
-        if matte_method in {"balanced", "guided_edge"}:
+        if matte_method == "guided_edge":
             alpha = self._guided_edge_refine(image, alpha, int(edge_width), float(matte_cleanup))
         elif matte_method == "pymatting_if_available":
             alpha = self._pymatting_refine_if_available(image, alpha, int(edge_width))
@@ -2126,7 +2126,6 @@ class VNCCSChromaKey:
             tolerance=float(tolerance),
             softness=float(softness),
             amount=1.0,
-            balanced=matte_method == "balanced",
         )
         edge = self._edge_band(alpha, int(edge_width))
 
@@ -2159,44 +2158,28 @@ class VNCCSChromaKey:
             other_indices=other_indices,
             amount=decontaminate_amount,
         )
-        color_radius = max(2, int(edge_width) + 2)
-        color_reference = self._nearest_opaque_colors(
-            image, alpha, color_radius, key_color, dominant_idx, balanced=matte_method == "balanced",
-        ) if despill_strength > 0 else None
-        if color_reference is not None:
-            despilled = self._bleed_clean_edge_colors(
-                image=despilled,
-                alpha=alpha,
-                edge=edge,
-                key_color=key_color,
-                dominant_idx=dominant_idx,
-                other_indices=other_indices,
-                radius=color_radius,
-                amount=despill_strength,
-                color_reference=color_reference,
-            )
-            despilled, alpha = self._unmix_screen_edges(
-                image, despilled, alpha, key_color, color_reference, color_radius, dominant_idx,
-            )
-            edge = self._edge_band(alpha, int(edge_width))
+        despilled = self._bleed_clean_edge_colors(
+            image=despilled,
+            alpha=alpha,
+            edge=edge,
+            key_color=key_color,
+            dominant_idx=dominant_idx,
+            other_indices=other_indices,
+            radius=max(2, int(edge_width) + 2),
+            amount=despill_strength,
+        )
+        if output_mode == "premultiplied_rgba":
+            rgb_out = despilled * alpha.unsqueeze(-1)
+        else:
+            rgb_out = despilled
 
-        rgba = self._pack_rgba(despilled, alpha, output_mode)
+        rgba = torch.cat([rgb_out.clamp(0.0, 1.0), alpha.unsqueeze(-1)], dim=-1)
         debug = torch.stack([edge, alpha, 1.0 - alpha], dim=-1).clamp(0.0, 1.0)
 
         if rgba.shape[:2] != (height, width):
             raise RuntimeError("VNCCS Chroma Key changed image dimensions unexpectedly.")
 
         return rgba, alpha, debug
-
-    @staticmethod
-    def _pack_rgba(rgb, alpha, output_mode):
-        # Straight alpha must contain foreground RGB, never the old screen in
-        # fully transparent pixels. Multiplying all straight RGB by alpha here
-        # would apply opacity twice when a downstream node composites it.
-        rgb = torch.where(alpha.unsqueeze(-1) > 0, rgb.clamp(0.0, 1.0), torch.zeros_like(rgb))
-        if output_mode == "premultiplied_rgba":
-            rgb = rgb * alpha.unsqueeze(-1)
-        return torch.cat([rgb, alpha.unsqueeze(-1)], dim=-1)
 
     def _detect_key_color(self, image: torch.Tensor) -> torch.Tensor:
         height, width, _ = image.shape
@@ -2275,32 +2258,6 @@ class VNCCSChromaKey:
         background = torch.maximum(background, strong_screen * hue_similarity * 0.85).clamp(0.0, 1.0)
         return 1.0 - background
 
-    def _build_balanced_alpha(
-        self,
-        image: torch.Tensor,
-        key_color: torch.Tensor,
-        dominant_idx: int,
-        other_indices: list[int],
-        tolerance: float,
-        softness: float,
-    ) -> torch.Tensor:
-        eps = 1e-6
-        chroma = image / (image.sum(dim=-1, keepdim=True) + eps)
-        key_chroma = key_color / (key_color.sum() + eps)
-        chroma_dist = torch.sqrt(((chroma - key_chroma) ** 2).sum(dim=-1))
-        rgb_dist = torch.sqrt(((image - key_color) ** 2).sum(dim=-1))
-
-        # Classify closeness to the sampled screen, not dominance of its
-        # channel. Channel dominance erased distinct green foreground while
-        # treating desaturated green/cyan fringes as almost opaque foreground.
-        hue_similarity = 1.0 - self._smoothstep(
-            tolerance * 0.25, tolerance * 0.25 + softness * 0.25, chroma_dist,
-        )
-        rgb_similarity = 1.0 - self._smoothstep(
-            tolerance * 0.5, tolerance * 0.5 + softness, rgb_dist,
-        )
-        return 1.0 - hue_similarity * rgb_similarity
-
     def _smoothstep(self, edge0: float | torch.Tensor, edge1: float | torch.Tensor, value: torch.Tensor) -> torch.Tensor:
         x = ((value - edge0) / (edge1 - edge0 + 1e-6)).clamp(0.0, 1.0)
         return x * x * (3.0 - 2.0 * x)
@@ -2362,7 +2319,6 @@ class VNCCSChromaKey:
         tolerance: float,
         softness: float,
         amount: float,
-        balanced=False,
     ) -> torch.Tensor:
         if amount <= 0.0:
             return alpha
@@ -2399,13 +2355,7 @@ class VNCCSChromaKey:
         # Trust confident foreground from the soft matte even when its color is
         # close to the screen; otherwise a one-pixel connection can erase a
         # complete dark garment or a long anti-aliased outline.
-        # Broad, flat screen variations can be outside the conservative initial
-        # key range. Let border connectivity identify these patches; keep sharp
-        # transitions (soft hair edges and distinct foreground) out of this extension.
         candidate = (strict_candidate | hue_extension) & (alpha <= 0.55)
-        if balanced:
-            flat_luma = (_morph(luma, 1, "dilate") - _morph(luma, 1, "erode")) <= 0.005
-            candidate = candidate | (strict_candidate & flat_luma)
 
         candidate_np = candidate.detach().cpu().numpy().astype(np.uint8)
         if candidate_np.max() <= 0:
@@ -2567,150 +2517,6 @@ class VNCCSChromaKey:
 
         return torch.lerp(image, decontaminated, edge.unsqueeze(-1) * amount).clamp(0.0, 1.0)
 
-    def _nearest_opaque_colors(self, image, alpha, radius, key_color=None, dominant_idx=None, balanced=False):
-        """Share one nearest-foreground lookup between despill and matting."""
-        # A 0.98 matte pixel is still visibly blended with the screen. Treating
-        # it as clean foreground makes the nearest-color lookup point back to
-        # the contaminated pixel itself, leaving a dotted halo untouched.
-        # Prefer genuinely opaque color anchors and retain the old threshold
-        # only as a fallback for mattes that never reach full opacity.
-        opaque_np = (alpha >= 0.995).detach().cpu().numpy()
-        if not opaque_np.any():
-            opaque_np = (alpha >= 0.98).detach().cpu().numpy()
-        if not opaque_np.any():
-            return None
-
-        image_np = image.detach().cpu().numpy()
-        if key_color is None:
-            key_color = self._detect_key_color(image)
-        if dominant_idx is None:
-            dominant_idx = int(torch.argmax(key_color).item())
-        other_indices = [index for index in range(3) if index != dominant_idx]
-        screen_hued = image_np[..., dominant_idx] > (
-            np.minimum(image_np[..., other_indices[0]], image_np[..., other_indices[1]]) * 1.2 + 0.002
-        )
-        kernel = np.ones((3, 3), dtype=np.uint8)
-        erosion_iterations = max(1, min(2, int(radius) // 2))
-        interior = cv2.erode(opaque_np.astype(np.uint8), kernel, iterations=erosion_iterations).astype(bool)
-
-        protected = None
-        trusted_opaque_np = interior
-        if balanced:
-            # Protect substantial, locally consistent foreground colors (including
-            # green clothing). A thin contaminated stripe is not a color anchor.
-            core_iterations = max(1, min(3, int(radius)))
-            color_core = cv2.erode((screen_hued & opaque_np).astype(np.uint8), kernel, iterations=core_iterations).astype(bool)
-            color_kernel = np.ones((2 * core_iterations + 1, 2 * core_iterations + 1), dtype=np.uint8)
-            local_range = cv2.dilate(image_np, color_kernel) - cv2.erode(image_np, color_kernel)
-            color_core &= local_range.max(axis=-1) <= 0.025
-            component_count, component_labels = cv2.connectedComponents(color_core.astype(np.uint8), connectivity=8)
-            counts = np.bincount(component_labels.reshape(-1), minlength=component_count)
-            keep = counts >= max(1, int(radius) ** 2)
-            keep[0] = False
-            color_core = keep[component_labels]
-            protected = cv2.dilate(color_core.astype(np.uint8), kernel, iterations=core_iterations).astype(bool)
-            protected &= screen_hued & opaque_np
-            if color_core.any():
-                # Carry an established foreground color into narrow details
-                # (fingers, folds) that cannot contain a wide flat core.
-                color_distance, color_labels = cv2.distanceTransformWithLabels(
-                    (~color_core).astype(np.uint8), cv2.DIST_L2, 5,
-                    labelType=cv2.DIST_LABEL_PIXEL,
-                )
-                core_colors = np.zeros((int(color_labels.max()) + 1, 3), dtype=image_np.dtype)
-                core_colors[color_labels[color_core]] = image_np[color_core]
-                nearby_color = core_colors[color_labels]
-                color_delta = image_np - nearby_color
-                matching_color = np.abs(color_delta).max(axis=-1) <= 0.04
-                source_sum = image_np.sum(axis=-1, keepdims=True)
-                core_sum = nearby_color.sum(axis=-1, keepdims=True)
-                hue_delta = image_np / (source_sum + 1e-6) - nearby_color / (core_sum + 1e-6)
-                # Shaded parts of the same colored detail can be darker than
-                # the flat seed without being contaminated by the screen.
-                matching_color |= ((hue_delta ** 2).sum(axis=-1) < 0.05 ** 2) & (source_sum[..., 0] <= core_sum[..., 0])
-                screen_direction = key_color.detach().cpu().numpy() - nearby_color
-                screen_norm = np.maximum((screen_direction ** 2).sum(axis=-1), 1e-5)
-                fraction = (color_delta * screen_direction).sum(axis=-1) / screen_norm
-                fit_error = np.sqrt(((color_delta - fraction[..., None] * screen_direction) ** 2).sum(axis=-1) / screen_norm)
-                # A close color can still be a true soft screen mixture; do
-                # not promote those antialiased samples to opaque anchors.
-                matching_color &= ~((fraction > 0.005) & (fit_error < 0.05))
-                protected |= matching_color & (color_distance <= radius * 8) & screen_hued & opaque_np
-
-            # Thin, dark line art can disappear under silhouette erosion. Retain
-            # clean ink as a local color reference for individual hair strands.
-            luma = image_np[..., 0] * 0.299 + image_np[..., 1] * 0.587 + image_np[..., 2] * 0.114
-            key_luma = float((key_color * key_color.new_tensor([0.299, 0.587, 0.114])).sum().item())
-            thin_ink = opaque_np & ~screen_hued & (luma < key_luma * 0.45)
-            trusted_opaque_np = (interior & ~screen_hued) | protected | thin_ink
-        if not trusted_opaque_np.any():
-            trusted_opaque_np = opaque_np
-
-        distance_np, labels = cv2.distanceTransformWithLabels(
-            (~trusted_opaque_np).astype(np.uint8),
-            cv2.DIST_L2,
-            5,
-            labelType=cv2.DIST_LABEL_PIXEL,
-        )
-        nearest_lookup = np.zeros((int(labels.max()) + 1, 3), dtype=image_np.dtype)
-        opaque_y, opaque_x = np.nonzero(trusted_opaque_np)
-        nearest_lookup[labels[opaque_y, opaque_x]] = image_np[opaque_y, opaque_x]
-        nearest = torch.from_numpy(nearest_lookup[labels]).to(device=image.device, dtype=image.dtype)
-        distance = torch.from_numpy(distance_np).to(device=alpha.device, dtype=alpha.dtype)
-        if protected is None:
-            return nearest, distance
-        return nearest, distance, torch.from_numpy(protected).to(device=alpha.device)
-
-    def _unmix_screen_edges(self, source, corrected, alpha, key_color, color_reference, radius, dominant_idx=None):
-        """Recover coverage and remove residual screen color from soft edges."""
-        nearest, distance = color_reference[:2]
-        protected = color_reference[2] if len(color_reference) > 2 else None
-        direction = key_color.reshape(1, 1, 3) - nearest
-        norm_sq = (direction * direction).sum(dim=-1).clamp(min=1e-5)
-        screen_fraction = (((source - nearest) * direction).sum(dim=-1) / norm_sq).clamp(0.0, 1.0)
-        fitted = nearest + screen_fraction.unsqueeze(-1) * direction
-        relative_error = torch.sqrt(((source - fitted) ** 2).sum(dim=-1) / norm_sq)
-        error_limit = 0.08 if protected is not None else 0.05
-        confidence = (1.0 - self._smoothstep(0.01, error_limit, relative_error)) * self._smoothstep(0.01, 0.04, norm_sq)
-        if protected is None:
-            confidence = confidence * self._smoothstep(0.005, 0.05, screen_fraction)
-        if dominant_idx is None:
-            dominant_idx = int(torch.argmax(key_color).item())
-        other_indices = [index for index in range(3) if index != dominant_idx]
-        source_screen_hued = source[..., dominant_idx] > source[..., other_indices].amin(dim=-1) * 1.2 + 0.002
-        anchor_screen_hued = nearest[..., dominant_idx] > nearest[..., other_indices].amin(dim=-1) * 1.2 + 0.002
-        if protected is not None:
-            confidence = torch.maximum(confidence, (source_screen_hued & ~anchor_screen_hued).to(alpha.dtype))
-        local_radius = float(radius) * 2 if protected is not None else float(radius)
-        # Connected-background cleanup is authoritative: never revive zero alpha.
-        local_edge = (alpha > 0) & (distance > 0) & (distance < local_radius)
-        confidence = confidence * local_edge.to(alpha.dtype)
-        refined_alpha = torch.lerp(alpha, 1.0 - screen_fraction, confidence).clamp(0.0, 1.0)
-        refined_rgb = torch.lerp(corrected, nearest, confidence.unsqueeze(-1)).clamp(0.0, 1.0)
-        if protected is not None:
-            refined_rgb = torch.where((distance == 0).unsqueeze(-1), source, refined_rgb)
-            # Subpixel strands may have no clean opaque sample nearby. Remove
-            # the residual screen contribution algebraically instead of copying
-            # a distant object's color or merely capping the dominant channel.
-            weak_idx = other_indices[int(torch.argmin(key_color[other_indices]).item())]
-            key_delta = (key_color[dominant_idx] - key_color[weak_idx]).clamp(min=0.05)
-            residual_fraction = ((source[..., dominant_idx] - source[..., weak_idx]) / key_delta).clamp(0.0, 1.0 - 1e-6)
-            coverage = 1.0 - residual_fraction
-            unmixed = ((source - residual_fraction.unsqueeze(-1) * key_color) / coverage.unsqueeze(-1)).clamp(0.0, 1.0)
-            remaining = (refined_rgb[..., dominant_idx] > refined_rgb[..., weak_idx] + 1e-6)
-            remaining = remaining & (residual_fraction > 0) & ~protected & (refined_alpha > 0)
-            # A reliable local foreground sample may legitimately share the
-            # screen's channel, such as a green leg or blue sleeve.
-            different_hue = (
-                (source[..., other_indices].amax(dim=-1) > source[..., dominant_idx] * 1.1)
-                & (nearest[..., other_indices].amax(dim=-1) > nearest[..., dominant_idx] * 1.1)
-                & (distance < local_radius)
-            )
-            remaining = remaining & ~(anchor_screen_hued & ((confidence >= 0.999) | different_hue))
-            refined_rgb = torch.where(remaining.unsqueeze(-1), unmixed, refined_rgb)
-            refined_alpha = torch.where(remaining, torch.minimum(refined_alpha, coverage), refined_alpha)
-        return refined_rgb, refined_alpha
-
     def _bleed_clean_edge_colors(
         self,
         image: torch.Tensor,
@@ -2721,16 +2527,46 @@ class VNCCSChromaKey:
         other_indices: list[int],
         radius: int,
         amount: float,
-        color_reference=None,
     ) -> torch.Tensor:
         """Replace key-contaminated edge RGB with nearby opaque foreground RGB."""
         if amount <= 0.0 or radius <= 0:
             return image
-        if color_reference is None:
-            color_reference = self._nearest_opaque_colors(image, alpha, radius, key_color, dominant_idx)
-        if color_reference is None:
+
+        # A 0.98 matte pixel is still visibly blended with the screen. Treating
+        # it as clean foreground makes the nearest-color lookup point back to
+        # the contaminated pixel itself, leaving a dotted halo untouched.
+        # Prefer genuinely opaque color anchors and retain the old threshold
+        # only as a fallback for mattes that never reach full opacity.
+        opaque_np = (alpha >= 0.995).detach().cpu().numpy()
+        if not opaque_np.any():
+            opaque_np = (alpha >= 0.98).detach().cpu().numpy()
+        if not opaque_np.any():
             return image
-        nearest, distance = color_reference[:2]
+
+        # Pull reference colors from just inside the silhouette. Boundary
+        # pixels can reach alpha=1 while their RGB still contains screen color,
+        # especially after image scaling. Using them as distance-transform
+        # seeds merely copies the halo along the contour.
+        erosion_iterations = max(1, min(2, int(radius) // 2))
+        trusted_opaque_np = cv2.erode(
+            opaque_np.astype(np.uint8),
+            np.ones((3, 3), dtype=np.uint8),
+            iterations=erosion_iterations,
+        ).astype(bool)
+        if not trusted_opaque_np.any():
+            trusted_opaque_np = opaque_np
+
+        distance_np, labels = cv2.distanceTransformWithLabels(
+            (~trusted_opaque_np).astype(np.uint8),
+            cv2.DIST_L2,
+            5,
+            labelType=cv2.DIST_LABEL_PIXEL,
+        )
+        image_np = image.detach().cpu().numpy()
+        nearest_lookup = np.zeros((int(labels.max()) + 1, 3), dtype=image_np.dtype)
+        opaque_y, opaque_x = np.nonzero(trusted_opaque_np)
+        nearest_lookup[labels[opaque_y, opaque_x]] = image_np[opaque_y, opaque_x]
+        nearest = torch.from_numpy(nearest_lookup[labels]).to(device=image.device, dtype=image.dtype)
 
         dom = image[..., dominant_idx]
         other1 = image[..., other_indices[0]]
@@ -2774,6 +2610,7 @@ class VNCCSChromaKey:
         uncertain_color = ((alpha > 0.001) & (alpha < 0.995)).to(dtype=alpha.dtype)
         color_edge = torch.maximum(edge, uncertain_color)
         partial_weight = color_edge * spill_affinity * max(0.0, min(1.0, float(amount)))
+        distance = torch.from_numpy(distance_np).to(device=alpha.device, dtype=alpha.dtype)
         transparent_near_edge = ((alpha <= 0.001) & (distance <= float(radius))).to(dtype=alpha.dtype)
         weight = torch.maximum(partial_weight, transparent_near_edge).unsqueeze(-1)
         return torch.lerp(image, nearest, weight).clamp(0.0, 1.0)
