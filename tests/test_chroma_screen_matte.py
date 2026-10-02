@@ -1,7 +1,8 @@
 """Known-color mattes and connectivity regressions, independent of real assets."""
 
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 from nodes.chroma_screen_matte import screen_matte, _reconstruct_detail
 

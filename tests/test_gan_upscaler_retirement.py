@@ -8,18 +8,23 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import torch
 
-from nodes import character_generator as cg
 from nodes import vnccs_control_center as cc
 
 
+@pytest.fixture
+def generator_module():
+    pytest.importorskip("torch")
+    from nodes import character_generator
+    return character_generator
+
+
 @pytest.mark.parametrize("generator_type", [
-    cg.VNCCS_CharacterGenerator, cg.VNCCS_CharacterCloneGenerator,
-    cg.VNCCS_ClothesGenerator, cg.VNCCS_EmotionsGenerator,
+    "VNCCS_CharacterGenerator", "VNCCS_CharacterCloneGenerator",
+    "VNCCS_ClothesGenerator", "VNCCS_EmotionsGenerator",
 ])
-def test_saved_gan_settings_migrate_to_off(generator_type):
-    generator = generator_type()
+def test_saved_gan_settings_migrate_to_off(generator_module, generator_type):
+    generator = getattr(generator_module, generator_type)()
     for previous, expected in [("gan", "off"), (" GAN ", "off"), ("seedvr", "seedvr"), ("off", "off")]:
         settings = generator._settings(json.dumps({"upscaler": {
             "mode": previous, "gan_model": "old.pth", "resolution": 3072,
@@ -29,7 +34,9 @@ def test_saved_gan_settings_migrate_to_off(generator_type):
         assert settings["resolution"] == 3072
 
 
-def test_legacy_gan_execution_preserves_rgba_without_loading_models(monkeypatch):
+def test_legacy_gan_execution_preserves_rgba_without_loading_models(monkeypatch, generator_module):
+    torch = pytest.importorskip("torch")
+    cg = generator_module
     generator = cg.VNCCS_CharacterGenerator()
     def forbidden(*args, **kwargs):
         pytest.fail("Retired GAN mode must not load GAN or SeedVR models")
@@ -93,4 +100,7 @@ def test_control_center_hides_and_rejects_retired_downloads(retired_catalog, mon
 def test_packaged_catalog_no_longer_contains_gan_upscalers():
     catalog = json.loads((Path(__file__).parents[1] / "control_center.json").read_text())
     assert cc._without_gan_upscalers(catalog) == catalog
-    assert "gan_model" not in cg.DEFAULT_WIDGET_DATA["upscaler"]
+
+
+def test_generator_defaults_no_longer_contain_gan_model(generator_module):
+    assert "gan_model" not in generator_module.DEFAULT_WIDGET_DATA["upscaler"]

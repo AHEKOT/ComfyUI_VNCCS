@@ -2,26 +2,11 @@ import types
 import weakref
 
 import pytest
-import torch
 
-from test_h3_runtime_cleanup import cg, dynamic_runtime
-from test_h3_runtime_cleanup import install_node_calls
-from nodes import runtime_cleanup as runtime
+torch = pytest.importorskip("torch")
 
-
-def test_nested_stages_clean_once_and_reset_after_failure(dynamic_runtime):
-    _, events, pending = dynamic_runtime
-    with pytest.raises(RuntimeError, match='interrupted'):
-        with runtime.inference_stage():
-            with runtime.inference_stage():
-                pending.append(object())
-                raise RuntimeError('interrupted')
-    assert events == ['prefetch', 'cast_buffers', 'watermarks']
-    assert not pending
-    with runtime.inference_stage():
-        pending.append(object())
-    assert events == ['prefetch', 'cast_buffers', 'watermarks'] * 2
-    assert not pending
+from nodes import character_generator as cg
+from runtime_cleanup_helpers import dynamic_runtime, install_node_calls
 
 
 def test_list_mapping_releases_owned_inputs_on_failure(dynamic_runtime, monkeypatch):

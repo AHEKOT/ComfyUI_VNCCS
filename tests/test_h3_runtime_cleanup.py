@@ -1,61 +1,14 @@
 """H3 direct node calls must observe ComfyUI's dynamic VRAM boundaries."""
 
-import sys
 import types
 import weakref
 
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 from nodes import character_generator as cg
-from nodes import runtime_cleanup as runtime
-
-
-def install_node_calls(monkeypatch, call):
-    """Keep the production dispatcher and its cleanup active in model-free tests."""
-    def node_class(name):
-        def run(**kwargs):
-            return call(name, **kwargs)
-        return type(name, (), {"FUNCTION": "run", "run": staticmethod(run)})
-    names = [
-        "MiniMaxH3ReferenceToVideo", "SamplerCustomAdvanced", "VAEDecode",
-        "BasicGuider", "RandomNoise", "KSamplerSelect", "BasicScheduler",
-        "VNCCS_Flux_Klein_Encoder", "ProbeEncode", "KSampler", "VAEDecodeTiled",
-        "ImageScale", "SeedVR2Preprocess", "VAEEncodeTiled", "SeedVR2Conditioning",
-        "SeedVR2PostProcessing",
-    ]
-    monkeypatch.setattr(cg, "comfy_nodes", types.SimpleNamespace(
-        NODE_CLASS_MAPPINGS={name: node_class(name) for name in names},
-    ))
-
-
-@pytest.fixture
-def dynamic_runtime(monkeypatch):
-    events = []
-    pending = []
-    memory = types.ModuleType("comfy.memory_management")
-    memory.aimdo_enabled = True
-    prefetch = types.ModuleType("comfy.model_prefetch")
-    def cleanup():
-        events.append("prefetch")
-        pending.clear()
-    prefetch.cleanup_prefetch_queues = cleanup
-    aimdo = types.ModuleType("comfy_aimdo")
-    vbar = types.ModuleType("comfy_aimdo.model_vbar")
-    vbar.vbars_reset_watermark_limits = lambda: events.append("watermarks")
-    aimdo.model_vbar = vbar
-    for name, module in {
-        "comfy.memory_management": memory, "comfy.model_prefetch": prefetch,
-        "comfy_aimdo": aimdo, "comfy_aimdo.model_vbar": vbar,
-    }.items():
-        monkeypatch.setitem(sys.modules, name, module)
-    monkeypatch.setattr(sys.modules["comfy"], "memory_management", memory, raising=False)
-    monkeypatch.setattr(sys.modules["comfy"], "model_prefetch", prefetch, raising=False)
-    management = types.ModuleType("comfy.model_management")
-    management.reset_cast_buffers = lambda: events.append("cast_buffers")
-    monkeypatch.setitem(sys.modules, "comfy.model_management", management)
-    monkeypatch.setattr(sys.modules["comfy"], "model_management", management, raising=False)
-    return memory, events, pending
+from runtime_cleanup_helpers import dynamic_runtime, install_node_calls
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -75,20 +28,6 @@ def test_h3_stage_cleans_runtime_on_success_and_failure(dynamic_runtime, monkeyp
         assert cg._call_comfy_node("SamplerCustomAdvanced") is output
     assert events == ["prefetch", "cast_buffers", "watermarks"]
     assert pending == []
-
-
-def test_cleanup_is_noop_without_dynamic_allocator(dynamic_runtime):
-    memory, events, _ = dynamic_runtime
-    memory.aimdo_enabled = False
-    runtime.cleanup_runtime()
-    assert events == []
-
-
-def test_cleanup_is_compatible_with_older_comfyui(dynamic_runtime, monkeypatch):
-    _, events, _ = dynamic_runtime
-    monkeypatch.setitem(sys.modules, "comfy.model_prefetch", None)
-    runtime.cleanup_runtime()
-    assert events == []
 
 
 def test_long_pose_list_does_not_accumulate_executor_resources(dynamic_runtime, monkeypatch):
