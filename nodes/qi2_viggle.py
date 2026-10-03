@@ -10,6 +10,8 @@ import math
 import torch
 import torch.nn.functional as F
 
+from .vnccs_control_center import _load_lora_file
+
 
 VIGGLE_TURBO_NODES = (1.0, 0.9375, 0.875, 0.75, 0.5, 0.25)
 
@@ -149,11 +151,10 @@ def _run_with_viggle_lora(weights, executor, *args, **kwargs):
 def apply_viggle_turbo_lora(model, lora_name, strength=1.0):
     """Attach the adapter as a model execution wrapper without merging weights."""
     import comfy.patcher_extension
-    import comfy.utils
     import folder_paths
 
     path = folder_paths.get_full_path_or_raise("loras", lora_name)
-    state_dict, metadata = comfy.utils.load_torch_file(path, return_metadata=True)
+    state_dict, metadata = _load_lora_file(path)
     adapter_metadata = json.loads((metadata or {}).get("lora_adapter_metadata", "{}"))
     alpha = adapter_metadata.get("transformer.lora_alpha", 1)
     rank = adapter_metadata.get("transformer.r", 1)

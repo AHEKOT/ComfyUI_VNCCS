@@ -440,6 +440,10 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
         return (object(),)
     monkeypatch.setattr(cd, "_call_comfy_node", call)
     monkeypatch.setattr(cg, "_call_comfy_node", call)
+    monkeypatch.setattr(cd, "_find_model_on_disk", lambda path: (path, True))
+    monkeypatch.setattr(cd, "_apply_lora_standard", lambda model, clip, path, strength: (
+        call("LoraLoaderModelOnly", model=model, lora_name=path, strength_model=strength)[0], clip,
+    ))
     pipe = types.SimpleNamespace(
         model=object(), clip=object(), vae=object(), audio_vae=object(), model_entry={"kind": kind},
         model_cache_key={"model": {"kind": kind, "name": "Test catalog model"}},

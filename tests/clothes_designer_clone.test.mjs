@@ -88,3 +88,50 @@ for (const selectedType of ["unet", "custom"]) {
         assert.equal(JSON.parse(serialized.widgets_values[0]).activeTab, "clone");
     });
 }
+
+test("background buttons update restored QI2 state, preview payload and workflow", async () => {
+    const harness = setup();
+    await harness.upload();
+    Object.assign(harness.context, {
+        defaultState: { costume_info: {}, character_info: {}, gen_settings: { seed_mode: "fixed" } },
+        getConnectedModelKind: () => "qi2",
+        syncResolutionControl() {}, renderClothesCoreLoraCard() {},
+        setHelpText() {}, helpFor() {},
+        document: { createElement: () => ({
+            children: [], attrs: {}, classList: { add() {}, toggle() {} },
+            appendChild(child) { this.children.push(child); },
+            append(...children) { this.children.push(...children); },
+            setAttribute(name, value) { this.attrs[name] = value; },
+            remove() {},
+        }) },
+    });
+    vm.runInContext(
+        block("const createSegmentedField =", "const syncResolutionControl =") +
+        block("const syncBackgroundForModel =", "const renderClothesCoreLoraCard =") +
+        block("node._vnccsRestoreClothesState =", "registerCleanup(node, () => { delete node._vnccsRestoreClothesState;") +
+        `this.field = createSegmentedField("Background", "background_color", [
+            { label: "Green", value: "Green" }, { label: "Blue", value: "Blue" },
+            { label: "Alpha", value: "Transparent" }
+        ]); this.sync = syncGenerationControls;`, harness.context,
+    );
+
+    for (const [index, background] of [[1, "Blue"], [0, "Green"], [2, "Transparent"]]) {
+        harness.dataWidget.value = JSON.stringify({ ...harness.state, gen_settings: {
+            seed_mode: "fixed", background_color: "Transparent", background_model_kind: "qi2",
+        } });
+        harness.context.node._vnccsRestoreClothesState();
+        const buttons = harness.context.field.children[1].children;
+        buttons[index].onclick();
+        assert.equal(buttons[index].attrs["aria-pressed"], "true");
+        assert.equal(harness.state.gen_settings.background_color, background);
+        assert.equal(JSON.parse(harness.dataWidget.value).gen_settings.background_color, background);
+        harness.context.sync();
+        assert.equal(harness.state.gen_settings.background_color, background);
+
+        await harness.context.btnGen.onclick();
+        assert.equal(harness.apiPreviews.at(-1).clothes_state.gen_settings.background_color, background);
+        const serialized = { widgets_values: ["{}"] };
+        harness.context.node.onSerialize(serialized);
+        assert.equal(JSON.parse(serialized.widgets_values[0]).gen_settings.background_color, background);
+    }
+});

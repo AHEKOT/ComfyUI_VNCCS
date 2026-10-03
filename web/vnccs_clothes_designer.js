@@ -1359,7 +1359,7 @@ app.registerExtension({
                     return wrap;
                 };
 
-                const createSegmentedField = (lbl, key, options, targetObj = state.gen_settings) => {
+                const createSegmentedField = (lbl, key, options) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-clothes-field";
                     setHelpText(wrap, helpFor(key));
@@ -1377,14 +1377,14 @@ app.registerExtension({
                         const raw = String(value || options[0]?.value || "");
                         const matched = options.find(option => String(option.value).toLowerCase() === raw.toLowerCase());
                         const normalized = matched?.value || raw;
-                        targetObj[key] = normalized;
+                        state.gen_settings[key] = normalized;
                         if (
                             persist
                             && key === "background_color"
                             && getConnectedModelKind().trim().toLowerCase() === "qi2"
                             && normalized !== "Transparent"
                         ) {
-                            targetObj.previous_background_color = normalized;
+                            state.gen_settings.previous_background_color = normalized;
                         }
                         buttons.forEach(({ btn, value: btnValue }) => {
                             const selected = btnValue === normalized;
@@ -1406,7 +1406,7 @@ app.registerExtension({
 
                     els[key] = { setValue };
                     wrap.append(label, segmented);
-                    setValue(targetObj[key] || options[0]?.value);
+                    setValue(state.gen_settings[key] || options[0]?.value);
                     return wrap;
                 };
 

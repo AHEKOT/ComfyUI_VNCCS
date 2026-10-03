@@ -13,6 +13,7 @@ import tempfile
 import configparser
 import ipaddress
 from weakref import WeakValueDictionary
+from functools import lru_cache
 
 import folder_paths
 import comfy.sd
@@ -75,6 +76,8 @@ class _ByPassTypeTuple(tuple):
 
 _CC_CONFIG_CACHE = {}
 _CC_CONFIG_SYNC_LOCK = threading.Lock()
+_MODEL_ASSET_CACHE = {}
+_MODEL_ASSET_LOCK = threading.RLock()
 _DOWNLOAD_STATUS = {}
 _DOWNLOAD_QUEUE = queue.Queue()
 _CUSTOM_LORAS_FILE = "vnccs_custom_loras.json"
@@ -1228,12 +1231,49 @@ def _is_audio_vae_entry(entry):
     return role == "audio" or entry_type == "audiovae" or "audio_vae" in identity or "audio vae" in identity
 
 
+def _model_file_signature(full_path):
+    try:
+        stat = os.stat(full_path)
+    except OSError:
+        return None
+    return os.path.realpath(full_path), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _cached_model_asset(slot, paths, options, load):
+    signatures = tuple(_model_file_signature(path) for path in paths)
+    if not all(signatures):
+        return load()  # Let the loader report missing or inaccessible files.
+    key = signatures, options
+    # ponytail: one active asset per slot; add a bounded LRU if switching models needs reuse.
+    with _MODEL_ASSET_LOCK:
+        cached = _MODEL_ASSET_CACHE.get(slot)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        _MODEL_ASSET_CACHE.pop(slot, None)
+        asset = load()
+        _MODEL_ASSET_CACHE[slot] = key, asset
+        return asset
+
+
+@lru_cache(maxsize=4)
+def _cached_lora_file(full_path, signature):
+    return comfy.utils.load_torch_file(full_path, safe_load=True, return_metadata=True)
+
+
+def _load_lora_file(full_path):
+    signature = _model_file_signature(full_path)
+    if signature is None:
+        return comfy.utils.load_torch_file(full_path, safe_load=True, return_metadata=True)
+    with _MODEL_ASSET_LOCK:
+        return _cached_lora_file(full_path, signature)
+
+
 def _load_checkpoint(full_path):
-    output = comfy.sd.load_checkpoint_guess_config(
-        full_path,
-        output_vae=True,
-        output_clip=True,
-        embedding_directory=folder_paths.get_folder_paths("embeddings"),
+    embeddings = folder_paths.get_folder_paths("embeddings")
+    output = _cached_model_asset("model", (full_path,), ("checkpoint", tuple(embeddings)), lambda:
+        comfy.sd.load_checkpoint_guess_config(
+            full_path, output_vae=True, output_clip=True, embedding_directory=embeddings,
+        )
     )
     return output[0], output[1], output[2]
 
@@ -1250,7 +1290,9 @@ def _load_unet(full_path, settings=None):
         model_options["fp8_optimizations"] = True
     elif weight_dtype == "fp8_e5m2":
         model_options["dtype"] = torch.float8_e5m2
-    return comfy.sd.load_diffusion_model(full_path, model_options=model_options)
+    return _cached_model_asset("model", (full_path,), ("unet", weight_dtype), lambda:
+        comfy.sd.load_diffusion_model(full_path, model_options=model_options)
+    )
 
 
 def _load_gguf(full_path):
@@ -1268,20 +1310,22 @@ def _load_gguf(full_path):
             f"{loader_info.get('folder') or loader_info.get('module') or loader_info.get('file') or 'unknown'}"
         )
 
-    loader = loader_cls()
-    try:
-        model, = loader.load_unet(basename_agnostic(full_path))
-    except ValueError as exc:
-        message = str(exc)
-        if "Unexpected architecture type" in message and "qwen_image" in message:
-            active_loader = loader_info.get("folder") or loader_info.get("module") or loader_info.get("file") or "unknown"
-            raise RuntimeError(
-                "[VNCCS Control Center] Installed GGUF loader does not support Qwen Image GGUF files. "
-                "Update github.com/city96/ComfyUI-GGUF and remove or disable older GGUF forks. "
-                f"Active loader: {active_loader}."
-            ) from exc
-        raise
-    return model
+    def load():
+        loader = loader_cls()
+        try:
+            model, = loader.load_unet(basename_agnostic(full_path))
+        except ValueError as exc:
+            message = str(exc)
+            if "Unexpected architecture type" in message and "qwen_image" in message:
+                active_loader = loader_info.get("folder") or loader_info.get("module") or loader_info.get("file") or "unknown"
+                raise RuntimeError(
+                    "[VNCCS Control Center] Installed GGUF loader does not support Qwen Image GGUF files. "
+                    "Update github.com/city96/ComfyUI-GGUF and remove or disable older GGUF forks. "
+                    f"Active loader: {active_loader}."
+                ) from exc
+            raise
+        return model
+    return _cached_model_asset("model", (full_path,), ("gguf", loader_cls), load)
 
 
 def _get_nunchaku_load_candidates(full_path):
@@ -1358,10 +1402,9 @@ def _load_clips(clip_entries, selected_names):
         clip_type_str.upper(),
         comfy.sd.CLIPType.STABLE_DIFFUSION,
     )
-    return comfy.sd.load_clip(
-        ckpt_paths=paths,
-        embedding_directory=folder_paths.get_folder_paths("embeddings"),
-        clip_type=clip_type,
+    embeddings = folder_paths.get_folder_paths("embeddings")
+    return _cached_model_asset("clip", paths, (clip_type, tuple(embeddings)), lambda:
+        comfy.sd.load_clip(ckpt_paths=paths, embedding_directory=embeddings, clip_type=clip_type)
     )
 
 
@@ -1374,8 +1417,11 @@ def _load_vae(vae_entries, selected_name):
     full_path, exists = _find_model_on_disk(entry["local_path"])
     if not exists:
         raise RuntimeError(f"[VNCCS Control Center] VAE not downloaded: '{selected_name}'")
-    sd, metadata = comfy.utils.load_torch_file(full_path, return_metadata=True)
-    return comfy.sd.VAE(sd=sd, metadata=metadata)
+    def load():
+        sd, metadata = comfy.utils.load_torch_file(full_path, return_metadata=True)
+        return comfy.sd.VAE(sd=sd, metadata=metadata)
+    slot = "audio_vae" if _is_audio_vae_entry(entry) else "vae"
+    return _cached_model_asset(slot, (full_path,), (), load)
 
 
 def _load_model_block(
@@ -1429,7 +1475,7 @@ def _apply_lora_standard(model, clip, full_path, strength):
     lora_name = basename_agnostic(full_path)
     try:
         _validate_downloaded_model_file(full_path, lora_name)
-        lora_sd = comfy.utils.load_torch_file(full_path, safe_load=True)
+        lora_sd, _metadata = _load_lora_file(full_path)
     except Exception as exc:
         raise RuntimeError(
             "[VNCCS Control Center] Failed to load LoRA "
@@ -1934,6 +1980,10 @@ def _build_control_center_pipe(
     audio_vae = custom_audio_vae if selected_type == "custom" else None
     if selected_audio_vae_name:
         audio_vae = _load_vae(config.get("vae", []), selected_audio_vae_name)
+    if selected_type != "custom":
+        # Clone request-owned patches and CLIP options while sharing native weights.
+        model = model.clone() if hasattr(model, "clone") else model
+        clip = clip.clone() if hasattr(clip, "clone") else clip
     model, clip = _apply_loras(
         model,
         clip,
@@ -1966,6 +2016,12 @@ def _build_control_center_pipe(
         "lora_entries": pipe.lora_entries,
         "lora_states": pipe.lora_states,
     }
+    if pipe.model_cache_key is not None:
+        pipe.model_cache_key["files"] = [
+            _model_file_signature(_find_model_on_disk(entry.get("local_path", ""))[0])
+            for entry in [model_entry, *pipe.model_cache_key["clips"],
+                          *pipe.model_cache_key["vaes"], *pipe.lora_entries]
+        ]
     cache_settings = state.get("qi2_cache", {})
     if not isinstance(cache_settings, dict):
         cache_settings = {}
