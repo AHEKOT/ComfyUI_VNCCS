@@ -11,10 +11,28 @@ import numpy as np
 import traceback
 
 from ..utils import (
-    load_character_info, save_config,
+    load_character_info, load_config, config_path, save_config,
     character_dir, sheets_dir, MAIN_DIRS, EMOTIONS,
-    safe_join_under, safe_relative_path
+    safe_join_under, safe_relative_path, privileged_route, file_fingerprint,
+    character_storage_lock,
 )
+from .preview_runtime import run_wizard_job
+
+MAX_SOURCE_IMAGES = 1
+MAX_GRID_PIXELS = 16 * 1024 * 1024
+
+
+def _source_image_path(image):
+    data = image if isinstance(image, dict) else {"name": image}
+    kind = data.get("type", "input")
+    if kind not in {"input", "temp", "output"}:
+        raise ValueError("Unknown source image type")
+    directory = getattr(folder_paths, f"get_{kind}_directory")()
+    parts = []
+    if data.get("subfolder"):
+        parts.append(safe_relative_path(data["subfolder"], "subfolder"))
+    parts.append(safe_relative_path(data.get("name"), "image_name"))
+    return safe_join_under(directory, *parts)
 
 try:
     from .qwen_vl import get_qwen_vl_chat_handler
@@ -22,19 +40,6 @@ try:
 except Exception:
     from nodes.qwen_vl import get_qwen_vl_chat_handler
     from nodes.vnccs_utils import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME
-
-SKIN_COLOR_OPTIONS = [
-    "light skin",
-    "fair skin",
-    "pale skin",
-    "tan skin",
-    "dark skin",
-    "brown skin",
-    "olive skin",
-    "blue skin",
-    "green skin",
-    "grey skin",
-]
 
 # VNCCS Installer (REMOVED: User requested Qwen2)
 # Reverted to manual update instructions if needed.
@@ -82,6 +87,13 @@ def _emit_cloner_validation_error(unique_id, message):
 
 class CharacterCloner:
     @classmethod
+    def IS_CHANGED(cls, widget_data="{}", **kwargs):
+        data = json.loads(widget_data)
+        paths = [config_path(data.get("character", "Unknown"))]
+        paths.extend(_source_image_path(image) for image in data.get("source_images", []))
+        return json.dumps([file_fingerprint(path) for path in paths])
+
+    @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {},
@@ -105,49 +117,47 @@ class CharacterCloner:
         # 1. Parse Data
         character_name = data.get("character", "Unknown")
         info = data.get("character_info", {})
+        info_owner = str(info.get("name", "") or "").strip()
+        if info_owner and info_owner != str(character_name):
+            raise ValueError(
+                f"Character Cloner received metadata for '{info_owner}' while '{character_name}' is selected. "
+                "Reload the selected character before generating."
+            )
         source_images = data.get("source_images", []) # List of filenames in input dir
+        if not isinstance(source_images, list) or len(source_images) > MAX_SOURCE_IMAGES:
+            raise ValueError("Character Cloner accepts only one reference image. Remove extra images or upload a replacement.")
         background_color = info.get("background_color", "White")
 
         # 4. Process Images
         # Load all source images, make a grid
         images_tensors = []
+        source_pixels = 0
         if source_images:
             for img_obj in source_images:
                 # Handle both string (filename only) and dict (name, subfolder, type)
                 if isinstance(img_obj, dict):
                     img_name = img_obj.get("name")
-                    subfolder = img_obj.get("subfolder", "")
-                    img_type = img_obj.get("type", "input")
                 else:
                     img_name = img_obj
-                    subfolder = ""
-                    img_type = "input"
 
                 if not img_name: continue
 
-                # Manuall resolve path to avoid TypeError
-                if img_type == "input":
-                    base_dir = folder_paths.get_input_directory()
-                elif img_type == "temp":
-                    base_dir = folder_paths.get_temp_directory()
-                else:
-                    base_dir = folder_paths.get_output_directory()
-                
                 try:
-                    image_parts = []
-                    if subfolder:
-                        image_parts.append(safe_relative_path(subfolder, "subfolder"))
-                    image_parts.append(safe_relative_path(img_name, "image_name"))
-                    img_path = safe_join_under(base_dir, *image_parts)
+                    img_path = _source_image_path(img_obj)
                 except ValueError:
                     continue
 
                 if img_path and os.path.exists(img_path):
                     try:
                         with Image.open(img_path) as opened:
+                            source_pixels += opened.width * opened.height
+                            if source_pixels > MAX_GRID_PIXELS:
+                                raise ValueError(f"Character references exceed {MAX_GRID_PIXELS:,} source pixels. Use fewer or smaller images.")
                             i = ImageOps.exif_transpose(opened)
                             i = _composite_pil_alpha(i, background_color)
                             images_tensors.append(i)
+                    except ValueError:
+                        raise
                     except Exception as exc:
                         print(f"[CharacterCloner] Failed to load source image '{img_name}': {exc}")
         
@@ -193,6 +203,8 @@ class CharacterCloner:
             
             grid_w = cols * max_w
             grid_h = rows * max_h
+            if grid_w * grid_h > MAX_GRID_PIXELS:
+                raise ValueError(f"Character reference grid exceeds {MAX_GRID_PIXELS:,} pixels. Use fewer or smaller images.")
             grid = Image.new("RGB", (grid_w, grid_h), "black")
             
             for idx, img in enumerate(images_tensors):
@@ -218,16 +230,21 @@ class CharacterCloner:
         # 6. Save Config (if character name is valid)
         if character_name and character_name != "Unknown":
             # Just ensure folder exists
-            os.makedirs(character_path, exist_ok=True)
-            # We don't necessarily overwrite config unless user explicitly saved?
-            # CharacterCreatorV2 saves on process. We stick to that pattern.
-            config = {
-                "character_info": info,
-                "folder_structure": { "main_directories": MAIN_DIRS, "emotions": EMOTIONS },
-                "character_path": character_path,
-                "config_version": "2.0"
-            }
-            save_config(character_name, config)
+            with character_storage_lock(character_path):
+                os.makedirs(character_path, exist_ok=True)
+                config = load_config(character_name)
+                if not isinstance(config, dict):
+                    if os.path.exists(config_path(character_name)):
+                        raise ValueError(f"Cannot read the existing configuration for '{character_name}'; refusing to overwrite it.")
+                    config = {}
+                config.setdefault("folder_structure", {"main_directories": MAIN_DIRS, "emotions": EMOTIONS})
+                config.setdefault("config_version", "2.0")
+                config.update({
+                    "character_info": {**config.get("character_info", {}), **info, "name": character_name},
+                    "character_path": character_path,
+                })
+                if not save_config(character_name, config):
+                    raise OSError(f"Character Cloner could not save the configuration for '{character_name}'.")
 
         # Get background color
         background_color = info.get("background_color", "Green")
@@ -277,6 +294,7 @@ if server:
         return web.json_response(DOWNLOAD_STATUS)
 
     @server.PromptServer.instance.routes.post("/vnccs/cloner_download_model")
+    @privileged_route
     async def cloner_download_model(request):
         global DOWNLOAD_STATUS
         if DOWNLOAD_STATUS["status"] == "downloading":
@@ -288,11 +306,13 @@ if server:
         return web.json_response({"status": "started"})
 
 
-    @server.PromptServer.instance.routes.post("/vnccs/cloner_auto_generate")
-    async def cloner_auto_generate(request):
+    def _cloner_auto_generate_response(post):
         import sys
-        import llama_cpp
-        import llama_cpp.llama_chat_format
+        try:
+            import llama_cpp
+            import llama_cpp.llama_chat_format
+        except ImportError as error:
+            return web.json_response({"error": "DEPENDENCY_MISSING", "message": str(error), "model_name": "llama-cpp-python"}, status=500)
         
         # DEBUG INFO
         lib_ver = getattr(llama_cpp, "__version__", "unknown")
@@ -314,7 +334,6 @@ if server:
             # Proceed with HandlerCls...
 
             
-            post = await request.json()
             image_data = post.get("image_name")
             
             if not image_data:
@@ -356,26 +375,6 @@ if server:
                     "model_name": QWEN_VL_MODEL_FILENAME
                 }, status=500)
             
-            # 4. Inference
-            system_prompt = "You are a character description assistant. Analyze the image and extract the character's physical attributes into a JSON format."
-            
-            # Convert formatted image to base64 data URI
-            with open(image_path, "rb") as f:
-                import base64
-                b64 = base64.b64encode(f.read()).decode("utf-8")
-                img_uri = f"data:image/png;base64,{b64}"
-
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": [
-                    {
-                        "type": "text",
-                        "text": f"Analyze the character. Output JSON with keys: sex, age (int), race, skin_color, hair, eyes, face, body, additional_details, aesthetics (style tags), nsfw (boolean). For skin_color, choose only a clearly visible value from this list: {', '.join(SKIN_COLOR_OPTIONS)}. If the skin tone is obscured or uncertain, use an empty string. Do not use pale skin as a default.",
-                    },
-                    {"type": "image_url", "image_url": {"url": img_uri}},
-                ]},
-            ]
-
              # 4. Initialize Llama
             try:
                 print(f"[VNCCS] Using {HandlerCls.__name__}")
@@ -398,30 +397,35 @@ if server:
                     raise RuntimeError("Failed to initialize Llama model.")
 
                 # 5. Run Inference
-                # 5. Run Inference
-                # Explicit Instruction for JSON
-                prompt_instruction = """Analyze the image and strictly output valid JSON. 
-Use Danbooru-style tags for descriptions.
+                prompt_instruction = """Analyze the character in the image and strictly output valid JSON.
+Extract visible physical character traits using concise comma-separated tags.
+Describe colors and physical traits in your own words; do not choose from presets or a closed list.
 
 Keys:
 - sex (string: 'male' or 'female')
 - age (int: estimated number)
 - race (string: e.g. 'human', 'elf', 'cyborg')
-- skin_color (string: choose only one clearly visible value from: light skin, fair skin, pale skin, tan skin, dark skin, brown skin, olive skin, blue skin, green skin, grey skin)
+- skin_color (string: describe the actual visible skin color, including unusual or multiple colors)
 - hair (string: comma-separated tags for color and style, e.g. 'blue hair, long hair, ponytail')
 - eyes (string: comma-separated tags for color and shape, e.g. 'green eyes, tsurime')
-- face (string: tags for features, e.g. 'blush', 'scars', 'makeup')
+- face (string: clearly visible facial features, e.g. 'freckles', 'facial scar', 'makeup')
 - body (string: tags for build, e.g. 'slim', 'muscular', 'tall')
-- additional_details (string: tags for clothing, accessories, pose, e.g. 'wearing suit, sitting, holding sword')
-- aesthetics (string: high quality tags e.g. 'masterpiece, best quality, anime style')
+- additional_details (string: physical character traits not covered by the other fields, e.g. 'monster arm', 'extra limbs', 'tail', 'wings', 'body markings')
+- aesthetics (string: visible art style, e.g. 'anime style, illustration, flat color')
 - nsfw (boolean)
 
 Rules:
-- Determine skin_color from visible skin only.
+- Describe only features clearly visible in the image. Do not invent traits or copy the examples.
+- Use an empty string for absent, hidden, or uncertain traits. Do not fill a field just to avoid an empty value.
+- Determine skin_color from exposed skin, not clothing, background, or assumed human skin tones.
+- Preserve unusual skin colors as drawn. Red or pink skin across the face or body is skin_color, not blush.
 - Use "pale skin" only for unusually pale/very light skin, never as a generic default.
-- If skin is hidden, heavily stylized by lighting, or uncertain, set skin_color to "".
+- Add blush only when distinct localized cheek blush is visible against the surrounding skin color.
+- Different colors on exposed body parts can be character traits; do not assume they are gloves or tights.
+- additional_details contains only physical character features that do not fit race, skin_color, hair, eyes, face, or body.
+- Do not include clothing, footwear, wearable accessories, held objects, pose, actions, facial expressions, camera framing, or background in character trait fields.
 
-Structure the response as a raw JSON object. Do not output the word 'tag' as a value. DESCRIBE the character."""
+Return all keys in a raw JSON object. Do not output the word 'tag' as a value."""
 
                 # Helper for Base64 with Resizing (Max 512px)
                 import base64
@@ -452,7 +456,7 @@ Structure the response as a raw JSON object. Do not output the word 'tag' as a v
                     b64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
 
                 messages = [
-                    {"role": "system", "content": "You are a character description specialist. Analyze the image and output valid JSON only."},
+                    {"role": "system", "content": "You extract visible physical character identity, with no outfit or pose descriptions. Output valid JSON only."},
                     {"role": "user", "content": [
                         {"type": "text", "text": prompt_instruction},
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}} 
@@ -473,7 +477,7 @@ Structure the response as a raw JSON object. Do not output the word 'tag' as a v
                 # 6. Robust JSON Extraction
                 if not content or not content.strip():
                      print("[VNCCS] Error: Empty response from LLM")
-                     return web.json_response({"additional_details": "Error: Empty response from LLM. check console."})
+                     return web.json_response({"error": "INVALID_RESPONSE", "message": "The image wizard returned an empty response. Please try again."}, status=502)
 
                 data = None
 
@@ -507,14 +511,14 @@ Structure the response as a raw JSON object. Do not output the word 'tag' as a v
                     except Exception as e:
                         print(f"[VNCCS] Standard JSON parse failed: {e}")
 
-                # Final Check: If valid dict, return it. Else, raw content.
+                # Only structured character traits may reach the character fields.
                 if isinstance(data, dict):
                     # Ensure keys exist? Frontend handles missing keys.
                     print(f"[VNCCS] Final JSON Keys: {list(data.keys())}")
                     return web.json_response(data)
                 else:
-                    print("[VNCCS] Failed to extract JSON. Returning raw content.")
-                    return web.json_response({"additional_details": content})
+                    print("[VNCCS] Failed to extract character JSON.")
+                    return web.json_response({"error": "INVALID_RESPONSE", "message": "The image wizard did not return a character JSON object. Please try again."}, status=502)
 
             except Exception as e:
                 import traceback
@@ -538,6 +542,18 @@ Structure the response as a raw JSON object. Do not output the word 'tag' as a v
         except Exception as e:
             traceback.print_exc()
             return web.Response(status=500, text=str(e))
+
+
+    @server.PromptServer.instance.routes.post("/vnccs/cloner_auto_generate")
+    @privileged_route
+    async def cloner_auto_generate(request):
+        try:
+            post = await request.json()
+        except (ValueError, TypeError):
+            return web.json_response({"error": "Invalid JSON request"}, status=400)
+        if not isinstance(post, dict):
+            return web.json_response({"error": "Request must be an object"}, status=400)
+        return await run_wizard_job(_cloner_auto_generate_response, post, "cloner")
 
 
 NODE_CLASS_MAPPINGS = {

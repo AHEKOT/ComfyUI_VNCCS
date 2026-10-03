@@ -657,25 +657,39 @@ class TestPackagedConfigSync:
         assert json.loads(target.read_text(encoding="utf-8")) == remote_data
         assert download_args["force_download"] is True
 
-    def test_remote_refresh_failure_does_not_return_stale_local_config(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("local_available", [True, False])
+    def test_remote_refresh_failure_uses_local_catalog_when_available(self, tmp_path, monkeypatch, local_available):
         target = tmp_path / "control_center.json"
         local_data = {"name": "stale", "lora": [{"name": "Removed LoRA", "version": "3.0"}]}
-        target.write_text(json.dumps(local_data), encoding="utf-8")
+        if local_available:
+            target.write_text(json.dumps(local_data), encoding="utf-8")
         monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_get_packaged_cc_path", lambda: str(target))
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_load_custom_loras", lambda: [])
+        download_args = {}
 
         def fail_hf_download(**kwargs):
-            raise RuntimeError("HF unavailable")
+            download_args.update(kwargs)
+            raise OSError("HF unavailable")
 
         monkeypatch.setattr(_CONTROL_CENTER_MODULE, "hf_hub_download", fail_hf_download)
         _CC_CONFIG_CACHE.clear()
 
         try:
-            with pytest.raises(RuntimeError, match="HF unavailable"):
-                _get_cc_config("MIUProject/VNCCS_v3.0", prefer_remote=True)
+            if local_available:
+                loaded = _get_cc_config("MIUProject/VNCCS_v3.0", prefer_remote=True)
+                assert loaded["name"] == local_data["name"]
+                assert loaded["lora"] == local_data["lora"]
+                assert _CONTROL_CENTER_MODULE._get_cc_config_source("MIUProject/VNCCS_v3.0") == "packaged"
+            else:
+                with pytest.raises(OSError, match="HF unavailable"):
+                    _get_cc_config("MIUProject/VNCCS_v3.0", prefer_remote=True)
         finally:
             _CC_CONFIG_CACHE.clear()
 
-        assert json.loads(target.read_text(encoding="utf-8")) == local_data
+        assert download_args["force_download"] is True
+        assert download_args["token"] is False
+        if local_available:
+            assert json.loads(target.read_text(encoding="utf-8")) == local_data
 
     def test_packaged_catalog_uses_current_clothes_core(self):
         path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "control_center.json")
@@ -1006,8 +1020,8 @@ class TestControlCenterFrontendFamilies:
         assert 'api.fetchApi("/vnccs/manager/enable_personal_cloud"' in source
         assert 'confirmation: "enable_personal_cloud"' in source
         assert '"X-VNCCS-CSRF": "1"' in source
-        assert 'sessionStorage.setItem(PENDING_DEPENDENCY_INSTALLS_KEY' in source
-        assert 'sessionStorage.removeItem(PENDING_DEPENDENCY_INSTALLS_KEY)' in source
+        assert 'sessionStore.setItem(PENDING_DEPENDENCY_INSTALLS_KEY' in source
+        assert 'sessionStore.removeItem(PENDING_DEPENDENCY_INSTALLS_KEY)' in source
         assert "window.location.reload();" in source
         assert 'this._btn("Enable & restart"' in source
         assert "security_level will not be changed" in source
@@ -1047,7 +1061,7 @@ class TestControlCenterFrontendFamilies:
         assert source.count("this._syncCustomModelInput();") >= 7
 
 class TestClothesPreviewFrontendContract:
-    def test_custom_preview_uses_partial_graph_execution(self):
+    def test_custom_preview_never_submits_graph_execution(self):
         path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
             "web",
@@ -1056,11 +1070,10 @@ class TestClothesPreviewFrontendContract:
         with open(path, "r", encoding="utf-8") as handle:
             source = handle.read()
 
-        assert 'controlCenter.selected_type === "custom"' in source
-        assert "app.queuePrompt(0, 1, [targetId])" in source
-        assert 'api.addEventListener("vnccs.preview.updated", onPreview)' in source
-        assert 'api.addEventListener("execution_cached", onCached)' in source
-        assert "cachedNodes.some(nodeId => String(nodeId) === targetId)" in source
+        assert 'api.fetchApi("/vnccs/control_center/clothes_preview"' in source
+        assert "control_center_id: String(upstream.id)" in source
+        assert "queueConnectedPreview" not in source
+        assert "app.queuePrompt(0, 1, [targetId])" not in source
 
     def test_clothes_designer_is_partial_execution_output(self):
         path = os.path.join(
@@ -1086,12 +1099,9 @@ class TestClothesPreviewFrontendContract:
         assert 'if (url.includes("force_cache=true")) return;' in source
         force_cache_branch = source.split("if (forceCache) {", 1)[1].split("} else {", 1)[0]
         assert "selected_preview_sprite = null" not in force_cache_branch
-        custom_preview_branch = source.split(
-            'if (controlCenter.selected_type === "custom") {',
-            1,
-        )[1].split("} else {", 1)[0]
-        assert "if (previewResult?.cached)" in custom_preview_branch
-        assert custom_preview_branch.count("updatePreviewImage(true)") == 1
+        preview_handler = source.split("btnGen.onclick = async () => {", 1)[1].split("els.btnGen = btnGen;", 1)[0]
+        assert "selected_preview_sprite = null" not in preview_handler
+        assert "clothes_state: state" in preview_handler
 
 
 # ── custom LoRA helpers ──────────────────────────────────────────────────────

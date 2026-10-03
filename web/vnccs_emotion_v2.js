@@ -1,5 +1,5 @@
 import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
+import { vnccsApi as api, mediaURL, storage, serverRegistry } from "./vnccs_transport.js";
 import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator } from "./vnccs_common.js";
 
 // --- CSS STYLES: Sakura Archive Design System ---
@@ -7,7 +7,7 @@ const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
 
 /* ── Variables ── */
-:root {
+.ems-container {
     --bg-primary: #0a0a0f;
     --bg-secondary: #12121a;
     --bg-elevated: #1a1a26;
@@ -441,7 +441,7 @@ const STYLE = `
     box-sizing: border-box;
     background: transparent;
 }
-.ems-emotion-item:hover {
+.ems-emotion-item:hover:not(.selected) {
     background: rgba(255, 143, 163, 0.06);
     border-color: var(--accent-border);
 }
@@ -497,7 +497,7 @@ const STYLE = `
     border: 1px dashed var(--accent-border);
     background: rgba(255, 143, 163, 0.05);
 }
-.ems-emotion-item.add-custom:hover {
+.ems-emotion-item.add-custom:hover:not(.selected) {
     background: rgba(255, 143, 163, 0.1);
 }
 .ems-emotion-add-box {
@@ -686,7 +686,7 @@ const STYLE = `
     min-height: 34px;
     font-size: 11px;
 }
-.ems-tab:hover,
+.ems-tab:hover:not(.active),
 .ems-tab:focus,
 .ems-tab:focus-visible,
 .ems-tab:active {
@@ -1576,15 +1576,15 @@ app.registerExtension({
                 };
 
                 const fetchCcConfig = async (force = false) => {
-                    if (!force && window.VNCCS_CC_REGISTRY?.[CC_REPO_ID] && ccHasRequiredFamilies(window.VNCCS_CC_REGISTRY[CC_REPO_ID])) {
-                        ccConfig = window.VNCCS_CC_REGISTRY[CC_REPO_ID];
+                    if (!force && serverRegistry("VNCCS_CC_REGISTRY")?.[CC_REPO_ID] && ccHasRequiredFamilies(serverRegistry("VNCCS_CC_REGISTRY")[CC_REPO_ID])) {
+                        ccConfig = serverRegistry("VNCCS_CC_REGISTRY")[CC_REPO_ID];
                         renderControlCenterCards();
                         return ccConfig;
                     }
                     if (!force && ccConfig && ccHasRequiredFamilies(ccConfig)) return ccConfig;
                     if (!force) {
                         try {
-                            const cached = localStorage.getItem(CC_CACHE_KEY);
+                            const cached = storage.getItem(CC_CACHE_KEY);
                             if (cached) {
                                 ccConfig = JSON.parse(cached);
                                 if (ccHasRequiredFamilies(ccConfig)) renderControlCenterCards();
@@ -1598,9 +1598,9 @@ app.registerExtension({
                     const payload = await response.json();
                     if (!response.ok || payload.error) throw new Error(payload.error || "Failed to load Control Center config");
                     ccConfig = payload;
-                    window.VNCCS_CC_REGISTRY = window.VNCCS_CC_REGISTRY || {};
-                    window.VNCCS_CC_REGISTRY[CC_REPO_ID] = payload;
-                    localStorage.setItem(CC_CACHE_KEY, JSON.stringify(payload));
+
+                    serverRegistry("VNCCS_CC_REGISTRY")[CC_REPO_ID] = payload;
+                    storage.setItem(CC_CACHE_KEY, JSON.stringify(payload));
                     renderControlCenterCards();
                     return payload;
                 };
@@ -2416,9 +2416,9 @@ app.registerExtension({
                 generationEls.tabIllustrious = tabIllustrious;
                 generationEls.tabAnima = tabAnima;
                 generationEls.tabQi2 = tabQi2;
-                tabRow.appendChild(tabIllustrious);
-                tabRow.appendChild(tabAnima);
                 tabRow.appendChild(tabQi2);
+                tabRow.appendChild(tabAnima);
+                tabRow.appendChild(tabIllustrious);
                 generationSection.appendChild(tabRow);
 
                 const illustriousModelCards = document.createElement("div");
@@ -2581,7 +2581,7 @@ app.registerExtension({
                 const refreshCharacterList = async ({ fetchData = false } = {}) => {
                     const token = ++characterListRefreshToken;
                     try {
-                        const response = await fetch("/vnccs/list_characters", { cache: "no-store" });
+                        const response = await api.fetchApi("/vnccs/list_characters", { cache: "no-store" });
                         if (!response.ok) throw new Error(`HTTP ${response.status}`);
                         const characters = await response.json();
                         if (token !== characterListRefreshToken) return;
@@ -2828,7 +2828,7 @@ app.registerExtension({
                         btnSave.disabled = true;
                         btnSave.innerText = "Saving...";
                         try {
-                            const res = await fetch("/vnccs/add_custom_emotion", {
+                            const res = await api.fetchApi("/vnccs/add_custom_emotion", {
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({
@@ -2922,7 +2922,7 @@ app.registerExtension({
                         try {
                             const savedEmotions = JSON.parse(emotionsDataWidget.value);
                             state.selectedEmotions = new Set(savedEmotions);
-                            // renderEmotions is called after fetch("/vnccs/get_emotions"), need to wait?
+                            // renderEmotions is called after api.fetchApi("/vnccs/get_emotions"), need to wait?
                             // No, renderEmotions() just needs state.emotions to be populated.
                             // The fetch happens async.
                         } catch (e) { }
@@ -3050,7 +3050,7 @@ app.registerExtension({
 
                     const img = document.createElement("img");
                     img.className = "ems-emotion-img";
-                    img.src = `/vnccs/get_emotion_image?name=${encodeURIComponent(e.safe_name)}&v=webp`;
+                    img.src = mediaURL(`/vnccs/get_emotion_image?name=${encodeURIComponent(e.safe_name)}&v=webp`);
                     img.onerror = () => {
                         const placeholder = document.createElement("div");
                         placeholder.className = "ems-emotion-img ems-emotion-img-placeholder";
@@ -3166,7 +3166,7 @@ app.registerExtension({
 
                     // Costumes
                     try {
-                        const res = await fetch(`/vnccs/get_character_costumes?character=${encodeURIComponent(charName)}`);
+                        const res = await api.fetchApi(`/vnccs/get_character_costumes?character=${encodeURIComponent(charName)}`);
                         const validCostumes = await res.json();
                         if (token !== characterFetchToken || charName !== state.character) return;
                         state.costumes = validCostumes || [];
@@ -3190,7 +3190,7 @@ app.registerExtension({
                 }
 
                 // Initial Load
-                fetch("/vnccs/get_emotions").then(async (res) => {
+                api.fetchApi("/vnccs/get_emotions").then(async (res) => {
                     if (res.ok) {
                         const data = await res.json();
                         let flat = [];

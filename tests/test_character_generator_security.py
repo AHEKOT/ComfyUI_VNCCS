@@ -3,6 +3,8 @@
 import json
 import os
 import sys
+import types
+from pathlib import Path
 
 import pytest
 
@@ -76,6 +78,7 @@ def test_character_root_ignores_external_sheets_path(tmp_path, monkeypatch):
     external.mkdir(parents=True)
 
     monkeypatch.setattr(cg, "base_output_dir", lambda: str(base))
+    monkeypatch.setattr(cg, "character_dir", lambda name: str(base / name))
 
     assert cg._character_root_from_sheets_path(str(external), "Alice") == str(char_root)
 
@@ -87,6 +90,7 @@ def test_character_root_accepts_windows_style_sheets_path(tmp_path, monkeypatch)
     sheets.mkdir(parents=True)
 
     monkeypatch.setattr(cg, "base_output_dir", lambda: str(base))
+    monkeypatch.setattr(cg, "character_dir", lambda name: str(base / name))
 
     windows_style = str(sheets).replace(os.sep, "\\")
     assert cg._character_root_from_sheets_path(windows_style, "Alice") == str(char_root)
@@ -99,6 +103,7 @@ def test_cache_tensor_path_rejects_external_cache(tmp_path, monkeypatch):
     outside.mkdir(parents=True)
 
     monkeypatch.setattr(cg, "base_output_dir", lambda: str(base))
+    monkeypatch.setattr(cg, "character_dir", lambda name: str(base / name))
 
     assert cg._cache_tensor_path(str(outside), "stage") == ""
 
@@ -111,9 +116,41 @@ def test_emotion_output_prefix_must_stay_under_character_sprites(tmp_path, monke
     char_root.mkdir(parents=True)
 
     monkeypatch.setattr(cg, "base_output_dir", lambda: str(base))
+    monkeypatch.setattr(cg, "character_dir", lambda name: str(base / name))
 
     assert cg._safe_emotion_output_prefix(str(safe_prefix), "Alice") == str(safe_prefix)
     assert cg._safe_emotion_output_prefix(str(unsafe_prefix), "Alice") == ""
+
+
+@pytest.mark.parametrize("root_name", ["Sprites", "Faces"])
+def test_emotion_image_save_preserves_previous_png_on_failure(tmp_path, monkeypatch, root_name):
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(cg, "base_output_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(cg, "character_dir", lambda name: str(tmp_path / name))
+    prefix = tmp_path / "Alice" / root_name / "Coat" / "happy" / "sprite_happy_"
+    prefix.parent.mkdir(parents=True)
+    target = prefix.parent / "sprite_happy_0001.png"
+    cg.Image.new("RGBA", (2, 2), "blue").save(target)
+    previous = target.read_bytes()
+    image = torch.ones(1, 2, 2, 4)
+    generator = cg.VNCCS_EmotionsGenerator()
+
+    def fail_save(self, destination, **kwargs):
+        Path(destination).write_bytes(b"partial image")
+        raise OSError("Simulated disk-full error")
+
+    with monkeypatch.context() as failure:
+        failure.setattr(cg.Image.Image, "save", fail_save)
+        with pytest.raises(OSError, match="disk-full"):
+            generator._save_rgba_image(image, None, str(prefix), 1, "Alice", root_name)
+
+    assert target.read_bytes() == previous
+    assert list(prefix.parent.iterdir()) == [target]
+    assert generator._save_rgba_image(image, None, str(prefix), 1, "Alice", root_name) == str(target)
+    with cg.Image.open(target) as saved:
+        assert saved.mode == "RGBA"
+        assert saved.getpixel((0, 0)) == (255, 255, 255, 255)
+    assert list(prefix.parent.iterdir()) == [target]
 
 
 def test_bg_remove_disabled_skips_chroma_key(monkeypatch):
@@ -381,6 +418,7 @@ def test_generator_internal_node_settings_are_forwarded(monkeypatch):
     class TestGenerator(cg.VNCCS_CharacterGenerator):
         def _extract_pipe(self, pipe):
             return {
+                "model_kind": "klein9b",
                 "clip": object(),
                 "vae": object(),
                 "model": object(),
@@ -393,7 +431,7 @@ def test_generator_internal_node_settings_are_forwarded(monkeypatch):
 
         def _run_list_mapped(self, class_name, list_kwargs, **kwargs):
             calls[class_name] = kwargs
-            if class_name == "VNCCS_QWEN_Encoder":
+            if class_name == "VNCCS_Flux_Klein_Encoder":
                 return ([object()], [object()], [{"samples": torch.rand(1, 4, 8, 8)}])
             if class_name == "KSampler":
                 return ([{"samples": torch.rand(1, 4, 8, 8)}],)
@@ -439,12 +477,9 @@ def test_generator_internal_node_settings_are_forwarded(monkeypatch):
         },
     )
 
-    assert calls["VNCCS_QWEN_Encoder"]["target_size"] == 1344
-    assert calls["VNCCS_QWEN_Encoder"]["upscale_method"] == "area"
-    assert calls["VNCCS_QWEN_Encoder"]["crop_method"] == "pad"
-    assert calls["VNCCS_QWEN_Encoder"]["vl_size"] == 512
-    assert calls["VNCCS_QWEN_Encoder"]["weight1"] == pytest.approx(0.75)
-    assert calls["VNCCS_QWEN_Encoder"]["qwen_2511"] is False
+    assert calls["VNCCS_Flux_Klein_Encoder"]["megapixels"] == pytest.approx(1344 / 1024)
+    assert calls["VNCCS_Flux_Klein_Encoder"]["upscale_method"] == "lanczos"
+    assert calls["VNCCS_Flux_Klein_Encoder"]["resolution_steps"] == 1
     assert calls["KSampler"]["seed"] == 99
     assert calls["KSampler"]["steps"] == 23
     assert calls["KSampler"]["cfg"] == pytest.approx(4.25)
@@ -570,11 +605,11 @@ def test_emotion_detailer_defaults_match_face_detailer_and_step3_workflow():
         "guide_size": 1536,
         "guide_size_for": True,
         "max_size": 1536,
-        "feather": 5,
+        "feather": 50,
         "noise_mask": True,
         "force_inpaint": True,
         "bbox_threshold": 0.5,
-        "bbox_dilation": 10,
+        "bbox_dilation": 50,
         "bbox_crop_factor": 3.0,
         "sam_detection_hint": "center-1",
         "sam_dilation": 0,
@@ -594,7 +629,7 @@ def test_emotion_detailer_defaults_match_face_detailer_and_step3_workflow():
     workflow_path = os.path.join(
         os.path.dirname(os.path.dirname(__file__)),
         "workflows",
-        "VNCCS_3.0_Step3_CharacterEmotions.json",
+        "VNCCS_3.2_Step3_CharacterEmotions.json",
     )
     with open(workflow_path, "r", encoding="utf-8") as handle:
         workflow = json.load(handle)
@@ -622,7 +657,8 @@ def test_emotions_generator_bg_remove_uses_character_background_color(tmp_path, 
     torch = pytest.importorskip("torch")
     seen = {}
 
-    monkeypatch.setattr(cg, "_character_cache_dir_from_sheets_path", lambda *args, **kwargs: str(tmp_path))
+    monkeypatch.setattr(cg, "base_output_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(cg, "_character_cache_dir_from_sheets_path", lambda *args, **kwargs: str(tmp_path / "cache"))
     monkeypatch.setattr(cg, "_rotate_preview_cache", lambda *args, **kwargs: None)
     monkeypatch.setattr(cg, "_save_run_inputs", lambda *args, **kwargs: None)
 
@@ -655,11 +691,14 @@ def test_emotions_generator_bg_remove_uses_character_background_color(tmp_path, 
     assert seen["background"] == "Green"
 
 
-def test_emotions_generator_qi2_passes_source_alpha_into_generation(tmp_path, monkeypatch):
+@pytest.mark.parametrize("emotion_settings", [{}, {"bbox_dilation": 10, "feather": 5},
+                                             {"bbox_dilation": 0, "feather": 0}])
+def test_emotions_generator_qi2_passes_source_alpha_into_generation(tmp_path, monkeypatch, emotion_settings):
     torch = pytest.importorskip("torch")
     seen = {}
 
-    monkeypatch.setattr(cg, "_character_cache_dir_from_sheets_path", lambda *args, **kwargs: str(tmp_path))
+    monkeypatch.setattr(cg, "base_output_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(cg, "_character_cache_dir_from_sheets_path", lambda *args, **kwargs: str(tmp_path / "cache"))
     monkeypatch.setattr(cg, "_rotate_preview_cache", lambda *args, **kwargs: None)
     monkeypatch.setattr(cg, "_save_run_inputs", lambda *args, **kwargs: None)
 
@@ -670,6 +709,8 @@ def test_emotions_generator_qi2_passes_source_alpha_into_generation(tmp_path, mo
 
     def capture_generation(image, *args, **kwargs):
         seen["encoder_input"] = image.clone()
+        seen["settings"] = kwargs["detailer_settings"]
+        seen["dilation"] = kwargs["bbox_dilation"]
         return image, image, torch.ones((image.shape[0], image.shape[1], image.shape[2]))
 
     monkeypatch.setattr(node, "_run_emotion_generation_one", capture_generation)
@@ -686,6 +727,7 @@ def test_emotions_generator_qi2_passes_source_alpha_into_generation(tmp_path, mo
     }])
     widget_data = json.dumps({
         "character_name": "Alice",
+        "emotion_generation": emotion_settings,
         "bg_remove": {"preset": "Native", "use_sam3_details_recovery": False},
     })
 
@@ -695,6 +737,9 @@ def test_emotions_generator_qi2_passes_source_alpha_into_generation(tmp_path, mo
     assert encoder_input.shape == (1, 4, 4, 4)
     assert torch.allclose(encoder_input[..., :3], images[..., :3])
     assert torch.allclose(encoder_input[..., 3], images[..., 3])
+    assert seen["dilation"] == emotion_settings.get("bbox_dilation", 50)
+    for key in ("bbox_dilation", "feather"):
+        assert seen["settings"][key] == emotion_settings.get(key, 50)
 
 
 def test_emotions_generator_single_bg_regenerate_slices_cached_raw_batch(tmp_path, monkeypatch):
@@ -703,11 +748,11 @@ def test_emotions_generator_single_bg_regenerate_slices_cached_raw_batch(tmp_pat
 
     monkeypatch.setattr(cg, "_character_cache_dir_from_sheets_path", lambda *args, **kwargs: str(tmp_path))
     monkeypatch.setattr(cg, "_save_run_inputs", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cg, "_load_cached_tensor", lambda *args, **kwargs: torch.zeros(4, 4, 4, 3))
 
     node = cg.VNCCS_EmotionsGenerator()
     monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(node, "_save_stage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cg, "_save_cached_tensor", lambda *args, **kwargs: None)
     monkeypatch.setattr(node, "_load_source_sprite_from_path", lambda *args, **kwargs: (None, None))
     monkeypatch.setattr(node, "_pad_alpha_sources_to_uniform_canvas", lambda data, items: (items, (4, 4)))
     monkeypatch.setattr(
@@ -721,17 +766,20 @@ def test_emotions_generator_single_bg_regenerate_slices_cached_raw_batch(tmp_pat
         for index in range(4)
     ])
 
-    def load_cached_stage(cache_dir, stage, unique_id=None, message=""):
-        if stage == "emotion_0001":
-            return cached_raw
+    def load_cached_item(cache_dir, key):
+        if key.startswith("emotion_0001__item_"):
+            return cached_raw[int(key.rsplit("_", 1)[1]) - 1:int(key.rsplit("_", 1)[1])]
+        if "__item_" in key and "detailer" in key:
+            return torch.ones(1, 4, 4)
         return None
+
+    monkeypatch.setattr(cg, "_load_cached_tensor", load_cached_item)
 
     def capture_bg_remove(images, source_items, detailer_masks, settings, background="Green", **kwargs):
         seen["shape"] = tuple(images.shape)
         seen["value"] = float(images[0, 0, 0, 0].item())
         return images
 
-    monkeypatch.setattr(node, "_load_cached_stage", load_cached_stage)
     monkeypatch.setattr(node, "_run_emotion_bg_remove", capture_bg_remove)
 
     images = torch.rand(4, 4, 4, 3)
@@ -952,6 +1000,7 @@ def test_pose_generation_decode_preserves_encoder_aspect(monkeypatch):
     class TestGenerator(cg.VNCCS_CharacterGenerator):
         def _extract_pipe(self, pipe):
             return {
+                "model_kind": "klein9b",
                 "clip": object(),
                 "vae": object(),
                 "model": object(),
@@ -963,7 +1012,7 @@ def test_pose_generation_decode_preserves_encoder_aspect(monkeypatch):
             }
 
         def _run_list_mapped(self, class_name, list_kwargs, **kwargs):
-            if class_name == "VNCCS_QWEN_Encoder":
+            if class_name == "VNCCS_Flux_Klein_Encoder":
                 return ([object()], [object()], [{"samples": torch.rand(1, 4, 198, 83)}])
             if class_name == "KSampler":
                 return ([{"samples": torch.rand(1, 4, 198, 83)}],)
@@ -1048,7 +1097,7 @@ def test_h3_pose_generation_follows_reference_workflow_and_returns_first_frame(m
             "BasicGuider": ("guider",),
             "RandomNoise": ("noise",),
             "SamplerCustomAdvanced": ("sampled", "denoised"),
-            "VAEDecodeTiled": (decoded,),
+            "VAEDecode": (decoded,),
         }
         return outputs[class_name]
 
@@ -1078,17 +1127,17 @@ def test_h3_pose_generation_follows_reference_workflow_and_returns_first_frame(m
         "BasicGuider",
         "RandomNoise",
         "SamplerCustomAdvanced",
-        "VAEDecodeTiled",
-        "VAEDecodeTiled",
+        "VAEDecode",
+        "VAEDecode",
     ]
     scheduler_call = next(kwargs for name, kwargs in calls if name == "BasicScheduler")
     assert scheduler_call["model"] == "pose_model"
     h3_calls = [kwargs for name, kwargs in calls if name == "MiniMaxH3ReferenceToVideo"]
     assert len(h3_calls) == 2
     for index, h3_kwargs in enumerate(h3_calls):
-        assert h3_kwargs["prompt"] == cg.H3_POSE_PROMPT
-        assert h3_kwargs["width"] == 2048
-        assert h3_kwargs["height"] == 2048
+        assert h3_kwargs["prompt"] == "Draw character from image2\n<lighting>"
+        assert h3_kwargs["width"] == h3_kwargs["height"]
+        assert h3_kwargs["width"] * h3_kwargs["height"] == pytest.approx(2048 * 1024, rel=0.025)
         assert h3_kwargs["length"] == 5
         assert h3_kwargs["ref_image_size"] == "match"
         assert list(h3_kwargs["ref_images"]) == ["ref_image_1", "ref_image_2"]
@@ -1178,6 +1227,8 @@ def test_h3_custom_pose_lora_must_be_enabled_in_control_center(monkeypatch):
 
 
 def test_seedvr_loader_cleans_vram_and_uses_settings(monkeypatch):
+    monkeypatch.setattr(cg, "comfy_nodes", types.SimpleNamespace(NODE_CLASS_MAPPINGS={
+        name: object for name in ("SeedVR2Preprocess", "SeedVR2Conditioning", "SeedVR2PostProcessing")}))
     torch = pytest.importorskip("torch")
     calls = []
 
@@ -1255,6 +1306,8 @@ def test_seedvr_target_dimensions_use_short_edge_and_max_edge():
 
 
 def test_seedvr_loader_ensures_required_vae_on_process(monkeypatch):
+    monkeypatch.setattr(cg, "comfy_nodes", types.SimpleNamespace(NODE_CLASS_MAPPINGS={
+        name: object for name in ("SeedVR2Preprocess", "SeedVR2Conditioning", "SeedVR2PostProcessing")}))
     ensured = []
     monkeypatch.setattr(cg, "_ensure_seedvr_vae_model", lambda name: ensured.append(name))
     monkeypatch.setattr(cg, "_call_comfy_node", lambda class_name, **kwargs: (object(),))
@@ -1271,7 +1324,7 @@ def test_seedvr_upscaler_runs_each_image_independently(monkeypatch):
     generator = cg.VNCCS_CharacterGenerator()
     calls = []
 
-    monkeypatch.setattr(generator, "_run_upscaler_models", lambda settings: ("dit", "vae"))
+    monkeypatch.setattr(generator, "_run_upscaler_models", lambda settings, node_id=None: ("dit", "vae"))
 
     def fake_seedvr(image, dit, vae, settings, seed, node_id=None):
         calls.append(image)

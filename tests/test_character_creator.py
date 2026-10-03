@@ -163,18 +163,12 @@ class TestProcessConfigSave:
             "preview_source": "gen",
         })
 
-        # process() will fail when it tries to load a checkpoint — we only test up to config save.
-        # Patch the model loading to raise before it's called by checking config was already written.
-        original_load = cc_mod.comfy.sd.load_checkpoint_guess_config if hasattr(cc_mod, 'comfy') else None
-
+        def stop_at_model_boundary(settings):
+            raise RuntimeError("Test model boundary reached")
+        monkeypatch.setattr(cc_mod, "load_generation_assets", stop_at_model_boundary)
         node = CharacterCreatorV2()
-
-        # We expect a ValueError/AttributeError when checkpoint loading is attempted.
-        # The config should already be written before that point.
-        try:
+        with pytest.raises(RuntimeError, match="Test model boundary reached"):
             node.process(widget_data=widget_data)
-        except Exception:
-            pass
 
         config = utils.load_config("TestChar")
         assert config is not None, "Config was not saved before model loading"

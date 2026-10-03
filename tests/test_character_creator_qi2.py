@@ -510,12 +510,13 @@ def test_qi2_portrait_composition_and_coverage_reach_positive_encoder_for_every_
 
 @pytest.mark.parametrize("framing", ["cowboy_shot", "full_body"])
 @pytest.mark.parametrize("sex,nsfw", [("female", False), ("male", False), ("female", True), ("male", True)])
-def test_qi2_pe_cannot_replace_composition_clothing_or_background(framing, sex, nsfw):
+def test_qi2_pe_cannot_replace_composition_clothing_expression_or_background(framing, sex, nsfw):
     info = _cat_character_info(framing=framing, sex=sex, nsfw=nsfw, age=30)
     fields = creator._qi2_character_fields(info)
     response = json.dumps({"fields": {
         "framing": "invented multi-panel layout",
         "clothing": "invented wardrobe",
+        "expression": "invented smile",
         "background": "invented scenery",
         "gender": "invented gender",
     }})
@@ -523,6 +524,8 @@ def test_qi2_pe_cannot_replace_composition_clothing_or_background(framing, sex, 
     assert fields["framing"] in prompt.split("\n\n", 1)[0]
     assert fields["clothing"] in prompt
     assert fields["background"] in prompt
+    assert "expressionless." in prompt
+    assert "unless" not in prompt
     assert f"The character is {sex}, 30 years old" in prompt
     assert "invented" not in prompt
 

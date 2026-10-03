@@ -901,10 +901,10 @@ class TestEnsureFloat01:
         result = _ensure_float01(t)
         assert torch.allclose(result, t)
 
-    def test_clamps_above_1(self):
+    def test_float_byte_range_is_scaled(self):
         t = torch.tensor([0.5, 1.5, 2.0])
         result = _ensure_float01(t)
-        assert result.max().item() == 1.0
+        assert torch.allclose(result, t / 255.0)
 
     def test_clamps_below_0(self):
         t = torch.tensor([-0.5, 0.5])

@@ -1,3 +1,4 @@
+import { createWidgetContext } from './widget_context.mjs';
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
@@ -14,7 +15,7 @@ const turbo = { name: "Qwen Image 2.1 Viggle Turbo", type: "TurboLora", kind: "Q
 
 function setup(state = {}, config = { models, lora: [turbo] }) {
     const events = [];
-    const context = vm.createContext({
+    const context = createWidgetContext({
         window: { dispatchEvent: event => events.push(event) },
         CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
     });
@@ -99,7 +100,13 @@ test("packaged workflows select QI2 without legacy model state", () => {
             const saved = JSON.parse(value.widgets_values[1]);
             assert.equal(saved.active_kind, "QI2");
             assert.equal(saved.selected_model, defaultName);
-            assert.equal(saved.model_params.steps, 25);
+            const turboEnabled = saved.loras.some(lora => lora.name === turbo.name && lora.auto_apply);
+            assert.equal(saved.model_params.steps, turboEnabled ? 6 : 25);
+            assert.equal(saved.model_params.cfg, turboEnabled ? 1 : 3);
+            assert.deepEqual(saved.model_params_by_kind.QI2, saved.model_params);
+            if (turboEnabled) {
+                assert.deepEqual(saved.model_params.turbo_previous_settings, { steps: 25, cfg: 3 });
+            }
             count++;
         }
         Object.values(value).forEach(inspect);

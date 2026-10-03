@@ -72,8 +72,8 @@ def test_both_generation_paths_apply_overhaul_before_turbo_and_sampling(monkeypa
     monkeypatch.setattr(creator, "sheets_dir", lambda name: str(tmp_path / name / "Sheets"))
     monkeypatch.setattr(creator, "faces_dir", lambda name: str(tmp_path / name / "Faces"))
     monkeypatch.setattr(creator, "ensure_character_structure", lambda name: None)
-    monkeypatch.setattr(creator, "load_config", lambda name: None)
-    monkeypatch.setattr(creator, "save_config", lambda *args: None)
+    monkeypatch.setattr(creator, "load_config", lambda name, **kwargs: None)
+    monkeypatch.setattr(creator, "save_config", lambda *args: str(tmp_path / "config.json"))
     monkeypatch.setattr(creator, "load_generation_assets", lambda settings: ("key", "model", "clip", "vae"))
     monkeypatch.setattr(creator, "acquire_preview_assets", lambda settings: ("model", "clip", "vae"))
     monkeypatch.setattr(creator, "get_lora_full_path", lambda name: "/test/overhaul.safetensors")
@@ -105,7 +105,7 @@ def test_both_generation_paths_apply_overhaul_before_turbo_and_sampling(monkeypa
     if route == "preview":
         async def payload():
             return data
-        result = asyncio.run(creator.preview_generate(SimpleNamespace(json=payload)))
+        result = asyncio.run(creator.preview_generate(SimpleNamespace(json=payload, headers={"Host": "localhost", "X-VNCCS-CSRF": "1"})))
         assert result["image"]
     else:
         result = creator.CharacterCreatorV2().process(json.dumps(data))

@@ -7,6 +7,7 @@ import shutil
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -31,6 +32,8 @@ try:
         get_legacy_output_dir,
         safe_join_under,
         validate_privileged_request,
+        character_storage_lock,
+        staged_image_batch,
     )
 except Exception:
     from utils import (
@@ -39,6 +42,8 @@ except Exception:
         get_legacy_output_dir,
         safe_join_under,
         validate_privileged_request,
+        character_storage_lock,
+        staged_image_batch,
     )
 
 
@@ -46,7 +51,40 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 MIN_SPRITE_HEIGHT = 128
 LEGACY_SHEET_COLS = 6
 LEGACY_SHEET_ROWS = 2
-RUNS: Dict[str, dict] = {}
+RUNS: Dict[str, dict] = OrderedDict()
+MAX_RUNS = 64
+MAX_LOG_LINES = 500
+RUN_TTL_SECONDS = 24 * 60 * 60
+_RUNS_LOCK = threading.RLock()
+
+
+def _prune_runs(*, reserve=False):
+    cutoff = time.time() - RUN_TTL_SECONDS
+    with _RUNS_LOCK:
+        for key, run in list(RUNS.items()):
+            if run.get("status") not in {"queued", "running"} and run.get("updated_at", 0) < cutoff:
+                del RUNS[key]
+        for key, run in list(RUNS.items()):
+            if len(RUNS) <= MAX_RUNS - int(reserve):
+                break
+            if run.get("status") not in {"queued", "running"}:
+                del RUNS[key]
+
+
+def _start_job(callback, args, total, message):
+    with _RUNS_LOCK:
+        _prune_runs(reserve=True)
+        if any(run.get("status") in {"queued", "running"} for run in RUNS.values()):
+            return None
+        run_id = uuid.uuid4().hex
+        RUNS[run_id] = {"id": run_id, "status": "queued", "message": message, "log": [],
+                        "created_at": time.time(), "updated_at": time.time(), "total": total, "current": 0}
+        try:
+            threading.Thread(target=callback, args=(run_id, *args), daemon=True).start()
+        except Exception as error:
+            _set_status(RUNS[run_id], status="error", error=str(error))
+            raise
+        return run_id
 
 
 def _safe_legacy_name(name: str) -> str:
@@ -247,7 +285,15 @@ def _scan_sheet_files(character_dir: str) -> List[dict]:
                 "costume": _safe_legacy_name(costume),
                 "emotion": _safe_legacy_name(emotion),
             })
-    return sorted(files, key=lambda item: item["relative"].lower())
+    # Legacy generation kept only the latest sheet per costume/emotion valid.
+    latest = {}
+    for sheet in files:
+        key = (sheet["costume"], sheet["emotion"])
+        rank = (os.path.getmtime(sheet["path"]), sheet["relative"].lower())
+        previous = latest.get(key)
+        if previous is None or rank > previous[0]:
+            latest[key] = (rank, sheet)
+    return sorted((item[1] for item in latest.values()), key=lambda item: item["relative"].lower())
 
 
 def _sprite_files(path: str) -> List[str]:
@@ -312,6 +358,13 @@ def _scan_sprite_canvas_issues() -> List[dict]:
 
 
 def _repair_sprite_canvas_folder(directory: str, backup: bool = True) -> dict:
+    relative = os.path.relpath(directory, base_output_dir())
+    root = safe_join_under(base_output_dir(), relative.split(os.sep)[0])
+    with character_storage_lock(root):
+        return _repair_sprite_canvas_folder_locked(directory, backup)
+
+
+def _repair_sprite_canvas_folder_locked(directory: str, backup: bool = True) -> dict:
     paths = _sprite_files(directory)
     groups = _sprite_size_groups(paths)
     if len(groups) <= 1:
@@ -395,6 +448,10 @@ def _ensure_sprite_alpha(path: str) -> bool:
 
 
 def _copy_config(legacy_char_dir: str, new_char_dir: str, old_name: str, new_name: str) -> bool:
+    dst = os.path.join(new_char_dir, f"{new_name}_config.json")
+    # force applies to sprite conversion, never to an existing character profile.
+    if os.path.exists(dst):
+        return False
     candidates = [
         os.path.join(legacy_char_dir, f"{old_name}_config.json"),
         os.path.join(legacy_char_dir, f"{new_name}_config.json"),
@@ -408,7 +465,6 @@ def _copy_config(legacy_char_dir: str, new_char_dir: str, old_name: str, new_nam
         if not os.path.isfile(src):
             continue
         os.makedirs(new_char_dir, exist_ok=True)
-        dst = os.path.join(new_char_dir, f"{new_name}_config.json")
         with open(src, "r", encoding="utf-8") as handle:
             try:
                 data = json.load(handle)
@@ -418,11 +474,17 @@ def _copy_config(legacy_char_dir: str, new_char_dir: str, old_name: str, new_nam
             info = data.setdefault("character_info", {})
             if isinstance(info, dict):
                 info["name"] = new_name
-            with open(dst, "w", encoding="utf-8") as handle:
-                json.dump(data, handle, ensure_ascii=False, indent=4)
+            try:
+                with open(dst, "x", encoding="utf-8") as handle:
+                    json.dump(data, handle, ensure_ascii=False, indent=4)
+            except FileExistsError:
+                return False
         else:
-            with open(src, "rb") as in_handle, open(dst, "wb") as out_handle:
-                out_handle.write(in_handle.read())
+            try:
+                with open(src, "rb") as in_handle, open(dst, "xb") as out_handle:
+                    out_handle.write(in_handle.read())
+            except FileExistsError:
+                return False
         return True
     return False
 
@@ -470,18 +532,27 @@ def scan_legacy_characters() -> dict:
 
 
 def _set_status(run: dict, **updates) -> None:
-    run.update(updates)
-    run["updated_at"] = time.time()
+    with _RUNS_LOCK:
+        run.update(updates)
+        run["updated_at"] = time.time()
 
 
 def _log(run: dict, message: str) -> None:
-    run.setdefault("log", []).append(message)
-    run["message"] = message
-    run["updated_at"] = time.time()
+    with _RUNS_LOCK:
+        run.setdefault("log", []).append(message)
+        run["log"] = run["log"][-MAX_LOG_LINES:]
+        run["message"] = message
+        run["updated_at"] = time.time()
     print(f"[VNCCS Migration Assistant] {message}")
 
 
-def _migrate_character(run: dict, legacy_name: str, new_name: str, force: bool) -> dict:
+def _migrate_character(run: dict, legacy_name: str, new_name: str, force: bool, retry_sheets=None) -> dict:
+    root = safe_join_under(base_output_dir(), new_name)
+    with character_storage_lock(root):
+        return _migrate_character_locked(run, legacy_name, new_name, force, retry_sheets)
+
+
+def _migrate_character_locked(run: dict, legacy_name: str, new_name: str, force: bool, retry_sheets=None) -> dict:
     legacy_root = get_legacy_output_dir()
     new_root = base_output_dir()
     legacy_char_dir = safe_join_under(legacy_root, legacy_name)
@@ -489,35 +560,44 @@ def _migrate_character(run: dict, legacy_name: str, new_name: str, force: bool) 
     os.makedirs(new_char_dir, exist_ok=True)
     config_copied = _copy_config(legacy_char_dir, new_char_dir, legacy_name, new_name)
     sheet_files = _scan_sheet_files(legacy_char_dir)
+    if retry_sheets is not None:
+        known = {sheet["relative"] for sheet in sheet_files}
+        if not retry_sheets or not set(retry_sheets).issubset(known):
+            raise ValueError("Retry includes an unknown legacy sheet")
+        sheet_files = [sheet for sheet in sheet_files if sheet["relative"] in retry_sheets]
     saved = skipped = alpha_fixed = failed = 0
+    failed_paths = []
 
     for index, sheet in enumerate(sheet_files, start=1):
         _set_status(run, current_sheet=sheet["relative"])
-        target_dir = os.path.join(new_char_dir, "Sprites", sheet["costume"], sheet["emotion"])
-        existing = _sprite_files(target_dir)
-        if existing and not force:
-            for sprite_path in existing:
-                if _ensure_sprite_alpha(sprite_path):
-                    alpha_fixed += 1
-            skipped += len(existing)
-            _log(run, f"{new_name}: skipped {sheet['relative']} because sprites already exist")
-            continue
-
-        os.makedirs(target_dir, exist_ok=True)
         try:
-            image = Image.open(sheet["path"])
-            sprites = _crop_sprites(image)
+            target_dir = safe_join_under(new_char_dir, "Sprites", sheet["costume"], sheet["emotion"])
+            existing = _sprite_files(target_dir)
+            if existing and not force:
+                for sprite_path in existing:
+                    if _ensure_sprite_alpha(sprite_path):
+                        alpha_fixed += 1
+                skipped += len(existing)
+                _log(run, f"{new_name}: skipped {sheet['relative']} because sprites already exist")
+                continue
+
+            os.makedirs(target_dir, exist_ok=True)
+            with Image.open(sheet["path"]) as image:
+                sprites = _crop_sprites(image)
             if not sprites:
                 failed += 1
+                failed_paths.append(sheet["relative"])
                 _log(run, f"{new_name}: no sprites detected in {sheet['relative']}")
                 continue
-            for sprite_index, sprite in enumerate(sprites):
-                filename = f"sprite_{sheet['emotion']}_{sprite_index:04d}.png"
-                sprite.save(os.path.join(target_dir, filename))
-                saved += 1
+            with staged_image_batch(target_dir, version_existing=force, lock_root=new_char_dir) as stage:
+                for sprite_index, sprite in enumerate(sprites):
+                    filename = f"sprite_{sheet['emotion']}_{sprite_index:04d}.png"
+                    sprite.save(os.path.join(stage, filename))
+            saved += len(sprites)
             _log(run, f"{new_name}: {index}/{len(sheet_files)} saved {len(sprites)} sprite(s) from {sheet['relative']}")
         except Exception as exc:
             failed += 1
+            failed_paths.append(sheet["relative"])
             _log(run, f"{new_name}: failed {sheet['relative']}: {exc}")
 
     return {
@@ -528,25 +608,38 @@ def _migrate_character(run: dict, legacy_name: str, new_name: str, force: bool) 
         "sprites_skipped": skipped,
         "sprites_alpha_fixed": alpha_fixed,
         "failed_sheets": failed,
+        "failed_sheet_paths": failed_paths,
         "config_copied": config_copied,
     }
 
 
 def _run_migration(run_id: str, characters: List[dict], force: bool) -> None:
     run = RUNS[run_id]
+    results = []
     try:
         _set_status(run, status="running", total=len(characters), current=0)
-        results = []
         for index, item in enumerate(characters, start=1):
             legacy_name = item.get("legacy_name") or item.get("name")
             new_name = _safe_legacy_name(item.get("new_name") or legacy_name)
             _set_status(run, current=index, current_character=legacy_name, current_sheet="")
             _log(run, f"Processing {legacy_name} -> {new_name}")
-            results.append(_migrate_character(run, legacy_name, new_name, force))
-        _set_status(run, status="done", current=len(characters), results=results, message="Migration complete")
-        _log(run, "Migration complete")
+            if item.get("retry_sheets") is not None:
+                results.append(_migrate_character(run, legacy_name, new_name, force, item["retry_sheets"]))
+            else:
+                results.append(_migrate_character(run, legacy_name, new_name, force))
+        failures = sum(result.get("failed_sheets", 0) for result in results)
+        message = f"Migration incomplete: {failures} sheet(s) failed" if failures else "Migration complete"
+        _set_status(run, status="partial" if failures else "done", current=len(characters),
+                    results=results, failed_sheets=failures,
+                    failed_characters=[result["legacy_name"] for result in results if result.get("failed_sheets", 0)],
+                    message=message)
+        _log(run, message)
     except Exception as exc:
-        _set_status(run, status="error", error=str(exc), message=str(exc))
+        failed_characters = [result.get("legacy_name") for result in results if result.get("failed_sheets", 0)]
+        failed_characters.extend(item.get("legacy_name") or item.get("name") for item in characters[len(results):])
+        _set_status(run, status="error", error=str(exc), message=str(exc), results=results,
+                    failed_sheets=sum(result.get("failed_sheets", 0) for result in results),
+                    failed_characters=list(dict.fromkeys(name for name in failed_characters if name)))
         _log(run, f"Migration failed: {exc}")
 
 
@@ -581,30 +674,22 @@ if server and web:
         try:
             data = await request.json()
         except Exception:
-            data = {}
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(data, dict) or not isinstance(data.get("characters", []), list) or any(not isinstance(name, str) for name in data.get("characters", [])):
+            return web.json_response({"error": "Characters must be a list of names"}, status=400)
         scan = scan_legacy_characters()
         by_legacy = {item["legacy_name"]: item for item in scan["characters"]}
         selected = data.get("characters") or list(by_legacy)
         characters = [by_legacy[name] for name in selected if name in by_legacy]
+        retries = data.get("retry_sheets", {})
+        if not isinstance(retries, dict) or any(not isinstance(paths, list) or any(not isinstance(path, str) for path in paths) for paths in retries.values()):
+            return web.json_response({"error": "Invalid retry sheet list"}, status=400)
+        characters = [{**item, "retry_sheets": retries[item["legacy_name"]]} if item["legacy_name"] in retries else item for item in characters]
         if not characters:
             return web.json_response({"error": "No legacy characters selected"}, status=400)
-        run_id = uuid.uuid4().hex
-        RUNS[run_id] = {
-            "id": run_id,
-            "status": "queued",
-            "message": "Queued",
-            "log": [],
-            "created_at": time.time(),
-            "updated_at": time.time(),
-            "total": len(characters),
-            "current": 0,
-        }
-        thread = threading.Thread(
-            target=_run_migration,
-            args=(run_id, characters, bool(data.get("force", False))),
-            daemon=True,
-        )
-        thread.start()
+        run_id = _start_job(_run_migration, (characters, bool(data.get("force", False))), len(characters), "Queued")
+        if run_id is None:
+            return web.json_response({"error": "A migration or repair job is already running. Retry after it completes."}, status=409)
         return web.json_response({"run_id": run_id})
 
     @server.PromptServer.instance.routes.post("/vnccs/migration/repair-sprites")
@@ -616,33 +701,24 @@ if server and web:
         try:
             data = await request.json()
         except Exception:
-            data = {}
-        run_id = uuid.uuid4().hex
-        RUNS[run_id] = {
-            "id": run_id,
-            "status": "queued",
-            "message": "Queued sprite canvas repair",
-            "log": [],
-            "created_at": time.time(),
-            "updated_at": time.time(),
-            "total": 0,
-            "current": 0,
-        }
-        thread = threading.Thread(
-            target=_run_canvas_repair,
-            args=(run_id, bool(data.get("backup", True))),
-            daemon=True,
-        )
-        thread.start()
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "Request body must be an object"}, status=400)
+        run_id = _start_job(_run_canvas_repair, (bool(data.get("backup", True)),), 0, "Queued sprite canvas repair")
+        if run_id is None:
+            return web.json_response({"error": "A migration or repair job is already running. Retry after it completes."}, status=409)
         return web.json_response({"run_id": run_id})
 
     @server.PromptServer.instance.routes.get("/vnccs/migration/status/{run_id}")
     async def vnccs_migration_status(request):
         run_id = request.match_info.get("run_id", "")
-        run = RUNS.get(run_id)
-        if not run:
-            return web.json_response({"error": "Run not found"}, status=404)
-        return web.json_response(run)
+        with _RUNS_LOCK:
+            _prune_runs()
+            run = RUNS.get(run_id)
+            if not run:
+                return web.json_response({"error": "Run not found"}, status=404)
+            snapshot = {**run, "log": list(run.get("log", [])), "results": list(run.get("results", []))}
+        return web.json_response(snapshot)
 
 
 NODE_CLASS_MAPPINGS = {

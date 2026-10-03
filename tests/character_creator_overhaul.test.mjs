@@ -1,3 +1,4 @@
+import { createWidgetContext } from './widget_context.mjs';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
@@ -35,7 +36,7 @@ function setup(saved) {
         gen_settings: { generation_mode: "qi2", mode_settings: {} } };
     const widget = { name: "widget_data", value: "" };
     const downloads = [];
-    const ctx = vm.createContext({
+    const ctx = createWidgetContext({
         window: { innerWidth: 1024, innerHeight: 768 },
         els: {},
         state, node: { id: 42, widgets: [widget] }, localStorage: { setItem() {} },
@@ -74,12 +75,12 @@ test("QI2 card follows Turbo and uses the exact title with five slider positions
     ctx.render(root, "qi2");
     assert.equal(root.children[0].children[0].textContent, "Turbo LoRA");
     const card = root.children[1];
-    assert.equal(walk(card).find(el => el.className === "vnccs-model-card-name").textContent, "Qwen Image2.1 Character Overhaul");
+    assert.equal(walk(card).find(el => el.className === "vnccs-creator-model-card-name").textContent, "Qwen Image2.1 Character Overhaul");
     const slider = walk(card).find(el => el.type === "range");
     assert.deepEqual([slider.min, slider.max, slider.step, slider.value], ["0", "1", "0.25", "0.5"]);
     assert.equal(walk(card).some(el => el.type === "checkbox"), false);
     assert.equal(walk(card).some(el => el.tagName === "output" || el.textContent === "Strength"), false);
-    const control = walk(card).find(el => el.className === "vnccs-overhaul-control");
+    const control = walk(card).find(el => el.className === "vnccs-creator-overhaul-control");
     assert.equal(control.children.length, 2);
     assert.equal(control.children[0], slider);
     assert.deepEqual(control.children[1].children.map(el => el.textContent), ["0", "0.25", "0.5", "0.75", "1"]);
@@ -124,7 +125,7 @@ test("missing card retains catalog identity for Download and can be set to zero"
     const root = new Element("div");
     ctx.render(root, "qi2");
     const card = root.children[1];
-    const download = walk(card).find(el => el.className === "vnccs-model-card-download");
+    const download = walk(card).find(el => el.className === "vnccs-creator-model-card-download");
     download.onclick({ stopPropagation() {} });
     assert.deepEqual(downloads, [["lora", "VNCCS Overhaul QI2"]]);
     const slider = walk(card).find(el => el.type === "range");
@@ -157,11 +158,11 @@ test("Overhaul help opens on hover, focus and click without changing strength", 
     const root = new Element("div");
     ctx.render(root, "qi2");
     const card = root.children[1];
-    const heading = walk(card).find(el => el.className === "vnccs-overhaul-heading");
+    const heading = walk(card).find(el => el.className === "vnccs-creator-overhaul-heading");
     const help = heading.children[1];
     const [button, tooltip] = help.children;
     const before = JSON.stringify(state);
-    assert.equal(heading.children[0].className, "vnccs-model-card-name");
+    assert.equal(heading.children[0].className, "vnccs-creator-model-card-name");
     assert.equal(button.type, "button");
     assert.equal(button.attrs["aria-describedby"], tooltip.id);
     assert.equal(tooltip.attrs.role, "tooltip");

@@ -1,3 +1,4 @@
+import { createWidgetContext } from './widget_context.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -20,8 +21,10 @@ function setup(selectedType = "unet") {
     const queued = [];
     const node = { widgets: [dataWidget], _randomizeSeedIfNeeded() {},
         onSerialize(result) { result.originalCallbackCalled = true; } };
-    const context = vm.createContext({
+    const context = createWidgetContext({
         state, dataWidget, node,
+        beginPreviewRequest: () => () => true,
+        spritePreviewNavigator: null,
         localStorage: { setItem() {} },
         fileInp: {}, btn: {}, btnGen: { disabled: false },
         els: { previewImg: { style: {} }, placeholder: { style: {} } },
@@ -72,7 +75,8 @@ for (const selectedType of ["unet", "custom"]) {
         const expected = { name: "donor.png", type: "input", subfolder: "clothes" };
         assert.deepEqual(JSON.parse(harness.dataWidget.value).clone_image, expected);
         await harness.context.btnGen.onclick();
-        const sent = selectedType === "custom" ? harness.queued[0] : harness.apiPreviews[0].clothes_state;
+        assert.equal(harness.queued.length, 0, "Preview must never submit the workflow");
+        const sent = harness.apiPreviews[0].clothes_state;
         assert.deepEqual(sent.clone_image, expected);
         assert.equal(sent.activeTab, "clone");
         assert.equal(harness.messages.length, 0);

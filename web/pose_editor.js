@@ -427,7 +427,7 @@ function ensurePoseEditorStyles() {
             font-size: 13px;
             color: #92a3d6;
         }
-        .vnccs-close-btn {
+        .vnccs-pose-editor-close-btn {
             background: rgba(147, 163, 210, 0.14);
             border: 1px solid rgba(147, 163, 210, 0.3);
             color: #d7def3;
@@ -436,7 +436,7 @@ function ensurePoseEditorStyles() {
             cursor: pointer;
             transition: background 120ms ease, color 120ms ease;
         }
-        .vnccs-close-btn:hover {
+        .vnccs-pose-editor-close-btn:hover {
             background: rgba(147, 163, 210, 0.24);
         }
         .vnccs-pose-editor-body {
@@ -482,7 +482,7 @@ function ensurePoseEditorStyles() {
             flex-direction: column;
             gap: 18px;
         }
-        .vnccs-panel {
+        .vnccs-pose-editor-sidebar-panel {
             border: 1px solid rgba(121, 150, 255, 0.12);
             border-radius: 12px;
             background: rgba(14, 18, 30, 0.8);
@@ -491,25 +491,25 @@ function ensurePoseEditorStyles() {
             flex-direction: column;
             gap: 12px;
         }
-        .vnccs-panel h3 {
+        .vnccs-pose-editor-sidebar-panel h3 {
             margin: 0;
             font-size: 14px;
             text-transform: uppercase;
             letter-spacing: 0.8px;
             color: #a4b6ec;
         }
-        .vnccs-panel p {
+        .vnccs-pose-editor-sidebar-panel p {
             margin: 0;
             font-size: 12px;
             color: #8595c4;
             line-height: 1.6;
         }
-        .vnccs-button-row {
+        .vnccs-pose-editor-button-row {
             display: flex;
             flex-wrap: wrap;
             gap: 8px;
         }
-        .vnccs-btn {
+        .vnccs-pose-editor-btn {
             flex: 1;
             padding: 8px 12px;
             border: 1px solid transparent;
@@ -521,45 +521,45 @@ function ensurePoseEditorStyles() {
             cursor: pointer;
             transition: background 120ms ease, border 120ms ease, color 120ms ease;
         }
-        .vnccs-btn:hover {
+        .vnccs-pose-editor-btn:hover {
             background: rgba(79, 123, 255, 0.32);
             border-color: rgba(79, 123, 255, 0.45);
         }
-        .vnccs-btn.secondary {
+        .vnccs-pose-editor-btn.secondary {
             background: rgba(146, 158, 200, 0.14);
             color: #d7def3;
         }
-        .vnccs-btn.secondary:hover {
+        .vnccs-pose-editor-btn.secondary:hover {
             background: rgba(146, 158, 200, 0.2);
             border-color: rgba(146, 158, 200, 0.4);
         }
-        .vnccs-btn.ghost {
+        .vnccs-pose-editor-btn.ghost {
             background: transparent;
             border: 1px solid rgba(146, 158, 200, 0.2);
             color: #9eb0dd;
         }
-        .vnccs-btn.ghost:hover {
+        .vnccs-pose-editor-btn.ghost:hover {
             border-color: rgba(146, 158, 200, 0.45);
             color: #d7def3;
         }
-        .vnccs-status {
+        .vnccs-pose-editor-status {
             font-size: 12px;
             color: #8794ba;
             min-height: 18px;
         }
-        .vnccs-toggle {
+        .vnccs-pose-editor-toggle {
             display: flex;
             align-items: center;
             gap: 10px;
             font-size: 12px;
             color: #d7def3;
         }
-        .vnccs-toggle input[type="checkbox"] {
+        .vnccs-pose-editor-toggle input[type="checkbox"] {
             width: 16px;
             height: 16px;
             accent-color: #6283ff;
         }
-        .vnccs-info-line {
+        .vnccs-pose-editor-info-line {
             font-size: 12px;
             color: #96a6d5;
             line-height: 1.5;
@@ -571,7 +571,7 @@ function ensurePoseEditorStyles() {
             color: #92a3d6;
             padding: 0 4px;
         }
-        .vnccs-select {
+        .vnccs-pose-editor-select {
             padding: 8px 10px;
             border-radius: 8px;
             border: 1px solid rgba(121, 150, 255, 0.2);
@@ -579,18 +579,18 @@ function ensurePoseEditorStyles() {
             color: #d7def3;
             font-size: 12px;
         }
-        .vnccs-metrics {
+        .vnccs-pose-editor-metrics {
             font-size: 12px;
             color: #92a3d6;
             line-height: 1.6;
         }
-        .vnccs-metrics strong {
+        .vnccs-pose-editor-metrics strong {
             color: #c5d2ff;
         }
-        .vnccs-warning {
+        .vnccs-pose-editor-warning {
             color: #ff9f7d;
         }
-        .vnccs-success {
+        .vnccs-pose-editor-success {
             color: #7dffa9;
         }
         .vnccs-pose-editor-3d-column {
@@ -600,27 +600,27 @@ function ensurePoseEditorStyles() {
             gap: 12px;
             min-width: 0;
         }
-        .vnccs-3d-header {
+        .vnccs-pose-editor-3d-header {
             display: flex;
             align-items: center;
             justify-content: space-between;
             gap: 12px;
         }
-        .vnccs-3d-title {
+        .vnccs-pose-editor-3d-title {
             font-size: 16px;
             font-weight: 600;
             letter-spacing: 0.45px;
         }
-        .vnccs-3d-subtitle {
+        .vnccs-pose-editor-3d-subtitle {
             font-size: 12px;
             color: #8795c4;
         }
-        .vnccs-3d-toolbar {
+        .vnccs-pose-editor-3d-toolbar {
             display: flex;
             gap: 8px;
             flex-wrap: wrap;
         }
-        .vnccs-3d-btn {
+        .vnccs-pose-editor-3d-btn {
             padding: 6px 12px;
             border-radius: 8px;
             border: 1px solid rgba(121, 150, 255, 0.18);
@@ -630,16 +630,16 @@ function ensurePoseEditorStyles() {
             cursor: pointer;
             transition: background 120ms ease, border 120ms ease, color 120ms ease;
         }
-        .vnccs-3d-btn:hover {
+        .vnccs-pose-editor-3d-btn:hover:not(.active) {
             background: rgba(79, 123, 255, 0.28);
             border-color: rgba(79, 123, 255, 0.52);
         }
-        .vnccs-3d-btn.active {
+        .vnccs-pose-editor-3d-btn.active {
             background: rgba(79, 123, 255, 0.48);
             border-color: rgba(79, 123, 255, 0.75);
             color: #f4f6ff;
         }
-        .vnccs-3d-canvas-wrapper {
+        .vnccs-pose-editor-3d-canvas-wrapper {
             flex: 1;
             min-height: 420px;
             border: 1px solid rgba(121, 150, 255, 0.12);
@@ -648,12 +648,12 @@ function ensurePoseEditorStyles() {
             overflow: hidden;
             position: relative;
         }
-        .vnccs-3d-canvas-wrapper canvas {
+        .vnccs-pose-editor-3d-canvas-wrapper canvas {
             display: block;
             width: 100%;
             height: 100%;
         }
-        .vnccs-3d-footer {
+        .vnccs-pose-editor-3d-footer {
             font-size: 12px;
             color: #92a3d6;
             display: flex;
@@ -671,7 +671,7 @@ function ensurePoseEditorStyles() {
                 flex-direction: row;
                 flex-wrap: wrap;
             }
-            .vnccs-panel {
+            .vnccs-pose-editor-sidebar-panel {
                 flex: 1 1 280px;
             }
         }
@@ -1039,7 +1039,7 @@ class PoseEditorDialog {
 
         const closeBtn = document.createElement("button");
         closeBtn.type = "button";
-        closeBtn.className = "vnccs-close-btn";
+        closeBtn.className = "vnccs-pose-editor-close-btn";
         closeBtn.textContent = "Close";
         closeBtn.addEventListener("click", () => this.close());
 
@@ -1065,7 +1065,7 @@ class PoseEditorDialog {
         for (let i = 0; i < 12; i++) {
             const btn = document.createElement("button");
             btn.textContent = `${i + 1}`;
-            btn.className = "vnccs-btn secondary";
+            btn.className = "vnccs-pose-editor-btn secondary";
             btn.style.width = "32px";
             btn.style.padding = "6px 0";
             btn.style.textAlign = "center";
@@ -1171,7 +1171,7 @@ class PoseEditorDialog {
 
     createPoseToolsPanel() {
         const panel = document.createElement("div");
-        panel.className = "vnccs-panel";
+        panel.className = "vnccs-pose-editor-sidebar-panel";
 
         const heading = document.createElement("h3");
         heading.textContent = "Pose Tools";
@@ -1179,14 +1179,14 @@ class PoseEditorDialog {
         description.textContent = "Refine joint layout, mirror the skeleton, or fit to the safe zone.";
 
         const row = document.createElement("div");
-        row.className = "vnccs-button-row";
+        row.className = "vnccs-pose-editor-button-row";
         row.appendChild(this.createButton("Reset Pose", () => this.resetPose(), "secondary"));
         row.appendChild(this.createButton("Mirror", () => this.mirrorPose()));
         row.appendChild(this.createButton("Fit Safe Zone", () => this.fitSafeZone()));
         row.appendChild(this.createButton("Center", () => this.centerPose(), "ghost"));
 
         this.metricsEl = document.createElement("div");
-        this.metricsEl.className = "vnccs-metrics";
+        this.metricsEl.className = "vnccs-pose-editor-metrics";
 
         panel.appendChild(heading);
         panel.appendChild(description);
@@ -1197,7 +1197,7 @@ class PoseEditorDialog {
 
     createPresetPanel() {
         const panel = document.createElement("div");
-        panel.className = "vnccs-panel";
+        panel.className = "vnccs-pose-editor-sidebar-panel";
 
         const heading = document.createElement("h3");
         heading.textContent = "Presets & IO";
@@ -1205,7 +1205,7 @@ class PoseEditorDialog {
         description.textContent = "Load curated poses or import/export JSON files.";
 
         this.presetSelect = document.createElement("select");
-        this.presetSelect.className = "vnccs-select";
+        this.presetSelect.className = "vnccs-pose-editor-select";
 
         const placeholder = document.createElement("option");
         placeholder.value = "";
@@ -1223,12 +1223,12 @@ class PoseEditorDialog {
         });
 
         const row = document.createElement("div");
-        row.className = "vnccs-button-row";
+        row.className = "vnccs-pose-editor-button-row";
         row.appendChild(this.createButton("Import", () => this.importPose(), "secondary"));
         row.appendChild(this.createButton("Copy JSON", () => this.copyPoseJson(), "ghost"));
 
         const row2 = document.createElement("div");
-        row2.className = "vnccs-button-row";
+        row2.className = "vnccs-pose-editor-button-row";
         row2.appendChild(this.createButton("Save Pose", () => this.downloadPose()));
         row2.appendChild(this.createButton("Save Set", () => this.downloadSet()));
 
@@ -1239,7 +1239,7 @@ class PoseEditorDialog {
         this.fileInput.addEventListener("change", (event) => this.onFileSelected(event));
 
         this.statusEl = document.createElement("div");
-        this.statusEl.className = "vnccs-status";
+        this.statusEl.className = "vnccs-pose-editor-status";
 
         panel.appendChild(heading);
         panel.appendChild(description);
@@ -1261,20 +1261,20 @@ class PoseEditorDialog {
         column.className = "vnccs-pose-editor-3d-column";
 
         const header = document.createElement("div");
-        header.className = "vnccs-3d-header";
+        header.className = "vnccs-pose-editor-3d-header";
 
         const titleBox = document.createElement("div");
         const title = document.createElement("div");
-        title.className = "vnccs-3d-title";
+        title.className = "vnccs-pose-editor-3d-title";
         title.textContent = "3D Pose Explorer";
         const subtitle = document.createElement("div");
-        subtitle.className = "vnccs-3d-subtitle";
+        subtitle.className = "vnccs-pose-editor-3d-subtitle";
         subtitle.textContent = "Orbit, move, and rotate joints in space.";
         titleBox.appendChild(title);
         titleBox.appendChild(subtitle);
 
         this.threeToolbar = document.createElement("div");
-        this.threeToolbar.className = "vnccs-3d-toolbar";
+        this.threeToolbar.className = "vnccs-pose-editor-3d-toolbar";
 
         this.threeBtnMove = this.create3DButton("Move", () => this.setTransformMode3D("translate"));
         this.threeBtnRotate = this.create3DButton("Rotate", () => this.setTransformMode3D("rotate"));
@@ -1295,11 +1295,11 @@ class PoseEditorDialog {
         column.appendChild(header);
 
         this.threeViewport = document.createElement("div");
-        this.threeViewport.className = "vnccs-3d-canvas-wrapper";
+        this.threeViewport.className = "vnccs-pose-editor-3d-canvas-wrapper";
         column.appendChild(this.threeViewport);
 
         const footer = document.createElement("div");
-        footer.className = "vnccs-3d-footer";
+        footer.className = "vnccs-pose-editor-3d-footer";
         this.threeStatusLeft = document.createElement("span");
         this.threeStatusLeft.textContent = "Loading 3D editor…";
         this.threeStatusRight = document.createElement("span");
@@ -1316,7 +1316,7 @@ class PoseEditorDialog {
     create3DButton(label, handler) {
         const button = document.createElement("button");
         button.type = "button";
-        button.className = "vnccs-3d-btn";
+        button.className = "vnccs-pose-editor-3d-btn";
         button.textContent = label;
         button.addEventListener("click", handler);
         return button;
@@ -1335,7 +1335,7 @@ class PoseEditorDialog {
     createButton(label, handler, variant = "primary") {
         const button = document.createElement("button");
         button.type = "button";
-        button.className = `vnccs-btn ${variant}`;
+        button.className = `vnccs-pose-editor-btn ${variant}`;
         button.textContent = label;
         button.addEventListener("click", handler);
         return button;
@@ -1343,7 +1343,7 @@ class PoseEditorDialog {
 
     createToggle(label, checked, onChange) {
         const wrapper = document.createElement("label");
-        wrapper.className = "vnccs-toggle";
+        wrapper.className = "vnccs-pose-editor-toggle";
         const input = document.createElement("input");
         input.type = "checkbox";
         input.checked = checked;
@@ -1993,7 +1993,7 @@ class PoseEditorDialog {
         this.metricsEl.innerHTML = `
             Width: <strong>${bounds.width.toFixed(0)}px</strong> (${coverageX}% of canvas)<br>
             Height: <strong>${bounds.height.toFixed(0)}px</strong> (${coverageY}% of canvas)<br>
-            Outside safe zone: <strong class="${outside ? "vnccs-warning" : "vnccs-success"}">${outside}</strong> joints
+            Outside safe zone: <strong class="${outside ? "vnccs-pose-editor-warning" : "vnccs-pose-editor-success"}">${outside}</strong> joints
         `;
     }
 
@@ -2133,11 +2133,11 @@ class PoseEditorDialog {
 
     setStatus(message, type = "info") {
         this.statusEl.textContent = message;
-        this.statusEl.classList.remove("vnccs-warning", "vnccs-success");
+        this.statusEl.classList.remove("vnccs-pose-editor-warning", "vnccs-pose-editor-success");
         if (type === "warning") {
-            this.statusEl.classList.add("vnccs-warning");
+            this.statusEl.classList.add("vnccs-pose-editor-warning");
         } else if (type === "success") {
-            this.statusEl.classList.add("vnccs-success");
+            this.statusEl.classList.add("vnccs-pose-editor-success");
         }
         this.statusMessage.textContent = message;
     }

@@ -1,3 +1,4 @@
+from .preview_runtime import run_wizard_job
 
 import os
 import json
@@ -12,10 +13,11 @@ import traceback
 import re
 
 from ..utils import (
-    character_dir, save_costume_info,
+    character_dir, save_costume_info, delete_costume,
     load_costume_info, list_costumes, ensure_costume_structure,
     sheets_dir,
-    ensure_safe_name, safe_join_under, safe_relative_path
+    ensure_safe_name, safe_join_under, safe_relative_path, atomic_output_path,
+    validate_costume_info, privileged_route
 )
 from .character_generator import (
     _call_comfy_node,
@@ -50,6 +52,21 @@ BACKGROUND_RGB = {
     "Blue": (0.0, 0.0, 1.0),
 }
 TRANSPARENT_BACKGROUND = "Transparent"
+
+
+def _save_preview_cache(image, image_path, info_path, info):
+    # Invalidate the old image/metadata pair before publishing either new file.
+    # Failure preserves the previous image but cannot authorize its reuse with
+    # a different prompt or reference. A later normal run can rebuild the cache.
+    try:
+        os.unlink(info_path)
+    except FileNotFoundError:
+        pass
+    with atomic_output_path(image_path) as temporary:
+        image.save(temporary, format="PNG")
+    with atomic_output_path(info_path) as temporary:
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(info, handle)
 
 
 def _qi2_edit_system_prompt():
@@ -402,9 +419,13 @@ class ClothesDesigner:
     @classmethod
     def IS_CHANGED(cls, widget_data="{}", **kwargs):
         data = json.loads(widget_data) if isinstance(widget_data, str) else widget_data
-        if not isinstance(data, dict) or data.get("activeTab") != "clone" or not data.get("clone_image"):
+        if not isinstance(data, dict):
             return ""
-        return _clone_reference_digest(resolve_comfy_image_path(data["clone_image"]))
+        source_path = cls.reference_sprite_path(data.get("character", ""), data)
+        identity = {"source": _clone_reference_digest(source_path) if source_path else None}
+        if data.get("activeTab") == "clone" and data.get("clone_image"):
+            identity["donor"] = _clone_reference_digest(resolve_comfy_image_path(data["clone_image"]))
+        return json.dumps(identity, sort_keys=True)
 
     @staticmethod
     def _normalize_background_color(value):
@@ -529,7 +550,10 @@ class ClothesDesigner:
         info_path = os.path.join(cache_dir, f"preview_info_{safe_costume}.json")
         return img_path, info_path
 
-    def get_reference_sprite(self, character_name, data=None):
+    @staticmethod
+    def reference_sprite_path(character_name, data=None):
+        if not character_name:
+            return None
         try:
             selected = data.get("selected_preview_sprite") if isinstance(data, dict) else None
             if isinstance(selected, dict) and selected.get("character") == character_name:
@@ -541,23 +565,22 @@ class ClothesDesigner:
                     files = list_preview_sprite_files(character_name, costume)
                     if files:
                         sprite_path = files[index % len(files)]
-                        with Image.open(sprite_path) as img:
-                            sprite_tensor = self._pil_image_tensor(img)
-                        print(f"[ClothesDesigner] Using selected preview sprite for Picture 1: {sprite_path} (index={index})")
-                        return sprite_tensor
+                        return sprite_path
                     print(f"[ClothesDesigner] Selected preview sprite list is empty for {character_name}/{costume}; falling back to latest base sprite.")
                 except Exception as exc:
                     print(f"[ClothesDesigner] Failed to load selected preview sprite {selected}: {exc}. Falling back to latest base sprite.")
 
             sprite_path = get_latest_sprite_path(character_name, "Naked") or get_latest_sprite_path(character_name, "Original")
-            if sprite_path:
-                with Image.open(sprite_path) as img:
-                    sprite_tensor = self._pil_image_tensor(img)
-                return sprite_tensor
-            print(f"[ClothesDesigner] No Naked/Original sprites found for {character_name}. Run migration or generate sprites first.")
+            return sprite_path
+        except (ValueError, OSError):
             return None
-        except:
+
+    def get_reference_sprite(self, character_name, data=None):
+        sprite_path = self.reference_sprite_path(character_name, data)
+        if not sprite_path:
             return None
+        with Image.open(sprite_path) as img:
+            return self._pil_image_tensor(img)
 
     def process(self, pipe=None, widget_data="{}", unique_id=None):
         # CRITICAL FIX: Ensure PromptServer has last_prompt_id for preview system
@@ -615,7 +638,10 @@ class ClothesDesigner:
 
         default_steps = 25 if model_kind == "qi2" else WORKFLOW_SAMPLER_DEFAULTS["steps"]
         default_cfg = 3.0 if model_kind == "qi2" else WORKFLOW_SAMPLER_DEFAULTS["cfg"]
-        seed_int = int(getattr(pipe, "seed_int", getattr(pipe, "seed", 0)) or WORKFLOW_SAMPLER_DEFAULTS["seed"])
+        seed_value = gen_settings.get("seed")
+        if seed_value is None or seed_value == "":
+            seed_value = getattr(pipe, "seed_int", getattr(pipe, "seed", None))
+        seed_int = int(WORKFLOW_SAMPLER_DEFAULTS["seed"] if seed_value is None else seed_value)
         sample_steps = int(getattr(pipe, "sample_steps", getattr(pipe, "steps", 0)) or default_steps)
         cfg = float(getattr(pipe, "cfg", 0.0) or default_cfg)
         denoise = float(getattr(pipe, "denoise", 0.0) or WORKFLOW_SAMPLER_DEFAULTS["denoise"])
@@ -625,6 +651,13 @@ class ClothesDesigner:
         target_size = _clothes_target_size(gen_settings, model_kind)
         clone_image_path = resolve_comfy_image_path(data["clone_image"]) if active_tab == "clone" else None
         clone_reference_hash = _clone_reference_digest(clone_image_path) if clone_image_path else None
+        # Resolve the actual selected image before consulting the persistent cache.
+        ref_image = self.get_reference_sprite(character_name, data)
+        if ref_image is None:
+            raise ValueError(f"Character '{character_name}' is incomplete. Missing 'Naked' or 'Original' sprites.")
+        source_reference_hash = hashlib.sha256(
+            ref_image.detach().cpu().contiguous().numpy().tobytes()
+        ).hexdigest()
         use_qi2_rewriter = is_qi2 and active_tab != "clone"
         edit_system_prompt = _qi2_edit_system_prompt() if use_qi2_rewriter else None
 
@@ -632,9 +665,11 @@ class ClothesDesigner:
         c_img_path, c_info_path = self.get_cache_paths(character_name, costume_name)
         try:
             cache_payload = {
+                "model_cache_key": getattr(pipe, "model_cache_key", None),
                 "widget_data": data,
                 "prompts": {"positive": positive_prompt, "negative": negative_prompt},
                 "clone_reference_sha256": clone_reference_hash,
+                "source_reference": {"sha256": source_reference_hash, "shape": list(ref_image.shape)},
                 "sampler": {
                     "seed": seed_int,
                     "steps": sample_steps,
@@ -662,6 +697,9 @@ class ClothesDesigner:
                 )
             canonical_str = json.dumps(cache_payload, sort_keys=True, separators=(',', ':'))
             input_hash = hashlib.sha256(canonical_str.encode('utf-8')).hexdigest()
+            # Custom or externally modified pipes cannot provide a stable asset identity.
+            if cache_payload["model_cache_key"] is None:
+                input_hash = "INVALID"
         except Exception:
              input_hash = "INVALID"
 
@@ -678,9 +716,6 @@ class ClothesDesigner:
             except Exception as exc:
                 print(f"[ClothesDesigner] Cache read failed, regenerating preview: {exc}")
 
-        ref_image = self.get_reference_sprite(character_name, data)
-        if ref_image is None:
-            raise ValueError(f"Character '{character_name}' is incomplete. Missing 'Naked' or 'Original' sprites.")
         ref_image = self._prepare_reference_background(
             ref_image, background_color, preserve_transparency=is_qi2,
         )
@@ -820,7 +855,7 @@ class ClothesDesigner:
 
         # 5. Decode
         print("[ClothesDesigner] VAE Decoding...")
-        if is_qi2:
+        if is_qi2 or is_h3:
             with torch.inference_mode():
                 image, = _call_comfy_node("VAEDecode", vae=vae, samples=latent_for_decode)
         else:
@@ -840,18 +875,10 @@ class ClothesDesigner:
         if is_h3:
             image = VNCCS_CharacterGenerator()._h3_first_frame_to_cpu(image)
 
-        # Cache for UI preview
+        # Publish the preview before reporting success to the widget.
+        i_pil = Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
+        _save_preview_cache(i_pil, c_img_path, c_info_path, {"hash": input_hash, "widget_data": data})
         try:
-             i_pil = Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
-             i_pil.save(c_img_path)
-             
-             # Save Cache Info
-             with open(c_info_path, "w") as f:
-                 json.dump({
-                     "hash": input_hash,
-                     "widget_data": data # Save parsed data or original string
-                 }, f)
-                 
              print(f"[ClothesDesigner] Sending Preview Update Event: ID={unique_id}, Char={character_name}")
              server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": str(unique_id), "character": character_name})
         except Exception as e:
@@ -887,24 +914,51 @@ async def vnccs_get_costume(request):
         return web.Response(status=500, text=str(e))
 
 @server.PromptServer.instance.routes.post("/vnccs/save_costume")
+@privileged_route
 async def vnccs_save_costume(request):
     try:
         data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("Costume request must be an object")
         character = data.get("character")
         costume = data.get("costume")
-        info = data.get("info", {})
+        info = validate_costume_info(data.get("info", {}))
         if not character or not costume: return web.Response(status=400)
         character = ensure_safe_name(character, "character")
         costume = ensure_safe_name(costume, "costume")
         ensure_costume_structure(character, costume)
-        save_costume_info(character, costume, info)
+        if not save_costume_info(character, costume, info):
+            return web.json_response({"error": f"Could not save costume '{costume}'. Check storage permissions and free space."}, status=500)
         return web.json_response({"status": "ok"})
+    except ValueError as e:
+        return web.json_response({"error": str(e)}, status=400)
     except Exception as e:
         return web.Response(status=500, text=str(e))
 
 
-@server.PromptServer.instance.routes.post("/vnccs/clothes_wizard")
-async def vnccs_clothes_wizard(request):
+@server.PromptServer.instance.routes.post("/vnccs/delete_costume")
+@privileged_route
+async def vnccs_delete_costume(request):
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("Costume request must be an object")
+        if not isinstance(data.get("character"), str) or not isinstance(data.get("costume"), str):
+            raise ValueError("Character and costume must be names.")
+        warning = delete_costume(data["character"], data["costume"])
+        result = {"status": "ok"}
+        if warning:
+            result["warning"] = warning
+        return web.json_response(result)
+    except ValueError as error:
+        return web.json_response({"error": str(error)}, status=400)
+    except FileNotFoundError as error:
+        return web.json_response({"error": str(error)}, status=404)
+    except Exception as error:
+        return web.json_response({"error": str(error)}, status=500)
+
+
+def _clothes_wizard_response(post):
     try:
         try:
             import llama_cpp
@@ -915,7 +969,6 @@ async def vnccs_clothes_wizard(request):
                 "model_name": "llama-cpp-python",
             }, status=500)
 
-        post = await request.json()
         user_description = str(post.get("description", "")).strip()
         if not user_description:
             return web.Response(status=400, text="No clothes description provided")
@@ -1011,6 +1064,18 @@ Example for "Santa Claus costume":
             "message": f"Engine Error: {e}",
             "model_name": QWEN_VL_MODEL_FILENAME,
         }, status=500)
+
+
+@server.PromptServer.instance.routes.post("/vnccs/clothes_wizard")
+@privileged_route
+async def vnccs_clothes_wizard(request):
+    try:
+        post = await request.json()
+    except (ValueError, TypeError):
+        return web.json_response({"error": "Invalid JSON request"}, status=400)
+    if not isinstance(post, dict):
+        return web.json_response({"error": "Request must be an object"}, status=400)
+    return await run_wizard_job(_clothes_wizard_response, post, "clothes")
 
 
 @server.PromptServer.instance.routes.get("/vnccs/get_preview")

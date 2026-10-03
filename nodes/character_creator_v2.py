@@ -1,3 +1,4 @@
+from .preview_runtime import run_preview_job, run_wizard_job
 
 import os
 import json
@@ -26,9 +27,12 @@ from ..utils import (
     apply_sex, append_age, load_config, age_strength,
     list_characters, character_dir, base_output_dir,
     sheets_dir, faces_dir, normalize_hair_tags, ensure_safe_name,
-    get_full_path_agnostic,
+    get_full_path_agnostic, atomic_output_path, safe_join_under,
+    privileged_route, file_fingerprint, config_path,
+    character_storage_lock,
 )
 from .vnccs_utils import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
+from .runtime_cleanup import inference_stage
 from .qwen_vl import configure_qwen_text_chat
 from .character_presets import CHARACTER_PRESETS, RACE_PRESETS, preset_key, race_features, race_prompt
 
@@ -46,15 +50,16 @@ def list_pose_preview_files(character_name, costume=None):
         base_char_path = character_dir(character_name)
         sprite_roots = []
         if costume:
+            costume = ensure_safe_name(costume, "costume")
             sprite_roots.extend([
-                os.path.join(base_char_path, "Sprites", costume, "Neutral"),
-                os.path.join(base_char_path, "Sprites", costume),
+                safe_join_under(base_char_path, "Sprites", costume, "Neutral"),
+                safe_join_under(base_char_path, "Sprites", costume),
             ])
         sprite_roots.extend([
-            os.path.join(base_char_path, "Sprites", "Naked", "Neutral"),
-            os.path.join(base_char_path, "Sprites", "Original", "Neutral"),
-            os.path.join(base_char_path, "Sprites", "Naked"),
-            os.path.join(base_char_path, "Sprites", "Original"),
+            safe_join_under(base_char_path, "Sprites", "Naked", "Neutral"),
+            safe_join_under(base_char_path, "Sprites", "Original", "Neutral"),
+            safe_join_under(base_char_path, "Sprites", "Naked"),
+            safe_join_under(base_char_path, "Sprites", "Original"),
         ])
         print(f"[VNCCS Debug] Checking Pose Preview Paths: {sprite_roots}")
 
@@ -64,7 +69,7 @@ def list_pose_preview_files(character_name, costume=None):
             if not os.path.isdir(poses_dir):
                 continue
             root_files = [
-                os.path.join(poses_dir, filename)
+                safe_join_under(base_char_path, os.path.relpath(os.path.join(poses_dir, filename), base_char_path))
                 for filename in os.listdir(poses_dir)
                 if os.path.isfile(os.path.join(poses_dir, filename))
                 and os.path.splitext(filename)[1].lower() in image_exts
@@ -227,6 +232,7 @@ already clear phrases unchanged; otherwise use a concise sentence including the
 original terms. Copy gender, clothing, framing, expression, background and
 race_features unchanged: the application manages these values directly. Species
 defaults are context for the same subject, not a second race description.
+Expression is always expressionless; never derive an emotion from other fields.
 Keep the exact numeric age, gender, species, anatomy, breast size, colors, patterns,
 markings, clothing, expression, crop and background. Explicit traits override
 stereotypes. Adults aged 18 and above retain adult proportions; use restrained
@@ -731,6 +737,7 @@ def _call_loader_node(class_names, method_names, **kwargs):
     return None
 
 
+@inference_stage()
 def _call_node_method(class_names, method_names, **kwargs):
     mappings = getattr(nodes, "NODE_CLASS_MAPPINGS", {}) or {}
     for class_name in class_names:
@@ -877,6 +884,7 @@ def load_generation_assets(gen_settings):
     return (generation_mode, ckpt_name), model, clip, vae
 
 
+@inference_stage()
 def acquire_preview_assets(gen_settings):
     """Return request-local preview assets while retaining only reusable state."""
     generation_mode = str(gen_settings.get("generation_mode", "illustrious") or "illustrious").lower()
@@ -1002,7 +1010,7 @@ def _qi2_character_fields(info):
         )},
         "race_features": race_features(info.get("race", "")),
         "clothing": _character_clothing_prompt(info),
-        "expression": "expressionless unless a specific expression is supplied in facial features",
+        "expression": "expressionless",
         "framing": f"single character; {QI2_NATURAL_FRAMING[framing_key]}",
         "background": QI2_ALPHA_BACKGROUND_PROMPT if background == "Transparent" else (
             f"solid {background} background" if background else "simple background"
@@ -1176,6 +1184,7 @@ def create_generation_latent(model, width, height, gen_settings, batch_size=1):
     return {"samples": torch.zeros([batch_size, 4, height // 8, width // 8], device=model.load_device)}
 
 
+@inference_stage()
 def sample_generation_latent(model, positive, negative, latent, seed, steps, cfg, sampler_name, scheduler, gen_settings, qi2_turbo=False):
     if str(gen_settings.get("generation_mode", "illustrious")).lower() == "qi2":
         from .character_generator import VNCCS_CharacterGenerator
@@ -1230,6 +1239,7 @@ def sample_generation_latent(model, positive, negative, latent, seed, steps, cfg
     )[0]
 
 
+@inference_stage()
 def encode_generation_prompt(clip, text, gen_settings):
     if str(gen_settings.get("generation_mode", "illustrious")).lower() == "anima":
         encoded = _call_node_method(
@@ -1267,6 +1277,7 @@ def validate_anima_conditioning(positive, negative, clip_name):
         )
 
 
+@inference_stage()
 def decode_generation_samples(vae, samples, gen_settings):
     def unwrap_latent_samples(value):
         while isinstance(value, (list, tuple)) and value:
@@ -1345,7 +1356,9 @@ if server:
                 return web.json_response({})
             name = ensure_safe_name(name, "character")
                 
-            config = load_config(name)
+            config = load_config(name, strict=True)
+            if config is None:
+                return web.json_response({"error": "Character not found"}, status=404)
             if config and "character_info" in config:
                 return web.json_response(config["character_info"])
             return web.json_response({})
@@ -1443,8 +1456,7 @@ if server:
         except Exception as e:
             return web.Response(status=500, text=str(e))
 
-    @server.PromptServer.instance.routes.post("/vnccs/character_wizard")
-    async def vnccs_character_wizard(request):
+    def _character_wizard_response(post):
         try:
             try:
                 import llama_cpp
@@ -1455,7 +1467,6 @@ if server:
                     "model_name": "llama-cpp-python",
                 }, status=500)
 
-            post = await request.json()
             user_description = str(post.get("description", "")).strip()
             if not user_description:
                 return web.Response(status=400, text="No character description provided")
@@ -1574,10 +1585,20 @@ Example:
                 "model_name": QWEN_VL_MODEL_FILENAME,
             }, status=500)
 
-    @server.PromptServer.instance.routes.post("/vnccs/preview_generate")
-    async def preview_generate(request):
+
+    @server.PromptServer.instance.routes.post("/vnccs/character_wizard")
+    @privileged_route
+    async def vnccs_character_wizard(request):
         try:
-            data = await request.json()
+            post = await request.json()
+        except (ValueError, TypeError):
+            return web.json_response({"error": "Invalid JSON request"}, status=400)
+        if not isinstance(post, dict):
+            return web.json_response({"error": "Request must be an object"}, status=400)
+        return await run_wizard_job(_character_wizard_response, post, "character")
+
+    def _generate_preview_response(data):
+        try:
             gen_settings = normalize_gen_settings(data.get("gen_settings", {}))
             char_info = data.get("character_info", {})
             character_name = data.get("character", "Unknown")
@@ -1707,13 +1728,9 @@ Example:
                 img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8)[0])
 
             # Save Smart Cache
-            try:
-                c_dir = os.path.join(character_dir(character_name), "cache")
-                os.makedirs(c_dir, exist_ok=True)
-                c_path = os.path.join(c_dir, "preview.png")
-                img.save(c_path)
-            except Exception as e:
-                print(f"[VNCCS] Failed to save preview cache: {e}")
+            c_path = os.path.join(character_dir(character_name), "cache", "preview.png")
+            with atomic_output_path(c_path) as temporary:
+                img.save(temporary, format="PNG")
 
             buffered = io.BytesIO()
             img.save(buffered, format="PNG")
@@ -1725,6 +1742,17 @@ Example:
             traceback.print_exc()
             return web.Response(status=500, text=str(e))
 
+
+
+    @server.PromptServer.instance.routes.post("/vnccs/preview_generate")
+    @privileged_route
+    async def preview_generate(request):
+        try:
+            data = await request.json()
+            return await run_preview_job(_generate_preview_response, data)
+        except Exception as exc:
+            traceback.print_exc()
+            return web.json_response({"error": str(exc)}, status=500)
 
 class CharacterCreatorV2:
     """
@@ -1822,6 +1850,15 @@ class CharacterCreatorV2:
         print(f"[VNCCS Character Creator V2] {label} positive generation prompt: {positive_prompt}")
         print(f"[VNCCS Character Creator V2] {label} negative generation prompt: {negative_prompt}")
 
+    @classmethod
+    def IS_CHANGED(cls, widget_data="{}", **kwargs):
+        data = json.loads(widget_data)
+        character = data.get("character", "Unknown")
+        root = character_dir(character)
+        paths = [config_path(character), safe_join_under(root, "cache", "preview.png")]
+        paths.extend(list_pose_preview_files(character))
+        return json.dumps([file_fingerprint(path) for path in paths])
+
     def process(self, widget_data="{}", unique_id=None):
         # Clear Preview Cache to free memory for workflow run
         global PREVIEW_CACHE
@@ -1872,131 +1909,28 @@ class CharacterCreatorV2:
 
         ensure_character_structure(character_name)
 
-        config = load_config(character_name) or {
-            "character_info": {},
-            "folder_structure": {
-                "main_directories": MAIN_DIRS,
-                "emotions": EMOTIONS
-            },
-            "character_path": character_path,
-            "config_version": "2.0"
-        }
-
-        info["name"] = character_name
-        info["seed"] = gen_settings.get("seed", 0)
-        config["character_info"] = info
-        config["character_path"] = character_path
-        if "costumes" not in config:
-            config["costumes"] = {}
-        save_config(character_name, config)
-
-
-        # 3. Load Models & Construct Pipe
-        # ----------------------------------------------------------------
-        _, model, clip, vae = load_generation_assets(gen_settings)
-
-        # Helper to apply LoRA
-        def apply_lora_safe(m, c, l_name, l_strength, clip_strength=None):
-            if not l_name or l_name == "None": return m, c
-            l_path = get_lora_full_path(l_name)
-            if l_path:
-                lora = comfy.utils.load_torch_file(l_path, safe_load=True)
-                return comfy.sd.load_lora_for_models(m, c, lora, l_strength, l_strength if clip_strength is None else clip_strength)
-            return m, c
-
-        # Apply DMD2
-        generation_mode = str(gen_settings.get("generation_mode", "illustrious")).lower()
-        if generation_mode == "anima":
-            if gen_settings.get("turbo_enabled"):
-                dmd_name = gen_settings.get("dmd_lora_name")
-                dmd_str = float(gen_settings.get("dmd_lora_strength", 1.0))
-                model, clip = apply_lora_safe(model, clip, dmd_name, dmd_str, 0.0)
-
-            stack = gen_settings.get("lora_stack", [])
-            for item in stack:
-                model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
-        elif generation_mode == "qi2":
-            # The Viggle adapter is applied by prepare_qi2_model so its custom
-            # execution wrapper and sigma schedule remain intact.
-            stack = gen_settings.get("lora_stack", [])
-            for item in stack:
-                model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
-            model, clip = apply_creator_overhaul(model, clip, gen_settings, apply_lora_safe)
-        else:
-            dmd_name = gen_settings.get("dmd_lora_name")
-            dmd_str = float(gen_settings.get("dmd_lora_strength", 1.0))
-            model, clip = apply_lora_safe(model, clip, dmd_name, dmd_str)
-
-            # Apply Age LoRA
-            age_name = gen_settings.get("age_lora_name")
-            if age_name:
-                age = int(info.get("age", 18))
-                age_str = age_strength(age)
-                model, clip = apply_lora_safe(model, clip, age_name, age_str)
-
-            # Apply Stack
-            stack = gen_settings.get("lora_stack", [])
-            for item in stack:
-                model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
-
-        qi2_turbo = False
-        if generation_mode == "qi2":
-            model, qi2_turbo = prepare_qi2_model(model, gen_settings)
-
-        # Encode Conditioning
-        conditioning_pos, conditioning_neg, encoded_positive_prompt = encode_generation_conditioning(
-            clip,
-            vae,
-            positive_prompt,
-            negative_prompt,
-            gen_settings,
-            style_reference=_character_style_prompt(info),
-            character_info=info,
-        )
-        if generation_mode == "qi2":
-            self.log_generation_prompts(
-                "QI2 rewritten workflow",
-                encoded_positive_prompt,
-                negative_prompt,
-                framing=info.get("framing"),
-            )
-        if generation_mode == "anima":
-            validate_anima_conditioning(conditioning_pos, conditioning_neg, gen_settings.get("clip_name", ""))
-
-        # Construct Pipe Object
-        class PipeContext:
-            def __init__(self, **kwargs):
-                for k, v in kwargs.items():
-                    setattr(self, k, v)
-
-        pipe = PipeContext(
-            model=model,
-            clip=clip,
-            vae=vae,
-            pos=conditioning_pos,
-            neg=conditioning_neg,
-            seed_int=resolve_generation_seed(gen_settings),
-            sample_steps=int(gen_settings.get("steps", ILLUSTRIOUS_DEFAULTS["steps"])),
-            cfg=float(gen_settings.get("cfg", ILLUSTRIOUS_DEFAULTS["cfg"])),
-            denoise=1.0,
-            sampler_name=gen_settings.get("sampler", ILLUSTRIOUS_DEFAULTS["sampler"]),
-            scheduler=gen_settings.get("scheduler", ILLUSTRIOUS_DEFAULTS["scheduler"])
-        )
-        if generation_mode == "qi2":
-            pipe.model_kind = "qi2"
-            pipe.model_entry = {
-                "name": "Qwen Image 2.1",
-                "type": "unet",
-                "kind": "QI2",
-                "local_path": f"models/diffusion_models/{gen_settings.get('diffusion_model_name', '')}",
+        with character_storage_lock(character_path):
+            config = load_config(character_name, strict=True) or {
+                "character_info": {},
+                "folder_structure": {
+                    "main_directories": MAIN_DIRS,
+                    "emotions": EMOTIONS
+                },
+                "character_path": character_path,
+                "config_version": "2.0"
             }
-            pipe.qi2_cache = dict(gen_settings.get("qi2_cache", {}))
-            pipe.lora_entries = [dict(QI2_TURBO_ENTRY)]
-            pipe.lora_states = [{
-                "name": QI2_TURBO_ENTRY["name"],
-                "auto_apply": bool(gen_settings.get("turbo_enabled")),
-                "strength": float(gen_settings.get("dmd_lora_strength", 1.0) or 1.0),
-            }]
+
+            info["name"] = character_name
+            info["seed"] = gen_settings.get("seed", 0)
+            config["character_info"] = info
+            config["character_path"] = character_path
+            if "costumes" not in config:
+                config["costumes"] = {}
+            if not save_config(character_name, config):
+                raise OSError(f"Could not save character configuration for '{character_name}'. Check storage permissions and free space.")
+
+
+        generation_mode = str(gen_settings.get("generation_mode", "illustrious")).lower()
 
         # 4. Generate Image (Smart Cache Logic)
         
@@ -2039,12 +1973,9 @@ class CharacterCreatorV2:
                   image, _selected_index, _count = get_pose_preview(character_name, index=selected_index)
                   if image is not None:
                        print("[VNCCS] Pose preview loaded successfully. Overwriting Cache.")
-                       try:
-                           c_img = tensor2pil(image)
-                           os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-                           c_img.save(cache_path)
-                       except Exception as exc:
-                           print(f"[VNCCS] Failed to save pose preview cache '{cache_path}': {exc}")
+                       c_img = tensor2pil(image)
+                       with atomic_output_path(cache_path) as temporary:
+                           c_img.save(temporary, format="PNG")
                   else:
                        print("[VNCCS] Pose preview load failed. Will try cache/regen.")
 
@@ -2064,24 +1995,98 @@ class CharacterCreatorV2:
                  image = get_random_pose_preview(character_name)
                  if image is not None:
                      print(f"[VNCCS] Pose Preview Fallback Successful. Updating Cache.")
+                     c_img = tensor2pil(image)
+                     with atomic_output_path(cache_path) as temporary:
+                        c_img.save(temporary, format="PNG")
                      try:
-                        c_img = tensor2pil(image)
-                        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-                        c_img.save(cache_path)
                         # Notify Frontend
                         server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": unique_id, "character": character_name})
                      except Exception as e:
-                        print(f"[VNCCS] Failed to save/notify on pose preview fallback: {e}")
+                        print(f"[VNCCS] Failed to notify on pose preview fallback: {e}")
                  else:
                      print(f"[VNCCS] Pose Preview Fallback Failed. Regenerating...")
 
         if image is None:
-            print(f"[VNCCS] Regenerating Preview...")
-            
-            width, height = get_generation_resolution(gen_settings)
-            latent = create_generation_latent(model, width, height, gen_settings)
-            
+            print(f"[VNCCS] Regenerating preview for '{character_name}' ({generation_mode}).")
+            stage = "preparing generation"
             try:
+                stage = "loading generation models"
+                _, model, clip, vae = load_generation_assets(gen_settings)
+
+                # Helper to apply LoRA
+                def apply_lora_safe(m, c, l_name, l_strength, clip_strength=None):
+                    if not l_name or l_name == "None": return m, c
+                    l_path = get_lora_full_path(l_name)
+                    if l_path:
+                        lora = comfy.utils.load_torch_file(l_path, safe_load=True)
+                        return comfy.sd.load_lora_for_models(m, c, lora, l_strength, l_strength if clip_strength is None else clip_strength)
+                    return m, c
+
+                stage = "applying generation adapters"
+                # Apply DMD2
+                generation_mode = str(gen_settings.get("generation_mode", "illustrious")).lower()
+                if generation_mode == "anima":
+                    if gen_settings.get("turbo_enabled"):
+                        dmd_name = gen_settings.get("dmd_lora_name")
+                        dmd_str = float(gen_settings.get("dmd_lora_strength", 1.0))
+                        model, clip = apply_lora_safe(model, clip, dmd_name, dmd_str, 0.0)
+
+                    stack = gen_settings.get("lora_stack", [])
+                    for item in stack:
+                        model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
+                elif generation_mode == "qi2":
+                    # The Viggle adapter is applied by prepare_qi2_model so its custom
+                    # execution wrapper and sigma schedule remain intact.
+                    stack = gen_settings.get("lora_stack", [])
+                    for item in stack:
+                        model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
+                    model, clip = apply_creator_overhaul(model, clip, gen_settings, apply_lora_safe)
+                else:
+                    dmd_name = gen_settings.get("dmd_lora_name")
+                    dmd_str = float(gen_settings.get("dmd_lora_strength", 1.0))
+                    model, clip = apply_lora_safe(model, clip, dmd_name, dmd_str)
+
+                    # Apply Age LoRA
+                    age_name = gen_settings.get("age_lora_name")
+                    if age_name:
+                        age = int(info.get("age", 18))
+                        age_str = age_strength(age)
+                        model, clip = apply_lora_safe(model, clip, age_name, age_str)
+
+                    # Apply Stack
+                    stack = gen_settings.get("lora_stack", [])
+                    for item in stack:
+                        model, clip = apply_lora_safe(model, clip, item.get("name"), float(item.get("strength", 1.0)))
+
+                qi2_turbo = False
+                if generation_mode == "qi2":
+                    model, qi2_turbo = prepare_qi2_model(model, gen_settings)
+
+                stage = "encoding the character prompt"
+                # Encode Conditioning
+                conditioning_pos, conditioning_neg, encoded_positive_prompt = encode_generation_conditioning(
+                    clip,
+                    vae,
+                    positive_prompt,
+                    negative_prompt,
+                    gen_settings,
+                    style_reference=_character_style_prompt(info),
+                    character_info=info,
+                )
+                if generation_mode == "qi2":
+                    self.log_generation_prompts(
+                        "QI2 rewritten workflow",
+                        encoded_positive_prompt,
+                        negative_prompt,
+                        framing=info.get("framing"),
+                    )
+                if generation_mode == "anima":
+                    validate_anima_conditioning(conditioning_pos, conditioning_neg, gen_settings.get("clip_name", ""))
+
+                stage = "creating the generation latent"
+                width, height = get_generation_resolution(gen_settings)
+                latent = create_generation_latent(model, width, height, gen_settings)
+                stage = "sampling the character image"
                 sampled = sample_generation_latent(
                     model=model,
                     seed=resolve_generation_seed(gen_settings),
@@ -2096,22 +2101,29 @@ class CharacterCreatorV2:
                     qi2_turbo=qi2_turbo,
                 )
                 
+                stage = "decoding the character image"
                 image = decode_generation_samples(vae, sampled, gen_settings)
                 
                 # Update Cache
+                stage = "saving the preview cache"
+                c_img = tensor2pil(image)
+                with atomic_output_path(cache_path) as temporary:
+                    c_img.save(temporary, format="PNG")
+                print(f"[VNCCS] Saved new preview cache to {cache_path}")
                 try:
-                    # Tensor [1,H,W,3] -> PIL
-                    c_img = tensor2pil(image)
-                    c_img.save(cache_path)
-                    print(f"[VNCCS] Saved new preview cache to {cache_path}")
                     # Notify Frontend
                     server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": unique_id, "character": character_name})
                 except Exception as e:
-                    print(f"[VNCCS] Failed to save cache: {e}")
+                    print(f"[VNCCS] Failed to notify preview update: {e}")
 
             except Exception as e:
-                print(f"[VNCCS] Generation failed in process: {e}")
-                image = torch.zeros((1, 512, 512, 3))
+                message = (
+                    f"Character Creator V2 failed while {stage} for '{character_name}' "
+                    f"(node {unique_id}, model family {generation_mode}): {type(e).__name__}: {e}"
+                )
+                print(f"[VNCCS] ERROR: {message}", flush=True)
+                traceback.print_exc()
+                raise RuntimeError(message) from e
 
         # Get background color
         background_color = _effective_character_background(

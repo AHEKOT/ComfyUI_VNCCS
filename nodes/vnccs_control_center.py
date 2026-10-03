@@ -1,3 +1,4 @@
+from .preview_runtime import run_preview_job
 import json
 import os
 import io
@@ -11,6 +12,7 @@ import platform
 import tempfile
 import configparser
 import ipaddress
+from weakref import WeakValueDictionary
 
 import folder_paths
 import comfy.sd
@@ -35,6 +37,7 @@ try:
         is_absolute_path_any_os,
         normalize_filesystem_path,
         validate_privileged_request,
+        privileged_route,
     )
 except Exception:
     from utils import (
@@ -43,6 +46,7 @@ except Exception:
         is_absolute_path_any_os,
         normalize_filesystem_path,
         validate_privileged_request,
+        privileged_route,
     )
 
 
@@ -78,6 +82,7 @@ _PACKAGED_CC_REPO_IDS = {"MIUProject/VNCCS_v3.0"}
 DEFAULT_QI2_MODEL = "Qwen Image 2.1 INT8 ConvRot"
 QI2_CACHE_DEFAULTS = {"device": "gpu", "dtype": "int8"}
 _PIPELINE_LOCAL_LORAS = {
+    "clothescore",
     "vnccs clothes core",
     "vnccs pose studio qi2",
     "qwen image 2.1 viggle turbo",
@@ -765,26 +770,48 @@ def _sync_packaged_cc_config(repo_id, data):
         return False
 
 
+def _without_gan_upscalers(config):
+    """Retire generic GAN upscalers even in cached or older remote catalogs."""
+    result = dict(config)
+    for category in ("models", "clip", "vae", "lora", "controlnet", "other"):
+        if category not in config:
+            continue
+        result[category] = [
+            entry for entry in config[category]
+            if isinstance(entry, dict) and not any(
+                "upscale_models" in str(entry.get(key, "")).replace("\\", "/").lower().split("/")
+                for key in ("local_path", "hf_path")
+            )
+        ]
+    return result
+
+
 def _get_cc_config(repo_id, prefer_remote=False):
     cached = _CC_CONFIG_CACHE.get(repo_id)
     now = time.time()
     if not prefer_remote and cached and now - cached.get("ts", 0) < 300:
-        return _dedupe_config_by_name(_merge_custom_loras(cached["data"]))
+        return _dedupe_config_by_name(_without_gan_upscalers(_merge_custom_loras(cached["data"])))
 
     source = "packaged"
     if _uses_packaged_cc_config(repo_id) and not prefer_remote:
         path = _get_packaged_cc_path()
     else:
-        path = hf_hub_download(
-            repo_id=repo_id,
-            filename="control_center.json",
-            local_files_only=False,
-            force_download=bool(prefer_remote),
-            token=False,
-        )
-        source = "huggingface"
+        try:
+            path = hf_hub_download(
+                repo_id=repo_id,
+                filename="control_center.json",
+                local_files_only=False,
+                force_download=bool(prefer_remote),
+                token=False,
+            )
+            source = "huggingface"
+        except Exception as exc:
+            if not _uses_packaged_cc_config(repo_id):
+                raise
+            print(f"[VNCCS Control Center] Remote catalog unavailable; using local catalog: {exc}")
+            path = _get_packaged_cc_path()
     with open(path, "r", encoding="utf-8") as handle:
-        data = json.load(handle)
+        data = _without_gan_upscalers(json.load(handle))
     if source == "huggingface":
         if _uses_packaged_cc_config(repo_id):
             with open(_get_packaged_cc_path(), "r", encoding="utf-8") as handle:
@@ -1442,8 +1469,9 @@ def _apply_loras(model, clip, lora_states, config, model_type, type_settings=Non
         if not is_custom and not _lora_matches_model_kind(entry, model_entry):
             continue
 
-        normalized_name = name.strip().lower()
-        if normalized_name in _PIPELINE_LOCAL_LORAS or any(target in normalized_name for target in _PIPELINE_LOCAL_LORAS):
+        identity = f"{name} {basename_agnostic(entry.get('local_path', ''))}".lower()
+        normalized_name = "".join(char for char in identity if char.isalnum())
+        if any("".join(char for char in target if char.isalnum()) in normalized_name for target in _PIPELINE_LOCAL_LORAS):
             print(f"[VNCCS Control Center] Deferring LoRA to downstream pipeline: {name}")
             continue
         state = state_by_name.get(name, {})
@@ -1729,6 +1757,14 @@ class VNCCSPipeProxy:
         self.lora_states = []          # UI lora state
 
 
+_CUSTOM_PREVIEW_PIPES = WeakValueDictionary()
+
+
+def _preview_state_key(repo_id, node_state):
+    state = json.loads(node_state) if isinstance(node_state, str) else node_state
+    return str(repo_id), json.dumps(state, sort_keys=True, separators=(",", ":"))
+
+
 class VNCCS_ControlCenter:
     @classmethod
     def INPUT_TYPES(cls):
@@ -1742,7 +1778,8 @@ class VNCCS_ControlCenter:
                 "clip": ("CLIP",),
                 "vae": ("VAE",),
                 "audio_vae": ("VAE",),
-            }
+            },
+            "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
     @classmethod
@@ -1754,7 +1791,7 @@ class VNCCS_ControlCenter:
     FUNCTION = "execute"
     CATEGORY = "VNCCS/manager"
 
-    def execute(self, repo_id, node_state="{}", model=None, clip=None, vae=None, audio_vae=None):
+    def execute(self, repo_id, node_state="{}", model=None, clip=None, vae=None, audio_vae=None, unique_id=None):
         pipe = _build_control_center_pipe(
             repo_id,
             node_state,
@@ -1763,6 +1800,12 @@ class VNCCS_ControlCenter:
             custom_vae=vae,
             custom_audio_vae=audio_vae,
         )
+        if unique_id is not None:
+            key = str(unique_id)
+            _CUSTOM_PREVIEW_PIPES.pop(key, None)
+            if model is not None and clip is not None and vae is not None:
+                pipe.preview_state_key = _preview_state_key(repo_id, node_state)
+                _CUSTOM_PREVIEW_PIPES[key] = pipe
         return (pipe,)
 
 
@@ -1913,6 +1956,16 @@ def _build_control_center_pipe(
     pipe.nunchaku_settings = None
     pipe.model_entry = model_entry
     pipe.model_kind = model_kind
+    # Persist only catalog-backed identities. Custom input objects may change
+    # without changing their catalog context, so their previews must be regenerated.
+    pipe.model_cache_key = None if selected_type == "custom" else {
+        "model": model_entry,
+        "clips": [entry for entry in config.get("clip", []) if entry.get("name") in all_clip_names],
+        "vaes": [entry for entry in config.get("vae", []) if entry.get("name") in {first_vae_name, selected_audio_vae_name}],
+        "type_settings": type_settings,
+        "lora_entries": pipe.lora_entries,
+        "lora_states": pipe.lora_states,
+    }
     cache_settings = state.get("qi2_cache", {})
     if not isinstance(cache_settings, dict):
         cache_settings = {}
@@ -1974,10 +2027,8 @@ async def cc_dependencies(request):
     ))
 
 
-@server.PromptServer.instance.routes.post("/vnccs/control_center/clothes_preview")
-async def cc_clothes_preview(request):
+def _clothes_preview_response(data):
     try:
-        data = await request.json()
         repo_id = (data.get("repo_id") or "").strip()
         node_state = data.get("node_state", "{}")
         clothes_state = data.get("clothes_state", {})
@@ -1985,13 +2036,25 @@ async def cc_clothes_preview(request):
         if not repo_id:
             return web.Response(status=400, text="Missing repo_id")
 
-        pipe = _build_control_center_pipe(repo_id, node_state)
+        state = json.loads(node_state) if isinstance(node_state, str) else node_state
+        selected_type = (state.get("selected_types_by_kind") or {}).get(state.get("active_kind"), state.get("selected_type"))
+        if selected_type == "custom":
+            pipe = _CUSTOM_PREVIEW_PIPES.get(str(data.get("control_center_id", "")))
+            if pipe is None or pipe.preview_state_key != _preview_state_key(repo_id, node_state):
+                return web.Response(status=409, text=(
+                    "Custom model inputs for this Control Center configuration are not available in preview memory. "
+                    "Select a catalog model for standalone preview. The workflow has not been queued."
+                ))
+        else:
+            pipe = _build_control_center_pipe(repo_id, node_state)
 
         from .clothes_designer import ClothesDesigner
 
         widget_data_str = json.dumps(clothes_state, sort_keys=True, separators=(",", ":"))
         designer = ClothesDesigner()
-        ret = designer.process(pipe=pipe, widget_data=widget_data_str, unique_id="api_preview")
+        import torch
+        with torch.inference_mode():
+            ret = designer.process(pipe=pipe, widget_data=widget_data_str, unique_id="api_preview")
         image_tensor = ret[0]
 
         image_array = np.clip(255.0 * image_tensor.cpu().numpy().squeeze(), 0, 255).astype(np.uint8)
@@ -2004,6 +2067,17 @@ async def cc_clothes_preview(request):
         traceback.print_exc()
         return web.Response(status=500, text=str(e))
 
+
+
+@server.PromptServer.instance.routes.post("/vnccs/control_center/clothes_preview")
+@privileged_route
+async def cc_clothes_preview(request):
+    try:
+        data = await request.json()
+        return await run_preview_job(_clothes_preview_response, data)
+    except Exception as exc:
+        traceback.print_exc()
+        return web.json_response({"error": str(exc)}, status=500)
 
 @server.PromptServer.instance.routes.get("/vnccs/control_center/check")
 async def cc_check(request):
@@ -2082,12 +2156,15 @@ async def cc_lora_files(request):
 
 
 @server.PromptServer.instance.routes.post("/vnccs/control_center/custom_lora")
+@privileged_route
 async def cc_add_custom_lora(request):
     try:
         data = await request.json()
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
+    if not isinstance(data, dict) or any(data.get(field) is not None and not isinstance(data[field], str) for field in ("repo_id", "path", "kind")):
+        return web.json_response({"error": "Custom LoRA fields must be strings in an object"}, status=400)
     repo_id = (data.get("repo_id") or "").strip()
     rel_path = (data.get("path") or "").strip().replace("\\", "/")
     kind = str(data.get("kind") or "Custom").strip() or "Custom"
@@ -2125,12 +2202,15 @@ async def cc_add_custom_lora(request):
 
 
 @server.PromptServer.instance.routes.post("/vnccs/control_center/custom_lora/delete")
+@privileged_route
 async def cc_delete_custom_lora(request):
     try:
         data = await request.json()
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
+    if not isinstance(data, dict) or any(data.get(field) is not None and not isinstance(data[field], str) for field in ("repo_id", "local_path", "name")):
+        return web.json_response({"error": "Custom LoRA fields must be strings in an object"}, status=400)
     repo_id = (data.get("repo_id") or "").strip()
     local_path = (data.get("local_path") or "").strip().replace("\\", "/")
     name = (data.get("name") or "").strip()

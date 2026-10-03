@@ -371,7 +371,7 @@ const STYLE = `
     box-sizing: border-box;
 }
 
-.vnccs-sm-costume-card:hover {
+.vnccs-sm-costume-card:hover:not(.selected) {
     border-color: #5b96f5;
 }
 

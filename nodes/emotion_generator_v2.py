@@ -14,7 +14,8 @@ from ..utils import (
     character_dir, list_characters,
     load_character_info,
     apply_sex, append_age, generate_seed, build_face_details,
-    list_costumes, load_costume_info
+    list_costumes, load_costume_info, ensure_safe_name, safe_join_under,
+    privileged_route, file_fingerprint, config_path
 )
 from .character_creator_v2 import (
     ANIMA_DEFAULTS,
@@ -292,13 +293,14 @@ def _load_sprite_tensor(path):
 
 def list_costume_sprite_paths(character, costume):
     """Return sorted current neutral/source sprite paths without decoding them."""
-    root = os.path.join(character_dir(character), "Sprites", costume)
+    costume = ensure_safe_name(costume, "costume")
+    root = safe_join_under(character_dir(character), "Sprites", costume)
     paths = []
     if os.path.isdir(root):
         neutral_paths = []
         seen_neutral_roots = set()
         for neutral_name in ("Neutral", "neutral"):
-            neutral_root = os.path.join(root, neutral_name)
+            neutral_root = safe_join_under(root, neutral_name)
             if not os.path.isdir(neutral_root):
                 continue
             neutral_key = os.path.normcase(os.path.abspath(neutral_root))
@@ -306,13 +308,13 @@ def list_costume_sprite_paths(character, costume):
                 continue
             seen_neutral_roots.add(neutral_key)
             neutral_paths.extend(
-                os.path.join(neutral_root, name)
+                safe_join_under(neutral_root, name)
                 for name in os.listdir(neutral_root)
                 if os.path.isfile(os.path.join(neutral_root, name))
                 and os.path.splitext(name)[1].lower() in IMAGE_EXTS
             )
         direct = [
-            os.path.join(root, name)
+            safe_join_under(root, name)
             for name in os.listdir(root)
             if os.path.isfile(os.path.join(root, name)) and os.path.splitext(name)[1].lower() in IMAGE_EXTS
         ]
@@ -350,12 +352,12 @@ def load_costume_sprite_images(character, costume, selected_pose_indices=None):
 
 
 def costume_has_source_sprites(character, costume):
-    root = os.path.join(character_dir(character), "Sprites", costume)
+    root = safe_join_under(character_dir(character), "Sprites", ensure_safe_name(costume, "costume"))
     if not os.path.isdir(root):
         return False
     search_roots = [
-        os.path.join(root, "Neutral"),
-        os.path.join(root, "neutral"),
+        safe_join_under(root, "Neutral"),
+        safe_join_under(root, "neutral"),
         root,
     ]
     seen = set()
@@ -365,7 +367,7 @@ def costume_has_source_sprites(character, costume):
             continue
         seen.add(folder_key)
         for name in os.listdir(folder):
-            path = os.path.join(folder, name)
+            path = safe_join_under(folder, name)
             if os.path.isfile(path) and os.path.splitext(name)[1].lower() in IMAGE_EXTS:
                 return True
     return False
@@ -396,9 +398,12 @@ if server:
             return web.Response(status=500, text=f"Error loading emotions.json: {e}")
 
     @server.PromptServer.instance.routes.post("/vnccs/add_custom_emotion")
+    @privileged_route
     async def add_custom_emotion(request):
         try:
             payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Emotion request must be an object")
             title = str(payload.get("name", "") or "").strip()
             if not title:
                 return web.json_response({"error": "Emotion name is required."}, status=400)
@@ -453,10 +458,13 @@ if server:
         if not character:
             return web.json_response([])
         
-        costumes = [
-            costume for costume in list_costumes(character)
-            if costume_has_source_sprites(character, costume)
-        ]
+        try:
+            costumes = [
+                costume for costume in list_costumes(character)
+                if costume_has_source_sprites(character, costume)
+            ]
+        except ValueError as error:
+            return web.json_response({"error": str(error)}, status=400)
         return web.json_response(costumes)
 
     @server.PromptServer.instance.routes.get("/vnccs/get_character_sheet_preview")
@@ -478,20 +486,19 @@ if server:
             img_byte_arr = io.BytesIO()
             img.save(img_byte_arr, format='PNG')
             return web.Response(body=img_byte_arr.getvalue(), content_type='image/png')
+        except ValueError as e:
+            return web.Response(status=400, text=str(e))
         except Exception as e:
             print(f"[VNCCS Emotion Studio] Failed to serve sprite preview: {e}")
             return web.Response(status=500)
 
     @server.PromptServer.instance.routes.get("/vnccs/get_emotion_image")
     async def get_emotion_image(request):
-        name = request.rel_url.query.get("name", "")
-        if not name or ".." in name or "/" in name or "\\" in name:
-            return web.Response(status=400)
-            
-        from urllib.parse import unquote
-        name = unquote(name).strip() 
-        
-        image_path = os.path.join(emotion_images_dir(), f"{name}.webp")
+        try:
+            name = ensure_safe_name(request.rel_url.query.get("name", ""), "emotion")
+            image_path = safe_join_under(emotion_images_dir(), f"{name}.webp")
+        except ValueError as error:
+            return web.Response(status=400, text=str(error))
 
         if not os.path.exists(image_path):
             return web.Response(status=404)
@@ -503,18 +510,21 @@ class EmotionGeneratorV2:
     
     EMOTIONS_DATA = None
     SAFE_NAME_MAP = None
+    EMOTIONS_FINGERPRINT = None
 
     def __init__(self):
         self._setup_emotions_data()
 
     @classmethod
     def _setup_emotions_data(cls):
-        if cls.SAFE_NAME_MAP is not None:
-            return
+        path = emotions_config_path()
+        fingerprint = file_fingerprint(path)
+        cached = cls.SAFE_NAME_MAP
+        if cached is not None and cls.EMOTIONS_FINGERPRINT == fingerprint:
+            return cached
 
         try:
-            config_path = os.path.join(get_custom_node_path(), "emotions-config", "emotions.json")
-            with open(config_path, 'r', encoding='utf-8') as f:
+            with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
             safe_name_map = {}
@@ -527,10 +537,12 @@ class EmotionGeneratorV2:
                                 "natural_prompt": emotion.get('natural_prompt', ''),
                                 "category": category
                         }
-            cls.SAFE_NAME_MAP = safe_name_map
         except Exception as e:
             print(f"[VNCCS] ERROR: Failed to load emotions data: {e}")
-            cls.SAFE_NAME_MAP = {}
+            safe_name_map = {}
+        cls.SAFE_NAME_MAP = safe_name_map
+        cls.EMOTIONS_FINGERPRINT = fingerprint
+        return safe_name_map
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -556,7 +568,29 @@ class EmotionGeneratorV2:
     FUNCTION = "generate_emotions_v2"
     CATEGORY = "VNCCS"
 
+    @classmethod
+    def IS_CHANGED(cls, character="Character Name", costumes_data="[]", **kwargs):
+        paths = [config_path(character), emotions_config_path()]
+        for costume in json.loads(costumes_data):
+            paths.extend(list_costume_sprite_paths(character, costume))
+        return json.dumps([file_fingerprint(path) for path in paths])
+
     def generate_emotions_v2(self, generation_model="Anima", generation_settings="{}", prompt_style="Anima", character="Character Name", costumes_data="[]", emotions_data="[]"):
+        info = load_character_info(character)
+        if not isinstance(info, dict) or not info:
+            raise ValueError(f"Character profile missing for '{character}'. Save the character in Creator or Cloner before generating emotions.")
+        selected_costumes = json.loads(costumes_data)
+        if not isinstance(selected_costumes, list):
+            raise ValueError("Selected costumes must be a list")
+        for costume in selected_costumes:
+            ensure_safe_name(costume, "costume")
+            load_costume_info(character, costume)
+        selected_emotions = json.loads(emotions_data)
+        if not isinstance(selected_emotions, list):
+            raise ValueError("Selected emotions must be a list")
+        for emotion in selected_emotions:
+            ensure_safe_name(emotion, "emotion")
+        emotion_map = self._setup_emotions_data()
         pipe, pipe_seed = build_emotion_pipe(generation_model, generation_settings)
         mode = str(generation_model or "Anima").lower()
         effective_prompt_style = "Anima" if mode == "anima" else "SDXL Style"
@@ -577,26 +611,13 @@ class EmotionGeneratorV2:
                 if index > 0:
                     selected_pose_indices.add(index)
         
-        try:
-            selected_costumes = json.loads(costumes_data)
-        except:
-            selected_costumes = []
         selected_costumes = [
             costume for costume in selected_costumes
             if costume_has_source_sprites(character, costume)
         ]
 
-        try:
-            selected_emotions = json.loads(emotions_data)
-        except:
-            selected_emotions = []
-
         # --- SETUP ---
-        if self.SAFE_NAME_MAP is None:
-            self._setup_emotions_data()
-            
         character_path = character_dir(character)
-        info = load_character_info(character)
         images = []
         emotion_data = []
         
@@ -648,7 +669,7 @@ class EmotionGeneratorV2:
 
             for emotion_key in selected_emotions:
                 
-                emotion_details_data = self.SAFE_NAME_MAP.get(emotion_key)
+                emotion_details_data = emotion_map.get(emotion_key)
                 if not emotion_details_data:
                     print(f"Warning: Unknown emotion key {emotion_key}")
                     emotion_description = "unknown emotion"

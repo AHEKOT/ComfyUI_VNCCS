@@ -123,7 +123,7 @@ class CharacterCreator:
 
         final_negative_prompt = dedupe_tokens(f"{negative_prompt},{gender_negative}")
 
-        config = load_config(character_name) or {
+        config = load_config(character_name, strict=True) or {
             "character_info": {},
             "folder_structure": {
                 "main_directories": MAIN_DIRS,
@@ -155,7 +155,8 @@ class CharacterCreator:
         if "costumes" not in config:
             config["costumes"] = {}
 
-        save_config(character_name, config)
+        if not save_config(character_name, config):
+            raise OSError(f"Could not save character configuration for '{character_name}'. Check storage permissions and free space.")
 
         face_details = build_face_details(config["character_info"])
         face_details += f", (expressionless:1.0)"

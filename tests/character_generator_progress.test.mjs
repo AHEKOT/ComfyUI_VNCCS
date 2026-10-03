@@ -1,3 +1,4 @@
+import { createWidgetContext } from './widget_context.mjs';
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -8,7 +9,7 @@ const source = readFileSync(new URL("../web/vnccs_character_generator.js", impor
 function setup(stage = "pose_generation") {
     const listeners = new Map();
     const cleanups = [];
-    const context = vm.createContext({
+    const context = createWidgetContext({
         api: {
             addEventListener: (name, callback) => listeners.set(name, callback),
             removeEventListener: (name, callback) => {

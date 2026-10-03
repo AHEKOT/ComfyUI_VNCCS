@@ -35,9 +35,9 @@ except Exception:
     server = None
 
 try:
-    from ..utils import get_full_path_agnostic
+    from ..utils import get_full_path_agnostic, privileged_route
 except Exception:
-    from utils import get_full_path_agnostic
+    from utils import get_full_path_agnostic, privileged_route
 
 try:
     from .qwen_vl import get_qwen_vl_chat_handler
@@ -381,6 +381,7 @@ if server is not None and web is not None:
         return web.json_response(dict(_QWEN_VL_DOWNLOAD_STATUS))
 
     @server.PromptServer.instance.routes.post("/vnccs/qwen_vl_download_model")
+    @privileged_route
     async def qwen_vl_download_model(request):
         require_mmproj = request.rel_url.query.get("vision") != "false"
         if _QWEN_VL_DOWNLOAD_STATUS.get("status") == "downloading":
@@ -1684,7 +1685,7 @@ class VNCCSChromaKey:
                 "foreground_recover": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "edge_decontaminate": ("FLOAT", {"default": 0.75, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "edge_choke": ("FLOAT", {"default": 0.08, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "matte_method": (["chroma_soft", "guided_edge", "pymatting_if_available"], {"default": "guided_edge"}),
+                "matte_method": (["chroma_soft", "guided_edge", "pymatting_if_available", "screen_matte"], {"default": "guided_edge"}),
                 "screen_mode": (["auto", "green", "blue", "red"], {"default": "auto"}),
                 "output_mode": (["straight_rgba", "premultiplied_rgba"], {"default": "straight_rgba"}),
                 "use_sam3_recovery_mask": (
@@ -1702,6 +1703,10 @@ class VNCCSChromaKey:
     VNCCS Chroma Key - automatically detects background color from image borders.
     Uses soft chroma keying, edge-guided matte cleanup, foreground recovery, and
     edge-only decontamination for cleaner hair and outlines.
+    The opt-in screen_matte method runs on the selected GPU, estimates the actual
+    plate color automatically, and removes isolated screen artifacts. Its color
+    unmixing is controlled jointly by despill, foreground recovery and edge
+    decontamination; screen_mode is used only by the legacy methods.
     """
 
     def chroma_key(
@@ -2067,6 +2072,16 @@ class VNCCSChromaKey:
         screen_mode,
         output_mode,
     ):
+        if matte_method == "screen_matte":
+            from .chroma_screen_matte import screen_matte
+
+            return screen_matte(
+                _ensure_float01(image), tolerance=tolerance, softness=softness,
+                despill_strength=despill_strength, edge_width=edge_width,
+                matte_cleanup=matte_cleanup, foreground_recover=foreground_recover,
+                edge_decontaminate=edge_decontaminate, edge_choke=edge_choke,
+                output_mode=output_mode,
+            )
         image = _ensure_float01(image)[..., :3]
         height, width, _ = image.shape
         key_color = self._detect_key_color(image)

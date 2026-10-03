@@ -39,10 +39,19 @@ export function presetSelection(value, groups) {
         const key = aliases.get(presetKey(token)) || presetKey(token);
         if (!selected.has(key)) selected.set(key, token);
     }
+    // The old creation route stored both default hair traits in one token.
+    const legacyHair = [aliases.get("black hair"), aliases.get("long hair")].filter(Boolean);
+    const hasLegacyHair = key => legacyHair.length === 2 && selected.has("black long hair") && legacyHair.includes(key);
     return {
-        has: item => selected.has(presetKey(item.tag)),
+        has: item => selected.has(presetKey(item.tag)) || hasLegacyHair(presetKey(item.tag)),
         toggle(item) {
             const key = presetKey(item.tag);
+            if (hasLegacyHair(key)) {
+                selected.delete("black long hair");
+                for (const trait of legacyHair) {
+                    if (!selected.has(trait)) selected.set(trait, trait);
+                }
+            }
             if (selected.has(key)) selected.delete(key);
             else selected.set(key, item.tag.replaceAll("_", " "));
         },

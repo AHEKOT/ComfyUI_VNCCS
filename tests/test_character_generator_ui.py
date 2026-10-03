@@ -61,6 +61,25 @@ def test_emotion_result_tabs_stay_single_row_and_only_show_final_stage():
     assert 'flex-wrap: nowrap;' in SOURCE
 
 
+def test_clone_stage_chain_fits_two_compact_rows_without_clipping():
+    def rule(selector):
+        return SOURCE.split(selector + " {", 1)[1].split("}", 1)[0]
+
+    main = rule(".vnccs-pipe-root.is-clone .vnccs-pipe-main")
+    assert "grid-template-rows: minmax(0, 1fr) auto;" in main
+    chain = rule(".vnccs-pipe-chain.is-clone")
+    stage = rule(".vnccs-pipe-chain.is-clone .vnccs-pipe-stage")
+    actions = rule(".vnccs-pipe-chain.is-clone .vnccs-pipe-stage-actions")
+    assert "grid-auto-rows: minmax(58px, 1fr);" in chain
+    assert "box-sizing: border-box;" in chain
+    assert "min-height: 0;" in chain
+    assert "overflow-y: auto;" in chain
+    assert "display: grid;" in stage
+    assert "padding: 4px 8px;" in stage
+    assert "grid-column: 2;" in actions
+    assert "grid-row: 1;" in actions
+
+
 def test_emotion_tabs_resync_after_late_studio_restore():
     assert "const sourceChanged = this.syncCharacterSourceData();" in SOURCE
     assert "if (!sourceChanged && !modelChanged) return;" in SOURCE
