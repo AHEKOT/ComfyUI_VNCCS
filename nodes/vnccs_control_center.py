@@ -82,6 +82,7 @@ _PACKAGED_CC_REPO_IDS = {"MIUProject/VNCCS_v3.0"}
 DEFAULT_QI2_MODEL = "Qwen Image 2.1 INT8 ConvRot"
 QI2_CACHE_DEFAULTS = {"device": "gpu", "dtype": "int8"}
 _PIPELINE_LOCAL_LORAS = {
+    "clothescore",
     "vnccs clothes core",
     "vnccs pose studio qi2",
     "qwen image 2.1 viggle turbo",
@@ -1468,8 +1469,9 @@ def _apply_loras(model, clip, lora_states, config, model_type, type_settings=Non
         if not is_custom and not _lora_matches_model_kind(entry, model_entry):
             continue
 
-        normalized_name = name.strip().lower()
-        if normalized_name in _PIPELINE_LOCAL_LORAS or any(target in normalized_name for target in _PIPELINE_LOCAL_LORAS):
+        identity = f"{name} {basename_agnostic(entry.get('local_path', ''))}".lower()
+        normalized_name = "".join(char for char in identity if char.isalnum())
+        if any("".join(char for char in target if char.isalnum()) in normalized_name for target in _PIPELINE_LOCAL_LORAS):
             print(f"[VNCCS Control Center] Deferring LoRA to downstream pipeline: {name}")
             continue
         state = state_by_name.get(name, {})

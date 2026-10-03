@@ -332,7 +332,7 @@ const CSS = `
     overflow: hidden;
 }
 .vnccs-pipe-root.is-clone .vnccs-pipe-main {
-    grid-template-rows: minmax(0, 1fr) 176px;
+    grid-template-rows: minmax(0, 1fr) auto;
 }
 .vnccs-pipe-title {
     font-size: 10px;
@@ -750,6 +750,43 @@ const CSS = `
 }
 .vnccs-pipe-chain.is-clone {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-auto-rows: minmax(58px, 1fr);
+    min-height: 0;
+    box-sizing: border-box;
+    gap: 6px;
+    padding: 6px 10px;
+    overflow-y: auto;
+}
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-content: start;
+    min-height: 0;
+    padding: 4px 8px;
+    gap: 2px 8px;
+}
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-name,
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-status,
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-lora {
+    grid-column: 1;
+    line-height: 1.2;
+}
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-status,
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-lora {
+    grid-column: 1 / -1;
+}
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-lora {
+    grid-row: 3;
+}
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-progress {
+    grid-column: 1 / -1;
+    grid-row: 4;
+}
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-actions {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
+    margin-top: 0;
 }
 .vnccs-pipe-chain.is-clothes {
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -3438,7 +3475,7 @@ class CharacterGeneratorWidget {
                 l.textContent = `LoRA: ${poseLora}`;
                 stage.appendChild(l);
             }
-            if (key === "remove_clothes" && this.data.ui?.resolution_model_kind !== "qi2") {
+            if (key === "remove_clothes") {
                 const l = document.createElement("div");
                 l.className = "vnccs-pipe-stage-lora";
                 l.textContent = `LoRA: ${CLOTHES_CORE_LORA_LABEL}`;

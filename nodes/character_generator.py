@@ -1904,6 +1904,8 @@ class VNCCS_CharacterGenerator:
         for candidate in entries:
             candidate_name = str(candidate.get("name", "")).strip().lower()
             normalized_candidate_name = "".join(char for char in candidate_name if char.isalnum())
+            filename = basename_agnostic(candidate.get("local_path", ""))
+            normalized_filename = "".join(char for char in filename.lower() if char.isalnum())
             candidate_kind = _entry_kind(candidate)
             if candidate_kind and model_kind and candidate_kind != model_kind:
                 continue
@@ -1911,6 +1913,7 @@ class VNCCS_CharacterGenerator:
                 candidate_name == target
                 or target in candidate_name
                 or (normalized_target and normalized_target in normalized_candidate_name)
+                or (normalized_target and normalized_target in normalized_filename)
             ):
                 entry = candidate
                 break
@@ -1926,14 +1929,7 @@ class VNCCS_CharacterGenerator:
         state = next(
             (
                 item for item in states
-                if str(item.get("name", "")).strip().lower() == target
-                or target in str(item.get("name", "")).strip().lower()
-                or (
-                    normalized_target
-                    and normalized_target in "".join(
-                        char for char in str(item.get("name", "")).strip().lower() if char.isalnum()
-                    )
-                )
+                if str(item.get("name", "")).strip().lower() == str(entry.get("name", "")).strip().lower()
             ),
             {},
         )
@@ -1973,11 +1969,13 @@ class VNCCS_CharacterGenerator:
         return info
 
     def _find_clothes_lora(self, pipe):
-        model_kind = _entry_kind(getattr(pipe, "model_entry", None))
-        if model_kind == "qi2":
-            return self._find_lora(pipe, CLOTHES_CORE_LORA_NAME)
-        name = KLEIN_CLOTHES_CORE_LORA_NAME if model_kind == "klein9b" else CLOTHES_CORE_LORA_NAME
-        return self._find_lora(pipe, name)
+        info = self._find_lora(pipe, "ClothesCore")
+        if info.get("custom") and not info.get("enabled"):
+            info.update(
+                status="disabled",
+                message=f"{info.get('name')}: enable this custom LoRA in VNCCS Control Center",
+            )
+        return info
 
     def _is_native_bg_remove(self, settings):
         return str((settings or {}).get("preset", "") or "").strip().lower() == "native"
@@ -2023,7 +2021,7 @@ class VNCCS_CharacterGenerator:
             )[0]
         except Exception as exc:
             print(f"[VNCCS Character Generator] LoraLoaderModelOnly failed for '{rel_path}', using direct loader: {exc}")
-        model_lora, _ = _apply_lora_standard(model, clip, lora_info["path"], strength)
+        model_lora, _ = _apply_lora_standard(model, None, lora_info["path"], strength)
         return model_lora
 
     def _apply_pose_lora_to_model(self, model, clip, pipe, lora_info):
@@ -2410,55 +2408,57 @@ class VNCCS_CharacterGenerator:
             )
         encoding_progress(1, 1)
 
-        if self._is_qi2_pipe(pipe_values) and not (lora_info or {}).get("exists"):
-            sampler_model = pipe_values["model"]
-        else:
-            sampler_model = self._apply_lora_to_model(
-                pipe_values["model"], pipe_values["clip"], pipe,
-                lora_info, "Remove Clothes",
-            )
-        turbo = False
-        if self._is_qi2_pipe(pipe_values):
-            sampler_model, turbo = self._qi2_prepare_model(sampler_model, pipe, pipe_values)
-        self._validate_conditioning_for_model(pipe_values, positive, negative, "Remove Clothes")
-        sampling_progress(0, 1)
-        if is_h3:
-            sampler_node = _call_comfy_node("KSamplerSelect", sampler_name=sampler["sampler_name"])[0]
-            sigmas = _call_comfy_node(
-                "BasicScheduler", model=sampler_model, scheduler=sampler["scheduler"],
-                steps=sampler["steps"], denoise=sampler["denoise"],
-            )[0]
-            guider = _call_comfy_node("BasicGuider", model=sampler_model, conditioning=positive)[0]
-            noise = _call_comfy_node("RandomNoise", noise_seed=sampler["seed"])[0]
-            sampled = _call_comfy_node(
-                "SamplerCustomAdvanced", noise=noise, guider=guider, sampler=sampler_node,
-                sigmas=sigmas, latent_image=latent,
-            )[0]
-        elif self._is_qi2_pipe(pipe_values):
-            sampled = self._qi2_sample(
-                sampler_model, positive, negative, latent, sampler, turbo=turbo,
-            )
-        else:
-            sampled = _call_comfy_node(
-                "KSampler", model=sampler_model, positive=positive,
-                negative=negative, latent_image=latent, **sampler,
-            )[0]
-        sampling_progress(1, 1)
+        sampler_model = self._apply_lora_to_model(
+            pipe_values["model"], pipe_values["clip"], pipe,
+            lora_info, "Remove Clothes",
+        )
+        try:
+            turbo = False
+            if self._is_qi2_pipe(pipe_values):
+                sampler_model, turbo = self._qi2_prepare_model(sampler_model, pipe, pipe_values)
+            self._validate_conditioning_for_model(pipe_values, positive, negative, "Remove Clothes")
+            sampling_progress(0, 1)
+            if is_h3:
+                sampler_node = _call_comfy_node("KSamplerSelect", sampler_name=sampler["sampler_name"])[0]
+                sigmas = _call_comfy_node(
+                    "BasicScheduler", model=sampler_model, scheduler=sampler["scheduler"],
+                    steps=sampler["steps"], denoise=sampler["denoise"],
+                )[0]
+                guider = _call_comfy_node("BasicGuider", model=sampler_model, conditioning=positive)[0]
+                noise = _call_comfy_node("RandomNoise", noise_seed=sampler["seed"])[0]
+                sampled = _call_comfy_node(
+                    "SamplerCustomAdvanced", noise=noise, guider=guider, sampler=sampler_node,
+                    sigmas=sigmas, latent_image=latent,
+                )[0]
+            elif self._is_qi2_pipe(pipe_values):
+                sampled = self._qi2_sample(
+                    sampler_model, positive, negative, latent, sampler, turbo=turbo,
+                )
+            else:
+                sampled = _call_comfy_node(
+                    "KSampler", model=sampler_model, positive=positive,
+                    negative=negative, latent_image=latent, **sampler,
+                )[0]
+            sampling_progress(1, 1)
 
-        decoding_progress(0, 1)
-        if is_h3:
-            decoded = _call_comfy_node("VAEDecode", samples=sampled, vae=pipe_values["vae"])[0]
-        elif self._is_qi2_pipe(pipe_values):
-            decoded = self._qi2_decode(sampled, pipe_values["vae"])
-        else:
-            decoded = _call_comfy_node(
-                "VAEDecodeTiled",
-                samples=sampled,
-                vae=pipe_values["vae"],
-                **vae_decode,
-            )[0]
-        decoding_progress(1, 1)
-        return self._h3_first_frame_to_cpu(decoded) if is_h3 else decoded
+            decoding_progress(0, 1)
+            if is_h3:
+                decoded = _call_comfy_node("VAEDecode", samples=sampled, vae=pipe_values["vae"])[0]
+            elif self._is_qi2_pipe(pipe_values):
+                decoded = self._qi2_decode(sampled, pipe_values["vae"])
+            else:
+                decoded = _call_comfy_node(
+                    "VAEDecodeTiled",
+                    samples=sampled,
+                    vae=pipe_values["vae"],
+                    **vae_decode,
+                )[0]
+            decoding_progress(1, 1)
+            return self._h3_first_frame_to_cpu(decoded) if is_h3 else decoded
+        finally:
+            if sampler_model is not pipe_values["model"]:
+                sampler_model.detach()
+                sampler_model.cleanup()
 
     def _run_upscaler_models(self, settings, node_id=None):
         defaults = DEFAULT_WIDGET_DATA["upscaler"]
