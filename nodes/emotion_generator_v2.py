@@ -14,16 +14,43 @@ from ..utils import (
     character_dir, list_characters,
     load_character_info,
     apply_sex, append_age, generate_seed, build_face_details,
-    list_costumes, load_costume_info
+    list_costumes, load_costume_info, ensure_safe_name, safe_join_under,
+    privileged_route, file_fingerprint, config_path
 )
 from .character_creator_v2 import (
     ANIMA_DEFAULTS,
     ILLUSTRIOUS_DEFAULTS,
+    load_anima_assets,
     load_generation_assets,
     normalize_gen_settings,
     get_lora_full_path,
 )
 from .vnccs_pipe import VNCCS_Pipe
+
+
+QI2_TURBO_LORA_NAME = "QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors"
+QI2_DEFAULTS = {
+    "generation_mode": "qi2",
+    "diffusion_model_name": "qwen_image_2.1_int8_convrot.safetensors",
+    "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+    "vae_name": "qwen_image_2.1_vae_bf16.safetensors",
+    "clip_type": "qwen_image",
+    "sampler": "euler",
+    "scheduler": "simple",
+    "steps": 25,
+    "cfg": 3.0,
+    "turbo_enabled": False,
+    "dmd_lora_name": QI2_TURBO_LORA_NAME,
+    "dmd_lora_strength": 1.0,
+    "lora_stack": [],
+    "qi2_cache": {"device": "gpu", "dtype": "int8"},
+}
+QI2_TURBO_ENTRY = {
+    "name": "Qwen Image 2.1 Viggle Turbo",
+    "type": "TurboLora",
+    "kind": "QI2",
+    "local_path": f"models/loras/{QI2_TURBO_LORA_NAME}",
+}
 
 # --- ComfyUI Server Imports ---
 try:
@@ -107,6 +134,7 @@ def default_generation_settings():
     settings.setdefault("mode_settings", {
         "illustrious": dict(ILLUSTRIOUS_DEFAULTS),
         "anima": dict(ANIMA_DEFAULTS),
+        "qi2": dict(QI2_DEFAULTS),
     })
     return settings
 
@@ -125,16 +153,30 @@ def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
         parsed = {}
 
     mode = str(generation_model or parsed.get("generation_mode") or "Anima").lower()
-    if mode not in ("illustrious", "anima"):
+    if mode not in ("illustrious", "anima", "qi2"):
         mode = "anima"
 
     merged = default_generation_settings()
     if isinstance(parsed, dict):
         merged.update(parsed)
     merged["generation_mode"] = mode
-    gen_settings = normalize_gen_settings(merged)
-
-    _, model, clip, vae = load_generation_assets(gen_settings)
+    if mode == "qi2":
+        gen_settings = dict(QI2_DEFAULTS)
+        if isinstance(parsed, dict):
+            gen_settings.update(parsed)
+        mode_settings = parsed.get("mode_settings", {}) if isinstance(parsed, dict) else {}
+        mode_profile = mode_settings.get("qi2", {}) if isinstance(mode_settings, dict) else {}
+        if isinstance(mode_profile, dict):
+            gen_settings.update(mode_profile)
+        gen_settings["generation_mode"] = "qi2"
+        gen_settings["clip_type"] = "qwen_image"
+        if gen_settings.get("turbo_enabled"):
+            gen_settings["steps"] = 6
+            gen_settings["cfg"] = 1.0
+        model, clip, vae = load_anima_assets(gen_settings)
+    else:
+        gen_settings = normalize_gen_settings(merged)
+        _, model, clip, vae = load_generation_assets(gen_settings)
 
     def apply_lora_safe(m, c, lora_name, strength, clip_strength=None):
         if not lora_name or lora_name == "None" or float(strength or 0) == 0:
@@ -164,10 +206,16 @@ def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
         for item in gen_settings.get("lora_stack", []) or []:
             if isinstance(item, dict):
                 model, clip = apply_lora_safe(model, clip, item.get("name"), item.get("strength", 1.0))
-    else:
+    elif mode == "illustrious":
         dmd_name = gen_settings.get("dmd_lora_name")
         if dmd_name:
             model, clip = apply_lora_safe(model, clip, dmd_name, gen_settings.get("dmd_lora_strength", 1.0))
+        for item in gen_settings.get("lora_stack", []) or []:
+            if isinstance(item, dict):
+                model, clip = apply_lora_safe(model, clip, item.get("name"), item.get("strength", 1.0))
+    else:
+        # Viggle uses VNCCS' unmerged adapter and latent-aware sigma schedule in
+        # VNCCS Emotions Generator.  Only ordinary user LoRAs are merged here.
         for item in gen_settings.get("lora_stack", []) or []:
             if isinstance(item, dict):
                 model, clip = apply_lora_safe(model, clip, item.get("name"), item.get("strength", 1.0))
@@ -194,6 +242,26 @@ def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
             "kind": "Anima",
             "local_path": gen_settings.get("diffusion_model_name", ""),
         }
+    elif mode == "qi2":
+        cache = gen_settings.get("qi2_cache", {})
+        cache = cache if isinstance(cache, dict) else {}
+        pipe.model_entry = {
+            "name": "Qwen Image 2.1",
+            "type": "unet",
+            "kind": "QI2",
+            "local_path": f"models/diffusion_models/{gen_settings.get('diffusion_model_name', '')}",
+        }
+        pipe.model_kind = "qi2"
+        pipe.qi2_cache = {
+            "device": cache.get("device") if cache.get("device") in {"auto", "gpu", "cpu", "off"} else "gpu",
+            "dtype": cache.get("dtype") if cache.get("dtype") in {"default", "int8", "int4"} else "int8",
+        }
+        pipe.lora_entries = [dict(QI2_TURBO_ENTRY)]
+        pipe.lora_states = [{
+            "name": QI2_TURBO_ENTRY["name"],
+            "auto_apply": bool(gen_settings.get("turbo_enabled")),
+            "strength": float(gen_settings.get("dmd_lora_strength", 1.0) or 1.0),
+        }]
     return pipe, seed
 
 
@@ -225,13 +293,14 @@ def _load_sprite_tensor(path):
 
 def list_costume_sprite_paths(character, costume):
     """Return sorted current neutral/source sprite paths without decoding them."""
-    root = os.path.join(character_dir(character), "Sprites", costume)
+    costume = ensure_safe_name(costume, "costume")
+    root = safe_join_under(character_dir(character), "Sprites", costume)
     paths = []
     if os.path.isdir(root):
         neutral_paths = []
         seen_neutral_roots = set()
         for neutral_name in ("Neutral", "neutral"):
-            neutral_root = os.path.join(root, neutral_name)
+            neutral_root = safe_join_under(root, neutral_name)
             if not os.path.isdir(neutral_root):
                 continue
             neutral_key = os.path.normcase(os.path.abspath(neutral_root))
@@ -239,13 +308,13 @@ def list_costume_sprite_paths(character, costume):
                 continue
             seen_neutral_roots.add(neutral_key)
             neutral_paths.extend(
-                os.path.join(neutral_root, name)
+                safe_join_under(neutral_root, name)
                 for name in os.listdir(neutral_root)
                 if os.path.isfile(os.path.join(neutral_root, name))
                 and os.path.splitext(name)[1].lower() in IMAGE_EXTS
             )
         direct = [
-            os.path.join(root, name)
+            safe_join_under(root, name)
             for name in os.listdir(root)
             if os.path.isfile(os.path.join(root, name)) and os.path.splitext(name)[1].lower() in IMAGE_EXTS
         ]
@@ -283,12 +352,12 @@ def load_costume_sprite_images(character, costume, selected_pose_indices=None):
 
 
 def costume_has_source_sprites(character, costume):
-    root = os.path.join(character_dir(character), "Sprites", costume)
+    root = safe_join_under(character_dir(character), "Sprites", ensure_safe_name(costume, "costume"))
     if not os.path.isdir(root):
         return False
     search_roots = [
-        os.path.join(root, "Neutral"),
-        os.path.join(root, "neutral"),
+        safe_join_under(root, "Neutral"),
+        safe_join_under(root, "neutral"),
         root,
     ]
     seen = set()
@@ -298,7 +367,7 @@ def costume_has_source_sprites(character, costume):
             continue
         seen.add(folder_key)
         for name in os.listdir(folder):
-            path = os.path.join(folder, name)
+            path = safe_join_under(folder, name)
             if os.path.isfile(path) and os.path.splitext(name)[1].lower() in IMAGE_EXTS:
                 return True
     return False
@@ -329,9 +398,12 @@ if server:
             return web.Response(status=500, text=f"Error loading emotions.json: {e}")
 
     @server.PromptServer.instance.routes.post("/vnccs/add_custom_emotion")
+    @privileged_route
     async def add_custom_emotion(request):
         try:
             payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Emotion request must be an object")
             title = str(payload.get("name", "") or "").strip()
             if not title:
                 return web.json_response({"error": "Emotion name is required."}, status=400)
@@ -386,10 +458,13 @@ if server:
         if not character:
             return web.json_response([])
         
-        costumes = [
-            costume for costume in list_costumes(character)
-            if costume_has_source_sprites(character, costume)
-        ]
+        try:
+            costumes = [
+                costume for costume in list_costumes(character)
+                if costume_has_source_sprites(character, costume)
+            ]
+        except ValueError as error:
+            return web.json_response({"error": str(error)}, status=400)
         return web.json_response(costumes)
 
     @server.PromptServer.instance.routes.get("/vnccs/get_character_sheet_preview")
@@ -411,20 +486,19 @@ if server:
             img_byte_arr = io.BytesIO()
             img.save(img_byte_arr, format='PNG')
             return web.Response(body=img_byte_arr.getvalue(), content_type='image/png')
+        except ValueError as e:
+            return web.Response(status=400, text=str(e))
         except Exception as e:
             print(f"[VNCCS Emotion Studio] Failed to serve sprite preview: {e}")
             return web.Response(status=500)
 
     @server.PromptServer.instance.routes.get("/vnccs/get_emotion_image")
     async def get_emotion_image(request):
-        name = request.rel_url.query.get("name", "")
-        if not name or ".." in name or "/" in name or "\\" in name:
-            return web.Response(status=400)
-            
-        from urllib.parse import unquote
-        name = unquote(name).strip() 
-        
-        image_path = os.path.join(emotion_images_dir(), f"{name}.webp")
+        try:
+            name = ensure_safe_name(request.rel_url.query.get("name", ""), "emotion")
+            image_path = safe_join_under(emotion_images_dir(), f"{name}.webp")
+        except ValueError as error:
+            return web.Response(status=400, text=str(error))
 
         if not os.path.exists(image_path):
             return web.Response(status=404)
@@ -436,18 +510,21 @@ class EmotionGeneratorV2:
     
     EMOTIONS_DATA = None
     SAFE_NAME_MAP = None
+    EMOTIONS_FINGERPRINT = None
 
     def __init__(self):
         self._setup_emotions_data()
 
     @classmethod
     def _setup_emotions_data(cls):
-        if cls.SAFE_NAME_MAP is not None:
-            return
+        path = emotions_config_path()
+        fingerprint = file_fingerprint(path)
+        cached = cls.SAFE_NAME_MAP
+        if cached is not None and cls.EMOTIONS_FINGERPRINT == fingerprint:
+            return cached
 
         try:
-            config_path = os.path.join(get_custom_node_path(), "emotions-config", "emotions.json")
-            with open(config_path, 'r', encoding='utf-8') as f:
+            with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 
             safe_name_map = {}
@@ -460,10 +537,12 @@ class EmotionGeneratorV2:
                                 "natural_prompt": emotion.get('natural_prompt', ''),
                                 "category": category
                         }
-            cls.SAFE_NAME_MAP = safe_name_map
         except Exception as e:
             print(f"[VNCCS] ERROR: Failed to load emotions data: {e}")
-            cls.SAFE_NAME_MAP = {}
+            safe_name_map = {}
+        cls.SAFE_NAME_MAP = safe_name_map
+        cls.EMOTIONS_FINGERPRINT = fingerprint
+        return safe_name_map
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -473,7 +552,7 @@ class EmotionGeneratorV2:
 
         return {
             "required": {
-                "generation_model": (["Illustrious", "Anima"], {"default": "Anima"}),
+                "generation_model": (["Illustrious", "Anima", "QI2"], {"default": "Anima"}),
                 "generation_settings": ("STRING", {"default": json.dumps(default_generation_settings()), "multiline": False}),
                 "prompt_style": (["SDXL Style", "Anima"], {"default": "Anima"}),
                 "character": (characters, {"default": characters[0] if characters else "Character Name"}),
@@ -489,7 +568,29 @@ class EmotionGeneratorV2:
     FUNCTION = "generate_emotions_v2"
     CATEGORY = "VNCCS"
 
+    @classmethod
+    def IS_CHANGED(cls, character="Character Name", costumes_data="[]", **kwargs):
+        paths = [config_path(character), emotions_config_path()]
+        for costume in json.loads(costumes_data):
+            paths.extend(list_costume_sprite_paths(character, costume))
+        return json.dumps([file_fingerprint(path) for path in paths])
+
     def generate_emotions_v2(self, generation_model="Anima", generation_settings="{}", prompt_style="Anima", character="Character Name", costumes_data="[]", emotions_data="[]"):
+        info = load_character_info(character)
+        if not isinstance(info, dict) or not info:
+            raise ValueError(f"Character profile missing for '{character}'. Save the character in Creator or Cloner before generating emotions.")
+        selected_costumes = json.loads(costumes_data)
+        if not isinstance(selected_costumes, list):
+            raise ValueError("Selected costumes must be a list")
+        for costume in selected_costumes:
+            ensure_safe_name(costume, "costume")
+            load_costume_info(character, costume)
+        selected_emotions = json.loads(emotions_data)
+        if not isinstance(selected_emotions, list):
+            raise ValueError("Selected emotions must be a list")
+        for emotion in selected_emotions:
+            ensure_safe_name(emotion, "emotion")
+        emotion_map = self._setup_emotions_data()
         pipe, pipe_seed = build_emotion_pipe(generation_model, generation_settings)
         mode = str(generation_model or "Anima").lower()
         effective_prompt_style = "Anima" if mode == "anima" else "SDXL Style"
@@ -510,26 +611,13 @@ class EmotionGeneratorV2:
                 if index > 0:
                     selected_pose_indices.add(index)
         
-        try:
-            selected_costumes = json.loads(costumes_data)
-        except:
-            selected_costumes = []
         selected_costumes = [
             costume for costume in selected_costumes
             if costume_has_source_sprites(character, costume)
         ]
 
-        try:
-            selected_emotions = json.loads(emotions_data)
-        except:
-            selected_emotions = []
-
         # --- SETUP ---
-        if self.SAFE_NAME_MAP is None:
-            self._setup_emotions_data()
-            
         character_path = character_dir(character)
-        info = load_character_info(character)
         images = []
         emotion_data = []
         
@@ -581,7 +669,7 @@ class EmotionGeneratorV2:
 
             for emotion_key in selected_emotions:
                 
-                emotion_details_data = self.SAFE_NAME_MAP.get(emotion_key)
+                emotion_details_data = emotion_map.get(emotion_key)
                 if not emotion_details_data:
                     print(f"Warning: Unknown emotion key {emotion_key}")
                     emotion_description = "unknown emotion"
@@ -615,7 +703,13 @@ class EmotionGeneratorV2:
                 if costume_details:
                     face_details = f"{face_details}, {costume_details}" if face_details else costume_details
                 
-                if effective_prompt_style == "Anima":
+                if mode == "qi2":
+                    emotion_text = build_anima_emotion_prompt(
+                        natural_prompt,
+                        emotion_description,
+                        emotion_key,
+                    )
+                elif effective_prompt_style == "Anima":
                     if face_details:
                         positive_prompt += f", Character face details: {face_details}"
                     emotion_text = build_anima_emotion_prompt(natural_prompt, emotion_description, emotion_key)

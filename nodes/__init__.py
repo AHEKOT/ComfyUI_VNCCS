@@ -11,6 +11,7 @@ try:
     from .sheet_manager import NODE_CLASS_MAPPINGS as SHEET_MANAGER_MAPPINGS
     from .sprite_generator import NODE_CLASS_MAPPINGS as SPRITE_GENERATOR_MAPPINGS
     from .vnccs_pipe import NODE_CLASS_MAPPINGS as VNCCS_PIPE_MAPPINGS
+    # Keep the standalone encoder registered for existing workflows.
     from .vnccs_qwen_encoder import NODE_CLASS_MAPPINGS as VNCCS_QWEN_ENCODER_MAPPINGS
     from .vnccs_flux_klein_encoder import NODE_CLASS_MAPPINGS as VNCCS_FLUX_KLEIN_ENCODER_MAPPINGS
     from .sampler_scheduler_picker import NODE_CLASS_MAPPINGS as SAMPLER_SCHEDULER_PICKER_MAPPINGS
@@ -23,6 +24,7 @@ try:
     from .character_generator import NODE_CLASS_MAPPINGS as CHARACTER_GENERATOR_MAPPINGS
     from .service_nodes import NODE_CLASS_MAPPINGS as SERVICE_NODES_MAPPINGS
     from .character_creator_v2 import NODE_CLASS_MAPPINGS as CHARACTER_CREATOR_V2_MAPPINGS
+    from .style_preview_test import NODE_CLASS_MAPPINGS as STYLE_PREVIEW_TEST_MAPPINGS
     from .character_cloner import NODE_CLASS_MAPPINGS as CHARACTER_CLONER_MAPPINGS
     from .clothes_designer import NODE_CLASS_MAPPINGS as CLOTHES_DESIGNER_MAPPINGS
     from .migration_assistant import NODE_CLASS_MAPPINGS as MIGRATION_ASSISTANT_MAPPINGS
@@ -50,6 +52,7 @@ try:
     from .character_generator import NODE_DISPLAY_NAME_MAPPINGS as CHARACTER_GENERATOR_DISPLAY_MAPPINGS
     from .service_nodes import NODE_DISPLAY_NAME_MAPPINGS as SERVICE_NODES_DISPLAY_MAPPINGS
     from .character_creator_v2 import NODE_DISPLAY_NAME_MAPPINGS as CHARACTER_CREATOR_V2_DISPLAY_MAPPINGS
+    from .style_preview_test import NODE_DISPLAY_NAME_MAPPINGS as STYLE_PREVIEW_TEST_DISPLAY_MAPPINGS
     from .character_cloner import NODE_DISPLAY_NAME_MAPPINGS as CHARACTER_CLONER_DISPLAY_MAPPINGS
     from .clothes_designer import NODE_DISPLAY_NAME_MAPPINGS as CLOTHES_DESIGNER_DISPLAY_MAPPINGS
     from .migration_assistant import NODE_DISPLAY_NAME_MAPPINGS as MIGRATION_ASSISTANT_DISPLAY_MAPPINGS
@@ -78,6 +81,7 @@ try:
         **CHARACTER_GENERATOR_MAPPINGS,
         **SERVICE_NODES_MAPPINGS,
         **CHARACTER_CREATOR_V2_MAPPINGS,
+        **STYLE_PREVIEW_TEST_MAPPINGS,
         **CHARACTER_CLONER_MAPPINGS,
         **CLOTHES_DESIGNER_MAPPINGS,
         **MIGRATION_ASSISTANT_MAPPINGS,
@@ -106,6 +110,7 @@ try:
         **CHARACTER_GENERATOR_DISPLAY_MAPPINGS,
         **SERVICE_NODES_DISPLAY_MAPPINGS,
         **CHARACTER_CREATOR_V2_DISPLAY_MAPPINGS,
+        **STYLE_PREVIEW_TEST_DISPLAY_MAPPINGS,
         **CHARACTER_CLONER_DISPLAY_MAPPINGS,
         **CLOTHES_DESIGNER_DISPLAY_MAPPINGS,
         **MIGRATION_ASSISTANT_DISPLAY_MAPPINGS,
@@ -115,8 +120,7 @@ except Exception as e:
     import traceback
     print(f"❌ [VNCCS] CRITICAL REGISTRATION ERROR in nodes/__init__.py: {e}")
     traceback.print_exc()
-    NODE_CLASS_MAPPINGS = {}
-    NODE_DISPLAY_NAME_MAPPINGS = {}
+    raise RuntimeError(f"[VNCCS] Node registration failed: {e}") from e
 
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']

@@ -212,6 +212,18 @@ class TestProcessPipeLoaderContext:
         result = self._run(pipe)
         assert result[9].model_entry is entry
 
+    def test_propagates_h3_family_and_audio_vae(self):
+        audio_vae = object()
+        pipe = _make_pipe(model_kind="minimaxh3", audio_vae=audio_vae)
+        result = self._run(pipe)
+        assert result[9].model_kind == "minimaxh3"
+        assert result[9].audio_vae is audio_vae
+
+    def test_propagates_qi2_cache_settings(self):
+        pipe = _make_pipe(model_kind="qi2", qi2_cache={"device": "cpu", "dtype": "int4"})
+        result = self._run(pipe)
+        assert result[9].qi2_cache == {"device": "cpu", "dtype": "int4"}
+
 
 # ── return tuple shape ────────────────────────────────────────────────────────
 

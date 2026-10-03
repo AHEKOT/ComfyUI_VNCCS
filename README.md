@@ -64,11 +64,11 @@ Open the workflow:
 Let's start from the very beginning. The first thing you need to do, besides opening the workflow, silly, is figure out the **VNCCS Control Center**.
 ![Header](images/v3/ReadMe1.png)
 
-Inside it, you will find all the models used in the workflow. Choose the one that fits your computer and press **Download**.
+Inside it, you will find the models that turn your character into different poses and outfits. Choose the one that fits your computer and press **Download**.
 
-- **Q4** is light, but in some places the result may be a little less fancy.
-- **Q5** is a great balance between quality and performance.
-- **Q8** is the heaviest one, but it will make you the best characters.
+- **Qwen Image 2.1** works from your character image to change poses and clothes. It can even give you a transparent background. Less green-screen trouble, yay!
+- **Flux Klein9b** makes your sprites in just 4 steps. Want less waiting while trying poses and outfits? Give it a try!
+- **MiniMax H3** is a video model, but here it helps you make character sprites! Try it for poses and clothes too, and see which result you like more.
 
 Choose wisely, but in the end nobody is stopping you from trying them all and deciding later.
 
@@ -83,16 +83,20 @@ The most important thing here is to create a new character and choose the model 
 
 **Anima** is a new and cool model. It can do almost everything, but it will need a bit more resources, and there are not as many LoRAs for it yet.
 
-I recommend trying both and deciding for yourself.
+**Qwen Image 2.1** is here too! It can create your character with a transparent background, and the **Turbo** option cuts down the number of generation steps. More time to try different characters, hehe!
+
+I recommend trying all three and deciding for yourself.
 
 Right now you do not have any characters yet, so press **NEW** and give him or her a name! The name is very important!!! Be creative and unique!
 
 Done? Good job! Now you have two paths:
 
-1. Manually enter tags. The pencil icons above the fields are tag builders, and they will help you. Choose sex, age, and generation type. The **NSFW** switch controls whether the base character will have clothes or not :3
+1. Enter character descriptions or use the pencil buttons to choose curated presets for race, skin tone, body type, face, hair, eyes, and details. Choose sex, age, and generation type. The **NSFW** switch controls whether the base character will have clothes or not :3
 2. Press **CHARACTER WIZZARD**, describe the character you want, and after a little magic the system will set all the needed options by itself. Do not forget to check them!
 
-A new little feature is the **GENERATE PREVIEW** button. It lets you see what the character will look like without restarting the whole generation. So press it already, and if you like everything, move on. If you want to make changes, edit the tags and press it again!
+Race presets include natural-language descriptions of their distinctive anatomy, added automatically to generation prompts in Illustrious, Anima, and Qwen Image 2.1. Select multiple species for hybrids, or enter custom traits; the prompt gives explicit character traits priority over preset defaults. Existing character fields and custom text remain supported. Breast-size presets retain their original tags. Creator V2 uses `character_template/character_presets_v2.json`; the legacy catalog remains available to Character Cloner.
+
+A new little feature is the **GENERATE PREVIEW** button. It lets you see what the character will look like without restarting the whole generation. So press it already, and if you like everything, move on. If you want to make changes, edit the descriptions and press it again!
 
 ## VNCCS Pose Studio
 
@@ -180,10 +184,12 @@ After that, you again need to decide which model will do the generation.
 
 **Anima** makes very cool emotions, but it is still too young, so it can be unstable. It can change character details too much, so try it yourself and decide what you like better.
 
+**Qwen Image 2.1** can make emotions too! It works on the face and puts it back into your sprite, keeping the rest of the image in place. Describe the expression you want and give it a try!
+
 ![Header](images/v3/ReadMe9.png)
 
 
-In **VNCCS Emotions Generator**, the most important setting is **Face Detailer Denoise**. It will suggest optimal values by itself, but remember one basic idea: the higher the denoise, the more the original image changes.
+If you chose **Illustrious** or **Anima**, the most important setting in **VNCCS Emotions Generator** is **Face Detailer Denoise**. It will suggest optimal values by itself, but remember one basic idea: the higher the denoise, the more the original image changes.
 
 More denoise means a brighter emotion, but the character may stop looking like themselves.
 

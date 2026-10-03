@@ -1,11 +1,42 @@
 """VNCCS - Visual Novel Character Creator Suite for ComfyUI."""
 
+import importlib.util
 import os, json, inspect
+import sys
 import traceback
 
 print("[VNCCS] Automatic legacy migration is disabled. Use the VNCCS Migration Assistent node to migrate legacy sheets.")
 
-from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+def _runtime_module_available(name):
+    if name in sys.modules:
+        return True
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+if (
+    _runtime_module_available("torch")
+    and _runtime_module_available("comfy")
+    and _runtime_module_available("folder_paths")
+):
+    _nodes_module_name = f"{__name__}.nodes"
+    _preloaded_nodes = sys.modules.get(_nodes_module_name)
+    if _preloaded_nodes is not None and getattr(_preloaded_nodes, "__file__", None) is None:
+        # Some custom-node loaders may pre-register this path as a namespace package.
+        # Remove that placeholder so the regular relative import executes nodes/__init__.py.
+        sys.modules.pop(_nodes_module_name, None)
+
+    from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+
+    if not NODE_CLASS_MAPPINGS:
+        raise RuntimeError("VNCCS node registration returned no nodes. Check the preceding registration traceback.")
+else:
+    # Package discovery and source-analysis tools do not provide a ComfyUI runtime.
+    # Keep importing metadata possible without importing model dependencies such as torch.
+    NODE_CLASS_MAPPINGS = {}
+    NODE_DISPLAY_NAME_MAPPINGS = {}
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
 
@@ -19,6 +50,10 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         from aiohttp import web
     except Exception:
         return
+
+    if getattr(PromptServer.instance, "app", None) is not None:
+        from .nodes.http_state import install_cache_policy
+        install_cache_policy(PromptServer.instance)
 
     @PromptServer.instance.routes.get("/vnccs/config")
     async def vnccs_get_config(request):
@@ -91,9 +126,23 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
                 "detail": str(e),
             }, status=500)
 
+    @PromptServer.instance.routes.post("/vnccs/create")
     @PromptServer.instance.routes.get("/vnccs/create")
     async def vnccs_create_character(request):
-        name = request.rel_url.query.get("name", "").strip()
+        try:
+            from .utils import validate_privileged_request
+            validate_privileged_request(request)
+        except ValueError as error:
+            return web.json_response({"error": str(error)}, status=403)
+        if getattr(request, "method", "GET") == "POST":
+            try:
+                data = await request.json()
+                name = str(data.get("name", "")).strip()
+            except (ValueError, TypeError, AttributeError):
+                return web.json_response({"error": "Invalid create request"}, status=400)
+        else:
+            # Compatibility for older extensions; responses are explicitly no-store.
+            name = request.rel_url.query.get("name", "").strip()
         if not name:
             return web.json_response({"error": "name required"}, status=400)
         try:
@@ -120,20 +169,16 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             lora_prompt="",
             new_character_name=name,
         )
+        if getattr(request, "method", "GET") == "POST" and data.get("catalog") == "creator_v2":
+            defaults["hair"] = "black hair, waist-length hair"
         try:
             from .nodes.character_creator import CharacterCreator
-            from .utils import base_output_dir, safe_join_under
+            from .utils import base_output_dir, load_config
             cc = CharacterCreator()
             base_path = base_output_dir()
             os.makedirs(base_path, exist_ok=True)
-            base_char_dir = safe_join_under(base_path, name)
-            config_path = os.path.join(base_char_dir, f"{name}_config.json")
-            if os.path.exists(config_path):
-                try:
-                    with open(config_path, 'r', encoding='utf-8') as f:
-                        existing_data = json.load(f)
-                except Exception:
-                    existing_data = None
+            existing_data = load_config(name, strict=True)
+            if existing_data is not None:
                 return web.json_response({
                     "ok": True,
                     "name": name,

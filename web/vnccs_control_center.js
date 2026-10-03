@@ -1,11 +1,10 @@
 // web/vnccs_control_center.js
 import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
+import { vnccsApi as api, storage, sessionStore, serverRegistry } from "./vnccs_transport.js";
 import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
 
 // Global registry cache — prevents API storms when multiple CC nodes exist
-window.VNCCS_CC_REGISTRY = window.VNCCS_CC_REGISTRY || {};
-window.VNCCS_CC_FETCH_PROMISES = window.VNCCS_CC_FETCH_PROMISES || {};
+
 
 const INITIAL_NODE_W = 300;
 const INITIAL_NODE_H = 700;
@@ -25,9 +24,11 @@ const DEFAULT_MODEL_STEPS = 4;
 const DEFAULT_MODEL_CFG = 1.0;
 const DEFAULT_MODEL_SCHEDULER = "simple";
 const PENDING_DEPENDENCY_INSTALLS_KEY = "vnccs-control-center-pending-dependency-installs";
+const DEFAULT_QI2_MODEL = "Qwen Image 2.1 INT8 ConvRot";
 const MODEL_FAMILIES = [
-    { kind: "QIE2511", label: "QIE2511", defaultType: "gguf" },
-    { kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet" },
+    { kind: "QI2", label: "Qwen Image 2.1", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 25, cfg: 3, sampler: "euler" },
+    { kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 4, sampler: "euler" },
+    { kind: "MiniMaxH3", label: "MiniMax H3", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 20, sampler: "res_multistep" },
 ];
 
 // ─── CSS injection (once per page load) ──────────────────────────────────────
@@ -86,7 +87,7 @@ function _injectVNCCSControlCenterStyles() {
     transition: all 0.18s ease;
     line-height: 1.4;
 }
-.vnccs-cc-btn:hover {
+.vnccs-cc-btn:hover:where(:not(.vnccs-cc-btn--active):not(.vnccs-cc-btn--clip-active):not(.vnccs-cc-btn--cnet-active)) {
     background: rgba(255,143,163,0.1);
     border-color: rgba(255,143,163,0.3);
     color: #ff8fa3;
@@ -289,7 +290,7 @@ function _injectVNCCSControlCenterStyles() {
     position: relative;
     overflow: hidden;
 }
-.vnccs-cc-row:hover {
+.vnccs-cc-row:hover:not(.vnccs-cc-row--model-sel):not(.vnccs-cc-row--clip-sel):not(.vnccs-cc-row--cnet-sel) {
     background: rgba(34,34,46,0.7);
 }
 .vnccs-cc-row-bg {
@@ -382,7 +383,7 @@ function _injectVNCCSControlCenterStyles() {
 }
 .vnccs-cc-family-tabs {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 5px;
     padding: 6px;
     margin-bottom: 6px;
@@ -401,7 +402,7 @@ function _injectVNCCSControlCenterStyles() {
     letter-spacing: 0;
     cursor: pointer;
 }
-.vnccs-cc-family-tab:hover {
+.vnccs-cc-family-tab:hover:not(.vnccs-cc-family-tab--active) {
     border-color: rgba(255,143,163,0.3);
     color: #f4c2ce;
 }
@@ -431,7 +432,7 @@ function _injectVNCCSControlCenterStyles() {
     cursor: pointer;
     transition: all 0.18s ease;
 }
-.vnccs-cc-model-tab:hover {
+.vnccs-cc-model-tab:hover:not(.vnccs-cc-model-tab--active) {
     border-color: rgba(255,143,163,0.28);
     color: #f4c2ce;
 }
@@ -511,6 +512,18 @@ function _injectVNCCSControlCenterStyles() {
     color: #ff8fa3;
     padding: 0 2px;
 }
+.vnccs-cc-cache-strip {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    padding: 9px 12px 10px;
+    border-radius: 10px;
+    border: 1px solid rgba(184,169,232,0.18);
+    background: linear-gradient(135deg, rgba(184,169,232,0.08) 0%, rgba(18,18,26,0.8) 100%);
+}
+.vnccs-cc-cache-strip .vnccs-cc-select {
+    min-height: 28px;
+}
 .vnccs-cc-turbo-strip {
     display: flex;
     align-items: center;
@@ -524,7 +537,7 @@ function _injectVNCCSControlCenterStyles() {
     position: relative;
 }
 .vnccs-cc-turbo-strip.is-installed { cursor: pointer; }
-.vnccs-cc-turbo-strip.is-installed:hover {
+.vnccs-cc-turbo-strip.is-installed:hover:not(.is-active) {
     border-color: rgba(255,143,163,0.28);
 }
 .vnccs-cc-turbo-strip.is-active {
@@ -668,7 +681,7 @@ function _injectVNCCSControlCenterStyles() {
     cursor: pointer;
     transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
 }
-.vnccs-cc-lora-card:hover {
+.vnccs-cc-lora-card:hover:not(.vnccs-cc-lora-card--active) {
     border-color: rgba(255,143,163,0.32);
     transform: translateY(-1px);
 }
@@ -1258,7 +1271,7 @@ class VNCCSControlCenterWidget {
         this._dependencyRefreshSeq = 0;
         this._draggingLoraSlider = false;
         this._onGlobalPointerUp = null;
-        this.downloadStartTimes = {};  // for fake progress bars
+        this._downloadRefreshPending = false;
         this._samplers   = DEFAULT_SAMPLERS;
         this._schedulers = DEFAULT_SCHEDULERS;
         this.pollingInterval = null;
@@ -1294,8 +1307,8 @@ class VNCCSControlCenterWidget {
             }
             const repoId = e.detail?.repo_id;
             const myRepo = this._getRepoId();
-            if (repoId && repoId === myRepo && window.VNCCS_CC_REGISTRY[repoId]) {
-                this.config = window.VNCCS_CC_REGISTRY[repoId];
+            if (repoId && repoId === myRepo && serverRegistry("VNCCS_CC_REGISTRY")[repoId]) {
+                this.config = serverRegistry("VNCCS_CC_REGISTRY")[repoId];
                 this._syncCustomModelInput();
                 if (!this._isUserInteracting()) this._renderAll();
             }
@@ -1309,16 +1322,15 @@ class VNCCSControlCenterWidget {
     }
 
     _getModelTypeTabs() {
-        // TECH DEBT: Nunchaku/NVFP entries can remain in old catalogs/state, but
-        // are intentionally hidden from the Control Center UI. Delete this after
-        // catalogs are cleaned and old workflow JSON is migrated.
+        // Only supported model types are selectable for the active family.
         const activeKind = this._activeKind();
-        const preferred = activeKind === "Klein9b" ? ["unet", "custom"] : ["gguf", "custom"];
+        const preferred = this._familyDefinition(activeKind).preferredTypes;
         const available = new Set((this.config?.models ?? [])
             .filter(entry => this._metaKind(entry).toLowerCase() === activeKind.toLowerCase())
             .map(entry => entry.type)
             .filter(Boolean));
         available.add("custom");
+        if (activeKind === "QI2") available.add("unet");
         const preferredTabs = preferred.filter(type => available.has(type));
         return preferredTabs.length ? preferredTabs : Array.from(available);
     }
@@ -1335,11 +1347,15 @@ class VNCCSControlCenterWidget {
         return (this.node.inputs ?? []).findIndex(input => input?.name === "vae");
     }
 
+    _getCustomAudioVaeInputIndex() {
+        return (this.node.inputs ?? []).findIndex(input => input?.name === "audio_vae");
+    }
+
     _getStoredSelectedType() {
         const kind = this._activeKind();
         const selectedForKind = this.state.selected_types_by_kind?.[kind];
         if (selectedForKind) return selectedForKind;
-        return kind === "QIE2511" ? (this.state.selected_type || "") : "";
+        return kind === "QI2" ? (this.state.selected_type || "") : "";
     }
 
     _syncCustomModelInput() {
@@ -1369,6 +1385,7 @@ class VNCCSControlCenterWidget {
         sync("model", "MODEL", this._getCustomModelInputIndex, isCustom);
         sync("clip", "CLIP", this._getCustomClipInputIndex, isCustom);
         sync("vae", "VAE", this._getCustomVaeInputIndex, isCustom);
+        sync("audio_vae", "VAE", this._getCustomAudioVaeInputIndex, isCustom && this._activeKind() === "MiniMaxH3");
     }
 
     _setSelectedType(nextType) {
@@ -1425,8 +1442,10 @@ class VNCCSControlCenterWidget {
     _getRepoId()     { return (this.node.widgets?.find(w => w.name === "repo_id")?.value ?? "").trim(); }
     _getStateWidget(){ return this.node.widgets?.find(w => w.name === "node_state"); }
     _activeKind() {
-        const kind = String(this.state.active_kind || "QIE2511");
-        return MODEL_FAMILIES.some(entry => entry.kind === kind) ? kind : "QIE2511";
+        const rawKind = String(this.state.active_kind || "QI2");
+        const compactKind = rawKind.toLowerCase().replace(/[^a-z0-9]/g, "");
+        const kind = compactKind === "h3" || compactKind === "minimaxh3" ? "MiniMaxH3" : rawKind;
+        return MODEL_FAMILIES.some(entry => entry.kind === kind) ? kind : "QI2";
     }
 
     _familyDefinition(kind = this._activeKind()) {
@@ -1436,7 +1455,7 @@ class VNCCSControlCenterWidget {
     _getSelectedType(){
         const visibleTabs = this._getModelTypeTabs();
         const selected = this.state.selected_types_by_kind?.[this._activeKind()]
-            ?? (this._activeKind() === "QIE2511" ? this.state.selected_type : "");
+            ?? (this._activeKind() === "QI2" ? this.state.selected_type : "");
         if (selected && visibleTabs.includes(selected)) return selected;
         const preferred = this._familyDefinition().defaultType;
         return visibleTabs.includes(preferred) ? preferred : (visibleTabs[0] || "");
@@ -1446,7 +1465,11 @@ class VNCCSControlCenterWidget {
         const selectedByType = this.state.selected_models ?? {};
         const familyKey = `${this._activeKind()}:${type}`;
         if (selectedByType[familyKey]) return selectedByType[familyKey];
-        if (this._activeKind() === "QIE2511") return selectedByType[type] ?? this.state.selected_model ?? "";
+        if (this._activeKind() === "QI2") {
+            const legacy = this.state.selected_model;
+            if (legacy && this._visibleModelsByType(type).some(entry => entry.name === legacy)) return legacy;
+            return type === "unet" ? (this._visibleModelsByType(type)[0]?.name || DEFAULT_QI2_MODEL) : "";
+        }
         return "";
     }
 
@@ -1454,7 +1477,6 @@ class VNCCSControlCenterWidget {
         if (!type || !modelName) return;
         if (!this.state.selected_models) this.state.selected_models = {};
         this.state.selected_models[`${this._activeKind()}:${type}`] = modelName;
-        if (this._activeKind() === "QIE2511") this.state.selected_models[type] = modelName;
         if (type === this._getSelectedType()) {
             this.state.selected_model = modelName;
         }
@@ -1473,21 +1495,26 @@ class VNCCSControlCenterWidget {
         const contextType = this._familyDefinition().defaultType;
         const variants = this._visibleModelsByType(contextType);
         const selectedModel = this._getSelectedModelName(contextType);
-        return variants.find(m => m.name === selectedModel) ?? variants[0] ?? null;
+        return variants.find(m => m.name === selectedModel) ?? variants[0] ?? {
+            name: `Custom ${this._activeKind()}`,
+            type: "custom",
+            kind: this._activeKind(),
+            custom: true,
+        };
     }
 
     _visibleModelsByType(type) {
-        // TECH DEBT: Nunchaku and NVFP/UNet entries are still present in
-        // control_center.json for future use, but hidden from the UI for now.
         if (type === "custom") return [];
         const activeKind = this._activeKind().toLowerCase();
         return (this.config?.models || []).filter(m =>
             (!m.type || m.type === type) && this._metaKind(m).toLowerCase() === activeKind
-        );
+        ).sort((a, b) => Number(b.name === DEFAULT_QI2_MODEL) - Number(a.name === DEFAULT_QI2_MODEL));
     }
 
     _metaKind(entry) {
-        return String(entry?.kind ?? entry?.Kind ?? "").trim();
+        const value = String(entry?.kind ?? entry?.Kind ?? "").trim();
+        const compact = value.toLowerCase().replace(/[^a-z0-9]/g, "");
+        return compact === "h3" || compact === "minimaxh3" ? "MiniMaxH3" : value;
     }
 
     _metaType(entry) {
@@ -1521,15 +1548,12 @@ class VNCCSControlCenterWidget {
         if (!this.state.model_params_by_kind) this.state.model_params_by_kind = {};
         const kind = this._activeKind();
         if (!this.state.model_params_by_kind[kind]) {
-            const legacy = kind === "QIE2511" && this.state.model_params
-                ? this.state.model_params
-                : {};
+            const family = this._familyDefinition(kind);
             this.state.model_params_by_kind[kind] = {
-                steps: DEFAULT_MODEL_STEPS,
-                cfg: DEFAULT_MODEL_CFG,
-                sampler: "euler",
+                steps: family.steps ?? DEFAULT_MODEL_STEPS,
+                cfg: family.cfg ?? DEFAULT_MODEL_CFG,
+                sampler: family.sampler ?? "euler",
                 scheduler: DEFAULT_MODEL_SCHEDULER,
-                ...legacy,
             };
         }
         return this.state.model_params_by_kind[kind];
@@ -1558,6 +1582,7 @@ class VNCCSControlCenterWidget {
         this._syncCustomModelInput();
         this._saveState();
         this._renderAll();
+        this.scrollArea?.querySelector(`.vnccs-cc-family-tab[data-kind="${kind}"]`)?.focus({ preventScroll: true });
         this._scheduleDependencyRefresh(true);
     }
 
@@ -1588,7 +1613,7 @@ class VNCCSControlCenterWidget {
                 steps: params.steps ?? DEFAULT_MODEL_STEPS,
                 cfg: params.cfg ?? DEFAULT_MODEL_CFG,
             };
-            params.steps = 4;
+            params.steps = this._activeKind() === "QI2" ? 6 : 4;
             params.cfg = 1.0;
             return;
         }
@@ -1622,6 +1647,9 @@ class VNCCSControlCenterWidget {
         if (w) w.value = JSON.stringify(this.state);
         this.node.setDirtyCanvas(true, true);
         this._dispatchLoraOptions();
+        window.dispatchEvent(new CustomEvent("vnccs-control-center-model-changed", {
+            detail: { node_id: this.node.id },
+        }));
     }
 
     _dispatchLoraOptions() {
@@ -1655,10 +1683,17 @@ class VNCCSControlCenterWidget {
             const selectedType = this.state.selected_type;
             this.state.selected_models = selectedType ? { [selectedType]: this.state.selected_model } : {};
         }
+        if (this.state.active_kind === "QIE2511" ||
+            (!this.state.active_kind && String(this.state.selected_model || "").includes("2511"))) {
+            this.state.unsupported_model_kind = "QIE2511";
+            this.state.active_kind = "QI2";
+            this.state.selected_type = "unet";
+            this.state.selected_model = DEFAULT_QI2_MODEL;
+        }
         this.state.active_kind = this._activeKind();
         if (!this.state.selected_types_by_kind) this.state.selected_types_by_kind = {};
-        if (!this.state.selected_types_by_kind.QIE2511 && this.state.selected_type) {
-            this.state.selected_types_by_kind.QIE2511 = this.state.selected_type;
+        if (!this.state.selected_types_by_kind.QI2 && this.state.selected_type) {
+            this.state.selected_types_by_kind.QI2 = this.state.selected_type;
         }
         // Control Center now exposes a single pipe output.
         this.state.output_slot_names = [];
@@ -1809,22 +1844,25 @@ class VNCCSControlCenterWidget {
                 const newStatuses = await r.json();
 
                 // Detect transitions to "success" → re-fetch config to update disk state
-                let needsRefresh = false;
                 for (const key in newStatuses) {
                     const s = newStatuses[key];
                     const old = this.dlStatus[key];
                     if (s?.status === "success" && old?.status !== "success") {
-                        needsRefresh = true;
+                        this._downloadRefreshPending = true;
                         break;
                     }
                 }
 
                 this.dlStatus = newStatuses;
+                this._updateDownloadIndicators();
 
                 if (this._isUserInteracting()) return;
-                if (needsRefresh) {
+                if (this._downloadRefreshPending) {
                     const repo = this._getRepoId();
-                    if (repo) this.fetchConfig(repo);
+                    if (repo) {
+                        this._downloadRefreshPending = false;
+                        await this.fetchConfig(repo);
+                    }
                 } else {
                     this._renderAll();
                 }
@@ -2013,19 +2051,17 @@ class VNCCSControlCenterWidget {
     _storePendingDependencyInstalls(items) {
         const keys = this._pendingDependencyKeys(items);
         if (!keys.length) return;
-        try {
-            sessionStorage.setItem(PENDING_DEPENDENCY_INSTALLS_KEY, JSON.stringify(keys));
-        } catch { /* private browsing may disable session storage */ }
+        sessionStore.setItem(PENDING_DEPENDENCY_INSTALLS_KEY, JSON.stringify(keys));
     }
 
     async _resumePendingDependencyInstalls(items) {
         let keys = [];
         try {
-            keys = JSON.parse(sessionStorage.getItem(PENDING_DEPENDENCY_INSTALLS_KEY) || "[]");
-            sessionStorage.removeItem(PENDING_DEPENDENCY_INSTALLS_KEY);
+            keys = JSON.parse(sessionStore.getItem(PENDING_DEPENDENCY_INSTALLS_KEY) || "[]");
         } catch {
-            try { sessionStorage.removeItem(PENDING_DEPENDENCY_INSTALLS_KEY); } catch { /* ignored */ }
+            keys = [];
         }
+        sessionStore.removeItem(PENDING_DEPENDENCY_INSTALLS_KEY);
         if (!Array.isArray(keys) || !keys.length) return false;
 
         const allowedKeys = new Set(keys.filter(key => typeof key === "string"));
@@ -2623,13 +2659,13 @@ class VNCCSControlCenterWidget {
         const cacheKey = `vnccs_cc_cache_${repoId}`;
 
         if (force) {
-            delete window.VNCCS_CC_REGISTRY[repoId];
-            localStorage.removeItem(cacheKey);
+            delete serverRegistry("VNCCS_CC_REGISTRY")[repoId];
+            storage.removeItem(cacheKey);
         }
 
         // Show cached data immediately while fetching fresh
-        if (!force && window.VNCCS_CC_REGISTRY[repoId]) {
-            this.config = window.VNCCS_CC_REGISTRY[repoId];
+        if (!force && serverRegistry("VNCCS_CC_REGISTRY")[repoId]) {
+            this.config = serverRegistry("VNCCS_CC_REGISTRY")[repoId];
             this.statusText.textContent = this.config.name || "Control Center";
             if (!this.state.output_slot_names) this.state.output_slot_names = [];
             this._syncCustomModelInput();
@@ -2638,9 +2674,9 @@ class VNCCSControlCenterWidget {
         }
 
         // Debounce: reuse in-flight fetch for same repo
-        if (!force && window.VNCCS_CC_FETCH_PROMISES[repoId]) {
+        if (!force && serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId]) {
             try {
-                const data = await window.VNCCS_CC_FETCH_PROMISES[repoId];
+                const data = await serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId];
                 this.config = data;
                 this.statusText.textContent = data.name || "Control Center";
                 if (!this.state.output_slot_names) this.state.output_slot_names = [];
@@ -2657,20 +2693,20 @@ class VNCCSControlCenterWidget {
                 const r = await api.fetchApi(url);
                 const data = await r.json();
                 if (data.error) throw new Error(data.error);
-                window.VNCCS_CC_REGISTRY[repoId] = data;
+                serverRegistry("VNCCS_CC_REGISTRY")[repoId] = data;
                 return data;
             } finally {
-                delete window.VNCCS_CC_FETCH_PROMISES[repoId];
+                delete serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId];
             }
         })();
 
-        window.VNCCS_CC_FETCH_PROMISES[repoId] = fetchPromise;
+        serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId] = fetchPromise;
 
         try {
             const data = await fetchPromise;
             this.config = data;
             this.statusText.textContent = data.name || "Control Center";
-            localStorage.setItem(cacheKey, JSON.stringify(data));
+            storage.setItem(cacheKey, JSON.stringify(data));
             this._syncCnetSlots(data);
             this._syncCustomModelInput();
             await this._refreshDependencyStatus(true);
@@ -2712,12 +2748,17 @@ class VNCCSControlCenterWidget {
         if (status === "outdated") return "↑ Update";
         if (status === "queued") return "⏳ Queued";
         if (status === "downloading") return dls.message || "Downloading…";
+        if (status === "error") return dls.message || "Download failed";
         if (status === "auth_required") return "⚠ Key Required";
         return "↓ Missing";
     }
 
     _renderAll() {
         if (!this.config) return;
+        const renderSequence = (this._renderSequence ?? 0) + 1;
+        this._renderSequence = renderSequence;
+        const previousScrollTop = this.scrollArea.scrollTop;
+        const previousScrollLeft = this.scrollArea.scrollLeft;
         this.scrollArea.innerHTML = "";
 
         // TECH DEBT: legacy Nunchaku error rendering disabled. Delete after
@@ -2750,6 +2791,19 @@ class VNCCSControlCenterWidget {
         }
 
         this.scrollArea.appendChild(this._renderFamilyTabs());
+        if (this.state.unsupported_model_kind === "QIE2511") {
+            const notice = document.createElement("div");
+            notice.className = "vnccs-cc-params";
+            const message = document.createElement("span");
+            message.textContent = "QIE2511 is no longer supported. Choose QI2 to run this workflow.";
+            const choose = this._btn("Use QI2", () => {
+                delete this.state.unsupported_model_kind;
+                this._saveState();
+                this._renderAll();
+            });
+            notice.append(message, choose);
+            this.scrollArea.appendChild(notice);
+        }
 
         // MODEL — 2-column block: one big card for the selected type's variants
         this._renderTwoColBlockSingle(
@@ -2771,16 +2825,25 @@ class VNCCSControlCenterWidget {
         this._renderLoraBlock();
         this._renderCustomLoraBlock();
 
+        const modelBlock = this.scrollArea?.querySelector(`.vnccs-cc-block[data-block-key="models"]`);
+        const cacheInline = this._buildQI2CacheInlineSection();
+        if (cacheInline) modelBlock?.appendChild(cacheInline);
         const turboInline = this._buildModelTurboInlineSection();
-        if (turboInline) {
-            this.scrollArea?.querySelector(`.vnccs-cc-block[data-block-key="models"]`)?.appendChild(turboInline);
-        }
+        if (turboInline) modelBlock?.appendChild(turboInline);
 
         // CONTROLNET / OTHER
         this._renderBlock("CONTROLNET", this.config.controlnet, "controlnet",
             e => this._renderCnetEntry("controlnet", e));
         this._renderBlock("OTHER", this.config.other, "other",
             e => this._renderCnetEntry("other", e));
+
+        this.scrollArea.scrollTop = previousScrollTop;
+        this.scrollArea.scrollLeft = previousScrollLeft;
+        requestAnimationFrame(() => {
+            if (!this.scrollArea?.isConnected || this._renderSequence !== renderSequence) return;
+            this.scrollArea.scrollTop = previousScrollTop;
+            this.scrollArea.scrollLeft = previousScrollLeft;
+        });
     }
 
     _renderFamilyTabs() {
@@ -2788,15 +2851,28 @@ class VNCCSControlCenterWidget {
         tabs.className = "vnccs-cc-family-tabs";
         tabs.setAttribute("role", "tablist");
         const activeKind = this._activeKind();
-        MODEL_FAMILIES.forEach(family => {
+        MODEL_FAMILIES.forEach((family, index) => {
             const button = document.createElement("button");
             button.type = "button";
             button.className = "vnccs-cc-family-tab";
             button.textContent = family.label;
+            button.dataset.kind = family.kind;
             button.setAttribute("role", "tab");
             button.setAttribute("aria-selected", String(family.kind === activeKind));
+            button.setAttribute("aria-label", `${family.label} model family`);
+            button.tabIndex = family.kind === activeKind ? 0 : -1;
             if (family.kind === activeKind) button.classList.add("vnccs-cc-family-tab--active");
             button.onclick = () => this._setActiveKind(family.kind);
+            button.onkeydown = event => {
+                let nextIndex = null;
+                if (event.key === "ArrowLeft") nextIndex = (index - 1 + MODEL_FAMILIES.length) % MODEL_FAMILIES.length;
+                if (event.key === "ArrowRight") nextIndex = (index + 1) % MODEL_FAMILIES.length;
+                if (event.key === "Home") nextIndex = 0;
+                if (event.key === "End") nextIndex = MODEL_FAMILIES.length - 1;
+                if (nextIndex === null) return;
+                event.preventDefault();
+                this._setActiveKind(MODEL_FAMILIES[nextIndex].kind);
+            };
             tabs.appendChild(button);
         });
         return tabs;
@@ -2930,7 +3006,12 @@ class VNCCSControlCenterWidget {
     }
 
     _buildCustomLoraBlock() {
-        const entries = (this.config.lora || []).filter(entry => entry.custom);
+        const activeKind = this._activeKind().toLowerCase();
+        const entries = (this.config.lora || []).filter(entry => {
+            if (!entry.custom) return false;
+            const kind = this._metaKind(entry).toLowerCase();
+            return !kind || kind === "custom" || kind === activeKind;
+        });
         const collapsed = this.state.collapsed?.custom_lora ?? false;
         const block = this._blockShell("CUSTOM LORAS", entries.length, "custom_lora", collapsed);
 
@@ -3047,7 +3128,7 @@ class VNCCSControlCenterWidget {
 
                 this.state.loras = (this.state.loras || []).filter(lora => lora.name !== entry.name);
                 this._saveState();
-                delete window.VNCCS_CC_REGISTRY[repoId];
+                delete serverRegistry("VNCCS_CC_REGISTRY")[repoId];
                 await this.fetchConfig(repoId, true);
                 this._refreshLoraBlock();
             } catch (error) {
@@ -3092,7 +3173,7 @@ class VNCCSControlCenterWidget {
 
         const desc = document.createElement("div");
         desc.className = "vnccs-cc-lora-add-note";
-        desc.textContent = "Choose an installed LoRA file from ComfyUI's standard loras folder. It will be saved into a separate VNCCS JSON file and stay available between sessions.";
+        desc.textContent = `Choose an installed LoRA for ${this._familyDefinition().label}. It will be saved into a separate VNCCS JSON file and stay available between sessions.`;
         panel.appendChild(desc);
 
         const selectWrap = document.createElement("div");
@@ -3123,13 +3204,13 @@ class VNCCSControlCenterWidget {
                 const response = await api.fetchApi("/vnccs/control_center/custom_lora", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ repo_id: repoId, path }),
+                    body: JSON.stringify({ repo_id: repoId, path, kind: this._activeKind() }),
                 });
                 const result = await response.json();
                 if (!response.ok || result.error) throw new Error(result.error || "Failed to add custom LoRA");
 
                 ov.remove();
-                delete window.VNCCS_CC_REGISTRY[repoId];
+                delete serverRegistry("VNCCS_CC_REGISTRY")[repoId];
                 await this.fetchConfig(repoId, true);
                 this._refreshLoraBlock();
             } catch (error) {
@@ -3387,7 +3468,9 @@ class VNCCSControlCenterWidget {
 
         const text = document.createElement("div");
         text.className = "vnccs-cc-model-card-placeholder-text";
-        text.textContent = "Pass-through mode is enabled. Connect MODEL, CLIP, and VAE to the node inputs.";
+        text.textContent = this._activeKind() === "MiniMaxH3"
+            ? "Pass-through mode is enabled. Connect MODEL, CLIP, video VAE, and audio VAE to the node inputs."
+            : "Pass-through mode is enabled. Connect MODEL, CLIP, and VAE to the node inputs.";
         card.appendChild(text);
 
         return card;
@@ -3461,6 +3544,57 @@ class VNCCSControlCenterWidget {
         if (this._isQwenFamily()) this._renderAll();
     }
 
+    _qi2CacheSettings() {
+        const cache = this.state.qi2_cache ?? {};
+        return {
+            device: ["auto", "gpu", "cpu", "off"].includes(cache.device) ? cache.device : "gpu",
+            dtype: ["default", "int8", "int4"].includes(cache.dtype) ? cache.dtype : "int8",
+        };
+    }
+
+    _qi2CacheSave(patch) {
+        this.state.qi2_cache = { ...this._qi2CacheSettings(), ...patch };
+        this._saveState();
+    }
+
+    _buildQI2CacheInlineSection() {
+        if (this._activeKind() !== "QI2") return null;
+
+        const cache = this._qi2CacheSettings();
+        const section = document.createElement("div");
+        section.className = "vnccs-cc-model-inline-section vnccs-cc-qi2-cache-section";
+
+        const label = document.createElement("div");
+        label.className = "vnccs-cc-model-inline-label";
+        label.textContent = "Qwen Image 2.1 Cache";
+
+        const strip = document.createElement("div");
+        strip.className = "vnccs-cc-cache-strip";
+        const field = (labelText, control, help) => {
+            const wrap = document.createElement("div");
+            wrap.className = "vnccs-cc-param-field";
+            setHelpText(wrap, help);
+            wrap.append(this._label(labelText), control);
+            return wrap;
+        };
+        strip.append(
+            field(
+                "Device",
+                this._sel("vnccs-cc-qi2-cache-device", ["auto", "gpu", "cpu", "off"], cache.device,
+                    value => this._qi2CacheSave({ device: value })),
+                "KV cache location. Auto uses spare VRAM then RAM; CPU uses prefetched RAM; Off recomputes the prefix every step."
+            ),
+            field(
+                "Dtype",
+                this._sel("vnccs-cc-qi2-cache-dtype", ["default", "int8", "int4"], cache.dtype,
+                    value => this._qi2CacheSave({ dtype: value })),
+                "KV cache storage precision. Default is lossless; int8 halves its size; int4 uses about one quarter."
+            ),
+        );
+        section.append(label, strip);
+        return section;
+    }
+
     _buildModelTurboInlineSection() {
         const entries = this._compatibleTurboLoras();
         if (!entries.length) return null;
@@ -3487,6 +3621,7 @@ class VNCCSControlCenterWidget {
 
         const row = document.createElement("div");
         row.className = "vnccs-cc-turbo-strip";
+        row.dataset.downloadKey = `cc_lora_${entry.name}`;
         row.classList.toggle("is-installed", installed);
         row.classList.toggle("is-active", active);
         if (installed) {
@@ -3975,8 +4110,7 @@ class VNCCSControlCenterWidget {
         panel.className = "vnccs-cc-settings-panel";
 
         const ts   = this.state.type_settings ?? {};
-        const sel  = this._getSelectedType() || "gguf";
-        const gguf = ts.gguf ?? {};
+        const sel  = this._getSelectedType() || "unet";
         const unet = ts.unet ?? {};
         // TECH DEBT: legacy Nunchaku settings are disabled. Delete after stale
         // workflow state no longer stores type_settings.nunchaku.
@@ -3987,7 +4121,6 @@ class VNCCSControlCenterWidget {
             w.className = "vnccs-cc-settings-field";
             const help = {
                 "Weight Dtype": "Precision mode for UNet loading. Default follows the loader; fp8 modes can reduce memory use.",
-                "dequant_dtype": "Dequantization precision for GGUF models.",
                 // TECH DEBT: Nunchaku settings help removed with disabled UI.
                 // "CPU Offload": "Controls whether Nunchaku can offload model blocks to CPU memory.",
                 // "Blocks On GPU": "How many Nunchaku blocks should stay on GPU. Higher uses more VRAM and can be faster.",
@@ -4028,18 +4161,6 @@ class VNCCSControlCenterWidget {
                 ["default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2"],
                 unet.weight_dtype ?? "default")));
         panel.appendChild(unetDet);
-
-        // GGUF
-        const ggufDet = document.createElement("details");
-        ggufDet.className = "vnccs-cc-settings-details";
-        ggufDet.open = sel === "gguf";
-        const ggufSum = document.createElement("summary");
-        ggufSum.textContent = "GGUF";
-        ggufDet.appendChild(ggufSum);
-        ggufDet.appendChild(field("dequant_dtype",
-            mkSel("vnccs-cc-gguf-dequant", ["default","float32","float16","bfloat16"],
-                gguf.dequant_dtype ?? "default")));
-        panel.appendChild(ggufDet);
 
         /*
         // TECH DEBT: Nunchaku settings UI is disabled. Delete this commented
@@ -4122,9 +4243,6 @@ class VNCCSControlCenterWidget {
             this.state.type_settings.unet = {
                 weight_dtype: panel.querySelector("#vnccs-cc-unet-dtype")?.value ?? "default",
             };
-            this.state.type_settings.gguf = {
-                dequant_dtype: panel.querySelector("#vnccs-cc-gguf-dequant")?.value ?? "default",
-            };
             // TECH DEBT: Nunchaku settings persistence disabled. Delete after
             // stale workflow state no longer stores type_settings.nunchaku.
             delete this.state.type_settings.nunchaku;
@@ -4147,9 +4265,8 @@ class VNCCSControlCenterWidget {
         const repoId = this._getRepoId();
         if (!repoId) return;
         const key = `cc_${cat}_${entry.name}`;
-        // Optimistic update with start time for fake progress
+        // Show the queued state while the server accepts the request.
         this.dlStatus[key] = { status: "queued", message: "Queued…" };
-        this.downloadStartTimes[key] = Date.now();
         this._renderAll();
         try {
             const r = await api.fetchApi("/vnccs/control_center/download", {
@@ -4211,20 +4328,46 @@ class VNCCSControlCenterWidget {
 
     // ── Progress bar helper ───────────────────────────────────────────────────
 
+    _updateDownloadIndicators() {
+        // Update only status DOM while an input or dropdown is focused. Replacing
+        // the full widget here would interrupt editing and reset open controls.
+        for (const row of this.scrollArea.querySelectorAll("[data-download-key]")) {
+            const key = row.dataset.downloadKey;
+            const dls = this.dlStatus[key];
+            if (!dls) continue;
+            if (dls.status === "success" && !this._downloadRefreshPending) continue;
+            const badge = row.querySelector(".vnccs-cc-badge");
+            if (badge) {
+                const updated = this._badge(dls.status);
+                badge.className = updated.className;
+                badge.textContent = updated.textContent;
+            }
+            const label = row.querySelector(".vnccs-cc-model-card-status, .vnccs-cc-lora-card-status, .vnccs-cc-turbo-strip-status, .vnccs-cc-row-progress");
+            if (label) {
+                label.textContent = dls.status === "success" ? "Checking installation…"
+                    : this._statusLabel(dls.status, dls);
+            }
+            if (!row.classList.contains("vnccs-cc-turbo-strip")) {
+                this._applyProgressLayer(row, key, dls);
+            }
+        }
+    }
+
     _applyProgressLayer(row, key, dls) {
+        row.dataset.downloadKey = key;
+        row.querySelector(".vnccs-cc-row-bg")?.remove();
         const status = dls?.status;
-        if (!status || status === "installed" || status === "missing") return;
+        if (!["downloading", "queued", "auth_required", "error"].includes(status)) return;
 
         const bg = document.createElement("div");
         bg.className = "vnccs-cc-row-bg";
 
-        if (status === "downloading") {
-            const elapsed = Date.now() - (this.downloadStartTimes[key] ?? Date.now());
-            const progress = dls.progress ?? Math.min((elapsed / 30000) * 100, 95);
+        if (status === "downloading" && Number.isFinite(dls.progress)) {
+            const progress = Math.max(0, Math.min(dls.progress, 100));
             bg.style.width = `${progress}%`;
             bg.style.background = "rgba(0, 214, 143, 0.15)";
             bg.style.transition = "width 0.3s linear";
-        } else if (status === "queued") {
+        } else if (status === "queued" || status === "downloading") {
             bg.style.width = "100%";
             bg.style.background = "repeating-linear-gradient(45deg, rgba(184,169,232,0.12), rgba(184,169,232,0.12) 10px, transparent 10px, transparent 20px)";
         } else if (status === "auth_required") {

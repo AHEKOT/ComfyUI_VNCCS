@@ -23,8 +23,10 @@ from nodes.vnccs_control_center import (
     _max_download_bytes,
     _apply_lora_standard,
     _filter_entries_by_kind,
+    _is_audio_vae_entry,
     _build_dynamic_paths,
     _build_custom_lora_name,
+    _build_custom_lora_entry,
     _dedupe_config_by_name,
     _enrich_config_entries,
     _merge_custom_loras,
@@ -375,7 +377,7 @@ class TestModuleStatusHelpers:
         with open(path, "r", encoding="utf-8") as handle:
             source = handle.read()
 
-        assert '"manager_id": "ComfyUI-GGUF"' in source
+        assert '"manager_id": "ComfyUI-GGUF"' not in source
         assert '"manager_id": "comfyui-impact-pack"' in source
         assert '"manager_id": "comfyui-impact-subpack"' in source
         assert '"manager_id": "comfyui-easy-sam3"' in source
@@ -539,6 +541,46 @@ class TestEnrichConfigEntries:
 
 
 class TestPackagedConfigSync:
+    @pytest.mark.parametrize("folder_name", ["vnccs", "ComfyUI_VNCCS", "ComfyUI_vnccs", "my-vnccs-checkout"])
+    def test_catalog_is_written_inside_the_loaded_package(self, tmp_path, monkeypatch, folder_name):
+        package = tmp_path / "custom_nodes" / folder_name
+        module = package / "nodes" / "vnccs_control_center.py"
+        module.parent.mkdir(parents=True)
+        module.write_text("# Installed module\n", encoding="utf-8")
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "__file__", str(module))
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE.folder_paths, "base_path", str(tmp_path / "unrelated"))
+
+        assert _CONTROL_CENTER_MODULE._get_packaged_cc_path() == str(package / "control_center.json")
+        assert _sync_packaged_cc_config("MIUProject/VNCCS_v3.0", {"name": "updated"}) is True
+        assert json.loads((package / "control_center.json").read_text()) == {"name": "updated"}
+        assert sorted(path.name for path in package.parent.iterdir()) == [folder_name]
+
+    def test_catalog_follows_a_linked_checkout(self, tmp_path, monkeypatch):
+        package = tmp_path / "ComfyUI_VNCCS"
+        module = package / "nodes" / "vnccs_control_center.py"
+        module.parent.mkdir(parents=True)
+        module.write_text("# Installed module\n", encoding="utf-8")
+        alias = tmp_path / "vnccs"
+        alias.symlink_to(package, target_is_directory=True)
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "__file__", str(alias / "nodes" / module.name))
+        assert _CONTROL_CENTER_MODULE._get_packaged_cc_path() == str(package / "control_center.json")
+
+    def test_refresh_does_not_recreate_a_package_renamed_after_startup(self, tmp_path, monkeypatch):
+        package = tmp_path / "custom_nodes" / "vnccs"
+        module = package / "nodes" / "vnccs_control_center.py"
+        module.parent.mkdir(parents=True)
+        module.write_text("# Installed module\n", encoding="utf-8")
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "__file__", str(module))
+        renamed = package.with_name("ComfyUI_VNCCS")
+        package.rename(renamed)
+
+        assert _sync_packaged_cc_config("MIUProject/VNCCS_v3.0", {"name": "updated"}) is False
+        assert not package.exists()
+        # After restarting, __file__ reflects the newly loaded location.
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "__file__", str(renamed / "nodes" / module.name))
+        assert _sync_packaged_cc_config("MIUProject/VNCCS_v3.0", {"name": "updated"}) is True
+        assert (renamed / "control_center.json").is_file()
+
     def test_updates_packaged_catalog_atomically(self, tmp_path, monkeypatch):
         target = tmp_path / "control_center.json"
         target.write_text('{"name": "old"}\n', encoding="utf-8")
@@ -615,25 +657,39 @@ class TestPackagedConfigSync:
         assert json.loads(target.read_text(encoding="utf-8")) == remote_data
         assert download_args["force_download"] is True
 
-    def test_remote_refresh_failure_does_not_return_stale_local_config(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("local_available", [True, False])
+    def test_remote_refresh_failure_uses_local_catalog_when_available(self, tmp_path, monkeypatch, local_available):
         target = tmp_path / "control_center.json"
         local_data = {"name": "stale", "lora": [{"name": "Removed LoRA", "version": "3.0"}]}
-        target.write_text(json.dumps(local_data), encoding="utf-8")
+        if local_available:
+            target.write_text(json.dumps(local_data), encoding="utf-8")
         monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_get_packaged_cc_path", lambda: str(target))
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_load_custom_loras", lambda: [])
+        download_args = {}
 
         def fail_hf_download(**kwargs):
-            raise RuntimeError("HF unavailable")
+            download_args.update(kwargs)
+            raise OSError("HF unavailable")
 
         monkeypatch.setattr(_CONTROL_CENTER_MODULE, "hf_hub_download", fail_hf_download)
         _CC_CONFIG_CACHE.clear()
 
         try:
-            with pytest.raises(RuntimeError, match="HF unavailable"):
-                _get_cc_config("MIUProject/VNCCS_v3.0", prefer_remote=True)
+            if local_available:
+                loaded = _get_cc_config("MIUProject/VNCCS_v3.0", prefer_remote=True)
+                assert loaded["name"] == local_data["name"]
+                assert loaded["lora"] == local_data["lora"]
+                assert _CONTROL_CENTER_MODULE._get_cc_config_source("MIUProject/VNCCS_v3.0") == "packaged"
+            else:
+                with pytest.raises(OSError, match="HF unavailable"):
+                    _get_cc_config("MIUProject/VNCCS_v3.0", prefer_remote=True)
         finally:
             _CC_CONFIG_CACHE.clear()
 
-        assert json.loads(target.read_text(encoding="utf-8")) == local_data
+        assert download_args["force_download"] is True
+        assert download_args["token"] is False
+        if local_available:
+            assert json.loads(target.read_text(encoding="utf-8")) == local_data
 
     def test_packaged_catalog_uses_current_clothes_core(self):
         path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "control_center.json")
@@ -642,11 +698,12 @@ class TestPackagedConfigSync:
 
         clothes_core = next(
             entry for entry in config["lora"]
-            if entry["name"] == "VNCCS Clothes Core"
+            if entry["name"] == "VNCCS Clothes Core Klein9b"
         )
 
-        assert clothes_core["version"] == "0.3.7"
-        assert clothes_core["local_path"].endswith("VNCCS_QIE2511_ClothesCore-RC3.7.safetensors")
+        assert clothes_core["version"] == "1.0"
+        assert clothes_core["local_path"].endswith("VNCCS_ClothesCoreKlein9b_V1.safetensors")
+        assert all(entry.get("kind") != "QIE2511" for section in ("models", "clip", "vae", "lora") for entry in config[section])
         assert all(entry["name"] != "VNCCS Emotion Core" for entry in config["lora"])
 
     def test_packaged_catalog_contains_complete_klein_family(self):
@@ -680,6 +737,45 @@ class TestPackagedConfigSync:
             "VNCCS Clothes Core Klein9b",
             "VNCCS Pose Studio Klein9b",
         }
+
+    def test_packaged_catalog_contains_complete_minimax_h3_family(self):
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "control_center.json")
+        with open(path, "r", encoding="utf-8") as handle:
+            config = json.load(handle)
+
+        h3_models = [entry for entry in config["models"] if entry.get("kind") == "minimaxh3"]
+        h3_clips = [entry for entry in config["clip"] if entry.get("kind") == "minimaxh3"]
+        h3_vaes = [entry for entry in config["vae"] if entry.get("kind") == "minimaxh3"]
+        h3_loras = [entry for entry in config["lora"] if entry.get("kind") == "minimaxh3"]
+
+        assert [entry["type"] for entry in h3_models] == ["unet", "unet"]
+        assert [entry["hf_repo"] for entry in h3_models] == [
+            "Comfy-Org/MiniMax-H3",
+            "Comfy-Org/MiniMax-H3",
+        ]
+        assert [entry["hf_path"] for entry in h3_models] == [
+            "diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors",
+            "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        ]
+        assert [entry["clip_type"] for entry in h3_clips] == ["minimax"]
+        assert [entry["hf_path"] for entry in h3_clips] == [
+            "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+        ]
+        assert [entry["local_path"] for entry in h3_vaes] == [
+            "models/vae/minimax_h3_video_vae_fp16.safetensors",
+            "models/vae/minimax_h3_audio_vae_fp32.safetensors",
+        ]
+        assert [entry["type"] for entry in h3_vaes] == ["VAE", "AudioVAE"]
+        assert [_is_audio_vae_entry(entry) for entry in h3_vaes] == [False, True]
+        assert {entry["name"] for entry in h3_loras} == {
+            "MiniMax H3 Pose Studio",
+            "MiniMax H3 Ref2V Turbo 8-Step 768p",
+        }
+        h3_turbo = next(entry for entry in h3_loras if entry["type"] == "TurboLora")
+        assert h3_turbo["hf_repo"] == "lightx2v/Minimax-h3-Turbo"
+        assert h3_turbo["hf_path"] == (
+            "minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors"
+        )
 
 
 class TestControlCenterFamilyState:
@@ -761,6 +857,116 @@ class TestControlCenterFamilyState:
         assert captured == {"entry": klein_entry, "selected_type": "custom"}
         assert pipe.model_entry == klein_entry
 
+    def test_custom_h3_pipe_uses_audio_vae_and_workflow_defaults(self, monkeypatch):
+        custom_model = object()
+        custom_clip = object()
+        video_vae = object()
+        audio_vae = object()
+        monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
+            "models": [], "clip": [], "vae": [], "lora": [],
+        })
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._load_model_block",
+            lambda *args, **kwargs: (custom_model, custom_clip, video_vae),
+        )
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._apply_loras",
+            lambda model, clip, *args, **kwargs: (model, clip),
+        )
+
+        pipe = _build_control_center_pipe(
+            "demo/repo",
+            {
+                "active_kind": "MiniMaxH3",
+                "selected_types_by_kind": {"MiniMaxH3": "custom"},
+            },
+            custom_model=custom_model,
+            custom_clip=custom_clip,
+            custom_vae=video_vae,
+            custom_audio_vae=audio_vae,
+        )
+
+        assert pipe.model_entry["kind"] == "MiniMaxH3"
+        assert pipe.model_kind == "minimaxh3"
+        assert pipe.audio_vae is audio_vae
+        assert pipe.sample_steps == 8
+        assert pipe.sampler_name == "res_multistep"
+        assert pipe.scheduler == "simple"
+
+    def test_custom_h3_pipe_requires_audio_vae(self, monkeypatch):
+        monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
+            "models": [], "clip": [], "vae": [], "lora": [],
+        })
+
+        with pytest.raises(RuntimeError, match="audio VAE input is not connected"):
+            _build_control_center_pipe(
+                "demo/repo",
+                {
+                    "active_kind": "MiniMaxH3",
+                    "selected_types_by_kind": {"MiniMaxH3": "custom"},
+                },
+                custom_model=object(),
+                custom_clip=object(),
+                custom_vae=object(),
+            )
+
+    def test_managed_h3_catalog_selects_video_and_audio_vaes(self, monkeypatch):
+        model = object()
+        clip = object()
+        video_vae = object()
+        audio_vae = object()
+        model_entry = {"name": "H3", "type": "unet", "kind": "MiniMaxH3"}
+        vae_entries = [
+            {"name": "H3 Video VAE", "type": "VAE", "kind": "MiniMaxH3"},
+            {"name": "H3 Audio VAE", "type": "AudioVAE", "kind": "MiniMaxH3"},
+        ]
+        monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
+            "models": [model_entry],
+            "clip": [{"name": "H3 CLIP", "kind": "MiniMaxH3"}],
+            "vae": vae_entries,
+            "lora": [],
+        })
+        captured = {}
+
+        def fake_load_model_block(entry, selected_type, settings, config, clips, vae_name, **kwargs):
+            captured.update(clips=clips, video_vae=vae_name)
+            return model, clip, video_vae
+
+        monkeypatch.setattr("nodes.vnccs_control_center._load_model_block", fake_load_model_block)
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._load_vae",
+            lambda entries, name: captured.setdefault("audio_vae", name) and audio_vae,
+        )
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center._apply_loras",
+            lambda model, clip, *args, **kwargs: (model, clip),
+        )
+
+        pipe = _build_control_center_pipe("demo/repo", {
+            "active_kind": "MiniMaxH3",
+            "selected_types_by_kind": {"MiniMaxH3": "unet"},
+            "selected_models": {"MiniMaxH3:unet": "H3"},
+        })
+
+        assert captured == {
+            "clips": ["H3 CLIP"],
+            "video_vae": "H3 Video VAE",
+            "audio_vae": "H3 Audio VAE",
+        }
+        assert pipe.audio_vae is audio_vae
+        assert pipe.model_kind == "minimaxh3"
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            {"name": "H3 audio_vae", "type": "VAE"},
+            {"name": "H3 VAE", "type": "AudioVAE"},
+            {"name": "H3 VAE", "type": "VAE", "vae_role": "audio"},
+        ],
+    )
+    def test_h3_audio_vae_catalog_metadata_is_detected(self, entry):
+        assert _is_audio_vae_entry(entry) is True
+
 
 class TestControlCenterFrontendFamilies:
     def test_frontend_has_family_tabs_and_kind_filters(self):
@@ -768,9 +974,14 @@ class TestControlCenterFrontendFamilies:
         with open(path, "r", encoding="utf-8") as handle:
             source = handle.read()
 
-        assert '{ kind: "QIE2511", label: "QIE2511", defaultType: "gguf" }' in source
-        assert '{ kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet" }' in source
-        assert 'activeKind === "Klein9b" ? ["unet", "custom"]' in source
+        assert '{ kind: "QI2", label: "Qwen Image 2.1", defaultType: "unet", preferredTypes: ["unet", "custom"]' in source
+        assert '{ kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet", preferredTypes: ["unet", "custom"]' in source
+        assert '{ kind: "MiniMaxH3", label: "MiniMax H3", defaultType: "unet", preferredTypes: ["unet", "custom"]' in source
+        assert "const preferred = this._familyDefinition(activeKind).preferredTypes;" in source
+        assert 'sync("audio_vae", "VAE"' in source
+        assert 'grid-template-columns: repeat(3, minmax(0, 1fr));' in source
+        assert 'button.onkeydown = event =>' in source
+        assert "const previousScrollTop = this.scrollArea.scrollTop;" in source
         assert 'const contextType = this._familyDefinition().defaultType;' in source
         assert '.vnccs-cc-twocol-left > .vnccs-cc-model-card' in source
         assert 'this.scrollArea.appendChild(this._renderFamilyTabs())' in source
@@ -809,8 +1020,8 @@ class TestControlCenterFrontendFamilies:
         assert 'api.fetchApi("/vnccs/manager/enable_personal_cloud"' in source
         assert 'confirmation: "enable_personal_cloud"' in source
         assert '"X-VNCCS-CSRF": "1"' in source
-        assert 'sessionStorage.setItem(PENDING_DEPENDENCY_INSTALLS_KEY' in source
-        assert 'sessionStorage.removeItem(PENDING_DEPENDENCY_INSTALLS_KEY)' in source
+        assert 'sessionStore.setItem(PENDING_DEPENDENCY_INSTALLS_KEY' in source
+        assert 'sessionStore.removeItem(PENDING_DEPENDENCY_INSTALLS_KEY)' in source
         assert "window.location.reload();" in source
         assert 'this._btn("Enable & restart"' in source
         assert "security_level will not be changed" in source
@@ -850,7 +1061,7 @@ class TestControlCenterFrontendFamilies:
         assert source.count("this._syncCustomModelInput();") >= 7
 
 class TestClothesPreviewFrontendContract:
-    def test_custom_preview_uses_partial_graph_execution(self):
+    def test_custom_preview_never_submits_graph_execution(self):
         path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
             "web",
@@ -859,11 +1070,10 @@ class TestClothesPreviewFrontendContract:
         with open(path, "r", encoding="utf-8") as handle:
             source = handle.read()
 
-        assert 'controlCenter.selected_type === "custom"' in source
-        assert "app.queuePrompt(0, 1, [targetId])" in source
-        assert 'api.addEventListener("vnccs.preview.updated", onPreview)' in source
-        assert 'api.addEventListener("execution_cached", onCached)' in source
-        assert "cachedNodes.some(nodeId => String(nodeId) === targetId)" in source
+        assert 'api.fetchApi("/vnccs/control_center/clothes_preview"' in source
+        assert "control_center_id: String(upstream.id)" in source
+        assert "queueConnectedPreview" not in source
+        assert "app.queuePrompt(0, 1, [targetId])" not in source
 
     def test_clothes_designer_is_partial_execution_output(self):
         path = os.path.join(
@@ -889,12 +1099,9 @@ class TestClothesPreviewFrontendContract:
         assert 'if (url.includes("force_cache=true")) return;' in source
         force_cache_branch = source.split("if (forceCache) {", 1)[1].split("} else {", 1)[0]
         assert "selected_preview_sprite = null" not in force_cache_branch
-        custom_preview_branch = source.split(
-            'if (controlCenter.selected_type === "custom") {',
-            1,
-        )[1].split("} else {", 1)[0]
-        assert "if (previewResult?.cached)" in custom_preview_branch
-        assert custom_preview_branch.count("updatePreviewImage(true)") == 1
+        preview_handler = source.split("btnGen.onclick = async () => {", 1)[1].split("els.btnGen = btnGen;", 1)[0]
+        assert "selected_preview_sprite = null" not in preview_handler
+        assert "clothes_state: state" in preview_handler
 
 
 # ── custom LoRA helpers ──────────────────────────────────────────────────────
@@ -903,6 +1110,21 @@ class TestCustomLoraHelpers:
     def test_build_custom_lora_name_disambiguates_parent_folder(self):
         result = _build_custom_lora_name("portraits/my_style.safetensors", {"my_style"})
         assert result == "my_style (portraits)"
+
+    def test_custom_lora_keeps_selected_model_family(self, monkeypatch):
+        monkeypatch.setattr(
+            "nodes.vnccs_control_center.get_full_path_agnostic",
+            lambda *args, **kwargs: "/models/loras/MiniMax/H3_PoseStudioV1.safetensors",
+        )
+        monkeypatch.setattr("nodes.vnccs_control_center.os.path.exists", lambda path: True)
+
+        entry = _build_custom_lora_entry(
+            "MiniMax/H3_PoseStudioV1.safetensors",
+            kind="MiniMaxH3",
+        )
+
+        assert entry["kind"] == "MiniMaxH3"
+        assert entry["custom"] is True
 
     def test_merge_custom_loras_appends_non_duplicate_entries(self, monkeypatch):
         monkeypatch.setattr(
@@ -991,12 +1213,12 @@ class TestControlCenterCustomModel:
         custom_model = object()
         custom_clip = object()
         custom_vae = object()
-        context_model = {"name": "Qwen GGUF", "type": "gguf", "kind": "QIE2511"}
+        context_model = {"name": "Qwen Image 2.1 INT8 ConvRot", "type": "unet", "kind": "QI2"}
 
         monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
             "models": [context_model],
-            "clip": [{"name": "clip_a", "kind": "QIE2511"}],
-            "vae": [{"name": "vae_a", "kind": "QIE2511"}],
+            "clip": [{"name": "clip_a", "kind": "QI2"}],
+            "vae": [{"name": "vae_a", "kind": "QI2"}],
             "lora": [],
         })
 
@@ -1034,7 +1256,7 @@ class TestControlCenterCustomModel:
             "demo/repo",
             {
                 "selected_type": "custom",
-                "selected_models": {"gguf": "Qwen GGUF"},
+                "selected_models": {"unet": "Qwen Image 2.1 INT8 ConvRot"},
                 "loras": [],
                 "type_settings": {},
                 "model_params": {},
@@ -1052,25 +1274,25 @@ class TestControlCenterCustomModel:
         assert pipe.nunchaku_settings is None
         assert pipe.model_entry == context_model
         assert captured["model_entry"] == context_model
-        assert pipe.sample_steps == 4
-        assert pipe.cfg == 1.0
+        assert pipe.sample_steps == 25
+        assert pipe.cfg == 3.0
         assert pipe.scheduler == "simple"
 
     def test_custom_type_requires_external_clip_and_vae_inputs(self, monkeypatch):
         custom_model = object()
         custom_clip = object()
-        context_model = {"name": "Qwen GGUF", "type": "gguf", "kind": "QIE2511"}
+        context_model = {"name": "Qwen Image 2.1 INT8 ConvRot", "type": "unet", "kind": "QI2"}
 
         monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
             "models": [context_model],
-            "clip": [{"name": "clip_a", "kind": "QIE2511"}],
-            "vae": [{"name": "vae_a", "kind": "QIE2511"}],
+            "clip": [{"name": "clip_a", "kind": "QI2"}],
+            "vae": [{"name": "vae_a", "kind": "QI2"}],
             "lora": [],
         })
 
         base_state = {
             "selected_type": "custom",
-            "selected_models": {"gguf": "Qwen GGUF"},
+            "selected_models": {"unet": "Qwen Image 2.1 INT8 ConvRot"},
             "loras": [],
             "type_settings": {},
             "model_params": {},
@@ -1093,23 +1315,23 @@ class TestControlCenterCustomModel:
 
 
 class TestControlCenterRequiredTurboLora:
-    def test_qwen_four_step_cfg_one_forces_lightning_lora_for_process(self, monkeypatch):
+    def test_qi2_six_step_cfg_one_forces_viggle_lora_for_process(self, monkeypatch):
         model = object()
         clip = object()
         vae = object()
-        model_entry = {"name": "Qwen-Image-Edit-2511-GGUF-Q5", "type": "gguf", "kind": "QIE2511"}
-        lightning_entry = {
-            "name": "Qwen Image Edit 2511 Lightning",
+        model_entry = {"name": "Qwen Image 2.1 INT8 ConvRot", "type": "unet", "kind": "QI2"}
+        turbo_entry = {
+            "name": "Qwen Image 2.1 Viggle Turbo",
             "type": "TurboLora",
-            "kind": "QIE2511",
-            "local_path": "models/loras/qwen/Qwen-Image-Edit-2511-Lightning.safetensors",
+            "kind": "QI2",
+            "local_path": "models/loras/QI2/Viggle/Qwen-Image-2.1-viggle-turbo.safetensors",
         }
 
         monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
             "models": [model_entry],
-            "clip": [{"name": "clip_a", "kind": "QIE2511"}],
-            "vae": [{"name": "vae_a", "kind": "QIE2511"}],
-            "lora": [lightning_entry],
+            "clip": [{"name": "clip_a", "kind": "QI2"}],
+            "vae": [{"name": "vae_a", "kind": "QI2"}],
+            "lora": [turbo_entry],
         })
         monkeypatch.setattr(
             "nodes.vnccs_control_center._load_model_block",
@@ -1126,36 +1348,37 @@ class TestControlCenterRequiredTurboLora:
         pipe = _build_control_center_pipe(
             "demo/repo",
             {
-                "selected_type": "gguf",
-                "selected_model": "Qwen-Image-Edit-2511-GGUF-Q5",
+                "selected_type": "unet",
+                "active_kind": "QI2",
+                "selected_model": "Qwen Image 2.1 INT8 ConvRot",
                 "loras": [],
-                "model_params": {"steps": 4, "cfg": 1},
+                "model_params": {"steps": 6, "cfg": 1},
             },
         )
 
         assert pipe.model is model
         assert captured["lora_states"] == [
-            {"name": "Qwen Image Edit 2511 Lightning", "auto_apply": True, "strength": 1.0}
+            {"name": "Qwen Image 2.1 Viggle Turbo", "auto_apply": True, "strength": 1.0}
         ]
         assert pipe.lora_states == captured["lora_states"]
 
-    def test_qwen_non_four_step_does_not_force_lightning_lora(self, monkeypatch):
+    def test_qi2_non_turbo_settings_do_not_force_viggle_lora(self, monkeypatch):
         model = object()
         clip = object()
         vae = object()
-        model_entry = {"name": "Qwen-Image-Edit-2511-GGUF-Q5", "type": "gguf", "kind": "QIE2511"}
-        lightning_entry = {
-            "name": "Qwen Image Edit 2511 Lightning",
+        model_entry = {"name": "Qwen Image 2.1 INT8 ConvRot", "type": "unet", "kind": "QI2"}
+        turbo_entry = {
+            "name": "Qwen Image 2.1 Viggle Turbo",
             "type": "TurboLora",
-            "kind": "QIE2511",
-            "local_path": "models/loras/qwen/Qwen-Image-Edit-2511-Lightning.safetensors",
+            "kind": "QI2",
+            "local_path": "models/loras/QI2/Viggle/Qwen-Image-2.1-viggle-turbo.safetensors",
         }
 
         monkeypatch.setattr("nodes.vnccs_control_center._get_cc_config", lambda repo_id: {
             "models": [model_entry],
-            "clip": [{"name": "clip_a", "kind": "QIE2511"}],
-            "vae": [{"name": "vae_a", "kind": "QIE2511"}],
-            "lora": [lightning_entry],
+            "clip": [{"name": "clip_a", "kind": "QI2"}],
+            "vae": [{"name": "vae_a", "kind": "QI2"}],
+            "lora": [turbo_entry],
         })
         monkeypatch.setattr(
             "nodes.vnccs_control_center._load_model_block",
@@ -1172,10 +1395,11 @@ class TestControlCenterRequiredTurboLora:
         _build_control_center_pipe(
             "demo/repo",
             {
-                "selected_type": "gguf",
-                "selected_model": "Qwen-Image-Edit-2511-GGUF-Q5",
+                "selected_type": "unet",
+                "active_kind": "QI2",
+                "selected_model": "Qwen Image 2.1 INT8 ConvRot",
                 "loras": [],
-                "model_params": {"steps": 8, "cfg": 1},
+                "model_params": {"steps": 25, "cfg": 3},
             },
         )
 

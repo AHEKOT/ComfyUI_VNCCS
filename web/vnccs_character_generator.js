@@ -1,8 +1,38 @@
 import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
+import { vnccsApi as api, mediaURL, checkedJSON, storage, workflowScope, cacheIdentity, watchConnection } from "./vnccs_transport.js";
 import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
 
 const GENERATOR_QWEN_INSTRUCTION = "Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.";
+const QI2_EMOTION_PROMPT_TEMPLATE = "Upscale face image.\nMake character's face emotion {emotion}\nChange only face. Keep original neck colour, clothes and hairs\nkeep character's clothes";
+const QI2_EMOTION_BBOX_DEFAULTS = Object.freeze({
+    bbox_threshold: 0.3,
+    drop_size: 10,
+});
+const RESOLUTION_SCALE_BASE = 1024;
+const RESOLUTION_SCALE_MIN_MP = 1;
+const RESOLUTION_SCALE_MAX_MP = 4;
+const RESOLUTION_SCALE_STEP_MP = 0.1;
+const RESOLUTION_SCALE_PRESETS = new Map([
+    [1.3, 1344],
+    [1.5, 1536],
+]);
+
+function resolutionScaleMegapixels(value) {
+    const numeric = Number(value);
+    const megapixels = Number.isFinite(numeric) ? numeric / RESOLUTION_SCALE_BASE : RESOLUTION_SCALE_MIN_MP;
+    return Math.max(RESOLUTION_SCALE_MIN_MP, Math.min(RESOLUTION_SCALE_MAX_MP, megapixels));
+}
+
+function resolutionScaleValue(megapixels) {
+    const numeric = Number(megapixels);
+    const clamped = Math.max(RESOLUTION_SCALE_MIN_MP, Math.min(RESOLUTION_SCALE_MAX_MP, Number.isFinite(numeric) ? numeric : RESOLUTION_SCALE_MIN_MP));
+    const stepped = Number((Math.round(clamped / RESOLUTION_SCALE_STEP_MP) * RESOLUTION_SCALE_STEP_MP).toFixed(1));
+    return RESOLUTION_SCALE_PRESETS.get(stepped) ?? Math.round(stepped * RESOLUTION_SCALE_BASE);
+}
+
+function resolutionScaleText(value) {
+    return `${resolutionScaleMegapixels(value).toFixed(1)} MP`;
+}
 
 const DEFAULT_DATA = {
     nsfw_enabled: true,
@@ -24,7 +54,6 @@ const DEFAULT_DATA = {
         background_color: "from_generator",
         latent_image_index: 1,
         instruction: GENERATOR_QWEN_INSTRUCTION,
-        qwen_2511: true,
     },
     pose_sampler: {
         inherit_pipe: true,
@@ -43,8 +72,9 @@ const DEFAULT_DATA = {
     },
     emotion_generation: {
         task_batch_size: 0,
+        target_size: 2048,
         face_denoise: 0.55,
-        use_sam: true,
+        use_sam: false,
         bbox_model: "bbox/face_yolov8m.pt",
         segm_model: "bbox/face_yolov8m.pt",
         sam_model: "sam_vit_b_01ec64.pth",
@@ -55,11 +85,12 @@ const DEFAULT_DATA = {
         inherit_pipe_sampler: true,
         sampler_name: "euler",
         scheduler: "simple",
-        feather: 5,
+        feather: 50,
         noise_mask: true,
         force_inpaint: true,
         bbox_threshold: 0.5,
-        bbox_dilation: 10,
+        bbox_dilation: 50,
+        qi2_prompt_template: QI2_EMOTION_PROMPT_TEMPLATE,
         bbox_crop_factor: 3,
         sam_detection_hint: "center-1",
         sam_dilation: 0,
@@ -92,7 +123,6 @@ const DEFAULT_DATA = {
         background_color: "White",
         latent_image_index: 1,
         instruction: GENERATOR_QWEN_INSTRUCTION,
-        qwen_2511: true,
     },
     remove_clothes_sampler: {
         inherit_pipe: true,
@@ -107,7 +137,6 @@ const DEFAULT_DATA = {
         mode: "seedvr",
         model: "seedvr2_3b_fp8_e4m3fn.safetensors",
         vae: "ema_vae_fp16.safetensors",
-        gan_model: "",
         device: "cuda:0",
         offload_device: "cpu",
         seed: 42,
@@ -140,7 +169,7 @@ const DEFAULT_DATA = {
         // TODO: Decide what to do with internal RMBG later.
         use_internal_rmbg: false,
         preset: "balanced",
-        use_sam3_details_recovery: true,
+        use_sam3_details_recovery: false,
         use_preset_values: true,
         tolerance: 0.15,
         softness: 0.12,
@@ -200,8 +229,7 @@ const CLOTHES_STAGES = [
 ];
 
 const DEFAULT_EMOTION_STAGES = [
-    ["emotion_0001", "Emotion"],
-    ["emotion_0001_bg_remove", "Emotion BG"],
+    ["emotion_0001_bg_remove", "Emotion"],
 ];
 
 const WORKFLOW_UPSCALER_DIT_MODELS = [
@@ -220,8 +248,8 @@ const WORKFLOW_UPSCALER_VAE_MODELS = [
 const SEEDVR_ATTENTION_MODES = ["sdpa", "flash_attn_2", "flash_attn_3", "sageattn_2", "sageattn_3"];
 const SEEDVR_COLOR_CORRECTION_MODES = ["lab", "wavelet", "adain", "none"];
 const NATIVE_SEEDVR_NODE_NAMES = ["SeedVR2Preprocess", "SeedVR2Conditioning", "SeedVR2PostProcessing"];
+const BG_REMOVE_MODES = ["Native", "disabled", "ultra_light", "light", "balanced", "strong", "aggressive"];
 
-const POSE_GENERATION_LORA_LABEL = "VNCCS Pose Studio QIE2511";
 const CLOTHES_CORE_LORA_LABEL = "VNCCS Clothes Core";
 
 const CSS = `
@@ -251,7 +279,7 @@ const CSS = `
 .vnccs-seedvr-card { display:flex; flex-direction:column; gap:5px; padding:10px 12px 8px; border:1px solid rgba(0,214,143,.25); border-radius:10px; background:rgba(0,214,143,.05); cursor:default; position:relative; overflow:hidden; transition:all .16s ease; }
 .vnccs-seedvr-card.is-picker-head { min-height:58px; cursor:pointer; }
 .vnccs-seedvr-card.is-installed { cursor:pointer; }
-.vnccs-seedvr-card.is-installed:hover, .vnccs-seedvr-card.is-picker-head:hover { border-color:rgba(0,214,143,.42); background:rgba(0,214,143,.08); }
+.vnccs-seedvr-card.is-installed:hover:not(.is-selected), .vnccs-seedvr-card.is-picker-head:hover:not(.is-selected) { border-color:rgba(0,214,143,.42); background:rgba(0,214,143,.08); }
 .vnccs-seedvr-card.is-selected { border-color:#ff8fa3; background:rgba(255,143,163,.12); box-shadow:0 0 0 1px rgba(255,143,163,.12) inset; }
 .vnccs-seedvr-card.is-missing { opacity:.92; }
 .vnccs-seedvr-card-head { display:flex; align-items:center; gap:7px; min-width:0; }
@@ -304,7 +332,7 @@ const CSS = `
     overflow: hidden;
 }
 .vnccs-pipe-root.is-clone .vnccs-pipe-main {
-    grid-template-rows: minmax(0, 1fr) 176px;
+    grid-template-rows: minmax(0, 1fr) auto;
 }
 .vnccs-pipe-title {
     font-size: 10px;
@@ -722,9 +750,81 @@ const CSS = `
 }
 .vnccs-pipe-chain.is-clone {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-auto-rows: minmax(58px, 1fr);
+    min-height: 0;
+    box-sizing: border-box;
+    gap: 6px;
+    padding: 6px 10px;
+    overflow-y: auto;
+}
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-content: start;
+    min-height: 0;
+    padding: 4px 8px;
+    gap: 2px 8px;
+}
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-name,
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-status,
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-lora {
+    grid-column: 1;
+    line-height: 1.2;
+}
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-status,
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-lora {
+    grid-column: 1 / -1;
+}
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-lora {
+    grid-row: 3;
+}
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-progress {
+    grid-column: 1 / -1;
+    grid-row: 4;
+}
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-actions {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
+    margin-top: 0;
 }
 .vnccs-pipe-chain.is-clothes {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.vnccs-pipe-chain.is-emotions {
+    grid-template-columns: repeat(var(--vnccs-stage-count, 1), minmax(0, 1fr));
+    grid-template-rows: minmax(0, 1fr);
+    gap: calc(10px * var(--vnccs-stage-scale, 1));
+    overflow: hidden;
+}
+.vnccs-pipe-chain.is-emotions .vnccs-pipe-stage {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    padding: calc(10px * var(--vnccs-stage-scale, 1));
+    gap: calc(5px * var(--vnccs-stage-scale, 1));
+}
+.vnccs-pipe-chain.is-emotions .vnccs-pipe-stage-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: calc(12px * var(--vnccs-stage-scale, 1));
+}
+.vnccs-pipe-chain.is-emotions .vnccs-pipe-stage-status {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    font-size: calc(10px * var(--vnccs-stage-scale, 1));
+    line-height: 1.2;
+}
+.vnccs-pipe-chain.is-emotions .vnccs-pipe-regen {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: calc(4px * var(--vnccs-stage-scale, 1)) calc(7px * var(--vnccs-stage-scale, 1));
+    font-size: calc(10px * var(--vnccs-stage-scale, 1));
 }
 .vnccs-pipe-stage {
     position: relative;
@@ -826,6 +926,32 @@ const CSS = `
     flex-wrap: wrap;
     justify-content: flex-end;
 }
+.vnccs-pipe-root.is-emotions .vnccs-pipe-preview-head {
+    min-width: 0;
+    gap: 8px;
+}
+.vnccs-pipe-root.is-emotions .vnccs-pipe-preview-label {
+    flex: 0 1 24%;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.vnccs-pipe-root.is-emotions .vnccs-pipe-tabs {
+    flex: 1 1 auto;
+    min-width: 0;
+    flex-wrap: nowrap;
+    overflow: hidden;
+}
+.vnccs-pipe-root.is-emotions .vnccs-pipe-tab {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding-inline: calc(8px * var(--vnccs-stage-scale, 1));
+    font-size: calc(10px * var(--vnccs-stage-scale, 1));
+}
 .vnccs-pipe-tab {
     border: 1px solid rgba(255,255,255,0.08);
     background: rgba(255,255,255,0.04);
@@ -849,16 +975,24 @@ const CSS = `
 }
 .vnccs-pipe-viewer-bar {
     display: flex;
+    min-width: 0;
     align-items: center;
     gap: 8px;
     padding: 7px 10px;
     background: #101018;
     border-bottom: 1px solid rgba(255,143,163,0.16);
 }
-.vnccs-pipe-viewer-spacer {
-    flex: 1;
+.vnccs-pipe-viewer-stages {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1 1 0;
+    min-width: 0;
+    overflow-x: auto;
 }
 .vnccs-pipe-viewer-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
     border: 1px solid rgba(255,255,255,0.1);
     background: rgba(255,255,255,0.055);
     color: #e8e8f0;
@@ -886,6 +1020,8 @@ const CSS = `
     overflow: hidden;
     cursor: grab;
     min-height: 0;
+    min-width: 0;
+    touch-action: none;
 }
 .vnccs-pipe-viewer-canvas.is-dragging {
     cursor: grabbing;
@@ -898,6 +1034,7 @@ const CSS = `
     transform-origin: 0 0;
     user-select: none;
     -webkit-user-drag: none;
+    pointer-events: none;
     opacity: 0;
     visibility: hidden;
     transform: translate(-100000px, -100000px) scale(1);
@@ -928,6 +1065,13 @@ function deepMerge(base, patch) {
     return out;
 }
 
+function normalizeUpscalerSettings(data) {
+    const upscaler = data.upscaler;
+    if (!upscaler || typeof upscaler !== "object") return;
+    if (String(upscaler.mode || "").trim().toLowerCase() === "gan") upscaler.mode = "off";
+    delete upscaler.gan_model;
+}
+
 function readData(node) {
     const widget = node.widgets?.find(w => w.name === "widget_data");
     try {
@@ -946,18 +1090,31 @@ function readData(node) {
         if (!SEEDVR_COLOR_CORRECTION_MODES.includes(data.upscaler?.color_correction)) {
             data.upscaler.color_correction = "lab";
         }
+        for (const section of ["common", "pose_generation", "remove_clothes"]) {
+            data[section].target_size = resolutionScaleValue(resolutionScaleMegapixels(data[section].target_size));
+        }
+        normalizeUpscalerSettings(data);
         return data;
     } catch {
         return JSON.parse(JSON.stringify(DEFAULT_DATA));
     }
 }
 
-function writeData(node, data, { notify = true } = {}) {
+function writeData(node, data, { notify = true, trackChange = false } = {}) {
     const widget = node.widgets?.find(w => w.name === "widget_data");
     if (!widget) return;
-    widget.value = JSON.stringify(data);
-    if (notify) widget.callback?.(widget.value);
-    app.graph?.setDirtyCanvas(true, true);
+    normalizeUpscalerSettings(data);
+    const value = JSON.stringify(data);
+    // DOM clicks run after ComfyUI's mouseup snapshot; explicitly track user edits.
+    const canvas = trackChange ? app.canvas : null;
+    canvas?.emitEvent?.({ subType: "before-change" });
+    try {
+        widget.value = value;
+        if (notify) widget.callback?.(widget.value);
+        app.graph?.setDirtyCanvas(true, true);
+    } finally {
+        canvas?.emitEvent?.({ subType: "after-change" });
+    }
 }
 
 function uniqueOptions(values) {
@@ -981,10 +1138,10 @@ class CharacterGeneratorWidget {
         this.isClone = Boolean(options.isClone);
         this.isClothes = Boolean(options.isClothes);
         this.isEmotions = Boolean(options.isEmotions);
+        this.qi2EmotionDefaultsPending = this.isEmotions;
         this.title = options.title || "VNCCS Character Generator";
         this.data = readData(node);
         this.seedvrAttention = { current: null, available: SEEDVR_ATTENTION_MODES };
-        this.ganUpscaleModels = [];
         this.seedvrAssets = null;
         this.seedvrDownloads = {};
         this.seedvrPollTimer = null;
@@ -997,10 +1154,13 @@ class CharacterGeneratorWidget {
         this.stageState = Object.fromEntries(this.stages.map(([key]) => [key, { status: "waiting", images: null, message: "" }]));
         const defaultPreview = this.defaultPreviewStage();
         this.selectedPreview = this.data.ui?.selected_preview || defaultPreview;
-        if (!this.stages.some(([key]) => key === this.selectedPreview)) {
+        const selectedPreviewWasInvalid = !this.stages.some(([key]) => key === this.selectedPreview);
+        if (selectedPreviewWasInvalid) {
             this.selectedPreview = defaultPreview;
         }
-        this.userSelectedPreview = Boolean(this.data.ui?.user_selected_preview);
+        this.userSelectedPreview = selectedPreviewWasInvalid
+            ? false
+            : Boolean(this.data.ui?.user_selected_preview);
         this.viewer = null;
         this.viewerFocus = null;
         this.restoredViewer = null;
@@ -1014,6 +1174,8 @@ class CharacterGeneratorWidget {
         this.restoreBrowserState();
         this.build();
         this.bindEvents();
+        const refreshTimer = setTimeout(() => this.refreshProgress().catch(error => console.warn("[VNCCS] Progress refresh failed", error)), 0);
+        registerCleanup(this.node, () => clearTimeout(refreshTimer));
         this.loadNodeDefs();
         this.loadSeedvrAssets();
     }
@@ -1023,7 +1185,7 @@ class CharacterGeneratorWidget {
         const root = document.createElement("div");
         root.className = "vnccs-pipe-root";
         this.root = root;
-        enableMiddleMouseCanvasPan(root);
+        enableMiddleMouseCanvasPan(root, this.node);
         attachHelpTooltips(root);
         this.updateModeClasses();
 
@@ -1065,10 +1227,12 @@ class CharacterGeneratorWidget {
 
         this.syncCharacterSourceData();
         this.syncStagesFromData();
+        this.syncModelResolution();
         writeData(this.node, this.data);
         this.node._vnccsCharacterGeneratorSyncBeforeQueue = () => {
             this.syncCharacterSourceData();
             this.syncStagesFromData();
+            this.syncModelResolution();
             writeData(this.node, this.data);
             return this.validateNativeSeedvr(true);
         };
@@ -1082,6 +1246,13 @@ class CharacterGeneratorWidget {
         registerCleanup(this.node, () => this.previewResizeObserver?.disconnect());
         registerCleanup(this.node, () => clearInterval(this.regenerateTimer));
         registerCleanup(this.node, () => clearInterval(this.seedvrPollTimer));
+        registerCleanup(this.node, () => {
+            this.closeViewer();
+            this.viewer = null;
+            clearTimeout(this._saveBrowserStateTimer);
+            cancelAnimationFrame(this.previewLayoutFrame);
+        });
+        this.bindModelResolutionSync();
         if (this.isClone) {
             this.sourceSyncTimer = setInterval(() => {
                 const previous = this.data.nsfw_enabled;
@@ -1104,30 +1275,50 @@ class CharacterGeneratorWidget {
         this.onStage = (event) => {
             const detail = event.detail || {};
             if (String(detail.node_id) !== String(this.node.id)) return;
+            const scope = this.progressScope();
+            if (detail.scope && detail.scope !== scope) return;
+            if (!this.acceptsProgressRequest(detail.request_id)) return;
+            if (detail.scope) {
+                if (this._progressScope === scope && this._progressEpoch === detail.epoch && detail.revision <= (this._progressRevision || 0)) return;
+                this._progressScope = scope;
+                this._progressRevision = detail.revision;
+                this._progressEpoch = detail.epoch;
+            }
+            this.observeProgressRequest(detail.request_id, detail.run_id);
             const stage = detail.stage;
             if (!this.stageState[stage] && stage !== "error") return;
             if (stage === "error") {
-                for (const key of Object.keys(this.stageState)) {
-                    if (this.stageState[key].status === "running") this.stageState[key].status = "error";
-                }
-                this.finishRegenerate();
+                this.applyProgressError(detail.message);
             } else {
                 const status = detail.status || "waiting";
                 const previousStageState = this.stageState[stage] || {};
                 const hasImages = Object.prototype.hasOwnProperty.call(detail, "images");
+                const targetedRegenerate = Number.isInteger(this.regenerateState?.imageIndex)
+                    && this.regenerateState?.targetStages?.includes(stage);
                 if (status === "running") {
-                    const continuingBatch = previousStageState.status === "running"
-                        && (Boolean(detail.append_images) || !hasImages);
+                    const continuingBatch = targetedRegenerate || (
+                        previousStageState.status === "running"
+                        && (Boolean(detail.append_images) || !hasImages)
+                    );
                     if (!continuingBatch) this.resetStagesFrom(stage);
-                    if (stage === "pose_generation" || stage === "original_pose_generation" || stage === "source_upscaler") {
+                    if (!continuingBatch && (stage === "pose_generation" || stage === "original_pose_generation" || stage === "source_upscaler")) {
                         this.userSelectedPreview = false;
                         if (!this.data.ui) this.data.ui = {};
                         this.data.ui.user_selected_preview = false;
                     }
                 }
-                const nextImages = hasImages && detail.append_images
-                    ? [...(previousStageState.images || []), ...(detail.images || [])]
-                    : (hasImages ? detail.images : (previousStageState.images || null));
+                let nextImages = previousStageState.images || null;
+                if (hasImages && detail.replace_images) {
+                    nextImages = [...(previousStageState.images || [])];
+                    const previewStart = Math.max(0, Number.parseInt(detail.preview_start, 10) || 0);
+                    for (const [offset, image] of (detail.images || []).entries()) {
+                        nextImages[previewStart + offset] = image;
+                    }
+                } else if (hasImages && detail.append_images) {
+                    nextImages = [...(previousStageState.images || []), ...(detail.images || [])];
+                } else if (hasImages) {
+                    nextImages = detail.images;
+                }
                 this.stageState[stage] = {
                     status,
                     images: nextImages,
@@ -1148,6 +1339,13 @@ class CharacterGeneratorWidget {
         };
         api.addEventListener("vnccs.character_generator.stage", this.onStage);
         registerCleanup(this.node, () => api.removeEventListener("vnccs.character_generator.stage", this.onStage));
+        watchConnection(this.node, () => this.refreshProgress(), registerCleanup);
+        const timer = setInterval(() => {
+            if (document.visibilityState !== "hidden") {
+                this.refreshProgress().catch(error => console.warn("[VNCCS] Progress refresh failed", error));
+            }
+        }, 10000);
+        registerCleanup(this.node, () => { this._disposed = true; clearInterval(timer); });
 
         if (this.isClone) {
             this.onClonerUpdated = () => {
@@ -1164,19 +1362,22 @@ class CharacterGeneratorWidget {
             registerCleanup(this.node, () => window.removeEventListener("vnccs-character-cloner-updated", this.onClonerUpdated));
         }
         if (this.isEmotions) {
-            this.onEmotionStudioModeChanged = () => this.renderSettings();
+            this.onEmotionStudioModeChanged = () => {
+                if (this.syncModelResolution()) writeData(this.node, this.data);
+                this.renderSettings();
+            };
             window.addEventListener("vnccs-emotion-studio-generation-mode-changed", this.onEmotionStudioModeChanged);
             registerCleanup(this.node, () => window.removeEventListener("vnccs-emotion-studio-generation-mode-changed", this.onEmotionStudioModeChanged));
         }
     }
 
-    resetStagesFrom(stageKey) {
+    resetStagesFrom(stageKey, { preserveImages = false } = {}) {
         const start = this.stages.findIndex(([key]) => key === stageKey);
         if (start < 0) return;
         for (const [key] of this.stages.slice(start)) {
             this.stageState[key] = {
                 status: "waiting",
-                images: null,
+                images: preserveImages ? (this.stageState[key]?.images || null) : null,
                 message: "",
                 current: undefined,
                 total: undefined,
@@ -1205,15 +1406,15 @@ class CharacterGeneratorWidget {
         }, 500);
     }
 
-    finishRegenerate() {
+    finishRegenerate({ render = true } = {}) {
         clearInterval(this.regenerateTimer);
         this.regenerateTimer = null;
         this.regenerateState = null;
-        this.renderPreview();
-        this.renderChain();
+        this._regenerateRequestPending = false;
+        if (render) { this.renderPreview(); this.renderChain(); }
     }
 
-    updateRegenerateProgress(stage, status) {
+    updateRegenerateProgress(stage, status, { render = true } = {}) {
         if (!this.regenerateState) return;
         this.regenerateState.sawStageEvent = true;
         if (this.regenerateState.targetStages.includes(stage) && status === "running") {
@@ -1221,7 +1422,7 @@ class CharacterGeneratorWidget {
         }
         const lastStage = this.regenerateState.targetStages[this.regenerateState.targetStages.length - 1];
         if (stage === lastStage && status === "done") {
-            this.finishRegenerate();
+            this.finishRegenerate({ render });
         }
     }
 
@@ -1239,20 +1440,46 @@ class CharacterGeneratorWidget {
 
     set(section, key, value) {
         this.syncCharacterSourceData();
+        this.syncModelResolution();
         if (!this.data[section] || typeof this.data[section] !== "object") this.data[section] = {};
+        const rerenderBgRemove = section === "bg_remove"
+            && key === "preset"
+            && this.data.bg_remove.preset !== value;
         this.data[section][key] = value;
         if (section === "bg_remove" && key === "preset") {
+            if (String(value).trim().toLowerCase() === "native" && !this.bgRemoveModes().includes("Native")) {
+                this.data.bg_remove.preset = this.previousBgRemovePreset();
+            }
             this.data.bg_remove.use_preset_values = true;
         }
         if (this.isClone && section === "common" && key === "target_size") {
             this.data.pose_generation.target_size = value;
             this.data.remove_clothes.target_size = value;
         }
-        writeData(this.node, this.data, { notify: false });
+        this.rememberModelResolution(key === "target_size" && section === (this.isClone ? "common" : "pose_generation"));
+        writeData(this.node, this.data, { notify: false, trackChange: true });
         this.saveBrowserState();
+        if (rerenderBgRemove) this.renderSettings();
+    }
+
+    isNativeBgRemove() {
+        return String(this.data.bg_remove?.preset || "").trim().toLowerCase() === "native";
+    }
+
+    previousBgRemovePreset() {
+        const previous = this.data.ui?.bg_remove_previous_preset;
+        return BG_REMOVE_MODES.includes(previous) && previous !== "Native" ? previous : "balanced";
+    }
+
+    bgRemoveModes() {
+        return this.data.ui?.bg_remove_model_kind === "qi2"
+            ? BG_REMOVE_MODES
+            : BG_REMOVE_MODES.filter(mode => mode !== "Native");
     }
 
     generatorSettingsGroups() {
+        const isQI2 = this.data.ui?.resolution_model_kind === "qi2";
+        const isNativeBgRemove = this.isNativeBgRemove();
         const number = (section, key, label, min, max, step = 1, extra = {}) => ({
             section, key, label, type: "number", min, max, step, ...extra,
         });
@@ -1260,6 +1487,9 @@ class CharacterGeneratorWidget {
         const check = (section, key, label, extra = {}) => ({ section, key, label, type: "checkbox", wide: true, ...extra });
         const select = (section, key, label, options, extra = {}) => ({
             section, key, label, type: "select", options, ...extra,
+        });
+        const resolutionScale = (section, key = "target_size") => ({
+            section, key, label: "resolution scale", type: "resolution_scale", wide: true,
         });
         const textarea = (section, key, label, extra = {}) => ({
             section, key, label, type: "textarea", wide: true, ...extra,
@@ -1269,9 +1499,12 @@ class CharacterGeneratorWidget {
         if (!this.isEmotions) {
             const poseTargetSection = this.isClone ? "common" : "pose_generation";
             groups.push({
-                title: "VNCCS QWEN Encoder · Pose Generation",
-                fields: [
-                    number(poseTargetSection, "target_size", "target_size", 512, 4096, 8),
+                title: isQI2 ? "Text Encode Qwen Image 2.1 · Pose Generation" : "Encoder · Pose Generation",
+                fields: isQI2 ? [
+                    resolutionScale(poseTargetSection),
+                    select("pose_generation", "background_color", "background_color", ["from_generator", "White", "Green", "Blue"]),
+                ] : [
+                    resolutionScale(poseTargetSection),
                     select("pose_generation", "upscale_method", "upscale_method", ["lanczos", "bicubic", "area"]),
                     select("pose_generation", "crop_method", "crop_method", ["disabled", "pad", "center"]),
                     number("pose_generation", "latent_image_index", "latent_image_index", 1, 3, 1),
@@ -1283,7 +1516,6 @@ class CharacterGeneratorWidget {
                     text("pose_generation", "image1_name", "image1_name"),
                     text("pose_generation", "image2_name", "image2_name"),
                     text("pose_generation", "image3_name", "image3_name"),
-                    check("pose_generation", "qwen_2511", "qwen_2511"),
                     textarea("pose_generation", "instruction", "instruction"),
                 ],
             });
@@ -1311,8 +1543,11 @@ class CharacterGeneratorWidget {
             });
             if (this.isClone) {
                 groups.push({
-                    title: "VNCCS QWEN Encoder · Remove Clothes",
-                    fields: [
+                    title: isQI2 ? "Text Encode Qwen Image 2.1 · Remove Clothes" : "Encoder · Remove Clothes",
+                    fields: isQI2 ? [
+                        textarea("remove_clothes", "prompt", "prompt"),
+                        select("remove_clothes", "background_color", "background_color", ["White", "Green", "Blue"]),
+                    ] : [
                         textarea("remove_clothes", "prompt", "prompt"),
                         select("remove_clothes", "upscale_method", "upscale_method", ["lanczos", "bicubic", "area"]),
                         select("remove_clothes", "crop_method", "crop_method", ["disabled", "pad", "center"]),
@@ -1325,7 +1560,6 @@ class CharacterGeneratorWidget {
                         text("remove_clothes", "image1_name", "image1_name"),
                         text("remove_clothes", "image2_name", "image2_name"),
                         text("remove_clothes", "image3_name", "image3_name"),
-                        check("remove_clothes", "qwen_2511", "qwen_2511"),
                         textarea("remove_clothes", "instruction", "instruction"),
                     ],
                     note: "target_size is shared with the clone pose-generation encoder.",
@@ -1348,7 +1582,7 @@ class CharacterGeneratorWidget {
             groups.push({
                 title: "Generator Upscaler",
                 fields: [
-                    select("upscaler", "mode", "mode", ["seedvr", "gan", "off"]),
+                    select("upscaler", "mode", "mode", ["seedvr", "off"]),
                     check("upscaler", "inherit_pipe_seed", "Use seed from connected pipe"),
                     number("upscaler", "seed", "seed", 0, Number.MAX_SAFE_INTEGER, 1),
                 ],
@@ -1363,73 +1597,92 @@ class CharacterGeneratorWidget {
                     select("upscaler", "color_correction", "color correction", SEEDVR_COLOR_CORRECTION_MODES, { nodeName: "SeedVR2PostProcessing", inputName: "color_correction_method" }),
                 ],
             });
-            groups.push({
-                title: "UpscaleModelLoader · GAN",
-                fields: [
-                    select("upscaler", "gan_model", "model_name", this.ganUpscaleModels, { nodeName: "UpscaleModelLoader", inputName: "model_name", wide: true }),
-                ],
-            });
         } else {
             groups.push({
                 title: "UltralyticsDetectorProvider",
-                fields: [
+                fields: isQI2 ? [
+                    select("emotion_generation", "bbox_model", "bbox detector model", [], { nodeName: "UltralyticsDetectorProvider", inputName: "model_name", wide: true }),
+                ] : [
                     select("emotion_generation", "bbox_model", "bbox detector model", [], { nodeName: "UltralyticsDetectorProvider", inputName: "model_name", wide: true }),
                     select("emotion_generation", "segm_model", "segmentation detector model", [], { nodeName: "UltralyticsDetectorProvider", inputName: "model_name", wide: true }),
                 ],
             });
+            if (isQI2) {
+                groups.push({
+                    title: "VNCCS BBox Extractor · QI2 Face Generation",
+                    fields: [
+                        resolutionScale("emotion_generation", "target_size"),
+                        number("emotion_generation", "bbox_threshold", "threshold", 0, 1, 0.01),
+                        number("emotion_generation", "bbox_dilation", "dilation", 0, 1024, 1),
+                        number("emotion_generation", "feather", "feather", 0, 1024, 1),
+                        number("emotion_generation", "drop_size", "drop_size", 1, 4096, 1),
+                    ],
+                    note: "The crop is encoded by Text Encode Qwen Image 2.1, generated at the selected megapixel scale, resized to the original crop bounds, and pasted back at the same coordinates. Feather controls the blend at the paste boundary.",
+                });
+                groups.push({
+                    title: "Text Encode Qwen Image 2.1 · Emotion Prompt",
+                    fields: [
+                        textarea("emotion_generation", "qi2_prompt_template", "prompt template"),
+                    ],
+                    note: "Use {emotion} where the selected card's natural prompt and description tags should be inserted.",
+                });
+            } else {
+                groups.push({
+                    title: "SAMLoader",
+                    fields: [
+                        check("emotion_generation", "use_sam", "Connect SAM and segmentation detector to FaceDetailer"),
+                        select("emotion_generation", "sam_model", "model_name", [], { nodeName: "SAMLoader", inputName: "model_name", wide: true }),
+                        select("emotion_generation", "sam_device_mode", "device_mode", ["AUTO", "Prefer GPU", "CPU"], { nodeName: "SAMLoader", inputName: "device_mode" }),
+                    ],
+                });
+                groups.push({
+                    title: "FaceDetailer",
+                    fields: [
+                        number("emotion_generation", "guide_size", "guide_size", 64, 16384, 8),
+                        check("emotion_generation", "guide_size_for", "guide_size_for"),
+                        number("emotion_generation", "max_size", "max_size", 64, 16384, 8),
+                        check("emotion_generation", "inherit_pipe_sampler", "Use sampler and scheduler from connected pipe"),
+                        select("emotion_generation", "sampler_name", "sampler_name", [], { nodeName: "FaceDetailer", inputName: "sampler_name" }),
+                        select("emotion_generation", "scheduler", "scheduler", [], { nodeName: "FaceDetailer", inputName: "scheduler" }),
+                        number("emotion_generation", "feather", "feather", 0, 1024, 1),
+                        check("emotion_generation", "noise_mask", "noise_mask"),
+                        check("emotion_generation", "force_inpaint", "force_inpaint"),
+                        number("emotion_generation", "bbox_threshold", "bbox_threshold", 0, 1, 0.01),
+                        number("emotion_generation", "bbox_dilation", "bbox_dilation", 0, 1024, 1),
+                        number("emotion_generation", "bbox_crop_factor", "bbox_crop_factor", 1, 100, 0.01),
+                        select("emotion_generation", "sam_detection_hint", "sam_detection_hint", ["center-1", "horizontal-2", "vertical-2", "rect-4", "diamond-4", "mask-area", "mask-points", "mask-point-bbox", "none"], { nodeName: "FaceDetailer", inputName: "sam_detection_hint" }),
+                        number("emotion_generation", "sam_dilation", "sam_dilation", 0, 1024, 1),
+                        number("emotion_generation", "sam_threshold", "sam_threshold", 0, 1, 0.01),
+                        number("emotion_generation", "sam_bbox_expansion", "sam_bbox_expansion", 0, 1024, 1),
+                        number("emotion_generation", "sam_mask_hint_threshold", "sam_mask_hint_threshold", 0, 1, 0.01),
+                        select("emotion_generation", "sam_mask_hint_use_negative", "sam_mask_hint_use_negative", ["False", "True"], { nodeName: "FaceDetailer", inputName: "sam_mask_hint_use_negative" }),
+                        number("emotion_generation", "drop_size", "drop_size", 0, 4096, 1),
+                        number("emotion_generation", "cycle", "cycle", 1, 100, 1),
+                        check("emotion_generation", "inpaint_model", "inpaint_model"),
+                        number("emotion_generation", "noise_mask_feather", "noise_mask_feather", 0, 1024, 1),
+                        check("emotion_generation", "tiled_encode", "tiled_encode"),
+                        check("emotion_generation", "tiled_decode", "tiled_decode"),
+                    ],
+                    note: "Steps and CFG come from the connected pipe. Face Detailer denoise is controlled in the main panel. Sampler and scheduler can optionally be overridden here. Seed remains per emotion item.",
+                });
+            }
             groups.push({
-                title: "SAMLoader",
-                fields: [
-                    check("emotion_generation", "use_sam", "Connect SAM and segmentation detector to FaceDetailer"),
-                    select("emotion_generation", "sam_model", "model_name", [], { nodeName: "SAMLoader", inputName: "model_name", wide: true }),
-                    select("emotion_generation", "sam_device_mode", "device_mode", ["AUTO", "Prefer GPU", "CPU"], { nodeName: "SAMLoader", inputName: "device_mode" }),
-                ],
-            });
-            groups.push({
-                title: "FaceDetailer",
-                fields: [
-                    number("emotion_generation", "guide_size", "guide_size", 64, 16384, 8),
-                    check("emotion_generation", "guide_size_for", "guide_size_for"),
-                    number("emotion_generation", "max_size", "max_size", 64, 16384, 8),
-                    check("emotion_generation", "inherit_pipe_sampler", "Use sampler and scheduler from connected pipe"),
-                    select("emotion_generation", "sampler_name", "sampler_name", [], { nodeName: "FaceDetailer", inputName: "sampler_name" }),
-                    select("emotion_generation", "scheduler", "scheduler", [], { nodeName: "FaceDetailer", inputName: "scheduler" }),
-                    number("emotion_generation", "feather", "feather", 0, 1024, 1),
-                    check("emotion_generation", "noise_mask", "noise_mask"),
-                    check("emotion_generation", "force_inpaint", "force_inpaint"),
-                    number("emotion_generation", "bbox_threshold", "bbox_threshold", 0, 1, 0.01),
-                    number("emotion_generation", "bbox_dilation", "bbox_dilation", 0, 1024, 1),
-                    number("emotion_generation", "bbox_crop_factor", "bbox_crop_factor", 1, 100, 0.01),
-                    select("emotion_generation", "sam_detection_hint", "sam_detection_hint", ["center-1", "horizontal-2", "vertical-2", "rect-4", "diamond-4", "mask-area", "mask-points", "mask-point-bbox", "none"], { nodeName: "FaceDetailer", inputName: "sam_detection_hint" }),
-                    number("emotion_generation", "sam_dilation", "sam_dilation", 0, 1024, 1),
-                    number("emotion_generation", "sam_threshold", "sam_threshold", 0, 1, 0.01),
-                    number("emotion_generation", "sam_bbox_expansion", "sam_bbox_expansion", 0, 1024, 1),
-                    number("emotion_generation", "sam_mask_hint_threshold", "sam_mask_hint_threshold", 0, 1, 0.01),
-                    select("emotion_generation", "sam_mask_hint_use_negative", "sam_mask_hint_use_negative", ["False", "True"], { nodeName: "FaceDetailer", inputName: "sam_mask_hint_use_negative" }),
-                    number("emotion_generation", "drop_size", "drop_size", 0, 4096, 1),
-                    number("emotion_generation", "cycle", "cycle", 1, 100, 1),
-                    check("emotion_generation", "inpaint_model", "inpaint_model"),
-                    number("emotion_generation", "noise_mask_feather", "noise_mask_feather", 0, 1024, 1),
-                    check("emotion_generation", "tiled_encode", "tiled_encode"),
-                    check("emotion_generation", "tiled_decode", "tiled_decode"),
-                ],
-                note: "Steps and CFG come from the connected pipe. Face Detailer denoise is controlled in the main panel. Sampler and scheduler can optionally be overridden here. Seed remains per emotion item.",
-            });
-            groups.push({
-                title: "VNCCS Emotion Matte Merge",
+                title: isQI2 ? "VNCCS Emotion Crop Merge" : "VNCCS Emotion Matte Merge",
                 fields: [
                     number("emotion_generation", "matte_expand_radius", "matte_expand_radius", 0, 256, 1),
                     number("emotion_generation", "matte_feather_radius", "matte_feather_radius", 0, 256, 1),
                     number("emotion_generation", "chroma_context", "chroma_context", 0, 1024, 1),
                 ],
-                note: "These parameters affect only the FaceDetailer region. The original sprite alpha remains untouched elsewhere.",
+                note: isQI2
+                    ? "The generated QI2 face crop is returned to its original coordinates before background processing."
+                    : "These parameters affect only the FaceDetailer region. The original sprite alpha remains untouched elsewhere.",
             });
         }
 
         groups.push({
             title: "VNCCS Chroma Key",
             fields: [
-                select("bg_remove", "preset", "preset", ["disabled", "ultra_light", "light", "balanced", "strong", "aggressive"]),
+                select("bg_remove", "preset", "preset", this.bgRemoveModes()),
                 check("bg_remove", "use_preset_values", "Use values from selected preset"),
                 number("bg_remove", "tolerance", "tolerance", 0, 1, 0.01),
                 number("bg_remove", "softness", "softness", 0.001, 1, 0.01),
@@ -1439,33 +1692,35 @@ class CharacterGeneratorWidget {
                 number("bg_remove", "foreground_recover", "foreground_recover", 0, 1, 0.01),
                 number("bg_remove", "edge_decontaminate", "edge_decontaminate", 0, 1, 0.01),
                 number("bg_remove", "edge_choke", "edge_choke", 0, 1, 0.01),
-                select("bg_remove", "matte_method", "matte_method", ["chroma_soft", "guided_edge", "pymatting_if_available"]),
+                select("bg_remove", "matte_method", "matte_method", ["chroma_soft", "guided_edge", "pymatting_if_available", "screen_matte"]),
                 select("bg_remove", "screen_mode", "screen_mode", ["from_background", "auto", "green", "blue", "red"]),
                 select("bg_remove", "output_mode", "output_mode", ["straight_rgba", "premultiplied_rgba"]),
-                check("bg_remove", "use_sam3_details_recovery", "Use SAM3 recovery mask"),
+                ...(!isNativeBgRemove ? [check("bg_remove", "use_sam3_details_recovery", "Use SAM3 recovery mask")] : []),
             ],
             note: "When preset values are enabled, the individual chroma parameters are retained but the preset controls processing.",
         });
-        groups.push({
-            title: "Easy SAM3 · Model Loader",
-            fields: [
-                text("bg_remove", "sam3_model", "model (blank = managed VNCCS model)", { wide: true }),
-                select("bg_remove", "sam3_segmentor", "segmentor", ["image"], { nodeName: "LoadSam3Model", inputName: "segmentor" }),
-                select("bg_remove", "sam3_device", "device", ["auto", "cuda", "cpu", "mps"], { nodeName: "LoadSam3Model", inputName: "device" }),
-                select("bg_remove", "sam3_precision", "precision", ["bf16", "fp16", "fp32"], { nodeName: "LoadSam3Model", inputName: "precision" }),
-            ],
-        });
-        groups.push({
-            title: "Easy SAM3 · Image Segmentation / Recovery",
-            fields: [
-                textarea("bg_remove", "sam3_prompt", "prompt"),
-                number("bg_remove", "sam3_threshold", "threshold", 0, 1, 0.01),
-                select("bg_remove", "sam3_add_background", "add_background", ["none", "black", "white", "green", "blue"], { nodeName: "Sam3ImageSegmentation", inputName: "add_background" }),
-                number("bg_remove", "sam3_detection_limit", "detection_limit", -1, 10000, 1),
-                number("bg_remove", "sam3_erode_radius", "recovery erode radius", 0, 256, 1),
-                number("bg_remove", "sam3_min_foreground_overlap", "minimum foreground overlap", 0, 1, 0.01),
-            ],
-        });
+        if (!isNativeBgRemove) {
+            groups.push({
+                title: "Easy SAM3 · Model Loader",
+                fields: [
+                    text("bg_remove", "sam3_model", "model (blank = managed VNCCS model)", { wide: true }),
+                    select("bg_remove", "sam3_segmentor", "segmentor", ["image"], { nodeName: "LoadSam3Model", inputName: "segmentor" }),
+                    select("bg_remove", "sam3_device", "device", ["auto", "cuda", "cpu", "mps"], { nodeName: "LoadSam3Model", inputName: "device" }),
+                    select("bg_remove", "sam3_precision", "precision", ["bf16", "fp16", "fp32"], { nodeName: "LoadSam3Model", inputName: "precision" }),
+                ],
+            });
+            groups.push({
+                title: "Easy SAM3 · Image Segmentation / Recovery",
+                fields: [
+                    textarea("bg_remove", "sam3_prompt", "prompt"),
+                    number("bg_remove", "sam3_threshold", "threshold", 0, 1, 0.01),
+                    select("bg_remove", "sam3_add_background", "add_background", ["none", "black", "white", "green", "blue"], { nodeName: "Sam3ImageSegmentation", inputName: "add_background" }),
+                    number("bg_remove", "sam3_detection_limit", "detection_limit", -1, 10000, 1),
+                    number("bg_remove", "sam3_erode_radius", "recovery erode radius", 0, 256, 1),
+                    number("bg_remove", "sam3_min_foreground_overlap", "minimum foreground overlap", 0, 1, 0.01),
+                ],
+            });
+        }
         return groups;
     }
 
@@ -1494,6 +1749,22 @@ class CharacterGeneratorWidget {
                 draft[field.section][field.key] = input.checked;
             };
             wrap.append(input, caption);
+        } else if (field.type === "resolution_scale") {
+            wrap.classList.add("is-wide");
+            const value = document.createElement("span");
+            value.className = "vnccs-pipe-settings-field-label";
+            value.textContent = resolutionScaleText(current);
+            input = document.createElement("input");
+            input.type = "range";
+            input.min = String(RESOLUTION_SCALE_MIN_MP);
+            input.max = String(RESOLUTION_SCALE_MAX_MP);
+            input.step = String(RESOLUTION_SCALE_STEP_MP);
+            input.value = resolutionScaleMegapixels(current).toFixed(1);
+            input.oninput = () => {
+                draft[field.section][field.key] = resolutionScaleValue(input.value);
+                value.textContent = resolutionScaleText(draft[field.section][field.key]);
+            };
+            wrap.append(caption, value, input);
         } else if (field.type === "select") {
             input = document.createElement("select");
             for (const value of this.settingsFieldOptions(field, current)) {
@@ -1531,10 +1802,14 @@ class CharacterGeneratorWidget {
                     draft[field.section][field.key] = input.value;
                     return;
                 }
-                const value = Number(String(input.value).replace(",", "."));
-                if (!Number.isFinite(value)) return;
+                const text = String(input.value).trim().replace(",", ".");
+                const value = Number(text);
+                if (!text || !Number.isFinite(value)) return;
                 draft[field.section][field.key] = Math.max(field.min, Math.min(field.max, value));
             };
+            if (field.type === "number") {
+                input.onblur = () => { input.value = String(draft[field.section][field.key] ?? ""); };
+            }
             wrap.append(caption, input);
         }
         this.protectNativeControl(input);
@@ -1614,8 +1889,9 @@ class CharacterGeneratorWidget {
         apply.textContent = "Apply";
         apply.onclick = () => {
             this.data = deepMerge(DEFAULT_DATA, draft);
+            this.syncModelResolution();
             this.data.bg_remove.use_internal_rmbg = false;
-            writeData(this.node, this.data);
+            writeData(this.node, this.data, { trackChange: true });
             this.saveBrowserState();
             this.renderSettings();
             this.closeModal();
@@ -1629,12 +1905,13 @@ class CharacterGeneratorWidget {
         backdrop.onclick = event => {
             if (event.target === backdrop) this.closeModal();
         };
-        modal.onkeydown = event => {
+        modal.addEventListener("keydown", event => {
             if (event.key === "Escape") {
                 event.preventDefault();
+                event.stopPropagation();
                 this.closeModal();
             }
-        };
+        }, true);
         this.root.appendChild(backdrop);
         this.modalEl = backdrop;
         requestAnimationFrame(() => modal.querySelector("input, select, textarea")?.focus({ preventScroll: true }));
@@ -1733,6 +2010,7 @@ class CharacterGeneratorWidget {
     async regenerateFrom(stageKey, imageIndex = null) {
         if (!this.stages.some(([key]) => key === stageKey)) return;
         this.syncCharacterSourceData();
+        this.syncModelResolution();
         this.syncStagesFromData();
         const beforeRegenerate = this.snapshotStageState();
         this.data.regenerate_from = stageKey;
@@ -1742,14 +2020,19 @@ class CharacterGeneratorWidget {
         this.selectedPreview = stageKey;
         this.userSelectedPreview = false;
         if (!this.data.ui) this.data.ui = {};
+        this.data.ui.progress_scope = this.progressScope();
+        const requestId = cacheIdentity();
+        this.data.ui.progress_request_id = requestId;
         this.data.ui.selected_preview = stageKey;
         this.data.ui.user_selected_preview = false;
-        this.resetStagesFrom(stageKey);
+        this.resetStagesFrom(stageKey, { preserveImages: Number.isInteger(imageIndex) });
         this.startRegenerate(stageKey, imageIndex);
+        this.regenerateState.requestId = requestId;
         writeData(this.node, this.data);
         this.renderPreview();
         this.renderChain();
         try {
+            this._regenerateRequestPending = requestId;
             const response = await api.fetchApi("/vnccs/character_generator/regenerate", {
                 method: "POST",
                 body: JSON.stringify({
@@ -1763,19 +2046,150 @@ class CharacterGeneratorWidget {
             if (!response.ok) {
                 throw new Error(await this.responseErrorMessage(response));
             }
-            this.finishRegenerate();
+            if (this._regenerateRequestPending === requestId) this.finishRegenerate();
         } catch (error) {
+            if (this._regenerateRequestPending !== requestId) return;
             const hadStageEvent = Boolean(this.regenerateState?.sawStageEvent);
             this.finishRegenerate();
-            if (!hadStageEvent) this.restoreStageSnapshot(beforeRegenerate);
+            if (!hadStageEvent) {
+                beforeRegenerate.ui = { ...beforeRegenerate.ui, progress_scope: this.progressScope(),
+                    progress_request_id: this.data.ui.progress_request_id };
+                this.restoreStageSnapshot(beforeRegenerate);
+            }
             throw error;
         } finally {
-            if (this.data.regenerate_from === stageKey) {
+            if (this._regenerateRequestPending === requestId) this._regenerateRequestPending = false;
+            if (this.data.ui.progress_request_id === requestId && this.data.regenerate_from === stageKey) {
                 delete this.data.regenerate_from;
                 delete this.data.regenerate_index;
                 writeData(this.node, this.data);
             }
         }
+    }
+
+    controlCenterWidgetNode() {
+        const graph = this.node.graph || app.graph;
+        const pending = [this.node];
+        const visited = new Set();
+        while (pending.length) {
+            const node = pending.shift();
+            if (!node || visited.has(node)) continue;
+            visited.add(node);
+            if (node.type === "VNCCS_ControlCenter" || node.comfyClass === "VNCCS_ControlCenter") return node;
+            for (const input of node.inputs || []) {
+                if (input.link == null) continue;
+                const link = graph?.links?.[input.link];
+                const source = graph?.getNodeById?.(link?.origin_id);
+                if (source) pending.push(source);
+            }
+        }
+        return null;
+    }
+
+    rememberModelResolution(edited = false) {
+        if (this.isEmotions || !this.data.ui?.resolution_model_key) return;
+        const section = this.isClone ? "common" : "pose_generation";
+        const key = this.data.ui.resolution_model_key;
+        const previous = this.data.ui.resolution_by_model?.[key];
+        const size = this.data[section].target_size;
+        const changed = previous && (previous.target_size ?? previous) !== size;
+        const updatedAt = edited || changed
+            ? Math.max(Date.now(), (previous?.updated_at || 0) + 1)
+            : previous?.updated_at || 0;
+        this.data.ui.resolution_by_model = {
+            ...(this.data.ui.resolution_by_model || {}),
+            [key]: { target_size: size, updated_at: updatedAt },
+        };
+    }
+
+    syncModelResolution(sourceId = null) {
+        const source = this.controlCenterWidgetNode();
+        let kind = "";
+        let modelKey = "";
+        if (source) {
+            if (sourceId != null && String(source.id) !== String(sourceId)) return false;
+            const stateWidget = source.widgets?.find(widget => widget.name === "node_state");
+            let state;
+            try { state = JSON.parse(stateWidget?.value || "{}"); } catch { return false; }
+            kind = String(state.active_kind || "QI2").trim().toLowerCase();
+            const family = state.active_kind || "QI2";
+            const type = state.selected_types_by_kind?.[family] || (kind === "qi2" && state.selected_type) || "unet";
+            const model = state.selected_models?.[`${family}:${type}`] || state.selected_model || "";
+            modelKey = JSON.stringify([kind, type, model]);
+        } else if (this.isEmotions && sourceId == null) {
+            kind = this.connectedEmotionStudioMode();
+        } else {
+            return false;
+        }
+        if (!["qi2", "klein9b", "minimaxh3", "anima", "illustrious"].includes(kind)) return false;
+        const previousKind = this.data.ui?.resolution_model_kind;
+        const previousBgKind = this.data.ui?.bg_remove_model_kind;
+        let changed = false;
+        if (kind === "qi2" && this.qi2EmotionDefaultsPending) {
+            this.data.emotion_generation = {
+                ...(this.data.emotion_generation || {}),
+                ...QI2_EMOTION_BBOX_DEFAULTS,
+            };
+            this.qi2EmotionDefaultsPending = false;
+            changed = true;
+        }
+        if (!this.isEmotions && this.data.ui?.resolution_model_key !== modelKey) {
+            const section = this.isClone ? "common" : "pose_generation";
+            const settings = this.data[section];
+            const previousKey = this.data.ui?.resolution_model_key;
+            this.rememberModelResolution();
+            const saved = this.data.ui?.resolution_by_model?.[modelKey];
+            const savedSize = saved?.target_size ?? saved;
+            if (Number.isFinite(savedSize)) {
+                settings.target_size = resolutionScaleValue(resolutionScaleMegapixels(savedSize));
+            } else if (previousKey || (previousKind && previousKind !== kind) || (!previousKind && Number(settings.target_size) === 1024)) {
+                // Use family defaults only for a model without a saved choice.
+                settings.target_size = kind === "minimaxh3" ? 1536 : 1024;
+            }
+            this.data.ui = { ...this.data.ui, resolution_model_key: modelKey };
+            if (this.isClone) {
+                this.data.pose_generation.target_size = settings.target_size;
+                this.data.remove_clothes.target_size = settings.target_size;
+            }
+            changed = true;
+        }
+        this.rememberModelResolution();
+
+        if (previousBgKind !== kind || (kind !== "qi2" && this.isNativeBgRemove())) {
+            const preset = String(this.data.bg_remove?.preset || "balanced");
+            if (kind === "qi2") {
+                if (preset.toLowerCase() !== "native") {
+                    this.data.ui.bg_remove_previous_preset = preset;
+                }
+                this.data.bg_remove.preset = "Native";
+            } else if (preset.toLowerCase() === "native") {
+                this.data.bg_remove.preset = this.previousBgRemovePreset();
+            }
+            this.data.ui.bg_remove_model_kind = kind;
+            changed = true;
+        }
+        this.data.ui = { ...this.data.ui, resolution_model_kind: kind };
+        return changed;
+    }
+
+    bindModelResolutionSync() {
+        const sync = event => {
+            const sourceChanged = this.syncCharacterSourceData();
+            const modelChanged = this.syncModelResolution(event?.detail?.node_id);
+            if (!sourceChanged && !modelChanged) return;
+            this.syncStagesFromData();
+            writeData(this.node, this.data);
+            this.renderSettings();
+            this.renderPreview();
+            this.renderChain();
+        };
+        window.addEventListener("vnccs-control-center-model-changed", sync);
+        // Also cover graph reconnection and loading saved workflows in any node order.
+        const timer = setInterval(sync, 500);
+        registerCleanup(this.node, () => {
+            window.removeEventListener("vnccs-control-center-model-changed", sync);
+            clearInterval(timer);
+        });
     }
 
     syncCharacterNameFromCreator() {
@@ -1816,11 +2230,7 @@ class CharacterGeneratorWidget {
     }
 
     syncEmotionStudioSourceData() {
-        const matchesType = (node, type, displayName = "") => {
-            const title = typeof node?.getTitle === "function" ? node.getTitle() : node?.title;
-            return node?.type === type || node?.comfyClass === type || node?.constructor?.type === type || title === displayName;
-        };
-        const source = app.graph?._nodes?.find(n => matchesType(n, "EmotionGeneratorV2", "VNCCS Emotion Studio"));
+        const source = this.connectedEmotionStudioNode();
         if (!source) return false;
         const character = source.widgets?.find(w => w.name === "character")?.value || "";
         const costumesRaw = source.widgets?.find(w => w.name === "costumes_data")?.value || "[]";
@@ -1857,13 +2267,10 @@ class CharacterGeneratorWidget {
         if (this.isEmotions) {
             const pairs = Array.isArray(this.data.emotion_pairs) ? this.data.emotion_pairs : [];
             if (!pairs.length) return DEFAULT_EMOTION_STAGES;
-            return pairs.flatMap((pair, index) => {
+            return pairs.map((pair, index) => {
                 const key = `emotion_${String(index + 1).padStart(4, "0")}`;
                 const label = `${pair.costume || "Costume"} / ${pair.emotion || "Emotion"}`;
-                return [
-                    [key, label],
-                    [`${key}_bg_remove`, `${label} BG`],
-                ];
+                return [`${key}_bg_remove`, label];
             });
         }
         return this.isClothes ? CLOTHES_STAGES : STAGES;
@@ -1871,12 +2278,18 @@ class CharacterGeneratorWidget {
 
     defaultPreviewStage() {
         if (this.isClone) return "original_pose_generation";
-        if (this.isEmotions) return this.currentStages()[0]?.[0] || "emotion_0001";
+        if (this.isEmotions) return this.currentStages()[0]?.[0] || "emotion_0001_bg_remove";
         return this.isClothes ? "source_upscaler" : "pose_generation";
     }
 
     syncStagesFromData() {
         const nextStages = this.currentStages();
+        const stageCount = Math.max(1, nextStages.length);
+        const stageScale = this.isEmotions
+            ? Math.max(0.5, Math.min(1, 6 / stageCount))
+            : 1;
+        this.root?.style.setProperty("--vnccs-stage-count", String(stageCount));
+        this.root?.style.setProperty("--vnccs-stage-scale", String(stageScale));
         const nextKeys = new Set(nextStages.map(([key]) => key));
         this.stages = nextStages;
         if (!this.stageState) this.stageState = {};
@@ -1910,24 +2323,133 @@ class CharacterGeneratorWidget {
         this.chainEl?.classList.toggle("is-emotions", this.isEmotions);
     }
 
+    progressScope() {
+        return workflowScope(this.node);
+    }
+
+    prepareQueuedRun() {
+        // Normal execution identity comes from server events. A per-submission
+        // nonce in widget_data would invalidate ComfyUI's execution cache.
+        this.data.ui ||= {};
+        this.data.ui.progress_scope = this.progressScope();
+        delete this.data.ui.progress_request_id;
+        delete this.data.ui.progress_request_kind;
+        delete this.data.regenerate_from;
+        delete this.data.regenerate_index;
+        writeData(this.node, this.data);
+    }
+
+    acceptsProgressRequest(requestId) {
+        // Only an outstanding Regenerate needs a temporary request filter.
+        // A completed request must not hide normal jobs already in the queue.
+        const pending = this.regenerateState?.requestId || this._regenerateRequestPending;
+        return !pending || requestId === pending;
+    }
+
+    observeProgressRequest(requestId, runId) {
+        this._activeProgressRequestId = requestId;
+        this._activeProgressRunId = runId;
+    }
+
+    progressViewKey() {
+        return JSON.stringify([
+            this.stages.map(([key]) => {
+                const stage = this.stageState[key] || {};
+                return [key, stage.status || "waiting", stage.images || null, stage.message || "", stage.current ?? null, stage.total ?? null];
+            }),
+            this.selectedPreview,
+            this.regenerateState ? [this.regenerateState.from, this.regenerateState.activeStage, this.regenerateState.imageIndex] : null,
+        ]);
+    }
+
+    applyProgressError(message, failedStage = null, { render = true } = {}) {
+        let targets = this.stages.map(([key]) => key).filter(key => this.stageState[key]?.status === "running");
+        if (!targets.length) {
+            const lastDone = this.stages.map(([key]) => key).reverse().find(key => this.stageState[key]?.status === "done");
+            const fallback = this.stages.some(([key]) => key === failedStage) ? failedStage : lastDone || this.stages[0]?.[0];
+            if (fallback) targets = [fallback];
+        }
+        for (const key of targets) this.stageState[key] = {
+            ...this.stageState[key], status: "error", message: message || "Generation failed. Check the server log.",
+        };
+        if (!this.userSelectedPreview && targets.length && this.selectedPreview !== targets[targets.length - 1]) {
+            this.selectedPreview = targets[targets.length - 1];
+            this.persistUI();
+        }
+        this.finishRegenerate({ render });
+    }
+
+    async refreshProgress() {
+        const scope = this.progressScope();
+        if (!scope || this._progressPending || this._disposed) return;
+        this._progressPending = true;
+        const requestId = this.data.ui?.progress_request_id;
+        const epoch = this._progressEpoch;
+        const revision = this._progressRevision;
+        try {
+            const { snapshot } = await checkedJSON(`/vnccs/character_generator/progress?scope=${encodeURIComponent(scope)}`);
+            if (this._disposed || scope !== this.progressScope() || requestId !== this.data.ui?.progress_request_id) return;
+            if (this._progressEpoch !== epoch && snapshot?.epoch !== this._progressEpoch) return;
+            if (!snapshot) {
+                if (this._regenerateRequestPending || revision !== this._progressRevision) return;
+                let changed = false;
+                for (const state of Object.values(this.stageState)) {
+                    if (state.status === "running") {
+                        state.status = "error";
+                        state.message = "Server progress is unavailable. Check the queue before retrying.";
+                        changed = true;
+                    }
+                }
+                if (this.regenerateState) this.finishRegenerate();
+                else if (changed) { this.renderPreview(); this.renderChain(); }
+                if (changed) this.saveBrowserState();
+                return;
+            }
+            if (snapshot.scope !== scope || String(snapshot.node_id) !== String(this.node.id)) return;
+            if (!this.acceptsProgressRequest(snapshot.request_id)) return;
+            if (this._progressScope === scope && this._progressEpoch === snapshot.epoch && snapshot.revision < (this._progressRevision || 0)) return;
+            const previousView = this.progressViewKey();
+            this._progressScope = scope;
+            this._progressRevision = snapshot.revision;
+            this._progressEpoch = snapshot.epoch;
+            this.observeProgressRequest(snapshot.request_id, snapshot.run_id);
+            let followedStage = null;
+            for (const [key] of this.stages) {
+                this.stageState[key] = snapshot.stages[key] || { status: "waiting", images: null, message: "" };
+                if (["running", "done"].includes(this.stageState[key].status)) followedStage = key;
+                this.updateRegenerateProgress(key, this.stageState[key].status, { render: false });
+            }
+            if (!snapshot.error && !this.userSelectedPreview && followedStage && this.selectedPreview !== followedStage) {
+                this.selectedPreview = followedStage;
+                this.persistUI();
+            }
+            if (snapshot.error) this.applyProgressError(snapshot.error.message, snapshot.error.stage, { render: false });
+            else if (Object.values(this.stageState).some(stage => stage.status === "error")) this.finishRegenerate({ render: false });
+            if (previousView === this.progressViewKey()) return;
+            if (this.viewer?.open) this.syncViewerImage();
+            this.renderPreview();
+            this.renderChain();
+            this.saveBrowserState();
+        } finally { this._progressPending = false; }
+    }
+
     storageKey() {
-        return `vnccs:character-generator:${this.node.type || "node"}:${this.node.id}`;
+        const scope = workflowScope(this.node);
+        return scope ? `character-generator:${scope}` : null;
     }
 
     restoreBrowserState() {
+        if (!this.storageKey()) return;
         let saved = null;
         try {
-            saved = JSON.parse(localStorage.getItem(this.storageKey()) || "null");
+            saved = JSON.parse(storage.getItem(this.storageKey()) || "null");
         } catch {
             saved = null;
         }
-        if (!saved || saved.version !== 1) return;
+        if (!saved || saved.version !== 2) return;
 
-        let restoredData = false;
-        if (saved.data) {
-            this.data = deepMerge(this.data, saved.data);
-            restoredData = true;
-        }
+        // Workflow settings are authoritative; browser data is only a matching UI cache.
+        if (saved.settings !== JSON.stringify(this.data)) return;
         if (this.stages.some(([key]) => key === saved.selectedPreview)) {
             this.selectedPreview = saved.selectedPreview;
         }
@@ -1960,10 +2482,10 @@ class CharacterGeneratorWidget {
             }
             this.restoredViewer = saved.viewer;
         }
-        if (restoredData) writeData(this.node, this.data);
     }
 
     saveBrowserState(includeImages = true) {
+        if (!this.storageKey()) return;
         this.syncCharacterSourceData();
         this.syncStagesFromData();
         const stageState = {};
@@ -1978,15 +2500,15 @@ class CharacterGeneratorWidget {
             };
         }
         const payload = {
-            version: 1,
-            data: this.data,
+            version: 2,
+            settings: JSON.stringify(this.data),
             selectedPreview: this.selectedPreview,
             userSelectedPreview: this.userSelectedPreview,
             stageState,
             viewer: this.serializableViewerState(),
         };
         try {
-            localStorage.setItem(this.storageKey(), JSON.stringify(payload));
+            if (!storage.setItem(this.storageKey(), JSON.stringify(payload))) throw new Error("Cache unavailable");
         } catch {
             if (!includeImages) return;
             const compactState = {};
@@ -2004,7 +2526,7 @@ class CharacterGeneratorWidget {
                 };
             }
             try {
-                localStorage.setItem(this.storageKey(), JSON.stringify({ ...payload, stageState: compactState }));
+                if (!storage.setItem(this.storageKey(), JSON.stringify({ ...payload, stageState: compactState }))) throw new Error("Cache unavailable");
             } catch {
                 this.saveBrowserState(false);
             }
@@ -2072,12 +2594,13 @@ class CharacterGeneratorWidget {
     async loadNodeDefs() {
         const names = [
             "VNCCS_QWEN_Encoder",
+            "TextEncodeQwenImage21",
+            "QwenImage21Cache",
             "KSampler",
             "VAEDecodeTiled",
             "UNETLoader",
             "VAELoader",
             ...NATIVE_SEEDVR_NODE_NAMES,
-            "UpscaleModelLoader",
             "VNCCSChromaKey",
             "UltralyticsDetectorProvider",
             "SAMLoader",
@@ -2121,26 +2644,8 @@ class CharacterGeneratorWidget {
             this.seedvrUpdateModalShown = true;
             this.validateNativeSeedvr(true);
         }
-        await Promise.all([
-            this.loadSeedvrAttentionInfo(),
-            this.loadGanUpscaleModels(),
-        ]);
+        await this.loadSeedvrAttentionInfo();
         this.renderSettings();
-    }
-
-    async loadGanUpscaleModels() {
-        try {
-            const r = await api.fetchApi("/vnccs/character_generator/gan_upscale_models");
-            if (r.ok) {
-                const data = await r.json();
-                this.ganUpscaleModels = uniqueOptions(Array.isArray(data?.models) ? data.models : []);
-            }
-        } catch {
-            this.ganUpscaleModels = [];
-        }
-        if (!this.ganUpscaleModels.length) {
-            this.ganUpscaleModels = this.getLoaderModelOptions("UpscaleModelLoader", "model_name");
-        }
     }
 
     async loadSeedvrAttentionInfo() {
@@ -2181,11 +2686,6 @@ class CharacterGeneratorWidget {
         return uniqueOptions([currentValue, ...workflowOptions, ...nodeOptions]);
     }
 
-    getLoaderModelOptions(nodeName, inputName) {
-        const spec = this.getInputSpec(nodeName, inputName);
-        return uniqueOptions(Array.isArray(spec?.[0]) ? spec[0] : []);
-    }
-
     syncSelectToOptions(section, key, options) {
         const values = options || [];
         if (!values.length) return values;
@@ -2200,7 +2700,8 @@ class CharacterGeneratorWidget {
         if (!input || input._vnccsNativeControlProtected) return input;
         input._vnccsNativeControlProtected = true;
         for (const eventName of ["pointerdown", "mousedown", "mouseup", "dblclick", "touchstart", "touchend", "keydown"]) {
-            input.addEventListener(eventName, event => event.stopPropagation(), true);
+            // Let target handlers run before isolating the event from the graph.
+            input.addEventListener(eventName, event => event.stopPropagation());
         }
         // Keep the click inside the DOM widget without cancelling the control's
         // own target-phase handler (for example the settings modal opener).
@@ -2229,9 +2730,8 @@ class CharacterGeneratorWidget {
         const wrap = document.createElement("label");
         wrap.className = "vnccs-pipe-field";
         const help = {
-            target_size: "Scales the QWEN encoder latent by total pixel area while preserving the pose aspect ratio.",
+            target_size: "Sets the generated image area from 1.0 to 4.0 megapixels while preserving aspect ratio.",
             prompt: "Prompt text used for the remove-clothes/preparation stage.",
-            gan_model: "Upscale model used when GAN upscaling is selected.",
             model: "SeedVR diffusion model used for the upscaler stage.",
             resolution: "Target size of the shortest output edge in pixels.",
             max_resolution: "Maximum size of either output edge in pixels. Set to 0 to disable the limit.",
@@ -2272,7 +2772,7 @@ class CharacterGeneratorWidget {
             input.checked = Boolean(this.data[section][key]);
             input.onchange = () => this.set(section, key, input.checked);
             for (const eventName of ["pointerdown", "mousedown", "mouseup", "dblclick", "touchstart", "touchend", "keydown"]) {
-                wrap.addEventListener(eventName, event => event.stopPropagation(), true);
+                wrap.addEventListener(eventName, event => event.stopPropagation());
             }
             wrap.onclick = (event) => {
                 event.stopPropagation();
@@ -2300,13 +2800,55 @@ class CharacterGeneratorWidget {
         }
         input.value = this.data[section][key];
         input.oninput = () => {
-            const raw = type === "number" ? Number(input.value) : input.value;
+            let raw = input.value;
+            if (type === "number") {
+                if (!input.value.trim()) return;
+                raw = Number(input.value);
+                if (!Number.isFinite(raw)) return;
+                if (options?.min !== undefined) raw = Math.max(options.min, raw);
+                if (options?.max !== undefined) raw = Math.min(options.max, raw);
+            }
             if (section === "upscaler" && key === "attention_mode") {
                 this.data.upscaler.attention_mode_manual = true;
             }
             this.set(section, key, raw);
         };
+        if (type === "number") input.onblur = () => { input.value = String(this.data[section][key]); };
         wrap.append(caption, input);
+        return wrap;
+    }
+
+    resolutionScaleSlider(section, key = "target_size") {
+        const wrap = document.createElement("label");
+        wrap.className = "vnccs-pipe-slider-field";
+        setHelpText(wrap, "Sets the generated image area from 1.0 to 4.0 megapixels while preserving aspect ratio.");
+        const head = document.createElement("div");
+        head.className = "vnccs-pipe-slider-head";
+        const caption = document.createElement("div");
+        caption.className = "vnccs-pipe-label";
+        caption.textContent = "resolution scale";
+        const value = document.createElement("div");
+        value.className = "vnccs-pipe-slider-value";
+        value.textContent = resolutionScaleText(this.data[section][key]);
+        head.append(caption, value);
+
+        const slider = document.createElement("input");
+        slider.className = "vnccs-pipe-slider";
+        slider.type = "range";
+        slider.min = String(RESOLUTION_SCALE_MIN_MP);
+        slider.max = String(RESOLUTION_SCALE_MAX_MP);
+        slider.step = String(RESOLUTION_SCALE_STEP_MP);
+        slider.value = resolutionScaleMegapixels(this.data[section][key]).toFixed(1);
+        slider.style.setProperty("--fill", `${((Number(slider.value) - 1) / 3) * 100}%`);
+        slider.setAttribute("aria-label", "Resolution scale in megapixels");
+        this.protectNativeControl(slider);
+        slider.oninput = () => {
+            const targetSize = resolutionScaleValue(slider.value);
+            value.textContent = resolutionScaleText(targetSize);
+            slider.style.setProperty("--fill", `${((Number(slider.value) - 1) / 3) * 100}%`);
+            this.set(section, key, targetSize);
+        };
+        wrap.append(head, slider);
         return wrap;
     }
 
@@ -2413,7 +2955,7 @@ class CharacterGeneratorWidget {
         const commit = () => {
             const normalized = String(input.value).trim().replace(",", ".");
             const raw = Number(normalized);
-            if (!Number.isFinite(raw)) {
+            if (!normalized || !Number.isFinite(raw)) {
                 input.value = String(this.data.emotion_generation?.[key] ?? DEFAULT_DATA.emotion_generation[key]);
                 this.fieldDrafts.delete(draftKey);
                 return;
@@ -2449,25 +2991,49 @@ class CharacterGeneratorWidget {
         return wrap;
     }
 
-    connectedEmotionStudioIsAnima() {
-        if (!this.isEmotions) return false;
-        const pipeInput = (this.node.inputs || []).find(input => input.name === "pipe");
-        if (!pipeInput?.link) return false;
-        const link = app.graph?.links?.[pipeInput.link];
-        const sourceNode = app.graph?.getNodeById?.(link?.origin_id);
-        if (!sourceNode || sourceNode.type !== "EmotionGeneratorV2") return false;
+    bgRemoveFields() {
+        const fields = [
+            this.field("bg_remove", "preset", "mode", "select", this.bgRemoveModes()),
+        ];
+        if (!this.isNativeBgRemove()) {
+            fields.push(this.field("bg_remove", "use_sam3_details_recovery", "Use SAM3 Details Recovery", "checkbox"));
+        }
+        return fields;
+    }
+
+    connectedEmotionStudioMode() {
+        const sourceNode = this.connectedEmotionStudioNode();
+        if (!sourceNode) return false;
 
         const settingsWidget = sourceNode.widgets?.find(widget => widget.name === "generation_settings");
         try {
             const settings = settingsWidget?.value ? JSON.parse(settingsWidget.value) : {};
             const settingsMode = String(settings?.generation_mode || "").toLowerCase();
-            if (settingsMode === "anima") return true;
-            if (settingsMode === "illustrious") return false;
+            if (["qi2", "anima", "illustrious"].includes(settingsMode)) return settingsMode;
         } catch (_) {
             // Fall back to the hidden mode widget below.
         }
         const modeWidget = sourceNode.widgets?.find(widget => widget.name === "generation_model");
-        return String(modeWidget?.value || "").toLowerCase() === "anima";
+        const mode = String(modeWidget?.value || "").toLowerCase();
+        return ["qi2", "anima", "illustrious"].includes(mode) ? mode : "";
+    }
+
+    connectedEmotionStudioNode() {
+        if (!this.isEmotions) return null;
+        const pipeInput = (this.node.inputs || []).find(input => input.name === "pipe");
+        if (!pipeInput || pipeInput.link == null) return null;
+        const link = app.graph?.links?.[pipeInput.link];
+        const sourceNode = app.graph?.getNodeById?.(link?.origin_id);
+        if (!sourceNode || (sourceNode.type !== "EmotionGeneratorV2" && sourceNode.comfyClass !== "EmotionGeneratorV2")) return null;
+        return sourceNode;
+    }
+
+    connectedEmotionStudioIsAnima() {
+        return this.connectedEmotionStudioMode() === "anima";
+    }
+
+    shouldShowEmotionDenoiseControl() {
+        return this.connectedEmotionStudioMode() !== "qi2";
     }
 
     async loadSeedvrAssets(force = false) {
@@ -2582,6 +3148,7 @@ class CharacterGeneratorWidget {
         title.textContent = this.title;
         this.settingsEl.appendChild(title);
         if (this.isEmotions) {
+            const qi2Emotion = this.connectedEmotionStudioMode() === "qi2";
             const count = Array.isArray(this.data.emotion_pairs) ? this.data.emotion_pairs.length : 0;
             const info = document.createElement("div");
             info.className = "vnccs-pipe-block";
@@ -2594,28 +3161,39 @@ class CharacterGeneratorWidget {
                     <div class="vnccs-pipe-empty" style="min-height:auto;padding:8px;">${count} costume / emotion pair(s)</div>
                 </div>`;
             this.settingsEl.appendChild(info);
-            this.settingsEl.appendChild(this.block("Emotion Strength", [
-                this.faceDenoiseSlider(),
-            ]));
-            const faceDetailerFields = [
-                this.faceDetailerNumberField("task_batch_size", "task_batch_size (0 = auto)", { min: 0, max: 32, step: 1 }),
-                this.field("emotion_generation", "use_sam", "Use SAM", "checkbox"),
-                this.faceDetailerNumberField("bbox_threshold", "bbox_threshold", { min: 0, max: 1, step: 0.01 }),
-                this.faceDetailerNumberField("bbox_dilation", "bbox_dilation", { min: 0, max: 128, step: 1 }),
-                this.faceDetailerNumberField("sam_dilation", "sam_dilation", { min: 0, max: 128, step: 1 }),
-                this.faceDetailerNumberField("sam_threshold", "sam_threshold", { min: 0, max: 1, step: 0.01 }),
-                this.faceDetailerNumberField("sam_bbox_expansion", "sam_bbox_expansion", { min: 0, max: 128, step: 1 }),
-            ];
-            this.settingsEl.appendChild(this.block("Face Detailer", faceDetailerFields));
-            this.settingsEl.appendChild(this.block("BG Remove", [
-                this.field("bg_remove", "preset", "chroma preset", "select", ["disabled", "ultra_light", "light", "balanced", "strong", "aggressive"]),
-                this.field("bg_remove", "use_sam3_details_recovery", "Use SAM3 Details Recovery", "checkbox"),
-            ]));
+            if (qi2Emotion) {
+                this.settingsEl.appendChild(this.block("QI2 Face Generation", [
+                    this.resolutionScaleSlider("emotion_generation", "target_size"),
+                ]));
+                this.settingsEl.appendChild(this.block("VNCCS BBox Extractor", [
+                    this.faceDetailerNumberField("bbox_threshold", "threshold", { min: 0, max: 1, step: 0.01 }),
+                    this.faceDetailerNumberField("bbox_dilation", "dilation", { min: 0, max: 1024, step: 1 }),
+                    this.faceDetailerNumberField("feather", "feather", { min: 0, max: 1024, step: 1 }),
+                    this.faceDetailerNumberField("drop_size", "drop_size", { min: 1, max: 4096, step: 1 }),
+                ]));
+            } else if (this.shouldShowEmotionDenoiseControl()) {
+                this.settingsEl.appendChild(this.block("Emotion Strength", [
+                    this.faceDenoiseSlider(),
+                ]));
+            }
+            if (!qi2Emotion) {
+                const faceDetailerFields = [
+                    this.faceDetailerNumberField("task_batch_size", "task_batch_size (0 = auto)", { min: 0, max: 32, step: 1 }),
+                    this.field("emotion_generation", "use_sam", "Use SAM", "checkbox"),
+                    this.faceDetailerNumberField("bbox_threshold", "bbox_threshold", { min: 0, max: 1, step: 0.01 }),
+                    this.faceDetailerNumberField("bbox_dilation", "bbox_dilation", { min: 0, max: 128, step: 1 }),
+                    this.faceDetailerNumberField("sam_dilation", "sam_dilation", { min: 0, max: 128, step: 1 }),
+                    this.faceDetailerNumberField("sam_threshold", "sam_threshold", { min: 0, max: 1, step: 0.01 }),
+                    this.faceDetailerNumberField("sam_bbox_expansion", "sam_bbox_expansion", { min: 0, max: 128, step: 1 }),
+                ];
+                this.settingsEl.appendChild(this.block("Face Detailer", faceDetailerFields));
+            }
+            this.settingsEl.appendChild(this.block("BG Remove", this.bgRemoveFields()));
             return;
         }
         if (this.isClone) {
             this.settingsEl.appendChild(this.block("Common", [
-                this.field("common", "target_size", "scale area", "select", [1024, 1344, 1536, 2048, 768, 512]),
+                this.resolutionScaleSlider("common"),
             ]));
             if (this.isCloneNsfwEnabled()) {
                 this.settingsEl.appendChild(this.block("Remove Clothes", [
@@ -2624,22 +3202,13 @@ class CharacterGeneratorWidget {
             }
         } else {
             this.settingsEl.appendChild(this.block("Pose Generation", [
-                this.field("pose_generation", "target_size", "scale area", "select", [1024, 1344, 1536, 2048, 768, 512]),
+                this.resolutionScaleSlider("pose_generation"),
             ]));
         }
         const upscalerFields = [
-            this.modeTabs("upscaler", "mode", [["seedvr", "SeedVR"], ["gan", "GAN"], ["off", "OFF"]]),
+            this.modeTabs("upscaler", "mode", [["seedvr", "SeedVR"], ["off", "OFF"]]),
         ];
-        if (this.data.upscaler.mode === "gan") {
-            const ganOptions = this.syncSelectToOptions(
-                "upscaler",
-                "gan_model",
-                this.ganUpscaleModels,
-            );
-            upscalerFields.push(
-                this.field("upscaler", "gan_model", "model", "select", ganOptions),
-            );
-        } else if (this.data.upscaler.mode !== "off") {
+        if (this.data.upscaler.mode !== "off") {
             const resolutionFields = document.createElement("div");
             resolutionFields.className = "vnccs-pipe-field-row";
             resolutionFields.append(
@@ -2653,11 +3222,7 @@ class CharacterGeneratorWidget {
             );
         }
         this.settingsEl.appendChild(this.block("Upscaler", upscalerFields));
-        this.settingsEl.appendChild(this.block("BG Remove", [
-            // TODO: Decide what to do with internal RMBG later.
-            this.field("bg_remove", "preset", "chroma preset", "select", ["disabled", "ultra_light", "light", "balanced", "strong", "aggressive"]),
-            this.field("bg_remove", "use_sam3_details_recovery", "Use SAM3 Details Recovery", "checkbox"),
-        ]));
+        this.settingsEl.appendChild(this.block("BG Remove", this.bgRemoveFields()));
     }
 
     renderPreview() {
@@ -2666,6 +3231,7 @@ class CharacterGeneratorWidget {
         const head = document.createElement("div");
         head.className = "vnccs-pipe-preview-head";
         const label = document.createElement("div");
+        label.className = "vnccs-pipe-preview-label";
         label.textContent = this.stages.find(([key]) => key === this.selectedPreview)?.[1] || "Results";
         const tabs = document.createElement("div");
         tabs.className = "vnccs-pipe-tabs";
@@ -2709,7 +3275,8 @@ class CharacterGeneratorWidget {
         grid.className = "vnccs-pipe-grid";
         const selectedState = this.stageState[this.selectedPreview] || {};
         const canRegenerateImages = selectedState.status === "done" && !this.regenerateState;
-        images.forEach((src, index) => {
+        images.forEach((source, index) => {
+            const src = mediaURL(source);
             const tile = document.createElement("div");
             tile.tabIndex = 0;
             tile.role = "button";
@@ -2718,6 +3285,7 @@ class CharacterGeneratorWidget {
             tile.dataset.src = src;
             tile.onclick = () => this.openViewer(index);
             tile.onkeydown = (event) => {
+                if (event.target !== tile) return;
                 if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
                     this.openViewer(index);
@@ -2776,7 +3344,7 @@ class CharacterGeneratorWidget {
             this.imageMetrics.set(src, { width: 1, height: 1, loading: false });
             callbacks.forEach(callback => callback?.());
         };
-        img.src = src;
+        img.src = mediaURL(src);
     }
 
     layoutPreviewGrid(grid, images) {
@@ -2861,6 +3429,7 @@ class CharacterGeneratorWidget {
         this.syncStagesFromData();
         this.chainEl.innerHTML = "";
         this.updateModeClasses();
+        this.chainEl.style.setProperty("--vnccs-stage-count", String(Math.max(1, this.stages.length)));
         for (const [key, name] of this.stages) {
             const stage = document.createElement("div");
             const status = this.stageState[key]?.status || "waiting";
@@ -2901,7 +3470,9 @@ class CharacterGeneratorWidget {
             if (key === "pose_generation" || key === "original_pose_generation" || key === "naked_pose_generation") {
                 const l = document.createElement("div");
                 l.className = "vnccs-pipe-stage-lora";
-                l.textContent = `LoRA: ${POSE_GENERATION_LORA_LABEL}`;
+                const poseLora = this.data.ui?.resolution_model_kind === "klein9b"
+                    ? "VNCCS Pose Studio Klein9b" : "VNCCS Pose Studio QI2";
+                l.textContent = `LoRA: ${poseLora}`;
                 stage.appendChild(l);
             }
             if (key === "remove_clothes") {
@@ -2938,6 +3509,8 @@ class CharacterGeneratorWidget {
     openViewer(index = 0, restored = null) {
         const images = this.currentImages();
         if (!images.length) return;
+        const returnFocus = this.viewer?.returnFocus || document.activeElement;
+        this.closeViewer();
         if (!restored) {
             this.userSelectedPreview = true;
             this.persistUI();
@@ -2950,6 +3523,7 @@ class CharacterGeneratorWidget {
             x: 0,
             y: 0,
             dragging: false,
+            returnFocus,
             restored,
         };
         if (restored?.open && Number.isFinite(restored.centerNormX) && Number.isFinite(restored.centerNormY)) {
@@ -2966,18 +3540,37 @@ class CharacterGeneratorWidget {
     }
 
     renderViewer() {
+        const stageScrollLeft = this.viewer?.stageTabs?.scrollLeft || 0;
         this.closeViewer();
         const overlay = document.createElement("div");
         overlay.className = "vnccs-pipe-viewer";
+        overlay.tabIndex = -1;
+        overlay.setAttribute("aria-label", "Image viewer. Press Escape to close.");
+        overlay.onkeydown = (event) => {
+            if (event.key !== "Escape") return;
+            event.preventDefault();
+            event.stopPropagation();
+            this.closeViewer(true);
+        };
+        for (const type of ["pointerdown", "mousedown", "click", "dblclick"]) {
+            overlay.addEventListener(type, (event) => {
+                if (event.button !== 1) event.stopPropagation();
+            });
+        }
         const bar = document.createElement("div");
         bar.className = "vnccs-pipe-viewer-bar";
         const back = document.createElement("button");
+        back.type = "button";
         back.className = "vnccs-pipe-viewer-btn";
         back.textContent = "BACK";
+        back.title = "Close viewer (Escape)";
         back.onclick = () => this.closeViewer(true);
         bar.appendChild(back);
+        const stageTabs = document.createElement("div");
+        stageTabs.className = "vnccs-pipe-viewer-stages";
         for (const [key, name] of this.stages) {
             const btn = document.createElement("button");
+            btn.type = "button";
             btn.className = "vnccs-pipe-viewer-btn" + (key === this.selectedPreview ? " is-selected" : "");
             btn.textContent = name;
             btn.onclick = () => {
@@ -2996,85 +3589,158 @@ class CharacterGeneratorWidget {
                 this.renderViewer();
                 this.renderPreview();
             };
-            bar.appendChild(btn);
+            stageTabs.appendChild(btn);
         }
-        const spacer = document.createElement("div");
-        spacer.className = "vnccs-pipe-viewer-spacer";
         const zoomOut = document.createElement("button");
+        zoomOut.type = "button";
         zoomOut.className = "vnccs-pipe-viewer-btn";
         zoomOut.textContent = "-";
+        zoomOut.setAttribute("aria-label", "Zoom out");
         zoomOut.onclick = () => this.zoomViewer(0.8);
         const zoomIn = document.createElement("button");
+        zoomIn.type = "button";
         zoomIn.className = "vnccs-pipe-viewer-btn";
         zoomIn.textContent = "+";
+        zoomIn.setAttribute("aria-label", "Zoom in");
         zoomIn.onclick = () => this.zoomViewer(1.25);
-        bar.append(spacer, zoomOut, zoomIn);
+        bar.append(stageTabs, zoomOut, zoomIn);
 
         const canvas = document.createElement("div");
         canvas.className = "vnccs-pipe-viewer-canvas";
         const img = document.createElement("img");
         img.className = "vnccs-pipe-viewer-img";
+        img.draggable = false;
         canvas.appendChild(img);
         overlay.append(bar, canvas);
         this.root.appendChild(overlay);
         this.viewer.overlay = overlay;
         this.viewer.canvas = canvas;
         this.viewer.img = img;
+        this.viewer.stageTabs = stageTabs;
+        stageTabs.scrollLeft = stageScrollLeft;
         this.viewer.fitApplied = false;
 
-        const scheduleFit = () => requestAnimationFrame(() => this.fitViewer());
+        const viewer = this.viewer;
+        let fitFrame = null;
+        const scheduleFit = () => {
+            cancelAnimationFrame(fitFrame);
+            fitFrame = requestAnimationFrame(() => {
+                fitFrame = null;
+                if (this.viewer === viewer && viewer.canvas === canvas) this.fitViewer();
+            });
+        };
         img.onload = scheduleFit;
+        img.onerror = () => img.classList.remove("is-ready");
         img.decoding = "async";
-        img.src = this.currentImages()[this.viewer.index] || "";
+        img.src = mediaURL(this.currentImages()[this.viewer.index] || "");
         if (img.complete && img.naturalWidth) scheduleFit();
         canvas.onwheel = (event) => {
             event.preventDefault();
+            event.stopPropagation();
+            if (!event.deltaY) return;
             const factor = event.deltaY < 0 ? 1.12 : 0.88;
             this.zoomViewer(factor, event);
         };
+        const finishDrag = (event) => {
+            if (this.viewer !== viewer || viewer.canvas !== canvas) return;
+            if (!viewer.dragging) return;
+            if (event?.pointerId !== undefined && event.pointerId !== viewer.pointerId) return;
+            const pointerId = viewer.pointerId;
+            viewer.dragging = false;
+            viewer.pointerId = null;
+            canvas.classList.remove("is-dragging");
+            if (canvas.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId);
+            if (this.viewer === viewer) {
+                this.updateViewerFocus();
+                this.saveBrowserState();
+            }
+        };
         canvas.onpointerdown = (event) => {
+            if (event.button !== 0 || event.isPrimary === false || !viewer.fitApplied) return;
+            event.preventDefault();
+            event.stopPropagation();
+            overlay.focus({ preventScroll: true });
             const point = this.viewerEventPoint(event);
-            this.viewer.dragging = true;
-            this.viewer.dragX = point.x;
-            this.viewer.dragY = point.y;
+            viewer.dragging = true;
+            viewer.pointerId = event.pointerId;
+            viewer.dragX = point.x;
+            viewer.dragY = point.y;
             canvas.classList.add("is-dragging");
             canvas.setPointerCapture(event.pointerId);
         };
         canvas.onpointermove = (event) => {
-            if (!this.viewer?.dragging) return;
+            if (this.viewer !== viewer || viewer.canvas !== canvas) return;
+            if (!viewer.dragging || event.pointerId !== viewer.pointerId) return;
+            if (!(event.buttons & 1)) {
+                finishDrag(event);
+                return;
+            }
+            event.stopPropagation();
             const point = this.viewerEventPoint(event);
-            this.viewer.x += point.x - this.viewer.dragX;
-            this.viewer.y += point.y - this.viewer.dragY;
-            this.viewer.dragX = point.x;
-            this.viewer.dragY = point.y;
+            viewer.x += point.x - viewer.dragX;
+            viewer.y += point.y - viewer.dragY;
+            viewer.dragX = point.x;
+            viewer.dragY = point.y;
             this.applyViewerTransform();
             this.updateViewerFocus();
             this.scheduleBrowserStateSave();
         };
-        canvas.onpointerup = (event) => {
-            if (!this.viewer) return;
-            this.viewer.dragging = false;
-            canvas.classList.remove("is-dragging");
-            canvas.releasePointerCapture(event.pointerId);
-            this.updateViewerFocus();
-            this.saveBrowserState();
+        canvas.onpointerup = finishDrag;
+        canvas.onpointercancel = finishDrag;
+        canvas.onlostpointercapture = finishDrag;
+        const onVisibilityChange = () => {
+            if (document.hidden) finishDrag();
         };
+        window.addEventListener("pointerup", finishDrag, true);
+        window.addEventListener("blur", finishDrag);
+        document.addEventListener("visibilitychange", onVisibilityChange);
+        const resizeObserver = new ResizeObserver(() => {
+            if (this.viewer !== viewer || viewer.canvas !== canvas || !canvas.isConnected) return;
+            if (!viewer.fitApplied) {
+                scheduleFit();
+                return;
+            }
+            viewer.restored = { open: true, ...this.currentViewerFocus() };
+            viewer.fitApplied = false;
+            scheduleFit();
+        });
+        resizeObserver.observe(canvas);
+        viewer.dispose = () => {
+            finishDrag();
+            cancelAnimationFrame(fitFrame);
+            img.onload = null;
+            img.onerror = null;
+            resizeObserver.disconnect();
+            window.removeEventListener("pointerup", finishDrag, true);
+            window.removeEventListener("blur", finishDrag);
+            document.removeEventListener("visibilitychange", onVisibilityChange);
+        };
+        overlay.focus({ preventScroll: true });
     }
 
     closeViewer(clear = false) {
+        this.viewer?.dispose?.();
+        if (this.viewer) this.viewer.dispose = null;
         this.viewer?.overlay?.remove();
         if (clear) {
+            const returnFocus = this.viewer?.returnFocus;
             this.viewer = null;
             this.saveBrowserState();
+            if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
         }
     }
 
     syncViewerImage() {
         const images = this.currentImages();
-        if (!this.viewer?.img || !images.length) return;
+        if (!this.viewer?.img) return;
         this.viewer.index = this.clampedViewerIndex();
+        const src = images[this.viewer.index] || "";
+        if ((this.viewer.img.getAttribute("src") || "") === src) return;
+        this.viewer.restored = { open: true, ...this.currentViewerFocus() };
+        this.viewer.fitApplied = false;
         this.viewer.img.classList.remove("is-ready");
-        this.viewer.img.src = images[this.viewer.index];
+        if (src) this.viewer.img.src = mediaURL(src);
+        else this.viewer.img.removeAttribute("src");
     }
 
     clampedViewerIndex() {
@@ -3086,10 +3752,12 @@ class CharacterGeneratorWidget {
     fitViewer() {
         if (!this.viewer?.img || !this.viewer?.canvas) return;
         if (this.viewer.fitApplied) return;
+        if (!this.viewer.img.complete || !this.viewer.img.naturalWidth || !this.viewer.img.naturalHeight) return;
+        if (!this.viewer.canvas.clientWidth || !this.viewer.canvas.clientHeight) return;
         const rect = this.viewerCanvasRect();
         const iw = this.viewer.img.naturalWidth || 1;
         const ih = this.viewer.img.naturalHeight || 1;
-        const fit = rect.height / ih;
+        const fit = Math.min(rect.width / iw, rect.height / ih);
         this.viewer.fitScale = fit;
         const restored = this.viewer.restored;
         if (restored?.open && Number.isFinite(restored.scaleRatio)) {
@@ -3101,8 +3769,8 @@ class CharacterGeneratorWidget {
             const centerNormY = Number.isFinite(restored.centerNormY)
                 ? restored.centerNormY
                 : (Number.isFinite(restored.centerImageY) ? restored.centerImageY / ih : 0.5);
-            const centerImageX = Math.max(0, Math.min(1, centerNormX)) * iw;
-            const centerImageY = Math.max(0, Math.min(1, centerNormY)) * ih;
+            const centerImageX = Math.max(-2, Math.min(3, centerNormX)) * iw;
+            const centerImageY = Math.max(-2, Math.min(3, centerNormY)) * ih;
             this.viewer.x = rect.width / 2 - centerImageX * this.viewer.scale;
             this.viewer.y = rect.height / 2 - centerImageY * this.viewer.scale;
             this.viewer.restored = null;
@@ -3110,7 +3778,7 @@ class CharacterGeneratorWidget {
             this.viewerFocus = { scaleRatio, centerNormX, centerNormY };
         } else {
             this.viewer.scale = fit;
-            this.centerViewerImage(rect, iw, ih, true);
+            this.centerViewerImage(rect, iw, ih);
             this.viewerFocus = { scaleRatio: 1, centerNormX: 0.5, centerNormY: 0.5 };
         }
         this.viewer.fitApplied = true;
@@ -3165,6 +3833,7 @@ class CharacterGeneratorWidget {
 
     zoomViewer(factor, event = null) {
         if (!this.viewer?.canvas || !this.viewer?.img) return;
+        if (!this.viewer.fitApplied) return;
         const rect = this.viewerCanvasRect();
         const oldScale = this.viewer.scale;
         const fitScale = this.viewer.fitScale || 1;
@@ -3214,10 +3883,11 @@ app.registerExtension({
         if (typeof queuePrompt !== "function") return;
         const originalQueuePrompt = (...args) => queuePrompt.apply(app, args);
         app.queuePrompt = async function (...args) {
-            for (const node of app.graph?._nodes || []) {
-                if (node.mode === 2 || node.mode === 4) continue;
+            const nodes = (app.graph?._nodes || []).filter(node => node.mode !== 2 && node.mode !== 4);
+            for (const node of nodes) {
                 if (node._vnccsCharacterGeneratorSyncBeforeQueue?.() === false) return;
             }
+            for (const node of nodes) node._vnccsCharacterGeneratorWidget?.prepareQueuedRun();
             return originalQueuePrompt(...args);
         };
     },
@@ -3247,12 +3917,16 @@ app.registerExtension({
         nodeType.prototype.onConfigure = function () {
             onConfigure?.apply(this, arguments);
             if (this._vnccsCharacterGeneratorWidget) {
+                // Loading a saved workflow must preserve its explicit values.
+                this._vnccsCharacterGeneratorWidget.qi2EmotionDefaultsPending = false;
                 this._vnccsCharacterGeneratorWidget.data = readData(this);
                 this._vnccsCharacterGeneratorWidget.syncCharacterSourceData();
                 this._vnccsCharacterGeneratorWidget.syncStagesFromData();
                 this._vnccsCharacterGeneratorWidget.restoreBrowserState();
                 this._vnccsCharacterGeneratorWidget.syncCharacterSourceData();
                 this._vnccsCharacterGeneratorWidget.syncStagesFromData();
+                this._vnccsCharacterGeneratorWidget.syncModelResolution();
+                writeData(this, this._vnccsCharacterGeneratorWidget.data);
                 this._vnccsCharacterGeneratorWidget.renderSettings();
                 this._vnccsCharacterGeneratorWidget.renderPreview();
                 this._vnccsCharacterGeneratorWidget.renderChain();
@@ -3264,6 +3938,20 @@ app.registerExtension({
                 }
             }
             syncDOMWidgetWidthSoon(this, "character_generator_ui");
+        };
+
+        const onSerialize = nodeType.prototype.onSerialize;
+        nodeType.prototype.onSerialize = function (serialized) {
+            const widget = this._vnccsCharacterGeneratorWidget;
+            if (widget) {
+                widget.syncModelResolution();
+                writeData(this, widget.data, { notify: false });
+            }
+            onSerialize?.apply(this, arguments);
+            const index = this.widgets?.findIndex(item => item.name === "widget_data") ?? -1;
+            if (widget && index >= 0 && Array.isArray(serialized?.widgets_values)) {
+                serialized.widgets_values[index] = this.widgets[index].value;
+            }
         };
 
         const onResize = nodeType.prototype.onResize;

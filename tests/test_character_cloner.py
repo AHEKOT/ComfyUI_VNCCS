@@ -1,10 +1,12 @@
 """Tests for nodes/character_cloner.py — grid layout and config logic."""
 
+import importlib.util
 import json
 import math
 import os
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -220,3 +222,72 @@ class TestClonerConfigSave:
 
         # "Unknown" should not create a config
         assert utils.load_config("Unknown") is None
+
+
+def _load_cloner(monkeypatch):
+    """Load the cloner without tensor or model dependencies."""
+    monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
+    assets = types.ModuleType("_vnccs.nodes.vnccs_utils")
+    assets._ensure_qwen_vl_assets = lambda **kwargs: ("model.gguf", "mmproj.gguf")
+    assets.QWEN_VL_MODEL_FILENAME = "model.gguf"
+    monkeypatch.setitem(sys.modules, assets.__name__, assets)
+    spec = importlib.util.spec_from_file_location(
+        "_vnccs.nodes._cloner_wizard_test", Path(__file__).parents[1] / "nodes/character_cloner.py"
+    )
+    cloner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cloner)
+    return cloner
+
+
+def test_cloner_rejects_multiple_references_before_processing_or_saving(monkeypatch):
+    cloner = _load_cloner(monkeypatch)
+    monkeypatch.setattr(cloner, "_source_image_path", lambda image: pytest.fail("Extra references must be rejected before reading images"))
+    monkeypatch.setattr(cloner, "load_config", lambda name: pytest.fail("Invalid reference counts must not change character data"))
+    with pytest.raises(ValueError, match="only one reference image"):
+        cloner.CharacterCloner().process(json.dumps({"character": "Alice", "source_images": ["one.png", "two.png"]}))
+
+
+def _run_wizard(monkeypatch, tmp_path, content):
+    """Exercise the real wizard request without tensor or model dependencies."""
+    from PIL import Image
+
+    cloner = _load_cloner(monkeypatch)
+    monkeypatch.setattr(cloner.folder_paths, "get_input_directory", lambda: str(tmp_path), raising=False)
+    monkeypatch.setattr(cloner.web, "json_response", lambda data, status=200: types.SimpleNamespace(data=data, status=status), raising=False)
+    Image.new("RGB", (32, 64), "red").save(tmp_path / "reference.png")
+
+    calls = []
+    def complete(**kwargs):
+        calls.append(kwargs)
+        return {"choices": [{"message": {"content": content}}]}
+    llama = types.ModuleType("llama_cpp")
+    llama.llama_chat_format = types.ModuleType("llama_cpp.llama_chat_format")
+    llama.llama_chat_format.Qwen35ChatHandler = type("Qwen35ChatHandler", (), {"__init__": lambda self, **kwargs: None})
+    llama.Llama = lambda **kwargs: types.SimpleNamespace(create_chat_completion=complete)
+    monkeypatch.setitem(sys.modules, "llama_cpp", llama)
+    monkeypatch.setitem(sys.modules, "llama_cpp.llama_chat_format", llama.llama_chat_format)
+    monkeypatch.setitem(sys.modules, "json_repair", types.SimpleNamespace(loads=json.loads))
+    return cloner._cloner_auto_generate_response({"image_name": "reference.png"}), calls
+
+
+def test_wizard_requests_visible_character_traits_only(monkeypatch, tmp_path):
+    traits = {"skin_color": "red skin", "face": "", "additional_details": "monster arm"}
+    response, calls = _run_wizard(monkeypatch, tmp_path, json.dumps(traits))
+    assert response.status == 200
+    assert response.data == traits
+    prompt = calls[0]["messages"][1]["content"][0]["text"]
+    assert "do not choose from presets or a closed list" in prompt
+    assert "including unusual or multiple colors" in prompt
+    assert "Red or pink skin across the face or body is skin_color, not blush" in prompt
+    assert "distinct localized cheek blush" in prompt
+    assert "monster arm" in prompt
+    assert "Do not include clothing, footwear, wearable accessories, held objects, pose, actions" in prompt
+    assert "Do not fill a field just to avoid an empty value" in prompt
+
+
+@pytest.mark.parametrize("content", ["", "wearing white shirt, standing, one arm raised", "[]"])
+def test_wizard_invalid_response_does_not_become_character_details(monkeypatch, tmp_path, content):
+    response, _ = _run_wizard(monkeypatch, tmp_path, content)
+    assert response.status == 502
+    assert response.data["error"] == "INVALID_RESPONSE"
+    assert "additional_details" not in response.data

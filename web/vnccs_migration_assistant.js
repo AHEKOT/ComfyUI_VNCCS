@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
-import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "./vnccs_common.js";
+import { vnccsApi as api } from "./vnccs_transport.js";
+import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan } from "./vnccs_common.js";
 
 const STYLE_ID = "vnccs-migration-assistant-style";
 const STYLE = `
@@ -117,6 +117,14 @@ app.registerExtension({
                 runId: "",
                 status: null,
             };
+            let removed = false;
+            let pollTimer = null;
+            let pollRequest = null;
+            registerCleanup(node, () => {
+                removed = true;
+                clearTimeout(pollTimer);
+                pollRequest?.abort();
+            });
 
             const root = el("div", "vnccs-ma");
             const top = el("div", "vnccs-ma-top");
@@ -130,7 +138,9 @@ app.registerExtension({
             const repairBtn = el("button", "vnccs-ma-btn", "Repair Sprites");
             const selectedBtn = el("button", "vnccs-ma-btn primary", "Migrate Selected");
             const allBtn = el("button", "vnccs-ma-btn", "Migrate All");
-            actions.append(scanBtn, repairBtn, selectedBtn, allBtn);
+            const retryBtn = el("button", "vnccs-ma-btn", "Retry Failed");
+            retryBtn.hidden = true;
+            actions.append(scanBtn, repairBtn, selectedBtn, allBtn, retryBtn);
             top.append(titleWrap, actions);
 
             const progress = el("div", "vnccs-ma-progress");
@@ -208,15 +218,19 @@ app.registerExtension({
                 const pct = total ? Math.min(100, Math.round((current / total) * 100)) : 0;
                 fill.style.width = `${pct}%`;
                 progressText.textContent = `${status.status || "idle"} ${current}/${total}`;
-                log.textContent = (status.log || []).join("\n") || status.message || "";
+                if (status.failed_sheets) progressText.textContent += ` — ${status.failed_sheets} sheet(s) failed`;
+                log.textContent = (status.log || []).join("\n") || status.message || status.error || "";
             };
 
             const setBusy = (busy) => {
                 state.running = busy;
-                selectedBtn.disabled = busy || state.selected.size === 0;
-                allBtn.disabled = busy || !(state.scan?.characters || []).length;
+                const mutationBlocked = busy || !!state.runId;
+                selectedBtn.disabled = mutationBlocked || state.selected.size === 0;
+                allBtn.disabled = mutationBlocked || !(state.scan?.characters || []).length;
                 scanBtn.disabled = busy;
-                repairBtn.disabled = busy;
+                repairBtn.disabled = mutationBlocked;
+                retryBtn.disabled = mutationBlocked;
+                retryBtn.hidden = !(state.status?.failed_characters?.length);
             };
 
             const scan = async () => {
@@ -240,24 +254,54 @@ app.registerExtension({
             };
 
             const poll = async () => {
-                if (!state.runId) return;
-                const response = await api.fetchApi(`/vnccs/migration/status/${state.runId}`);
-                const data = await response.json();
-                state.status = data;
-                renderStatus();
-                if (data.status === "done" || data.status === "error") {
-                    setBusy(false);
-                    if (data.status === "done") {
-                        window.dispatchEvent(new CustomEvent("vnccs.characters.updated"));
-                        window.dispatchEvent(new CustomEvent("vnccs.migration.complete"));
+                if (removed || !state.runId) return;
+                clearTimeout(pollTimer);
+                const runId = state.runId;
+                const controller = new AbortController();
+                pollRequest?.abort();
+                pollRequest = controller;
+                try {
+                    const response = await api.fetchApi(`/vnccs/migration/status/${runId}`, { signal: controller.signal });
+                    const data = await response.json();
+                    if (removed || state.runId !== runId || controller.signal.aborted) return;
+                    if (!response.ok || (data.error && data.status !== "error") || !["queued", "running", "done", "partial", "error"].includes(data.status)) {
+                        if (response.status === 404) state.runId = "";
+                        throw new Error(data.error || `Invalid migration status (${response.status})`);
                     }
-                    return;
+                    scanBtn.textContent = "Scan";
+                    state.status = data;
+                    renderStatus();
+                    if (["done", "partial", "error"].includes(data.status)) {
+                        state.runId = "";
+                        setBusy(false);
+                        if (data.status === "error" || data.status === "partial") {
+                            const message = data.error || data.message || "Migration job failed";
+                            console.error("[VNCCS Migration Assistant] Job failed:", message);
+                            if (!log.textContent.includes(message)) log.textContent += `\n${message}`;
+                        }
+                        if (data.status === "done" || data.status === "partial") {
+                            window.dispatchEvent(new CustomEvent("vnccs.characters.updated"));
+                        }
+                        if (data.status === "done") {
+                            window.dispatchEvent(new CustomEvent("vnccs.migration.complete"));
+                        }
+                        return;
+                    }
+                    pollTimer = setTimeout(poll, 700);
+                } catch (error) {
+                    if (removed || controller.signal.aborted) return;
+                    console.error("[VNCCS Migration Assistant] Status request failed:", error);
+                    log.textContent = `Status request failed: ${error?.message || error}. ${state.runId ? "The job may still be running. Retry Status to reconnect." : "Scan again to refresh migration state."}`;
+                    setBusy(false);
+                    scanBtn.textContent = state.runId ? "Retry Status" : "Scan";
+                } finally {
+                    if (pollRequest === controller) pollRequest = null;
                 }
-                setTimeout(poll, 700);
             };
 
-            const start = async (all) => {
-                const chars = all ? (state.scan?.characters || []).map(c => c.legacy_name) : Array.from(state.selected);
+            const start = async (all, retry = false) => {
+                if (state.running || state.runId || removed) return;
+                const chars = retry ? state.status?.failed_characters || [] : all ? (state.scan?.characters || []).map(c => c.legacy_name) : Array.from(state.selected);
                 if (!chars.length) return;
                 setBusy(true);
                 log.textContent = "Starting migration...";
@@ -265,9 +309,13 @@ app.registerExtension({
                     const response = await api.fetchApi("/vnccs/migration/start", {
                         method: "POST",
                         headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
-                        body: JSON.stringify({ characters: chars }),
+                        body: JSON.stringify({ characters: chars, force: retry,
+                            retry_sheets: retry ? Object.fromEntries((state.status?.results || [])
+                                .filter(item => item.failed_sheet_paths?.length)
+                                .map(item => [item.legacy_name, item.failed_sheet_paths])) : {} }),
                     });
                     const data = await response.json();
+                    if (removed) return;
                     if (!response.ok || data.error) throw new Error(data.error || "Start failed");
                     state.runId = data.run_id;
                     await poll();
@@ -278,6 +326,7 @@ app.registerExtension({
             };
 
             const repairSprites = async () => {
+                if (state.running || state.runId || removed) return;
                 setBusy(true);
                 log.textContent = "Scanning current VNCCS sprites for mismatched canvases...";
                 try {
@@ -287,6 +336,7 @@ app.registerExtension({
                         body: JSON.stringify({ backup: true }),
                     });
                     const data = await response.json();
+                    if (removed) return;
                     if (!response.ok || data.error) throw new Error(data.error || "Repair failed");
                     state.runId = data.run_id;
                     await poll();
@@ -296,10 +346,17 @@ app.registerExtension({
                 }
             };
 
-            scanBtn.onclick = scan;
+            scanBtn.onclick = () => {
+                if (state.runId) {
+                    setBusy(true);
+                    return poll();
+                }
+                return scan();
+            };
             repairBtn.onclick = repairSprites;
             selectedBtn.onclick = () => start(false);
             allBtn.onclick = () => start(true);
+            retryBtn.onclick = () => start(false, true);
 
             enableMiddleMouseCanvasPan(root);
             node.addDOMWidget("migration_assistant_ui", "ui", root, { serialize: false, hideOnZoom: false });
