@@ -27,7 +27,7 @@ from .character_generator import (
     H3_FRAME_COUNT,
     NATIVE_BACKGROUND_PROMPT,
 )
-from .vnccs_control_center import _entry_kind
+from .vnccs_control_center import _entry_kind, _find_model_on_disk, _apply_lora_standard
 from .vnccs_utils import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
 from .qwen_vl import configure_qwen_text_chat
 
@@ -803,10 +803,10 @@ class ClothesDesigner:
         sampler_model = model
         if clothes_core_lora:
             print(f"[ClothesDesigner] Applying VNCCS Clothes Core LoRA from pipe: {clothes_core_lora} (strength=1)")
-            sampler_model = _call_comfy_node(
-                "LoraLoaderModelOnly", model=model,
-                lora_name=clothes_core_lora, strength_model=1,
-            )[0]
+            lora_path, exists = _find_model_on_disk(f"models/loras/{clothes_core_lora}")
+            if not exists:
+                raise ValueError(f"VNCCS Clothes Core LoRA is not installed: {clothes_core_lora}")
+            sampler_model = _apply_lora_standard(model, None, lora_path, 1)[0]
         if is_qi2:
             qi2_generator = VNCCS_CharacterGenerator()
             sampler_model, qi2_turbo = qi2_generator._qi2_prepare_model(
