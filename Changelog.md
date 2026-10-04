@@ -1,3 +1,13 @@
+# VNCCS 3.2.1 Changelog
+
+This patch release fixes the `inconsistent privileged request origins` error affecting VNCCS actions when a launcher or reverse proxy rewrites request origins.
+
+## Request Compatibility
+
+- Fixed model downloads, custom LoRA management, and character creation being blocked by conflicting `Origin` and `Referer` headers.
+- Privileged VNCCS routes now validate `Origin` when present and use `Referer` only as a fallback. The backend fix also supports older UI clients without requiring a frontend transport change. Cross-site rejection, origin-to-host validation, and the existing request-header requirements remain enforced.
+- Added regression coverage for rewritten headers, older clients, Referer fallback, character creation, and rejection of untrusted or invalid origins.
+
 # VNCCS 3.2.0 Changelog
 
 This changelog describes the final user-visible and release-level changes in version `3.2.0` compared with `main` (`3.1.2`).

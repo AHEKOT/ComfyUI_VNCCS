@@ -323,21 +323,18 @@ def validate_privileged_request(request) -> None:
     # non-simple header as well; never trust arbitrary forwarded host headers.
     proxy_same_origin = sec_fetch_site == "same-origin" and has_marker
     same_origin = False
-    browser_origin = None
-    for header_name in ("Origin", "Referer"):
-        raw = request.headers.get(header_name)
-        if not raw:
-            continue
+    # Origin is authoritative; Referer is a fallback, not a second origin check.
+    # Launchers and proxies can rewrite one header without rewriting the other.
+    raw = request.headers.get("Origin")
+    if raw is None:
+        raw = request.headers.get("Referer")
+    if raw is not None:
         parsed = urlparse(raw)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("invalid privileged request origin")
-        origin = (parsed.scheme.lower(), parsed.netloc.lower())
-        if browser_origin is not None and origin != browser_origin:
-            raise ValueError("inconsistent privileged request origins")
-        browser_origin = origin
-        if parsed.netloc and host and parsed.netloc.lower() == host:
+        if host and parsed.netloc.lower() == host:
             same_origin = True
-        elif parsed.netloc and host and not proxy_same_origin:
+        elif host and not proxy_same_origin:
             raise ValueError("cross-origin privileged request rejected")
 
     if has_marker:
