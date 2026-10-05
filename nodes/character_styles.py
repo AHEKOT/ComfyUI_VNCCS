@@ -7,9 +7,10 @@ import re
 import threading
 import time
 import uuid
+import numpy as np
 from PIL import Image
 
-from ..utils import atomic_output_path, safe_join_under, base_output_dir
+from ..utils import atomic_output_path, safe_join_under
 
 
 USER_CHARACTER_STYLES_PATH = os.path.join(
@@ -18,8 +19,7 @@ USER_CHARACTER_STYLES_PATH = os.path.join(
 )
 _STYLE_LOCK = threading.RLock()
 _TEXT_LIMITS = {"label": 100, "description": 240, "reference": 500, "prompt": 16000}
-STYLE_PREVIEWS_DIR = os.path.join(os.path.dirname(base_output_dir()), "style_previews")
-LEGACY_STYLE_PREVIEWS_DIR = os.path.join(os.path.dirname(USER_CHARACTER_STYLES_PATH), "style_previews")
+STYLE_PREVIEWS_DIR = os.path.join(os.path.dirname(USER_CHARACTER_STYLES_PATH), "style_previews")
 
 
 def style_preview_path(style_id):
@@ -30,19 +30,6 @@ def style_preview_path(style_id):
 
 def style_preview_url(style_id):
     path = style_preview_path(style_id)
-    if not os.path.isfile(path):
-        legacy = safe_join_under(LEGACY_STYLE_PREVIEWS_DIR, style_id + ".webp")
-        if os.path.isfile(legacy):
-            # Recover existing previews without deleting the old files.
-            try:
-                with Image.open(legacy) as image:
-                    image.load()
-                    if image.format != "WEBP" or image.width != image.height:
-                        return ""
-                    recovered = image.copy()
-            except OSError:
-                return ""
-            save_style_preview(style_id, recovered)
     if not os.path.isfile(path):
         return ""
     stat = os.stat(path)
@@ -56,15 +43,34 @@ def square_style_resolution(target_size):
     return side, side
 
 
+def flatten_style_preview(image):
+    """Composite alpha onto the style card's 145-degree dark gradient."""
+    if "A" not in image.getbands() and "transparency" not in image.info:
+        return image.convert("RGB")
+    image = image.convert("RGBA")
+    width, height = image.size
+    dx, dy = math.sin(math.radians(145)), -math.cos(math.radians(145))
+    weight = ((np.arange(height)[:, None] + .5) * dy
+              + (np.arange(width)[None, :] + .5) * dx) / (width * dx + height * dy)
+    start, end = np.array([41, 32, 52]), np.array([23, 19, 31])
+    pixels = np.rint(start + (end - start) * weight[:, :, None]).astype(np.uint8)
+    background = Image.fromarray(pixels)
+    background.paste(image, mask=image.getchannel("A"))
+    return background
+
+
 def save_style_preview(style_id, image):
     if image.width != image.height:
         raise ValueError("Style preview must be generated as a square image")
     path = style_preview_path(style_id)
     mode = "RGBA" if "A" in image.getbands() or "transparency" in image.info else "RGB"
+    image = image.convert(mode)
+    if image.width > 1024:
+        image = image.resize((1024, 1024), Image.Resampling.LANCZOS)
+    image = flatten_style_preview(image)
     started = time.perf_counter()
     with atomic_output_path(path) as temporary:
-        # Favor encoding speed for hundreds of previews; keep full-resolution alpha.
-        image.convert(mode).save(temporary, format="WEBP", quality=85, alpha_quality=100, method=0)
+        image.save(temporary, format="WEBP", quality=90, method=6)
         encoded = time.perf_counter()
         with Image.open(temporary) as stored:
             stored.load()
@@ -139,3 +145,45 @@ def save_user_style(value, path=None):
                 json.dump({"version": 1, "styles": styles}, output, ensure_ascii=False, indent=2)
                 output.write("\n")
     return style
+
+
+def delete_user_style(style_id, path=None):
+    if not isinstance(style_id, str) or not re.fullmatch(r"user_[a-f0-9]{32}", style_id):
+        raise ValueError("Only user styles can be deleted")
+    path = path or USER_CHARACTER_STYLES_PATH
+    with _STYLE_LOCK:
+        styles = load_user_styles(path)
+        remaining = [style for style in styles if style["id"] != style_id]
+        if len(remaining) == len(styles):
+            return False
+        preview = style_preview_path(style_id)
+        if os.path.islink(preview):
+            raise ValueError("Cannot delete a linked style preview")
+        previous = None
+        if os.path.isfile(preview):
+            with open(preview, "rb") as source:
+                previous = source.read()
+        removed = False
+        try:
+            with atomic_output_path(path) as temporary:
+                with open(temporary, "w", encoding="utf-8") as output:
+                    json.dump({"version": 1, "styles": remaining}, output, ensure_ascii=False, indent=2)
+                    output.write("\n")
+                if previous is not None:
+                    os.unlink(preview)
+                    removed = True
+        except OSError:
+            if removed:
+                with atomic_output_path(preview) as temporary:
+                    with open(temporary, "wb") as output:
+                        output.write(previous)
+            raise
+        return True
+
+
+def save_user_style_preview(style_id, image):
+    # A render finishing after deletion must not recreate an orphan preview.
+    with _STYLE_LOCK:
+        if not any(style["id"] == style_id for style in load_user_styles()):
+            raise ValueError("User style no longer exists")
+        return save_style_preview(style_id, image)

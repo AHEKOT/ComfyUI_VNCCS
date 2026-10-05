@@ -1,6 +1,6 @@
 // Style selection stays in widget_data; the user library lives on the server.
 export function createStylePicker({ host, catalog, getInfo, save, fetchApi, cleanup,
-    getPreviewPayload, imageURL = value => value, listenPreview }) {
+    getPreviewPayload, imageURL = value => value, listenPreview, showModal }) {
     const make = (tag, className, text) => {
         const element = document.createElement(tag);
         element.className = className;
@@ -28,6 +28,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
     customInput.placeholder = "Describe any visual style";
     customInput.setAttribute("aria-label", "Custom style description");
     customInput.maxLength = 16000;
+    customInput.hidden = true;
     customInput.oninput = () => { getInfo().custom_style = customInput.value; save(); };
     root.append(trigger, customInput);
     let overlay = null;
@@ -35,9 +36,13 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
     let requestId = 0;
     let inertChildren = [];
     let batch = null;
+    let deleting = false;
+    let confirmation = null;
     let cardScale = 130;
     let progressMessage = "";
     let updateGallery = () => {};
+    let refreshLibrary = () => {};
+    let generatePreviews = async () => false;
     const paintPreview = (element, style) => {
         element.replaceChildren();
         const fallback = make("span", "", "Preview");
@@ -74,7 +79,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         description.title = description.textContent;
         reference.title = reference.textContent;
         customInput.value = info.custom_style || "";
-        customInput.style.display = info.style === "custom" ? "block" : "none";
+        customInput.style.display = "none";
         trigger.setAttribute("aria-label", `Choose style: ${name.textContent}`);
         if (persist) {
             info.style_prompt = style?.prompt || "";
@@ -91,6 +96,9 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
             progressMessage = "Stopping after the current image is saved...";
         }
         updateGallery = () => {};
+        refreshLibrary = () => {};
+        confirmation?.remove();
+        confirmation = null;
         overlay?.remove();
         overlay = null;
         for (const [element, previous] of inertChildren) element.inert = previous;
@@ -123,13 +131,10 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         const filter = make("select", "vnccs-creator-select");
         filter.setAttribute("aria-label", "Style category");
         const add = make("button", "vnccs-creator-btn", "New style");
-        const generate = make("button", "vnccs-creator-btn", "Generate all previews");
-        generate.title = "Render every library style sequentially using current Creator settings and resolution scale. Stop finishes the current image.";
-        generate.hidden = !getPreviewPayload;
         const dismiss = make("button", "vnccs-creator-btn", "Close");
         dismiss.title = "Close the library and stop after the current preview";
         dismiss.onclick = () => close();
-        header.append(search, filter, add, generate, dismiss);
+        header.append(search, filter, add, dismiss);
         const sizeControls = make("label", "vnccs-style-size-controls", "Card size");
         const sizeSlider = make("input", "vnccs-style-size-slider");
         sizeSlider.type = "range";
@@ -167,10 +172,9 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         let loadingCatalog = true;
         const previewSlots = new Map();
         updateGallery = (styleId) => {
-            generate.textContent = batch ? (batch.cancelled ? "Stopping..." : "Stop after current") : "Generate all previews";
-            generate.disabled = loadingCatalog || !editor.hidden || !!batch?.cancelled;
-            add.disabled = !editor.hidden || !!batch;
-            for (const edit of grid.querySelectorAll(".vnccs-style-edit")) edit.disabled = !!batch;
+            add.disabled = !editor.hidden || !!batch || deleting;
+            for (const edit of grid.querySelectorAll(".vnccs-style-edit")) edit.disabled = !!batch || deleting;
+            for (const button of grid.querySelectorAll(".vnccs-style-delete")) button.disabled = loadingCatalog || !!batch || deleting;
             if (styleId) {
                 const style = allStyles().find(item => item.id === styleId) || (styleId === "custom" ? custom : null);
                 const slot = previewSlots.get(styleId);
@@ -197,13 +201,63 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
                 paintPreview(placeholder, style);
                 previewSlots.set(style.id, placeholder);
                 card.append(placeholder, make("span", "vnccs-style-card-label", style.label));
-                card.onclick = () => { setValue(style.id, true); close(); };
+                card.onclick = () => {
+                    if (style.id === "custom") {
+                        showEditor({ label: "Custom style", prompt: getInfo().custom_style || "", reference: "Your prompt" });
+                    } else { setValue(style.id, true); close(); }
+                };
                 tile.append(card);
                 if (style.user) {
                     const edit = make("button", "vnccs-style-edit", "Edit");
                     edit.setAttribute("aria-label", `Edit ${style.label}`);
                     edit.onclick = () => showEditor(style);
                     tile.append(edit);
+                    if (showModal) {
+                        const remove = make("button", "vnccs-style-delete", "×");
+                        remove.title = "Delete style";
+                        remove.setAttribute("aria-label", `Delete ${style.label}`);
+                        remove.onclick = event => {
+                            event?.stopPropagation();
+                            if (loadingCatalog || batch || deleting || confirmation?.isConnected) return;
+                            const currentOverlay = overlay;
+                            const message = make("p", "", `Delete “${style.label}”? Its saved style and preview will be permanently removed.`);
+                            const errorText = make("p", "vnccs-style-status");
+                            const body = make("div", "");
+                            body.append(message, errorText);
+                            const dialog = showModal(overlay, "Delete style", () => body, [
+                                { text: "Cancel" },
+                                { text: "Delete", class: "danger", action: async () => {
+                                    if (deleting || disposed || overlay !== currentOverlay) return false;
+                                    deleting = true;
+                                    updateGallery();
+                                    try {
+                                        const response = await fetchApi(`/vnccs/character_styles/delete?style=${encodeURIComponent(style.id)}`, {
+                                            method: "POST", headers: { "X-VNCCS-CSRF": "1" },
+                                        });
+                                        const result = await response.json();
+                                        if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+                                        if (result.deleted !== true || result.style_id !== style.id) throw new Error("Invalid style deletion response");
+                                        if (disposed) return false;
+                                        for (const group of catalog.groups) group.styles = group.styles.filter(item => item.id !== style.id);
+                                        catalog.groups = catalog.groups.filter(group => group.label !== "My styles" || group.styles.length);
+                                        if (getInfo().style === style.id) setValue(catalog.default_style, true);
+                                        progressMessage = `Deleted: ${style.label}`;
+                                        refreshLibrary();
+                                        if (overlay === currentOverlay) search.focus();
+                                        return false;
+                                    } catch (error) {
+                                        errorText.textContent = `Cannot delete style: ${error.message}`;
+                                        return true;
+                                    } finally {
+                                        deleting = false;
+                                        if (!disposed) updateGallery();
+                                    }
+                                } },
+                            ]);
+                            confirmation = dialog.overlay;
+                        };
+                        tile.append(remove);
+                    }
                 }
                 grid.append(tile);
             }
@@ -220,7 +274,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
             filter.value = previous;
         };
         const showEditor = (style = {}) => {
-            if (batch) return;
+            if (batch || deleting) return;
             progressMessage = "";
             requestId++;
             loadingCatalog = false;
@@ -230,6 +284,10 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
             search.disabled = filter.disabled = add.disabled = true;
             status.textContent = style.id ? "Edit your style" : "Create your style";
             updateGallery();
+            let draft = { ...style };
+            const preview = make("div", "vnccs-style-placeholder");
+            paintPreview(preview, draft);
+            editor.append(preview);
             const fields = {};
             for (const [key, label, limit] of [["label", "Name", 100], ["description", "Short description", 240], ["reference", "Reference", 500], ["prompt", "Style prompt", 16000]]) {
                 const wrapper = make("label", "vnccs-creator-field", label);
@@ -246,56 +304,76 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
             const submit = make("button", "vnccs-creator-btn", "Save style");
             submit.type = "submit";
             const cancel = make("button", "vnccs-creator-btn", "Back to library");
+            const generate = make("button", "vnccs-creator-btn", "Generate preview");
+            generate.title = "Save this style and render only its portrait preview with seed 0 and current Creator settings.";
+            generate.hidden = !getPreviewPayload;
             cancel.onclick = () => {
                 editor.hidden = true; grid.hidden = false;
                 search.disabled = filter.disabled = add.disabled = false;
                 render(); search.focus();
             };
-            actions.append(submit, cancel);
+            actions.append(submit, generate, cancel);
             editor.append(actions);
             fields.label.focus();
-            editor.onsubmit = async event => {
-                event.preventDefault();
-                if (submit.disabled) return;
-                submit.disabled = cancel.disabled = true;
+            const storeDraft = async () => {
                 const token = ++requestId;
+                const payload = Object.fromEntries(Object.entries(fields).map(([key, input]) => [key, input.value]));
+                if (draft.id) payload.id = draft.id;
+                const response = await fetchApi("/vnccs/character_styles", {
+                    method: "POST", headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" }, body: JSON.stringify(payload),
+                });
+                const result = await response.json();
+                if (token !== requestId || disposed) return null;
+                if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+                let group = catalog.groups.find(item => item.label === "My styles");
+                if (!group) { group = { label: "My styles", styles: [] }; catalog.groups.push(group); }
+                group.styles = group.styles.filter(item => item.id !== result.style.id);
+                draft = result.style;
+                group.styles.push(draft);
+                setValue(draft.id, true);
+                paintPreview(preview, draft);
+                return draft;
+            };
+            const commit = async renderPreview => {
+                if (submit.disabled || (editor.reportValidity && !editor.reportValidity())) return;
+                submit.disabled = generate.disabled = cancel.disabled = true;
+                for (const field of Object.values(fields)) field.disabled = true;
+                const currentOverlay = overlay;
                 try {
-                    const payload = Object.fromEntries(Object.entries(fields).map(([key, input]) => [key, input.value]));
-                    if (style.id) payload.id = style.id;
-                    const response = await fetchApi("/vnccs/character_styles", {
-                        method: "POST", headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" }, body: JSON.stringify(payload),
-                    });
-                    const result = await response.json();
-                    if (token !== requestId || disposed) return;
-                    if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
-                    let group = catalog.groups.find(item => item.label === "My styles");
-                    if (!group) { group = { label: "My styles", styles: [] }; catalog.groups.push(group); }
-                    group.styles = group.styles.filter(item => item.id !== result.style.id);
-                    group.styles.push(result.style);
-                    setValue(result.style.id, true);
-                    close();
+                    const stored = await storeDraft();
+                    if (!stored) return;
+                    if (renderPreview) {
+                        const payload = JSON.parse(JSON.stringify(getPreviewPayload()));
+                        payload.gen_settings = { ...payload.gen_settings, seed: 0, seed_mode: "fixed", mode_settings: {} };
+                        await generatePreviews([stored], payload);
+                        if (!disposed && overlay === currentOverlay) paintPreview(preview, draft);
+                    } else close();
                 } catch (error) {
-                    if (token === requestId && !disposed) status.textContent = `Cannot save style: ${error.message}`;
+                    if (!disposed && overlay === currentOverlay) status.textContent = `Cannot save style: ${error.message}`;
                 } finally {
-                    submit.disabled = cancel.disabled = false;
+                    submit.disabled = generate.disabled = cancel.disabled = false;
+                    for (const field of Object.values(fields)) field.disabled = false;
                 }
             };
+            editor.onsubmit = event => { event.preventDefault(); return commit(false); };
+            generate.onclick = () => commit(true);
         };
         search.oninput = filter.onchange = render;
         add.onclick = () => showEditor();
-        generate.onclick = async () => {
+        // Retain the sequential renderer for maintenance; the UI generates one user style.
+        generatePreviews = async (requestedStyles, requestedPayload) => {
             if (batch) {
                 batch.cancelled = true;
                 progressMessage = "Stopping after the current image is saved...";
                 updateGallery();
                 return;
             }
-            if (loadingCatalog || !editor.hidden || disposed) return;
+            if (loadingCatalog || deleting || (!editor.hidden && !requestedStyles) || disposed || !overlay) return false;
             let current;
             try {
-                const payload = JSON.parse(JSON.stringify(getPreviewPayload()));
-                const styles = [...allStyles()];
-                if (payload.character_info.custom_style?.trim()) styles.push({ ...custom });
+                const payload = JSON.parse(JSON.stringify(requestedPayload || getPreviewPayload()));
+                const styles = requestedStyles || [...allStyles()];
+                if (!requestedStyles && payload.character_info.custom_style?.trim()) styles.push({ ...custom });
                 current = { payload, styles, index: 0, cancelled: false, requestId: "", key: `${Date.now()}-${++requestId}` };
                 batch = current;
                 for (const [index, style] of styles.entries()) {
@@ -322,13 +400,16 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
                     updateGallery(style.id);
                 }
                 progressMessage = current.cancelled ? "Stopped. Completed previews are saved." : `Saved all ${styles.length} style previews.`;
+                return true;
             } catch (error) {
                 progressMessage = `Preview generation stopped: ${error.message}. Completed previews are saved.`;
+                return false;
             } finally {
                 batch = null;
                 if (!disposed) updateGallery();
             }
         };
+        refreshLibrary = () => { requestId++; loadingCatalog = false; updateFilters(); render(); };
         updateFilters();
         render();
         const token = ++requestId;
@@ -352,5 +433,5 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
     };
     trigger.onclick = open;
     setValue(getInfo().style);
-    return { root, setValue, customInput };
+    return { root, setValue, customInput, generatePreviews: (...args) => generatePreviews(...args) };
 }

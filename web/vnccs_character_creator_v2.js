@@ -280,6 +280,7 @@ const STYLE = `
     background: var(--bg-surface); color: var(--text-primary); text-align: left;
 }
 .vnccs-style-card > .vnccs-style-placeholder { width: 100%; height: 100%; border-radius: 0; }
+.vnccs-style-editor > .vnccs-style-placeholder { width: min(100%, 220px); }
 .vnccs-style-card-label {
     position: absolute; inset: auto 0 0; padding: 26px 12px 12px; font-size: 13px;
     font-weight: 600; background: linear-gradient(transparent, rgba(0,0,0,.8));
@@ -287,10 +288,16 @@ const STYLE = `
 .vnccs-creator-container .vnccs-style-card[aria-pressed="true"] { border: 2px solid var(--accent); }
 .vnccs-creator-container .vnccs-style-summary:hover,
 .vnccs-creator-container .vnccs-style-card:hover { border-color: var(--accent); }
-.vnccs-creator-container .vnccs-style-edit {
+.vnccs-creator-container .vnccs-style-edit,
+.vnccs-creator-container .vnccs-style-delete {
     position: absolute; top: 8px; right: 8px; border: 1px solid var(--accent-border);
     border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); cursor: pointer;
 }
+.vnccs-creator-container .vnccs-style-edit { right: 44px; }
+.vnccs-creator-container .vnccs-style-delete {
+    width: 28px; height: 28px; padding: 0; font-size: 20px; line-height: 1;
+}
+.vnccs-creator-container .vnccs-style-delete:hover:not(:disabled) { color: var(--error); }
 .vnccs-creator-container .vnccs-style-editor { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
 .vnccs-creator-container .vnccs-style-editor textarea { height: auto; min-height: 160px; resize: vertical; }
 .vnccs-creator-container .vnccs-style-gallery [hidden] { display: none; }
@@ -2701,9 +2708,9 @@ app.registerExtension({
                         getInfo: () => state.character_info, save: saveState,
                         fetchApi: (...args) => api.fetchApi(...args),
                         cleanup: callback => registerCleanup(node, callback),
+                        showModal: (...args) => showCommonModal(...args),
                         imageURL: mediaURL,
                         getPreviewPayload: () => {
-                            node._randomizeSeedIfNeeded?.();
                             saveCurrentGenerationModeValues();
                             saveState();
                             return { node_id: String(node.id), character_info: state.character_info, gen_settings: state.gen_settings };

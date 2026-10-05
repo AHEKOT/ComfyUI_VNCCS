@@ -5,7 +5,8 @@
 
 # User-specific files
 character_template/character_styles.user.json
-character_template/style_previews/
+character_template/style_previews/user_*.webp
+character_template/style_previews/custom.webp
 *.rsuser
 *.suo
 *.user

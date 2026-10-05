@@ -79,7 +79,7 @@ def test_style_selector_has_readable_character_focused_options():
         "2020s Anime",
     }.issubset(labels)
     assert {"Marker Anime", "Brush Ink Anime", "Cubist Geometric"}.isdisjoint(labels)
-    assert "aliases" not in STYLE_CATALOG
+    assert STYLE_CATALOG["aliases"]["clio_anime_style"] == "anime_style"
     assert "Fortiche / Arcane" not in SOURCE
 
 

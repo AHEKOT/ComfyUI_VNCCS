@@ -47,7 +47,7 @@ def test_real_preview_path_samples_a_square_at_selected_scale_and_writes_only_we
     def unexpected(*args):
         pytest.fail("Style previews must not write the character PNG cache")
     monkeypatch.setattr(creator, "character_dir", unexpected)
-    info = {"style": "clio_anime_style", "hair": "black hair", "eyes": "blue eyes", "sex": "female", "age": 30, "framing": "full_body"}
+    info = {"style": "anime_style", "hair": "black hair", "eyes": "blue eyes", "sex": "female", "age": 30, "framing": "full_body"}
     settings = {"generation_mode": mode, "target_size": scale, "seed": 123, "steps": 17, "cfg": 3.5,
                 "sampler": "euler", "scheduler": "normal", "lora_stack": [{"name": "Mine", "strength": .4}], "turbo_enabled": False}
     response = creator._generate_preview_response({"character_info": info, "gen_settings": settings}, style_preview=info["style"])
@@ -69,10 +69,12 @@ def test_real_preview_path_samples_a_square_at_selected_scale_and_writes_only_we
     assert ("head to toe" if mode == "qi2" else "standing, full body") in normal_prompt
     path = Path(library.style_preview_path(info["style"]))
     with Image.open(path) as image:
-        assert image.format == "WEBP" and image.size == dimensions[0]
-        assert image.mode == ("RGBA" if channels == 4 else "RGB")
+        assert image.format == "WEBP" and image.size == (1024, 1024)
+        assert image.mode == "RGB"
         if channels == 4:
-            assert image.getchannel("A").getextrema() == (0, 0)
+            assert all(abs(a - b) <= 3 for a, b in zip(image.getpixel((0, 0)), (41, 32, 52)))
+        else:
+            assert image.getpixel((0, 0)) == (0, 0, 0)
     assert list(tmp_path.rglob("*.png")) == []
     assert response.data["image"].startswith("/vnccs/character_styles/preview?")
     assert response.data["saved"] is True and response.data["path"] == str(path)
@@ -84,13 +86,13 @@ def test_generation_route_validates_style_and_keeps_tags_settings_and_scoped_eve
     events, calls = [], []
     monkeypatch.setattr(creator.server.PromptServer.instance, "send_sync", lambda name, data: events.append((name, data)), raising=False)
     monkeypatch.setattr(creator, "_generate_preview_response", lambda data, style_preview: calls.append((data, style_preview)) or SimpleNamespace(status=200))
-    payload = {"style_id": "clio_anime_style", "node_id": "42", "request_id": "batch-1", "character_info": {"hair": "black hair", "eyes": "blue eyes", "style": "legacy"}, "gen_settings": {"target_size": 1536, "seed": 123, "seed_mode": "randomize"}}
+    payload = {"style_id": "anime_style", "node_id": "42", "request_id": "batch-1", "character_info": {"hair": "black hair", "eyes": "blue eyes", "style": "legacy"}, "gen_settings": {"target_size": 1536, "seed": 123, "seed_mode": "randomize"}}
     async def body():
         return payload
     request = SimpleNamespace(json=body, headers={"Host": "localhost", "X-VNCCS-CSRF": "1"})
     assert asyncio.run(creator.generate_style_preview(request)).status == 200
     assert calls[0][0]["character_info"]["hair"] == "black hair"
-    assert calls[0][0]["character_info"]["style"] == "clio_anime_style"
+    assert calls[0][0]["character_info"]["style"] == "anime_style"
     assert calls[0][0]["gen_settings"]["target_size"] == 1536
     assert calls[0][0]["gen_settings"]["seed"] == 123
     assert creator.resolve_generation_seed(calls[0][0]["gen_settings"]) == 123
@@ -112,15 +114,54 @@ def test_preview_route_serves_webp_and_catalog_recovers_generated_images(monkeyp
     monkeypatch.setattr(creator.web, "json_response", lambda data, status=200: SimpleNamespace(data=data, status=status), raising=False)
     monkeypatch.setattr(creator.web, "Response", lambda status: SimpleNamespace(status=status), raising=False)
     monkeypatch.setattr(creator.web, "FileResponse", lambda path, headers: SimpleNamespace(path=path, headers=headers, status=200), raising=False)
-    request = SimpleNamespace(rel_url=SimpleNamespace(query={"style": "clio_anime_style"}))
+    request = SimpleNamespace(rel_url=SimpleNamespace(query={"style": "anime_style"}))
     assert asyncio.run(creator.get_style_preview(request)).status == 404
-    library.save_style_preview("clio_anime_style", Image.new("RGB", (64, 64)))
+    library.save_style_preview("anime_style", Image.new("RGB", (64, 64)))
     response = asyncio.run(creator.get_style_preview(request))
     assert response.headers["Content-Type"] == "image/webp"
     assert Path(response.path).is_file()
     catalog = asyncio.run(creator.get_character_styles(None)).data
-    style = next(s for group in catalog["groups"] for s in group["styles"] if s["id"] == "clio_anime_style")
-    assert style["image"] == library.style_preview_url("clio_anime_style")
+    style = next(s for group in catalog["groups"] for s in group["styles"] if s["id"] == "anime_style")
+    assert style["image"] == library.style_preview_url("anime_style")
     assert creator.CHARACTER_STYLE_CATALOG["groups"] != catalog["groups"]
     request.rel_url.query["style"] = "../escape"
     assert asyncio.run(creator.get_style_preview(request)).status == 400
+
+
+@pytest.mark.parametrize("style_id", ["custom", "user_" + "a" * 32])
+def test_custom_preview_route_forces_seed_zero_and_preserves_main_settings(monkeypatch, style_id):
+    monkeypatch.setattr(creator.web, "json_response", lambda data, status=200: SimpleNamespace(data=data, status=status), raising=False)
+    monkeypatch.setattr(creator, "load_user_styles", lambda: [{"id": "user_" + "a" * 32, "prompt": "User graphite"}])
+    monkeypatch.setattr(creator.server.PromptServer.instance, "send_sync", lambda *args: None, raising=False)
+    calls = []
+    monkeypatch.setattr(creator, "_generate_preview_response", lambda data, style_preview: calls.append((data, style_preview)) or SimpleNamespace(status=200))
+    payload = {"style_id": style_id, "character_info": {"style": "photorealism", "custom_style": "User ink", "framing": "full_body"},
+               "gen_settings": {"seed": 567, "seed_mode": "randomize", "target_size": 2048,
+                                "mode_settings": {"qi2": {"seed": 999}}, "generation_mode": "qi2"}}
+    original = json.dumps(payload, sort_keys=True)
+    async def body():
+        return payload
+    request = SimpleNamespace(json=body, headers={"Host": "localhost", "X-VNCCS-CSRF": "1"})
+    assert asyncio.run(creator.generate_style_preview(request)).status == 200
+    data, selected = calls[0]
+    assert selected == style_id
+    assert data["character_info"]["style"] == style_id
+    if style_id.startswith("user_"):
+        assert data["character_info"]["style_prompt"] == "User graphite"
+    assert data["gen_settings"]["seed"] == creator.resolve_generation_seed(data["gen_settings"]) == 0
+    assert data["gen_settings"]["seed_mode"] == "fixed"
+    assert data["gen_settings"]["mode_settings"] == {}
+    assert data["gen_settings"]["target_size"] == 2048
+    assert json.dumps(payload, sort_keys=True) == original
+
+
+def test_old_preview_ids_serve_the_canonical_packaged_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(library, "STYLE_PREVIEWS_DIR", str(tmp_path))
+    monkeypatch.setattr(creator, "style_preview_path", library.style_preview_path)
+    monkeypatch.setattr(creator.web, "FileResponse", lambda path, headers: SimpleNamespace(path=path, headers=headers, status=200), raising=False)
+    library.save_style_preview("ghibli_miyazaki", Image.new("RGBA", (32, 32), (120, 80, 160, 100)))
+    request = SimpleNamespace(rel_url=SimpleNamespace(query={"style": "clio_ghibli_style"}))
+    response = asyncio.run(creator.get_style_preview(request))
+    assert response.status == 200
+    assert Path(response.path) == tmp_path / "ghibli_miyazaki.webp"
+    assert not (tmp_path / "clio_ghibli_style.webp").exists()

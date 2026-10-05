@@ -36,8 +36,8 @@ from .runtime_cleanup import inference_stage
 from .qwen_vl import configure_qwen_text_chat
 from .character_presets import CHARACTER_PRESETS, RACE_PRESETS, preset_key, race_features, race_prompt
 from .character_styles import (
-    load_user_styles, save_user_style, style_preview_path, style_preview_url,
-    square_style_resolution, save_style_preview,
+    load_user_styles, save_user_style, delete_user_style, style_preview_path, style_preview_url,
+    square_style_resolution, save_style_preview, save_user_style_preview,
     STYLE_PREVIEWS_DIR,
 )
 
@@ -1359,16 +1359,30 @@ if server:
                 if len(body) > 70000:
                     return web.json_response({"error": "Style payload is too large"}, status=413)
             style = save_user_style(json.loads(body))
-            return web.json_response({"style": style})
+            return web.json_response({"style": {**style, "image": style_preview_url(style["id"])}})
         except (ValueError, UnicodeError) as error:
             return web.json_response({"error": str(error)}, status=400)
         except OSError:
             return web.json_response({"error": "Cannot save user styles; check file permissions"}, status=500)
 
+    @server.PromptServer.instance.routes.post("/vnccs/character_styles/delete")
+    @privileged_route
+    async def delete_character_style(request):
+        try:
+            style_id = request.rel_url.query.get("style", "")
+            if not delete_user_style(style_id):
+                return web.json_response({"error": "User style no longer exists"}, status=404)
+            return web.json_response({"deleted": True, "style_id": style_id})
+        except ValueError as error:
+            return web.json_response({"error": str(error)}, status=400)
+        except OSError:
+            return web.json_response({"error": "Cannot delete user style; check file permissions"}, status=500)
+
     @server.PromptServer.instance.routes.get("/vnccs/character_styles/preview")
     async def get_style_preview(request):
         try:
-            path = style_preview_path(request.rel_url.query.get("style", ""))
+            style_id = request.rel_url.query.get("style", "")
+            path = style_preview_path(CHARACTER_STYLE_ALIASES.get(style_id, style_id))
             if not os.path.isfile(path):
                 return web.Response(status=404)
             return web.FileResponse(path, headers={"Content-Type": "image/webp"})
@@ -1795,7 +1809,8 @@ Example:
                 img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8)[0])
 
             if style_preview is not None:
-                return web.json_response(save_style_preview(style_preview, img))
+                save_preview = save_user_style_preview if style_preview.startswith("user_") else save_style_preview
+                return web.json_response(save_preview(style_preview, img))
 
             # Save Smart Cache
             c_path = os.path.join(character_dir(character_name), "cache", "preview.png")
@@ -1833,6 +1848,7 @@ Example:
                 raise ValueError("Request must be an object")
             style_id = data.get("style_id", "")
             style_preview_path(style_id)
+            style_id = CHARACTER_STYLE_ALIASES.get(style_id, style_id)
             info = data.get("character_info", {})
             settings = data.get("gen_settings", {})
             if not isinstance(info, dict) or not isinstance(settings, dict):
@@ -1846,8 +1862,10 @@ Example:
                     raise ValueError("Enter a custom style prompt before generating its preview")
             elif style_id not in styles:
                 raise ValueError("Unknown style ID")
-            # The UI resolves a randomized seed once for the whole comparison.
+            # User thumbnails are reproducible regardless of the main generation seed.
             preview_settings = {**normalize_gen_settings(settings), "seed_mode": "fixed", "mode_settings": {}}
+            if style_id == "custom" or style_id.startswith("user_"):
+                preview_settings["seed"] = 0
             payload = {**data, "character_info": {**info, "style": style_id, "style_prompt": styles.get(style_id, "")}, "gen_settings": preview_settings}
         except (ValueError, TypeError) as error:
             return web.json_response({"error": str(error)}, status=400)
