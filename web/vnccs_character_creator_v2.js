@@ -1,3 +1,4 @@
+import { createStylePicker } from "./character_styles.mjs";
 import { app } from "../../scripts/app.js";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, serverRegistry, refreshPreviewImage, watchConnection } from "./vnccs_transport.js";
 import { presetGroups, presetSelection } from "./character_presets.mjs";
@@ -83,6 +84,7 @@ const STYLE = `
 
 /* Main Host */
 .vnccs-creator-container {
+    position: relative;
     display: flex;
     flex-direction: column;
     background: var(--bg-primary);
@@ -224,22 +226,76 @@ const STYLE = `
     background: #1e1e2e;
     color: #e8e8f0;
 }
-.vnccs-creator-style-select {
-    font-size: 14px;
+/* Style library uses the whole node workspace without changing its size. */
+.vnccs-creator-container .vnccs-style-summary {
+    display: flex; gap: 12px; align-items: center; width: 100%; padding: 10px;
+    text-align: left; color: var(--text-primary); background: var(--bg-surface);
+    border: 1px solid var(--accent-border); border-radius: 12px; cursor: pointer;
 }
-.vnccs-creator-style-select option,
-.vnccs-creator-style-select optgroup {
-    font-family: var(--font);
-    font-size: 16px;
-    line-height: 1.55;
+.vnccs-creator-container .vnccs-style-placeholder {
+    position: relative; overflow: hidden;
+    display: flex; align-items: center; justify-content: center; aspect-ratio: 1;
+    background: linear-gradient(145deg, #292034, #17131f);
+    color: var(--text-secondary); font-size: 11px; border-radius: 10px;
 }
-.vnccs-creator-style-select option {
-    padding: 7px 12px;
+.vnccs-style-preview-image {
+    position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+    border-radius: inherit;
 }
-.vnccs-creator-style-select optgroup {
-    color: var(--text-secondary);
-    font-weight: 700;
+.vnccs-style-summary > .vnccs-style-placeholder { width: 106.4px; flex-shrink: 0; }
+.vnccs-style-details { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.vnccs-style-name { font-size: 14px; }
+.vnccs-style-description, .vnccs-style-reference {
+    display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-size: 11px; color: var(--text-secondary);
 }
+.vnccs-creator-container .vnccs-style-gallery {
+    position: absolute; inset: 0; z-index: 100; display: flex; flex-direction: column;
+    padding: 20px; gap: 12px; box-sizing: border-box; border-radius: inherit;
+    background: var(--bg-primary); color: var(--text-primary); overflow: hidden;
+    pointer-events: auto;
+}
+.vnccs-style-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; flex-shrink: 0; }
+.vnccs-style-toolbar input { flex: 1; min-width: 120px; }
+.vnccs-style-toolbar select { width: auto; max-width: 240px; }
+.vnccs-style-heading { font-size: 18px; margin-right: auto; }
+.vnccs-creator-container .vnccs-style-gallery .vnccs-creator-btn {
+    flex: 0 0 auto; background: var(--bg-surface); border: 1px solid var(--accent-border);
+}
+.vnccs-creator-container .vnccs-style-gallery .vnccs-creator-btn:hover:not(:disabled) {
+    background: var(--bg-hover); border-color: var(--accent);
+}
+.vnccs-style-status { color: var(--text-secondary); font-size: 12px; flex-shrink: 0; }
+.vnccs-style-content { flex: 1; min-height: 0; overflow-y: auto; padding: 3px; }
+.vnccs-style-size-controls { display: flex; align-items: center; gap: 12px; flex-shrink: 0; font-size: 12px; color: var(--text-secondary); }
+.vnccs-style-size-slider { width: 180px; max-width: 50%; accent-color: var(--accent); cursor: pointer; }
+.vnccs-style-size-value { min-width: 40px; font-variant-numeric: tabular-nums; }
+.vnccs-style-preview-location { font-size: 11px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.vnccs-style-preview-location:empty { display: none; }
+.vnccs-style-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--vnccs-style-card-size, 182px)), 1fr)); gap: 14px; }
+.vnccs-style-tile { position: relative; min-width: 0; }
+.vnccs-creator-container .vnccs-style-card {
+    position: relative; width: 100%; aspect-ratio: 1; padding: 0; overflow: hidden;
+    border-radius: 14px; border: 1px solid var(--accent-border); cursor: pointer;
+    background: var(--bg-surface); color: var(--text-primary); text-align: left;
+}
+.vnccs-style-card > .vnccs-style-placeholder { width: 100%; height: 100%; border-radius: 0; }
+.vnccs-style-card-label {
+    position: absolute; inset: auto 0 0; padding: 26px 12px 12px; font-size: 13px;
+    font-weight: 600; background: linear-gradient(transparent, rgba(0,0,0,.8));
+}
+.vnccs-creator-container .vnccs-style-card[aria-pressed="true"] { border: 2px solid var(--accent); }
+.vnccs-creator-container .vnccs-style-summary:hover,
+.vnccs-creator-container .vnccs-style-card:hover { border-color: var(--accent); }
+.vnccs-creator-container .vnccs-style-edit {
+    position: absolute; top: 8px; right: 8px; border: 1px solid var(--accent-border);
+    border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); cursor: pointer;
+}
+.vnccs-creator-container .vnccs-style-editor { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+.vnccs-creator-container .vnccs-style-editor textarea { height: auto; min-height: 160px; resize: vertical; }
+.vnccs-creator-container .vnccs-style-gallery [hidden] { display: none; }
+.vnccs-creator-container .vnccs-style-gallery :focus-visible,
+.vnccs-creator-container .vnccs-style-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .vnccs-creator-input,
 .vnccs-creator-select {
     height: 34px;
@@ -1374,8 +1430,6 @@ app.registerExtension({
                 characterStyleCatalog = { default_style: "custom", aliases: {}, groups: [] };
             }
             const DEFAULT_CHARACTER_STYLE = characterStyleCatalog.default_style || "custom";
-            const LEGACY_CHARACTER_STYLE_ALIASES = characterStyleCatalog.aliases || {};
-            const CHARACTER_STYLE_GROUPS = characterStyleCatalog.groups;
 
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
@@ -2642,52 +2696,27 @@ app.registerExtension({
                 };
 
                 const createStyleField = () => {
-                    const wrap = document.createElement("div");
-                    wrap.className = "vnccs-creator-field";
-                    setHelpText(wrap, helpFor("style"));
-                    wrap.innerHTML = '<div class="vnccs-creator-label">Style</div>';
-
-                    const select = document.createElement("select");
-                    select.className = "vnccs-creator-select vnccs-creator-style-select";
-                    select.setAttribute("aria-label", "Style");
-                    select.add(new Option("CUSTOM STYLE", "custom"));
-                    CHARACTER_STYLE_GROUPS.forEach(group => {
-                        const optgroup = document.createElement("optgroup");
-                        optgroup.label = group.label;
-                        group.styles.forEach(style => optgroup.appendChild(new Option(style.label, style.id)));
-                        select.appendChild(optgroup);
+                    const picker = createStylePicker({
+                        host: container, catalog: characterStyleCatalog,
+                        getInfo: () => state.character_info, save: saveState,
+                        fetchApi: (...args) => api.fetchApi(...args),
+                        cleanup: callback => registerCleanup(node, callback),
+                        imageURL: mediaURL,
+                        getPreviewPayload: () => {
+                            node._randomizeSeedIfNeeded?.();
+                            saveCurrentGenerationModeValues();
+                            saveState();
+                            return { node_id: String(node.id), character_info: state.character_info, gen_settings: state.gen_settings };
+                        },
+                        listenPreview: callback => {
+                            api.addEventListener("vnccs.style_preview.stage", callback);
+                            registerCleanup(node, () => api.removeEventListener("vnccs.style_preview.stage", callback));
+                        },
                     });
-
-                    const customInput = document.createElement("input");
-                    customInput.type = "text";
-                    customInput.className = "vnccs-creator-input";
-                    customInput.placeholder = "Describe any visual style";
-                    customInput.setAttribute("aria-label", "Custom style description");
-                    customInput.value = state.character_info.custom_style || "";
-                    customInput.oninput = (event) => {
-                        state.character_info.custom_style = event.target.value;
-                        debouncedSave();
-                    };
-
-                    const setValue = (value, persist = false) => {
-                        const migratedValue = LEGACY_CHARACTER_STYLE_ALIASES[value] || value;
-                        const knownValues = new Set([
-                            "custom",
-                            ...CHARACTER_STYLE_GROUPS.flatMap(group => group.styles.map(style => style.id)),
-                        ]);
-                        const normalized = knownValues.has(migratedValue) ? migratedValue : DEFAULT_CHARACTER_STYLE;
-                        state.character_info.style = normalized;
-                        select.value = normalized;
-                        customInput.style.display = normalized === "custom" ? "block" : "none";
-                        if (persist) saveState();
-                    };
-                    select.onchange = event => setValue(event.target.value, true);
-
-                    wrap.append(select, customInput);
-                    els.style = { setValue };
-                    els.custom_style = customInput;
-                    setValue(state.character_info.style || DEFAULT_CHARACTER_STYLE);
-                    return wrap;
+                    setHelpText(picker.root, helpFor("style"));
+                    els.style = { setValue: picker.setValue };
+                    els.custom_style = picker.customInput;
+                    return picker.root;
                 };
 
                 const createGraphicToggle = (lbl, key, targetObj = state.character_info) => {

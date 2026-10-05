@@ -4,6 +4,8 @@
 ## Get latest from https://github.com/github/gitignore/blob/main/VisualStudio.gitignore
 
 # User-specific files
+character_template/character_styles.user.json
+character_template/style_previews/
 *.rsuser
 *.suo
 *.user

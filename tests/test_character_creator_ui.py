@@ -45,16 +45,15 @@ def test_style_selector_is_between_framing_and_race_with_custom_first():
     assert SOURCE.index(framing) < SOURCE.index(style) < SOURCE.index(race)
     assert 'style: DEFAULT_CHARACTER_STYLE, custom_style: ""' in SOURCE
     assert 'api.fetchApi("/vnccs/character_styles")' in SOURCE
-    assert 'select.add(new Option("CUSTOM STYLE", "custom"))' in SOURCE
-    assert 'customInput.style.display = normalized === "custom" ? "block" : "none"' in SOURCE
+    assert "createStylePicker({" in SOURCE
+    assert "getInfo: () => state.character_info" in SOURCE
 
 
 def test_style_selector_has_readable_character_focused_options():
-    assert 'select.className = "vnccs-creator-select vnccs-creator-style-select"' in SOURCE
-    assert ".vnccs-creator-style-select {\n    font-size: 14px;" in SOURCE
-    assert "font-size: 16px;\n    line-height: 1.55;" in SOURCE
-    assert "group.styles.forEach(style =>" in SOURCE
-    assert "group.styles.map(style => style.id)" in SOURCE
+    assert ".vnccs-style-gallery" in SOURCE
+    assert "grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--vnccs-style-card-size, 182px)), 1fr))" in SOURCE
+    assert "white-space: nowrap; overflow: hidden; text-overflow: ellipsis" in SOURCE
+    assert "host: container, catalog: characterStyleCatalog" in SOURCE
 
     labels = {
         style["label"]
