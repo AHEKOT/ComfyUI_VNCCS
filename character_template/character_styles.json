@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "default_style": "ghibli_miyazaki",
   "groups": [
     {
@@ -1511,22 +1511,6 @@
           "reference": "Mort Drucker's cinematic caricature mastery, Jack Davis's frantic crosshatched scene, Don Martin's rubbery distortions, classic EC Comics, propaganda-poster parody of early Mad magazine,",
           "prompt": "Style: Mad Magazine Cover Art.\nsatirical caricature rendering with exaggerated proportions, grotesque distorted vibes, meticulously crosshatched shading and stippled textures building a grotesque yet highly detailed surface,overly-exaggerated grimacing subject, the linework loose but masterfully controlled with varying pen weights, the atmosphere relentlessly irreverent, mischievous, and subversive, parody. Influenced by: Mort Drucker's cinematic caricature mastery, Jack Davis's frantic crosshatched linework, Don Martin's rubbery distortions, classic EC Comics, propaganda-poster parody of early Mad magazine. Apply this visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories and the separately supplied composition.",
           "image": ""
-        },
-        {
-          "id": "stick_figure_child_drawing",
-          "label": "Stick-Figure Child Drawing",
-          "description": "A radically minimal illustration style built on the barest possible linework needed to suggest form, simple circular head and straight-line limbs replacing any anatomical detail entirely, a wobbly, unpracticed economy of gesture, and a…",
-          "reference": "child-art tradition, crayon drawing technique, kindergarten art, naive-art,",
-          "prompt": "Style: Stick-Figure Child Drawing.\nA radically minimal illustration style built on the barest possible linework needed to suggest form, simple circular head and straight-line limbs replacing any anatomical detail entirely, a wobbly, unpracticed economy of gesture, and a charmingly crude, innocent simplicity that feels spontaneous, playful, and completely unpolished. Influenced by: child-art tradition, crayon drawing technique, kindergarten art, naive-art. Apply this visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories and the separately supplied composition.",
-          "image": ""
-        },
-        {
-          "id": "troll_face",
-          "label": "Troll Face",
-          "description": "A single 2011 internet rage comic panel drawn in Microsoft Paint, where the character herself is drawn entirely in crude, shaky, jagged black lines made with a computer mouse, her hair and clothes reduced to wobbly scribbled outlines,…",
-          "reference": "rage comics, r/fffffffuuuuuuuuuuuu, 4chan, Microsoft Paint, early-2010s internet memes.",
-          "prompt": "Style: Troll Face.\nA single 2011 internet rage comic panel drawn in Microsoft Paint, where the character herself is drawn entirely in crude, shaky, jagged black lines made with a computer mouse, her hair and clothes reduced to wobbly scribbled outlines, a stick-limbed body under a big round head whose face is replaced by the grinning black-and-white Trollface, all squinting eyes, huge teeth and scribbled wrinkle lines, and flat bucket-fill color in only one or two spots. Influenced by: rage comics, r/fffffffuuuuuuuuuuuu, 4chan, Microsoft Paint, early-2010s internet memes. Apply this visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories and the separately supplied composition.",
-          "image": ""
         }
       ]
     },
@@ -1803,22 +1787,6 @@
           "image": ""
         },
         {
-          "id": "zelda_wind_waker_style",
-          "label": "Zelda Wind Waker Style",
-          "description": "A vibrant, toon-shaded illustration style built on crisp, hard-edged cel shading with minimal tonal gradation, confident, thick outline holding clean, geometric silhouette design, soft matte-painted surface texture, expressive, rounded…",
-          "reference": "Nintendo character-art direction, cel-shaded toon-rendering technique, painterly matte-background practice, whimsical adventure-game illustration method.",
-          "prompt": "Style: Zelda Wind Waker Style.\nA vibrant, toon-shaded illustration style built on crisp, hard-edged cel shading with minimal tonal gradation, confident, thick outline holding clean, geometric silhouette design, soft matte-painted surface texture, expressive, rounded character proportions carrying whimsical charm, and a bright, adventurous storybook vibrancy that feels playful, timeless, and quietly heroic.Influenced by: Nintendo character-art direction, cel-shaded toon-rendering technique, painterly surface-rendering practice, whimsical adventure-game illustration method. Apply this visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories and the separately supplied composition.",
-          "image": ""
-        },
-        {
-          "id": "breath_of_the_wild_style",
-          "label": "Breath of the Wild Style",
-          "description": "An in-game Nintendo Switch screenshot of The Legend of Zelda: Breath of the Wild: every character is a real-time 3D game model with smooth, simplified geometry, gently realistic proportions and an understated face with small, simple…",
-          "reference": "Breath of the Wild and Tears of the Kingdom art direction, Nintendo EPD, real-time toon-shaded 3D rendering.",
-          "prompt": "Style: Breath of the Wild Style.\nAn in-game Nintendo Switch screenshot of The Legend of Zelda: Breath of the Wild: every character is a real-time 3D game model with smooth, simplified geometry, gently realistic proportions and an understated face with small, simple eyes, lit with a soft two-tone toon-shading ramp that puts one crisp shadow edge across the face and clothes, cool blue-violet shadow tones against warm sunlit highlights, a bright white rim light tracing the silhouette, soft ambient occlusion within the supplied forms, matte low-detail textures with faint brush-stroke grain, a sunlit, slightly desaturated pastel palette, and softly graduated cool-toned reflected light. Influenced by: Breath of the Wild and Tears of the Kingdom art direction, Nintendo EPD, real-time toon-shaded 3D rendering. Apply this visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories and the separately supplied composition.",
-          "image": ""
-        },
-        {
           "id": "ps1_graphics",
           "label": "PS1 Graphics",
           "description": "A low-poly, texture-warped 3D-illustration style built on blocky, vertex-snapped geometry that jitters slightly with characteristic early-3D imprecision, low-resolution textures stretched and distorted across simplified polygonal…",
@@ -1872,14 +1840,6 @@
           "description": "decorative graphic aesthetics characterized by bold enclosed shapes, segmented composition, strong contour structures, ornamental patterning, and luminous mosaic-inspired design principles. The style builds imagery through…",
           "reference": "Stained Glass Flat Art",
           "prompt": "Style: Stained Glass Flat Art.\ndecorative graphic aesthetics characterized by bold enclosed shapes, segmented composition, strong contour structures, ornamental patterning, and luminous mosaic-inspired design principles. The style builds imagery through interconnected flat regions separated by deliberate leading-like divisions, emphasizing symbolic clarity, visual rhythm, and harmonious decorative balance rather than volumetric realism. Rather than relying on shading or painterly texture, it communicates form through shape relationships, stylized silhouettes, and carefully arranged visual geometry, creating imagery that feels iconic, radiant, and timeless. The resulting aesthetic blends medieval craftsmanship, sacred decorative traditions, and modern graphic simplification into richly symbolic compositions with striking visual presence, reminiscent of Louis Comfort Tiffany and Alphonse Mucha, inspired by Chartres Cathedral stained glass and Tiffany Studios glass panels. Apply this visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories and the separately supplied composition.",
-          "image": ""
-        },
-        {
-          "id": "isometric_3d_graphic",
-          "label": "Isometric 3D Graphic",
-          "description": "A clean dimensional graphic treatment with simplified geometric surface modeling, flat-to-subtly-gradated shading, clearly separated angular facets and polished UI-icon surface precision.",
-          "reference": "isometric game-art tradition, modern UI/UX iconography practice, flat-design illustration technique, procedural icon-set design method.",
-          "prompt": "Style: Dimensional Faceted Graphic.\nA clean dimensional graphic treatment with simplified geometric surface modeling, flat-to-subtly-gradated shading, clearly separated angular facets and polished UI-icon surface precision. Influenced by: faceted game-art rendering tradition, modern UI/UX iconography practice, flat-design illustration technique, procedural icon-set design method. Apply this visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories and the separately supplied composition.",
           "image": ""
         },
         {
@@ -1995,14 +1955,6 @@
           "image": ""
         },
         {
-          "id": "blueprint",
-          "label": "Blueprint",
-          "description": "A precise, technical illustration style built on crisp white linework laid over a deep, uniform blue field, exacting mechanical accuracy in every construction line and dimensional marker, minimal to no shading beyond the line itself…",
-          "reference": "technical/engineering-drawing tradition, architectural-blueprint drafting technique, cyanotype printing process, orthographic-projection drawing method.",
-          "prompt": "Style: Blueprint.\nA precise, technical illustration style built on crisp white linework laid over a deep, uniform blue field, exacting mechanical accuracy in every construction line and dimensional marker, minimal to no shading beyond the line itself carrying all structural information, a rigorous, drafting-level clarity that favors exact proportion over expressive interpretation, and a clean, methodical exactness rooted in centuries of engineering and architectural drafting discipline. Influenced by: technical/engineering-drawing tradition, architectural-blueprint drafting technique, cyanotype printing process, precise technical-drafting method. Apply this visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories and the separately supplied composition.",
-          "image": ""
-        },
-        {
           "id": "bold_painterly_impasto",
           "label": "Bold Painterly Impasto",
           "description": "A richly textured painting style built on thick, confident circular brushstrokes that curl and swirl across every extent, dense impasto ridges catching directional light with sculptural, tactile weight, sweeping curved strokes carrying…",
@@ -2021,9 +1973,9 @@
         {
           "id": "steampunk",
           "label": "Steampunk",
-          "description": "A richly ornamental Victorian-industrial illustration style built on intricate mechanical detail rendered with meticulous, gear-and-cog precision, dramatic directional lighting catching every riveted contour and polished brass-adjacent…",
-          "reference": "Jules Verne illustration tradition, Victorian engraving technique, retro-futurist mechanical-design practice, steampunk concept-art method.,",
-          "prompt": "Style: Steampunk.\nA richly ornamental Victorian-industrial illustration style built on intricate mechanical detail rendered with meticulous, gear-and-cog precision, dramatic directional lighting catching every riveted contour and polished brass-adjacent gleam, confident linework blending vintage engraving discipline with fantastical technical invention, a hushed, adventurous grandeur carried through richly layered ornamental complexity, and a nostalgic, retro-futurist intensity that feels handcrafted, inventive, and unmistakably era-blending. Influenced by: Jules Verne illustration tradition, Victorian engraving technique, retro-futurist mechanical-design practice, steampunk concept-art method. Apply this visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories and the separately supplied composition.",
+          "description": "Victorian engraving-inspired linework, fine etched textures, meticulous crosshatching, warm sepia-toned shading and softly burnished highlights on existing surfaces, preserving the specified materials and local colors.",
+          "reference": "Jules Verne illustration tradition; Victorian engraving technique; steampunk illustration.",
+          "prompt": "Style: Steampunk.\nVictorian engraving-inspired linework, fine etched textures, meticulous crosshatching, warm sepia-toned shading and softly burnished highlights on existing surfaces, preserving the specified materials and local colors. Reference: Jules Verne illustration tradition; Victorian engraving technique; steampunk illustration. Do not add or redesign clothing, accessories, mechanical parts or decorative objects. Apply this visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories and the separately supplied composition.",
           "image": ""
         },
         {
@@ -2309,22 +2261,6 @@
           "description": "richly detailed gothic illustration characterized by intricate linework, masterful texture rendering, atmospheric darkness, organic complexity, dramatic chiaroscuro, and exceptional craftsmanship, blending classical draftsmanship with…",
           "reference": "Bernie Wrightson Gothic",
           "prompt": "Style: Bernie Wrightson Gothic.\nrichly detailed gothic illustration characterized by intricate linework, masterful texture rendering, atmospheric darkness, organic complexity, dramatic chiaroscuro, and exceptional craftsmanship, blending classical draftsmanship with horror-infused visual storytelling through meticulous detail, immersive mood, and a strong sense of haunting romanticism, reminiscent of Bernie Wrightson and Gustave Doré, inspired by Frankenstein and Swamp Thing. Apply this visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories and the separately supplied composition.",
-          "image": ""
-        },
-        {
-          "id": "blacklight_style",
-          "label": "Blacklight Style",
-          "description": "A luminous glow-reactive illustration style built on stark contrast between an inert, absorbed base surface and intensely radiant fluorescing accents, an otherworldly internal luminosity that appears to emit rather than reflect, sharp…",
-          "reference": "blacklight poster art tradition, fluorescent pigment illustration technique, psychedelic 1960s-70s poster design, UV-reactive body-art photography.",
-          "prompt": "Style: Blacklight Style.\nA luminous glow-reactive illustration style built on stark contrast between an inert, absorbed base surface and intensely radiant fluorescing accents, an otherworldly internal luminosity that appears to emit rather than reflect, sharp separation between glowing and non-glowing regions with almost no transitional gradation, a surreal, electric intensity charged with nightclub-adjacent energy, and a hypnotic, ultraviolet-reactive vibrancy that feels alive in the dark. Influenced by: blacklight poster art tradition, fluorescent pigment illustration technique, psychedelic 1960s-70s poster design, UV-reactive body-art photography. Apply this visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories and the separately supplied composition.",
-          "image": ""
-        },
-        {
-          "id": "x_ray_style",
-          "label": "X-Ray Style",
-          "description": "A translucent anatomical rendering style built on layered internal visibility beneath an otherwise solid exterior, soft luminous glow radiating from within rather than reflecting off the outer plane, precise structural linework…",
-          "reference": "medical radiography technique, scientific illustration tradition, digital x-ray rendering effects, anatomical cross-section illustration.",
-          "prompt": "Style: X-Ray Style.\nA translucent anatomical rendering style built on layered internal visibility beneath an otherwise solid exterior, soft luminous glow radiating from within rather than reflecting off the outer plane, precise structural linework revealing underlying form with clinical exactness, a stark, high-contrast tonal separation between dense and translucent areas, and an eerie, revelatory clarity that treats the body as both solid and see-through simultaneously. Influenced by: medical radiography technique, scientific illustration tradition, digital x-ray rendering effects, anatomical cross-section illustration. Apply this visual treatment only; preserve all specified character details, proportions, eye colors, clothing, accessories and the separately supplied composition.",
           "image": ""
         },
         {
@@ -3001,7 +2937,7 @@
       "name": "Community Style Library",
       "url": "https://github.com/lumenastrum/clio-style-preview",
       "credit": "Style prose compiled by u/Dear-Spend-2865; expanded by lumenastrum. Previews generated with VNCCS.",
-      "style_count": 326
+      "style_count": 318
     }
   ],
   "aliases": {
@@ -3175,8 +3111,8 @@
     "clio_traditional_marker_illustration": "traditional_marker_illustration",
     "clio_western_cel_shaded_illustration": "western_cel_shaded_illustration",
     "clio_mad_magazine_cover_art": "mad_magazine_cover_art",
-    "clio_stick_figure_child_drawing": "stick_figure_child_drawing",
-    "clio_troll_face": "troll_face",
+    "clio_stick_figure_child_drawing": "ghibli_miyazaki",
+    "clio_troll_face": "ghibli_miyazaki",
     "clio_photography": "photorealism",
     "clio_35mm_photography": "photorealism",
     "clio_adobe_lightroom_masterpiece": "photorealism",
@@ -3280,8 +3216,8 @@
     "clio_mixed_media": "mixed_media",
     "clio_wallace_and_gromit_style": "wallace_and_gromit_style",
     "clio_muppets_style": "muppets_style",
-    "clio_zelda_wind_waker_style": "zelda_wind_waker_style",
-    "clio_breath_of_the_wild_style": "breath_of_the_wild_style",
+    "clio_zelda_wind_waker_style": "ghibli_miyazaki",
+    "clio_breath_of_the_wild_style": "ghibli_miyazaki",
     "clio_ps1_graphics": "ps1_graphics",
     "clio_woodcut": "woodcut",
     "clio_contemporary_lithography": "contemporary_lithography",
@@ -3289,7 +3225,7 @@
     "clio_contemporary_ukiyo_e": "contemporary_ukiyo_e",
     "clio_mosaic_art": "mosaic_art",
     "clio_stained_glass_flat_art": "stained_glass_flat_art",
-    "clio_isometric_3d_graphic": "isometric_3d_graphic",
+    "clio_isometric_3d_graphic": "ghibli_miyazaki",
     "clio_quilling": "quilling",
     "clio_lowbrow_style": "lowbrow_style",
     "clio_fortnite_style": "fortnite_style",
@@ -3306,7 +3242,7 @@
     "clio_vignette_tattoo_design_flat_print_format": "vignette_tattoo_design_flat_print_format",
     "clio_vignette_sticker": "vignette_sticker",
     "clio_icon_emoticon_vignette": "icon_emoticon_vignette",
-    "clio_blueprint": "blueprint",
+    "clio_blueprint": "ghibli_miyazaki",
     "clio_bold_painterly_impasto": "bold_painterly_impasto",
     "clio_the_mitchells_vs_the_machines_animation_style": "the_mitchells_vs_the_machines_animation_style",
     "clio_spider_verse_style": "spider_verse",
@@ -3349,8 +3285,8 @@
     "clio_artstation_masterpiece": "artstation_masterpiece",
     "clio_bastien_lecouffe_deharme_fantasy": "bastien_lecouffe_deharme_fantasy",
     "clio_bernie_wrightson_gothic": "bernie_wrightson_gothic",
-    "clio_blacklight_style": "blacklight_style",
-    "clio_x_ray_style": "x_ray_style",
+    "clio_blacklight_style": "ghibli_miyazaki",
+    "clio_x_ray_style": "ghibli_miyazaki",
     "clio_brassa_night_photography": "photorealism",
     "clio_character_design_illustration": "character_design_illustration",
     "clio_charlie_bowater_style": "charlie_bowater_style",
@@ -3435,6 +3371,14 @@
     "clio_modern_klimt_inspired_flat_collage_art": "modern_klimt_inspired_flat_collage_art",
     "clio_henri_matisse_style": "henri_matisse_style",
     "clio_andy_warhol_style": "andy_warhol_style",
-    "clio_impasto": "impasto"
+    "clio_impasto": "impasto",
+    "blacklight_style": "ghibli_miyazaki",
+    "blueprint": "ghibli_miyazaki",
+    "breath_of_the_wild_style": "ghibli_miyazaki",
+    "isometric_3d_graphic": "ghibli_miyazaki",
+    "stick_figure_child_drawing": "ghibli_miyazaki",
+    "troll_face": "ghibli_miyazaki",
+    "x_ray_style": "ghibli_miyazaki",
+    "zelda_wind_waker_style": "ghibli_miyazaki"
   }
 }

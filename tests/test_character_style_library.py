@@ -18,7 +18,7 @@ ROOT = Path(__file__).parents[1]
 def test_packaged_catalog_is_unique_and_every_style_has_a_square_rgb_preview():
     catalog = json.loads((ROOT / "character_template/character_styles.json").read_text())
     styles = [style for group in catalog["groups"] for style in group["styles"]]
-    assert len(styles) == len({style["id"] for style in styles}) == 366
+    assert len(styles) == len({style["id"] for style in styles}) == 358
     assert len({style["label"].casefold() for style in styles}) == len(styles)
     assert all(style["label"] and style["description"] and style["reference"] and style["prompt"] for style in styles)
     assert all(not style["id"].startswith("clio_") for style in styles)
@@ -32,6 +32,34 @@ def test_packaged_catalog_is_unique_and_every_style_has_a_square_rgb_preview():
             assert image.format == "WEBP" and image.size == (1024, 1024)
             assert image.mode == "RGB"
     assert catalog["default_style"] == "ghibli_miyazaki"
+
+
+def test_retired_styles_and_previews_are_removed_with_valid_workflow_fallbacks():
+    catalog = json.loads((ROOT / "character_template/character_styles.json").read_text())
+    styles = {s["id"] for g in catalog["groups"] for s in g["styles"]}
+    retired = {
+        "stick_figure_child_drawing", "troll_face", "zelda_wind_waker_style",
+        "breath_of_the_wild_style", "isometric_3d_graphic", "blueprint",
+        "blacklight_style", "x_ray_style",
+    }
+    assert styles.isdisjoint(retired)
+    assert set(catalog["aliases"].values()) <= styles
+    for style_id in retired:
+        assert not (ROOT / "character_template/style_previews" / (style_id + ".webp")).exists()
+        assert catalog["aliases"][style_id] == catalog["default_style"]
+        assert catalog["aliases"]["clio_" + style_id] == catalog["default_style"]
+
+
+def test_steampunk_is_surface_treatment_and_preserves_the_supplied_costume():
+    catalog = json.loads((ROOT / "character_template/character_styles.json").read_text())
+    style = next(s for g in catalog["groups"] for s in g["styles"] if s["id"] == "steampunk")
+    assert "Victorian engraving" in style["prompt"]
+    assert "crosshatching" in style["prompt"]
+    assert "existing surfaces" in style["prompt"]
+    assert "Do not add or redesign clothing, accessories, mechanical parts or decorative objects" in style["prompt"]
+    for term in ("gear-and-cog", "riveted", "ornamental complexity", "mechanical-design"):
+        assert term not in style["prompt"] + style["description"] + style["reference"]
+    assert (ROOT / "character_template/style_previews/steampunk.webp").is_file()
 
 
 def test_style_prose_keeps_rendering_and_cannot_set_background_pose_or_camera():
