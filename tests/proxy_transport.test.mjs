@@ -246,7 +246,7 @@ test('focus refresh preserves the same selected preview and ignores failed or st
         assert.equal(img.src, source);
     }
     for (const name of ['vnccs_character_creator_v2', 'vnccs_clothes_designer']) {
-        assert.match(read(name), /watchConnection\(node, [^\n]+refreshPreviewImage\(els.previewImg\)/);
+        assert.match(read(name), /watchConnection\(node, [\s\S]*?refreshPreviewImage\(els.previewImg\)/);
     }
 });
 

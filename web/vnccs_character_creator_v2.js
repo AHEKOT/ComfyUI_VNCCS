@@ -4375,7 +4375,57 @@ app.registerExtension({
                 };
                 api.addEventListener("vnccs.preview.updated", previewUpdateHandler);
                 registerCleanup(node, () => api.removeEventListener("vnccs.preview.updated", previewUpdateHandler));
-                watchConnection(node, () => { if (state.character && !els.btnGen?.disabled) refreshPreviewImage(els.previewImg); }, registerCleanup);
+
+                let previewRunning = false;
+                let workflowBusy = true;
+                const syncPreviewButton = () => {
+                    els.btnGen.disabled = previewRunning || workflowBusy;
+                    els.btnGen.innerText = previewRunning ? "GENERATING..." : workflowBusy ? "WORKFLOW BUSY..." : "GENERATE PREVIEW";
+                    els.btnGen.title = workflowBusy ? "Preview is unavailable while a workflow is queued or running." : "";
+                };
+                const beginWorkflowStatusRequest = createRequestGuard(node);
+                const refreshWorkflowBusy = async () => {
+                    const current = beginWorkflowStatusRequest();
+                    try {
+                        const response = await api.fetchApi("/queue");
+                        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                        const queue = await response.json();
+                        if (!Array.isArray(queue.queue_running) || !Array.isArray(queue.queue_pending)) throw new Error("Invalid queue response");
+                        if (!current()) return;
+                        workflowBusy = Boolean(queue.queue_running?.length || queue.queue_pending?.length);
+                        syncPreviewButton();
+                    } catch (error) {
+                        if (!current()) return;
+                        workflowBusy = true;
+                        syncPreviewButton();
+                        console.warn("[VNCCS] Could not refresh workflow status", error);
+                    }
+                };
+                const setWorkflowBusy = busy => {
+                    beginWorkflowStatusRequest();
+                    workflowBusy = busy;
+                    syncPreviewButton();
+                };
+                const workflowStatusHandler = event => {
+                    const remaining = event.detail?.exec_info?.queue_remaining;
+                    if (typeof remaining === "number" && Number.isFinite(remaining)) setWorkflowBusy(remaining > 0);
+                    else if (event.detail == null) setWorkflowBusy(true);
+                };
+                const workflowStartHandler = () => setWorkflowBusy(true);
+                api.addEventListener("status", workflowStatusHandler);
+                api.addEventListener("execution_start", workflowStartHandler);
+                api.addEventListener("reconnecting", workflowStartHandler);
+                registerCleanup(node, () => {
+                    api.removeEventListener("status", workflowStatusHandler);
+                    api.removeEventListener("execution_start", workflowStartHandler);
+                    api.removeEventListener("reconnecting", workflowStartHandler);
+                });
+                syncPreviewButton();
+                refreshWorkflowBusy();
+                watchConnection(node, async () => {
+                    await refreshWorkflowBusy();
+                    if (state.character && !els.btnGen?.disabled) refreshPreviewImage(els.previewImg);
+                }, registerCleanup);
                 registerCleanup(node, () => stopCcPolling());
 
                 const init = async () => {
@@ -4548,6 +4598,7 @@ app.registerExtension({
                 };
 
                 const doGenerate = async () => {
+                    if (els.btnGen.disabled) return;
                     if (!state.character) {
                         showAlertModal("No Character", "Create a character before generating a preview.");
                         return;
@@ -4580,16 +4631,14 @@ app.registerExtension({
                         showAlertModal("Model Missing", "Download and select an installed Illustrious checkpoint");
                         return;
                     }
-                    if (els.btnGen.disabled) return;
-
                     node._randomizeSeedIfNeeded();
                     saveCurrentGenerationModeValues();
 
                     // Show loading overlay
                     const loading = createLoadingOverlay(container, "Generating preview");
 
-                    els.btnGen.innerText = "GENERATING...";
-                    els.btnGen.disabled = true;
+                    previewRunning = true;
+                    syncPreviewButton();
                     saveState();
 
                     const character = state.character;
@@ -4627,8 +4676,8 @@ app.registerExtension({
                     } catch (e) { if (isCurrent()) showMessage(container, "Error: " + e, true); }
                     finally {
                         loading.remove();
-                        els.btnGen.innerText = "GENERATE PREVIEW";
-                        els.btnGen.disabled = false;
+                        previewRunning = false;
+                        syncPreviewButton();
                     }
                 };
 

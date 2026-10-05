@@ -364,7 +364,8 @@ def generator_module(monkeypatch):
     @contextmanager
     def inference_stage():
         yield
-    module(prefix + 'runtime_cleanup', inference_stage=inference_stage)
+    from threading import RLock
+    module(prefix + 'runtime_cleanup', inference_stage=inference_stage, inference_lock=RLock())
     module(prefix + 'vnccs_pipe', VNCCS_Pipe=object)
     module(prefix + 'vnccs_control_center', _apply_lora_standard=lambda *a: None,
            _find_model_on_disk=lambda *a: None, _rel_within_folder=lambda *a: None,
