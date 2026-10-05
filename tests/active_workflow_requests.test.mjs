@@ -218,7 +218,8 @@ function creatorImageHarness() {
         api: { fetchApi: (route, options) => { const task = deferred(); task.route = route; task.options = options; requests.push(task); return task.promise; } },
     });
     const text = source('vnccs_character_creator_v2');
-    vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\n${between(text, 'const clearCharacterSelection =', 'const applyStoredPrefs =')}\n${between(text, 'const beginCharacterRequest =', 'const doGenerate = async')}\n${between(text, 'const doGenerate = async', '// 7. Graph Restore Hook')}\nglobalThis.preview = { showSpritePreview, tryCachePreview, clearCharacterSelection, doGenerate, loadChar };`, context);
+    const previewButton = between(text, 'let previewRunning = false;', 'const beginWorkflowStatusRequest =');
+    vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\n${previewButton}\nworkflowBusy = false;\n${between(text, 'const clearCharacterSelection =', 'const applyStoredPrefs =')}\n${between(text, 'const beginCharacterRequest =', 'const doGenerate = async')}\n${between(text, 'const doGenerate = async', '// 7. Graph Restore Hook')}\nglobalThis.preview = { showSpritePreview, tryCachePreview, clearCharacterSelection, doGenerate, loadChar };`, context);
     return { context, state, node, els, images, saved, requests, ...context.preview };
 }
 

@@ -1,3 +1,27 @@
+# VNCCS 3.2.3 Changelog
+
+This release expands Character Creator V2's style selection into a visual library with packaged previews and persistent user styles. The changes below describe the final release compared with `main` (`3.2.2`).
+
+## Style Library
+
+- Replaced the style dropdown with a card showing the selected style's preview, name, short description, and reference. Clicking it opens a searchable gallery across the full Creator widget, with category filtering and an adjustable card-size slider.
+- Expanded the built-in catalog from 40 to 358 styles across 13 categories. Each style includes a description, reference, and generation prompt.
+- Bundled 358 square 1024×1024 WebP previews with the node. Images use the cards' dark gradient as their background and quality-90 compression to reduce storage requirements.
+- Refined style prompts to describe artistic rendering while preserving the supplied character details, clothing, accessories, background, pose, and framing.
+
+## Custom Styles and Previews
+
+- Added a custom style editor with name, short description, reference, and prompt fields. Saved styles appear in **My styles** and can be edited and reused.
+- User styles are stored separately in `character_template/character_styles.user.json`; their previews use `user_*.webp` filenames in `character_template/style_previews/`. These files are excluded from Git and packaged updates so updates preserve the user's library.
+- **Generate preview** saves and renders only the edited style using the current character tags and generation settings. Previews always use seed 0 and a square head-and-shoulders portrait; **Resolution scale** controls rendering quality before resizing to a maximum of 1024×1024.
+- Generated previews are saved directly inside the node's preview folder and remain available after page refreshes and backend restarts. Generation reports progress and confirms the file has been saved.
+- Added a **×** button to user style cards with a deletion confirmation. Deletion removes the library entry and its preview, if present; deleting the selected style restores the default selection. Built-in styles remain protected.
+
+## Persistence and Compatibility
+
+- Preserved legacy style identifiers and custom prompt text when loading existing workflows. Saved selections also retain style metadata and a prompt fallback for unavailable libraries.
+- Style library and preview writes use validated paths and atomic file replacement. Failed writes preserve existing files, and a preview finishing after its user style has been deleted cannot recreate an orphan image.
+
 # VNCCS 3.2.2 Changelog
 
 This patch release adjusts Qwen Image 2.1 Viggle Turbo sampling to help reduce visible noise and grain in generated images.
