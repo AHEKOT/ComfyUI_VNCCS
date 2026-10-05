@@ -1,3 +1,12 @@
+# VNCCS 3.2.2 Changelog
+
+This patch release adjusts Qwen Image 2.1 Viggle Turbo sampling to help reduce visible noise and grain in generated images.
+
+## Qwen Image 2.1 Turbo
+
+- Changed the final raw sigma node from `0.25` to `0.35`. The built-in six-step schedule is now `1.0, 0.9375, 0.875, 0.75, 0.5, 0.35`.
+- The adjustment applies to Character Creator V2 previews and all other VNCCS generation paths that use the built-in Viggle Turbo schedule.
+
 # VNCCS 3.2.1 Changelog
 
 This patch release fixes the `inconsistent privileged request origins` error affecting VNCCS actions when a launcher or reverse proxy rewrites request origins.
