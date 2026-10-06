@@ -25,9 +25,14 @@ def test_h3_body_preparation_uses_clothes_lora_and_returns_one_frame(monkeypatch
     calls = []
     applied = []
     events = []
+    released = []
+    clothes_model = SimpleNamespace(
+        detach=lambda: released.append("detach"),
+        cleanup=lambda: released.append("cleanup"),
+    )
     monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: events.append((args, kwargs)))
     monkeypatch.setattr(node, "_apply_lora_to_model", lambda model, clip, pipe, lora, stage:
-                        applied.append((lora, stage)) or "clothes_model")
+                        applied.append((lora, stage)) or clothes_model)
     monkeypatch.setattr(cg, 'fill_alpha_with_color', lambda x: (x,))
 
     def call(name, **kwargs):
@@ -49,7 +54,8 @@ def test_h3_body_preparation_uses_clothes_lora_and_returns_one_frame(monkeypatch
     assert encoding["ref_images"]["ref_image_1"] is image
     assert encoding["width"] * encoding["height"] == pytest.approx(1536 * 1024, rel=0.05)
     assert applied == [(lora, "Remove Clothes")]
-    assert dict(calls)["BasicScheduler"]["model"] == "clothes_model"
+    assert dict(calls)["BasicScheduler"]["model"] is clothes_model
+    assert released == ["detach", "cleanup"]
     assert dict(calls)["RandomNoise"]["noise_seed"] == 17
     assert torch.equal(result, decoded[:1])
     assert result.untyped_storage().nbytes() == result.numel() * result.element_size()

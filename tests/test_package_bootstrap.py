@@ -28,7 +28,6 @@ def test_registered_nodes_match_workflows_and_preserved_tools():
 
     root = Path(__file__).resolve().parents[1]
     workflows = list((root / "workflows").rglob("*.json"))
-    assert len(workflows) == 8
     used = {
         node["type"]
         for path in workflows

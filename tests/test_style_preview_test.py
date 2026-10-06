@@ -247,9 +247,11 @@ def test_random_clothing_mode_selects_both_adult_modes_and_preserves_minors(monk
         for _ in range(20)
     }
     assert choices == {False, True}
+    adult_body_tags = {item["tag"] for item in preview.CHARACTER_PRESETS["tags"]["breast_size"]}
     for _ in range(10):
         info, _ = preview._random_character_info("qi2", "Green", 1, 17, False, {}, "Random")
         assert info["nsfw"] is False
+        assert set(info["body"].split(", ")).isdisjoint(adult_body_tags)
     with pytest.raises(ValueError, match="requires adult"):
         preview._random_character_info("qi2", "Green", 17, 20, False, {}, "NSFW")
     with pytest.raises(ValueError, match="Unsupported NSFW"):
