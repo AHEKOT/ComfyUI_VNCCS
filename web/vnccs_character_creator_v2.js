@@ -16,8 +16,8 @@ const normalizeOverhaulStrength = value => {
     const numeric = Number(value);
     return Number.isFinite(numeric) ? Math.round(Math.max(0, Math.min(1, numeric)) * 4) / 4 : 0.5;
 };
-const isCreatorOverhaulLora = name => String(name || "").replace(/\\/g, "/").split("/").pop().toLowerCase()
-    === QI2_OVERHAUL_LORA_NAME.split("/").pop().toLowerCase();
+const isCreatorOverhaulLora = name => /^vnccs_qi2_animeoverhaulv\d+(?:[._]\d+)*\.safetensors$/i
+    .test(String(name || "").replace(/\\/g, "/").split("/").pop());
 
 const RESOLUTION_SCALE_BASE = 1024;
 const RESOLUTION_SCALE_MIN_MP = 1;

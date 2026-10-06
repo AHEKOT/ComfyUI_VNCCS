@@ -1,3 +1,19 @@
+# VNCCS 3.2.4 Changelog
+
+This patch release fixes Qwen Image 2.1 adapter selection in Character Creator V2 and restores module update notifications in Control Center. The changes below are relative to `main` (`3.2.3`).
+
+## Character Creator V2
+
+- QI2 Character Overhaul now resolves its installed file from the Control Center model catalog, fixing false “not installed” errors after downloading a version with a different filename. The original adapter remains supported as a compatibility fallback.
+- Versioned QI2 Character Overhaul filenames are recognized in both the UI and backend and excluded from ordinary LoRA slots, preventing duplicate application.
+- QI2 Viggle Turbo now honors the selected `dmd_lora_name` and uses the Control Center catalog and active installed version instead of constructing an adapter entry with the old v0.2.1 filename. Empty or outdated saved selections fall back to the current Viggle Turbo catalog entry. This applies to Creator previews and workflow generation.
+
+## Control Center Updates
+
+- Restored update checks for VNCCS and VNCCS Utils against published stable releases in Comfy Registry through ComfyUI-Manager. When a newer release is available, the module badge turns amber and an update banner shows the installed and available versions.
+- Green module badges now require a successful version check confirming no newer stable release. Unavailable or invalid update responses show an amber **update check unavailable** status.
+- Late module-status responses are ignored after the widget is removed or a newer check starts, preventing outdated results from replacing the current status.
+
 # VNCCS 3.2.3 Changelog
 
 This release expands Character Creator V2's style selection into a visual library with packaged previews and persistent user styles. The changes below describe the final release compared with `main` (`3.2.2`).

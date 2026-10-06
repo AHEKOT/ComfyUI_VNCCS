@@ -11,6 +11,63 @@ creator = _preload_node("character_creator_v2")
 from nodes import character_generator as generator
 
 
+@pytest.mark.parametrize("selection, use_alternate", [
+    ("QI2/Viggle/current.safetensors", False),
+    ("QI2\\Viggle\\current.safetensors", False),
+    ("QI2/Viggle/alternate.safetensors", True),
+    ("", False),
+    (creator.QI2_TURBO_LORA_NAME, False),
+])
+def test_creator_turbo_uses_control_center_catalog_and_selected_path(monkeypatch, tmp_path, selection, use_alternate):
+    entries = [
+        {"name": "Qwen Image 2.1 Viggle Turbo", "kind": "QI2", "type": "TurboLora",
+         "local_path": "models/loras/QI2/Viggle/current.safetensors", "version": "2.0"},
+        {"name": "QI2 Viggle Alternate", "kind": "QI2", "type": "TurboLora",
+         "local_path": "models/loras/QI2/Viggle/alternate.safetensors"},
+    ]
+    monkeypatch.setattr(creator.control_center, "_get_cc_config", lambda repo: {"lora": entries})
+    monkeypatch.setattr(creator.control_center, "get_installed_version_info", lambda: {})
+    monkeypatch.setattr(creator.folder_paths, "get_folder_paths", lambda category: [str(tmp_path)])
+    for entry in entries:
+        path = tmp_path / creator.control_center._rel_within_folder(entry["local_path"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"installed adapter")
+    calls = []
+    def apply(model, lora_name, strength):
+        calls.append((lora_name, strength))
+        return "turbo-model"
+    monkeypatch.setattr(generator, "apply_viggle_turbo_lora", apply)
+    cache = {"device": "cpu", "dtype": "int4"}
+    def apply_cache(self, model, values):
+        assert values["qi2_cache"] == cache
+        return model
+    monkeypatch.setattr(generator.VNCCS_CharacterGenerator, "_qi2_cache_model", apply_cache)
+    assert creator.prepare_qi2_model("model", {
+        "turbo_enabled": True, "dmd_lora_name": selection, "qi2_cache": cache,
+    }) == ("turbo-model", True)
+    expected = "QI2/Viggle/alternate.safetensors" if use_alternate else "QI2/Viggle/current.safetensors"
+    assert calls == [(expected, 1.0)]
+
+
+def test_creator_disabled_turbo_does_not_require_catalog_or_adapter(monkeypatch):
+    def unexpected(*args, **kwargs):
+        pytest.fail("Disabled Turbo must not resolve or load an adapter")
+    monkeypatch.setattr(creator.control_center, "_get_cc_config", unexpected)
+    monkeypatch.setattr(generator, "apply_viggle_turbo_lora", unexpected)
+    monkeypatch.setattr(generator.VNCCS_CharacterGenerator, "_qi2_cache_model", lambda self, model, values: model)
+    assert creator.prepare_qi2_model("model", {"turbo_enabled": False}) == ("model", False)
+
+
+def test_creator_enabled_turbo_requires_a_qi2_catalog_entry(monkeypatch):
+    monkeypatch.setattr(creator.control_center, "_get_cc_config", lambda repo: {"lora": [{
+        "name": "Qwen Image 2.1 Viggle Turbo", "kind": "Anima", "type": "TurboLora",
+        "local_path": "models/loras/wrong-family.safetensors",
+    }]})
+    monkeypatch.setattr(creator.control_center, "get_installed_version_info", lambda: {})
+    with pytest.raises(ValueError, match="Turbo LoRA.*Control Center catalog"):
+        creator.prepare_qi2_model("model", {"turbo_enabled": True})
+
+
 class _CloneableAsset:
     def __init__(self, name):
         self.name = name
