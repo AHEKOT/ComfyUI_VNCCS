@@ -12,6 +12,7 @@ import shutil
 from contextlib import contextmanager
 from functools import wraps
 from .progress_state import _valid_scope, expire_cache_progress
+from .runtime_cleanup import inference_lock
 
 _LIVE_GENERATOR_CONTEXTS = OrderedDict()
 _lock = threading.RLock()
@@ -24,7 +25,7 @@ _execution_locks = {}
 
 @contextmanager
 def generator_execution_lock(unique_id, scope=None):
-    """Serialize normal execution and Regenerate sharing the same disk cache."""
+    """Serialize model execution with previews and protect the scoped disk cache."""
     if isinstance(unique_id, list):
         unique_id = unique_id[0] if unique_id else None
     scope = scope if _valid_scope(scope) else None
@@ -33,7 +34,8 @@ def generator_execution_lock(unique_id, scope=None):
         entry = _execution_locks.setdefault(key, [threading.RLock(), 0])
         entry[1] += 1
     try:
-        with entry[0]:
+        # Acquire model state before the cache lock, including Regenerate.
+        with inference_lock, entry[0]:
             yield
     finally:
         with _lock:

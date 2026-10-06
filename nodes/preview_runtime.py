@@ -3,16 +3,23 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from .runtime_cleanup import inference_lock
 
 
 # A single worker also prevents preview requests from racing shared model caches.
 _preview_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vnccs-preview")
 
 
+def _run_preview_job(callback, *args, **kwargs):
+    # Hold the same lock as workflow generation, without merging stage cleanup.
+    with inference_lock:
+        return callback(*args, **kwargs)
+
+
 async def run_preview_job(callback, *args, **kwargs):
     """Keep HTTP/progress processing responsive while one isolated job runs."""
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_preview_executor, partial(callback, *args, **kwargs))
+    return await loop.run_in_executor(_preview_executor, partial(_run_preview_job, callback, *args, **kwargs))
 
 
 async def run_wizard_job(callback, payload, kind):

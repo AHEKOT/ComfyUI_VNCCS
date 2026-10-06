@@ -19,6 +19,33 @@ def test_rewritten_host_accepts_browser_same_origin_metadata_and_marker():
         Referer='https://comfy.example/comfy/', Sec_Fetch_Site='same-origin', X_VNCCS_CSRF='1'))
 
 
+@pytest.mark.parametrize('origin,referer,site,marker', [
+    ('http://127.0.0.1:8188', 'https://comfy.example/comfy/', '', '1'),
+    ('http://127.0.0.1:8188', 'https://comfy.example/comfy/', '', None),
+    ('http://127.0.0.1:8188', 'https://comfy.example/comfy/', 'same-origin', '1'),
+    ('https://comfy.example', 'http://127.0.0.1:8188/', 'same-origin', '1'),
+])
+def test_verified_origin_accepts_rewritten_referrer_and_older_clients(origin, referer, site, marker):
+    headers = dict(Host='127.0.0.1:8188', Origin=origin, Sec_Fetch_Site=site, X_VNCCS_CSRF=marker)
+    validate_privileged_request(request(**headers, Referer=referer))
+    validate_privileged_request(request(**headers))
+    with pytest.raises(ValueError, match='cross-site privileged request rejected'):
+        validate_privileged_request(request(**{**headers, 'Sec_Fetch_Site': 'cross-site'}))
+
+
+def test_referer_is_checked_when_origin_is_absent():
+    validate_privileged_request(request(Host='localhost:8188', Referer='http://localhost:8188/comfy/'))
+    with pytest.raises(ValueError, match='cross-origin privileged request rejected'):
+        validate_privileged_request(request(Host='localhost:8188', Referer='https://attacker.example/', X_VNCCS_CSRF='1'))
+
+
+@pytest.mark.parametrize('origin', ['https://attacker.example', 'null', '', 'file:///tmp/comfy.html'])
+def test_matching_referer_cannot_rescue_an_untrusted_or_invalid_origin(origin):
+    with pytest.raises(ValueError):
+        validate_privileged_request(request(Host='localhost:8188', Origin=origin,
+            Referer='http://localhost:8188/', X_VNCCS_CSRF='1'))
+
+
 @pytest.mark.parametrize('site', ['', 'same-site', 'cross-site'])
 def test_proxy_does_not_trust_forwarded_host_or_unverified_metadata(site):
     with pytest.raises(ValueError):
@@ -28,10 +55,9 @@ def test_proxy_does_not_trust_forwarded_host_or_unverified_metadata(site):
 
 @pytest.mark.parametrize('extra', [
     {}, {'X-VNCCS-CSRF': 'wrong'},
-    {'X-VNCCS-CSRF': '1', 'Referer': 'https://different.example/'},
-    {'X-VNCCS-CSRF': '1', 'Origin': 'null'},
+    {'X-VNCCS-CSRF': '1', 'Origin': 'null', 'Referer': 'http://localhost:8188/'},
 ])
-def test_proxy_origin_bypass_requires_consistent_browser_headers(extra):
+def test_proxy_origin_bypass_requires_valid_origin_metadata_and_marker(extra):
     headers = {'Host': 'localhost:8188', 'Origin': 'https://comfy.example', 'Sec-Fetch-Site': 'same-origin', **extra}
     with pytest.raises(ValueError):
         validate_privileged_request(SimpleNamespace(headers=headers))
@@ -176,7 +202,8 @@ def test_create_route_accepts_checked_post_and_rejects_invalid_or_cross_site_req
             return data
         req = SimpleNamespace(method='POST', headers=headers, json=body)
         return await handlers['POST', '/vnccs/create'](req)
-    headers = {'Host': 'localhost:8188', 'Origin': 'https://comfy.example', 'Sec-Fetch-Site': 'same-origin', 'X-VNCCS-CSRF': '1'}
+    headers = {'Host': 'localhost:8188', 'Origin': 'http://localhost:8188', 'Referer': 'https://comfy.example/comfy/',
+               'Sec-Fetch-Site': 'same-origin', 'X-VNCCS-CSRF': '1'}
     result = asyncio.run(invoke({'name': 'Alice', 'catalog': 'creator_v2'}, headers))
     assert result.status == 200 and result.data['name'] == 'Alice'
     config = Path(utils.config_path('Alice'))
@@ -337,7 +364,8 @@ def generator_module(monkeypatch):
     @contextmanager
     def inference_stage():
         yield
-    module(prefix + 'runtime_cleanup', inference_stage=inference_stage)
+    from threading import RLock
+    module(prefix + 'runtime_cleanup', inference_stage=inference_stage, inference_lock=RLock())
     module(prefix + 'vnccs_pipe', VNCCS_Pipe=object)
     module(prefix + 'vnccs_control_center', _apply_lora_standard=lambda *a: None,
            _find_model_on_disk=lambda *a: None, _rel_within_folder=lambda *a: None,

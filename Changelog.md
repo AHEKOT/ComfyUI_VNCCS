@@ -1,3 +1,62 @@
+# VNCCS 3.2.4 Changelog
+
+This patch release fixes Qwen Image 2.1 adapter selection in Character Creator V2 and restores module update notifications in Control Center. The changes below are relative to `main` (`3.2.3`).
+
+## Character Creator V2
+
+- QI2 Character Overhaul now resolves its installed file from the Control Center model catalog, fixing false “not installed” errors after downloading a version with a different filename. The original adapter remains supported as a compatibility fallback.
+- Versioned QI2 Character Overhaul filenames are recognized in both the UI and backend and excluded from ordinary LoRA slots, preventing duplicate application.
+- QI2 Viggle Turbo now honors the selected `dmd_lora_name` and uses the Control Center catalog and active installed version instead of constructing an adapter entry with the old v0.2.1 filename. Empty or outdated saved selections fall back to the current Viggle Turbo catalog entry. This applies to Creator previews and workflow generation.
+
+## Control Center Updates
+
+- Restored update checks for VNCCS and VNCCS Utils against published stable releases in Comfy Registry through ComfyUI-Manager. When a newer release is available, the module badge turns amber and an update banner shows the installed and available versions.
+- Green module badges now require a successful version check confirming no newer stable release. Unavailable or invalid update responses show an amber **update check unavailable** status.
+- Late module-status responses are ignored after the widget is removed or a newer check starts, preventing outdated results from replacing the current status.
+
+# VNCCS 3.2.3 Changelog
+
+This release expands Character Creator V2's style selection into a visual library with packaged previews and persistent user styles. The changes below describe the final release compared with `main` (`3.2.2`).
+
+## Style Library
+
+- Replaced the style dropdown with a card showing the selected style's preview, name, short description, and reference. Clicking it opens a searchable gallery across the full Creator widget, with category filtering and an adjustable card-size slider.
+- Expanded the built-in catalog from 40 to 358 styles across 13 categories. Each style includes a description, reference, and generation prompt.
+- Bundled 358 square 1024×1024 WebP previews with the node. Images use the cards' dark gradient as their background and quality-90 compression to reduce storage requirements.
+- Refined style prompts to describe artistic rendering while preserving the supplied character details, clothing, accessories, background, pose, and framing.
+
+## Custom Styles and Previews
+
+- Added a custom style editor with name, short description, reference, and prompt fields. Saved styles appear in **My styles** and can be edited and reused.
+- User styles are stored separately in `character_template/character_styles.user.json`; their previews use `user_*.webp` filenames in `character_template/style_previews/`. These files are excluded from Git and packaged updates so updates preserve the user's library.
+- **Generate preview** saves and renders only the edited style using the current character tags and generation settings. Previews always use seed 0 and a square head-and-shoulders portrait; **Resolution scale** controls rendering quality before resizing to a maximum of 1024×1024.
+- Generated previews are saved directly inside the node's preview folder and remain available after page refreshes and backend restarts. Generation reports progress and confirms the file has been saved.
+- Added a **×** button to user style cards with a deletion confirmation. Deletion removes the library entry and its preview, if present; deleting the selected style restores the default selection. Built-in styles remain protected.
+
+## Persistence and Compatibility
+
+- Preserved legacy style identifiers and custom prompt text when loading existing workflows. Saved selections also retain style metadata and a prompt fallback for unavailable libraries.
+- Style library and preview writes use validated paths and atomic file replacement. Failed writes preserve existing files, and a preview finishing after its user style has been deleted cannot recreate an orphan image.
+
+# VNCCS 3.2.2 Changelog
+
+This patch release adjusts Qwen Image 2.1 Viggle Turbo sampling to help reduce visible noise and grain in generated images.
+
+## Qwen Image 2.1 Turbo
+
+- Changed the final raw sigma node from `0.25` to `0.35`. The built-in six-step schedule is now `1.0, 0.9375, 0.875, 0.75, 0.5, 0.35`.
+- The adjustment applies to Character Creator V2 previews and all other VNCCS generation paths that use the built-in Viggle Turbo schedule.
+
+# VNCCS 3.2.1 Changelog
+
+This patch release fixes the `inconsistent privileged request origins` error affecting VNCCS actions when a launcher or reverse proxy rewrites request origins.
+
+## Request Compatibility
+
+- Fixed model downloads, custom LoRA management, and character creation being blocked by conflicting `Origin` and `Referer` headers.
+- Privileged VNCCS routes now validate `Origin` when present and use `Referer` only as a fallback. The backend fix also supports older UI clients without requiring a frontend transport change. Cross-site rejection, origin-to-host validation, and the existing request-header requirements remain enforced.
+- Added regression coverage for rewritten headers, older clients, Referer fallback, character creation, and rejection of untrusted or invalid origins.
+
 # VNCCS 3.2.0 Changelog
 
 This changelog describes the final user-visible and release-level changes in version `3.2.0` compared with `main` (`3.1.2`).

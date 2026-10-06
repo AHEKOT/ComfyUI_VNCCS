@@ -2,9 +2,12 @@
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+from threading import RLock
 
 
 _stage_depth = ContextVar("vnccs_inference_stage_depth", default=0)
+# ponytail: one lock for shared ComfyUI model/allocator state; split only if the runtime isolates that state.
+inference_lock = RLock()
 
 
 def cleanup_runtime():
@@ -26,11 +29,12 @@ def cleanup_runtime():
 @contextmanager
 def inference_stage():
     """Clean up after a synchronous stage, including failure and nested calls."""
-    depth = _stage_depth.get()
-    token = _stage_depth.set(depth + 1)
-    try:
-        yield
-    finally:
-        _stage_depth.reset(token)
-        if depth == 0:
-            cleanup_runtime()
+    with inference_lock:
+        depth = _stage_depth.get()
+        token = _stage_depth.set(depth + 1)
+        try:
+            yield
+        finally:
+            _stage_depth.reset(token)
+            if depth == 0:
+                cleanup_runtime()

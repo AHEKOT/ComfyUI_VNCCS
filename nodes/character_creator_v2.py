@@ -35,6 +35,12 @@ from .vnccs_utils import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MO
 from .runtime_cleanup import inference_stage
 from .qwen_vl import configure_qwen_text_chat
 from .character_presets import CHARACTER_PRESETS, RACE_PRESETS, preset_key, race_features, race_prompt
+from .character_styles import (
+    load_user_styles, save_user_style, delete_user_style, style_preview_path, style_preview_url,
+    square_style_resolution, save_style_preview, save_user_style_preview,
+    STYLE_PREVIEWS_DIR,
+)
+from . import vnccs_control_center as control_center
 
 # --------------------------------------------------------------------
 # Helper Functions
@@ -170,12 +176,6 @@ QI2_DEFAULTS = {
     "lora_stack": [],
     "qi2_cache": {"device": "gpu", "dtype": "int8"},
 }
-QI2_TURBO_ENTRY = {
-    "name": "Qwen Image 2.1 Viggle Turbo",
-    "type": "TurboLora",
-    "kind": "QI2",
-    "local_path": f"models/loras/{QI2_TURBO_LORA_NAME}",
-}
 QI2_TEXT_GENERATION_DEFAULTS = {
     "max_length": 2048,
     "sampling_mode": {
@@ -210,6 +210,11 @@ props, scenery or facial markings. Do not recolor, simplify away or hide
 specified details. A short request may have a short description; do not invent
 content to meet a word count. Return the same JSON output format as above."""
 QI2_NATURAL_FRAMING = {
+    "portrait": (
+        "Portrait: a close-up of the character's head and shoulders. "
+        "Keep the complete head and hair visible and make the face large in the image. "
+        "Crop just below the shoulders; the waist, hips and legs stay outside the image."
+    ),
     "cowboy_shot": (
         "Cowboy Shot (cowboy_shot): use a tight head-to-upper-thigh crop. Keep the complete head and hair visible, "
         "with the top of the hair just below the top image edge. "
@@ -550,6 +555,13 @@ def _character_style_prompt(info):
     if style_key == "custom":
         return str(info.get("custom_style", "") or "").strip()
     style_key = CHARACTER_STYLE_ALIASES.get(style_key, style_key)
+    if style_key.startswith("user_"):
+        styles = load_user_styles()
+        match = next((style for style in styles if style["id"] == style_key), None)
+        if match:
+            return match["prompt"]
+    if style_key not in CHARACTER_STYLE_PROMPTS and info.get("style_prompt"):
+        return str(info["style_prompt"])[:16000].strip()
     return CHARACTER_STYLE_PROMPTS.get(style_key, CHARACTER_STYLE_PROMPTS[DEFAULT_CHARACTER_STYLE])
 
 
@@ -644,7 +656,8 @@ def normalize_overhaul_strength(value):
 
 
 def is_creator_overhaul_lora(name):
-    return str(name or "").replace("\\", "/").rsplit("/", 1)[-1].lower() == QI2_OVERHAUL_LORA_NAME.rsplit("/", 1)[-1].lower()
+    filename = str(name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    return re.fullmatch(r"VNCCS_QI2_AnimeOverhaulV\d+(?:[._]\d+)*\.safetensors", filename, re.IGNORECASE) is not None
 
 
 def apply_creator_overhaul(model, clip, gen_settings, apply_lora):
@@ -654,12 +667,17 @@ def apply_creator_overhaul(model, clip, gen_settings, apply_lora):
     strength = normalize_overhaul_strength(gen_settings.get("qi2_overhaul_strength", 0.5))
     if strength == 0:
         return model, clip
-    if not get_lora_full_path(QI2_OVERHAUL_LORA_NAME):
+    config = control_center._get_cc_config("MIUProject/VNCCS_v3.0")
+    entry = control_center._find_entry(config.get("lora", []), "VNCCS Overhaul QI2")
+    lora_path, installed = control_center._find_model_on_disk(entry.get("local_path", "")) if entry else (None, False)
+    if not installed:
+        lora_path = get_lora_full_path(QI2_OVERHAUL_LORA_NAME)
+    if not lora_path:
         raise ValueError(
             "Qwen Image2.1 Character Overhaul is not installed. Download its card "
             "in Character Creator V2 or set its strength to 0."
         )
-    return apply_lora(model, clip, QI2_OVERHAUL_LORA_NAME, strength, 0.0)
+    return apply_lora(model, clip, lora_path, strength, 0.0)
 
 
 def normalize_gen_settings(gen_settings):
@@ -998,9 +1016,15 @@ def _character_clothing_prompt(info):
     return "bare chest, wear white boxers" if info.get("sex", "female") == "male" else "wear white bra and panties"
 
 
+def _character_framing_key(info):
+    if str(info.get("image_type", "")).strip().lower() == "portrait":
+        return "portrait"
+    return "full_body" if str(info.get("framing", "") or "").strip().lower() == "full_body" else "cowboy_shot"
+
+
 def _qi2_character_fields(info):
     """Keep supplied fields intact and attach species hints for PE and encoding."""
-    framing_key = "full_body" if str(info.get("framing", "") or "").strip().lower() == "full_body" else "cowboy_shot"
+    framing_key = _character_framing_key(info)
     background = _effective_character_background(info.get("background_color", ""), "qi2")
     fields = {
         "gender": info.get("sex", "female"),
@@ -1151,14 +1175,23 @@ def prepare_qi2_model(model, gen_settings):
     from .character_generator import VNCCS_CharacterGenerator
 
     turbo_enabled = bool(gen_settings.get("turbo_enabled"))
-    pipe = SimpleNamespace(
-        lora_entries=[dict(QI2_TURBO_ENTRY)],
-        lora_states=[{
-            "name": QI2_TURBO_ENTRY["name"],
-            "auto_apply": turbo_enabled,
+    lora_entries, lora_states = [], []
+    if turbo_enabled:
+        config = control_center._apply_active_installed_paths(control_center._get_cc_config("MIUProject/VNCCS_v3.0"))
+        entries = [entry for entry in config.get("lora", [])
+                   if control_center._entry_kind(entry) == "qi2" and control_center._entry_type(entry) == "turbolora"]
+        selected = str(gen_settings.get("dmd_lora_name", "") or "").strip().replace("\\", "/")
+        entry = next((item for item in entries if control_center._rel_within_folder(item.get("local_path", "")) == selected), None)
+        entry = entry or control_center._find_entry(entries, "Qwen Image 2.1 Viggle Turbo")
+        if entry is None:
+            raise ValueError("QI2 Turbo LoRA is not configured in the Control Center catalog.")
+        lora_entries = [dict(entry)]
+        lora_states = [{
+            "name": entry["name"],
+            "auto_apply": True,
             "strength": float(gen_settings.get("dmd_lora_strength", 1.0) or 1.0),
-        }],
-    )
+        }]
+    pipe = SimpleNamespace(lora_entries=lora_entries, lora_states=lora_states)
     generator = VNCCS_CharacterGenerator()
     prepared, turbo = generator._qi2_prepare_model(
         model,
@@ -1314,7 +1347,59 @@ def decode_generation_samples(vae, samples, gen_settings):
 if server:
     @server.PromptServer.instance.routes.get("/vnccs/character_styles")
     async def get_character_styles(request):
-        return web.json_response(CHARACTER_STYLE_CATALOG)
+        try:
+            styles = load_user_styles()
+            groups = [
+                {**group, "styles": [{**style, "image": style_preview_url(style["id"])} for style in group["styles"]]}
+                for group in CHARACTER_STYLE_CATALOG["groups"] + ([{"label": "My styles", "styles": styles}] if styles else [])
+            ]
+            return web.json_response({**CHARACTER_STYLE_CATALOG, "groups": groups, "custom_preview": style_preview_url("custom"), "preview_directory": STYLE_PREVIEWS_DIR})
+        except (OSError, ValueError) as error:
+            return web.json_response({"error": f"Cannot read user styles: {error}"}, status=500)
+
+    @server.PromptServer.instance.routes.post("/vnccs/character_styles")
+    @privileged_route
+    async def post_character_style(request):
+        try:
+            if request.content_length is not None and request.content_length > 70000:
+                return web.json_response({"error": "Style payload is too large"}, status=413)
+            body = bytearray()
+            async for chunk in request.content.iter_chunked(8192):
+                body.extend(chunk)
+                if len(body) > 70000:
+                    return web.json_response({"error": "Style payload is too large"}, status=413)
+            style = save_user_style(json.loads(body))
+            return web.json_response({"style": {**style, "image": style_preview_url(style["id"])}})
+        except (ValueError, UnicodeError) as error:
+            return web.json_response({"error": str(error)}, status=400)
+        except OSError:
+            return web.json_response({"error": "Cannot save user styles; check file permissions"}, status=500)
+
+    @server.PromptServer.instance.routes.post("/vnccs/character_styles/delete")
+    @privileged_route
+    async def delete_character_style(request):
+        try:
+            style_id = request.rel_url.query.get("style", "")
+            if not delete_user_style(style_id):
+                return web.json_response({"error": "User style no longer exists"}, status=404)
+            return web.json_response({"deleted": True, "style_id": style_id})
+        except ValueError as error:
+            return web.json_response({"error": str(error)}, status=400)
+        except OSError:
+            return web.json_response({"error": "Cannot delete user style; check file permissions"}, status=500)
+
+    @server.PromptServer.instance.routes.get("/vnccs/character_styles/preview")
+    async def get_style_preview(request):
+        try:
+            style_id = request.rel_url.query.get("style", "")
+            path = style_preview_path(CHARACTER_STYLE_ALIASES.get(style_id, style_id))
+            if not os.path.isfile(path):
+                return web.Response(status=404)
+            return web.FileResponse(path, headers={"Content-Type": "image/webp"})
+        except ValueError as error:
+            return web.json_response({"error": str(error)}, status=400)
+        except OSError:
+            return web.json_response({"error": "Cannot read style preview"}, status=500)
 
     @server.PromptServer.instance.routes.get("/vnccs/context_lists")
     async def get_context_lists(request):
@@ -1597,10 +1682,13 @@ Example:
             return web.json_response({"error": "Request must be an object"}, status=400)
         return await run_wizard_job(_character_wizard_response, post, "character")
 
-    def _generate_preview_response(data):
+    def _generate_preview_response(data, style_preview=None):
         try:
             gen_settings = normalize_gen_settings(data.get("gen_settings", {}))
             char_info = data.get("character_info", {})
+            if style_preview is not None:
+                char_info = {**char_info, "image_type": "Portrait"}
+                char_info.pop("framing", None)
             character_name = data.get("character", "Unknown")
 
             # Generate Prompt
@@ -1613,7 +1701,7 @@ Example:
                 "Preview",
                 positive_text,
                 negative_text,
-                framing=char_info.get("framing"),
+                framing=char_info.get("image_type") or char_info.get("framing"),
             )
             
             steps = int(gen_settings.get("steps", 20))
@@ -1624,7 +1712,10 @@ Example:
             generation_mode = gen_settings.get("generation_mode", "illustrious")
 
             # Resolution
-            width, height = get_generation_resolution(gen_settings)
+            width, height = (
+                square_style_resolution(gen_settings["target_size"])
+                if style_preview is not None else get_generation_resolution(gen_settings)
+            )
 
             # Load Models (With Cache)
             global PREVIEW_CACHE
@@ -1701,7 +1792,7 @@ Example:
                         "QI2 rewritten preview",
                         encoded_positive_text,
                         negative_text,
-                        framing=char_info.get("framing"),
+                        framing=char_info.get("image_type") or char_info.get("framing"),
                     )
                 if generation_mode == "anima":
                     validate_anima_conditioning(positive_cond, negative_cond, gen_settings.get("clip_name", ""))
@@ -1726,6 +1817,10 @@ Example:
                 vae_decoded = decode_generation_samples(vae, sampled, gen_settings)
                 i = 255. * vae_decoded.cpu().numpy()
                 img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8)[0])
+
+            if style_preview is not None:
+                save_preview = save_user_style_preview if style_preview.startswith("user_") else save_style_preview
+                return web.json_response(save_preview(style_preview, img))
 
             # Save Smart Cache
             c_path = os.path.join(character_dir(character_name), "cache", "preview.png")
@@ -1753,6 +1848,59 @@ Example:
         except Exception as exc:
             traceback.print_exc()
             return web.json_response({"error": str(exc)}, status=500)
+
+    @server.PromptServer.instance.routes.post("/vnccs/character_styles/preview")
+    @privileged_route
+    async def generate_style_preview(request):
+        try:
+            data = await request.json()
+            if not isinstance(data, dict):
+                raise ValueError("Request must be an object")
+            style_id = data.get("style_id", "")
+            style_preview_path(style_id)
+            style_id = CHARACTER_STYLE_ALIASES.get(style_id, style_id)
+            info = data.get("character_info", {})
+            settings = data.get("gen_settings", {})
+            if not isinstance(info, dict) or not isinstance(settings, dict):
+                raise ValueError("Character info and generation settings must be objects")
+            if len(json.dumps(data)) > 150000:
+                raise ValueError("Style preview payload is too large")
+            styles = {**CHARACTER_STYLE_PROMPTS, **{style["id"]: style["prompt"] for style in load_user_styles()}}
+            if style_id == "custom":
+                prompt = info.get("custom_style", "")
+                if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
+                    raise ValueError("Enter a custom style prompt before generating its preview")
+            elif style_id not in styles:
+                raise ValueError("Unknown style ID")
+            # User thumbnails are reproducible regardless of the main generation seed.
+            preview_settings = {**normalize_gen_settings(settings), "seed_mode": "fixed", "mode_settings": {}}
+            if style_id == "custom" or style_id.startswith("user_"):
+                preview_settings["seed"] = 0
+            payload = {**data, "character_info": {**info, "style": style_id, "style_prompt": styles.get(style_id, "")}, "gen_settings": preview_settings}
+        except (ValueError, TypeError) as error:
+            return web.json_response({"error": str(error)}, status=400)
+
+        except OSError:
+            return web.json_response({"error": "Cannot read the user style library"}, status=500)
+
+        def emit(status):
+            server.PromptServer.instance.send_sync("vnccs.style_preview.stage", {
+                "node_id": str(data.get("node_id", "")), "request_id": str(data.get("request_id", "")),
+                "style_id": style_id, "status": status,
+            })
+
+        def perform():
+            emit("running")
+            try:
+                response = _generate_preview_response(payload, style_preview=style_id)
+                emit("done" if response.status < 400 else "error")
+                return response
+            except Exception:
+                emit("error")
+                raise
+
+        emit("queued")
+        return await run_preview_job(perform)
 
 class CharacterCreatorV2:
     """
@@ -1786,15 +1934,15 @@ class CharacterCreatorV2:
         sex = info.get("sex", "female")
         age = int(info.get("age", 18))
         generation_mode = str(generation_mode or "illustrious").lower()
-        framing_key = (
-            "full_body"
-            if str(info.get("framing", "cowboy_shot") or "").strip().lower() == "full_body"
-            else "cowboy_shot"
-        )
+        framing_key = _character_framing_key(info)
         if generation_mode == "qi2":
             framing = QI2_NATURAL_FRAMING[framing_key]
         else:
-            framing = "standing, full body" if framing_key == "full_body" else "cowboy_shot"
+            framing = {
+                "portrait": "portrait, close-up, head and shoulders",
+                "full_body": "standing, full body",
+                "cowboy_shot": "cowboy_shot",
+            }[framing_key]
 
         background_color = _effective_character_background(
             info.get("background_color", ""), generation_mode,
