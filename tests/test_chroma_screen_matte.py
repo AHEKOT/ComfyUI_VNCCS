@@ -130,14 +130,15 @@ def test_gpu_matches_cpu_and_returns_to_callers_device(device):
         torch.testing.assert_close(actual, expected, atol=0.002, rtol=0.002)
 
 
-def test_node_screen_matte_handles_batches_without_changing_legacy_defaults():
-    from nodes.vnccs_utils import VNCCSChromaKey
+def test_internal_screen_matte_handles_batches_without_changing_generator_defaults():
+    from nodes.image_processing import ChromaKeyProcessor
+    from nodes.character_generator import CHROMA_KEY_PRESETS
 
-    node = VNCCSChromaKey()
-    required = node.INPUT_TYPES()["required"]
-    settings = {name: spec[1]["default"] for name, spec in required.items() if len(spec) > 1}
+    node = ChromaKeyProcessor()
+    settings = dict(CHROMA_KEY_PRESETS["balanced"])
     assert settings["matte_method"] == "guided_edge"
     settings["matte_method"] = "screen_matte"
+    settings["screen_mode"] = "auto"
     image = torch.tensor([0.0, 1.0, 0.0]).expand(2, 100, 80, 3).clone()
     image[:, 20:80, 20:60] = torch.tensor([0.85, 0.3, 0.2])
     rgba, alpha, debug = node.chroma_key(image, **settings)

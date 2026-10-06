@@ -55,14 +55,6 @@ test("loading other widgets cannot replace Creator's three columns with Clothes 
     }
 });
 
-test("Pose Editor's dialog and sidebar panels retain distinct styles", () => {
-    const pose = sheets.find(sheet => sheet.name === "pose_editor.js");
-    assert.equal(pose.selectors.filter(selector => selector === ".vnccs-pose-editor-panel").length, 1);
-    assert.ok(pose.source.includes('panel.className = "vnccs-pose-editor-panel"'));
-    assert.ok(pose.source.includes('panel.className = "vnccs-pose-editor-sidebar-panel"'));
-    assert.ok(/\.vnccs-pose-editor-panel\s*\{[^}]*width: min\(1120px, 96vw\)/.test(pose.css));
-});
-
 test("Creator hover styling only applies to enabled, unselected segmented buttons", () => {
     const creator = sheets.find(sheet => sheet.name === "vnccs_character_creator_v2.js");
     const hover = creator.selectors.filter(selector => selector.includes(".vnccs-creator-segmented-btn:hover"));
@@ -99,8 +91,6 @@ for (const [name, controls] of [
         ["ems-tab", "active"],
     ]],
     ["vnccs_character_generator.js", [["vnccs-seedvr-card", "is-selected"]]],
-    ["pose_editor.js", [["vnccs-pose-editor-3d-btn", "active"]]],
-    ["vnccs_sprite_manager.js", [["vnccs-sm-costume-card", "selected"]]],
     ["vnccs_control_center.js", [
         ["vnccs-cc-btn", "vnccs-cc-btn--active", "vnccs-cc-btn--clip-active", "vnccs-cc-btn--cnet-active"],
         ["vnccs-cc-row", "vnccs-cc-row--model-sel", "vnccs-cc-row--clip-sel", "vnccs-cc-row--cnet-sel"],

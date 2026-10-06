@@ -52,16 +52,15 @@ except Exception:  # pragma: no cover
     model_management = None
 
 from .runtime_cleanup import inference_stage
-from .vnccs_pipe import VNCCS_Pipe
+import comfy.samplers
 from .vnccs_control_center import (
     _apply_lora_standard,
     _find_model_on_disk,
     _rel_within_folder,
     _entry_kind,
 )
-from .vnccs_flux_klein_encoder import VNCCS_Flux_Klein_Encoder
 from .qi2_viggle import apply_viggle_turbo_lora, viggle_turbo_sigmas
-from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, VNCCS_RMBG2
+from .image_processing import ChromaKeyProcessor, fill_alpha_with_color
 from ..utils import (
     atomic_output_path,
     basename_agnostic,
@@ -93,9 +92,6 @@ _SEEDVR_DOWNLOAD_STATUS = {}
 _SEEDVR_DOWNLOAD_LOCK = threading.Lock()
 MAX_SEED = 0xFFFFFFFFFFFFFFFF
 REGENERATE_SEED_SHIFT_MAX = 1_000_000
-# Keep the internal implementation available, but prevent generator nodes from
-# invoking it even when an older workflow contains use_internal_rmbg=true.
-INTERNAL_RMBG_PROCESSING_ENABLED = False
 
 
 def _available_seedvr_attention_modes():
@@ -297,15 +293,10 @@ def _as_bool(value, default=False):
 @inference_stage()
 def _call_comfy_node(class_name, **kwargs):
     vnccs_node_id = kwargs.pop("_vnccs_node_id", None)
+    if callable(class_name):
+        return class_name(**kwargs)
     mappings = getattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {}) if comfy_nodes else {}
     cls = mappings.get(class_name)
-    if cls is None:
-        local_mappings = {
-            "VNCCS_Flux_Klein_Encoder": VNCCS_Flux_Klein_Encoder,
-            "VNCCS_RMBG2": VNCCS_RMBG2,
-            "VNCCSChromaKey": VNCCSChromaKey,
-        }
-        cls = local_mappings.get(class_name)
     if cls is None:
         raise RuntimeError(f"Required node '{class_name}' is not available")
 
@@ -344,6 +335,64 @@ def _call_comfy_node(class_name, **kwargs):
             raise RuntimeError(str(block_execution))
         result = result.result
     return result if isinstance(result, tuple) else (result,)
+
+
+def _encode_flux_klein(
+    clip,
+    prompt,
+    vae,
+    image1=None,
+    image2=None,
+    image3=None,
+    upscale_method="lanczos",
+    megapixels=1.0,
+    resolution_steps=1,
+    empty_width=1024,
+    empty_height=1024,
+    batch_size=1,
+):
+    positive = _call_comfy_node("CLIPTextEncode", clip=clip, text=prompt)[0]
+    negative = _call_comfy_node("ConditioningZeroOut", conditioning=positive)[0]
+
+    conditioned = positive
+    first_scaled_image = None
+    for image in (image1, image2, image3):
+        if image is None:
+            continue
+
+        scaled = _call_comfy_node(
+            "ImageScaleToTotalPixels",
+            image=image,
+            upscale_method=upscale_method,
+            megapixels=float(megapixels),
+            resolution_steps=int(resolution_steps),
+        )[0]
+        latent = _call_comfy_node("VAEEncode", pixels=scaled, vae=vae)[0]
+        conditioned = _call_comfy_node(
+            "ReferenceLatent",
+            conditioning=conditioned,
+            latent=latent,
+        )[0]
+        if first_scaled_image is None:
+            first_scaled_image = scaled
+
+    width = int(empty_width)
+    height = int(empty_height)
+    if first_scaled_image is not None:
+        shape = getattr(first_scaled_image, "shape", None)
+        if shape is None or len(shape) < 3:
+            raise RuntimeError("Scaled reference image has no valid B,H,W,C shape.")
+        height, width = int(shape[-3]), int(shape[-2])
+        if width <= 0 or height <= 0:
+            raise RuntimeError(f"Scaled reference image has invalid dimensions: {width}x{height}.")
+
+    latent = _call_comfy_node(
+        "EmptyFlux2LatentImage",
+        width=width,
+        height=height,
+        batch_size=int(batch_size),
+    )[0]
+    return conditioned, negative, latent
 
 
 def _h3_memory_label(model):
@@ -794,8 +843,6 @@ DEFAULT_WIDGET_DATA = {
         "enable_debug": False,
     },
     "bg_remove": {
-        # TODO: Decide whether internal RMBG should return as a supported generator option.
-        "use_internal_rmbg": False,
         "preset": "balanced",
         "use_sam3_details_recovery": False,
         "use_preset_values": True,
@@ -1059,7 +1106,6 @@ class VNCCS_CharacterGenerator:
             merged["upscaler"]["model"] = "seedvr2_3b_fp8_e4m3fn.safetensors"
         if merged["upscaler"].get("color_correction") not in {"lab", "wavelet", "adain", "none"}:
             merged["upscaler"]["color_correction"] = "lab"
-        merged["bg_remove"]["use_internal_rmbg"] = INTERNAL_RMBG_PROCESSING_ENABLED
         return _normalize_upscaler_settings(merged)
 
     def _sampler_settings(self, pipe_values, settings):
@@ -1270,22 +1316,21 @@ class VNCCS_CharacterGenerator:
         _save_cached_tensor(cache_dir, stage, images if normalized else self._list_to_batch(images))
 
     def _extract_pipe(self, pipe):
-        out = VNCCS_Pipe().process_pipe(pipe=pipe)
         model_entry = getattr(pipe, "model_entry", None)
         model_kind = _entry_kind(model_entry) or str(getattr(pipe, "model_kind", "") or "").strip().lower()
         if model_kind == "qie2511":
             raise RuntimeError("QIE2511 is no longer supported. Select a QI2 model in VNCCS Control Center.")
         return {
-            "model": out[0],
-            "clip": out[1],
-            "vae": out[2],
+            "model": getattr(pipe, "model", None),
+            "clip": getattr(pipe, "clip", None),
+            "vae": getattr(pipe, "vae", None),
             "audio_vae": getattr(pipe, "audio_vae", None),
-            "seed": int(out[5] or 0),
-            "steps": int(out[6] or 1),
-            "cfg": float(out[7] or 1.0),
-            "denoise": max(0.0, min(1.0, float(out[8] if out[8] is not None else 0.0))),
-            "sampler": out[10] or "euler",
-            "scheduler": out[11] or "simple",
+            "seed": int(getattr(pipe, "seed_int", getattr(pipe, "seed", 0)) or 0),
+            "steps": int(getattr(pipe, "sample_steps", 0) or 1),
+            "cfg": float(getattr(pipe, "cfg", 0.0) or 1.0),
+            "denoise": max(0.0, min(1.0, float(getattr(pipe, "denoise", 0.0) or 0.0))),
+            "sampler": (getattr(pipe, "sampler_name", None) or (comfy.samplers.KSampler.SAMPLERS or ["euler"])[0]),
+            "scheduler": (getattr(pipe, "scheduler", None) or (comfy.samplers.KSampler.SCHEDULERS or ["normal"])[0]),
             "model_entry": model_entry,
             "model_kind": model_kind,
             "qi2_cache": getattr(pipe, "qi2_cache", {"device": "gpu", "dtype": "int8"}),
@@ -1421,7 +1466,7 @@ class VNCCS_CharacterGenerator:
             )
         if self._is_klein_pipe(pipe_values):
             return _call_comfy_node(
-                "VNCCS_Flux_Klein_Encoder",
+                _encode_flux_klein,
                 clip=pipe_values["clip"],
                 vae=pipe_values["vae"],
                 prompt=prompt,
@@ -2262,7 +2307,7 @@ class VNCCS_CharacterGenerator:
         sampler = self._sampler_settings(pipe_values, sampler_settings)
         vae_decode = self._vae_decode_settings(vae_decode_settings)
         pose_parts = self._image_list(poses)
-        character_rgb = VNCCS_MaskExtractor().fill_alpha_with_color(character)[0]
+        character_rgb = fill_alpha_with_color(character)[0]
         if self._is_h3_pipe(pipe_values):
             return self._run_h3_pose_generation(
                 pose_parts,
@@ -2317,7 +2362,7 @@ class VNCCS_CharacterGenerator:
 
         if not self._is_klein_pipe(pipe_values):
             raise RuntimeError(f"Unsupported pose generation model family: {pipe_values.get('model_kind') or 'unknown'}")
-        encoder_class = "VNCCS_Flux_Klein_Encoder"
+        encoder_class = _encode_flux_klein
         encoder_kwargs = {
             "clip": pipe_values["clip"],
             "vae": pipe_values["vae"],
@@ -2383,7 +2428,7 @@ class VNCCS_CharacterGenerator:
         )
         sampler = self._sampler_settings(pipe_values, sampler_settings)
         vae_decode = self._vae_decode_settings(vae_decode_settings)
-        character_rgb = VNCCS_MaskExtractor().fill_alpha_with_color(character)[0]
+        character_rgb = fill_alpha_with_color(character)[0]
 
         encoding_progress = self._stage_progress_callback(unique_id, "remove_clothes", "Encoding source character", lora_info)
         sampling_progress = self._stage_progress_callback(unique_id, "remove_clothes", "Sampling source character", lora_info)
@@ -2507,21 +2552,6 @@ class VNCCS_CharacterGenerator:
         elif torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def _run_upscale_one(self, image, dit, vae, background, settings, seed, use_internal_rmbg=False):
-        upscaled = self._run_seedvr_upscale_one(image, dit, vae, settings, seed)
-        if not INTERNAL_RMBG_PROCESSING_ENABLED or not _as_bool(use_internal_rmbg, False):
-            return upscaled
-        return VNCCS_RMBG2().process_image(
-            upscaled,
-            "RMBG-2.0",
-            sensitivity=0.85,
-            process_res=1024,
-            mask_blur=0,
-            mask_offset=0,
-            invert_output=False,
-            refine_foreground=False,
-            background=str(background or "Green"),
-        )[0]
 
     def _run_seedvr_upscale_batch(
         self,
@@ -2659,7 +2689,7 @@ class VNCCS_CharacterGenerator:
                 alpha = alpha[:result.shape[0]]
         return torch.cat([result[..., :3], alpha.to(device=result.device, dtype=result.dtype)], dim=-1)
 
-    def _run_upscaler(self, image, background, settings, seed, unique_id=None, cache_dir=None, stage="upscaler", use_internal_rmbg=False, bg_remove_settings=None):
+    def _run_upscaler(self, image, background, settings, seed, unique_id=None, cache_dir=None, stage="upscaler", bg_remove_settings=None):
         native_bg_remove = self._is_native_bg_remove(bg_remove_settings)
         source_image = self._list_to_batch(image)
         model_image = source_image[..., :3] if native_bg_remove and torch.is_tensor(source_image) and source_image.ndim == 4 and source_image.shape[-1] >= 4 else image
@@ -2698,24 +2728,6 @@ class VNCCS_CharacterGenerator:
         elapsed = time.time() - started_at
         self._log_stage(unique_id, stage, f"SeedVR finished in {elapsed:.1f}s; normalizing output batch", current=total, total=total, cache_dir=cache_dir)
         result_batch = self._safe_image_batch(results, stage=stage) if results else self._list_to_batch(image)
-        if INTERNAL_RMBG_PROCESSING_ENABLED and _as_bool(use_internal_rmbg, False):
-            self._log_stage(unique_id, stage, f"Running internal RMBG on upscaled batch: {self._batch_shape_label(result_batch)}", current=total, total=total, cache_dir=cache_dir)
-            rmbg_started_at = time.time()
-            result_batch = VNCCS_RMBG2().process_image(
-                result_batch,
-                "RMBG-2.0",
-                sensitivity=0.85,
-                process_res=1024,
-                mask_blur=0,
-                mask_offset=0,
-                invert_output=False,
-                refine_foreground=False,
-                background=str(background or "Green"),
-            )[0]
-            rmbg_elapsed = time.time() - rmbg_started_at
-            self._log_stage(unique_id, stage, f"Internal RMBG finished in {rmbg_elapsed:.1f}s; preparing upscaler output", current=total, total=total, cache_dir=cache_dir)
-            results = self._split_batch(result_batch)
-            result_batch = self._safe_image_batch(results, stage=stage) if results else result_batch
         if native_bg_remove:
             result_batch = self._restore_native_alpha(source_image, result_batch)
         done_total = result_batch.shape[0] if torch.is_tensor(result_batch) and result_batch.ndim == 4 else total
@@ -2823,7 +2835,7 @@ class VNCCS_CharacterGenerator:
         )
         self._log_stage(unique_id, stage, f"Running chroma key preset '{str(settings.get('preset', 'balanced') or 'balanced')}' with screen mode '{screen_mode}' on {self._batch_shape_label(batch)}", current=0, total=total, cache_dir=cache_dir)
         started_at = time.time()
-        result = VNCCSChromaKey().chroma_key(
+        result = ChromaKeyProcessor().chroma_key(
             batch,
             float(preset["tolerance"]),
             float(preset["softness"]),
@@ -2968,7 +2980,6 @@ class VNCCS_CharacterGenerator:
                     self._extract_pipe(pipe)["seed"],
                     unique_id=unique_id,
                     cache_dir=cache_dir,
-                    use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", False),
                     bg_remove_settings=settings["bg_remove"],
                 )
                 if regenerate_index is not None:
@@ -3116,7 +3127,6 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 unique_id=unique_id,
                 cache_dir=cache_dir,
                 stage=up_stage,
-                use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", False),
                 bg_remove_settings=settings["bg_remove"],
             )
             if regenerate_index is not None:
@@ -3331,14 +3341,13 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
         background,
         settings,
         lora_info=None,
-        use_internal_rmbg=False,
         sampler_settings=None,
         vae_decode_settings=None,
         bg_remove_settings=None,
         unique_id=None,
         stage="pose_generation",
     ):
-        pose_images = self._run_pose_generation(
+        return self._run_pose_generation(
             poses,
             character,
             pipe,
@@ -3352,19 +3361,6 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
             unique_id=unique_id,
             stage=stage,
         )
-        if not INTERNAL_RMBG_PROCESSING_ENABLED or not _as_bool(use_internal_rmbg, False):
-            return pose_images
-        return VNCCS_RMBG2().process_image(
-            pose_images,
-            "RMBG-2.0",
-            sensitivity=1,
-            process_res=1024,
-            mask_blur=0,
-            mask_offset=0,
-            invert_output=False,
-            refine_foreground=True,
-            background=str(background or "Green"),
-        )[0]
 
     @serialized_generator
     def process(self, poses, character, pipe, prompt, background="Green", widget_data="{}", sheets_path="", unique_id=None):
@@ -3457,7 +3453,6 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                     background,
                     settings["pose_generation"],
                     lora_info=pose_lora_info,
-                    use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", False),
                     sampler_settings=settings["pose_sampler"],
                     vae_decode_settings=settings["vae_decode"],
                     bg_remove_settings=settings["bg_remove"],
@@ -3484,7 +3479,6 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                     self._extract_pipe(pipe)["seed"],
                     unique_id=unique_id,
                     cache_dir=cache_dir,
-                    use_internal_rmbg=settings["bg_remove"].get("use_internal_rmbg", False),
                     bg_remove_settings=settings["bg_remove"],
                 )
                 if regenerate_index is not None:
@@ -3665,7 +3659,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             if mask is None:
                 raise RuntimeError(
                     "Emotion source sprites have different canvas sizes and a source has no alpha mask. "
-                    "Regenerate or remigrate the source sprites with a uniform transparent canvas."
+                    "Regenerate the source sprites with a uniform transparent canvas."
                 )
             image = self._pad_tensor_image(image, target_hw)
             mask = self._pad_tensor_mask(mask, target_hw)
@@ -4177,7 +4171,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             lines.append(f"{shape[0]}x{shape[1]}: {preview}")
         return (
             "Emotion source sprites have different canvas sizes. VNCCS Emotions Generator will not resize "
-            "or stretch source sprites. Regenerate or remigrate the source sprites so every selected sprite "
+            "or stretch source sprites. Regenerate the source sprites so every selected sprite "
             "has the same size.\n" + "\n".join(lines)
         )
 
@@ -5154,7 +5148,6 @@ if server is not None:
         except Exception as exc:
             traceback.print_exc()
             return web.json_response({"error": str(exc)}, status=500)
-
 
 
     @server.PromptServer.instance.routes.post("/vnccs/character_generator/regenerate")

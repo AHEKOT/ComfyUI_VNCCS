@@ -16,7 +16,7 @@ from nodes import clothes_designer as clothes
 from nodes import emotion_generator_v2 as emotions
 from nodes import character_generator as generator
 from nodes import vnccs_control_center as control
-from nodes import vnccs_utils as helpers
+from nodes import qwen_vl as helpers
 
 
 @pytest.fixture

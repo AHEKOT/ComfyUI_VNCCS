@@ -12,10 +12,7 @@ import threading
 from contextlib import contextmanager
 from functools import wraps
 from urllib.parse import urlparse
-from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    import torch
+from typing import Optional, Dict, Any, List, Tuple
 
 
 EMOTIONS = ["neutral"]
@@ -359,139 +356,6 @@ def privileged_route(handler):
     return guarded
 
 
-def get_legacy_output_dir() -> str:
-    """Get legacy output directory path for migration."""
-    try:
-        from folder_paths import get_output_directory
-        return os.path.join(get_output_directory(), "VN_CharacterCreatorSuit")
-    except ImportError:
-        current_dir = os.path.dirname(__file__)
-        return os.path.abspath(os.path.join(current_dir, "..", "..", "output", "VN_CharacterCreatorSuit"))
-
-
-import shutil
-import traceback
-
-def _migration_archive_path(path: str) -> str:
-    """Return a unique archive path for a migrated legacy directory."""
-    base = f"{path}_migrated_safe_to_delete"
-    if not os.path.exists(base):
-        return base
-    index = 2
-    while True:
-        candidate = f"{base}_{index}"
-        if not os.path.exists(candidate):
-            return candidate
-        index += 1
-
-
-def migrate_legacy_data() -> dict:
-    """Check for legacy data and migrate to new location.
-    
-    Returns:
-        dict: with keys 'migrated' (bool), 'count' (int), 'details' (list of names)
-    """
-    try:
-        print("[VNCCS Migration] Starting migration check...")
-        old_dir = get_legacy_output_dir()
-        new_dir = base_output_dir()
-        
-        print(f"[VNCCS Migration] Old Dir: {old_dir}")
-        print(f"[VNCCS Migration] New Dir: {new_dir}")
-        
-        if not os.path.exists(old_dir):
-            print("[VNCCS Migration] Legacy folder not found.")
-            return {"migrated": False, "count": 0, "message": "No legacy folder found"}
-        
-        # Check if old folder has content
-        try:
-            items = os.listdir(old_dir)
-        except OSError as e:
-            print(f"[VNCCS Migration] Error reading legacy folder: {e}")
-            return {"migrated": False, "count": 0, "message": f"Error reading legacy folder: {e}"}
-            
-        chars_to_move = [i for i in items if os.path.isdir(os.path.join(old_dir, i))]
-        print(f"[VNCCS Migration] Found candidates: {chars_to_move}")
-        
-        if not chars_to_move:
-            print("[VNCCS Migration] Legacy folder empty (no subdirs).")
-            return {"migrated": False, "count": 0, "message": "Legacy folder empty"}
-
-        # Ensure new dir exists
-        if not os.path.exists(new_dir):
-            try:
-                os.makedirs(new_dir, exist_ok=True)
-                print(f"[VNCCS Migration] Created new dir: {new_dir}")
-            except Exception as e:
-                 print(f"[VNCCS Migration] Failed to create new dir: {e}")
-                 return {"migrated": False, "count": 0, "message": f"Failed to create new dir: {e}"}
-        
-        migrated_count = 0
-        migrated_names = []
-        errors = []
-        
-        for char_name in chars_to_move:
-            src = os.path.join(old_dir, char_name)
-            dst = os.path.join(new_dir, char_name)
-
-            if os.path.exists(dst):
-                # Destination exists: keep legacy data intact and archive old_dir after success.
-                dst_config = os.path.join(dst, f"{char_name}_config.json")
-                if os.path.exists(dst_config):
-                    print(f"[VNCCS Migration] {char_name}: already in new location, keeping legacy copy for archive")
-                    migrated_count += 1
-                    migrated_names.append(char_name)
-                else:
-                    # dst exists but is empty/broken: replace dst with a copy, then archive old_dir.
-                    print(f"[VNCCS Migration] {char_name}: dst exists but incomplete, replacing from legacy copy")
-                    try:
-                        shutil.rmtree(dst)
-                        shutil.copytree(src, dst)
-                        migrated_count += 1
-                        migrated_names.append(char_name)
-                    except Exception as e:
-                        errors.append(f"Failed to replace {char_name}: {e}")
-                continue
-
-            try:
-                print(f"[VNCCS Migration] Copying {src} -> {dst}")
-                shutil.copytree(src, dst)
-                migrated_count += 1
-                migrated_names.append(char_name)
-            except Exception as e:
-                msg = f"Failed to copy {char_name}: {str(e)}"
-                print(f"[VNCCS Migration] {msg}")
-                errors.append(msg)
-
-        archive_path = ""
-        if migrated_count > 0 and not errors:
-            try:
-                archive_path = _migration_archive_path(old_dir)
-                print(f"[VNCCS Migration] Archiving legacy dir: {old_dir} -> {archive_path}")
-                os.rename(old_dir, archive_path)
-            except Exception as e:
-                msg = f"Failed to archive legacy dir: {e}"
-                print(f"[VNCCS Migration] {msg}")
-                errors.append(msg)
-                
-        return {
-            "migrated": migrated_count > 0 and not errors,
-            "count": migrated_count,
-            "details": migrated_names,
-            "errors": errors,
-            "archive_path": archive_path,
-            "all_characters": list_characters()
-        }
-    except Exception as e:
-        trace = traceback.format_exc()
-        print(f"[VNCCS Migration] CRITICAL ERROR: {e}\n{trace}")
-        return {
-            "migrated": False, 
-            "error": str(e), 
-            "trace": trace
-        }
-
-
 def character_dir(name: str) -> str:
     """Get character directory path."""
     return safe_join_under(base_output_dir(), ensure_safe_name(name, "character"))
@@ -558,7 +422,6 @@ def ensure_character_structure(name: str, emotions: List[str] = None, main_dirs:
             os.makedirs(naked_path)
 
 
-
 def ensure_costume_structure(name: str, costume: str, emotions: List[str] = None) -> None:
     """Create costume directory structure.
     
@@ -576,7 +439,6 @@ def ensure_costume_structure(name: str, costume: str, emotions: List[str] = None
         
         if not os.path.exists(costume_path):
             os.makedirs(costume_path)
-
 
 
 def list_characters() -> List[str]:
@@ -715,7 +577,6 @@ def age_body_descriptor(age: int, sex: str) -> str:
             return "(old man:1.0)"
         else:
             return ""
-
 
 
 def append_age(positive_prompt: str, age: int, sex: str) -> str:
@@ -960,127 +821,6 @@ def delete_costume(character_name: str, costume_name: str) -> Optional[str]:
         return None
 
 
-def load_character_sheet(character: str, costume: str = "Naked", emotion: str = "neutral", with_mask: bool = False) -> Optional["torch.Tensor"]:
-    """Deprecated runtime loader: load a current sprite image, never a sheet.
-    
-    Args:
-        character (str): Character name
-        costume (str): Costume name (default "Naked")
-        emotion (str): Emotion (default "neutral")
-        with_mask (bool): Whether to return alpha mask separately (default False)
-        
-    Returns:
-        torch.Tensor or Tuple[torch.Tensor, torch.Tensor] or None: 
-        - If with_mask=False: RGBA sprite tensor [1, H, W, 4] or None on error
-        - If with_mask=True: (RGB image [1, H, W, 3], alpha mask [1, H, W]) or (None, None) on error
-    """
-    try:
-        import torch
-        from PIL import Image, ImageOps
-        import numpy as np
-    except ImportError:
-        print("[VNCCS Utils] Required libraries (torch, PIL, numpy) not installed")
-        return None
-    
-    try:
-        costume_candidates = [costume]
-        if costume == "Naked":
-            costume_candidates.append("Original")
-
-        best_path = None
-        image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-        for candidate_costume in costume_candidates:
-            sprite_root = os.path.join(character_dir(character), "Sprites", candidate_costume)
-            if not os.path.isdir(sprite_root):
-                continue
-            neutral_files = []
-            for neutral_name in ("Neutral", "neutral"):
-                neutral_root = os.path.join(sprite_root, neutral_name)
-                if not os.path.isdir(neutral_root):
-                    continue
-                for root, _dirs, filenames in os.walk(neutral_root):
-                    neutral_files.extend(
-                        os.path.join(root, filename)
-                        for filename in filenames
-                        if os.path.splitext(filename)[1].lower() in image_exts
-                    )
-            if neutral_files:
-                best_path = max(neutral_files, key=lambda path: (os.path.getmtime(path), path))
-                print(f"[VNCCS Utils] Using neutral sprite for deprecated sheet load: {best_path}")
-                break
-
-            sprite_files = []
-            for root, _dirs, filenames in os.walk(sprite_root):
-                parts = set(os.path.normpath(root).split(os.sep))
-                if "Neutral" in parts or "neutral" in parts:
-                    continue
-                sprite_files.extend(
-                    os.path.join(root, filename)
-                    for filename in filenames
-                    if os.path.splitext(filename)[1].lower() in image_exts
-                )
-            if sprite_files:
-                best_path = max(sprite_files, key=lambda path: (os.path.getmtime(path), path))
-                print(f"[VNCCS Utils] Using sprite for deprecated sheet load: {best_path}")
-                break
-
-        if not best_path:
-            checked = [
-                os.path.join(character_dir(character), "Sprites", candidate_costume)
-                for candidate_costume in costume_candidates
-            ]
-            print(f"[VNCCS Utils] No sprite found for {character}/{costume}/{emotion}: {checked}. Run migration or generate sprites first.")
-            if with_mask:
-                return None, None
-            else:
-                return None
-        
-        img_pil = Image.open(best_path)
-        img_pil = ImageOps.exif_transpose(img_pil)
-        
-        has_alpha = img_pil.mode == "RGBA" or img_pil.mode == "LA" or img_pil.mode == "P" and "transparency" in img_pil.info
-        
-        if img_pil.mode != "RGBA":
-            img_pil = img_pil.convert("RGBA")
-        
-        image_np = np.array(img_pil).astype(np.float32) / 255.0
-        
-        if with_mask:
-            if has_alpha:
-                img_tensor = torch.from_numpy(image_np[..., :3])[None,]
-                # ComfyUI mask convention: 1.0 = inpaint area, 0.0 = keep.
-                # PNG alpha: 1.0 = opaque (keep), 0.0 = transparent (inpaint). Invert.
-                mask_alpha_channel = 1.0 - image_np[..., 3]
-                mask_tensor = torch.from_numpy(mask_alpha_channel).unsqueeze(0)
-                print(f"[VNCCS Utils] Loaded sprite with mask: {best_path}")
-                return img_tensor, mask_tensor
-            else:
-                img_tensor = torch.from_numpy(image_np[..., :3])[None,]
-                print(f"[VNCCS Utils] Loaded sprite without mask: {best_path}")
-                return img_tensor, None
-        else:
-            # Return RGBA image for ComfyUI compatibility
-            if has_alpha:
-                # Keep alpha channel for proper transparency handling
-                sheet_image_tensor = torch.from_numpy(image_np)[None,]  # [1, H, W, 4]
-                print(f"[VNCCS Utils] Loaded RGBA sprite: {best_path}")
-            else:
-                # Convert RGB to RGBA by adding opaque alpha channel
-                rgb_image = image_np[..., :3]
-                alpha_channel = np.ones((image_np.shape[0], image_np.shape[1], 1), dtype=np.float32)
-                rgba_image = np.concatenate([rgb_image, alpha_channel], axis=2)
-                sheet_image_tensor = torch.from_numpy(rgba_image)[None,]  # [1, H, W, 4]
-                print(f"[VNCCS Utils] Loaded RGB sprite (converted to RGBA): {best_path}")
-            return sheet_image_tensor
-        
-    except Exception as e:
-        print(f"[VNCCS Utils] Error loading sprite image: {e}")
-        if with_mask:
-            return None, None
-        else:
-            return None
-
-
 def list_costumes(character_name: str) -> List[str]:
     """Get list of available costumes for character."""
     costumes = ["Naked"]
@@ -1107,3 +847,109 @@ def list_costumes(character_name: str) -> List[str]:
 
 
 create_costume_folders = ensure_costume_structure
+
+
+def create_initial_character(
+    existing_character: str,
+    background_color: str = "green",
+    aesthetics: str = "",
+    nsfw: bool = False,
+    sex: str = "female",
+    age: int = 18,
+    race: str = "",
+    eyes: str = "",
+    hair: str = "",
+    face: str = "",
+    body: str = "",
+    skin_color: str = "",
+    additional_details: str = "",
+    seed: int = 0,
+    negative_prompt: str = "",
+    lora_prompt: str = ""
+) -> tuple[str, int, str, float, str, str, str]:
+
+    character_name = existing_character
+
+    ensure_character_structure(character_name, EMOTIONS, MAIN_DIRS)
+
+    character_path = character_dir(character_name)
+    sheets_path = sheets_dir(character_name)
+    faces_path = faces_dir(character_name)
+    positive_prompt = f"{aesthetics}, simple background, expressionless"
+
+    if background_color:
+        positive_prompt += f", {background_color} background"
+
+    positive_prompt, gender_negative = apply_sex(sex, positive_prompt, "")
+
+    if nsfw:
+        nude_phrase = "(naked, nude, penis)" if sex == "male" else "(naked, nude, vagina, nipples)"
+    else:
+        nude_phrase = "(bare chest, wear white boxers)" if sex == "male" else "(wear white bra and panties)"
+
+
+    positive_prompt += f", {nude_phrase}"
+    positive_prompt = append_age(positive_prompt, age, sex)
+
+    if race:
+        positive_prompt += f", ({race} race:1.0)"
+    hair = normalize_hair_tags(hair)
+    if hair:
+        positive_prompt += f", ({hair}:1.0)"
+    if eyes:
+        positive_prompt += f", ({eyes} eyes:1.0)"
+    if face:
+        positive_prompt += f", ({face} face:1.0)"
+    if body:
+        positive_prompt += f", ({body} body:1.0)"
+    if skin_color:
+        positive_prompt += f", ({skin_color} skin:1.0)"
+    if additional_details:
+        positive_prompt += f", ({additional_details})"
+    if lora_prompt:
+        positive_prompt += f", {lora_prompt}"
+
+
+    age_lora_strength = age_strength(age)
+
+    final_negative_prompt = dedupe_tokens(f"{negative_prompt},{gender_negative}")
+
+    config = load_config(character_name, strict=True) or {
+        "character_info": {},
+        "folder_structure": {
+            "main_directories": MAIN_DIRS,
+            "emotions": EMOTIONS
+        },
+        "character_path": character_path,
+        "config_version": "2.0"
+    }
+
+    config["character_info"] = {
+        "name": character_name,
+        "background_color": background_color,
+        "sex": sex,
+        "age": age,
+        "race": race,
+        "aesthetics": aesthetics,
+        "eyes": eyes,
+        "hair": hair,
+        "face": face,
+        "body": body,
+        "skin_color": skin_color,
+        "additional_details": additional_details,
+        "negative_prompt": negative_prompt,
+        "lora_prompt": lora_prompt,
+        "seed": seed
+    }
+
+    # Preserve existing costumes if any
+    if "costumes" not in config:
+        config["costumes"] = {}
+
+    if not save_config(character_name, config):
+        raise OSError(f"Could not save character configuration for '{character_name}'. Check storage permissions and free space.")
+
+    face_details = build_face_details(config["character_info"])
+    face_details += f", (expressionless:1.0)"
+
+    return positive_prompt, seed, final_negative_prompt, age_lora_strength, sheets_path, faces_path, face_details

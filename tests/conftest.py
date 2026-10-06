@@ -132,10 +132,3 @@ class _NodeAliasFinder(importlib.abc.MetaPathFinder):
 
 
 sys.meta_path.insert(0, _NodeAliasFinder())
-
-
-# Pre-load node files that use `from ..utils import` (relative double-dot imports).
-# Other node files use absolute imports and load fine on demand.
-if importlib.util.find_spec("torch") is not None:
-    for _basename in ("character_creator", "dataset_generator"):
-        _preload_node(_basename)

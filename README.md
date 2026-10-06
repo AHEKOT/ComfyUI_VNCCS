@@ -48,13 +48,6 @@ Hi! My name is V-chan, and I am going to show you how to use the new VNCCS!
 
 We got a BIIIIIIG update, and now everything is completely new, so listen carefully!
 
-## Step 0: Migration assistant
-
-If you used VNCCS before - you characters are safe. But you need to do one extra step:
-Open **VNCCS_MigrationAssistant.json**, select your characters and click **migrate**. It will transfer you characters in new VNCCS format.
-
-!!!MAKE SURE THAT THEY WORK CORRECTLY BEFORE DELETING OLD FOLDER!!!
-
 ## Step 1: Character Creator
 
 Open the workflow:

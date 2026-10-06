@@ -64,7 +64,7 @@ def test_klein_pipe_selects_klein_encoder_and_helper_loras(monkeypatch):
     monkeypatch.setattr(cg, "_call_comfy_node", lambda class_name, **kwargs: calls.append((class_name, kwargs)) or (1, 2, 3))
 
     assert generator._encoder_call(pipe_values, "prompt", image1=object()) == (1, 2, 3)
-    assert calls[0][0] == "VNCCS_Flux_Klein_Encoder"
+    assert calls[0][0] == cg._encode_flux_klein
     assert calls[0][1]["megapixels"] == 1.0
     assert generator._find_pose_lora(pipe)["name"] == "VNCCS Pose Studio Klein9b"
     assert generator._find_clothes_lora(pipe)["name"] == "VNCCS Clothes Core Klein9b"
@@ -160,7 +160,7 @@ def test_bg_remove_disabled_skips_chroma_key(monkeypatch):
         def chroma_key(self, *args, **kwargs):
             raise AssertionError("chroma key should not run")
 
-    monkeypatch.setattr(cg, "VNCCSChromaKey", FailingChromaKey)
+    monkeypatch.setattr(cg, "ChromaKeyProcessor", FailingChromaKey)
     images = torch.rand(1, 4, 4, 3)
 
     result = cg.VNCCS_CharacterGenerator()._run_bg_remove(
@@ -179,7 +179,7 @@ def test_native_bg_remove_uses_alpha_prompt_and_skips_chroma_key(monkeypatch):
         def chroma_key(self, *args, **kwargs):
             raise AssertionError("native alpha must not run chroma key")
 
-    monkeypatch.setattr(cg, "VNCCSChromaKey", FailingChromaKey)
+    monkeypatch.setattr(cg, "ChromaKeyProcessor", FailingChromaKey)
     generator = cg.VNCCS_CharacterGenerator()
     prompt = generator._prompt_with_solid_background(
         "Keep the pose", "Green", {"preset": "Native"},
@@ -221,106 +221,6 @@ def test_native_bg_remove_preserves_alpha_through_upscaler(monkeypatch):
     assert torch.allclose(result[..., 3:4], expected_alpha)
 
 
-def test_settings_force_internal_rmbg_off_for_legacy_workflows():
-    settings = cg.VNCCS_CharacterGenerator()._settings(
-        json.dumps({"bg_remove": {"use_internal_rmbg": True}})
-    )
-
-    assert settings["bg_remove"]["use_internal_rmbg"] is False
-
-
-def test_internal_rmbg_cannot_run_when_directly_requested(monkeypatch):
-    torch = pytest.importorskip("torch")
-
-    class FailingRMBG:
-        def process_image(self, *args, **kwargs):
-            raise AssertionError("internal RMBG should be force-disabled")
-
-    generator = cg.VNCCS_CharacterGenerator()
-    monkeypatch.setattr(cg, "VNCCS_RMBG2", FailingRMBG)
-    monkeypatch.setattr(
-        generator,
-        "_run_seedvr_upscale_one",
-        lambda image, dit, vae, settings, seed: image,
-    )
-    image = torch.rand(1, 4, 4, 3)
-
-    result = generator._run_upscale_one(
-        image,
-        dit=None,
-        vae=None,
-        background="Green",
-        settings={},
-        seed=42,
-        use_internal_rmbg=True,
-    )
-
-    assert torch.equal(result, image)
-
-
-def test_upscaler_batch_internal_rmbg_cannot_run_when_directly_requested(monkeypatch):
-    torch = pytest.importorskip("torch")
-
-    class FailingRMBG:
-        def process_image(self, *args, **kwargs):
-            raise AssertionError("internal RMBG should be force-disabled")
-
-    generator = cg.VNCCS_CharacterGenerator()
-    monkeypatch.setattr(cg, "VNCCS_RMBG2", FailingRMBG)
-    monkeypatch.setattr(
-        generator,
-        "_run_upscaler_models",
-        lambda settings, node_id=None: (None, None),
-    )
-    monkeypatch.setattr(
-        generator,
-        "_run_seedvr_upscale_batch",
-        lambda images, dit, vae, settings, seed, **kwargs: images,
-    )
-    monkeypatch.setattr(generator, "_emit", lambda *args, **kwargs: None)
-    monkeypatch.setattr(generator, "_log_stage", lambda *args, **kwargs: None)
-    images = torch.rand(2, 4, 4, 3)
-
-    result = generator._run_upscaler(
-        images,
-        "Green",
-        {"mode": "seedvr"},
-        seed=42,
-        use_internal_rmbg=True,
-    )
-
-    assert torch.equal(result, images)
-
-
-def test_clothes_internal_rmbg_cannot_run_when_directly_requested(monkeypatch):
-    torch = pytest.importorskip("torch")
-
-    class FailingRMBG:
-        def process_image(self, *args, **kwargs):
-            raise AssertionError("internal RMBG should be force-disabled")
-
-    generator = cg.VNCCS_ClothesGenerator()
-    monkeypatch.setattr(cg, "VNCCS_RMBG2", FailingRMBG)
-    monkeypatch.setattr(
-        generator,
-        "_run_pose_generation",
-        lambda poses, character, pipe, prompt, settings, **kwargs: poses,
-    )
-    poses = torch.rand(1, 4, 4, 3)
-
-    result = generator._run_clothes_pose_generation(
-        poses,
-        character=None,
-        pipe=None,
-        prompt="",
-        background="Green",
-        settings={},
-        use_internal_rmbg=True,
-    )
-
-    assert torch.equal(result, poses)
-
-
 def test_bg_remove_disables_sam3_details_recovery_by_default(monkeypatch):
     torch = pytest.importorskip("torch")
     seen = {}
@@ -331,7 +231,7 @@ def test_bg_remove_disables_sam3_details_recovery_by_default(monkeypatch):
             seen["use_sam3_recovery_mask"] = args[12]
             return (args[0], None, None)
 
-    monkeypatch.setattr(cg, "VNCCSChromaKey", CapturingChromaKey)
+    monkeypatch.setattr(cg, "ChromaKeyProcessor", CapturingChromaKey)
     images = torch.rand(1, 4, 4, 3)
 
     cg.VNCCS_CharacterGenerator()._run_bg_remove(
@@ -355,7 +255,7 @@ def test_bg_remove_can_disable_sam3_details_recovery(monkeypatch):
             seen["use_sam3_recovery_mask"] = args[12]
             return (args[0], None, None)
 
-    monkeypatch.setattr(cg, "VNCCSChromaKey", CapturingChromaKey)
+    monkeypatch.setattr(cg, "ChromaKeyProcessor", CapturingChromaKey)
     images = torch.rand(1, 4, 4, 3)
 
     cg.VNCCS_CharacterGenerator()._run_bg_remove(
@@ -377,7 +277,7 @@ def test_bg_remove_custom_settings_reach_chroma_and_sam3(monkeypatch):
             seen["kwargs"] = kwargs
             return (args[0], None, None)
 
-    monkeypatch.setattr(cg, "VNCCSChromaKey", CapturingChromaKey)
+    monkeypatch.setattr(cg, "ChromaKeyProcessor", CapturingChromaKey)
     images = torch.rand(1, 4, 4, 3)
     settings = {
         "preset": "balanced",
@@ -431,7 +331,7 @@ def test_generator_internal_node_settings_are_forwarded(monkeypatch):
 
         def _run_list_mapped(self, class_name, list_kwargs, **kwargs):
             calls[class_name] = kwargs
-            if class_name == "VNCCS_Flux_Klein_Encoder":
+            if class_name == cg._encode_flux_klein:
                 return ([object()], [object()], [{"samples": torch.rand(1, 4, 8, 8)}])
             if class_name == "KSampler":
                 return ([{"samples": torch.rand(1, 4, 8, 8)}],)
@@ -445,7 +345,7 @@ def test_generator_internal_node_settings_are_forwarded(monkeypatch):
         def _validate_conditioning_for_model(self, *args, **kwargs):
             return None
 
-    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", FakeMaskExtractor)
+    monkeypatch.setattr(cg, 'fill_alpha_with_color', FakeMaskExtractor().fill_alpha_with_color)
     generator = TestGenerator()
     generator._run_pose_generation(
         torch.rand(1, 8, 8, 3),
@@ -477,9 +377,9 @@ def test_generator_internal_node_settings_are_forwarded(monkeypatch):
         },
     )
 
-    assert calls["VNCCS_Flux_Klein_Encoder"]["megapixels"] == pytest.approx(1344 / 1024)
-    assert calls["VNCCS_Flux_Klein_Encoder"]["upscale_method"] == "lanczos"
-    assert calls["VNCCS_Flux_Klein_Encoder"]["resolution_steps"] == 1
+    assert calls[cg._encode_flux_klein]["megapixels"] == pytest.approx(1344 / 1024)
+    assert calls[cg._encode_flux_klein]["upscale_method"] == "lanczos"
+    assert calls[cg._encode_flux_klein]["resolution_steps"] == 1
     assert calls["KSampler"]["seed"] == 99
     assert calls["KSampler"]["steps"] == 23
     assert calls["KSampler"]["cfg"] == pytest.approx(4.25)
@@ -1012,7 +912,7 @@ def test_pose_generation_decode_preserves_encoder_aspect(monkeypatch):
             }
 
         def _run_list_mapped(self, class_name, list_kwargs, **kwargs):
-            if class_name == "VNCCS_Flux_Klein_Encoder":
+            if class_name == cg._encode_flux_klein:
                 return ([object()], [object()], [{"samples": torch.rand(1, 4, 198, 83)}])
             if class_name == "KSampler":
                 return ([{"samples": torch.rand(1, 4, 198, 83)}],)
@@ -1026,7 +926,7 @@ def test_pose_generation_decode_preserves_encoder_aspect(monkeypatch):
         def _validate_conditioning_for_model(self, pipe_values, positive, negative, stage_label):
             return None
 
-    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", FakeMaskExtractor)
+    monkeypatch.setattr(cg, 'fill_alpha_with_color', FakeMaskExtractor().fill_alpha_with_color)
 
     result = TestGenerator()._run_pose_generation(
         torch.rand(1, 1536, 640, 3),
@@ -1101,7 +1001,7 @@ def test_h3_pose_generation_follows_reference_workflow_and_returns_first_frame(m
         }
         return outputs[class_name]
 
-    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", FakeMaskExtractor)
+    monkeypatch.setattr(cg, 'fill_alpha_with_color', FakeMaskExtractor().fill_alpha_with_color)
     monkeypatch.setattr(cg, "_call_comfy_node", fake_call)
 
     result = TestGenerator()._run_pose_generation(
@@ -1339,7 +1239,6 @@ def test_seedvr_upscaler_runs_each_image_independently(monkeypatch):
         "Green",
         generator._settings("{}")["upscaler"],
         seed=42,
-        use_internal_rmbg=False,
     )
 
     assert len(calls) == 4

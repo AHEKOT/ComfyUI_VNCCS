@@ -18,6 +18,10 @@ def test_emotion_studio_builds_qi2_pipe_with_cache_and_viggle_state(monkeypatch)
         "generation_mode": "qi2",
         "mode_settings": {
             "qi2": {
+                "seed": 721,
+                "seed_mode": "fixed",
+                "sampler": "euler",
+                "scheduler": "simple",
                 "diffusion_model_name": "qwen.safetensors",
                 "clip_name": "qwen3vl.safetensors",
                 "vae_name": "qwen_vae.safetensors",
@@ -40,6 +44,16 @@ def test_emotion_studio_builds_qi2_pipe_with_cache_and_viggle_state(monkeypatch)
         "auto_apply": True,
         "strength": 1.0,
     }]
+    from nodes.character_generator import VNCCS_EmotionsGenerator
+
+    original = vars(pipe).copy()
+    values = VNCCS_EmotionsGenerator()._extract_pipe(pipe)
+    assert (values["model"], values["clip"], values["vae"]) == ("model", "clip", "vae")
+    assert (values["seed"], values["steps"], values["cfg"], values["denoise"]) == (721, 6, 1.0, 1.0)
+    assert (values["sampler"], values["scheduler"]) == ("euler", "simple")
+    assert values["model_kind"] == "qi2"
+    assert values["qi2_cache"] == {"device": "cpu", "dtype": "int4"}
+    assert vars(pipe) == original
 
 
 def test_emotion_studio_ui_exposes_qi2_model_cache_and_turbo_controls():

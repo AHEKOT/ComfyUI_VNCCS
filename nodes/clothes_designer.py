@@ -21,6 +21,7 @@ from ..utils import (
 )
 from .character_generator import (
     _call_comfy_node,
+    _encode_flux_klein,
     _resolution_scale_megapixels,
     _resolution_scale_value,
     VNCCS_CharacterGenerator,
@@ -28,11 +29,10 @@ from .character_generator import (
     NATIVE_BACKGROUND_PROMPT,
 )
 from .vnccs_control_center import _entry_kind, _find_model_on_disk, _apply_lora_standard
-from .vnccs_utils import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
+from .qwen_vl import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
 from .qwen_vl import configure_qwen_text_chat
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-KLEIN_ENCODER_CLASS = "VNCCS_Flux_Klein_Encoder"
 WORKFLOW_SAMPLER_DEFAULTS = {
     "seed": 200413815563996,
     "steps": 4,
@@ -786,7 +786,7 @@ class ClothesDesigner:
                 negative_prompt=negative_prompt,
             )
         else:
-            pos_cond, neg_cond, empty_latent = _call_comfy_node(KLEIN_ENCODER_CLASS, **encoder_kwargs)
+            pos_cond, neg_cond, empty_latent = _call_comfy_node(_encode_flux_klein, **encoder_kwargs)
         
         out_pipe = PipeContext(
             source=pipe,
@@ -1092,7 +1092,7 @@ async def vnccs_get_preview(request):
     naked_sprite = get_latest_sprite_path(character, "Naked")
     original_sprite = get_latest_sprite_path(character, "Original")
     if not naked_sprite and not original_sprite:
-         return web.Response(status=400, text="Character incomplete. Run migration or generate sprites first.")
+         return web.Response(status=400, text="Character incomplete. Generate sprites first.")
 
     force_cache = request.rel_url.query.get("force_cache", "") == "true"
     

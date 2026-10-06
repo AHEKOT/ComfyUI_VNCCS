@@ -148,7 +148,7 @@ test('missing server progress releases stale running UI without starting another
 });
 
 test('active workflow sources use the shared transport and checked create/save operations', () => {
-    for (const name of ['vnccs_character_creator_v2', 'vnccs_character_cloner', 'vnccs_clothes_designer', 'vnccs_emotion_v2', 'vnccs_character_generator', 'vnccs_control_center', 'vnccs_migration_assistant']) {
+    for (const name of ['vnccs_character_creator_v2', 'vnccs_character_cloner', 'vnccs_clothes_designer', 'vnccs_emotion_v2', 'vnccs_character_generator', 'vnccs_control_center']) {
         const text = read(name);
         assert.match(text, /vnccsApi as api/);
         assert.doesNotMatch(text, /(?<![\w.])fetch\(/);

@@ -25,7 +25,8 @@ from .character_creator_v2 import (
     normalize_gen_settings,
     get_lora_full_path,
 )
-from .vnccs_pipe import VNCCS_Pipe
+from .vnccs_control_center import VNCCSPipeProxy
+import comfy.samplers
 
 
 QI2_TURBO_LORA_NAME = "QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors"
@@ -221,21 +222,13 @@ def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
                 model, clip = apply_lora_safe(model, clip, item.get("name"), item.get("strength", 1.0))
 
     seed = resolve_generation_seed(gen_settings)
-    pipe_node = VNCCS_Pipe()
-    pipe_result = pipe_node.process_pipe(
-        model=model,
-        clip=clip,
-        vae=vae,
-        seed_int=seed,
-        sample_steps=int(gen_settings.get("steps", 0) or 0),
-        cfg=float(gen_settings.get("cfg", 0.0) or 0.0),
-        denoise=1.0,
-        sampler_name=gen_settings.get("sampler"),
-        scheduler=gen_settings.get("scheduler"),
-        lora_name="none",
-        lora_strength=1.0,
-    )
-    pipe = pipe_result[9]
+    pipe = VNCCSPipeProxy(model, clip, vae)
+    pipe.seed_int = seed
+    pipe.sample_steps = int(gen_settings.get("steps", 0) or 0)
+    pipe.cfg = float(gen_settings.get("cfg", 0.0) or 0.0)
+    pipe.denoise = 1.0
+    pipe.sampler_name = gen_settings.get("sampler") or (comfy.samplers.KSampler.SAMPLERS or ["euler"])[0]
+    pipe.scheduler = gen_settings.get("scheduler") or (comfy.samplers.KSampler.SCHEDULERS or ["normal"])[0]
     if mode == "anima":
         pipe.model_entry = {
             "name": "Anima",
@@ -347,7 +340,7 @@ def load_costume_sprite_images(character, costume, selected_pose_indices=None):
     if loaded:
         return loaded
 
-    print(f"[VNCCS Emotion Studio] No sprites found for {character}/{costume}. Run migration or generate sprites first.")
+    print(f"[VNCCS Emotion Studio] No sprites found for {character}/{costume}. Generate sprites first.")
     return []
 
 
@@ -477,7 +470,7 @@ if server:
             costume = request.rel_url.query.get("costume", "Naked")
             sprites = load_costume_sprite_images(character, costume) or load_costume_sprite_images(character, "Original")
             if not sprites:
-                return web.Response(status=404, text="No sprites found. Run migration or generate sprites first.")
+                return web.Response(status=404, text="No sprites found. Generate sprites first.")
 
             image, _mask, _path = sprites[0]
             tensor = image[0].detach().cpu().clamp(0, 1)

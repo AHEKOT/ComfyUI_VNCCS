@@ -1,4 +1,4 @@
-"""Tests for nodes/character_creator.py — VALIDATE_INPUTS and prompt building."""
+"""Character creation API profile persistence and prompt construction."""
 
 import os
 import sys
@@ -7,44 +7,13 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from nodes.character_creator import CharacterCreator
-
-
-class TestValidateInputs:
-    def test_none_returns_error(self):
-        result = CharacterCreator.VALIDATE_INPUTS(existing_character=None)
-        assert result is not True
-        assert isinstance(result, str)
-
-    def test_string_none_returns_error(self):
-        result = CharacterCreator.VALIDATE_INPUTS(existing_character="None")
-        assert result is not True
-
-    def test_empty_string_returns_error(self):
-        result = CharacterCreator.VALIDATE_INPUTS(existing_character="")
-        assert result is not True
-
-    def test_missing_dir_returns_error(self, tmp_path, monkeypatch):
-        import utils
-        monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path))
-        result = CharacterCreator.VALIDATE_INPUTS(existing_character="Ghost")
-        assert result is not True
-        assert "Ghost" in result
-
-    def test_existing_dir_returns_true(self, tmp_path, monkeypatch):
-        import utils
-        monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path))
-        (tmp_path / "Alice").mkdir()
-        result = CharacterCreator.VALIDATE_INPUTS(existing_character="Alice")
-        assert result is True
+from utils import create_initial_character
 
 
 class TestCreateCharacterPrompt:
     def _run(self, tmp_path, monkeypatch, **kwargs):
         import utils
-        import nodes.character_creator as cc_mod
         monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path))
-        monkeypatch.setattr(cc_mod, "base_output_dir", lambda: str(tmp_path), raising=False)
         (tmp_path / "Alice").mkdir()
 
         defaults = dict(
@@ -64,10 +33,9 @@ class TestCreateCharacterPrompt:
             seed=0,
             negative_prompt="bad quality",
             lora_prompt="",
-            new_character_name="",
         )
         defaults.update(kwargs)
-        return CharacterCreator().create_character(**defaults)
+        return create_initial_character(**defaults)
 
     def test_returns_7_values(self, tmp_path, monkeypatch):
         result = self._run(tmp_path, monkeypatch)
@@ -138,16 +106,14 @@ class TestCreateCharacterPrompt:
     def test_config_saved_to_disk(self, tmp_path, monkeypatch):
         import utils
         monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path))
-        import nodes.character_creator as cc_mod
-        monkeypatch.setattr(cc_mod, "base_output_dir", lambda: str(tmp_path), raising=False)
         (tmp_path / "Alice").mkdir()
 
-        CharacterCreator().create_character(
+        create_initial_character(
             existing_character="Alice", background_color="green",
             aesthetics="masterpiece", nsfw=False, sex="female", age=18,
             race="human", eyes="blue", hair="black", face="oval",
             body="slim", skin_color="fair", additional_details="",
-            seed=0, negative_prompt="bad", lora_prompt="", new_character_name="",
+            seed=0, negative_prompt="bad", lora_prompt="",
         )
         config = utils.load_config("Alice")
         assert config is not None

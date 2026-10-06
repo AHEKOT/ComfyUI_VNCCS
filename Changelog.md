@@ -182,14 +182,12 @@ The release adds Qwen Image 2.1 and MiniMax H3 generation, expands character edi
 - Single-image regeneration retains sibling previews, per-pose prompts, and the selected preview. Normal execution and regeneration sharing a cache are serialized to avoid mixing results.
 - Inactive live contexts and transient workflow caches have bounded retention. Expired results request a new generator run; final character outputs and legacy caches are preserved.
 
-## Storage Safety and Migration
+## Storage Safety
 
 - Character configurations, preview images, and cached tensors are written through temporary files before replacement. Failed writes preserve the previous files and are reported instead of appearing successful; unreadable configurations are not treated as new characters.
 - Sprite batches are prepared before publication, with rollback on failure. Full runs archive previous images into version directories, while regeneration preserves unaffected current sprites and existing archives. Post-publication cleanup failures produce warnings without discarding successfully saved output.
-- Character storage updates coordinate generation, costume edits, deletion, migration, and canvas repair to prevent conflicting writes or restoration of deleted metadata.
+- Character storage updates coordinate generation, costume edits, and deletion to prevent conflicting writes or restoration of deleted metadata.
 - Added stricter request, costume-field, image-path, and LoRA validation. Filesystem checks reject traversal and symbolic links that escape the allowed storage roots; costume deletion also rejects aliases to protected sprite sets.
-- Legacy migration selects the newest sheet for each costume and emotion and preserves existing character configurations, including forced sprite conversion.
-- Migration reports partial failures and can retry only failed sheets. Failed status requests offer reconnection without starting a duplicate job; migration and canvas repair cannot run concurrently, and retained job history and logs are bounded.
 
 ## Widget Interaction
 
@@ -208,7 +206,7 @@ The release adds Qwen Image 2.1 and MiniMax H3 generation, expands character edi
 
 - Added updated 3.2 workflows for Character Creator, Character Cloner, Character Clothes, and Character Emotions. Previous 3.0 workflows are retained under `workflows/Old`.
 - Added the `VNCCS Style Preview Test` output node, which generates named preview PNGs for every catalog style using Anima or QI2.
-- Added regression coverage for model-family selection, QI2 and H3 generation, prompts and presets, trait editing, resolution and settings persistence, native alpha, clothing references and deletion, emotion crops, runtime cleanup, progress recovery, proxy transport, safe storage, migration, downloads, wizard models, widget isolation, accessibility, and package loading. CI now runs the Node.js widget tests in addition to the Python suite.
+- Added regression coverage for model-family selection, QI2 and H3 generation, prompts and presets, trait editing, resolution and settings persistence, native alpha, clothing references and deletion, emotion crops, runtime cleanup, progress recovery, proxy transport, safe storage, downloads, wizard models, widget isolation, accessibility, and package loading. CI now runs the Node.js widget tests in addition to the Python suite.
 - Updated package version to `3.2.0`.
 - **QIE2511 workflows require migration:** select a QI2 model and its matching assets in Control Center, or use a compatible Klein9b setup. Retired QIE2511 selections produce an explicit unsupported-model error. The standalone legacy Qwen encoder remains registered for existing independent workflows.
 - **Runtime requirements:** QI2 requires ComfyUI's native Qwen Image 2.1 nodes, including text generation, conditioning, and cache support. H3 requires native MiniMax H3 reference-to-video support and both video and audio VAEs. Qwen3.5 image analysis requires a `llama-cpp-python` build exposing `Qwen35ChatHandler`.
@@ -253,11 +251,9 @@ The release focuses on secure model delivery, Comfy Registry compliance, and saf
 
 ## Runtime Hardening
 
-- Removed dynamic code execution from the bundled BiRefNet implementation and replaced it with explicit supported backbone, decoder, and refiner mappings.
 - Sampler, scheduler, and SeedVR attention discovery now use direct guarded imports instead of dynamic module loading.
 - Removed environment-variable overrides for QwenVL, SAM3, and background-removal download sources and revisions.
 - Replaced frontend callback binding patterns with explicit receiver-preserving wrappers without changing queue hooks or widget behavior.
-- Removed BEN2 from the available RMBG model list; `RMBG-2.0`, `INSPYRENET`, and `BEN` remain available.
 
 ## Release Security Gate
 
@@ -270,7 +266,6 @@ The release focuses on secure model delivery, Comfy Registry compliance, and saf
 
 - Existing public Hugging Face model downloads continue to work without configuration changes.
 - Private, gated, token-authenticated, direct-URL, and Civitai catalog downloads are intentionally unsupported in `3.1.1`.
-- Workflows that explicitly selected `BEN2` must switch to `RMBG-2.0`, `INSPYRENET`, or `BEN`.
 - Existing Control Center dependency installation remains available, but remote or shared ComfyUI servers may require the new explicit Manager policy confirmation and restart flow.
 
 # VNCCS 3.1.0 Changelog
@@ -500,17 +495,14 @@ It focuses on workflow and system behavior, not on internal code changes.
 ## Headline Changes
 
 - VNCCS has moved from a collection of separate sheet-based workflows to a guided end-to-end character production pipeline.
-- The main workflow is now built around Control Center, Character Creator V2, Character Cloner, Clothes Designer, Emotion Studio, Pose Studio, and Migration Assistant.
 - Models and required workflow assets can now be downloaded and checked from VNCCS Control Center instead of being installed manually step by step.
 - The new pipeline is no longer locked to the old fixed 12-pose character sheet format.
 - Characters are now produced and managed as individual sprites, so pose count, sprite count, and sprite dimensions can vary by workflow and by character.
 - Individual generated images can be regenerated without restarting the whole workflow.
-- Existing VNCCS characters can be moved into the new format through the Migration Assistant.
 
 ## New Workflow Structure
 
 - VNCCS 3.0 introduces a smaller and clearer workflow set:
-  - Migration Assistant for old projects.
   - Character Creator for new characters.
   - Character Cloner for characters based on an existing image.
   - Character Clothes for outfit sets.
@@ -608,12 +600,3 @@ It focuses on workflow and system behavior, not on internal code changes.
 - This helps preserve eye color, clothing edges, hair details, and accessories that are close to the background color.
 - Upscaling can be selected, changed, or disabled from the generator settings.
 - The workflow gives stage previews and progress information so users can see where a generation currently is.
-
-## Migration From Older VNCCS Projects
-
-- VNCCS now includes a Migration Assistant workflow for old characters.
-- Migration is explicit: old characters are not silently moved or modified during startup.
-- Users can scan old VNCCS characters, select which ones to migrate, and run migration from the UI.
-- Old character sheets can be converted into the new sprite-based format.
-- Migration can also repair sprite canvas mismatches so old assets behave better in the new workflow.
-- Users are expected to verify migrated characters before deleting old folders.

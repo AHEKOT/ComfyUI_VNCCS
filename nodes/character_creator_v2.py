@@ -31,7 +31,7 @@ from ..utils import (
     privileged_route, file_fingerprint, config_path,
     character_storage_lock,
 )
-from .vnccs_utils import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
+from .qwen_vl import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
 from .runtime_cleanup import inference_stage
 from .qwen_vl import configure_qwen_text_chat
 from .character_presets import CHARACTER_PRESETS, RACE_PRESETS, preset_key, race_features, race_prompt

@@ -73,7 +73,7 @@ def test_bg_output_reuses_normalized_batch_and_saved_previews(tmp_path, monkeypa
     monkeypatch.setattr(node, "_emit", emit)
     monkeypatch.setattr(cg, "normalize_image_batch", normalize)
     monkeypatch.setattr(cg, "_tensor_to_preview_urls", preview)
-    monkeypatch.setattr(cg, "VNCCSChromaKey", ChromaKey)
+    monkeypatch.setattr(cg, "ChromaKeyProcessor", ChromaKey)
     monkeypatch.setattr(cg.server.PromptServer.instance, "send_sync", lambda name, payload: events.append(payload), raising=False)
     bg_stages = ["original_bg_remove", "naked_bg_remove"] if mode == "clone" else ["bg_remove"]
     payload = {"character_name": "Alice", "bg_remove": {"preset": preset}}

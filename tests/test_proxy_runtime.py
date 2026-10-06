@@ -217,9 +217,8 @@ def test_create_route_accepts_checked_post_and_rejects_invalid_or_cross_site_req
     config.write_text('broken JSON')
     assert asyncio.run(invoke({'name': 'Alice'}, headers)).status == 500
     assert config.read_text() == 'broken JSON'
-    creator = sys.modules[package_name + '.nodes.character_creator']
     with monkeypatch.context() as patch:
-        patch.setattr(creator, 'save_config', lambda *args: '')
+        patch.setattr(utils, 'save_config', lambda *args: '')
         failed = asyncio.run(invoke({'name': 'CannotSave'}, headers))
         assert failed.status == 500
     assert asyncio.run(invoke([], headers)).status == 400
@@ -366,13 +365,11 @@ def generator_module(monkeypatch):
         yield
     from threading import RLock
     module(prefix + 'runtime_cleanup', inference_stage=inference_stage, inference_lock=RLock())
-    module(prefix + 'vnccs_pipe', VNCCS_Pipe=object)
     module(prefix + 'vnccs_control_center', _apply_lora_standard=lambda *a: None,
            _find_model_on_disk=lambda *a: None, _rel_within_folder=lambda *a: None,
            _entry_kind=lambda entry: '')
-    module(prefix + 'vnccs_flux_klein_encoder', VNCCS_Flux_Klein_Encoder=object)
     module(prefix + 'qi2_viggle', apply_viggle_turbo_lora=lambda *a: None, viggle_turbo_sigmas=lambda *a: None)
-    module(prefix + 'vnccs_utils', VNCCSChromaKey=object, VNCCS_MaskExtractor=object, VNCCS_RMBG2=object)
+    module(prefix + 'image_processing', ChromaKeyProcessor=object, fill_alpha_with_color=object)
     spec = importlib.util.spec_from_file_location(prefix + 'character_generator', root / 'nodes/character_generator.py')
     generator = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, spec.name, generator)
@@ -573,7 +570,9 @@ def creative_modules(generator_module, monkeypatch, tmp_path):
     from pathlib import Path
     import utils
     prefix = generator_module.__package__ + '.'
-    helpers = sys.modules[prefix + 'vnccs_utils']
+    from nodes import qwen_vl
+    monkeypatch.setitem(sys.modules, prefix + 'qwen_vl', qwen_vl)
+    helpers = qwen_vl
     for name, value in {'_ensure_qwen_vl_assets': lambda *a: None, '_find_qwen_vl_model': lambda *a: None,
                         'QWEN_VL_MODEL_FILENAME': 'unused-model'}.items():
         monkeypatch.setattr(helpers, name, value, raising=False)

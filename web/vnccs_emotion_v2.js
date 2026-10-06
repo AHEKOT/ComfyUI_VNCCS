@@ -2621,10 +2621,8 @@ app.registerExtension({
 
                 const onCharactersUpdated = () => refreshCharacterList({ fetchData: true });
                 window.addEventListener("vnccs.characters.updated", onCharactersUpdated);
-                window.addEventListener("vnccs.migration.complete", onCharactersUpdated);
                 registerCleanup(node, () => {
                     window.removeEventListener("vnccs.characters.updated", onCharactersUpdated);
-                    window.removeEventListener("vnccs.migration.complete", onCharactersUpdated);
                 });
 
                 const styleWidget = node.widgets.find(w => w.name === "prompt_style");

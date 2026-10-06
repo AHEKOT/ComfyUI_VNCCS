@@ -1,11 +1,9 @@
 """VNCCS - Visual Novel Character Creator Suite for ComfyUI."""
 
 import importlib.util
-import os, json, inspect
+import os, json
 import sys
 import traceback
-
-print("[VNCCS] Automatic legacy migration is disabled. Use the VNCCS Migration Assistent node to migrate legacy sheets.")
 
 def _runtime_module_available(name):
     if name in sys.modules:
@@ -14,7 +12,6 @@ def _runtime_module_available(name):
         return importlib.util.find_spec(name) is not None
     except (ImportError, ValueError):
         return False
-
 
 if (
     _runtime_module_available("torch")
@@ -39,8 +36,6 @@ else:
     NODE_DISPLAY_NAME_MAPPINGS = {}
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
-
-
 
 WEB_DIRECTORY = "web"
 
@@ -77,17 +72,6 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             return web.json_response(data)
         except Exception as e:
             return web.json_response({"error": "read failed", "detail": str(e)}, status=500)
-
-
-
-    @PromptServer.instance.routes.post("/vnccs/migrate")
-    async def vnccs_migrate(request):
-        """Legacy endpoint disabled; use the widget-based Migration Assistent."""
-        return web.json_response({
-            "migrated": False,
-            "disabled": True,
-            "message": "Automatic migration is disabled. Use the VNCCS Migration Assistent node.",
-        }, status=410)
 
     @PromptServer.instance.routes.post("/vnccs/delete")
     async def vnccs_delete_character(request):
@@ -167,14 +151,11 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             seed=0,
             negative_prompt="bad quality,worst quality,worst detail,sketch,censor, missing arm, missing leg, distorted body",
             lora_prompt="",
-            new_character_name=name,
         )
         if getattr(request, "method", "GET") == "POST" and data.get("catalog") == "creator_v2":
             defaults["hair"] = "black hair, waist-length hair"
         try:
-            from .nodes.character_creator import CharacterCreator
-            from .utils import base_output_dir, load_config
-            cc = CharacterCreator()
+            from .utils import base_output_dir, load_config, create_initial_character
             base_path = base_output_dir()
             os.makedirs(base_path, exist_ok=True)
             existing_data = load_config(name, strict=True)
@@ -185,14 +166,7 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
                     "existing": True,
                     "data": existing_data,
                 })
-            # Backward compatibility: drop force_new if method doesn't accept it
-            try:
-                sig = inspect.signature(cc.create_character)
-                if 'force_new' not in sig.parameters and 'force_new' in defaults:
-                    defaults.pop('force_new')
-            except Exception:
-                defaults.pop('force_new', None)
-            positive_prompt, seed, negative_prompt, age_lora_strength, _sheets_path, _faces_path, face_details = cc.create_character(**defaults)
+            positive_prompt, seed, negative_prompt, age_lora_strength, _sheets_path, _faces_path, face_details = create_initial_character(**defaults)
             return web.json_response({
                 "ok": True,
                 "name": name,
@@ -246,86 +220,5 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
                 return web.json_response({"error": "Failed to save"}, status=500)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
-
-    @PromptServer.instance.routes.get("/vnccs/models/{filename}")
-    async def vnccs_get_model(request):
-        """Serve FBX model files for 3D pose editor"""
-        filename = request.match_info.get("filename", "")
-        if not filename.endswith(".fbx"):
-            return web.Response(text="Only FBX files allowed", status=400)
-        
-        # Get the models directory
-        models_dir = os.path.join(os.path.dirname(__file__), "models")
-        file_path = os.path.join(models_dir, filename)
-        
-        # Security check - ensure file is within models directory
-        if os.path.commonpath([os.path.abspath(models_dir), os.path.abspath(file_path)]) != os.path.abspath(models_dir):
-            return web.Response(text="Invalid path", status=400)
-        
-        if not os.path.exists(file_path):
-            return web.Response(text=f"Model not found: {filename}", status=404)
-        
-        try:
-            with open(file_path, 'rb') as f:
-                return web.Response(
-                    body=f.read(),
-                    content_type='application/octet-stream',
-                    headers={
-                        'Content-Disposition': f'inline; filename="{filename}"',
-                        'Access-Control-Allow-Origin': '*'
-                    }
-                )
-        except Exception as e:
-            return web.Response(text=f"Error reading file: {str(e)}", status=500)
-    
-    @PromptServer.instance.routes.get("/vnccs/pose_presets")
-    async def vnccs_get_pose_presets(request):
-        """Get list of available pose presets"""
-        try:
-            presets_dir = os.path.join(os.path.dirname(__file__), "presets", "poses")
-            presets = []
-            
-            if os.path.exists(presets_dir):
-                for filename in sorted(os.listdir(presets_dir)):
-                    if filename.endswith('.json'):
-                        # Create preset entry
-                        preset_id = filename[:-5]  # Remove .json
-                        label = preset_id.replace('_', ' ').title()
-                        presets.append({
-                            "id": preset_id,
-                            "label": label,
-                            "file": filename
-                        })
-            
-            return web.json_response(presets)
-        except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
-    
-    @PromptServer.instance.routes.get("/vnccs/pose_preset/{filename}")
-    async def vnccs_get_pose_preset(request):
-        """Get specific pose preset file"""
-        try:
-            filename = request.match_info.get("filename", "")
-            if not filename.endswith('.json'):
-                return web.Response(text="Only JSON files allowed", status=400)
-            
-            presets_dir = os.path.join(os.path.dirname(__file__), "presets", "poses")
-            file_path = os.path.join(presets_dir, filename)
-            
-            # Security check
-            if os.path.commonpath([os.path.abspath(presets_dir), os.path.abspath(file_path)]) != os.path.abspath(presets_dir):
-                return web.Response(text="Invalid path", status=400)
-            
-            if not os.path.exists(file_path):
-                return web.Response(text=f"Preset not found: {filename}", status=404)
-            
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
-            return web.json_response(data)
-        except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
-
-
 
 _vnccs_register_endpoint()

@@ -227,7 +227,9 @@ class TestClonerConfigSave:
 def _load_cloner(monkeypatch):
     """Load the cloner without tensor or model dependencies."""
     monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
-    assets = types.ModuleType("_vnccs.nodes.vnccs_utils")
+    from nodes.qwen_vl import get_qwen_vl_chat_handler
+    assets = types.ModuleType("_vnccs.nodes.qwen_vl")
+    assets.get_qwen_vl_chat_handler = get_qwen_vl_chat_handler
     assets._ensure_qwen_vl_assets = lambda **kwargs: ("model.gguf", "mmproj.gguf")
     assets.QWEN_VL_MODEL_FILENAME = "model.gguf"
     monkeypatch.setitem(sys.modules, assets.__name__, assets)

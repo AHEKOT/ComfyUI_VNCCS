@@ -14,10 +14,14 @@ def install_node_calls(monkeypatch, call):
         return type(name, (), {"FUNCTION": "run", "run": staticmethod(run)})
     from nodes import character_generator as cg
 
+    def encode(**kwargs):
+        return call(encode, **kwargs)
+    monkeypatch.setattr(cg, "_encode_flux_klein", encode)
+
     names = [
         "MiniMaxH3ReferenceToVideo", "SamplerCustomAdvanced", "VAEDecode",
         "BasicGuider", "RandomNoise", "KSamplerSelect", "BasicScheduler",
-        "VNCCS_Flux_Klein_Encoder", "ProbeEncode", "KSampler", "VAEDecodeTiled",
+        "ProbeEncode", "KSampler", "VAEDecodeTiled",
         "ImageScale", "SeedVR2Preprocess", "VAEEncodeTiled", "SeedVR2Conditioning",
         "SeedVR2PostProcessing",
     ]

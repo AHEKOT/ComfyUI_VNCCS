@@ -166,8 +166,6 @@ const DEFAULT_DATA = {
         enable_debug: false,
     },
     bg_remove: {
-        // TODO: Decide what to do with internal RMBG later.
-        use_internal_rmbg: false,
         preset: "balanced",
         use_sam3_details_recovery: false,
         use_preset_values: true,
@@ -1890,7 +1888,6 @@ class CharacterGeneratorWidget {
         apply.onclick = () => {
             this.data = deepMerge(DEFAULT_DATA, draft);
             this.syncModelResolution();
-            this.data.bg_remove.use_internal_rmbg = false;
             writeData(this.node, this.data, { trackChange: true });
             this.saveBrowserState();
             this.renderSettings();
@@ -2601,7 +2598,6 @@ class CharacterGeneratorWidget {
             "UNETLoader",
             "VAELoader",
             ...NATIVE_SEEDVR_NODE_NAMES,
-            "VNCCSChromaKey",
             "UltralyticsDetectorProvider",
             "SAMLoader",
             "FaceDetailer",

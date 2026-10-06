@@ -36,10 +36,10 @@ def _source_image_path(image):
 
 try:
     from .qwen_vl import get_qwen_vl_chat_handler
-    from .vnccs_utils import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME
+    from .qwen_vl import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME
 except Exception:
     from nodes.qwen_vl import get_qwen_vl_chat_handler
-    from nodes.vnccs_utils import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME
+    from nodes.qwen_vl import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME
 
 # VNCCS Installer (REMOVED: User requested Qwen2)
 # Reverted to manual update instructions if needed.

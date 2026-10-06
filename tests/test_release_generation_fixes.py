@@ -11,7 +11,6 @@ torch = pytest.importorskip("torch")
 
 from _vnccs.nodes import character_generator as cg
 from _vnccs.nodes import clothes_designer as cd
-from _vnccs.nodes.vnccs_pipe import VNCCS_Pipe
 
 
 def test_h3_body_preparation_uses_clothes_lora_and_returns_one_frame(monkeypatch):
@@ -29,7 +28,7 @@ def test_h3_body_preparation_uses_clothes_lora_and_returns_one_frame(monkeypatch
     monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: events.append((args, kwargs)))
     monkeypatch.setattr(node, "_apply_lora_to_model", lambda model, clip, pipe, lora, stage:
                         applied.append((lora, stage)) or "clothes_model")
-    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", lambda: SimpleNamespace(fill_alpha_with_color=lambda x: (x,)))
+    monkeypatch.setattr(cg, 'fill_alpha_with_color', lambda x: (x,))
 
     def call(name, **kwargs):
         calls.append((name, kwargs))
@@ -130,15 +129,6 @@ def test_preview_cache_reuses_only_unchanged_model_assets(designer_run, change):
     if change == "custom":
         run()
         assert len(seeds) == 3
-
-
-@pytest.mark.parametrize("override", [None, "model", "clip", "vae"])
-def test_pipe_invalidates_asset_identity_on_external_override(override):
-    source = SimpleNamespace(model=object(), clip=object(), vae=object(), model_cache_key={"model": "QI2"})
-    node = VNCCS_Pipe()
-    kwargs = {override: object()} if override else {}
-    node.process_pipe(pipe=source, **kwargs)
-    assert node.model_cache_key == (None if override else source.model_cache_key)
 
 
 def test_h3_clothes_catalog_entry_is_resolved():
