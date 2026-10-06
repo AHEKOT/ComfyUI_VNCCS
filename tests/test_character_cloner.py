@@ -20,6 +20,32 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import numpy as np
 
 
+def test_cloner_download_routes_share_qwen_worker_and_keep_legacy_responses(monkeypatch):
+    import asyncio
+    pytest.importorskip("torch")
+    from nodes import character_cloner as cloner, qwen_vl
+
+    started = []
+    monkeypatch.setattr(qwen_vl, "_QWEN_VL_DOWNLOAD_STATUS", {"status": "idle"})
+    monkeypatch.setattr(qwen_vl, "_find_qwen_vl_model", lambda: None)
+    monkeypatch.setattr(qwen_vl.threading, "Thread", lambda **kwargs:
+                        types.SimpleNamespace(start=lambda: started.append(kwargs)))
+    monkeypatch.setattr(cloner.web, "json_response", lambda data, status=200:
+                        types.SimpleNamespace(data=data, status=status), raising=False)
+    monkeypatch.setattr(cloner.web, "Response", lambda status=200, text="":
+                        types.SimpleNamespace(text=text, status=status), raising=False)
+    request = types.SimpleNamespace(headers={"X-VNCCS-CSRF": "1"})
+    response = asyncio.run(cloner.cloner_download_model(request))
+    assert response.status == 200 and response.data == {"status": "started"}
+    assert started[0]["target"] is qwen_vl._qwen_vl_download_worker
+    assert started[0]["args"] == (True,)
+    status = asyncio.run(cloner.cloner_download_status(request))
+    assert status.data == qwen_vl._QWEN_VL_DOWNLOAD_STATUS
+    response = asyncio.run(cloner.cloner_download_model(request))
+    assert response.status == 409 and response.text == "Download already in progress"
+    assert len(started) == 1
+
+
 def _best_grid(count, max_w, max_h):
     """Replicate the smart-grid selection from CharacterCloner.process()."""
     best_cols = 1
@@ -227,9 +253,15 @@ class TestClonerConfigSave:
 def _load_cloner(monkeypatch):
     """Load the cloner without tensor or model dependencies."""
     monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
-    from nodes.qwen_vl import get_qwen_vl_chat_handler
+    from nodes.qwen_vl import (
+        get_qwen_vl_chat_handler, parse_wizard_json,
+        _start_qwen_vl_download, qwen_vl_download_status,
+    )
     assets = types.ModuleType("_vnccs.nodes.qwen_vl")
     assets.get_qwen_vl_chat_handler = get_qwen_vl_chat_handler
+    assets.parse_wizard_json = parse_wizard_json
+    assets._start_qwen_vl_download = _start_qwen_vl_download
+    assets.qwen_vl_download_status = qwen_vl_download_status
     assets._ensure_qwen_vl_assets = lambda **kwargs: ("model.gguf", "mmproj.gguf")
     assets.QWEN_VL_MODEL_FILENAME = "model.gguf"
     monkeypatch.setitem(sys.modules, assets.__name__, assets)

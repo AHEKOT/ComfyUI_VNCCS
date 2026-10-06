@@ -1,8 +1,8 @@
 import { createStylePicker } from "./character_styles.mjs";
 import { app } from "../../scripts/app.js";
-import { vnccsApi as api, mediaURL, checkedJSON, storage, serverRegistry, refreshPreviewImage, watchConnection } from "./vnccs_transport.js";
+import { vnccsApi as api, mediaURL, checkedJSON, storage, refreshPreviewImage, watchConnection } from "./vnccs_transport.js";
 import { presetGroups, presetSelection } from "./character_presets.mjs";
-import { debounce, registerCleanup, injectStyles, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard } from "./vnccs_common.js";
+import { createTraitInput, createQwenVLModelLoader, SAKURA_THEME_CSS, debounce, registerCleanup, injectStyles, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard, createControlCenterClient, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
 
 const QI2_OVERHAUL_LORA_NAME = "QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.safetensors";
 const QI2_OVERHAUL_TITLE = "Qwen Image2.1 Character Overhaul";
@@ -19,67 +19,21 @@ const normalizeOverhaulStrength = value => {
 const isCreatorOverhaulLora = name => /^vnccs_qi2_animeoverhaulv\d+(?:[._]\d+)*\.safetensors$/i
     .test(String(name || "").replace(/\\/g, "/").split("/").pop());
 
-const RESOLUTION_SCALE_BASE = 1024;
-const RESOLUTION_SCALE_MIN_MP = 1;
-const RESOLUTION_SCALE_MAX_MP = 4;
-const RESOLUTION_SCALE_STEP_MP = 0.1;
-const RESOLUTION_SCALE_PRESETS = new Map([
-    [1.3, 1344],
-    [1.5, 1536],
-]);
 const LEGACY_ANIMA_RESOLUTION_SCALES = {
     normal: 1024,
     high: 1741,
     maximum: 2458,
 };
 
-const resolutionScaleMegapixels = value => {
-    const numeric = Number(value);
-    const megapixels = Number.isFinite(numeric) ? numeric / RESOLUTION_SCALE_BASE : RESOLUTION_SCALE_MIN_MP;
-    return Math.max(RESOLUTION_SCALE_MIN_MP, Math.min(RESOLUTION_SCALE_MAX_MP, megapixels));
-};
-const resolutionScaleValue = megapixels => {
-    const clamped = Math.max(
-        RESOLUTION_SCALE_MIN_MP,
-        Math.min(RESOLUTION_SCALE_MAX_MP, Number(megapixels) || RESOLUTION_SCALE_MIN_MP)
-    );
-    const stepped = Number((Math.round(clamped / RESOLUTION_SCALE_STEP_MP) * RESOLUTION_SCALE_STEP_MP).toFixed(1));
-    return RESOLUTION_SCALE_PRESETS.get(stepped) ?? Math.round(stepped * RESOLUTION_SCALE_BASE);
-};
-const resolutionScaleText = value => `${resolutionScaleMegapixels(value).toFixed(1)} MP`;
-
 // --- STYLES: Sakura Archive Design System ---
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 .vnccs-creator-container {
-    --bg-primary: #0a0a0f;
-    --bg-secondary: #12121a;
-    --bg-elevated: #1a1a26;
-    --bg-surface: #22222e;
-    --bg-hover: #2a2a38;
-    --text-primary: #e8e8f0;
-    --text-secondary: #9898a8;
-    --text-muted: #5e5e70;
-    --accent: #ff8fa3;
-    --accent-hover: #ffb6c8;
-    --accent-glow: rgba(255, 143, 163, 0.3);
-    --accent-subtle: rgba(255, 143, 163, 0.1);
-    --accent-border: rgba(255, 143, 163, 0.22);
-    --accent-lavender: #b8a9e8;
-    --success: #00d68f;
+${SAKURA_THEME_CSS}
     --warning: #ffaa00;
-    --error: #ff4757;
-    --border: rgba(255, 255, 255, 0.06);
-    --border-hover: rgba(255, 255, 255, 0.12);
-    --font: 'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
-    --radius-sm: 8px;
-    --radius-md: 12px;
-    --radius-lg: 20px;
     --shadow-subtle: 0 2px 8px rgba(0,0,0,0.3);
     --shadow-elevated: 0 8px 32px rgba(0,0,0,0.5);
-    --transition: 0.2s ease;
 }
 
 /* Main Host */
@@ -1702,11 +1656,8 @@ app.registerExtension({
                     },
                 };
                 const CC_REPO_ID = "MIUProject/VNCCS_v3.0";
-                const CC_CACHE_KEY = `vnccs_cc_cache_${CC_REPO_ID}`;
                 let TAG_DATA = null;
-                let ccConfig = null;
-                let ccDlStatus = {};
-                let ccPollingInterval = null;
+                const ccState = { config: null, downloadStatus: {} };
                 const modelPickerOpen = {
                     illustrious: false,
                     anima: false,
@@ -1727,7 +1678,7 @@ app.registerExtension({
                 const ccStatusKey = (cat, entry) => `cc_${cat}_${entry?.name || ""}`;
                 const ccResolveStatus = (entry, cat) => {
                     const transient = new Set(["queued", "downloading", "error", "auth_required"]);
-                    const dls = ccDlStatus[ccStatusKey(cat, entry)] || {};
+                    const dls = ccState.downloadStatus[ccStatusKey(cat, entry)] || {};
                     return transient.has(dls.status) ? dls.status : (entry?.status || "missing");
                 };
                 const ccRelPath = (entry) => {
@@ -1737,7 +1688,7 @@ app.registerExtension({
                     return parts[parts.length - 1] || "";
                 };
                 const ccEntries = (section, kind, predicate = null) => {
-                    const entries = ccConfig?.[section] || [];
+                    const entries = ccState.config?.[section] || [];
                     return entries.filter(entry => {
                         const kindOk = !kind || ccKind(entry) === ccNormalize(kind);
                         return kindOk && (!predicate || predicate(entry));
@@ -1800,10 +1751,12 @@ app.registerExtension({
                         && vaes.some(entry => ccKind(entry) === "qi2");
                     return hasAnima && hasIllustrious && hasQi2;
                 };
+                const { fetchConfig: fetchCcConfig, startPolling: startCcPolling, stopPolling: stopCcPolling } =
+                    createControlCenterClient(CC_REPO_ID, ccHasRequiredFamilies, ccState, () => renderControlCenterCards());
                 const ccDownloadEntry = async (cat, entry) => {
                     if (!entry?.name) return;
                     const key = ccStatusKey(cat, entry);
-                    ccDlStatus[key] = { status: "queued", message: "Queued…" };
+                    ccState.downloadStatus[key] = { status: "queued", message: "Queued…" };
                     renderControlCenterCards();
                     try {
                         const response = await api.fetchApi("/vnccs/control_center/download", {
@@ -1813,67 +1766,15 @@ app.registerExtension({
                         });
                         const payload = await response.json();
                         if (!response.ok || payload.error) {
-                            ccDlStatus[key] = { status: "error", message: payload.error || "Download failed" };
+                            ccState.downloadStatus[key] = { status: "error", message: payload.error || "Download failed" };
                             renderControlCenterCards();
                             return;
                         }
                         startCcPolling();
                     } catch (error) {
-                        ccDlStatus[key] = { status: "error", message: String(error?.message || error) };
+                        ccState.downloadStatus[key] = { status: "error", message: String(error?.message || error) };
                         renderControlCenterCards();
                     }
-                };
-                const fetchCcConfig = async (force = false) => {
-                    if (!force && serverRegistry("VNCCS_CC_REGISTRY")?.[CC_REPO_ID] && ccHasRequiredFamilies(serverRegistry("VNCCS_CC_REGISTRY")[CC_REPO_ID])) {
-                        ccConfig = serverRegistry("VNCCS_CC_REGISTRY")[CC_REPO_ID];
-                        renderControlCenterCards();
-                        return ccConfig;
-                    }
-                    if (!force && ccConfig && ccHasRequiredFamilies(ccConfig)) return ccConfig;
-                    if (!force) {
-                        try {
-                            const cached = storage.getItem(CC_CACHE_KEY);
-                            if (cached) {
-                                ccConfig = JSON.parse(cached);
-                                if (ccHasRequiredFamilies(ccConfig)) renderControlCenterCards();
-                                else ccConfig = null;
-                            }
-                        } catch (_) {}
-                    }
-
-                    const url = `/vnccs/control_center/check?repo_id=${encodeURIComponent(CC_REPO_ID)}${force ? "&force_refresh=true" : ""}`;
-                    const response = await api.fetchApi(url);
-                    const payload = await response.json();
-                    if (!response.ok || payload.error) throw new Error(payload.error || "Failed to load Control Center config");
-                    ccConfig = payload;
-
-                    serverRegistry("VNCCS_CC_REGISTRY")[CC_REPO_ID] = payload;
-                    storage.setItem(CC_CACHE_KEY, JSON.stringify(payload));
-                    renderControlCenterCards();
-                    return payload;
-                };
-                const refreshCcDownloadStatus = async () => {
-                    try {
-                        const response = await api.fetchApi("/vnccs/manager/status");
-                        if (!response.ok) return;
-                        ccDlStatus = await response.json();
-                        const active = Object.values(ccDlStatus || {}).some(item => ["queued", "downloading"].includes(item?.status));
-                        if (!active) {
-                            stopCcPolling();
-                            await fetchCcConfig(true);
-                        } else {
-                            renderControlCenterCards();
-                        }
-                    } catch (_) {}
-                };
-                const startCcPolling = () => {
-                    if (ccPollingInterval) return;
-                    ccPollingInterval = setInterval(refreshCcDownloadStatus, 2000);
-                };
-                const stopCcPolling = () => {
-                    if (!ccPollingInterval) return;
-                    clearInterval(ccPollingInterval);
-                    ccPollingInterval = null;
                 };
 
                 const els = {};
@@ -2381,22 +2282,6 @@ app.registerExtension({
                     applyPromptModeToFields(currentMode);
                 };
 
-                const applyGenerationDefaults = (mode, force = false) => {
-                    const defaults = getGenerationDefaults(mode);
-                    const markerKey = mode === "qi2" ? "qi2_defaults_applied" : mode === "anima" ? "anima_defaults_applied" : "illustrious_defaults_applied";
-                    if (!force && state.gen_settings[markerKey]) return;
-
-                    state.gen_settings.mode_settings[mode] = {
-                        ...defaults,
-                        ...(["illustrious", "anima", "qi2"].includes(mode) ? { lora_stack: cloneSettingsValue(defaults.lora_stack) } : {}),
-                    };
-                    if (mode === state.gen_settings.generation_mode) {
-                        applyGenerationProfile(mode);
-                        syncGenerationControls();
-                    }
-                    state.gen_settings[markerKey] = true;
-                    state.gen_settings.generation_defaults_version = GENERATION_DEFAULTS_VERSION;
-                };
 
                 const refreshGenerationModeUI = () => {
                     const mode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
@@ -2504,71 +2389,13 @@ app.registerExtension({
 
                 // 4. UI Builders
                 const createTraitField = (lbl, key, targetObj = state.character_info) => {
-                    const wrap = document.createElement("div");
-                    wrap.className = "vnccs-creator-trait-row";
-                    setHelpText(wrap, helpFor(key));
-                    const label = document.createElement("span");
-                    label.className = "vnccs-creator-trait-label";
-                    label.textContent = lbl;
-                    const editor = document.createElement("div");
-                    editor.className = "vnccs-creator-trait-editor";
-                    const values = document.createElement("button");
-                    values.type = "button";
-                    values.className = "vnccs-creator-trait-values";
-                    const inp = document.createElement("input");
-                    inp.type = "text";
-                    inp.className = "vnccs-creator-input vnccs-creator-trait-input";
-                    inp.setAttribute("aria-label", lbl);
-                    inp.placeholder = "Add tags";
-                    inp.hidden = true;
-                    const renderTags = () => {
-                        values.replaceChildren();
-                        const tokens = inp.value.split(",").map(token => token.trim()).filter(Boolean);
-                        for (const token of tokens.length ? tokens : ["Add tags"]) {
-                            const chip = document.createElement("span");
-                            chip.className = tokens.length ? "vnccs-creator-trait-token" : "vnccs-creator-trait-empty";
-                            chip.textContent = token;
-                            values.appendChild(chip);
-                        }
-                        values.setAttribute("aria-label", `Edit ${lbl.toLowerCase()} tags: ${inp.value || "Add tags"}`);
-                    };
-                    inp.setValue = value => {
-                        inp.value = value ?? "";
-                        renderTags();
-                    };
-                    inp.setValue(targetObj[key]);
-                    inp.oninput = (e) => {
-                        targetObj[key] = e.target.value;
-                        renderTags();
-                        debouncedSave();
-                    };
-                    values.onclick = () => {
-                        values.hidden = true;
-                        inp.hidden = false;
-                        inp.focus({ preventScroll: true });
-                    };
-                    inp.onblur = () => {
-                        inp.hidden = true;
-                        values.hidden = false;
-                    };
-                    inp.onkeydown = e => {
-                        if (e.key === "Enter") {
-                            e.preventDefault();
-                            inp.blur();
-                            values.focus({ preventScroll: true });
-                        }
-                    };
-                    const add = document.createElement("button");
-                    add.type = "button";
-                    add.className = "vnccs-creator-trait-add";
-                    add.textContent = "+";
-                    add.setAttribute("aria-label", `Choose ${lbl.toLowerCase()} presets`);
-                    add.title = "Choose Presets";
-                    add.onclick = () => openTagConstructor(key, inp);
-                    editor.append(values, inp);
-                    wrap.append(label, editor, add);
-                    els[key] = inp;
-                    return wrap;
+                    const { element, input } = createTraitInput({
+                        prefix: "vnccs-creator", label: lbl, key, target: targetObj,
+                        save: debouncedSave, choose: input => openTagConstructor(key, input),
+                    });
+                    setHelpText(element, helpFor(key));
+                    els[key] = input;
+                    return element;
                 };
 
                 const createField = (lbl, key, type = "text", opts = [], targetObj = state.character_info) => {
@@ -2863,7 +2690,7 @@ app.registerExtension({
                 };
 
                 const cardStatusLabel = (status, entry, cat) => {
-                    const dls = ccDlStatus[ccStatusKey(cat, entry)] || {};
+                    const dls = ccState.downloadStatus[ccStatusKey(cat, entry)] || {};
                     if (status === "installed") return "Installed";
                     if (status === "queued") return "Queued";
                     if (status === "downloading") return dls.message || "Downloading";
@@ -3195,8 +3022,8 @@ app.registerExtension({
                         if (mode === "qi2") return kind === "qi2";
                         return kind === "sdxl" || kind === "illustrious";
                     };
-                    const turboEntries = (ccConfig?.lora || []).filter(entry => kindOk(entry) && ccType(entry) === "turbolora");
-                    const ageEntries = (ccConfig?.lora || []).filter(entry => kindOk(entry) && ccType(entry) === "ageslider");
+                    const turboEntries = (ccState.config?.lora || []).filter(entry => kindOk(entry) && ccType(entry) === "turbolora");
+                    const ageEntries = (ccState.config?.lora || []).filter(entry => kindOk(entry) && ccType(entry) === "ageslider");
 
                     const addGroup = (title, entries, renderer) => {
                         if (!entries.length) return;
@@ -3227,7 +3054,7 @@ app.registerExtension({
                     });
 
                     if (mode === "qi2") {
-                        const entry = (ccConfig?.lora || []).find(item =>
+                        const entry = (ccState.config?.lora || []).find(item =>
                             ccKind(item) === "qi2" && ccType(item) === "helper"
                             && (item.name === QI2_OVERHAUL_ENTRY.name || isCreatorOverhaulLora(ccRelPath(item)))
                         ) || QI2_OVERHAUL_ENTRY;
@@ -3248,26 +3075,6 @@ app.registerExtension({
 
                     const isCurrentMode = (state.gen_settings.generation_mode || "illustrious").toLowerCase() === mode;
                     containerEl.style.display = isCurrentMode && containerEl.children.length ? "flex" : "none";
-                };
-
-                const renderCardSection = (containerEl, entries, cat, key, emptyText) => {
-                    if (!containerEl) return;
-                    containerEl.innerHTML = "";
-                    if (!entries.length) {
-                        const empty = document.createElement("div");
-                        empty.className = "vnccs-creator-model-card-desc";
-                        empty.textContent = emptyText;
-                        containerEl.appendChild(empty);
-                        return;
-                    }
-                    entries.forEach(entry => {
-                        containerEl.appendChild(buildAssetCard({
-                            entry,
-                            cat,
-                            selectedValue: state.gen_settings[key] || "",
-                            onSelect: rel => selectCcAsset(key, rel),
-                        }));
-                    });
                 };
 
                 const renderModelPicker = ({ containerEl, entries, cat, key, mode, emptyText, onSelect, onDownload = null }) => {
@@ -3367,7 +3174,7 @@ app.registerExtension({
                     installedAnimaDefaults.forEach(([key, entries, cat]) => {
                         const current = String(state.gen_settings[key] || "").replace(/\\/g, "/");
                         const firstEntry = entries[0];
-                        if (!current && firstEntry && ccConfig) {
+                        if (!current && firstEntry && ccState.config) {
                             selectAnimaModel(ccRelPath(firstEntry));
                         }
                     });
@@ -3391,7 +3198,7 @@ app.registerExtension({
                         onDownload: downloadQi2Bundle,
                     });
                     const currentQi2 = String(state.gen_settings.diffusion_model_name || "").replace(/\\/g, "/");
-                    if (isQi2Mode && !currentQi2 && qi2Models[0] && ccConfig) {
+                    if (isQi2Mode && !currentQi2 && qi2Models[0] && ccState.config) {
                         selectQi2Model(ccRelPath(qi2Models[0]));
                     }
                     if (isQi2Mode) ensureQi2DefaultAux();
@@ -3421,7 +3228,7 @@ app.registerExtension({
                         }
                     }
 
-                    const illustriousDefaults = (ccConfig?.models || []).filter(entry => {
+                    const illustriousDefaults = (ccState.config?.models || []).filter(entry => {
                         const kind = ccKind(entry);
                         return (kind === "illustrious" || kind === "sdxl") && ccType(entry) === "checkpoint";
                     });
@@ -3437,7 +3244,7 @@ app.registerExtension({
                         if (illustriousCkpts.length) {
                             els.illustriousFallback.style.display = "none";
                             const firstEntry = illustriousCkpts[0];
-                            if (!state.gen_settings.ckpt_name && firstEntry && ccConfig) {
+                            if (!state.gen_settings.ckpt_name && firstEntry && ccState.config) {
                                 selectCcAsset("ckpt_name", ccRelPath(firstEntry));
                             }
                             renderModelPicker({
@@ -3467,7 +3274,7 @@ app.registerExtension({
                 const isSelectedCcAssetInstalled = (section, kind, key, predicate = null) => {
                     const selected = String(state.gen_settings[key] || "").replace(/\\/g, "/");
                     if (!selected) return false;
-                    if (!ccConfig) return true;
+                    if (!ccState.config) return true;
                     const entries = ccEntries(section, kind, predicate);
                     if (!entries.length) return true;
                     const match = entries.find(entry => ccRelPath(entry) === selected);
@@ -3571,33 +3378,7 @@ app.registerExtension({
                     }, [{ text: "OK", class: "vnccs-creator-btn-primary" }]);
                 };
 
-                const ensureQwenVLReady = async () => {
-                    const statusResponse = await api.fetchApi("/vnccs/qwen_vl_model_status?vision=false");
-                    if (!statusResponse.ok) throw new Error("Failed to check Qwen3.5 model files.");
-                    const modelStatus = await statusResponse.json();
-                    if (modelStatus.ready) return true;
-                    const approved = await new Promise(resolve => {
-                        const { modal } = showModal("Qwen3.5 Model Required", () => {
-                            const text = document.createElement("div");
-                            text.textContent = `${modelStatus.message || modelStatus.model_name} Download the required files from Hugging Face now?`;
-                            return text;
-                        }, [
-                            { text: "Cancel", action: () => { resolve(false); return false; } },
-                            { text: "DOWNLOAD & INSTALL", class: "vnccs-creator-btn-primary", action: () => { resolve(true); return false; } },
-                        ]);
-                        modal.addEventListener("keydown", event => {
-                            if (event.key === "Escape") resolve(false);
-                        }, true);
-                    });
-                    if (!approved) return false;
-
-                    const start = await api.fetchApi("/vnccs/qwen_vl_download_model?vision=false", { method: "POST" });
-                    if (!start.ok && start.status !== 409) {
-                        let err;
-                        try { err = await start.json(); } catch (e) { err = { error: await start.text() }; }
-                        throw new Error(err?.error || err?.message || "Failed to start QwenVL download.");
-                    }
-
+                const ensureQwenVLReady = createQwenVLModelLoader(node, showModal, () => {
                     const { overlay, modal } = showModal("Downloading QwenVL...", () => {
                         const d = document.createElement("div");
                         d.className = "vnccs-creator-character-wizard-modal";
@@ -3614,39 +3395,8 @@ app.registerExtension({
                     const statusEl = modal.querySelector("#vnccs-qwenvl-status");
                     const barEl = modal.querySelector("#vnccs-qwenvl-bar");
                     const pctEl = modal.querySelector("#vnccs-qwenvl-pct");
-
-                    return await new Promise((resolve, reject) => {
-                        const poll = async () => {
-                            try {
-                                const r = await api.fetchApi("/vnccs/qwen_vl_download_status");
-                                if (!r.ok) throw new Error(await r.text());
-                                const d = await r.json();
-                                const progress = Math.max(0, Math.min(100, Number(d.progress) || 0));
-                                statusEl.innerText = d.current_file ? `Downloading ${d.current_file}...` : "Preparing model files...";
-                                barEl.style.width = `${progress}%`;
-                                pctEl.innerText = `${progress}%`;
-                                if (d.status === "completed") {
-                                    statusEl.innerText = "QwenVL ready.";
-                                    barEl.style.width = "100%";
-                                    pctEl.innerText = "100%";
-                                    setTimeout(() => overlay.remove(), 450);
-                                    resolve(true);
-                                    return;
-                                }
-                                if (d.status === "error") {
-                                    overlay.remove();
-                                    reject(new Error(d.error || "QwenVL download failed."));
-                                    return;
-                                }
-                                setTimeout(poll, 700);
-                            } catch (e) {
-                                overlay.remove();
-                                reject(e);
-                            }
-                        };
-                        poll();
-                    });
-                };
+                    return { overlay, statusEl, barEl, pctEl, completedMessage: "QwenVL ready." };
+                }, false);
 
                 const openCharacterWizard = () => {
                     const character = state.character;

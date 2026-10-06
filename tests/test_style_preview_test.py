@@ -399,7 +399,7 @@ def test_anima_encodes_raw_species_and_body_before_output_rewriting(runtime, mon
 
 
 @pytest.mark.parametrize("model", ["Anima", "QI2"])
-def test_observed_j_cup_is_inside_body_and_cannot_be_changed_by_pe(runtime, monkeypatch, capsys, model):
+def test_observed_j_cup_is_inside_body_and_cannot_be_changed_by_pe(runtime, monkeypatch, caplog, model):
     calls, *_ = runtime
     calls["analysis_output"] = "J-Cup"
     calls["rewrite_fields"]["body"] = "The character has A-Cup breasts."
@@ -427,9 +427,9 @@ def test_observed_j_cup_is_inside_body_and_cannot_be_changed_by_pe(runtime, monk
     assert calls["analysis"][0]["thinking"] is False
     assert calls["analysis"][0]["use_default_template"] is True
     assert calls["analysis"][0]["mtp"] == "auto"
-    log = capsys.readouterr().out
-    assert "Breast size analysis raw response: 'J-Cup'" in log
-    assert "Observed body breast size: J-Cup" in log
+    analysis = [record.vnccs for record in caplog.records if record.name == "VNCCS" and record.vnccs["event"] == "body_analysis"]
+    assert len(analysis) == 1 and analysis[0]["breast_size"] == "J-Cup"
+    assert "analysis_output" not in caplog.text
 
 
 def test_json_analysis_response_is_returned_in_full(runtime):

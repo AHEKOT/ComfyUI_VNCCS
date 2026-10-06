@@ -1,4 +1,5 @@
 """Internal image processing for character, clothing, and emotion generation."""
+from ..operation_logger import log_event, log_stage
 
 import os
 import inspect
@@ -82,7 +83,7 @@ def _normalize_image_batch(value, target_hw=None, stage="utils batch"):
     shapes = [(int(item.shape[1]), int(item.shape[2]), int(item.shape[3])) for item in items]
     target_shape = (int(target_hw[0]), int(target_hw[1]), target_channels)
     if any(shape != target_shape for shape in shapes):
-        print(f"[VNCCS Batch Safety] Normalizing {stage}: {shapes} -> {target_shape}")
+        log_event("diagnostic", component="ImageProcessing", level="debug", message=f'Normalizing {stage}: {shapes} -> {target_shape}')
     normalized = []
     for item in items:
         if item.shape[-1] < target_channels:
@@ -255,7 +256,7 @@ def _ensure_sam3_model_available():
         revision = SAM3_MODEL_REVISION
         target_dir = _sam3_model_dir()
         os.makedirs(target_dir, exist_ok=True)
-        print(f"[VNCCS SAM3] '{filename}' not found. Downloading from Hugging Face repo '{repo_id}'...")
+        log_stage("download", component="SAM3", file=filename, repository=repo_id)
         try:
             path = hf_hub_download(
                 repo_id=repo_id,
@@ -273,7 +274,7 @@ def _ensure_sam3_model_available():
 
         if not os.path.exists(path):
             raise RuntimeError(f"SAM3 download completed but '{path}' was not created")
-        print(f"[VNCCS SAM3] Model ready: {path}")
+        log_event("asset_ready", component="SAM3", file=os.path.basename(path))
         return filename
 
 def _normalize_mask_batch(value, target_hw, batch_size, stage="mask"):
@@ -386,7 +387,7 @@ class ChromaKeyProcessor:
         image = _normalize_image_batch(image, stage="chroma key input")
         if _as_bool(use_sam3_recovery_mask, False):
             if not _sam3_recovery_runtime_supported():
-                print("[VNCCS] SAM3 recovery is unsupported on macOS; using chroma key without recovery")
+                log_event("fallback", component="ImageProcessing", level="warning", message='SAM3 recovery is unsupported on macOS; using chroma key without recovery')
             else:
                 try:
                     return self._chroma_key_with_sam3_recovery(
@@ -405,10 +406,7 @@ class ChromaKeyProcessor:
                         sam3_settings=sam3_settings,
                     )
                 except Exception as exc:
-                    print(
-                        "[VNCCS] SAM3 recovery failed; using chroma key without recovery: "
-                        f"{type(exc).__name__}: {exc}"
-                    )
+                    log_event('fallback', component='ImageProcessing', level='warning', message=f'SAM3 recovery failed; using chroma key without recovery: {type(exc).__name__}: {exc}', error=str(exc))
 
         if len(image.shape) == 4:
             rgba_list = []
@@ -560,11 +558,8 @@ class ChromaKeyProcessor:
             if candidates is not None:
                 return candidates
 
-            print(
-                f"[VNCCS Chroma Key] {stage} could not interpret individual mask shape "
-                f"{tuple(raw_masks.shape)}; using the combined SAM3 mask",
-                flush=True,
-            )
+            log_event("fallback", component="ImageProcessing", level="warning",
+                      message=f"{stage} could not interpret individual mask shape {tuple(raw_masks.shape)}; using the combined SAM3 mask")
 
         combined_source = result[0] if isinstance(result, (tuple, list)) and result else result
         combined = _normalize_mask_batch(
@@ -673,11 +668,7 @@ class ChromaKeyProcessor:
             foreground_overlap = (hard_candidate * confident_foreground).sum() / candidate_area
             if float(foreground_overlap.item()) >= min_overlap:
                 kept.append(candidate)
-        print(
-            f"[VNCCS Chroma Key] SAM3 recovery kept {len(kept)}/{int(candidates.shape[0])} "
-            "object mask(s) after foreground-overlap filtering",
-            flush=True,
-        )
+        log_event("sam3_recovery", component="ImageProcessing", level="debug", kept=len(kept), candidates=int(candidates.shape[0]))
         if not kept:
             return torch.zeros_like(alpha)
         return torch.stack(kept, dim=0).amax(dim=0).clamp(0.0, 1.0)

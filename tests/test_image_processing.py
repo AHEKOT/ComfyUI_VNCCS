@@ -150,7 +150,7 @@ def test_sam3_recovery_preserves_candidates_across_arbitrary_wrapper_axes():
     assert candidates[:, 0, 0].tolist() == pytest.approx([0.25, 0.75])
 
 
-def test_sam3_recovery_falls_back_to_combined_mask_for_uninterpretable_candidates(capsys):
+def test_sam3_recovery_falls_back_to_combined_mask_for_uninterpretable_candidates(caplog):
     node = ChromaKeyProcessor()
     combined = torch.full((1, 6, 8), 0.6, dtype=torch.float32)
     invalid_candidates = torch.ones((7,), dtype=torch.float32)
@@ -163,7 +163,7 @@ def test_sam3_recovery_falls_back_to_combined_mask_for_uninterpretable_candidate
 
     assert candidates.shape == (1, 6, 8)
     assert candidates[0, 0, 0].item() == pytest.approx(0.6)
-    assert "individual mask shape (7,)" in capsys.readouterr().out
+    assert "individual mask shape (7,)" in caplog.text
 
 
 def test_sam3_recovery_supports_legacy_combined_mask_output():
@@ -743,5 +743,4 @@ class TestAlphaFill:
         image = torch.rand(1, 8, 8, 3)
         result, = fill_alpha_with_color(image)
         assert result.shape[-1] == 3
-
 

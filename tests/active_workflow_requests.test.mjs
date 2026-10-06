@@ -6,7 +6,7 @@ import vm from 'node:vm';
 
 const source = name => readFileSync(new URL(`../web/${name}.js`, import.meta.url), 'utf8');
 const between = (text, start, end) => text.slice(text.indexOf(start), text.indexOf(end, text.indexOf(start)));
-const guardCode = between(source('vnccs_common'), 'export function registerCleanup', '// ── Widget Data Sync').replaceAll('export ', '');
+const guardCode = between(source('vnccs_common'), 'export function registerCleanup', '// ── DOM Widget Width Sync').replaceAll('export ', '');
 const deferred = () => {
     let resolve;
     const promise = new Promise(done => { resolve = done; });

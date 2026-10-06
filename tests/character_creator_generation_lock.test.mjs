@@ -12,7 +12,7 @@ function between(text, start, end) {
     assert.ok(offset >= 0 && limit > offset);
     return text.slice(offset, limit);
 }
-const guards = between(common, "export function registerCleanup", "// ── Widget Data Sync").replaceAll("export ", "");
+const guards = between(common, "export function registerCleanup", "// ── DOM Widget Width Sync").replaceAll("export ", "");
 const response = (data, ok = true) => ({ ok, status: ok ? 200 : 500, json: async () => data, text: async () => "sampler failed" });
 
 function setup() {

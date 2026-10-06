@@ -27,7 +27,7 @@ def test_full_body_framing_replaces_cowboy_shot():
     assert "cowboy_shot" not in positive
 
 
-def test_generation_prompt_log_prints_exact_positive_and_negative(capsys):
+def test_generation_prompt_log_summarizes_without_printing_prompts(caplog):
     CharacterCreatorV2.log_generation_prompts(
         "Workflow",
         "masterpiece, Full_body",
@@ -35,10 +35,22 @@ def test_generation_prompt_log_prints_exact_positive_and_negative(capsys):
         framing="Full_body",
     )
 
-    output = capsys.readouterr().out
-    assert "[VNCCS Character Creator V2] Workflow framing input: 'Full_body'" in output
-    assert "[VNCCS Character Creator V2] Workflow positive generation prompt: masterpiece, Full_body" in output
-    assert "[VNCCS Character Creator V2] Workflow negative generation prompt: bad quality" in output
+    events = [record.vnccs for record in caplog.records if record.name == "VNCCS"]
+    assert events == [{"component": "Creator", "event": "prompt_ready", "context": "Workflow",
+                       "framing": "Full_body", "positive_chars": 22, "negative_chars": 11}]
+    assert "masterpiece, Full_body" not in caplog.text
+    assert "bad quality" not in caplog.text
+
+
+def test_repeated_pose_preview_queries_do_not_write_default_logs(tmp_path, monkeypatch, caplog):
+    root = tmp_path / "Alice"
+    sprites = root / "Sprites" / "Naked" / "Neutral"
+    sprites.mkdir(parents=True)
+    (sprites / "pose.png").write_bytes(b"preview")
+    monkeypatch.setattr(character_creator_v2, "character_dir", lambda name: str(root))
+    for _ in range(20):
+        assert character_creator_v2.list_pose_preview_files("Alice") == [str(sprites / "pose.png")]
+    assert not [record for record in caplog.records if record.name == "VNCCS"]
 
 
 @pytest.mark.parametrize("framing", [None, "", "portrait", "cowboy_shot"])

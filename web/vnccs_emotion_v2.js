@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
-import { vnccsApi as api, mediaURL, storage, serverRegistry } from "./vnccs_transport.js";
-import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator } from "./vnccs_common.js";
+import { vnccsApi as api, mediaURL, storage } from "./vnccs_transport.js";
+import { showModal as showCommonModal, SAKURA_THEME_CSS, registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createControlCenterClient } from "./vnccs_common.js";
 
 // --- CSS STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -8,30 +8,7 @@ const STYLE = `
 
 /* ── Variables ── */
 .ems-container {
-    --bg-primary: #0a0a0f;
-    --bg-secondary: #12121a;
-    --bg-elevated: #1a1a26;
-    --bg-surface: #22222e;
-    --bg-hover: #2a2a38;
-    --text-primary: #e8e8f0;
-    --text-secondary: #9898a8;
-    --text-muted: #5e5e70;
-    --accent: #ff8fa3;
-    --accent-hover: #ffb6c8;
-    --accent-glow: rgba(255, 143, 163, 0.3);
-    --accent-subtle: rgba(255, 143, 163, 0.1);
-    --accent-border: rgba(255, 143, 163, 0.22);
-    --accent-lavender: #b8a9e8;
-    --success: #00d68f;
-    --error: #ff4757;
-    --border: rgba(255, 255, 255, 0.06);
-    --border-hover: rgba(255, 255, 255, 0.12);
-    --font: 'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
-    --radius-sm: 8px;
-    --radius-md: 12px;
-    --radius-lg: 20px;
-    --transition: 0.2s ease;
+${SAKURA_THEME_CSS}
 }
 
 /* ── Container ── */
@@ -1290,10 +1267,7 @@ app.registerExtension({
                 let poseSelectionSummary = null;
                 let poseSelectionGrid = null;
                 const CC_REPO_ID = "MIUProject/VNCCS_v3.0";
-                const CC_CACHE_KEY = `vnccs_cc_cache_${CC_REPO_ID}`;
-                let ccConfig = null;
-                let ccDlStatus = {};
-                let ccPollingInterval = null;
+                const ccState = { config: null, downloadStatus: {} };
                 let localAssets = {
                     checkpoints: [],
                     diffusion_models: [],
@@ -1322,7 +1296,7 @@ app.registerExtension({
                     return parts[parts.length - 1] || "";
                 };
                 const ccEntries = (section, kind, predicate = null) => {
-                    const entries = ccConfig?.[section] || [];
+                    const entries = ccState.config?.[section] || [];
                     return entries.filter(entry => {
                         const kindOk = !kind || ccKind(entry) === ccNormalize(kind);
                         return kindOk && (!predicate || predicate(entry));
@@ -1357,7 +1331,7 @@ app.registerExtension({
                 };
                 const ccResolveStatus = (entry, cat) => {
                     const transient = new Set(["queued", "downloading", "error", "auth_required"]);
-                    const dls = ccDlStatus[ccStatusKey(cat, entry)] || {};
+                    const dls = ccState.downloadStatus[ccStatusKey(cat, entry)] || {};
                     return transient.has(dls.status) ? dls.status : (entry?.status || "missing");
                 };
                 const ccFirstEntry = (section, kind, predicate = null) => ccEntries(section, kind, predicate)[0] || null;
@@ -1542,7 +1516,7 @@ app.registerExtension({
                 }
 
                 const cardStatusLabel = (status, entry, cat) => {
-                    const dls = ccDlStatus[ccStatusKey(cat, entry)] || {};
+                    const dls = ccState.downloadStatus[ccStatusKey(cat, entry)] || {};
                     if (status === "installed") return "Installed";
                     if (status === "queued") return "Queued";
                     if (status === "downloading") return dls.message || "Downloading";
@@ -1551,10 +1525,12 @@ app.registerExtension({
                     return "Missing";
                 };
 
+                const { fetchConfig: fetchCcConfig, startPolling: startCcPolling, stopPolling: stopCcPolling } =
+                    createControlCenterClient(CC_REPO_ID, ccHasRequiredFamilies, ccState, () => renderControlCenterCards());
                 const ccDownloadEntry = async (cat, entry) => {
                     if (!entry?.name) return;
                     const key = ccStatusKey(cat, entry);
-                    ccDlStatus[key] = { status: "queued", message: "Queued..." };
+                    ccState.downloadStatus[key] = { status: "queued", message: "Queued..." };
                     renderControlCenterCards();
                     try {
                         const response = await api.fetchApi("/vnccs/control_center/download", {
@@ -1564,69 +1540,15 @@ app.registerExtension({
                         });
                         const payload = await response.json();
                         if (!response.ok || payload.error) {
-                            ccDlStatus[key] = { status: "error", message: payload.error || "Download failed" };
+                            ccState.downloadStatus[key] = { status: "error", message: payload.error || "Download failed" };
                             renderControlCenterCards();
                             return;
                         }
                         startCcPolling();
                     } catch (error) {
-                        ccDlStatus[key] = { status: "error", message: String(error?.message || error) };
+                        ccState.downloadStatus[key] = { status: "error", message: String(error?.message || error) };
                         renderControlCenterCards();
                     }
-                };
-
-                const fetchCcConfig = async (force = false) => {
-                    if (!force && serverRegistry("VNCCS_CC_REGISTRY")?.[CC_REPO_ID] && ccHasRequiredFamilies(serverRegistry("VNCCS_CC_REGISTRY")[CC_REPO_ID])) {
-                        ccConfig = serverRegistry("VNCCS_CC_REGISTRY")[CC_REPO_ID];
-                        renderControlCenterCards();
-                        return ccConfig;
-                    }
-                    if (!force && ccConfig && ccHasRequiredFamilies(ccConfig)) return ccConfig;
-                    if (!force) {
-                        try {
-                            const cached = storage.getItem(CC_CACHE_KEY);
-                            if (cached) {
-                                ccConfig = JSON.parse(cached);
-                                if (ccHasRequiredFamilies(ccConfig)) renderControlCenterCards();
-                                else ccConfig = null;
-                            }
-                        } catch (_) {}
-                    }
-
-                    const url = `/vnccs/control_center/check?repo_id=${encodeURIComponent(CC_REPO_ID)}${force ? "&force_refresh=true" : ""}`;
-                    const response = await api.fetchApi(url);
-                    const payload = await response.json();
-                    if (!response.ok || payload.error) throw new Error(payload.error || "Failed to load Control Center config");
-                    ccConfig = payload;
-
-                    serverRegistry("VNCCS_CC_REGISTRY")[CC_REPO_ID] = payload;
-                    storage.setItem(CC_CACHE_KEY, JSON.stringify(payload));
-                    renderControlCenterCards();
-                    return payload;
-                };
-
-                const refreshCcDownloadStatus = async () => {
-                    try {
-                        const response = await api.fetchApi("/vnccs/manager/status");
-                        if (!response.ok) return;
-                        ccDlStatus = await response.json();
-                        const active = Object.values(ccDlStatus || {}).some(item => ["queued", "downloading"].includes(item?.status));
-                        if (!active) {
-                            stopCcPolling();
-                            await fetchCcConfig(true);
-                        } else {
-                            renderControlCenterCards();
-                        }
-                    } catch (_) {}
-                };
-                const startCcPolling = () => {
-                    if (ccPollingInterval) return;
-                    ccPollingInterval = setInterval(refreshCcDownloadStatus, 2000);
-                };
-                const stopCcPolling = () => {
-                    if (!ccPollingInterval) return;
-                    clearInterval(ccPollingInterval);
-                    ccPollingInterval = null;
                 };
 
                 const ensureAnimaDefaultAux = () => {
@@ -1929,7 +1851,7 @@ app.registerExtension({
                         if (mode === "qi2") return kind === "qi2";
                         return kind === "sdxl" || kind === "illustrious";
                     };
-                    const turboEntries = (ccConfig?.lora || []).filter(entry => kindOk(entry) && ccType(entry) === "turbolora");
+                    const turboEntries = (ccState.config?.lora || []).filter(entry => kindOk(entry) && ccType(entry) === "turbolora");
                     if (!turboEntries.length) {
                         const fallbackName = mode === "qi2" ? QI2_TURBO_LORA_NAME : ANIMA_TURBO_LORA_NAME;
                         const fallback = {
@@ -2057,7 +1979,7 @@ app.registerExtension({
                     if (isQi2Mode && !currentQi2 && qi2Models[0]) selectQi2Model(ccRelPath(qi2Models[0]));
                     if (isQi2Mode) ensureQi2DefaultAux();
 
-                    const illustriousDefaults = (ccConfig?.models || []).filter(entry => {
+                    const illustriousDefaults = (ccState.config?.models || []).filter(entry => {
                         const kind = ccKind(entry);
                         return (kind === "illustrious" || kind === "sdxl") && ccType(entry) === "checkpoint";
                     });
@@ -2183,7 +2105,7 @@ app.registerExtension({
                             if (row.strength) row.strength.value = item.strength ?? 1;
                         });
                     }
-                    if (ccConfig) renderControlCenterCards();
+                    if (ccState.config) renderControlCenterCards();
                 }
 
                 // Create UI Container
@@ -2622,6 +2544,7 @@ app.registerExtension({
                 const onCharactersUpdated = () => refreshCharacterList({ fetchData: true });
                 window.addEventListener("vnccs.characters.updated", onCharactersUpdated);
                 registerCleanup(node, () => {
+                    stopCcPolling();
                     window.removeEventListener("vnccs.characters.updated", onCharactersUpdated);
                 });
 
@@ -2664,46 +2587,29 @@ app.registerExtension({
                 };
 
                 function showModalText(title, message, onConfirm = null) {
-                    const backdrop = document.createElement("div");
-                    backdrop.className = "ems-modal-backdrop";
-
-                    const modal = document.createElement("div");
-                    modal.className = "ems-modal";
-
-                    const text = document.createElement("div");
-                    text.className = "ems-modal-text";
-                    const titleEl = document.createElement("strong");
-                    titleEl.textContent = String(title ?? "");
-                    const messageEl = document.createElement("div");
-                    messageEl.textContent = String(message ?? "");
-                    messageEl.style.whiteSpace = "pre-wrap";
-                    text.append(titleEl, document.createElement("br"), messageEl);
-
-                    const actions = document.createElement("div");
-                    actions.className = "ems-modal-actions";
-
-                    if (onConfirm) {
-                        const btnCancel = document.createElement("button");
-                        btnCancel.className = "ems-modal-btn ems-modal-btn--cancel";
-                        btnCancel.innerText = "Cancel";
-                        btnCancel.onclick = () => backdrop.remove();
-                        actions.appendChild(btnCancel);
-                    }
-
-                    const btnOk = document.createElement("button");
-                    btnOk.className = "ems-modal-btn ems-modal-btn--confirm";
-                    btnOk.innerText = onConfirm ? "Proceed" : "OK";
-                    btnOk.onclick = () => {
-                        backdrop.remove();
+                    const buttons = onConfirm ? [{ text: "Cancel" }] : [];
+                    buttons.push({ text: onConfirm ? "Proceed" : "OK", autofocus: true, action: overlay => {
+                        overlay.remove();
                         onConfirm?.();
-                    };
-
-                    actions.appendChild(btnOk);
-                    modal.appendChild(text);
-                    modal.appendChild(actions);
-                    backdrop.appendChild(modal);
-                    container.appendChild(backdrop);
-                    btnOk.focus();
+                    } });
+                    const dialog = showCommonModal(container, String(title ?? ""), () => {
+                        const text = document.createElement("div");
+                        text.className = "ems-modal-text";
+                        const heading = document.createElement("strong");
+                        heading.textContent = String(title ?? "");
+                        const body = document.createElement("div");
+                        body.textContent = String(message ?? "");
+                        body.style.whiteSpace = "pre-wrap";
+                        text.append(heading, document.createElement("br"), body);
+                        return text;
+                    }, buttons);
+                    dialog.overlay.className = "ems-modal-backdrop";
+                    dialog.modal.className = "ems-modal";
+                    dialog.title.hidden = true;
+                    dialog.actions.className = "ems-modal-actions";
+                    dialog.buttons.forEach((button, index) => {
+                        button.className = `ems-modal-btn ems-modal-btn--${onConfirm && index === 0 ? "cancel" : "confirm"}`;
+                    });
                 }
 
                 function createCustomEmotionField(labelText, inputEl) {

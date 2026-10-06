@@ -3,10 +3,12 @@ import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 
 const web = new URL("../web/", import.meta.url);
+const theme = readFileSync(new URL("vnccs_common.js", web), "utf8")
+    .match(/export const SAKURA_THEME_CSS = `([\s\S]*?)`;/)[1];
 const sheets = readdirSync(web, { recursive: true })
     .filter(name => /\.(?:js|mjs)$/.test(name))
     .map(name => {
-        const source = readFileSync(new URL(name, web), "utf8");
+        const source = readFileSync(new URL(name, web), "utf8").replaceAll("${SAKURA_THEME_CSS}", theme.trimEnd());
         const css = Array.from(source.matchAll(/(?:const\s+\w*(?:STYLE|CSS)\w*|\w+\.textContent)\s*=\s*`([\s\S]*?)`/g), match => match[1])
             .filter(text => /(?:display|position|font-size|background)\s*:/.test(text)).join("\n");
         const selectors = Array.from(css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{/g), match => match[1].trim());
@@ -40,7 +42,7 @@ test("widget palettes cannot overwrite the page or another widget", () => {
         ["vnccs_emotion_v2.js", "ems-container"],
     ]) {
         const sheet = sheets.find(item => item.name === name);
-        assert.ok(sheet.css.includes(`.${root} {\n    --bg-primary:`), name);
+        assert.match(sheet.css, new RegExp(`\\.${root}\\s*\\{\\s*--bg-primary:`), name);
         assert.ok(sheet.source.includes(`container.className = "${root}"`), name);
     }
 });

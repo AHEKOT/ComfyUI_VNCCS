@@ -10,63 +10,13 @@ Class: VNCCS_QWEN_Encoder
 
 This file relies on runtime objects provided by ComfyUI (clip, vae, comfy.utils, node_helpers).
 """
-
-import types
-import sys
-try:
-    import node_helpers
-except Exception:
-    # minimal safe fallback for environments without ComfyUI
-    class _NodeHelpersFallback:
-        @staticmethod
-        def conditioning_set_values(conditioning, values, append=False):
-            # best-effort: if conditioning looks like a list of (tensor, dict) pairs, attach values
-            try:
-                new_conditioning = []
-                for cond in conditioning:
-                    if isinstance(cond, (list, tuple)) and len(cond) >= 2:
-                        cond_tensor = cond[0]
-                        cond_dict = dict(cond[1]) if isinstance(cond[1], dict) else {}
-                        if append:
-                            for k, v in values.items():
-                                if k in cond_dict and isinstance(cond_dict[k], list):
-                                    cond_dict[k].extend(v if isinstance(v, list) else [v])
-                                else:
-                                    cond_dict[k] = list(v) if isinstance(v, list) else [v]
-                        else:
-                            cond_dict.update(values)
-                        new_conditioning.append((cond_tensor, cond_dict))
-                    else:
-                        new_conditioning.append(cond)
-                return new_conditioning
-            except Exception:
-                return conditioning
-    node_helpers = _NodeHelpersFallback()
-
-try:
-    import comfy.utils
-except Exception:
-    # minimal comfy.utils fallback with common_upscale passthrough
-    class _ComfyUtilsFallback:
-        @staticmethod
-        def common_upscale(samples, width, height, method, crop):
-            # best-effort: return input unchanged
-            return samples
-    comfy = types.SimpleNamespace(utils=_ComfyUtilsFallback())
+from ..operation_logger import log_event
 
 import math
-try:
-    import torch
-except Exception:
-    torch = None
-try:
-    import numpy as np
-except Exception:
-    np = None
-try:
-    from PIL import Image
-except Exception:
-    Image = None
+
+import torch
+import comfy.utils
+import node_helpers
 
 
 ENCODER_BACKGROUND_RGB = {
@@ -291,7 +241,7 @@ class VNCCS_QWEN_Encoder:
                 conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents_method": method})
         except Exception as exc:
             # best-effort: if node_helpers not available or fails, continue with unmodified conditioning
-            print(f"[VNCCS Qwen Encoder] Failed to apply reference latent conditioning metadata: {exc}")
+            log_event('warning', component='QwenEncoder', level='warning', message=f'Failed to apply reference latent conditioning metadata: {exc}', error=str(exc))
         
         conditioning_full_ref = conditioning
         if len(ref_latents) > 0:

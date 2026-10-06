@@ -19,6 +19,28 @@ from nodes.character_creator_v2 import (
 from utils import normalize_hair_tags
 
 
+def test_loader_and_stage_share_dispatch_without_changing_results_or_cleanup(monkeypatch):
+    from types import SimpleNamespace
+    from nodes import character_creator_v2 as creator
+    from nodes import runtime_cleanup
+
+    calls, cleanup = [], []
+
+    class Node:
+        def run(self, value):
+            calls.append(value)
+            return (value, "extra")
+
+    monkeypatch.setattr(creator, "nodes", SimpleNamespace(NODE_CLASS_MAPPINGS={"Node": Node}))
+    monkeypatch.setattr(runtime_cleanup, "cleanup_runtime", lambda: cleanup.append(True))
+    assert creator._call_loader_node(["missing", "Node"], ["missing", "run"], value=7, unused=9) == 7
+    assert cleanup == []
+    assert creator._call_node_method(["Node"], ["run"], value=8, unused=9) == (8, "extra")
+    assert cleanup == [True]
+    assert calls == [7, 8]
+    assert creator._call_loader_node(["missing"], ["run"]) is None
+
+
 def _base_info(**overrides):
     info = {
         "sex": "female",

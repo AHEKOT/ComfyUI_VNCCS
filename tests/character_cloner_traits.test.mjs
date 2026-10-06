@@ -68,9 +68,9 @@ function setup(upload) {
         } },
     });
     vm.runInContext(
-        block(common, "export function registerCleanup", "// ── Widget Data Sync").replaceAll("export ", "") +
+        block(common, "export function registerCleanup", "// ── DOM Widget Width Sync").replaceAll("export ", "") +
         "const beginCaptionRequest = createRequestGuard(node); const beginUploadRequest = createRequestGuard(node);" +
-        block(source, "const saveState =", "const normalizeAgeValue =") +
+        block(source, "const saveState =", "const parsePoseStudioValues =") +
         block(source, "const createTraitField =", "const createSegmentedField =") +
         block(source, "const updateUIFromState =", "// --- Helpers (Hoisted)") +
         block(source, "const showModal =", "const showSourceImageRequiredModal =") +

@@ -24,7 +24,6 @@ from nodes.vnccs_control_center import (
     _apply_lora_standard,
     _filter_entries_by_kind,
     _is_audio_vae_entry,
-    _build_dynamic_paths,
     _build_custom_lora_name,
     _build_custom_lora_entry,
     _dedupe_config_by_name,
@@ -435,43 +434,7 @@ class TestKindFiltering:
             _filter_entries_by_kind(entries, "QIE2511")
 
 
-# ── _build_dynamic_paths ──────────────────────────────────────────────────────
 
-class TestBuildDynamicPaths:
-    def test_empty_slot_names(self):
-        assert _build_dynamic_paths({}, []) == []
-
-    def test_unknown_entry_returns_empty_string(self):
-        config = {"controlnet": [], "other": []}
-        result = _build_dynamic_paths(config, ["UnknownModel"])
-        assert result == [""]
-
-    def test_known_entry_found_on_disk(self, tmp_path, monkeypatch):
-        import folder_paths as fp
-        f = tmp_path / "ctrl.safetensors"
-        f.write_bytes(b"x")
-
-        monkeypatch.setattr(fp, "get_full_path", lambda key, name: str(f) if "ctrl" in name else None)
-        monkeypatch.setattr(fp, "get_folder_paths", lambda key: [str(tmp_path)])
-
-        config = {
-            "controlnet": [{"name": "MyCtrl", "local_path": "models/controlnet/ctrl.safetensors"}],
-            "other": [],
-        }
-        result = _build_dynamic_paths(config, ["MyCtrl"])
-        assert result == ["ctrl.safetensors"]
-
-    def test_known_entry_not_on_disk_returns_empty(self, monkeypatch):
-        import folder_paths as fp
-        monkeypatch.setattr(fp, "get_full_path", lambda *a: None)
-        monkeypatch.setattr(fp, "get_folder_paths", lambda *a: [])
-
-        config = {
-            "controlnet": [{"name": "Missing", "local_path": "models/controlnet/ghost.safetensors"}],
-            "other": [],
-        }
-        result = _build_dynamic_paths(config, ["Missing"])
-        assert result == [""]
 
 
 class TestEnrichConfigEntries:

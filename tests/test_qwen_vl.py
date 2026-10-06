@@ -6,6 +6,36 @@ import pytest
 from nodes.qwen_vl import get_qwen_vl_chat_handler
 
 
+@pytest.mark.parametrize("vision,model,projector,active,status,workers", [
+    (True, False, False, False, 200, 1),
+    (True, True, False, False, 200, 1),
+    (False, True, False, False, 200, 0),
+    (True, True, True, False, 200, 0),
+    (True, True, True, True, 409, 0),
+])
+def test_shared_download_start_checks_required_assets_and_active_worker(monkeypatch, vision, model, projector, active, status, workers):
+    from nodes import qwen_vl
+
+    started, validated = [], []
+    monkeypatch.setattr(qwen_vl, "_QWEN_VL_DOWNLOAD_STATUS", {"status": "downloading" if active else "idle"})
+    monkeypatch.setattr(qwen_vl, "_find_qwen_vl_model", lambda: "model.gguf" if model else None)
+    monkeypatch.setattr(qwen_vl, "_find_qwen_vl_mmproj", lambda path: "mmproj.gguf" if projector else None)
+    monkeypatch.setattr(qwen_vl, "_validate_gguf_file", lambda path, name: validated.append(path))
+    monkeypatch.setattr(qwen_vl.threading, "Thread", lambda **kwargs:
+                        types.SimpleNamespace(start=lambda: started.append(kwargs)))
+    monkeypatch.setattr(qwen_vl.web, "json_response", lambda data, status=200:
+                        types.SimpleNamespace(data=data, status=status), raising=False)
+    response = qwen_vl._start_qwen_vl_download(vision)
+    assert response.status == status
+    assert len(started) == workers
+    if workers:
+        assert response.data == {"status": "started"}
+        assert started[0]["args"] == (vision,)
+    elif not active:
+        assert response.data["status"] == "completed"
+        assert validated == (["model.gguf", "mmproj.gguf"] if vision else ["model.gguf"])
+
+
 def test_selects_qwen35_even_when_legacy_handlers_are_available():
     handler = object()
     llama_cpp = types.SimpleNamespace(llama_chat_format=types.SimpleNamespace(
@@ -41,6 +71,24 @@ def test_text_wizard_disables_thinking_in_model_template(monkeypatch):
 
 
 from nodes import qwen_vl
+
+@pytest.mark.parametrize("content, expected", [
+    ('{"hair": "black"}', {"hair": "black"}),
+    ('```json\n{"top": "coat"}\n```', {"top": "coat"}),
+    ('```\n{"top": "coat"}\n```', {"top": "coat"}),
+    ('Response: {"top": "coat"}', {"top": "coat"}),
+    ('[]', None), ('broken JSON', None), (None, None),
+])
+def test_wizard_json_fallback_without_repair(monkeypatch, content, expected):
+    import sys
+    monkeypatch.setitem(sys.modules, "json_repair", None)
+    assert qwen_vl.parse_wizard_json(content) == expected
+
+
+def test_wizard_json_repair_unwraps_first_object(monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "json_repair", types.SimpleNamespace(loads=lambda _: [{"hair": "black"}]))
+    assert qwen_vl.parse_wizard_json("repaired response") == {"hair": "black"}
 
 def test_qwen_download_disables_hub_credentials(tmp_path, monkeypatch):
     model_path = tmp_path / "model.gguf"

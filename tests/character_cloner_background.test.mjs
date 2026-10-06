@@ -60,7 +60,7 @@ function setup({ kind = "qi2", background = "Blue", previous = "Blue" } = {}) {
         block(common, "export function registerCleanup", "// Each loader").replace("export ", "") +
         `this.Generator = class { ${block(generator, "    controlCenterWidgetNode() {", "    rememberModelResolution(")} };` +
         "let restoredInfoCharacter = null;" +
-        block(source, "const saveState =", "const normalizeAgeValue =") +
+        block(source, "const saveState =", "const parsePoseStudioValues =") +
         block(source, "const getConnectedModelKind =", "const createGraphicToggle =") +
         block(source, "colAttr.appendChild(createSegmentedField(\"Background\"", "colAttr.appendChild(createSegmentedField(\"Gender\"") +
         block(source, "const updateUIFromState =", "// --- Helpers (Hoisted)") +

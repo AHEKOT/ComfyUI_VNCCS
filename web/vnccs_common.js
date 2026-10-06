@@ -2,8 +2,309 @@
  * VNCCS Common Utilities — shared patterns for all VNCCS widgets.
  * Import: import { debounce, showModal, ... } from "./vnccs_common.js";
  */
-import { vnccsApi as api, mediaURL } from "./vnccs_transport.js";
+import { vnccsApi as api, mediaURL, storage, serverRegistry } from "./vnccs_transport.js";
 import { app } from "../../scripts/app.js";
+
+// ── Shared Input Normalization ───────────────────────────────────────────────
+export const SAKURA_THEME_CSS = `
+    --bg-primary: #0a0a0f;
+    --bg-secondary: #12121a;
+    --bg-elevated: #1a1a26;
+    --bg-surface: #22222e;
+    --bg-hover: #2a2a38;
+    --text-primary: #e8e8f0;
+    --text-secondary: #9898a8;
+    --text-muted: #5e5e70;
+    --accent: #ff8fa3;
+    --accent-hover: #ffb6c8;
+    --accent-glow: rgba(255, 143, 163, 0.3);
+    --accent-subtle: rgba(255, 143, 163, 0.1);
+    --accent-border: rgba(255, 143, 163, 0.22);
+    --accent-lavender: #b8a9e8;
+    --success: #00d68f;
+    --error: #ff4757;
+    --border: rgba(255, 255, 255, 0.06);
+    --border-hover: rgba(255, 255, 255, 0.12);
+    --font: 'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 20px;
+    --transition: 0.2s ease;
+`;
+
+const RESOLUTION_SCALE_BASE = 1024;
+export const RESOLUTION_SCALE_MIN_MP = 1;
+export const RESOLUTION_SCALE_MAX_MP = 4;
+export const RESOLUTION_SCALE_STEP_MP = 0.1;
+const RESOLUTION_SCALE_PRESETS = new Map([
+    [1.3, 1344],
+    [1.5, 1536],
+]);
+export const resolutionScaleMegapixels = value => {
+    const numeric = Number(value);
+    const megapixels = Number.isFinite(numeric) ? numeric / RESOLUTION_SCALE_BASE : RESOLUTION_SCALE_MIN_MP;
+    return Math.max(RESOLUTION_SCALE_MIN_MP, Math.min(RESOLUTION_SCALE_MAX_MP, megapixels));
+};
+export const resolutionScaleValue = megapixels => {
+    const clamped = Math.max(
+        RESOLUTION_SCALE_MIN_MP,
+        Math.min(RESOLUTION_SCALE_MAX_MP, Number(megapixels) || RESOLUTION_SCALE_MIN_MP)
+    );
+    const stepped = Number((Math.round(clamped / RESOLUTION_SCALE_STEP_MP) * RESOLUTION_SCALE_STEP_MP).toFixed(1));
+    return RESOLUTION_SCALE_PRESETS.get(stepped) ?? Math.round(stepped * RESOLUTION_SCALE_BASE);
+};
+export const resolutionScaleText = value => `${resolutionScaleMegapixels(value).toFixed(1)} MP`;
+
+// Generator restoration falls back to the minimum for non-finite values.
+export function finiteResolutionScaleValue(megapixels) {
+    const numeric = Number(megapixels);
+    return resolutionScaleValue(Number.isFinite(numeric) ? numeric : RESOLUTION_SCALE_MIN_MP);
+}
+
+export function normalizeUploadFile(file, prefix = "vnccs_upload") {
+    const originalName = String(file?.name || "").trim();
+    const extMatch = originalName.match(/(\.[A-Za-z0-9]{1,8})$/);
+    const ext = extMatch ? extMatch[1] : ".png";
+    let name = originalName.replace(/[\\/]/g, "_").trim();
+    name = name.replace(/^[\s.-]+/, "");
+    name = name.replace(/\s+/g, "_");
+    name = name.replace(/[^A-Za-z0-9._-]/g, "_");
+    if (!name || !/[A-Za-z0-9]/.test(name)) {
+        name = `${prefix}_${Date.now()}${ext}`;
+    }
+    if (name !== originalName) {
+        name = `${prefix}_${name}`;
+    }
+    return name === file.name ? file : new File([file], name, {
+        type: file.type,
+        lastModified: file.lastModified,
+    });
+}
+
+export function normalizeAgeValue(value) {
+    const parsed = parseFloat(value);
+    if (!Number.isFinite(parsed)) return 18;
+    return Math.max(1, Math.min(100, parsed));
+}
+
+// Each widget keeps its own view state and polling cleanup.
+export function createControlCenterClient(repoId, hasRequiredFamilies, state, render) {
+    const cacheKey = `vnccs_cc_cache_${repoId}`;
+    let interval = null;
+    const fetchConfig = async (force = false) => {
+        if (!force && serverRegistry("VNCCS_CC_REGISTRY")?.[repoId] && hasRequiredFamilies(serverRegistry("VNCCS_CC_REGISTRY")[repoId])) {
+            state.config = serverRegistry("VNCCS_CC_REGISTRY")[repoId];
+            render();
+            return state.config;
+        }
+        if (!force && state.config && hasRequiredFamilies(state.config)) return state.config;
+        if (!force) {
+            try {
+                const cached = storage.getItem(cacheKey);
+                if (cached) {
+                    state.config = JSON.parse(cached);
+                    if (hasRequiredFamilies(state.config)) render();
+                    else state.config = null;
+                }
+            } catch (_) {}
+        }
+
+        const url = `/vnccs/control_center/check?repo_id=${encodeURIComponent(repoId)}${force ? "&force_refresh=true" : ""}`;
+        const response = await api.fetchApi(url);
+        const payload = await response.json();
+        if (!response.ok || payload.error) throw new Error(payload.error || "Failed to load Control Center config");
+        state.config = payload;
+
+        serverRegistry("VNCCS_CC_REGISTRY")[repoId] = payload;
+        storage.setItem(cacheKey, JSON.stringify(payload));
+        render();
+        return payload;
+    };
+
+    const refreshDownloadStatus = async () => {
+        try {
+            const response = await api.fetchApi("/vnccs/manager/status");
+            if (!response.ok) return;
+            state.downloadStatus = await response.json();
+            const active = Object.values(state.downloadStatus || {}).some(item => ["queued", "downloading"].includes(item?.status));
+            if (!active) {
+                stopPolling();
+                await fetchConfig(true);
+            } else {
+                render();
+            }
+        } catch (_) {}
+    };
+
+    const startPolling = () => {
+        if (interval) return;
+        interval = setInterval(refreshDownloadStatus, 2000);
+    };
+
+    const stopPolling = () => {
+        if (!interval) return;
+        clearInterval(interval);
+        interval = null;
+    };
+    return { fetchConfig, startPolling, stopPolling };
+}
+
+// Each widget owns its dialog styling; model preparation and polling are shared.
+export function createQwenVLModelLoader(node, showModal, createProgressModal, vision = true) {
+    let disposed = false;
+    const cleanups = new Set();
+    registerCleanup(node, () => {
+        disposed = true;
+        for (const cleanup of cleanups) cleanup();
+        cleanups.clear();
+    });
+    return async () => {
+        if (disposed) return false;
+        let overlay, timer, resolvePending, closing = false;
+        const cancel = () => {
+            clearTimeout(timer);
+            overlay?.remove();
+            resolvePending?.(false);
+        };
+        cleanups.add(cancel);
+        try {
+            const suffix = vision ? "" : "?vision=false";
+            const response = await api.fetchApi(`/vnccs/qwen_vl_model_status${suffix}`);
+            if (disposed) return false;
+            if (!response.ok) throw new Error("Failed to check Qwen3.5 model files.");
+            const modelStatus = await response.json();
+            if (disposed) return false;
+            if (modelStatus.ready) return true;
+            const approved = await new Promise(resolve => {
+                resolvePending = resolve;
+                const dialog = showModal("Qwen3.5 Model Required", () => {
+                    const text = document.createElement("div");
+                    text.textContent = `${modelStatus.message || modelStatus.model_name} Download the required files from Hugging Face now?`;
+                    return text;
+                }, [
+                    { text: "Cancel", action: () => { resolve(false); return false; } },
+                    { text: "DOWNLOAD & INSTALL", class: "primary", action: () => { resolve(true); return false; } },
+                ]);
+                overlay = dialog.overlay;
+                dialog.modal.addEventListener("keydown", event => {
+                    if (event.key === "Escape") resolve(false);
+                }, true);
+            });
+            if (!approved || disposed) return false;
+            const start = await api.fetchApi(`/vnccs/qwen_vl_download_model${suffix}`, { method: "POST" });
+            if (disposed) return false;
+            if (!start.ok && start.status !== 409) {
+                let error;
+                try { error = await start.json(); } catch (_) { error = { error: await start.text() }; }
+                throw new Error(error?.error || error?.message || "Failed to start QwenVL download.");
+            }
+            const progressModal = createProgressModal();
+            overlay = progressModal.overlay;
+            const { statusEl, barEl, pctEl, completedMessage } = progressModal;
+            return await new Promise((resolve, reject) => {
+                resolvePending = resolve;
+                const poll = async () => {
+                    try {
+                        const response = await api.fetchApi("/vnccs/qwen_vl_download_status");
+                        if (disposed) return;
+                        if (!response.ok) throw new Error(await response.text());
+                        const data = await response.json();
+                        if (disposed) return;
+                        const progress = Math.max(0, Math.min(100, Number(data.progress) || 0));
+                        statusEl.innerText = data.current_file ? `Downloading ${data.current_file}...` : "Preparing model files...";
+                        barEl.style.width = `${progress}%`;
+                        pctEl.innerText = `${progress}%`;
+                        if (data.status === "completed") {
+                            statusEl.innerText = completedMessage;
+                            barEl.style.width = "100%";
+                            pctEl.innerText = "100%";
+                            closing = true;
+                            timer = setTimeout(() => { overlay.remove(); cleanups.delete(cancel); }, 450);
+                            resolve(true);
+                            return;
+                        }
+                        if (data.status === "error") throw new Error(data.error || "QwenVL download failed.");
+                        timer = setTimeout(poll, 700);
+                    } catch (error) {
+                        overlay.remove();
+                        reject(error);
+                    }
+                };
+                poll();
+            });
+        } finally {
+            if (!closing) cleanups.delete(cancel);
+        }
+    };
+}
+
+export function createTraitInput({ prefix, label: lbl, key, target: targetObj, save, choose }) {
+    const wrap = document.createElement("div");
+    wrap.className = `${prefix}-trait-row`;
+    const label = document.createElement("span");
+    label.className = `${prefix}-trait-label`;
+    label.textContent = lbl;
+    const editor = document.createElement("div");
+    editor.className = `${prefix}-trait-editor`;
+    const values = document.createElement("button");
+    values.type = "button";
+    values.className = `${prefix}-trait-values`;
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.className = `${prefix}-input ${prefix}-trait-input`;
+    inp.setAttribute("aria-label", lbl);
+    inp.placeholder = "Add tags";
+    inp.hidden = true;
+    const renderTags = () => {
+        values.replaceChildren();
+        const tokens = inp.value.split(",").map(token => token.trim()).filter(Boolean);
+        for (const token of tokens.length ? tokens : ["Add tags"]) {
+            const chip = document.createElement("span");
+            chip.className = tokens.length ? `${prefix}-trait-token` : `${prefix}-trait-empty`;
+            chip.textContent = token;
+            values.appendChild(chip);
+        }
+        values.setAttribute("aria-label", `Edit ${lbl.toLowerCase()} tags: ${inp.value || "Add tags"}`);
+    };
+    inp.setValue = value => {
+        inp.value = value ?? "";
+        renderTags();
+    };
+    inp.setValue(targetObj[key]);
+    inp.oninput = (e) => {
+        targetObj[key] = e.target.value;
+        renderTags();
+        save();
+    };
+    inp.startEditing = () => {
+        values.hidden = true;
+        inp.hidden = false;
+        inp.focus({ preventScroll: true });
+    };
+    values.onclick = inp.startEditing;
+    inp.onblur = () => {
+        inp.hidden = true;
+        values.hidden = false;
+    };
+    inp.onkeydown = e => {
+        if (e.key === "Enter") {
+            e.preventDefault();
+            inp.blur();
+            values.focus({ preventScroll: true });
+        }
+    };
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = `${prefix}-trait-add`;
+    add.textContent = "+";
+    add.setAttribute("aria-label", `Choose ${lbl.toLowerCase()} presets`);
+    add.title = "Choose Presets";
+    add.onclick = () => choose(inp);
+    editor.append(values, inp);
+    wrap.append(label, editor, add);
+    return { element: wrap, input: inp };
+}
 
 // ── Debounce ──────────────────────────────────────────────────────────────────
 export function debounce(fn, delay = 300) {
@@ -41,16 +342,6 @@ export function createRequestGuard(node) {
         const request = ++sequence;
         return () => !removed && request === sequence;
     };
-}
-
-// ── Widget Data Sync ──────────────────────────────────────────────────────────
-// Sets widget value, triggers callback, marks canvas dirty.
-export function syncWidgetData(node, widgetName, data) {
-    const widget = node.widgets?.find(w => w.name === widgetName);
-    if (!widget) return;
-    widget.value = typeof data === "string" ? data : JSON.stringify(data);
-    if (widget.callback) widget.callback(widget.value);
-    if (app.graph?.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
 }
 
 // ── DOM Widget Width Sync ────────────────────────────────────────────────────
@@ -728,8 +1019,8 @@ const COMMON_CSS = `
 
 // ── Modal Dialog ──────────────────────────────────────────────────────────────
 // showModal(container, title, contentFunc, buttons)
-// buttons: [{ text, class?: "primary"|"danger", action?: async (overlay, btn) => keepOpen? }]
-// Returns { overlay, modal, content }
+// buttons: [{ text, class?: "primary"|"danger", autofocus?, action?: async (overlay, btn) => keepOpen? }]
+// Returns { overlay, modal, content, title, actions, buttons }
 let _modalSequence = 0;
 const _modalStack = [];
 const _modalOpeners = new WeakMap();
@@ -768,6 +1059,8 @@ export function showModal(container, title, contentFunc, buttons) {
         if (b.class === "primary" || b.class?.includes("primary")) cls += " vnccs-common-modal-btn-primary";
         if (b.class === "danger" || b.class?.includes("danger")) cls += " vnccs-common-modal-btn-danger";
         btn.className = cls;
+        btn.type = "button";
+        btn.autofocus = !!b.autofocus;
         btn.innerText = b.text;
         btn.onclick = async () => {
             if (b.action) {
@@ -791,7 +1084,10 @@ export function showModal(container, title, contentFunc, buttons) {
     const focusable = () => [...m.querySelectorAll("button, input:not([type='hidden']), textarea, select, a[href], [tabindex]:not([tabindex='-1'])")]
         .filter(element => !element.disabled && !element.hidden && !element.closest("[inert]")
             && element.getClientRects().length > 0);
-    const focusFirst = () => (focusable()[0] || m).focus({ preventScroll: true });
+    const focusFirst = () => {
+        const fields = focusable();
+        (fields.find(element => element.autofocus) || fields[0] || m).focus({ preventScroll: true });
+    };
     const containFocus = event => {
         if (_modalStack.at(-1) === m && !m.contains(event.target)) focusFirst();
     };
@@ -859,7 +1155,7 @@ export function showModal(container, title, contentFunc, buttons) {
             field.select();
         }
     });
-    return { overlay, modal: m, content };
+    return { overlay, modal: m, content, title: titleEl, actions: row, buttons: buttonEls.map(item => item.button) };
 }
 
 // ── Info/Error Message ────────────────────────────────────────────────────────
@@ -909,28 +1205,6 @@ export function createLoadingOverlay(container, message = "Generating preview") 
         overlay,
         remove() { if (overlay.parentNode) overlay.remove(); }
     };
-}
-
-// ── Safe Fetch ────────────────────────────────────────────────────────────────
-// Wraps api.fetchApi with error handling. On failure shows message in container (if provided).
-// Returns response or null on error.
-export async function safeFetch(url, options, container = null) {
-    try {
-        const r = await api.fetchApi(url, options);
-        if (!r.ok) {
-            const errText = await r.text().catch(() => "Unknown error");
-            const msg = `Server Error (${r.status}): ${errText}`;
-            console.warn("[VNCCS]", msg);
-            if (container) showMessage(container, msg, true);
-            return null;
-        }
-        return r;
-    } catch (e) {
-        const msg = `Network Error: ${e.message || e}`;
-        console.warn("[VNCCS]", msg);
-        if (container) showMessage(container, msg, true);
-        return null;
-    }
 }
 
 // ── Generate Random Seed ──────────────────────────────────────────────────────

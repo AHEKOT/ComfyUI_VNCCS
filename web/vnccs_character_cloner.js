@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { vnccsApi as api, mediaURL, checkedJSON } from "./vnccs_transport.js";
 import { presetSelection } from "./character_presets.mjs";
-import { showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, registerCleanup } from "./vnccs_common.js";
+import { createTraitInput, createQwenVLModelLoader, SAKURA_THEME_CSS, showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, registerCleanup, normalizeUploadFile, normalizeAgeValue } from "./vnccs_common.js";
 
 // --- STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -9,33 +9,10 @@ const STYLE = `
 
 /* ── Variables ── */
 .vnccs-cloner-container {
-    --bg-primary: #0a0a0f;
-    --bg-secondary: #12121a;
-    --bg-elevated: #1a1a26;
-    --bg-surface: #22222e;
-    --bg-hover: #2a2a38;
-    --text-primary: #e8e8f0;
-    --text-secondary: #9898a8;
-    --text-muted: #5e5e70;
-    --accent: #ff8fa3;
-    --accent-hover: #ffb6c8;
-    --accent-glow: rgba(255, 143, 163, 0.3);
-    --accent-subtle: rgba(255, 143, 163, 0.1);
-    --accent-border: rgba(255, 143, 163, 0.22);
-    --accent-lavender: #b8a9e8;
-    --success: #00d68f;
+${SAKURA_THEME_CSS}
     --warning: #ffaa00;
-    --error: #ff4757;
-    --border: rgba(255, 255, 255, 0.06);
-    --border-hover: rgba(255, 255, 255, 0.12);
-    --font: 'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
-    --radius-sm: 8px;
-    --radius-md: 12px;
-    --radius-lg: 20px;
     --shadow-subtle: 0 2px 8px rgba(0, 0, 0, 0.3);
     --shadow-elevated: 0 8px 32px rgba(0, 0, 0, 0.5);
-    --transition: 0.2s ease;
 }
 
 /* ── Container ── */
@@ -726,58 +703,7 @@ const STYLE = `
     pointer-events: auto;
 }
 
-/* ── Loading Overlay ── */
-.vnccs-cloner-loading-overlay {
-    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(10, 10, 15, 0.92);
-    backdrop-filter: blur(10px);
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    z-index: 1000; pointer-events: auto; gap: 16px;
-    border-radius: var(--radius-lg);
-}
-.vnccs-cloner-spinner {
-    width: 44px;
-    height: 44px;
-    position: relative;
-}
-.vnccs-cloner-spinner::before, .vnccs-cloner-spinner::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    border-radius: 50%;
-    border: 3px solid transparent;
-}
-.vnccs-cloner-spinner::before {
-    border-top-color: var(--accent);
-    border-right-color: rgba(255, 143, 163, 0.3);
-    animation: clonerSpin 1s linear infinite;
-    box-shadow: 0 0 18px rgba(255, 143, 163, 0.2);
-}
-.vnccs-cloner-spinner::after {
-    inset: 7px;
-    border-bottom-color: rgba(184, 169, 232, 0.6);
-    border-left-color: rgba(184, 169, 232, 0.2);
-    animation: clonerSpin 1.4s linear infinite reverse;
-}
 @keyframes clonerSpin { to { transform: rotate(360deg); } }
-.vnccs-cloner-loading-text {
-    color: var(--text-secondary);
-    font-family: var(--font);
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-}
-.vnccs-cloner-loading-dots::after {
-    content: '';
-    animation: clonerDots 1.5s steps(4, end) infinite;
-}
-@keyframes clonerDots {
-    0%, 20% { content: ''; }
-    40% { content: '.'; }
-    60% { content: '..'; }
-    80%, 100% { content: '...'; }
-}
 
 /* ── Modal Overrides ── */
 .vnccs-cloner-container .vnccs-common-modal-overlay {
@@ -1071,25 +997,6 @@ app.registerExtension({
                 let TAG_DATA = null;
 
                 const els = {};
-                const normalizeUploadFile = (file, prefix = "vnccs_upload") => {
-                    const originalName = String(file?.name || "").trim();
-                    const extMatch = originalName.match(/(\.[A-Za-z0-9]{1,8})$/);
-                    const ext = extMatch ? extMatch[1] : ".png";
-                    let name = originalName.replace(/[\\/]/g, "_").trim();
-                    name = name.replace(/^[\s.-]+/, "");
-                    name = name.replace(/\s+/g, "_");
-                    name = name.replace(/[^A-Za-z0-9._-]/g, "_");
-                    if (!name || !/[A-Za-z0-9]/.test(name)) {
-                        name = `${prefix}_${Date.now()}${ext}`;
-                    }
-                    if (name !== originalName) {
-                        name = `${prefix}_${name}`;
-                    }
-                    return name === file.name ? file : new File([file], name, {
-                        type: file.type,
-                        lastModified: file.lastModified,
-                    });
-                };
                 const saveState = () => {
                     if (dataWidget) dataWidget.value = JSON.stringify(state);
                     node._vnccsGetClonerState = () => state;
@@ -1101,11 +1008,6 @@ app.registerExtension({
                             nsfw: !!state.character_info?.nsfw
                         }
                     }));
-                };
-                const normalizeAgeValue = (value) => {
-                    const parsed = parseFloat(value);
-                    if (!Number.isFinite(parsed)) return 18;
-                    return Math.max(1, Math.min(100, parsed));
                 };
                 const parsePoseStudioValues = () => {
                     const info = state.character_info || {};
@@ -1297,72 +1199,13 @@ app.registerExtension({
 
                 // UI Builders
                 const createTraitField = (lbl, key, targetObj = state.character_info) => {
-                    const wrap = document.createElement("div");
-                    wrap.className = "vnccs-cloner-trait-row";
-                    setHelpText(wrap, helpFor(key));
-                    const label = document.createElement("span");
-                    label.className = "vnccs-cloner-trait-label";
-                    label.textContent = lbl;
-                    const editor = document.createElement("div");
-                    editor.className = "vnccs-cloner-trait-editor";
-                    const values = document.createElement("button");
-                    values.type = "button";
-                    values.className = "vnccs-cloner-trait-values";
-                    const inp = document.createElement("input");
-                    inp.type = "text";
-                    inp.className = "vnccs-cloner-input vnccs-cloner-trait-input";
-                    inp.setAttribute("aria-label", lbl);
-                    inp.placeholder = "Add tags";
-                    inp.hidden = true;
-                    const renderTags = () => {
-                        values.replaceChildren();
-                        const tokens = inp.value.split(",").map(token => token.trim()).filter(Boolean);
-                        for (const token of tokens.length ? tokens : ["Add tags"]) {
-                            const chip = document.createElement("span");
-                            chip.className = tokens.length ? "vnccs-cloner-trait-token" : "vnccs-cloner-trait-empty";
-                            chip.textContent = token;
-                            values.appendChild(chip);
-                        }
-                        values.setAttribute("aria-label", `Edit ${lbl.toLowerCase()} tags: ${inp.value || "Add tags"}`);
-                    };
-                    inp.setValue = value => {
-                        inp.value = value ?? "";
-                        renderTags();
-                    };
-                    inp.setValue(targetObj[key]);
-                    inp.oninput = (e) => {
-                        targetObj[key] = e.target.value;
-                        renderTags();
-                        saveState();
-                    };
-                    inp.startEditing = () => {
-                        values.hidden = true;
-                        inp.hidden = false;
-                        inp.focus({ preventScroll: true });
-                    };
-                    values.onclick = inp.startEditing;
-                    inp.onblur = () => {
-                        inp.hidden = true;
-                        values.hidden = false;
-                    };
-                    inp.onkeydown = e => {
-                        if (e.key === "Enter") {
-                            e.preventDefault();
-                            inp.blur();
-                            values.focus({ preventScroll: true });
-                        }
-                    };
-                    const add = document.createElement("button");
-                    add.type = "button";
-                    add.className = "vnccs-cloner-trait-add";
-                    add.textContent = "+";
-                    add.setAttribute("aria-label", `Choose ${lbl.toLowerCase()} presets`);
-                    add.title = "Choose Presets";
-                    add.onclick = () => openTagConstructor(key, inp, targetObj);
-                    editor.append(values, inp);
-                    wrap.append(label, editor, add);
-                    els[key] = inp;
-                    return wrap;
+                    const { element, input } = createTraitInput({
+                        prefix: "vnccs-cloner", label: lbl, key, target: targetObj,
+                        save: saveState, choose: input => openTagConstructor(key, input, targetObj),
+                    });
+                    setHelpText(element, helpFor(key));
+                    els[key] = input;
+                    return element;
                 };
 
                 const createField = (lbl, key, type = "text", opts = [], targetObj = state.character_info) => {
@@ -2386,33 +2229,7 @@ app.registerExtension({
                 };
 
                 // Helper: Progress Polling
-                const ensureQwenVLReady = async () => {
-                    const statusResponse = await api.fetchApi("/vnccs/qwen_vl_model_status");
-                    if (!statusResponse.ok) throw new Error("Failed to check Qwen3.5 model files.");
-                    const modelStatus = await statusResponse.json();
-                    if (modelStatus.ready) return true;
-                    const approved = await new Promise(resolve => {
-                        const { modal } = showModal("Qwen3.5 Model Required", () => {
-                            const text = document.createElement("div");
-                            text.textContent = `${modelStatus.message || modelStatus.model_name} Download the required files from Hugging Face now?`;
-                            return text;
-                        }, [
-                            { text: "Cancel", action: () => { resolve(false); return false; } },
-                            { text: "DOWNLOAD & INSTALL", class: "vnccs-btn-primary", action: () => { resolve(true); return false; } },
-                        ]);
-                        modal.addEventListener("keydown", event => {
-                            if (event.key === "Escape") resolve(false);
-                        }, true);
-                    });
-                    if (!approved) return false;
-
-                    const start = await api.fetchApi("/vnccs/qwen_vl_download_model", { method: "POST" });
-                    if (!start.ok && start.status !== 409) {
-                        let err;
-                        try { err = await start.json(); } catch (e) { err = { error: await start.text() }; }
-                        throw new Error(err?.error || err?.message || "Failed to start QwenVL download.");
-                    }
-
+                const ensureQwenVLReady = createQwenVLModelLoader(node, showModal, () => {
                     const { overlay, modal } = showModal("Downloading Model...", (m) => {
                         const d = document.createElement("div");
                         d.className = "vnccs-cloner-download-modal";
@@ -2429,39 +2246,8 @@ app.registerExtension({
                     const statusEl = modal.querySelector("#vnccs-dl-status");
                     const barEl = modal.querySelector("#vnccs-dl-bar");
                     const pctEl = modal.querySelector("#vnccs-dl-pct");
-
-                    return await new Promise((resolve, reject) => {
-                        const poll = async () => {
-                            try {
-                                const r = await api.fetchApi("/vnccs/qwen_vl_download_status");
-                                if (!r.ok) throw new Error(await r.text());
-                                const d = await r.json();
-                                const progress = Math.max(0, Math.min(100, Number(d.progress) || 0));
-                                statusEl.innerText = d.current_file ? `Downloading ${d.current_file}...` : "Preparing model files...";
-                                barEl.style.width = `${progress}%`;
-                                pctEl.innerText = `${progress}%`;
-                                if (d.status === "completed") {
-                                    statusEl.innerText = "Download Complete!";
-                                    barEl.style.width = "100%";
-                                    pctEl.innerText = "100%";
-                                    setTimeout(() => overlay.remove(), 450);
-                                    resolve(true);
-                                    return;
-                                }
-                                if (d.status === "error") {
-                                    overlay.remove();
-                                    reject(new Error(d.error || "QwenVL download failed."));
-                                    return;
-                                }
-                                setTimeout(poll, 700);
-                            } catch (e) {
-                                overlay.remove();
-                                reject(e);
-                            }
-                        };
-                        poll();
-                    });
-                };
+                    return { overlay, statusEl, barEl, pctEl, completedMessage: "Download Complete!" };
+                }, true);
 
                 // Add Header
                 colAttr.appendChild(attrHeader);

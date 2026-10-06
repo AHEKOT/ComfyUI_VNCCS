@@ -7,7 +7,6 @@ torch = pytest.importorskip("torch")
 from nodes import character_generator as cg
 from nodes.qi2_viggle import (
     VIGGLE_TURBO_NODES,
-    ViggleDetailerSchedule,
     _run_with_viggle_lora,
     viggle_turbo_sigmas,
 )
@@ -185,14 +184,6 @@ def test_qi2_base_sampler_uses_standard_ksampler(monkeypatch):
     assert calls[0][1]["latent_image"] == "empty"
 
 
-def test_viggle_detailer_schedule_uses_encoded_crop_latent():
-    hook = ViggleDetailerSchedule()
-    latent = {"samples": torch.zeros(1, 4, 96, 80)}
-    assert hook.post_encode(latent) is latent
-    assert torch.equal(hook.scheduler_func(None, "euler", 6), viggle_turbo_sigmas(latent))
-    image = torch.zeros(1, 64, 64, 3)
-    assert hook.post_paste(image) is image
-    assert hook.should_retry_patch(object()) is False
 
 
 def test_qi2_emotion_crop_alignment_is_square_symmetric_and_reversible():

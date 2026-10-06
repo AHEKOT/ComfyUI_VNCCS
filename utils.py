@@ -1,4 +1,8 @@
 """VNCCS utilities - common functions for character management."""
+if __package__:
+    from .operation_logger import log_event
+else:
+    from operation_logger import log_event
 
 import os
 import ntpath
@@ -272,7 +276,9 @@ def staged_image_batch(target_dir, *, version_existing=True, lock_root=None):
                     shutil.rmtree(backup)
                     backup = None
                 except OSError as error:
-                    print(f"[VNCCS Storage] Sprites published; could not remove rollback directory '{backup}': {error}")
+                    log_event("cleanup_warning", component="Storage", level="warning",
+                              message="Sprites published; could not remove rollback directory",
+                              path=backup, error=str(error))
         finally:
             if os.path.exists(stage):
                 shutil.rmtree(stage)
@@ -447,7 +453,7 @@ def list_characters() -> List[str]:
     try:
         return sorted([d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))])
     except Exception as exc:
-        print(f"[VNCCS] list_characters: failed to list new character path '{base_path}': {exc}")
+        log_event('warning', component='Storage', level='warning', message=f"list_characters: failed to list new character path '{base_path}': {exc}", error=str(exc))
         return []
 
 
@@ -616,7 +622,7 @@ def load_config(character_name: str, *, strict=False) -> Optional[Dict[str, Any]
     except Exception as e:
         if strict:
             raise OSError(f"Cannot read configuration for '{character_name}': {e}") from e
-        print(f"[VNCCS Utils] Error loading configuration {character_name}: {e}")
+        log_event('warning', component='Storage', level='warning', message=f'Error loading configuration {character_name}: {e}', error=str(e))
     return None
 
 
@@ -650,7 +656,7 @@ def save_config(character_name: str, data: Dict[str, Any]) -> str:
                 json.dump(data, f, ensure_ascii=False, indent=4)
         return config_file
     except Exception as e:
-        print(f"[VNCCS Utils] Error saving configuration {character_name}: {e}")
+        log_event('warning', component='Storage', level='warning', message=f'Error saving configuration {character_name}: {e}', error=str(e))
         return ""
 
 
@@ -816,7 +822,7 @@ def delete_costume(character_name: str, costume_name: str) -> Optional[str]:
                 f"Costume '{costume_name}' was deleted. Some removed files remain at '{staging}': {error}. "
                 "Check storage permissions, then remove that temporary directory."
             )
-            print(f"[VNCCS] {warning}")
+            log_event("warning", component="Storage", level="warning", message=f'{warning}')
             return warning
         return None
 
@@ -841,7 +847,7 @@ def list_costumes(character_name: str) -> List[str]:
                 if os.path.isdir(item_path) and item not in costumes:
                     costumes.append(item)
         except OSError as exc:
-            print(f"[VNCCS Utils] Failed to scan Sprites costumes for '{character_name}': {exc}")
+            log_event('warning', component='Storage', level='warning', message=f"Failed to scan Sprites costumes for '{character_name}': {exc}", error=str(exc))
     
     return costumes
 

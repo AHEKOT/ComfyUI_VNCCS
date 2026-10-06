@@ -1,3 +1,5 @@
+from ..operation_logger import log_event, log_stage, logged_operation
+
 from .preview_runtime import run_preview_job, run_wizard_job
 
 import os
@@ -14,7 +16,6 @@ from PIL import Image
 import io
 import base64
 import numpy as np
-import traceback
 import inspect
 import random
 import re
@@ -33,7 +34,7 @@ from ..utils import (
 )
 from .qwen_vl import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
 from .runtime_cleanup import inference_stage
-from .qwen_vl import configure_qwen_text_chat
+from .qwen_vl import configure_qwen_text_chat, parse_wizard_json, _validate_gguf_file
 from .character_presets import CHARACTER_PRESETS, RACE_PRESETS, preset_key, race_features, race_prompt
 from .character_styles import (
     load_user_styles, save_user_style, delete_user_style, style_preview_path, style_preview_url,
@@ -67,7 +68,7 @@ def list_pose_preview_files(character_name, costume=None):
             safe_join_under(base_char_path, "Sprites", "Naked"),
             safe_join_under(base_char_path, "Sprites", "Original"),
         ])
-        print(f"[VNCCS Debug] Checking Pose Preview Paths: {sprite_roots}")
+        log_event("pose_preview_scan", component="Creator", level="debug", character=character_name, costume=costume)
 
         image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
         files = []
@@ -83,10 +84,10 @@ def list_pose_preview_files(character_name, costume=None):
             if root_files:
                 files = sorted(root_files)
                 break
-        print(f"[VNCCS Debug] Pose preview files found: {len(files)}")
+        log_event("pose_preview_list", component="Creator", level="debug", character=character_name, count=len(files))
         return files
     except Exception as e:
-        print(f"[VNCCS] Pose Preview List Failed: {e}")
+        log_event('warning', component='Creator', level='warning', message=f'Pose Preview List Failed: {e}', error=str(e))
         return []
 
 
@@ -106,11 +107,11 @@ def get_pose_preview(character_name, index=None, costume=None):
         else:
             selected_index = int(index) % count
         selected_file = files[selected_index]
-        print(f"[VNCCS Debug] Using pose preview file: {selected_file}")
+        log_event("pose_preview_selected", component="Creator", level="debug", character=character_name, index=selected_index, count=count)
         img = Image.open(selected_file).convert("RGB")
         return pil2tensor(img), selected_index, count
     except Exception as e:
-        print(f"[VNCCS] Pose Preview Fallback Failed: {e}")
+        log_event('fallback', component='Creator', level='warning', message=f'Pose Preview Fallback Failed: {e}', error=str(e))
         return None, None, 0
 
 
@@ -390,20 +391,6 @@ def get_lora_full_path(lora_name):
     return get_full_path_agnostic(folder_paths, "loras", lora_name, require_exists=True)
 
 
-def _validate_character_wizard_gguf(path, file_label="File"):
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"{file_label} was not written: {path}")
-
-    size = os.path.getsize(path)
-    if size < 1024 * 1024:
-        raise ValueError(f"{file_label} is too small to be a valid GGUF file ({size} bytes)")
-
-    with open(path, "rb") as file:
-        magic = file.read(4)
-    if magic != b"GGUF":
-        raise ValueError(f"{file_label} is not a valid GGUF file (magic={magic!r})")
-
-
 def _find_character_wizard_model():
     return _find_qwen_vl_model()
 
@@ -474,32 +461,8 @@ ATHLETIC_BODY_HINT_RE = re.compile(
 
 
 def _parse_character_wizard_json(content):
-    data = None
-    try:
-        import json_repair
-        data = json_repair.loads(content)
-    except Exception:
-        data = None
-
-    if isinstance(data, list) and data and isinstance(data[0], dict):
-        data = data[0]
-
-    if not isinstance(data, dict):
-        try:
-            json_str = content.strip()
-            if "```json" in json_str:
-                json_str = json_str.split("```json", 1)[1].split("```", 1)[0]
-            elif "```" in json_str:
-                json_str = json_str.split("```", 1)[1].split("```", 1)[0]
-            else:
-                match = re.search(r"\{.*\}", json_str, re.DOTALL)
-                if match:
-                    json_str = match.group(0)
-            data = json.loads(json_str.strip())
-        except Exception:
-            data = None
-
-    if not isinstance(data, dict):
+    data = parse_wizard_json(content)
+    if data is None:
         return None
 
     result = {}
@@ -732,31 +695,7 @@ def normalize_gen_settings(gen_settings):
     return merged
 
 
-def _call_loader_node(class_names, method_names, **kwargs):
-    mappings = getattr(nodes, "NODE_CLASS_MAPPINGS", {}) or {}
-    for class_name in class_names:
-        loader_cls = mappings.get(class_name)
-        if loader_cls is None:
-            continue
-        loader = loader_cls()
-        for method_name in method_names:
-            method = getattr(loader, method_name, None)
-            if method is None:
-                continue
-            signature = inspect.signature(method)
-            accepted_kwargs = {
-                key: value for key, value in kwargs.items()
-                if key in signature.parameters
-            }
-            result = method(**accepted_kwargs)
-            if isinstance(result, tuple):
-                return result[0]
-            return result
-    return None
-
-
-@inference_stage()
-def _call_node_method(class_names, method_names, **kwargs):
+def _invoke_node_method(class_names, method_names, **kwargs):
     mappings = getattr(nodes, "NODE_CLASS_MAPPINGS", {}) or {}
     for class_name in class_names:
         node_cls = mappings.get(class_name)
@@ -774,6 +713,16 @@ def _call_node_method(class_names, method_names, **kwargs):
             }
             return method(**accepted_kwargs)
     return None
+
+
+def _call_loader_node(class_names, method_names, **kwargs):
+    result = _invoke_node_method(class_names, method_names, **kwargs)
+    return result[0] if isinstance(result, tuple) else result
+
+
+@inference_stage()
+def _call_node_method(class_names, method_names, **kwargs):
+    return _invoke_node_method(class_names, method_names, **kwargs)
 
 
 def load_generation_clip(gen_settings):
@@ -864,6 +813,7 @@ def load_anima_assets(gen_settings):
 
 
 def load_generation_assets(gen_settings):
+    log_stage("loading generation models")
     generation_mode = str(gen_settings.get("generation_mode", "illustrious")).lower()
 
     if generation_mode in {"anima", "qi2"}:
@@ -917,16 +867,16 @@ def acquire_preview_assets(gen_settings):
         asset_key = (generation_mode, gen_settings.get("ckpt_name", ""))
 
     if PREVIEW_CACHE["asset_key"] == asset_key and PREVIEW_CACHE["asset_obj"]:
-        print(f"[VNCCS] Preview: Using Cached Assets {asset_key}")
+        log_stage("loading_models", component="Creator", cache="hit")
         model, clip, vae = PREVIEW_CACHE["asset_obj"]
         if generation_mode == "qi2":
             # Qwen3-VL generation mutates runtime state inside cond_stage_model.
             # ComfyUI's CLIP.clone() shares that object, so retaining it across
             # requests is unsafe after diffusion and VAE have displaced it.
-            print("[VNCCS] Preview: Loading fresh QI2 text encoder")
+            log_event("text_encoder", component="Creator", mode="qi2", cache="fresh")
             clip = load_generation_clip(gen_settings)
     else:
-        print(f"[VNCCS] Preview: Loading Assets {asset_key}")
+        log_stage("loading_models", component="Creator", cache="miss")
         _, model, clip, vae = load_generation_assets(gen_settings)
         PREVIEW_CACHE["asset_key"] = asset_key
         # Keep the expensive QI2 diffusion model and VAE. The Qwen3-VL text
@@ -966,8 +916,8 @@ def _qi2_prompt_rewriter_system_prompt():
             if prompt:
                 return prompt
         except OSError as exc:
-            print(f"[VNCCS Character Creator V2] Failed to read QI2 prompt rewriter file: {exc}")
-    print("[VNCCS Character Creator V2] QI2 prompt rewriter file is missing; using built-in fallback.")
+            log_event('warning', component='Creator', level='warning', message=f'Failed to read QI2 prompt rewriter file: {exc}', error=str(exc))
+    log_event("fallback", component="Creator", level="warning", message='QI2 prompt rewriter file is missing; using built-in fallback.')
     return QI2_PROMPT_REWRITER_FALLBACK
 
 
@@ -1102,8 +1052,7 @@ def _qi2_expanded_field_prompt(generated_text, fields):
             missing.append(key)
         phrases.append(sentence(_qi2_visual_phrase(source, description)))
     if missing:
-        print("[VNCCS Character Creator V2] QI2 PE omitted or returned invalid field expansions; "
-              f"retained original values for: {', '.join(missing)}")
+        log_event("fallback", component="Creator", level="warning", message=f"QI2 PE omitted or returned invalid field expansions; retained original values for: {', '.join(missing)}")
     literals = " ".join(fields[key] for key in ("aesthetics", "lora_prompt") if fields.get(key))
     return "\n\n".join(part for part in (composition, " ".join(phrases), literals) if part)
 
@@ -1148,6 +1097,7 @@ def encode_generation_conditioning(
     clip, vae, positive_text, negative_text, gen_settings, style_reference="", character_info=None,
 ):
     """QI2 callers supply a style-free body and the selected reference separately."""
+    log_stage("encoding the character prompt")
     if str(gen_settings.get("generation_mode", "illustrious")).lower() == "qi2":
         from .character_generator import _call_comfy_node
 
@@ -1202,6 +1152,7 @@ def prepare_qi2_model(model, gen_settings):
 
 
 def create_generation_latent(model, width, height, gen_settings, batch_size=1):
+    log_stage("creating the generation latent")
     if str(gen_settings.get("generation_mode", "illustrious")).lower() in {"anima", "qi2"}:
         generated = _call_node_method(
             ["EmptyLatentImage"],
@@ -1219,6 +1170,7 @@ def create_generation_latent(model, width, height, gen_settings, batch_size=1):
 
 @inference_stage()
 def sample_generation_latent(model, positive, negative, latent, seed, steps, cfg, sampler_name, scheduler, gen_settings, qi2_turbo=False):
+    log_stage("sampling the character image")
     if str(gen_settings.get("generation_mode", "illustrious")).lower() == "qi2":
         from .character_generator import VNCCS_CharacterGenerator
 
@@ -1312,6 +1264,7 @@ def validate_anima_conditioning(positive, negative, clip_name):
 
 @inference_stage()
 def decode_generation_samples(vae, samples, gen_settings):
+    log_stage("decoding the character image")
     def unwrap_latent_samples(value):
         while isinstance(value, (list, tuple)) and value:
             value = value[0]
@@ -1449,7 +1402,7 @@ if server:
             return web.json_response({})
             
         except Exception as e:
-            traceback.print_exc() # Print to console
+            log_event('exception', component='Creator', level='error', exc_info=True, message='Operation failed', error=str(e))
             return web.Response(status=500, text="Failed to load character info")
 
     @server.PromptServer.instance.routes.get("/vnccs/get_cached_preview")
@@ -1462,10 +1415,10 @@ if server:
             c_path = os.path.join(character_dir(character), "cache", "preview.png")
             if os.path.exists(c_path):
                 return web.FileResponse(c_path)
-            print(f"[VNCCS] Cached preview not found at: {c_path}")
+            log_event("warning", component="Creator", level="warning", message=f'Cached preview not found at: {c_path}')
             return web.Response(status=404)
         except Exception as e:
-            print(f"[VNCCS] Error serving cached preview: {e}")
+            log_event('warning', component='Creator', level='warning', message=f'Error serving cached preview: {e}', error=str(e))
             return web.Response(status=500, text=str(e))
 
     @server.PromptServer.instance.routes.get("/vnccs/get_character_pose_preview")
@@ -1500,7 +1453,7 @@ if server:
                 },
             )
         except Exception as e:
-            print(f"[VNCCS] Error serving character pose preview: {e}")
+            log_event('warning', component='Creator', level='warning', message=f'Error serving character pose preview: {e}', error=str(e))
             return web.Response(status=500, text=str(e))
 
     @server.PromptServer.instance.routes.get("/vnccs/get_character_pose_preview_meta")
@@ -1518,7 +1471,7 @@ if server:
             files = list_pose_preview_files(character, costume=costume)
             return web.json_response({"count": len(files)})
         except Exception as e:
-            print(f"[VNCCS] Error serving character pose preview metadata: {e}")
+            log_event('warning', component='Creator', level='warning', message=f'Error serving character pose preview metadata: {e}', error=str(e))
             return web.json_response({"count": 0, "error": str(e)}, status=500)
 
     @server.PromptServer.instance.routes.get("/vnccs/get_tags")
@@ -1541,6 +1494,7 @@ if server:
         except Exception as e:
             return web.Response(status=500, text=str(e))
 
+    @logged_operation("Creator", "wizard")
     def _character_wizard_response(post):
         try:
             try:
@@ -1566,7 +1520,7 @@ if server:
                 }, status=500)
 
             try:
-                _validate_character_wizard_gguf(model_path, os.path.basename(model_path))
+                _validate_gguf_file(model_path, os.path.basename(model_path))
             except Exception as e:
                 return web.json_response({
                     "error": "MODEL_INVALID",
@@ -1632,7 +1586,7 @@ Example:
 }}
 """
 
-            print(f"[CharacterCreatorV2] Character Wizard loading model: {model_path}")
+            log_stage("loading_wizard_model", component="Creator", model=os.path.basename(model_path))
             llm = llama_cpp.Llama(
                 model_path=model_path,
                 n_ctx=6144,
@@ -1641,6 +1595,7 @@ Example:
             )
 
             configure_qwen_text_chat(llm)
+            log_stage("generating_description")
             response = llm.create_chat_completion(
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -1650,8 +1605,9 @@ Example:
                 temperature=0.3,
             )
 
+            log_stage("parsing_description")
             content = response["choices"][0]["message"]["content"]
-            print(f"[CharacterCreatorV2] Character Wizard raw output: {content}")
+            log_event("wizard_output", component="Creator", level="debug", output=content)
             parsed = _parse_character_wizard_json(content or "")
             if parsed is None:
                 return web.json_response({
@@ -1663,7 +1619,7 @@ Example:
 
             return web.json_response(parsed)
         except Exception as e:
-            traceback.print_exc()
+            log_event('exception', component='Creator', level='debug', exc_info=True, message='Operation failed', error=str(e))
             return web.json_response({
                 "error": "INFERENCE_ERROR",
                 "message": f"Engine Error: {e}",
@@ -1682,6 +1638,7 @@ Example:
             return web.json_response({"error": "Request must be an object"}, status=400)
         return await run_wizard_job(_character_wizard_response, post, "character")
 
+    @logged_operation("Creator", "preview")
     def _generate_preview_response(data, style_preview=None):
         try:
             gen_settings = normalize_gen_settings(data.get("gen_settings", {}))
@@ -1690,6 +1647,8 @@ Example:
                 char_info = {**char_info, "image_type": "Portrait"}
                 char_info.pop("framing", None)
             character_name = data.get("character", "Unknown")
+            log_event("generation_settings", character=character_name,
+                      mode=gen_settings.get("generation_mode"), steps=gen_settings.get("steps"), cfg=gen_settings.get("cfg"))
 
             # Generate Prompt
             positive_text, negative_text = CharacterCreatorV2.construct_prompt(
@@ -1736,7 +1695,7 @@ Example:
                         if l_path:
                             lora_dict = comfy.utils.load_torch_file(l_path, safe_load=True)
                             PREVIEW_CACHE["loras"][l_name] = lora_dict
-                            print(f"[VNCCS] Preview: Cached LoRA '{l_name}'")
+                            log_event("lora_cache", component="Creator", level="debug", model=l_name)
                     
                     if lora_dict:
                         return comfy.sd.load_lora_for_models(m, c, lora_dict, l_strength, l_strength if clip_strength is None else clip_strength)
@@ -1834,7 +1793,7 @@ Example:
             return web.json_response({"image": img_b64})
 
         except Exception as e:
-            traceback.print_exc()
+            log_event('exception', component='Creator', level='debug', exc_info=True, message='Operation failed', error=str(e))
             return web.Response(status=500, text=str(e))
 
 
@@ -1846,7 +1805,7 @@ Example:
             data = await request.json()
             return await run_preview_job(_generate_preview_response, data)
         except Exception as exc:
-            traceback.print_exc()
+            log_event('exception', component='Creator', level='error', exc_info=True, message='Operation failed', error=str(exc))
             return web.json_response({"error": str(exc)}, status=500)
 
     @server.PromptServer.instance.routes.post("/vnccs/character_styles/preview")
@@ -1994,9 +1953,10 @@ class CharacterCreatorV2:
     @staticmethod
     def log_generation_prompts(context, positive_prompt, negative_prompt, framing=None):
         label = str(context or "Generation").strip() or "Generation"
-        print(f"[VNCCS Character Creator V2] {label} framing input: {framing!r}")
-        print(f"[VNCCS Character Creator V2] {label} positive generation prompt: {positive_prompt}")
-        print(f"[VNCCS Character Creator V2] {label} negative generation prompt: {negative_prompt}")
+        log_event("prompt_ready", component="Creator", context=label, framing=framing,
+                  positive_chars=len(positive_prompt), negative_chars=len(negative_prompt))
+        log_event("prompts", component="Creator", level="debug",
+                  positive=positive_prompt, negative=negative_prompt)
 
     @classmethod
     def IS_CHANGED(cls, widget_data="{}", **kwargs):
@@ -2007,6 +1967,7 @@ class CharacterCreatorV2:
         paths.extend(list_pose_preview_files(character))
         return json.dumps([file_fingerprint(path) for path in paths])
 
+    @logged_operation("Creator", "workflow")
     def process(self, widget_data="{}", unique_id=None):
         # Clear Preview Cache to free memory for workflow run
         global PREVIEW_CACHE
@@ -2026,6 +1987,8 @@ class CharacterCreatorV2:
         character_name = data.get("character", "Unknown")
         info = data.get("character_info", {})
         gen_settings = normalize_gen_settings(data.get("gen_settings", {}))
+        log_event("generation_settings", character=character_name,
+                  mode=gen_settings.get("generation_mode"), steps=gen_settings.get("steps"), cfg=gen_settings.get("cfg"))
         info_owner = str(info.get("name", "") or "").strip()
         if info_owner and info_owner != str(character_name):
             raise ValueError(
@@ -2100,9 +2063,9 @@ class CharacterCreatorV2:
                 # logic above parsed it into 'data' dict. use that.
                 preview_source = data.get("preview_source", "gen")
              else:
-                print(f"[VNCCS] Preview source ignored because widget data is not a dict: {type(data).__name__}")
+                log_event("diagnostic", component="Creator", level="debug", message=f'Preview source ignored because widget data is not a dict: {type(data).__name__}')
         
-        print(f"[VNCCS] Processing - Source: {preview_source}, Valid: {preview_valid}")
+        log_event("preview_source", component="Creator", character=character_name, source=preview_source, valid=preview_valid)
 
         # LOGIC:
         # 1. If source == 'pose' (User just loaded character), we MUST use a saved pose sprite.
@@ -2117,32 +2080,32 @@ class CharacterCreatorV2:
                       selected_index = int(selected_index)
                   except (TypeError, ValueError):
                       selected_index = None
-                  print(f"[VNCCS] Source is Pose. Force-loading selected pose preview index={selected_index}.")
+                  log_event("diagnostic", component="Creator", level="debug", message=f'Source is Pose. Force-loading selected pose preview index={selected_index}.')
                   image, _selected_index, _count = get_pose_preview(character_name, index=selected_index)
                   if image is not None:
-                       print("[VNCCS] Pose preview loaded successfully. Overwriting Cache.")
+                       log_event("diagnostic", component="Creator", level="debug", message='Pose preview loaded successfully. Overwriting Cache.')
                        c_img = tensor2pil(image)
                        with atomic_output_path(cache_path) as temporary:
                            c_img.save(temporary, format="PNG")
                   else:
-                       print("[VNCCS] Pose preview load failed. Will try cache/regen.")
+                       log_event("warning", component="Creator", level="warning", message='Pose preview load failed. Will try cache/regen.')
 
              # If image not set yet (source=gen OR pose load failed), try cache
              if image is None and os.path.exists(cache_path):
-                 print(f"[VNCCS] Smart Cache Hit: Loading existing preview for '{character_name}'")
+                 log_event("preview_cache", component="Creator", character=character_name, cache="hit")
                  try:
                      i = Image.open(cache_path)
                      image = pil2tensor(i)
                  except Exception as e:
-                     print(f"[VNCCS] Failed to load cache: {e}. Regenerating.")
+                     log_event('fallback', component='Creator', level='warning', message=f'Failed to load cache: {e}. Regenerating.', error=str(e))
 
         if image is None:
              # Fallback: If cache is missing (even if source=gen), try saved pose before regen
              if preview_valid:
-                 print(f"[VNCCS] Cache Miss. Attempting Pose Preview Fallback...")
+                 log_event("fallback", component="Creator", level="warning", message=f'Cache Miss. Attempting Pose Preview Fallback...')
                  image = get_random_pose_preview(character_name)
                  if image is not None:
-                     print(f"[VNCCS] Pose Preview Fallback Successful. Updating Cache.")
+                     log_event("fallback", component="Creator", level="warning", message=f'Pose Preview Fallback Successful. Updating Cache.')
                      c_img = tensor2pil(image)
                      with atomic_output_path(cache_path) as temporary:
                         c_img.save(temporary, format="PNG")
@@ -2150,15 +2113,17 @@ class CharacterCreatorV2:
                         # Notify Frontend
                         server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": unique_id, "character": character_name})
                      except Exception as e:
-                        print(f"[VNCCS] Failed to notify on pose preview fallback: {e}")
+                        log_event('fallback', component='Creator', level='warning', message=f'Failed to notify on pose preview fallback: {e}', error=str(e))
                  else:
-                     print(f"[VNCCS] Pose Preview Fallback Failed. Regenerating...")
+                     log_event("fallback", component="Creator", level="warning", message=f'Pose Preview Fallback Failed. Regenerating...')
 
         if image is None:
-            print(f"[VNCCS] Regenerating preview for '{character_name}' ({generation_mode}).")
+            log_event("preview_generation", component="Creator", character=character_name, mode=generation_mode)
             stage = "preparing generation"
+            log_stage(stage)
             try:
                 stage = "loading generation models"
+                log_stage(stage)
                 _, model, clip, vae = load_generation_assets(gen_settings)
 
                 # Helper to apply LoRA
@@ -2171,6 +2136,7 @@ class CharacterCreatorV2:
                     return m, c
 
                 stage = "applying generation adapters"
+                log_stage(stage)
                 # Apply DMD2
                 generation_mode = str(gen_settings.get("generation_mode", "illustrious")).lower()
                 if generation_mode == "anima":
@@ -2211,6 +2177,7 @@ class CharacterCreatorV2:
                     model, qi2_turbo = prepare_qi2_model(model, gen_settings)
 
                 stage = "encoding the character prompt"
+                log_stage(stage)
                 # Encode Conditioning
                 conditioning_pos, conditioning_neg, encoded_positive_prompt = encode_generation_conditioning(
                     clip,
@@ -2232,9 +2199,11 @@ class CharacterCreatorV2:
                     validate_anima_conditioning(conditioning_pos, conditioning_neg, gen_settings.get("clip_name", ""))
 
                 stage = "creating the generation latent"
+                log_stage(stage)
                 width, height = get_generation_resolution(gen_settings)
                 latent = create_generation_latent(model, width, height, gen_settings)
                 stage = "sampling the character image"
+                log_stage(stage)
                 sampled = sample_generation_latent(
                     model=model,
                     seed=resolve_generation_seed(gen_settings),
@@ -2250,27 +2219,27 @@ class CharacterCreatorV2:
                 )
                 
                 stage = "decoding the character image"
+                log_stage(stage)
                 image = decode_generation_samples(vae, sampled, gen_settings)
                 
                 # Update Cache
                 stage = "saving the preview cache"
+                log_stage(stage)
                 c_img = tensor2pil(image)
                 with atomic_output_path(cache_path) as temporary:
                     c_img.save(temporary, format="PNG")
-                print(f"[VNCCS] Saved new preview cache to {cache_path}")
+                log_event("preview_saved", component="Creator", character=character_name)
                 try:
                     # Notify Frontend
                     server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": unique_id, "character": character_name})
                 except Exception as e:
-                    print(f"[VNCCS] Failed to notify preview update: {e}")
+                    log_event('warning', component='Creator', level='warning', message=f'Failed to notify preview update: {e}', error=str(e))
 
             except Exception as e:
                 message = (
                     f"Character Creator V2 failed while {stage} for '{character_name}' "
                     f"(node {unique_id}, model family {generation_mode}): {type(e).__name__}: {e}"
                 )
-                print(f"[VNCCS] ERROR: {message}", flush=True)
-                traceback.print_exc()
                 raise RuntimeError(message) from e
 
         # Get background color

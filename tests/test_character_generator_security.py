@@ -15,6 +15,14 @@ pytest.importorskip("torch")
 from nodes import character_generator as cg
 
 
+@pytest.mark.parametrize("node", [cg.VNCCS_CharacterCloneGenerator, cg.VNCCS_ClothesGenerator])
+def test_generator_variants_inherit_fresh_compatible_input_schemas(node):
+    assert node.INPUT_TYPES() == cg.VNCCS_CharacterGenerator.INPUT_TYPES()
+    schema = node.INPUT_TYPES()
+    schema["required"].pop("poses")
+    assert "poses" in node.INPUT_TYPES()["required"]
+
+
 def test_chroma_key_presets_use_edge_safe_tolerance_scale():
     tolerances = {
         name: values["tolerance"]

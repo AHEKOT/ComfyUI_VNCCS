@@ -1,4 +1,5 @@
 """Bounded, workflow-scoped live inputs for regenerating without submitting a graph."""
+from ..operation_logger import log_event
 
 from collections import OrderedDict
 import hashlib
@@ -51,7 +52,7 @@ def generator_execution_lock(unique_id, scope=None):
                         prune_workflow_caches(context["cache_dir"])
                     except OSError as error:
                         # Retry on the next run; cleanup must not mask its result.
-                        print(f"[VNCCS] Could not prune inactive generator caches: {error}")
+                        log_event('warning', component='GeneratorCache', level='warning', message=f'Could not prune inactive generator caches: {error}', error=str(error))
 
 
 def serialized_generator(process):

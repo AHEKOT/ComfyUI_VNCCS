@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, workflowScope, cacheIdentity, watchConnection } from "./vnccs_transport.js";
-import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
+import { showModal as showCommonModal, registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, resolutionScaleMegapixels, finiteResolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
 
 const GENERATOR_QWEN_INSTRUCTION = "Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.";
 const QI2_EMOTION_PROMPT_TEMPLATE = "Upscale face image.\nMake character's face emotion {emotion}\nChange only face. Keep original neck colour, clothes and hairs\nkeep character's clothes";
@@ -8,32 +8,6 @@ const QI2_EMOTION_BBOX_DEFAULTS = Object.freeze({
     bbox_threshold: 0.3,
     drop_size: 10,
 });
-const RESOLUTION_SCALE_BASE = 1024;
-const RESOLUTION_SCALE_MIN_MP = 1;
-const RESOLUTION_SCALE_MAX_MP = 4;
-const RESOLUTION_SCALE_STEP_MP = 0.1;
-const RESOLUTION_SCALE_PRESETS = new Map([
-    [1.3, 1344],
-    [1.5, 1536],
-]);
-
-function resolutionScaleMegapixels(value) {
-    const numeric = Number(value);
-    const megapixels = Number.isFinite(numeric) ? numeric / RESOLUTION_SCALE_BASE : RESOLUTION_SCALE_MIN_MP;
-    return Math.max(RESOLUTION_SCALE_MIN_MP, Math.min(RESOLUTION_SCALE_MAX_MP, megapixels));
-}
-
-function resolutionScaleValue(megapixels) {
-    const numeric = Number(megapixels);
-    const clamped = Math.max(RESOLUTION_SCALE_MIN_MP, Math.min(RESOLUTION_SCALE_MAX_MP, Number.isFinite(numeric) ? numeric : RESOLUTION_SCALE_MIN_MP));
-    const stepped = Number((Math.round(clamped / RESOLUTION_SCALE_STEP_MP) * RESOLUTION_SCALE_STEP_MP).toFixed(1));
-    return RESOLUTION_SCALE_PRESETS.get(stepped) ?? Math.round(stepped * RESOLUTION_SCALE_BASE);
-}
-
-function resolutionScaleText(value) {
-    return `${resolutionScaleMegapixels(value).toFixed(1)} MP`;
-}
-
 const DEFAULT_DATA = {
     nsfw_enabled: true,
     emotion_pairs: [],
@@ -1089,7 +1063,7 @@ function readData(node) {
             data.upscaler.color_correction = "lab";
         }
         for (const section of ["common", "pose_generation", "remove_clothes"]) {
-            data[section].target_size = resolutionScaleValue(resolutionScaleMegapixels(data[section].target_size));
+            data[section].target_size = finiteResolutionScaleValue(resolutionScaleMegapixels(data[section].target_size));
         }
         normalizeUpscalerSettings(data);
         return data;
@@ -1759,7 +1733,7 @@ class CharacterGeneratorWidget {
             input.step = String(RESOLUTION_SCALE_STEP_MP);
             input.value = resolutionScaleMegapixels(current).toFixed(1);
             input.oninput = () => {
-                draft[field.section][field.key] = resolutionScaleValue(input.value);
+                draft[field.section][field.key] = finiteResolutionScaleValue(input.value);
                 value.textContent = resolutionScaleText(draft[field.section][field.key]);
             };
             wrap.append(caption, value, input);
@@ -1941,32 +1915,21 @@ class CharacterGeneratorWidget {
 
     showModal(title, message) {
         this.closeModal();
-        const backdrop = document.createElement("div");
-        backdrop.className = "vnccs-pipe-modal-backdrop";
-        const modal = document.createElement("div");
-        modal.className = "vnccs-pipe-modal";
-        const heading = document.createElement("div");
-        heading.className = "vnccs-pipe-modal-title";
-        heading.textContent = title || "Message";
-        const body = document.createElement("div");
-        body.className = "vnccs-pipe-modal-body";
-        body.textContent = message || "";
-        const actions = document.createElement("div");
-        actions.className = "vnccs-pipe-modal-actions";
-        const ok = document.createElement("button");
-        ok.type = "button";
-        ok.className = "vnccs-pipe-modal-btn";
-        ok.textContent = "OK";
-        ok.onclick = () => this.closeModal();
-        actions.appendChild(ok);
-        modal.append(heading, body, actions);
-        backdrop.appendChild(modal);
-        backdrop.onclick = (event) => {
-            if (event.target === backdrop) this.closeModal();
+        const dialog = showCommonModal(this.root, title || "Message", () => {
+            const body = document.createElement("div");
+            body.className = "vnccs-pipe-modal-body";
+            body.textContent = message || "";
+            return body;
+        }, [{ text: "OK", autofocus: true, action: () => this.closeModal() }]);
+        dialog.overlay.className = "vnccs-pipe-modal-backdrop";
+        dialog.modal.className = "vnccs-pipe-modal";
+        dialog.title.className = "vnccs-pipe-modal-title";
+        dialog.actions.className = "vnccs-pipe-modal-actions";
+        dialog.buttons[0].className = "vnccs-pipe-modal-btn";
+        dialog.overlay.onclick = event => {
+            if (event.target === dialog.overlay) this.closeModal();
         };
-        this.root.appendChild(backdrop);
-        this.modalEl = backdrop;
-        ok.focus();
+        this.modalEl = dialog.overlay;
     }
 
     validateNativeSeedvr(showModal = false) {
@@ -2138,7 +2101,7 @@ class CharacterGeneratorWidget {
             const saved = this.data.ui?.resolution_by_model?.[modelKey];
             const savedSize = saved?.target_size ?? saved;
             if (Number.isFinite(savedSize)) {
-                settings.target_size = resolutionScaleValue(resolutionScaleMegapixels(savedSize));
+                settings.target_size = finiteResolutionScaleValue(resolutionScaleMegapixels(savedSize));
             } else if (previousKey || (previousKind && previousKind !== kind) || (!previousKind && Number(settings.target_size) === 1024)) {
                 // Use family defaults only for a model without a saved choice.
                 settings.target_size = kind === "minimaxh3" ? 1536 : 1024;
@@ -2187,10 +2150,6 @@ class CharacterGeneratorWidget {
             window.removeEventListener("vnccs-control-center-model-changed", sync);
             clearInterval(timer);
         });
-    }
-
-    syncCharacterNameFromCreator() {
-        return this.syncCharacterSourceData();
     }
 
     syncCharacterSourceData() {
@@ -2676,22 +2635,6 @@ class CharacterGeneratorWidget {
         return uniqueOptions([currentValue ?? this.data.upscaler[inputName], ...(opts || fallback || [])]);
     }
 
-    getWorkflowModelOptions(nodeName, inputName, workflowOptions, currentValue = null) {
-        const spec = this.getInputSpec(nodeName, inputName);
-        const nodeOptions = Array.isArray(spec?.[0]) ? spec[0] : [];
-        return uniqueOptions([currentValue, ...workflowOptions, ...nodeOptions]);
-    }
-
-    syncSelectToOptions(section, key, options) {
-        const values = options || [];
-        if (!values.length) return values;
-        if (!values.includes(this.data[section][key])) {
-            this.data[section][key] = values[0];
-            writeData(this.node, this.data);
-        }
-        return values;
-    }
-
     protectNativeControl(input) {
         if (!input || input._vnccsNativeControlProtected) return input;
         input._vnccsNativeControlProtected = true;
@@ -2839,7 +2782,7 @@ class CharacterGeneratorWidget {
         slider.setAttribute("aria-label", "Resolution scale in megapixels");
         this.protectNativeControl(slider);
         slider.oninput = () => {
-            const targetSize = resolutionScaleValue(slider.value);
+            const targetSize = finiteResolutionScaleValue(slider.value);
             value.textContent = resolutionScaleText(targetSize);
             slider.style.setProperty("--fill", `${((Number(slider.value) - 1) / 3) * 100}%`);
             this.set(section, key, targetSize);

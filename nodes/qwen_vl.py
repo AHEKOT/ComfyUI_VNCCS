@@ -1,6 +1,9 @@
 """Lightweight helpers for Qwen VL llama-cpp-python integration."""
+from ..operation_logger import log_event, log_stage, logged_operation
 
+import json
 import os
+import re
 import threading
 
 try:
@@ -82,6 +85,38 @@ _QWEN_VL_DOWNLOAD_STATUS = {
     "error": "",
 }
 
+def parse_wizard_json(content):
+    data = None
+    try:
+        import json_repair
+        data = json_repair.loads(content)
+    except Exception:
+        data = None
+
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        data = data[0]
+
+    if not isinstance(data, dict):
+        try:
+            json_str = content.strip()
+            if "```json" in json_str:
+                json_str = json_str.split("```json", 1)[1].split("```", 1)[0]
+            elif "```" in json_str:
+                json_str = json_str.split("```", 1)[1].split("```", 1)[0]
+            else:
+                match = re.search(r"\{.*\}", json_str, re.DOTALL)
+                if match:
+                    json_str = match.group(0)
+            data = json.loads(json_str.strip())
+        except Exception:
+            data = None
+
+    if not isinstance(data, dict):
+        return None
+
+    return data
+
+
 def _validate_gguf_file(path, file_label="File"):
     if not os.path.exists(path):
         raise FileNotFoundError(f"{file_label} was not written: {path}")
@@ -151,6 +186,7 @@ def _reset_qwen_vl_download_status(status="idle"):
         "error": "",
     })
 
+@logged_operation("QwenVL", "download_asset")
 def _download_qwen_vl_file(repo_id, filename, target_dir, revision=None):
     if hf_hub_download is None:
         raise RuntimeError(
@@ -158,7 +194,7 @@ def _download_qwen_vl_file(repo_id, filename, target_dir, revision=None):
             f"'{filename}' in '{target_dir}'."
         )
     os.makedirs(target_dir, exist_ok=True)
-    print(f"[VNCCS QwenVL] Downloading '{filename}' from Hugging Face repo '{repo_id}'...")
+    log_stage("download", component="QwenVL", file=filename, repository=repo_id)
     _set_qwen_vl_download_status(
         status="downloading",
         current_file=filename,
@@ -191,7 +227,7 @@ def _download_qwen_vl_file(repo_id, filename, target_dir, revision=None):
             downloaded_size=downloaded_size,
             total_size=downloaded_size,
         )
-        print(f"[VNCCS QwenVL] File ready: {path}")
+        log_event("asset_ready", component="QwenVL", file=filename, bytes=downloaded_size)
         return path
     except Exception:
         raise
@@ -259,6 +295,33 @@ def _qwen_vl_download_worker(require_mmproj=True):
         _set_qwen_vl_download_status(status="completed", progress=100, current_file="Qwen3.5 assets ready", error="")
     except Exception as exc:
         _set_qwen_vl_download_status(status="error", error=str(exc))
+        log_event("download_failed", component="QwenVL", level="error", error=str(exc))
+
+def _start_qwen_vl_download(require_mmproj=True):
+    if _QWEN_VL_DOWNLOAD_STATUS.get("status") == "downloading":
+        return web.json_response(dict(_QWEN_VL_DOWNLOAD_STATUS), status=409)
+    try:
+        model_path = _find_qwen_vl_model()
+        mmproj_path = _find_qwen_vl_mmproj(model_path) if model_path else None
+        if model_path and (mmproj_path or not require_mmproj):
+            _validate_gguf_file(model_path, os.path.basename(model_path))
+            if require_mmproj:
+                _validate_gguf_file(mmproj_path, os.path.basename(mmproj_path))
+            _set_qwen_vl_download_status(
+                status="completed",
+                progress=100,
+                current_file="QwenVL assets ready",
+                error="",
+            )
+            return web.json_response(dict(_QWEN_VL_DOWNLOAD_STATUS))
+    except Exception:
+        pass
+
+    _reset_qwen_vl_download_status("downloading")
+    thread = threading.Thread(target=_qwen_vl_download_worker, args=(require_mmproj,), daemon=True)
+    thread.start()
+    return web.json_response({"status": "started"})
+
 
 if server is not None and web is not None:
     @server.PromptServer.instance.routes.get("/vnccs/qwen_vl_model_status")
@@ -277,26 +340,4 @@ if server is not None and web is not None:
     @privileged_route
     async def qwen_vl_download_model(request):
         require_mmproj = request.rel_url.query.get("vision") != "false"
-        if _QWEN_VL_DOWNLOAD_STATUS.get("status") == "downloading":
-            return web.json_response(dict(_QWEN_VL_DOWNLOAD_STATUS), status=409)
-        try:
-            model_path = _find_qwen_vl_model()
-            mmproj_path = _find_qwen_vl_mmproj(model_path) if model_path else None
-            if model_path and (mmproj_path or not require_mmproj):
-                _validate_gguf_file(model_path, os.path.basename(model_path))
-                if require_mmproj:
-                    _validate_gguf_file(mmproj_path, os.path.basename(mmproj_path))
-                _set_qwen_vl_download_status(
-                    status="completed",
-                    progress=100,
-                    current_file="QwenVL assets ready",
-                    error="",
-                )
-                return web.json_response(dict(_QWEN_VL_DOWNLOAD_STATUS))
-        except Exception:
-            pass
-
-        _reset_qwen_vl_download_status("downloading")
-        thread = threading.Thread(target=_qwen_vl_download_worker, args=(require_mmproj,), daemon=True)
-        thread.start()
-        return web.json_response({"status": "started"})
+        return _start_qwen_vl_download(require_mmproj)

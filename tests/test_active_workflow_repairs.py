@@ -75,7 +75,7 @@ def test_creator_reuses_saved_preview_without_loading_models(runtime, monkeypatc
 
 
 @pytest.mark.parametrize('failed_stage', ['loading generation models', 'sampling the character image', 'decoding the character image'])
-def test_creator_errors_include_stage_and_traceback(runtime, monkeypatch, capsys, failed_stage):
+def test_creator_errors_include_stage_and_optional_traceback(runtime, monkeypatch, caplog, failed_stage):
     creator = runtime.creator
     monkeypatch.setattr(creator, 'load_generation_assets', lambda *a: ('key', object(), object(), object()))
     monkeypatch.setattr(creator, 'encode_generation_conditioning', lambda *a, **k: ('pos', 'neg', 'prompt'))
@@ -90,10 +90,12 @@ def test_creator_errors_include_stage_and_traceback(runtime, monkeypatch, capsys
     with pytest.raises(RuntimeError, match=failed_stage) as caught:
         creator.CharacterCreatorV2().process(json.dumps({'character': 'Alice', 'preview_valid': False}), unique_id='42')
     assert isinstance(caught.value.__cause__, RuntimeError)
-    logged = capsys.readouterr()
-    assert 'Alice' in logged.out and 'node 42' in logged.out
-    assert 'simulated device error' in logged.out
-    assert 'Traceback' in logged.err
+    failures = [record for record in caplog.records if record.name == 'VNCCS' and record.vnccs['event'] == 'failed']
+    assert len(failures) == 1
+    assert failures[0].vnccs['node_id'] == '42'
+    assert 'Alice' in failures[0].vnccs['error'] and failed_stage in failures[0].vnccs['error']
+    assert 'simulated device error' in failures[0].vnccs['error']
+    assert failures[0].exc_info is None
 
 
 def test_clothes_cache_and_comfy_signature_follow_primary_reference(runtime, tmp_path, monkeypatch):

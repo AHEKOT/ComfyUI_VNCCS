@@ -81,6 +81,56 @@ test('shared modal labels, traps focus, and restores its opener', () => {
     assert.equal(h.observers.filter(item => item.active).length, 0);
 });
 
+test('Generator message delegates to the shared dialog and preserves its styling and dismissal', async () => {
+    const h = domHarness();
+    h.context.showCommonModal = h.context.openModal;
+    h.context.root = h.document.body.appendChild(new h.Element('div'));
+    const text = source('vnccs_character_generator');
+    vm.runInContext(`class Widget {
+        ${between(text, '    showModal(title, message) {', '    validateNativeSeedvr(')}
+        ${between(text, '    closeModal() {', '    async responseErrorMessage(')}
+    }; globalThis.widget = new Widget(); widget.root = root; widget.showModal('Failed', 'Try again');`, h.context);
+    h.flush();
+    const overlay = h.context.widget.modalEl, modal = overlay.children[0];
+    const button = modal.descendants().find(item => item.tagName === 'BUTTON');
+    assert.equal(overlay.className, 'vnccs-pipe-modal-backdrop');
+    assert.equal(modal.className, 'vnccs-pipe-modal');
+    assert.equal(modal.children[0].className, 'vnccs-pipe-modal-title');
+    assert.equal(modal.children[1].textContent, 'Try again');
+    assert.equal(button.className, 'vnccs-pipe-modal-btn');
+    assert.equal(h.document.activeElement, button);
+    await button.click();
+    assert.equal(h.context.widget.modalEl, null);
+    assert.equal(h.listeners.get('focusin').size, 0);
+    h.context.widget.showModal('Again', 'Message');
+    h.context.widget.modalEl.onclick({ target: h.context.widget.modalEl });
+    assert.equal(h.context.widget.modalEl, null);
+});
+
+test('Emotion message retains confirm focus, text safety, styling and callbacks through the shared dialog', async () => {
+    const h = domHarness();
+    h.context.showCommonModal = h.context.openModal;
+    h.context.container = h.document.body.appendChild(new h.Element('div'));
+    h.context.confirm = () => { h.context.confirmed = true; };
+    const text = source('vnccs_emotion_v2');
+    vm.runInContext(`${between(text, '                function showModalText(', '                function createCustomEmotionField(')}
+        showModalText('Confirm', '<b>literal</b>', confirm);`, h.context);
+    h.flush();
+    const overlay = h.context.container.children[0], modal = overlay.children[0];
+    const buttons = modal.descendants().filter(item => item.tagName === 'BUTTON');
+    assert.equal(overlay.className, 'ems-modal-backdrop');
+    assert.equal(modal.className, 'ems-modal');
+    assert.equal(modal.children[0].hidden, true);
+    assert.equal(modal.children[1].children[2].textContent, '<b>literal</b>');
+    assert.equal(buttons[0].className, 'ems-modal-btn ems-modal-btn--cancel');
+    assert.equal(buttons[1].className, 'ems-modal-btn ems-modal-btn--confirm');
+    assert.equal(h.document.activeElement, buttons[1]);
+    await buttons[1].click();
+    assert.equal(h.context.confirmed, true);
+    assert.equal(overlay.isConnected, false);
+    assert.equal(h.listeners.get('focusin').size, 0);
+});
+
 test('nested modal and container removal clean up focus listeners', () => {
     const h = domHarness();
     const container = h.document.body.appendChild(new h.Element('div'));

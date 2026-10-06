@@ -200,7 +200,7 @@ def test_custom_lora_rejects_invalid_bodies_before_persistence(handler, field, i
     assert result.status == 400
 
 
-def test_generator_cleanup_warning_keeps_successful_publication(tmp_path, monkeypatch, capsys):
+def test_generator_cleanup_warning_keeps_successful_publication(tmp_path, monkeypatch, caplog):
     target = tmp_path / "Alice" / "Sprites" / "Naked" / "Neutral"
     target.mkdir(parents=True)
     Image.new("RGB", (2, 2), "red").save(target / "old.png")
@@ -216,7 +216,7 @@ def test_generator_cleanup_warning_keeps_successful_publication(tmp_path, monkey
     with Image.open(paths[0]) as image:
         assert image.getpixel((0, 0)) == (255, 255, 255)
     assert (target / "V1" / "old.png").exists()
-    assert "Sprites published; could not remove rollback directory" in capsys.readouterr().out
+    assert "Sprites published; could not remove rollback directory" in caplog.text
 
 
 def test_cloner_grid_limits_apply_before_decoding(tmp_path, monkeypatch):

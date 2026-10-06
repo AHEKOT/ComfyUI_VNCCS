@@ -356,7 +356,7 @@ def generator_module(monkeypatch):
     module(package, __path__=[str(root)])
     module(package + '.nodes', __path__=[str(root / 'nodes')])
     monkeypatch.setitem(sys.modules, package + '.utils', utils)
-    tensor = module('torch', is_tensor=lambda value: False)
+    tensor = module('torch', Tensor=object, is_tensor=lambda value: False)
     tensor.nn = module('torch.nn')
     tensor.nn.functional = module('torch.nn.functional')
     prefix = package + '.nodes.'
@@ -369,7 +369,11 @@ def generator_module(monkeypatch):
            _find_model_on_disk=lambda *a: None, _rel_within_folder=lambda *a: None,
            _entry_kind=lambda entry: '')
     module(prefix + 'qi2_viggle', apply_viggle_turbo_lora=lambda *a: None, viggle_turbo_sigmas=lambda *a: None)
-    module(prefix + 'image_processing', ChromaKeyProcessor=object, fill_alpha_with_color=object)
+    module('cv2')
+    spec = importlib.util.spec_from_file_location(prefix + 'image_processing', root / 'nodes/image_processing.py')
+    image_processing = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, image_processing)
+    spec.loader.exec_module(image_processing)
     spec = importlib.util.spec_from_file_location(prefix + 'character_generator', root / 'nodes/character_generator.py')
     generator = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, spec.name, generator)

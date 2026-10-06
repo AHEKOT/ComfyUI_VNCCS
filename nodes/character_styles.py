@@ -1,4 +1,5 @@
 """User-owned style library; packaged updates never write this file."""
+from ..operation_logger import log_event
 
 import json
 import math
@@ -77,11 +78,7 @@ def save_style_preview(style_id, image):
             if stored.format != "WEBP" or stored.size != image.size:
                 raise OSError("Style preview could not be verified on disk")
         verified = time.perf_counter()
-    print(
-        f"[VNCCS Style Preview] Saved {style_id} ({image.width}x{image.height}, WebP): "
-        f"encode/write={encoded - started:.3f}s, verify={verified - encoded:.3f}s, "
-        f"publish={time.perf_counter() - verified:.3f}s"
-    )
+    log_event("preview_saved", component="Styles", style=style_id, width=image.width, height=image.height, encode_s=round(encoded - started, 3), verify_s=round(verified - encoded, 3), publish_s=round(time.perf_counter() - verified, 3))
     return {"style_id": style_id, "image": style_preview_url(style_id), "width": image.width, "height": image.height, "saved": True, "path": path}
 
 

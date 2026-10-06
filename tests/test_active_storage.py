@@ -111,7 +111,7 @@ def test_regeneration_retains_other_current_images(tmp_path):
     assert (target / "two.png").read_bytes() == b"old"
 
 
-def test_post_commit_cleanup_warns_without_rejecting_published_images(tmp_path, monkeypatch, capsys):
+def test_post_commit_cleanup_warns_without_rejecting_published_images(tmp_path, monkeypatch, caplog):
     target = tmp_path / "Neutral"
     target.mkdir()
     (target / "old.png").write_bytes(b"old")
@@ -127,7 +127,7 @@ def test_post_commit_cleanup_warns_without_rejecting_published_images(tmp_path, 
     assert (target / "V1" / "old.png").read_bytes() == b"old"
     backups = list(tmp_path.glob(".vnccs-rollback-*"))
     assert len(backups) == 1
-    assert str(backups[0]) in capsys.readouterr().out
+    assert str(backups[0]) in caplog.text
 
 
 

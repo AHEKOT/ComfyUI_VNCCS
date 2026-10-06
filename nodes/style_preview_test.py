@@ -1,4 +1,5 @@
 """Standalone randomized single-image preview for Character Creator V2 styles."""
+from ..operation_logger import log_event, logged_operation
 
 import json
 import math
@@ -254,7 +255,7 @@ def _analyze_breast_size(image):
             "sampling_mode": {"sampling_mode": "off"},
         },
     )[0]
-    print(f"[VNCCS Style Preview Test] Breast size analysis raw response: {generated!r}")
+    log_event("analysis_output", component="StylePreview", level="debug", output=generated)
     return generated
 
 
@@ -328,6 +329,7 @@ class VNCCSStylePreviewTest:
     def IS_CHANGED(cls, **_kwargs):
         return float("nan")
 
+    @logged_operation("StylePreview", "generate")
     @inference_stage()
     def generate(self, model, scale_mp, background_color, turbo_enabled=False,
                  anima_style_override=False, age_min=18, age_max=40, nsfw_mode="SFW",
@@ -410,11 +412,11 @@ class VNCCSStylePreviewTest:
         os.makedirs(output_dir, exist_ok=True)
         path, filename = _next_output_path(output_dir, mode, style_id)
         tensor2pil(image).save(path)
-        print(f"[VNCCS Style Preview Test] Saved {path}")
+        log_event("preview_saved", component="StylePreview", file=os.path.basename(path))
         if info["age"] >= 1:
             breast_size = _analyze_breast_size(image)
             _set_observed_breast_size(info, breast_size)
-            print(f"[VNCCS Style Preview Test] Observed body breast size: {breast_size}")
+            log_event("body_analysis", component="StylePreview", breast_size=breast_size)
         if mode == "anima" or info["age"] >= 1:
             rewrite_clip = load_generation_clip(normalize_gen_settings(QI2_DEFAULTS))
             prompt = _rewrite_preview_output(rewrite_clip, info, style_reference)

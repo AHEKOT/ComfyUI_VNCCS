@@ -8,13 +8,16 @@ STYLE_CATALOG = json.loads(
 )
 
 
+COMMON = (Path(__file__).resolve().parents[1] / "web" / "vnccs_common.js").read_text(encoding="utf-8")
+
+
 def test_resolution_scale_is_a_one_to_four_megapixel_slider():
     assert 'resolutionSlider.type = "range"' in SOURCE
-    assert "RESOLUTION_SCALE_MIN_MP = 1" in SOURCE
-    assert "RESOLUTION_SCALE_MAX_MP = 4" in SOURCE
-    assert "RESOLUTION_SCALE_STEP_MP = 0.1" in SOURCE
-    assert "[1.3, 1344]" in SOURCE
-    assert "[1.5, 1536]" in SOURCE
+    assert "RESOLUTION_SCALE_MIN_MP = 1" in COMMON
+    assert "RESOLUTION_SCALE_MAX_MP = 4" in COMMON
+    assert "RESOLUTION_SCALE_STEP_MP = 0.1" in COMMON
+    assert "[1.3, 1344]" in COMMON
+    assert "[1.5, 1536]" in COMMON
     assert "resolutionScaleValue(resolutionSlider.value)" in SOURCE
     assert 'resolutionLabel.textContent = "Resolution scale"' in SOURCE
 

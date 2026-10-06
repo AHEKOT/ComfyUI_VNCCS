@@ -1,3 +1,5 @@
+from ..operation_logger import log_event, log_stage, logged_operation
+
 from .preview_runtime import run_preview_job
 import json
 import os
@@ -23,7 +25,6 @@ from aiohttp import web
 from huggingface_hub import hf_hub_download
 from PIL import Image
 import numpy as np
-import traceback
 import struct
 
 try:
@@ -49,29 +50,6 @@ except Exception:
         validate_privileged_request,
         privileged_route,
     )
-
-
-class AnyType(str):
-    def __ne__(self, other):
-        return False
-
-
-any_type = AnyType("*")
-
-
-class _TautologyStr(str):
-    def __ne__(self, other):
-        return False
-
-
-class _ByPassTypeTuple(tuple):
-    def __getitem__(self, index):
-        if index > 0:
-            index = 0
-        item = super().__getitem__(index)
-        if isinstance(item, str):
-            return _TautologyStr(item)
-        return item
 
 
 _CC_CONFIG_CACHE = {}
@@ -435,7 +413,7 @@ def _purge_legacy_download_credentials():
             if path and os.path.isfile(path):
                 os.remove(path)
         except OSError as exc:
-            print(f"[VNCCS Control Center] Failed to remove obsolete secret store '{path}': {exc}")
+            log_event('warning', component='ControlCenter', level='warning', message=f"Failed to remove obsolete secret store '{path}': {exc}", error=str(exc))
 
 
 _purge_legacy_download_credentials()
@@ -760,10 +738,10 @@ def _sync_packaged_cc_config(repo_id, data):
                 json.dump(data, handle, indent=2, ensure_ascii=False)
                 handle.write("\n")
             os.replace(tmp_path, target)
-            print(f"[VNCCS Control Center] Replaced local catalog from '{repo_id}'.")
+            log_event("catalog_updated", component="ControlCenter", repository=repo_id)
             return True
     except Exception as exc:
-        print(f"[VNCCS Control Center] Failed to update packaged catalog: {exc}")
+        log_event('warning', component='ControlCenter', level='warning', message=f'Failed to update packaged catalog: {exc}', error=str(exc))
         if tmp_path:
             try:
                 if os.path.exists(tmp_path):
@@ -811,7 +789,7 @@ def _get_cc_config(repo_id, prefer_remote=False):
         except Exception as exc:
             if not _uses_packaged_cc_config(repo_id):
                 raise
-            print(f"[VNCCS Control Center] Remote catalog unavailable; using local catalog: {exc}")
+            log_event('fallback', component='ControlCenter', level='warning', message=f'Remote catalog unavailable; using local catalog: {exc}', error=str(exc))
             path = _get_packaged_cc_path()
     with open(path, "r", encoding="utf-8") as handle:
         data = _without_gan_upscalers(json.load(handle))
@@ -1010,7 +988,7 @@ def _find_model_on_disk(local_path):
                     if os.path.exists(candidate):
                         return candidate, True
             except Exception as exc:
-                print(f"[VNCCS Control Center] folder_paths.get_folder_paths failed for {key}: {exc}")
+                log_event('warning', component='ControlCenter', level='warning', message=f'folder_paths.get_folder_paths failed for {key}: {exc}', error=str(exc))
 
     try:
         fallback = _resolve_model_download_path(local_path)
@@ -1094,26 +1072,6 @@ def _apply_active_installed_paths(config):
             updated.append(entry)
         result[category] = updated
     return result
-
-
-def _build_dynamic_paths(config, output_slot_names):
-    all_entries = {}
-    for entry in config.get("controlnet", []):
-        all_entries[entry["name"]] = entry
-    for entry in config.get("other", []):
-        all_entries[entry["name"]] = entry
-
-    paths = []
-    for name in output_slot_names or []:
-        if not name or name == "-":
-            continue
-        entry = all_entries.get(name)
-        if not entry:
-            paths.append("")
-            continue
-        _, exists = _find_model_on_disk(entry["local_path"])
-        paths.append(_rel_within_folder(entry["local_path"]) if exists else "")
-    return paths
 
 
 def _normalize_meta_value(value):
@@ -1304,11 +1262,7 @@ def _load_gguf(full_path):
 
     loader_info = _describe_gguf_loader(loader_cls)
     if loader_info.get("warning"):
-        print(
-            "[VNCCS Control Center] Warning: "
-            f"{loader_info['warning']} Active loader: "
-            f"{loader_info.get('folder') or loader_info.get('module') or loader_info.get('file') or 'unknown'}"
-        )
+        log_event("warning", component="ControlCenter", level="warning", message=f"Warning: {loader_info['warning']} Active loader: {loader_info.get('folder') or loader_info.get('module') or loader_info.get('file') or 'unknown'}")
 
     def load():
         loader = loader_cls()
@@ -1328,60 +1282,8 @@ def _load_gguf(full_path):
     return _cached_model_asset("model", (full_path,), ("gguf", loader_cls), load)
 
 
-def _get_nunchaku_load_candidates(full_path):
-    # TECH DEBT: Nunchaku loading is disabled. Keep this legacy helper only so
-    # stale imports fail gracefully until the old code is deleted.
-    normalized = os.path.abspath(full_path)
-    candidates = []
-
-    def add_candidate(path):
-        if not path:
-            return
-        abs_path = os.path.abspath(path)
-        if abs_path not in candidates:
-            candidates.append(abs_path)
-
-    if os.path.isdir(normalized):
-        add_candidate(normalized)
-        return candidates
-
-    parent_dir = os.path.dirname(normalized)
-    stem_dir = os.path.splitext(normalized)[0]
-
-    for candidate_dir in (parent_dir, stem_dir):
-        if not os.path.isdir(candidate_dir):
-            continue
-        if (
-            os.path.exists(os.path.join(candidate_dir, "comfy_config.json"))
-            or os.path.exists(os.path.join(candidate_dir, "config.json"))
-        ):
-            add_candidate(candidate_dir)
-
-    add_candidate(normalized)
-    return candidates
-
-
-def _resolve_nunchaku_loader_cls(model_entry, full_path):
-    # TECH DEBT: legacy Nunchaku loader resolution is disabled. Delete later.
-    raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
-
-
-def _resolve_nunchaku_lora_loader_cls(model, model_entry=None):
-    # TECH DEBT: legacy Nunchaku LoRA resolution is disabled. Delete later.
-    raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
-
-
-def _run_nunchaku_loader(loader_cls, load_target, settings):
-    # TECH DEBT: legacy Nunchaku model invocation is disabled. Delete later.
-    raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
-
-
-def _load_nunchaku(full_path, settings, model_entry=None):
-    # TECH DEBT: legacy Nunchaku model loading is disabled. Delete later.
-    raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
-
-
 def _load_clips(clip_entries, selected_names):
+    log_stage("loading_text_encoder", count=len(selected_names or []))
     if not selected_names:
         raise RuntimeError("[VNCCS Control Center] No CLIP selected.")
 
@@ -1409,6 +1311,7 @@ def _load_clips(clip_entries, selected_names):
 
 
 def _load_vae(vae_entries, selected_name):
+    log_stage("loading_vae", model=selected_name)
     if not selected_name:
         raise RuntimeError("[VNCCS Control Center] No VAE selected.")
     entry = _find_entry(vae_entries, selected_name)
@@ -1435,6 +1338,7 @@ def _load_model_block(
     custom_clip=None,
     custom_vae=None,
 ):
+    log_stage("loading_models", loader=selected_type, model=model_entry.get("name") if model_entry else None)
     if selected_type == "custom":
         if custom_model is None:
             raise RuntimeError("[VNCCS Control Center] Custom model input is not connected.")
@@ -1486,11 +1390,6 @@ def _apply_lora_standard(model, clip, full_path, strength):
     return comfy.sd.load_lora_for_models(model, clip, lora_sd, strength, clip_strength)
 
 
-def _apply_lora_nunchaku(model, full_path, strength, settings=None, model_entry=None):
-    # TECH DEBT: legacy Nunchaku LoRA application is disabled. Delete later.
-    raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
-
-
 def _apply_loras(model, clip, lora_states, config, model_type, type_settings=None, model_entry=None):
     entries = config.get("lora", [])
     is_nunchaku = False
@@ -1518,7 +1417,7 @@ def _apply_loras(model, clip, lora_states, config, model_type, type_settings=Non
         identity = f"{name} {basename_agnostic(entry.get('local_path', ''))}".lower()
         normalized_name = "".join(char for char in identity if char.isalnum())
         if any("".join(char for char in target if char.isalnum()) in normalized_name for target in _PIPELINE_LOCAL_LORAS):
-            print(f"[VNCCS Control Center] Deferring LoRA to downstream pipeline: {name}")
+            log_event("lora_deferred", component="ControlCenter", model=name)
             continue
         state = state_by_name.get(name, {})
         if not state.get("auto_apply", False):
@@ -1529,10 +1428,10 @@ def _apply_loras(model, clip, lora_states, config, model_type, type_settings=Non
 
         full_path, exists = _find_model_on_disk(entry["local_path"])
         if not exists:
-            print(f"[VNCCS Control Center] LoRA not on disk: '{name}', skipping.")
+            log_event("fallback", component="ControlCenter", level="warning", message=f"LoRA not on disk: '{name}', skipping.")
             continue
 
-        print(f"[VNCCS Control Center] Applying LoRA: {name} (strength={strength})")
+        log_event("lora_applied", component="ControlCenter", model=name, strength=strength)
         model, clip = _apply_lora_standard(model, clip, full_path, strength)
 
     return model, clip
@@ -1700,9 +1599,11 @@ def _download_worker_loop():
         repo_id, model_key, target_model = task
         download_repo_id = target_model.get("hf_repo", repo_id)
         temp_path = ""
+        download_started = time.perf_counter()
 
         try:
             _DOWNLOAD_STATUS[model_key] = {"status": "downloading", "message": "Initializing..."}
+            log_event("download_started", component="ControlCenter", model=model_key, repository=download_repo_id)
             target_abs_path = _resolve_model_download_path(target_model["local_path"])
             if target_model.get("url"):
                 raise ValueError("Direct URL downloads are disabled; use hf_repo and hf_path")
@@ -1753,12 +1654,14 @@ def _download_worker_loop():
             os.replace(temp_path, target_abs_path)
             update_installed_version(model_key, target_model.get("version", ""))
             _DOWNLOAD_STATUS[model_key] = {"status": "success", "message": "Installed"}
+            log_event("download_completed", component="ControlCenter", model=model_key, bytes=total_size,
+                      duration_s=round(time.perf_counter() - download_started, 2))
         except Exception as exc:
             if temp_path and os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
                 except Exception as cleanup_exc:
-                    print(f"[VNCCS Control Center] Failed to remove temp download '{temp_path}': {cleanup_exc}")
+                    log_event('warning', component='ControlCenter', level='warning', message=f"Failed to remove temp download '{temp_path}': {cleanup_exc}", error=str(cleanup_exc))
             response = getattr(exc, "response", None)
             is_auth_error = getattr(response, "status_code", None) == 401
 
@@ -1770,7 +1673,8 @@ def _download_worker_loop():
                 message = "File not found (404)"
 
             _DOWNLOAD_STATUS[model_key] = {"status": status, "message": message}
-            print(f"[VNCCS Control Center] Download failed for '{model_key}': {message}")
+            log_event("download_failed", component="ControlCenter", level="error", model=model_key,
+                      error=message, duration_s=round(time.perf_counter() - download_started, 2))
         finally:
             _DOWNLOAD_QUEUE.task_done()
 
@@ -1837,6 +1741,7 @@ class VNCCS_ControlCenter:
     FUNCTION = "execute"
     CATEGORY = "VNCCS/manager"
 
+    @logged_operation("ControlCenter", "load_pipeline")
     def execute(self, repo_id, node_state="{}", model=None, clip=None, vae=None, audio_vae=None, unique_id=None):
         pipe = _build_control_center_pipe(
             repo_id,
@@ -1917,25 +1822,6 @@ def _build_control_center_pipe(
                     "Refresh the Control Center catalog to load Qwen Image 2.1."
                 )
     loras = _ensure_required_turbo_lora_state(loras, config, model_entry, model_params)
-    lora_entry_by_name = {
-        entry.get("name"): entry
-        for entry in config.get("lora", [])
-        if isinstance(entry, dict) and entry.get("name")
-    }
-    has_enabled_loras = False
-    for item in loras:
-        if not item.get("name") or not item.get("auto_apply", False):
-            continue
-        lora_entry = lora_entry_by_name.get(item.get("name"))
-        if not lora_entry:
-            continue
-        is_turbo = _entry_type(lora_entry) == "turbolora"
-        if not is_turbo and abs(float(item.get("strength", 1.0))) <= 1e-6:
-            continue
-        if lora_entry.get("custom") or (is_turbo and _lora_matches_model_kind(lora_entry, model_entry)):
-            has_enabled_loras = True
-            break
-
     if selected_type == "nunchaku":
         # TECH DEBT: old saved workflows may still request Nunchaku. Delete this
         # guard together with all legacy Nunchaku state after migration.
@@ -2120,7 +2006,7 @@ def _clothes_preview_response(data):
         b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
         return web.json_response({"image": b64})
     except Exception as e:
-        traceback.print_exc()
+        log_event('exception', component='ControlCenter', level='error', exc_info=True, message='Operation failed', error=str(e))
         return web.Response(status=500, text=str(e))
 
 
@@ -2132,7 +2018,7 @@ async def cc_clothes_preview(request):
         data = await request.json()
         return await run_preview_job(_clothes_preview_response, data)
     except Exception as exc:
-        traceback.print_exc()
+        log_event('exception', component='ControlCenter', level='error', exc_info=True, message='Operation failed', error=str(exc))
         return web.json_response({"error": str(exc)}, status=500)
 
 @server.PromptServer.instance.routes.get("/vnccs/control_center/check")

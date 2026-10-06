@@ -1,3 +1,4 @@
+from ..operation_logger import log_event, logged_operation
 
 import os
 import json
@@ -58,7 +59,7 @@ try:
     import server
     from aiohttp import web
 except ImportError:
-    print("VNCCS Warning: Running outside ComfyUI environment. API routes will not be registered.")
+    log_event("warning", component="EmotionStudio", level="warning", message='VNCCS Warning: Running outside ComfyUI environment. API routes will not be registered.')
     server = None
     web = None
 
@@ -184,7 +185,7 @@ def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
             return m, c
         lora_path = get_lora_full_path(lora_name)
         if not lora_path:
-            print(f"[VNCCS Emotion Studio] LoRA not found: {lora_name}")
+            log_event("warning", component="EmotionStudio", level="warning", message=f'LoRA not found: {lora_name}')
             return m, c
         lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
         return comfy.sd.load_lora_for_models(
@@ -335,12 +336,12 @@ def load_costume_sprite_images(character, costume, selected_pose_indices=None):
             image, mask = _load_sprite_tensor(path)
             loaded.append((image, mask, path))
         except Exception as exc:
-            print(f"[VNCCS Emotion Studio] Failed to load sprite {path}: {exc}")
+            log_event('warning', component='EmotionStudio', level='warning', message=f'Failed to load sprite {path}: {exc}', error=str(exc))
 
     if loaded:
         return loaded
 
-    print(f"[VNCCS Emotion Studio] No sprites found for {character}/{costume}. Generate sprites first.")
+    log_event("warning", component="EmotionStudio", level="warning", message=f'No sprites found for {character}/{costume}. Generate sprites first.')
     return []
 
 
@@ -442,7 +443,7 @@ if server:
         except ValueError as e:
             return web.json_response({"error": str(e)}, status=400)
         except Exception as e:
-            print(f"[VNCCS Emotion Studio] Failed to add custom emotion: {e}")
+            log_event('warning', component='EmotionStudio', level='warning', message=f'Failed to add custom emotion: {e}', error=str(e))
             return web.json_response({"error": f"Failed to add custom emotion: {e}"}, status=500)
 
     @server.PromptServer.instance.routes.get("/vnccs/get_character_costumes")
@@ -482,7 +483,7 @@ if server:
         except ValueError as e:
             return web.Response(status=400, text=str(e))
         except Exception as e:
-            print(f"[VNCCS Emotion Studio] Failed to serve sprite preview: {e}")
+            log_event('warning', component='EmotionStudio', level='warning', message=f'Failed to serve sprite preview: {e}', error=str(e))
             return web.Response(status=500)
 
     @server.PromptServer.instance.routes.get("/vnccs/get_emotion_image")
@@ -531,7 +532,7 @@ class EmotionGeneratorV2:
                                 "category": category
                         }
         except Exception as e:
-            print(f"[VNCCS] ERROR: Failed to load emotions data: {e}")
+            log_event('warning', component='EmotionStudio', level='warning', message=f'ERROR: Failed to load emotions data: {e}', error=str(e))
             safe_name_map = {}
         cls.SAFE_NAME_MAP = safe_name_map
         cls.EMOTIONS_FINGERPRINT = fingerprint
@@ -568,6 +569,7 @@ class EmotionGeneratorV2:
             paths.extend(list_costume_sprite_paths(character, costume))
         return json.dumps([file_fingerprint(path) for path in paths])
 
+    @logged_operation("EmotionStudio", "prepare_tasks")
     def generate_emotions_v2(self, generation_model="Anima", generation_settings="{}", prompt_style="Anima", character="Character Name", costumes_data="[]", emotions_data="[]"):
         info = load_character_info(character)
         if not isinstance(info, dict) or not info:
@@ -639,7 +641,7 @@ class EmotionGeneratorV2:
              seed = pipe_seed
              base_negative_prompt = ""
              positive_prompt = ""
-             print(f"Character info not found for {character}")
+             log_event("warning", component="EmotionStudio", level="warning", message=f'Character info not found for {character}')
 
         # --- GENERATION LOOP ---
         for costume in selected_costumes:
@@ -649,7 +651,7 @@ class EmotionGeneratorV2:
             
             sprite_paths = list_costume_sprite_paths(character, costume)
             if not sprite_paths:
-                print(f"Failed to load sprites for costume {costume}")
+                log_event("warning", component="EmotionStudio", level="warning", message=f'Failed to load sprites for costume {costume}')
                 continue
             selected_sprite_paths = [
                 (sprite_index, source_path)
@@ -657,14 +659,14 @@ class EmotionGeneratorV2:
                 if selected_pose_indices is None or sprite_index in selected_pose_indices
             ]
             if not selected_sprite_paths:
-                print(f"No selected source poses remain for costume {costume}")
+                log_event("warning", component="EmotionStudio", level="warning", message=f'No selected source poses remain for costume {costume}')
                 continue
 
             for emotion_key in selected_emotions:
                 
                 emotion_details_data = emotion_map.get(emotion_key)
                 if not emotion_details_data:
-                    print(f"Warning: Unknown emotion key {emotion_key}")
+                    log_event("warning", component="EmotionStudio", level="warning", message=f'Warning: Unknown emotion key {emotion_key}')
                     emotion_description = "unknown emotion"
                     natural_prompt = ""
                 else:
@@ -731,6 +733,8 @@ class EmotionGeneratorV2:
         # Source sprites are loaded lazily by VNCCS_EmotionsGenerator. Returning
         # full-resolution tensors here used to decode every pose before the pose
         # selection was applied and duplicated them once per selected emotion.
+        log_event("tasks_prepared", character=character, costumes=len(selected_costumes),
+                  emotions=len(selected_emotions), tasks=len(emotion_data))
         return [], pipe, emotion_data
 
 NODE_CLASS_MAPPINGS = {
