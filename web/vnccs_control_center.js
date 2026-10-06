@@ -1,7 +1,7 @@
 // web/vnccs_control_center.js
 import { app } from "../../scripts/app.js";
 import { vnccsApi as api, storage, sessionStore, serverRegistry } from "./vnccs_transport.js";
-import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText } from "./vnccs_common.js";
+import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard } from "./vnccs_common.js";
 
 // Global registry cache — prevents API storms when multiple CC nodes exist
 
@@ -1262,6 +1262,7 @@ app.registerExtension({
 class VNCCSControlCenterWidget {
     constructor(node) {
         this.node = node;
+        this._beginModuleStatusRequest = createRequestGuard(node);
         this.config   = null;
         this.state    = {};
         this.dlStatus = {};
@@ -2522,7 +2523,23 @@ class VNCCSControlCenterWidget {
         return false;
     }
 
+    async _fetchLatestModuleVersion(managerId) {
+        try {
+            const response = await api.fetchApi(`/customnode/versions/${encodeURIComponent(managerId)}`, {
+                cache: "no-store", signal: AbortSignal.timeout(8000),
+            });
+            if (!response.ok) return null;
+            const versions = await response.json();
+            if (!Array.isArray(versions)) return null;
+            return versions.map(item => item?.version).filter(version => /^\d+\.\d+\.\d+$/.test(version))
+                .reduce((latest, version) => !latest || this._semverGt(version, latest) ? version : latest, null);
+        } catch {
+            return null;
+        }
+    }
+
     async _fetchModuleStatus() {
+        const isCurrent = this._beginModuleStatusRequest();
         const LABELS = { main: "VNCCS", utils: "Utils" };
         const PILLS  = { main: this._pillMain, utils: this._pillUtils };
 
@@ -2532,6 +2549,15 @@ class VNCCSControlCenterWidget {
             const r = await api.fetchApi("/vnccs/module_status");
             if (r.ok) local = await r.json();
         } catch { /* server may not be ready yet */ }
+        if (!isCurrent()) return;
+
+        const latestVersions = Object.fromEntries(await Promise.all(
+            Object.entries({ main: "vnccs", utils: "vnccs-utils" }).map(async ([key, managerId]) => [
+                key, local[key]?.version && !local[key].error && !local[key].duplicate
+                    ? await this._fetchLatestModuleVersion(managerId) : null,
+            ])
+        ));
+        if (!isCurrent()) return;
 
         const updateNeeded = [];
 
@@ -2558,7 +2584,16 @@ class VNCCSControlCenterWidget {
                 continue;
             }
 
-            this._updatePill(pill, label, locVer, "ok");
+            const latest = latestVersions[key];
+            if (!latest || !/^\d+\.\d+\.\d+$/.test(locVer)) {
+                this._updatePill(pill, label, locVer, "warning", "update check unavailable");
+            } else if (this._semverGt(latest, locVer)) {
+                this._updatePill(pill, label, locVer, "update", latest);
+                updateNeeded.push(`${label} v${locVer} → v${latest}`);
+            } else {
+                this._updatePill(pill, label, locVer, "ok");
+                pill.title = `No newer release in Comfy Registry (latest v${latest}).`;
+            }
         }
 
         const dependencies = local.dependencies || {};
@@ -2593,6 +2628,7 @@ class VNCCSControlCenterWidget {
             }
         }
         const resumedPendingInstalls = await this._resumePendingDependencyInstalls(missingDependencies);
+        if (!isCurrent()) return;
         if (!resumedPendingInstalls) this._showMissingDependenciesModal(missingDependencies);
 
         this._showUpdateBanner(updateNeeded);

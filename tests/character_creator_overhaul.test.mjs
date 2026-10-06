@@ -134,6 +134,21 @@ test("missing card retains catalog identity for Download and can be set to zero"
     assert.equal(state.gen_settings.qi2_overhaul_strength, 0);
 });
 
+test("catalog Overhaul version stays installed and cannot enter manual slots", () => {
+    const { ctx } = setup();
+    ctx.ccConfig.lora[1].local_path = "models/loras/QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.2.safetensors";
+    const root = new Element("div");
+    ctx.render(root, "qi2");
+    assert.equal(walk(root.children[1]).some(el => el.className === "vnccs-creator-model-card-download"), false);
+    for (const version of ["1.2", "1_2"]) {
+        const restored = setup({ character_info: {}, gen_settings: { generation_mode: "qi2", lora_stack: [
+            { name: `QI2.1\\VNCCS\\VNCCS_QI2_AnimeOverhaulV${version}.safetensors`, strength: .75 },
+            { name: "other.safetensors", strength: .25 },
+        ] } });
+        assert.deepEqual(restored.state.gen_settings.lora_stack.filter(item => item.name).map(item => item.name), ["other.safetensors"]);
+    }
+});
+
 test("legacy defaults, invalid values and Windows LoRA paths normalize safely", () => {
     const { ctx, state } = setup();
     assert.equal(state.gen_settings.qi2_overhaul_strength, .5);

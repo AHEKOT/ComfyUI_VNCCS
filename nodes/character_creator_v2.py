@@ -40,6 +40,7 @@ from .character_styles import (
     square_style_resolution, save_style_preview, save_user_style_preview,
     STYLE_PREVIEWS_DIR,
 )
+from . import vnccs_control_center as control_center
 
 # --------------------------------------------------------------------
 # Helper Functions
@@ -174,12 +175,6 @@ QI2_DEFAULTS = {
     "qi2_overhaul_strength": 0.5,
     "lora_stack": [],
     "qi2_cache": {"device": "gpu", "dtype": "int8"},
-}
-QI2_TURBO_ENTRY = {
-    "name": "Qwen Image 2.1 Viggle Turbo",
-    "type": "TurboLora",
-    "kind": "QI2",
-    "local_path": f"models/loras/{QI2_TURBO_LORA_NAME}",
 }
 QI2_TEXT_GENERATION_DEFAULTS = {
     "max_length": 2048,
@@ -661,7 +656,8 @@ def normalize_overhaul_strength(value):
 
 
 def is_creator_overhaul_lora(name):
-    return str(name or "").replace("\\", "/").rsplit("/", 1)[-1].lower() == QI2_OVERHAUL_LORA_NAME.rsplit("/", 1)[-1].lower()
+    filename = str(name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    return re.fullmatch(r"VNCCS_QI2_AnimeOverhaulV\d+(?:[._]\d+)*\.safetensors", filename, re.IGNORECASE) is not None
 
 
 def apply_creator_overhaul(model, clip, gen_settings, apply_lora):
@@ -671,12 +667,17 @@ def apply_creator_overhaul(model, clip, gen_settings, apply_lora):
     strength = normalize_overhaul_strength(gen_settings.get("qi2_overhaul_strength", 0.5))
     if strength == 0:
         return model, clip
-    if not get_lora_full_path(QI2_OVERHAUL_LORA_NAME):
+    config = control_center._get_cc_config("MIUProject/VNCCS_v3.0")
+    entry = control_center._find_entry(config.get("lora", []), "VNCCS Overhaul QI2")
+    lora_path, installed = control_center._find_model_on_disk(entry.get("local_path", "")) if entry else (None, False)
+    if not installed:
+        lora_path = get_lora_full_path(QI2_OVERHAUL_LORA_NAME)
+    if not lora_path:
         raise ValueError(
             "Qwen Image2.1 Character Overhaul is not installed. Download its card "
             "in Character Creator V2 or set its strength to 0."
         )
-    return apply_lora(model, clip, QI2_OVERHAUL_LORA_NAME, strength, 0.0)
+    return apply_lora(model, clip, lora_path, strength, 0.0)
 
 
 def normalize_gen_settings(gen_settings):
@@ -1174,14 +1175,23 @@ def prepare_qi2_model(model, gen_settings):
     from .character_generator import VNCCS_CharacterGenerator
 
     turbo_enabled = bool(gen_settings.get("turbo_enabled"))
-    pipe = SimpleNamespace(
-        lora_entries=[dict(QI2_TURBO_ENTRY)],
-        lora_states=[{
-            "name": QI2_TURBO_ENTRY["name"],
-            "auto_apply": turbo_enabled,
+    lora_entries, lora_states = [], []
+    if turbo_enabled:
+        config = control_center._apply_active_installed_paths(control_center._get_cc_config("MIUProject/VNCCS_v3.0"))
+        entries = [entry for entry in config.get("lora", [])
+                   if control_center._entry_kind(entry) == "qi2" and control_center._entry_type(entry) == "turbolora"]
+        selected = str(gen_settings.get("dmd_lora_name", "") or "").strip().replace("\\", "/")
+        entry = next((item for item in entries if control_center._rel_within_folder(item.get("local_path", "")) == selected), None)
+        entry = entry or control_center._find_entry(entries, "Qwen Image 2.1 Viggle Turbo")
+        if entry is None:
+            raise ValueError("QI2 Turbo LoRA is not configured in the Control Center catalog.")
+        lora_entries = [dict(entry)]
+        lora_states = [{
+            "name": entry["name"],
+            "auto_apply": True,
             "strength": float(gen_settings.get("dmd_lora_strength", 1.0) or 1.0),
-        }],
-    )
+        }]
+    pipe = SimpleNamespace(lora_entries=lora_entries, lora_states=lora_states)
     generator = VNCCS_CharacterGenerator()
     prepared, turbo = generator._qi2_prepare_model(
         model,
