@@ -134,48 +134,10 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             name = ensure_safe_name(name, "character")
         except ValueError as e:
             return web.json_response({"error": str(e)}, status=400)
-        defaults = dict(
-            existing_character=name,
-            background_color="green",
-            aesthetics="masterpiece",
-            nsfw=False,
-            sex="female",
-            age=18,
-            race="human",
-            eyes="blue eyes",
-            hair="black long",
-            face="freckles",
-            body="medium breasts",
-            skin_color="",
-            additional_details="",
-            seed=0,
-            negative_prompt="bad quality,worst quality,worst detail,sketch,censor, missing arm, missing leg, distorted body",
-            lora_prompt="",
-        )
-        if getattr(request, "method", "GET") == "POST" and data.get("catalog") == "creator_v2":
-            defaults["hair"] = "black hair, waist-length hair"
         try:
-            from .utils import base_output_dir, load_config, create_initial_character
-            base_path = base_output_dir()
-            os.makedirs(base_path, exist_ok=True)
-            existing_data = load_config(name, strict=True)
-            if existing_data is not None:
-                return web.json_response({
-                    "ok": True,
-                    "name": name,
-                    "existing": True,
-                    "data": existing_data,
-                })
-            positive_prompt, seed, negative_prompt, age_lora_strength, _sheets_path, _faces_path, face_details = create_initial_character(**defaults)
-            return web.json_response({
-                "ok": True,
-                "name": name,
-                "seed": seed,
-                "positive_prompt": positive_prompt,
-                "negative_prompt": negative_prompt,
-                "age_lora_strength": age_lora_strength,
-                "face_details": face_details,
-            })
+            from .nodes.character_creator_v2 import CharacterCreatorV2
+            catalog = data.get("catalog", "") if getattr(request, "method", "GET") == "POST" else ""
+            return web.json_response(CharacterCreatorV2.create_character(name, catalog))
         except Exception as e:
             traceback.print_exc()
             return web.json_response({

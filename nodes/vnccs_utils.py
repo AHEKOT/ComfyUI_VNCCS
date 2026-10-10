@@ -1,4 +1,4 @@
-"""Internal image processing for character, clothing, and emotion generation."""
+"""Shared image processing and the standalone VNCCS Chroma Key node."""
 from ..operation_logger import log_event, log_stage
 
 import os
@@ -335,37 +335,90 @@ def _normalize_mask_batch(value, target_hw, batch_size, stage="mask"):
     return mask[:batch_size].clamp(0.0, 1.0)
 
 # --- Guided Filter Helper ---
-def fill_alpha_with_color(image):
-    if image is None:
-        raise ValueError("No image provided")
-    img = _ensure_float01(image)
-    added_batch = False
-    if img.ndim == 3:
-        img = img.unsqueeze(0)
-        added_batch = True
-    if img.shape[-1] < 4:
-        out = img[..., :3]
-        return (out.squeeze(0) if added_batch else out,)
-    rgb = img[..., :3]
-    alpha = img[..., 3]
-    if alpha.ndim == 4 and alpha.shape[1] == 1:
-        alpha = alpha.squeeze(1)
-    alpha = alpha.clamp(0.0, 1.0)
-    r, g, b = 0.0, 1.0, 0.0
-    device = rgb.device
-    dtype = rgb.dtype
-    bg = torch.tensor([r, g, b], dtype=dtype, device=device).view(1, 1, 1, 3)
-    alpha3 = alpha.unsqueeze(-1)
-    out = rgb * alpha3 + bg * (1.0 - alpha3)
-    if added_batch:
-        out = out.squeeze(0)
-    return (out,)
+class VNCCS_MaskExtractor:
+    """Fill alpha channel with bright green color."""
+    
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+            }
+        }
 
-class ChromaKeyProcessor:
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("IMAGE",)
+    FUNCTION = "fill_alpha_with_color"
+    CATEGORY = "VNCCS"
+
+    def fill_alpha_with_color(self, image):
+        if image is None:
+            raise ValueError("No image provided")
+        img = _ensure_float01(image)
+        added_batch = False
+        if img.ndim == 3:
+            img = img.unsqueeze(0)
+            added_batch = True
+        if img.shape[-1] < 4:
+            out = img[..., :3]
+            return (out.squeeze(0) if added_batch else out,)
+        rgb = img[..., :3]
+        alpha = img[..., 3]
+        if alpha.ndim == 4 and alpha.shape[1] == 1:
+            alpha = alpha.squeeze(1)
+        alpha = alpha.clamp(0.0, 1.0)
+        r, g, b = 0.0, 1.0, 0.0
+        device = rgb.device
+        dtype = rgb.dtype
+        bg = torch.tensor([r, g, b], dtype=dtype, device=device).view(1, 1, 1, 3)
+        alpha3 = alpha.unsqueeze(-1)
+        out = rgb * alpha3 + bg * (1.0 - alpha3)
+        if added_batch:
+            out = out.squeeze(0)
+        return (out,)
+
+class VNCCSChromaKey:
     """VNCCS Chroma Key - soft chroma key with edge decontamination."""
 
     SAM3_RECOVERY_ERODE_RADIUS = 4
     SAM3_RECOVERY_MIN_FOREGROUND_OVERLAP = 0.55
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "tolerance": ("FLOAT", {"default": 0.15, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "softness": ("FLOAT", {"default": 0.12, "min": 0.001, "max": 1.0, "step": 0.01}),
+                "despill_strength": ("FLOAT", {"default": 0.65, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "edge_width": ("INT", {"default": 3, "min": 0, "max": 32, "step": 1}),
+                "matte_cleanup": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "foreground_recover": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "edge_decontaminate": ("FLOAT", {"default": 0.75, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "edge_choke": ("FLOAT", {"default": 0.08, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "matte_method": (["chroma_soft", "guided_edge", "pymatting_if_available", "screen_matte"], {"default": "guided_edge"}),
+                "screen_mode": (["auto", "green", "blue", "red"], {"default": "auto"}),
+                "output_mode": (["straight_rgba", "premultiplied_rgba"], {"default": "straight_rgba"}),
+                "use_sam3_recovery_mask": (
+                    "BOOLEAN",
+                    {"default": False, "label_on": "enabled", "label_off": "disabled", "display_name": "Use SAM3 Recovery Mask"},
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "MASK", "IMAGE")
+    RETURN_NAMES = ("image", "matte", "edge_debug")
+    CATEGORY = "VNCCS"
+    FUNCTION = "chroma_key"
+    DESCRIPTION = """
+    VNCCS Chroma Key - automatically detects background color from image borders.
+    Uses soft chroma keying, edge-guided matte cleanup, foreground recovery, and
+    edge-only decontamination for cleaner hair and outlines.
+    The opt-in screen_matte method runs on the selected GPU, estimates the actual
+    plate color automatically, and removes isolated screen artifacts. Its color
+    unmixing is controlled jointly by despill, foreground recovery and edge
+    decontamination; screen_mode is used only by the legacy methods.
+    """
 
     def chroma_key(
         self,
@@ -1263,3 +1316,14 @@ class ChromaKeyProcessor:
         transparent_near_edge = ((alpha <= 0.001) & (distance <= float(radius))).to(dtype=alpha.dtype)
         weight = torch.maximum(partial_weight, transparent_near_edge).unsqueeze(-1)
         return torch.lerp(image, nearest, weight).clamp(0.0, 1.0)
+
+
+NODE_CLASS_MAPPINGS = {
+    "VNCCSChromaKey": VNCCSChromaKey,
+    "VNCCS_MaskExtractor": VNCCS_MaskExtractor,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "VNCCSChromaKey": "VNCCS Chroma Key",
+    "VNCCS_MaskExtractor": "VNCCS Mask Extractor",
+}

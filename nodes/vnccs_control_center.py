@@ -61,6 +61,7 @@ _DOWNLOAD_QUEUE = queue.Queue()
 _CUSTOM_LORAS_FILE = "vnccs_custom_loras.json"
 _PACKAGED_CC_REPO_IDS = {"MIUProject/VNCCS_v3.0"}
 DEFAULT_QI2_MODEL = "Qwen Image 2.1 INT8 ConvRot"
+QI2_TURBO_MODEL_NAME = "qwen_image_2.1_turbo_int8_convrot.safetensors"
 QI2_CACHE_DEFAULTS = {"device": "gpu", "dtype": "int8"}
 _PIPELINE_LOCAL_LORAS = {
     "clothescore",
@@ -805,7 +806,7 @@ def _get_cc_config(repo_id, prefer_remote=False):
                     e for e in packaged.get(category, [])
                     if _entry_kind(e) == "qi2" and e.get("name") not in names
                 ]
-                data[category] = additions + remote_entries
+                data[category] = remote_entries + additions if category == "models" else additions + remote_entries
         _sync_packaged_cc_config(repo_id, data)
     _CC_CONFIG_CACHE[repo_id] = {"ts": now, "data": data, "source": source}
     return _dedupe_config_by_name(_merge_custom_loras(data))
@@ -1109,6 +1110,10 @@ def _is_qwen_model_entry(model_entry):
         str((model_entry or {}).get("local_path", "")),
     ]).lower()
     return "qwen" in identity or "qi2" in identity
+
+
+def is_qi2_turbo_model(model_name):
+    return basename_agnostic(str(model_name or "")) == QI2_TURBO_MODEL_NAME
 
 
 def _is_turbo_preset(model_params, model_entry=None):
@@ -1918,6 +1923,8 @@ def _build_control_center_pipe(
 
     default_steps = 8 if model_kind == "minimaxh3" else 25 if model_kind == "qi2" else DEFAULT_MODEL_STEPS
     default_cfg = 3.0 if model_kind == "qi2" else DEFAULT_MODEL_CFG
+    if model_kind == "qi2" and is_qi2_turbo_model(model_entry.get("local_path")):
+        default_steps, default_cfg = 8, 1.0
     default_sampler = "res_multistep" if model_kind == "minimaxh3" else None
     pipe.sample_steps = int(model_params.get("steps") or default_steps)
     pipe.cfg = float(model_params.get("cfg") if model_params.get("cfg") is not None else default_cfg)

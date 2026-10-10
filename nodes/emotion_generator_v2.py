@@ -26,8 +26,8 @@ from .character_creator_v2 import (
     normalize_gen_settings,
     get_lora_full_path,
 )
-from .vnccs_control_center import VNCCSPipeProxy
-import comfy.samplers
+from .vnccs_control_center import is_qi2_turbo_model
+from .vnccs_pipe import VNCCS_Pipe
 
 
 QI2_TURBO_LORA_NAME = "QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors"
@@ -164,14 +164,21 @@ def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
     merged["generation_mode"] = mode
     if mode == "qi2":
         gen_settings = dict(QI2_DEFAULTS)
-        if isinstance(parsed, dict):
-            gen_settings.update(parsed)
         mode_settings = parsed.get("mode_settings", {}) if isinstance(parsed, dict) else {}
         mode_profile = mode_settings.get("qi2", {}) if isinstance(mode_settings, dict) else {}
+        selected_model = parsed.get("diffusion_model_name") if isinstance(parsed, dict) else ""
+        if isinstance(mode_profile, dict):
+            selected_model = mode_profile.get("diffusion_model_name", selected_model)
+        if is_qi2_turbo_model(selected_model):
+            gen_settings.update(steps=8, cfg=1.0)
+        if isinstance(parsed, dict):
+            gen_settings.update(parsed)
         if isinstance(mode_profile, dict):
             gen_settings.update(mode_profile)
         gen_settings["generation_mode"] = "qi2"
         gen_settings["clip_type"] = "qwen_image"
+        if is_qi2_turbo_model(gen_settings.get("diffusion_model_name")):
+            gen_settings["turbo_enabled"] = False
         if gen_settings.get("turbo_enabled"):
             gen_settings["steps"] = 6
             gen_settings["cfg"] = 1.0
@@ -223,13 +230,13 @@ def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
                 model, clip = apply_lora_safe(model, clip, item.get("name"), item.get("strength", 1.0))
 
     seed = resolve_generation_seed(gen_settings)
-    pipe = VNCCSPipeProxy(model, clip, vae)
-    pipe.seed_int = seed
-    pipe.sample_steps = int(gen_settings.get("steps", 0) or 0)
-    pipe.cfg = float(gen_settings.get("cfg", 0.0) or 0.0)
-    pipe.denoise = 1.0
-    pipe.sampler_name = gen_settings.get("sampler") or (comfy.samplers.KSampler.SAMPLERS or ["euler"])[0]
-    pipe.scheduler = gen_settings.get("scheduler") or (comfy.samplers.KSampler.SCHEDULERS or ["normal"])[0]
+    pipe = VNCCS_Pipe().process_pipe(
+        model=model, clip=clip, vae=vae, seed_int=seed,
+        sample_steps=int(gen_settings.get("steps", 0) or 0),
+        cfg=float(gen_settings.get("cfg", 0.0) or 0.0), denoise=1.0,
+        sampler_name=gen_settings.get("sampler"),
+        scheduler=gen_settings.get("scheduler"),
+    )[9]
     if mode == "anima":
         pipe.model_entry = {
             "name": "Anima",

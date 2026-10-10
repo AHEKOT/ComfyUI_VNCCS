@@ -170,6 +170,9 @@ def test_create_route_accepts_checked_post_and_rejects_invalid_or_cross_site_req
     import server
     from aiohttp import web
     import utils
+    from creator_storage_helpers import load_creator_storage
+
+    creator = load_creator_storage(monkeypatch)
 
     handlers = {}
     def register(method):
@@ -192,6 +195,7 @@ def test_create_route_accepts_checked_post_and_rejects_invalid_or_cross_site_req
     nodes_package = types.ModuleType(package_name + '.nodes')
     nodes_package.__path__ = [str(root / 'nodes')]
     monkeypatch.setitem(sys.modules, package_name + '.nodes', nodes_package)
+    monkeypatch.setitem(sys.modules, package_name + '.nodes.character_creator_v2', creator)
     original_find_spec = importlib.util.find_spec
     monkeypatch.delitem(sys.modules, 'torch', raising=False)
     monkeypatch.setattr(importlib.util, 'find_spec', lambda name, *args: None if name == 'torch' else original_find_spec(name, *args))
@@ -218,7 +222,7 @@ def test_create_route_accepts_checked_post_and_rejects_invalid_or_cross_site_req
     assert asyncio.run(invoke({'name': 'Alice'}, headers)).status == 500
     assert config.read_text() == 'broken JSON'
     with monkeypatch.context() as patch:
-        patch.setattr(utils, 'save_config', lambda *args: '')
+        patch.setattr(creator, 'save_config', lambda *args: '')
         failed = asyncio.run(invoke({'name': 'CannotSave'}, headers))
         assert failed.status == 500
     assert asyncio.run(invoke([], headers)).status == 400
@@ -370,10 +374,10 @@ def generator_module(monkeypatch):
            _entry_kind=lambda entry: '')
     module(prefix + 'qi2_viggle', apply_viggle_turbo_lora=lambda *a: None, viggle_turbo_sigmas=lambda *a: None)
     module('cv2')
-    spec = importlib.util.spec_from_file_location(prefix + 'image_processing', root / 'nodes/image_processing.py')
-    image_processing = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, spec.name, image_processing)
-    spec.loader.exec_module(image_processing)
+    spec = importlib.util.spec_from_file_location(prefix + 'vnccs_utils', root / 'nodes/vnccs_utils.py')
+    vnccs_utils = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, vnccs_utils)
+    spec.loader.exec_module(vnccs_utils)
     spec = importlib.util.spec_from_file_location(prefix + 'character_generator', root / 'nodes/character_generator.py')
     generator = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, spec.name, generator)

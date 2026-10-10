@@ -67,6 +67,36 @@ def test_emotion_studio_ui_exposes_qi2_model_cache_and_turbo_controls():
     assert 'mode === "qi2" ? "QI2"' in UI_SOURCE
 
 
+@pytest.mark.parametrize("nested", [False, True])
+def test_emotion_builtin_qi2_turbo_uses_standard_sampler(monkeypatch, nested):
+    monkeypatch.setattr(emotion, "load_anima_assets", lambda settings: ("model", "clip", "vae"))
+    profile = {
+        "diffusion_model_name": "qwen_image_2.1_turbo_int8_convrot.safetensors",
+        "turbo_enabled": True,
+    }
+    settings = {"mode_settings": {"qi2": profile}} if nested else profile
+    pipe, _seed = emotion.build_emotion_pipe("QI2", json.dumps(settings))
+    assert (pipe.sample_steps, pipe.cfg) == (8, 1.0)
+    assert not any(state["auto_apply"] for state in pipe.lora_states)
+
+    from nodes import character_generator as generator
+    monkeypatch.setattr(generator.VNCCS_EmotionsGenerator, "_qi2_cache_model", lambda self, model, values: model)
+    node = generator.VNCCS_EmotionsGenerator()
+    model, turbo = node._qi2_prepare_model(pipe.model, pipe, node._extract_pipe(pipe))
+    assert (model, turbo) == ("model", False)
+    calls = []
+    monkeypatch.setattr(generator, "_call_comfy_node", lambda name, **kwargs: calls.append((name, kwargs)) or ("latent",))
+    assert node._qi2_sample(model, "positive", "negative", "empty", {
+        "seed": 2, "steps": pipe.sample_steps, "cfg": pipe.cfg,
+        "denoise": 1, "sampler_name": "euler", "scheduler": "simple",
+    }, turbo=turbo) == "latent"
+    assert [name for name, _ in calls] == ["KSampler"]
+
+    profile.update(steps=10, cfg=1.5)
+    pipe, _seed = emotion.build_emotion_pipe("QI2", json.dumps(settings))
+    assert (pipe.sample_steps, pipe.cfg) == (10, 1.5)
+
+
 def test_qi2_emotion_card_uses_natural_prompt_and_description_tags():
     source = (ROOT / "nodes" / "emotion_generator_v2.py").read_text(encoding="utf-8")
     assert 'if mode == "qi2":' in source

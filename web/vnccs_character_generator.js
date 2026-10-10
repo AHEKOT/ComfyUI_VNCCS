@@ -3095,10 +3095,11 @@ class CharacterGeneratorWidget {
                 <div class="vnccs-pipe-block-h">Emotion Generation</div>
                 <div class="vnccs-pipe-block-b">
                     <div class="vnccs-pipe-label">character</div>
-                    <div class="vnccs-pipe-empty" style="min-height:auto;padding:8px;">${this.data.character_name || "Select in Emotion Studio"}</div>
+                    <div class="vnccs-pipe-empty vnccs-pipe-character" style="min-height:auto;padding:8px;"></div>
                     <div class="vnccs-pipe-label">steps</div>
                     <div class="vnccs-pipe-empty" style="min-height:auto;padding:8px;">${count} costume / emotion pair(s)</div>
                 </div>`;
+            info.querySelector(".vnccs-pipe-character").textContent = this.data.character_name || "Select in Emotion Studio";
             this.settingsEl.appendChild(info);
             if (qi2Emotion) {
                 this.settingsEl.appendChild(this.block("QI2 Face Generation", [

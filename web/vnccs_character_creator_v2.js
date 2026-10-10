@@ -1580,6 +1580,8 @@ app.registerExtension({
                 const ANIMA_VAE_NAME = "qwen_image_vae.safetensors";
                 const QI2_TURBO_LORA_NAME = "QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors";
                 const QI2_MODEL_NAME = "qwen_image_2.1_int8_convrot.safetensors";
+                const QI2_TURBO_MODEL_NAME = "qwen_image_2.1_turbo_int8_convrot.safetensors";
+                const isQi2TurboModel = modelName => String(modelName || "").replace(/\\/g, "/").split("/").pop() === QI2_TURBO_MODEL_NAME;
                 const QI2_CLIP_NAME = "qwen3vl_8b_int8_convrot.safetensors";
                 const QI2_VAE_NAME = "qwen_image_2.1_vae_bf16.safetensors";
                 const ILLUSTRIOUS_DEFAULTS = {
@@ -1887,9 +1889,10 @@ app.registerExtension({
                     }
                     if (els.dmdSlider) {
                         const mode = (g.generation_mode || "illustrious").toLowerCase();
-                        els.dmdSlider.checked = mode === "anima" || mode === "qi2"
+                        els.dmdSlider.disabled = mode === "qi2" && isQi2TurboModel(g.diffusion_model_name);
+                        els.dmdSlider.checked = !els.dmdSlider.disabled && (mode === "anima" || mode === "qi2"
                             ? !!g.turbo_enabled
-                            : (g.dmd_lora_strength ?? 1.0) > 0;
+                            : (g.dmd_lora_strength ?? 1.0) > 0);
                     }
                     if (els.qi2CacheDevice) els.qi2CacheDevice.value = g.qi2_cache?.device || "gpu";
                     if (els.qi2CacheDtype) els.qi2CacheDtype.value = g.qi2_cache?.dtype || "int8";
@@ -2330,6 +2333,7 @@ app.registerExtension({
                 const setAnimaTurboMode = (enabled) => {
                     const mode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
                     if (!["anima", "qi2"].includes(mode)) return;
+                    if (mode === "qi2" && isQi2TurboModel(state.gen_settings.diffusion_model_name)) return;
                     if (enabled) {
                         if (!state.gen_settings.turbo_enabled) {
                             state.gen_settings.turbo_previous_settings = {
@@ -2949,9 +2953,19 @@ app.registerExtension({
                 };
 
                 const selectQi2Model = (rel) => {
+                    if (!rel) return;
+                    const turboModel = isQi2TurboModel(rel);
+                    const previousTurboModel = isQi2TurboModel(state.gen_settings.diffusion_model_name);
+                    if (rel !== state.gen_settings.diffusion_model_name && (turboModel || previousTurboModel)) {
+                        state.gen_settings.steps = turboModel ? 8 : 25;
+                        state.gen_settings.cfg = turboModel ? 1.0 : 3.0;
+                        state.gen_settings.turbo_enabled = false;
+                        state.gen_settings.turbo_previous_settings = null;
+                    }
                     ensureQi2DefaultAux();
                     modelPickerOpen.qi2 = false;
                     selectCcAsset("diffusion_model_name", rel);
+                    syncGenerationControls();
                 };
 
                 const downloadAnimaBundle = async (cat, entry) => {
@@ -2974,6 +2988,7 @@ app.registerExtension({
 
                 const setCcTurboMode = (enabled, rel) => {
                     const mode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
+                    if (mode === "qi2" && isQi2TurboModel(state.gen_settings.diffusion_model_name)) return;
                     if (mode === "anima" || mode === "qi2") {
                         state.gen_settings.dmd_lora_name = rel || state.gen_settings.dmd_lora_name || "";
                         setAnimaTurboMode(enabled);
@@ -3022,7 +3037,8 @@ app.registerExtension({
                         if (mode === "qi2") return kind === "qi2";
                         return kind === "sdxl" || kind === "illustrious";
                     };
-                    const turboEntries = (ccState.config?.lora || []).filter(entry => kindOk(entry) && ccType(entry) === "turbolora");
+                    const turboEntries = mode === "qi2" && isQi2TurboModel(state.gen_settings.diffusion_model_name)
+                        ? [] : (ccState.config?.lora || []).filter(entry => kindOk(entry) && ccType(entry) === "turbolora");
                     const ageEntries = (ccState.config?.lora || []).filter(entry => kindOk(entry) && ccType(entry) === "ageslider");
 
                     const addGroup = (title, entries, renderer) => {

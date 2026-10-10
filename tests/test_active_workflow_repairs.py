@@ -106,7 +106,7 @@ def test_clothes_cache_and_comfy_signature_follow_primary_reference(runtime, tmp
     calls = []
     def call_node(name, **kwargs):
         calls.append(name)
-        if name == cd._encode_flux_klein:
+        if name == "VNCCS_Flux_Klein_Encoder":
             return 'pos', 'neg', {}
         if name == 'KSampler':
             return ({},)
@@ -183,12 +183,12 @@ def test_each_pose_encoder_receives_its_own_prompt(runtime, monkeypatch, kind):
     monkeypatch.setattr(node, '_extract_pipe', lambda *a: values)
     monkeypatch.setattr(node, '_apply_pose_lora_to_model', lambda model, *a: model)
     monkeypatch.setattr(node, '_emit', lambda *a, **k: None)
-    monkeypatch.setattr(cg, 'fill_alpha_with_color', lambda image: (image,))
+    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", type("MaskExtractor", (), {"fill_alpha_with_color": staticmethod(lambda image: (image,))}))
     seen = []
     class EncodingVerified(Exception):
         pass
     def capture(name, **kwargs):
-        if name in {'TextEncodeQwenImage21', cg._encode_flux_klein, 'MiniMaxH3ReferenceToVideo'}:
+        if name in {'TextEncodeQwenImage21', "VNCCS_Flux_Klein_Encoder", 'MiniMaxH3ReferenceToVideo'}:
             seen.append(kwargs['prompt'])
             if len(seen) == 2:
                 raise EncodingVerified()

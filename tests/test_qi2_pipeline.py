@@ -397,7 +397,7 @@ def test_qi2_pose_pipeline_matches_reference_encoder_and_decode_nodes(monkeypatc
         return outputs[name]
 
     pipe = type("Pipe", (), {"lora_entries": [], "lora_states": []})()
-    monkeypatch.setattr(cg, 'fill_alpha_with_color', MaskExtractor().fill_alpha_with_color)
+    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", MaskExtractor)
     monkeypatch.setattr(cg, "_call_comfy_node", fake_node)
 
     result = Generator()._run_pose_generation(

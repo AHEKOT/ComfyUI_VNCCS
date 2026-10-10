@@ -133,6 +133,40 @@ def test_qi2_settings_normalize_cache_and_turbo_defaults():
     assert turbo["qi2_cache"] == {"device": "cpu", "dtype": "int4"}
 
 
+@pytest.mark.parametrize("nested", [False, True])
+def test_builtin_qi2_turbo_defaults_use_base_sampler_and_preserve_user_parameters(monkeypatch, nested):
+    profile = {
+        "diffusion_model_name": "QI2\\qwen_image_2.1_turbo_int8_convrot.safetensors",
+        "turbo_enabled": True,
+    }
+    settings = {"generation_mode": "qi2"}
+    settings.update({"mode_settings": {"qi2": profile}} if nested else profile)
+    normalized = creator.normalize_gen_settings(settings)
+    assert (normalized["steps"], normalized["cfg"], normalized["turbo_enabled"]) == (8, 1.0, False)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Built-in Turbo must not load Viggle or custom sigmas")
+
+    monkeypatch.setattr(generator, "apply_viggle_turbo_lora", unexpected)
+    monkeypatch.setattr(generator, "viggle_turbo_sigmas", unexpected)
+    monkeypatch.setattr(generator.VNCCS_CharacterGenerator, "_qi2_cache_model", lambda self, model, values: model)
+    model, turbo = creator.prepare_qi2_model("model", normalized)
+    calls = []
+    monkeypatch.setattr(generator, "_call_comfy_node", lambda name, **kwargs: calls.append((name, kwargs)) or ("latent",))
+    assert creator.sample_generation_latent(
+        model, "positive", "negative", "empty", 2, normalized["steps"], normalized["cfg"],
+        "euler", "simple", normalized, qi2_turbo=turbo,
+    ) == "latent"
+    assert [name for name, _ in calls] == ["KSampler"]
+    assert (calls[0][1]["steps"], calls[0][1]["cfg"]) == (8, 1.0)
+
+    profile.update(steps=10, cfg=1.5)
+    if not nested:
+        settings.update(profile)
+    custom = creator.normalize_gen_settings(settings)
+    assert (custom["steps"], custom["cfg"]) == (10, 1.5)
+
+
 def test_qi2_prompt_uses_text_generate_without_media_then_system_encoder(monkeypatch):
     calls = []
 

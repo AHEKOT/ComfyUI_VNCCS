@@ -25,6 +25,7 @@ const DEFAULT_MODEL_CFG = 1.0;
 const DEFAULT_MODEL_SCHEDULER = "simple";
 const PENDING_DEPENDENCY_INSTALLS_KEY = "vnccs-control-center-pending-dependency-installs";
 const DEFAULT_QI2_MODEL = "Qwen Image 2.1 INT8 ConvRot";
+const QI2_TURBO_MODEL_NAME = "qwen_image_2.1_turbo_int8_convrot.safetensors";
 const MODEL_FAMILIES = [
     { kind: "QI2", label: "Qwen Image 2.1", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 25, cfg: 3, sampler: "euler" },
     { kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 4, sampler: "euler" },
@@ -1467,6 +1468,20 @@ class VNCCSControlCenterWidget {
 
     _setSelectedModelName(type, modelName) {
         if (!type || !modelName) return;
+        const previousName = this._getSelectedModelName(type);
+        const previous = this.config?.models?.find(entry => entry.name === previousName);
+        const selected = this.config?.models?.find(entry => entry.name === modelName);
+        const turboModel = this._isQi2TurboModel(selected);
+        if (modelName !== previousName && (turboModel || this._isQi2TurboModel(previous))) {
+            const params = this._currentModelParams();
+            params.steps = turboModel ? 8 : 25;
+            params.cfg = turboModel ? 1.0 : 3.0;
+            params.turbo_previous_settings = null;
+            const turboNames = new Set(this._compatibleTurboLoras().map(entry => entry.name));
+            for (const lora of this.state.loras || []) {
+                if (turboNames.has(lora.name)) lora.auto_apply = false;
+            }
+        }
         if (!this.state.selected_models) this.state.selected_models = {};
         this.state.selected_models[`${this._activeKind()}:${type}`] = modelName;
         if (type === this._getSelectedType()) {
@@ -1541,14 +1556,20 @@ class VNCCSControlCenterWidget {
         const kind = this._activeKind();
         if (!this.state.model_params_by_kind[kind]) {
             const family = this._familyDefinition(kind);
+            const turboModel = this._isQi2TurboModel(this._getSelectedModelEntry());
             this.state.model_params_by_kind[kind] = {
-                steps: family.steps ?? DEFAULT_MODEL_STEPS,
-                cfg: family.cfg ?? DEFAULT_MODEL_CFG,
+                steps: turboModel ? 8 : family.steps ?? DEFAULT_MODEL_STEPS,
+                cfg: turboModel ? 1.0 : family.cfg ?? DEFAULT_MODEL_CFG,
                 sampler: family.sampler ?? "euler",
                 scheduler: DEFAULT_MODEL_SCHEDULER,
             };
         }
         return this.state.model_params_by_kind[kind];
+    }
+
+    _isQi2TurboModel(entry) {
+        return this._metaKind(entry).toLowerCase() === "qi2"
+            && String(entry?.local_path || "").replace(/\\/g, "/").split("/").pop() === QI2_TURBO_MODEL_NAME;
     }
 
     _syncActiveFamilyState() {

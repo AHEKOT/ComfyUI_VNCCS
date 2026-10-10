@@ -52,7 +52,8 @@ except Exception:  # pragma: no cover
     model_management = None
 
 from .runtime_cleanup import inference_stage
-import comfy.samplers
+from .vnccs_pipe import VNCCS_Pipe
+from .vnccs_flux_klein_encoder import VNCCS_Flux_Klein_Encoder
 from .vnccs_control_center import (
     _apply_lora_standard,
     _find_model_on_disk,
@@ -60,7 +61,7 @@ from .vnccs_control_center import (
     _entry_kind,
 )
 from .qi2_viggle import apply_viggle_turbo_lora, viggle_turbo_sigmas
-from .image_processing import ChromaKeyProcessor, fill_alpha_with_color, _flatten_image_tensors, _as_bool
+from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, _flatten_image_tensors, _as_bool
 from ..utils import (
     atomic_output_path,
     basename_agnostic,
@@ -258,10 +259,10 @@ def _first_tensor(value):
 @inference_stage()
 def _call_comfy_node(class_name, **kwargs):
     vnccs_node_id = kwargs.pop("_vnccs_node_id", None)
-    if callable(class_name):
-        return class_name(**kwargs)
     mappings = getattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {}) if comfy_nodes else {}
     cls = mappings.get(class_name)
+    if cls is None:
+        cls = {"VNCCS_Flux_Klein_Encoder": VNCCS_Flux_Klein_Encoder}.get(class_name)
     if cls is None:
         raise RuntimeError(f"Required node '{class_name}' is not available")
 
@@ -300,64 +301,6 @@ def _call_comfy_node(class_name, **kwargs):
             raise RuntimeError(str(block_execution))
         result = result.result
     return result if isinstance(result, tuple) else (result,)
-
-
-def _encode_flux_klein(
-    clip,
-    prompt,
-    vae,
-    image1=None,
-    image2=None,
-    image3=None,
-    upscale_method="lanczos",
-    megapixels=1.0,
-    resolution_steps=1,
-    empty_width=1024,
-    empty_height=1024,
-    batch_size=1,
-):
-    positive = _call_comfy_node("CLIPTextEncode", clip=clip, text=prompt)[0]
-    negative = _call_comfy_node("ConditioningZeroOut", conditioning=positive)[0]
-
-    conditioned = positive
-    first_scaled_image = None
-    for image in (image1, image2, image3):
-        if image is None:
-            continue
-
-        scaled = _call_comfy_node(
-            "ImageScaleToTotalPixels",
-            image=image,
-            upscale_method=upscale_method,
-            megapixels=float(megapixels),
-            resolution_steps=int(resolution_steps),
-        )[0]
-        latent = _call_comfy_node("VAEEncode", pixels=scaled, vae=vae)[0]
-        conditioned = _call_comfy_node(
-            "ReferenceLatent",
-            conditioning=conditioned,
-            latent=latent,
-        )[0]
-        if first_scaled_image is None:
-            first_scaled_image = scaled
-
-    width = int(empty_width)
-    height = int(empty_height)
-    if first_scaled_image is not None:
-        shape = getattr(first_scaled_image, "shape", None)
-        if shape is None or len(shape) < 3:
-            raise RuntimeError("Scaled reference image has no valid B,H,W,C shape.")
-        height, width = int(shape[-3]), int(shape[-2])
-        if width <= 0 or height <= 0:
-            raise RuntimeError(f"Scaled reference image has invalid dimensions: {width}x{height}.")
-
-    latent = _call_comfy_node(
-        "EmptyFlux2LatentImage",
-        width=width,
-        height=height,
-        batch_size=int(batch_size),
-    )[0]
-    return conditioned, negative, latent
 
 
 def _h3_memory_label(model):
@@ -1282,21 +1225,22 @@ class VNCCS_CharacterGenerator:
         _save_cached_tensor(cache_dir, stage, images if normalized else self._list_to_batch(images))
 
     def _extract_pipe(self, pipe):
+        out = VNCCS_Pipe().process_pipe(pipe=pipe)
         model_entry = getattr(pipe, "model_entry", None)
         model_kind = _entry_kind(model_entry) or str(getattr(pipe, "model_kind", "") or "").strip().lower()
         if model_kind == "qie2511":
             raise RuntimeError("QIE2511 is no longer supported. Select a QI2 model in VNCCS Control Center.")
         return {
-            "model": getattr(pipe, "model", None),
-            "clip": getattr(pipe, "clip", None),
-            "vae": getattr(pipe, "vae", None),
+            "model": out[0],
+            "clip": out[1],
+            "vae": out[2],
             "audio_vae": getattr(pipe, "audio_vae", None),
-            "seed": int(getattr(pipe, "seed_int", getattr(pipe, "seed", 0)) or 0),
-            "steps": int(getattr(pipe, "sample_steps", 0) or 1),
-            "cfg": float(getattr(pipe, "cfg", 0.0) or 1.0),
-            "denoise": max(0.0, min(1.0, float(getattr(pipe, "denoise", 0.0) or 0.0))),
-            "sampler": (getattr(pipe, "sampler_name", None) or (comfy.samplers.KSampler.SAMPLERS or ["euler"])[0]),
-            "scheduler": (getattr(pipe, "scheduler", None) or (comfy.samplers.KSampler.SCHEDULERS or ["normal"])[0]),
+            "seed": int(out[5] or 0),
+            "steps": int(out[6] or 1),
+            "cfg": float(out[7] or 1.0),
+            "denoise": max(0.0, min(1.0, float(out[8] if out[8] is not None else 0.0))),
+            "sampler": out[10] or "euler",
+            "scheduler": out[11] or "simple",
             "model_entry": model_entry,
             "model_kind": model_kind,
             "qi2_cache": getattr(pipe, "qi2_cache", {"device": "gpu", "dtype": "int8"}),
@@ -1432,7 +1376,7 @@ class VNCCS_CharacterGenerator:
             )
         if self._is_klein_pipe(pipe_values):
             return _call_comfy_node(
-                _encode_flux_klein,
+                "VNCCS_Flux_Klein_Encoder",
                 clip=pipe_values["clip"],
                 vae=pipe_values["vae"],
                 prompt=prompt,
@@ -2103,7 +2047,7 @@ class VNCCS_CharacterGenerator:
         sampler = self._sampler_settings(pipe_values, sampler_settings)
         vae_decode = self._vae_decode_settings(vae_decode_settings)
         pose_parts = self._image_list(poses)
-        character_rgb = fill_alpha_with_color(character)[0]
+        character_rgb = VNCCS_MaskExtractor().fill_alpha_with_color(character)[0]
         if self._is_h3_pipe(pipe_values):
             return self._run_h3_pose_generation(
                 pose_parts,
@@ -2158,7 +2102,7 @@ class VNCCS_CharacterGenerator:
 
         if not self._is_klein_pipe(pipe_values):
             raise RuntimeError(f"Unsupported pose generation model family: {pipe_values.get('model_kind') or 'unknown'}")
-        encoder_class = _encode_flux_klein
+        encoder_class = "VNCCS_Flux_Klein_Encoder"
         encoder_kwargs = {
             "clip": pipe_values["clip"],
             "vae": pipe_values["vae"],
@@ -2224,7 +2168,7 @@ class VNCCS_CharacterGenerator:
         )
         sampler = self._sampler_settings(pipe_values, sampler_settings)
         vae_decode = self._vae_decode_settings(vae_decode_settings)
-        character_rgb = fill_alpha_with_color(character)[0]
+        character_rgb = VNCCS_MaskExtractor().fill_alpha_with_color(character)[0]
 
         encoding_progress = self._stage_progress_callback(unique_id, "remove_clothes", "Encoding source character", lora_info)
         sampling_progress = self._stage_progress_callback(unique_id, "remove_clothes", "Sampling source character", lora_info)
@@ -2631,7 +2575,7 @@ class VNCCS_CharacterGenerator:
         )
         self._log_stage(unique_id, stage, f"Running chroma key preset '{str(settings.get('preset', 'balanced') or 'balanced')}' with screen mode '{screen_mode}' on {self._batch_shape_label(batch)}", current=0, total=total, cache_dir=cache_dir)
         started_at = time.time()
-        result = ChromaKeyProcessor().chroma_key(
+        result = VNCCSChromaKey().chroma_key(
             batch,
             float(preset["tolerance"]),
             float(preset["softness"]),
@@ -4015,7 +3959,8 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             if alpha.shape != rgb_arr.shape[:2]:
                 alpha = np.array(Image.fromarray(alpha).resize((rgb_arr.shape[1], rgb_arr.shape[0]), Image.Resampling.LANCZOS))
 
-        Image.fromarray(np.dstack([rgb_arr[..., :3], alpha]), mode="RGBA").save(path, format="PNG")
+        with atomic_output_path(path) as temporary:
+            Image.fromarray(np.dstack([rgb_arr[..., :3], alpha]), mode="RGBA").save(temporary, format="PNG")
         return path
 
     def _run_emotion_generation_one(

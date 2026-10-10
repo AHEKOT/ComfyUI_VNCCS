@@ -7,9 +7,12 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-pytest.importorskip("torch")
-from nodes import character_generator as encoder_module
-from nodes.character_generator import _encode_flux_klein
+from nodes import vnccs_flux_klein_encoder as encoder_module
+from nodes.vnccs_flux_klein_encoder import (
+    NODE_CLASS_MAPPINGS,
+    NODE_DISPLAY_NAME_MAPPINGS,
+    VNCCS_Flux_Klein_Encoder,
+)
 
 
 def _install_fake_nodes(monkeypatch):
@@ -88,12 +91,16 @@ def _install_fake_nodes(monkeypatch):
     return calls
 
 
+def test_registration_and_optional_image_inputs():
+    assert NODE_CLASS_MAPPINGS["VNCCS_Flux_Klein_Encoder"] is VNCCS_Flux_Klein_Encoder
+    assert NODE_DISPLAY_NAME_MAPPINGS["VNCCS_Flux_Klein_Encoder"] == "VNCCS Flux Klein Encoder"
+    assert {"image1", "image2", "image3"} <= set(VNCCS_Flux_Klein_Encoder.INPUT_TYPES()["optional"])
 
 
 def test_no_images_skips_every_reference_processing_block(monkeypatch):
     calls = _install_fake_nodes(monkeypatch)
 
-    positive, negative, latent = _encode_flux_klein(
+    positive, negative, latent = VNCCS_Flux_Klein_Encoder().encode(
         clip="clip",
         prompt="prompt",
         vae="vae",
@@ -124,7 +131,7 @@ def test_sparse_image_inputs_only_run_their_own_blocks(monkeypatch, image_key):
         "megapixels": 1.5,
         "resolution_steps": 4,
     }
-    positive, negative, latent = _encode_flux_klein(
+    positive, negative, latent = VNCCS_Flux_Klein_Encoder().encode(
         **inputs,
     )
 
@@ -146,7 +153,7 @@ def test_sparse_image_inputs_only_run_their_own_blocks(monkeypatch, image_key):
 def test_three_images_chain_reference_conditioning_in_input_order(monkeypatch):
     calls = _install_fake_nodes(monkeypatch)
 
-    positive, negative, latent = _encode_flux_klein(
+    positive, negative, latent = VNCCS_Flux_Klein_Encoder().encode(
         clip="clip",
         prompt="change outfit",
         vae="vae",

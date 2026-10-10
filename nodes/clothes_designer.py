@@ -22,7 +22,6 @@ from ..utils import (
 )
 from .character_generator import (
     _call_comfy_node,
-    _encode_flux_klein,
     _resolution_scale_megapixels,
     _resolution_scale_value,
     VNCCS_CharacterGenerator,
@@ -747,7 +746,7 @@ class ClothesDesigner:
                 negative_prompt=negative_prompt,
             )
         else:
-            pos_cond, neg_cond, empty_latent = _call_comfy_node(_encode_flux_klein, **encoder_kwargs)
+            pos_cond, neg_cond, empty_latent = _call_comfy_node("VNCCS_Flux_Klein_Encoder", **encoder_kwargs)
         
         out_pipe = PipeContext(
             source=pipe,

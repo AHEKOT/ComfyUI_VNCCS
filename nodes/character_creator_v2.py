@@ -660,6 +660,11 @@ def normalize_gen_settings(gen_settings):
         else ILLUSTRIOUS_DEFAULTS
     )
     merged = dict(defaults)
+    selected_model = normalized.get("diffusion_model_name")
+    if isinstance(mode_profile, dict):
+        selected_model = mode_profile.get("diffusion_model_name", selected_model)
+    if generation_mode == "qi2" and control_center.is_qi2_turbo_model(selected_model):
+        merged.update(steps=8, cfg=1.0)
     merged.update(normalized)
     if isinstance(mode_profile, dict):
         merged.update(mode_profile)
@@ -681,6 +686,8 @@ def normalize_gen_settings(gen_settings):
     if generation_mode == "anima":
         merged.pop("resolution_preset", None)
     elif generation_mode == "qi2":
+        if control_center.is_qi2_turbo_model(merged.get("diffusion_model_name")):
+            merged["turbo_enabled"] = False
         merged["clip_type"] = "qwen_image"
         merged["qi2_overhaul_strength"] = normalize_overhaul_strength(merged.get("qi2_overhaul_strength"))
         cache = merged.get("qi2_cache", {})
@@ -1880,6 +1887,41 @@ class CharacterCreatorV2:
     RETURN_NAMES = ("character", "sheets_path", "background")
     FUNCTION = "process"
     CATEGORY = "VNCCS"
+
+    @classmethod
+    def create_character(cls, name, catalog=""):
+        name = ensure_safe_name(name, "character")
+        character_path = character_dir(name)
+        with character_storage_lock(character_path):
+            existing = load_config(name, strict=True)
+            if existing is not None:
+                return {"ok": True, "name": name, "existing": True, "data": existing}
+
+            info = {
+                "name": name, "background_color": "green", "aesthetics": "masterpiece",
+                "nsfw": False, "sex": "female", "age": 18, "race": "human",
+                "eyes": "blue eyes",
+                "hair": "black hair, waist-length hair" if catalog == "creator_v2" else normalize_hair_tags("black long"),
+                "face": "freckles", "body": "medium breasts", "skin_color": "",
+                "additional_details": "", "seed": 0, "lora_prompt": "",
+                "negative_prompt": "bad quality,worst quality,worst detail,sketch,censor, missing arm, missing leg, distorted body",
+            }
+            positive, negative = cls.construct_prompt(info)
+            face_details = _strip_unit_prompt_weights(build_face_details(info)) + ", (expressionless)"
+            ensure_character_structure(name)
+            config = {
+                "character_info": info, "costumes": {}, "character_path": character_path,
+                "folder_structure": {"main_directories": MAIN_DIRS, "emotions": EMOTIONS},
+                "config_version": "2.0",
+            }
+            if not save_config(name, config):
+                raise OSError(f"Could not save character configuration for '{name}'. Check storage permissions and free space.")
+
+        return {
+            "ok": True, "name": name, "seed": info["seed"],
+            "positive_prompt": positive, "negative_prompt": negative,
+            "age_lora_strength": age_strength(info["age"]), "face_details": face_details,
+        }
 
     @staticmethod
     def construct_prompt(info, generation_mode="illustrious", include_style=True):

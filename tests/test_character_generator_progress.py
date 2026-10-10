@@ -22,7 +22,7 @@ def generator(monkeypatch):
     monkeypatch.setattr(node, "_apply_pose_lora_to_model", lambda model, *args: model)
     monkeypatch.setattr(node, "_apply_lora_to_model", lambda model, *args: model)
     monkeypatch.setattr(node, "_validate_conditioning_for_model", lambda *args: None)
-    monkeypatch.setattr(cg, 'fill_alpha_with_color', lambda image: (image,))
+    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", type("MaskExtractor", (), {"fill_alpha_with_color": staticmethod(lambda image: (image,))}))
     events = []
 
     def capture(name, payload):
@@ -40,7 +40,7 @@ def test_pose_progress_tracks_each_phase_and_item(generator, monkeypatch, kind, 
     values["model_kind"] = kind
     calls = []
     phases = {
-                cg._encode_flux_klein: "Encoding poses",
+                "VNCCS_Flux_Klein_Encoder": "Encoding poses",
         "MiniMaxH3ReferenceToVideo": "Encoding poses",
         "KSampler": "Sampling poses",
         "SamplerCustomAdvanced": "Sampling poses",
@@ -64,7 +64,7 @@ def test_pose_progress_tracks_each_phase_and_item(generator, monkeypatch, kind, 
             assert events[-1]["total"] == count
             completed[phase] += 1
             calls.append(class_name)
-        if class_name in {cg._encode_flux_klein, "ProbeEncode"}:
+        if class_name in {"VNCCS_Flux_Klein_Encoder", "ProbeEncode"}:
             return "positive", "negative", "latent"
         if class_name == "MiniMaxH3ReferenceToVideo":
             return "positive", "latent"

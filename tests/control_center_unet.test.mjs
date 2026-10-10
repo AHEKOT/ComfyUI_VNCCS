@@ -92,6 +92,28 @@ test("new Control Center serializes QI2 defaults", () => {
     assert.equal(events.at(-1).type, "vnccs-control-center-model-changed");
 });
 
+test("built-in QI2 Turbo selects 8/1 without Viggle and restores base defaults", () => {
+    const config = JSON.parse(readFileSync(new URL("../control_center.json", import.meta.url), "utf8"));
+    const model = config.models.find(entry => entry.name === "Qwen Image 2.1 Turbo INT8 ConvRot");
+    const { widget, serialized } = setup({ loras: [{ name: turbo.name, auto_apply: true }] }, config);
+    widget._setSelectedModelName("unet", model.name);
+    widget._saveState();
+    let saved = JSON.parse(serialized.value);
+    assert.equal(saved.selected_model, model.name);
+    assert.equal(saved.model_params.steps, 8);
+    assert.equal(saved.model_params.cfg, 1);
+    assert.equal(saved.loras[0].auto_apply, false);
+    widget._currentModelParams().steps = 10;
+    widget._setSelectedModelName("unet", model.name);
+    assert.equal(widget._currentModelParams().steps, 10);
+    widget._setSelectedModelName("unet", defaultName);
+    assert.equal(widget._currentModelParams().steps, 25);
+    assert.equal(widget._currentModelParams().cfg, 3);
+    const restored = setup({ active_kind: "QI2", selected_model: model.name }, config).widget;
+    assert.equal(restored._currentModelParams().steps, 8);
+    assert.equal(restored._currentModelParams().cfg, 1);
+});
+
 test("packaged workflows select QI2 without legacy model state", () => {
     let count = 0;
     function inspect(value) {

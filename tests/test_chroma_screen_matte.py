@@ -131,10 +131,10 @@ def test_gpu_matches_cpu_and_returns_to_callers_device(device):
 
 
 def test_internal_screen_matte_handles_batches_without_changing_generator_defaults():
-    from nodes.image_processing import ChromaKeyProcessor
+    from nodes.vnccs_utils import VNCCSChromaKey
     from nodes.character_generator import CHROMA_KEY_PRESETS
 
-    node = ChromaKeyProcessor()
+    node = VNCCSChromaKey()
     settings = dict(CHROMA_KEY_PRESETS["balanced"])
     assert settings["matte_method"] == "guided_edge"
     settings["matte_method"] = "screen_matte"

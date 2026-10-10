@@ -141,6 +141,8 @@ def _random_character_info(mode, background, age_min, age_max, anima_style_overr
         raise ValueError("Age range must satisfy 1 <= age_min <= age_max <= 100")
     if nsfw_mode not in {"SFW", "NSFW", "Random"}:
         raise ValueError(f"Unsupported NSFW mode: {nsfw_mode}")
+    if nsfw_mode == "NSFW" and age_min < 18:
+        raise ValueError("NSFW mode requires adult ages (18 or older)")
     if framing_mode not in {None, "Full Body", "Cowboy Shot", "Random"}:
         raise ValueError(f"Unsupported framing mode: {framing_mode}")
     info = {**_PROMPT_DEFAULTS, **_MODE_PROMPT_DEFAULTS[mode], "background_color": background}
@@ -148,7 +150,7 @@ def _random_character_info(mode, background, age_min, age_max, anima_style_overr
         info["sex"] = random.choice(("female", "male"))
     if randomize.get("age", True):
         info["age"] = random.randint(age_min, age_max)
-    info["nsfw"] = info["age"] >= 1 and (
+    info["nsfw"] = info["age"] >= 18 and (
         nsfw_mode == "NSFW" or nsfw_mode == "Random" and random.choice((False, True))
     )
     if framing_mode in {"Full Body", "Cowboy Shot"}:
@@ -161,7 +163,7 @@ def _random_character_info(mode, background, age_min, age_max, anima_style_overr
             continue
         selected = []
         for group in groups:
-            if group == "breast_size" and (info["sex"] != "female" or info["age"] < 1):
+            if group == "breast_size" and (info["sex"] != "female" or info["age"] < 18):
                 continue
             options = [item["tag"] for item in tags[group]]
             # Identity groups have one choice; decorative details can form a set.
@@ -212,14 +214,14 @@ def _rewrite_preview_output(clip, info, style_reference):
     expanded = dict(expanded) if isinstance(expanded, dict) else {}
     body_marker = "__VNCCS_PREVIEW_OBSERVED_BODY__"
     compile_fields = dict(fields)
-    if info["age"] >= 1:
+    if info["age"] >= 18:
         # Insert the complete analysis response after the shared compiler's cleanup.
         compile_fields["body"] = body_marker
         expanded["body"] = body_marker
     prompt = _strip_unit_prompt_weights(_qi2_expanded_field_prompt(
         json.dumps({"fields": expanded}, ensure_ascii=False), compile_fields,
     ))
-    if info["age"] >= 1:
+    if info["age"] >= 18:
         prompt = prompt.replace(body_marker + ".", info["body"], 1)
     if style_reference:
         prompt += f"\n\n{QI2_STYLE_REFERENCE_HEADING}\n{style_reference}"
@@ -413,11 +415,11 @@ class VNCCSStylePreviewTest:
         path, filename = _next_output_path(output_dir, mode, style_id)
         tensor2pil(image).save(path)
         log_event("preview_saved", component="StylePreview", file=os.path.basename(path))
-        if info["age"] >= 1:
+        if info["age"] >= 18:
             breast_size = _analyze_breast_size(image)
             _set_observed_breast_size(info, breast_size)
             log_event("body_analysis", component="StylePreview", breast_size=breast_size)
-        if mode == "anima" or info["age"] >= 1:
+        if mode == "anima" or info["age"] >= 18:
             rewrite_clip = load_generation_clip(normalize_gen_settings(QI2_DEFAULTS))
             prompt = _rewrite_preview_output(rewrite_clip, info, style_reference)
             del rewrite_clip

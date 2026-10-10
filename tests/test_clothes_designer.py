@@ -415,7 +415,7 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
                 "rewritten_prompt": "Dress the character in the image with the requested outfit precisely.",
                 "wh_ratio": "", "ratio_follow": "<image1>",
             }),)
-        if name == cd._encode_flux_klein:
+        if name == "VNCCS_Flux_Klein_Encoder":
             return "positive", "negative", {"samples": torch.zeros(1)}
         if name == "ImageScale":
             return (kwargs["image"],)
@@ -468,7 +468,7 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
         assert "VAEDecodeTiled" not in calls
         assert set(calls["VAEDecode"]) == {"samples", "vae"}
     elif kind == "Klein9b":
-        assert calls[cd._encode_flux_klein]["megapixels"] == expected / 1024
+        assert calls["VNCCS_Flux_Klein_Encoder"]["megapixels"] == expected / 1024
     else:
         assert background == "Alpha"
         latent = calls["EmptyLatentImage"]
@@ -499,7 +499,7 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
         assert "VAEDecodeTiled" not in calls
     if kind != "QI2":
         assert "TextGenerate" not in calls
-        encoder_name = "MiniMaxH3ReferenceToVideo" if kind == "MiniMaxH3" else cd._encode_flux_klein
+        encoder_name = "MiniMaxH3ReferenceToVideo" if kind == "MiniMaxH3" else "VNCCS_Flux_Klein_Encoder"
         assert "#00FF00" in calls[encoder_name]["prompt"]
     else:
         encoder_name = "TextEncodeQwenImage21"

@@ -33,7 +33,7 @@ def test_h3_body_preparation_uses_clothes_lora_and_returns_one_frame(monkeypatch
     monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: events.append((args, kwargs)))
     monkeypatch.setattr(node, "_apply_lora_to_model", lambda model, clip, pipe, lora, stage:
                         applied.append((lora, stage)) or clothes_model)
-    monkeypatch.setattr(cg, 'fill_alpha_with_color', lambda x: (x,))
+    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", type("MaskExtractor", (), {"fill_alpha_with_color": staticmethod(lambda x: (x,))}))
 
     def call(name, **kwargs):
         calls.append((name, kwargs))
