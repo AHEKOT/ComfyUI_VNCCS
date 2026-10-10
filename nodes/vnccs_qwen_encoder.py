@@ -186,7 +186,7 @@ class VNCCS_QWEN_Encoder:
                background_color="White",
                ):
         
-        ref_latents = []
+        ref_latents = [None, None, None]
         input_images = [image1, image2, image3]
         names = [image1_name, image2_name, image3_name]
         
@@ -219,7 +219,7 @@ class VNCCS_QWEN_Encoder:
                 image = self._prepare_encoder_image(image, background_color)
                 # 1. Processing for Reference Latents (VAE)
                 processed_ref = self._process_image(image, target_size, upscale_method, crop_method)
-                ref_latents.append(vae.encode(processed_ref[:, :, :, :3]))
+                ref_latents[i] = vae.encode(processed_ref[:, :, :, :3])
                 
                 # 2. Processing for VL (Qwen) - resizing to vl_size and padding/cropping
                 processed_vl = self._process_image(image, vl_size, upscale_method, crop_method)
@@ -244,20 +244,18 @@ class VNCCS_QWEN_Encoder:
             log_event('warning', component='QwenEncoder', level='warning', message=f'Failed to apply reference latent conditioning metadata: {exc}', error=str(exc))
         
         conditioning_full_ref = conditioning
-        if len(ref_latents) > 0:
+        if any(latent is not None for latent in ref_latents):
             # Apply weights to ref_latents
             weights_list = [weight1, weight2, weight3]
-            ref_latents_weighted = [ (w ** 2) * latent for w, latent in zip(weights_list[:len(ref_latents)], ref_latents) ]
-            
-            # Filter out zero-weighted latents for full_ref
-            ref_latents_full = [latent for latent, w in zip(ref_latents_weighted, weights_list[:len(ref_latents)]) if w > 0]
+            ref_latents_full = [(w ** 2) * latent for w, latent in zip(weights_list, ref_latents)
+                                if latent is not None and w > 0]
             conditioning_full_ref = node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents_full}, append=True)
         
         # Create negative conditioning by zeroing out the positive conditioning tensors
         conditioning_negative = [(torch.zeros_like(cond[0]), cond[1]) for cond in conditioning_full_ref]
         
         # Return latent of selected image if available, otherwise return empty latent
-        if len(ref_latents) >= latent_image_index:
+        if 1 <= latent_image_index <= len(ref_latents) and ref_latents[latent_image_index - 1] is not None:
             samples = ref_latents[latent_image_index - 1]
         else:
             samples = torch.zeros(1, 4, 128, 128)

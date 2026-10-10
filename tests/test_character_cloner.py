@@ -1,4 +1,4 @@
-"""Tests for nodes/character_cloner.py — grid layout and config logic."""
+"""Tests for nodes/character_cloner.py — single-reference import and config logic."""
 
 import importlib.util
 import json
@@ -12,10 +12,6 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-
-# ── grid algorithm (extracted from CharacterCloner.process) ──────────────────
-# The algorithm lives inline in process(), so we replicate it here exactly
-# so tests stay decoupled from model-loading side-effects.
 
 import numpy as np
 
@@ -46,67 +42,23 @@ def test_cloner_download_routes_share_qwen_worker_and_keep_legacy_responses(monk
     assert len(started) == 1
 
 
-def _best_grid(count, max_w, max_h):
-    """Replicate the smart-grid selection from CharacterCloner.process()."""
-    best_cols = 1
-    best_rows = count
-    best_score = float("inf")
-
-    for c in range(1, count + 1):
-        r = int(np.ceil(count / c))
-        w_total = c * max_w
-        h_total = r * max_h
-        ratio = w_total / h_total
-        symmetric_ratio = ratio if ratio >= 1 else 1 / ratio
-        grid_diff = abs(c - r)
-        score = symmetric_ratio + (grid_diff * 0.01)
-        if score < best_score:
-            best_score = score
-            best_cols = c
-            best_rows = r
-
-    return best_cols, best_rows
-
-
-class TestGridLayout:
-    def test_single_image_is_1x1(self):
-        cols, rows = _best_grid(1, 512, 512)
-        assert cols == 1
-        assert rows == 1
-
-    def test_four_square_images_prefer_2x2(self):
-        cols, rows = _best_grid(4, 512, 512)
-        assert cols == 2
-        assert rows == 2
-
-    def test_grid_covers_all_images(self):
-        for count in range(1, 13):
-            cols, rows = _best_grid(count, 512, 512)
-            assert cols * rows >= count
-
-    def test_single_tall_image_prefers_single_column(self):
-        # 3 portrait images — vertical strip is reasonable
-        cols, rows = _best_grid(3, 256, 768)
-        assert cols * rows >= 3
-
-    def test_many_wide_images_grid_covers_all(self):
-        # Algorithm minimises total output aspect ratio, not number of columns.
-        # For 6 wide images (1024x256) the minimum-score layout is 1 col × 6 rows.
-        cols, rows = _best_grid(6, 1024, 256)
-        assert cols * rows >= 6
-
-    def test_symmetric_score_penalises_extreme_ratios(self):
-        # 4 square images: 2x2 beats 4x1
-        cols_4x1, rows_4x1 = 4, 1
-        cols_2x2, rows_2x2 = 2, 2
-        max_w = max_h = 512
-
-        def score(c, r):
-            ratio = (c * max_w) / (r * max_h)
-            sym = ratio if ratio >= 1 else 1 / ratio
-            return sym + abs(c - r) * 0.01
-
-        assert score(cols_2x2, rows_2x2) < score(cols_4x1, rows_4x1)
+@pytest.mark.parametrize("size", [(3, 7), (8, 2)])
+def test_single_reference_keeps_exact_dimensions_and_pixels(tmp_path, monkeypatch, size):
+    torch = pytest.importorskip("torch")
+    from PIL import Image
+    import utils
+    from nodes import character_cloner as cloner
+    monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path / "characters"))
+    monkeypatch.setattr(cloner.folder_paths, "get_input_directory", lambda: str(tmp_path), raising=False)
+    pixels = np.arange(size[0] * size[1] * 3, dtype=np.uint8).reshape(size[1], size[0], 3)
+    Image.fromarray(pixels).save(tmp_path / "reference.png")
+    image, sheets, background = cloner.CharacterCloner().process(json.dumps({
+        "character": "Alice", "character_info": {"name": "Alice"}, "source_images": ["reference.png"],
+    }))
+    assert image.shape == (1, size[1], size[0], 3)
+    assert torch.allclose(image[0], torch.from_numpy(pixels).float() / 255)
+    assert sheets == utils.sheets_dir("Alice")
+    assert background == "Green"
 
 
 # ── image path resolution logic ───────────────────────────────────────────────

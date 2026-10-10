@@ -40,6 +40,7 @@ try:
         normalize_filesystem_path,
         validate_privileged_request,
         privileged_route,
+        atomic_output_path, character_storage_lock,
     )
 except Exception:
     from utils import (
@@ -49,6 +50,7 @@ except Exception:
         normalize_filesystem_path,
         validate_privileged_request,
         privileged_route,
+        atomic_output_path, character_storage_lock,
     )
 
 
@@ -58,6 +60,7 @@ _MODEL_ASSET_CACHE = {}
 _MODEL_ASSET_LOCK = threading.RLock()
 _DOWNLOAD_STATUS = {}
 _DOWNLOAD_QUEUE = queue.Queue()
+_DOWNLOAD_QUEUE_LOCK = threading.Lock()
 _CUSTOM_LORAS_FILE = "vnccs_custom_loras.json"
 _PACKAGED_CC_REPO_IDS = {"MIUProject/VNCCS_v3.0"}
 DEFAULT_QI2_MODEL = "Qwen Image 2.1 INT8 ConvRot"
@@ -561,63 +564,49 @@ def _get_custom_loras_path(for_write=False):
 
 def _load_custom_loras():
     path = _get_custom_loras_path()
-    if not os.path.exists(path):
-        return []
     try:
         with open(path, "r", encoding="utf-8") as handle:
             data = json.load(handle)
-        if isinstance(data, dict):
-            data = data.get("lora", [])
-        return data if isinstance(data, list) else []
-    except Exception:
+    except FileNotFoundError:
         return []
+    if isinstance(data, dict):
+        data = data.get("lora")
+    if (not isinstance(data, list) or any(not isinstance(entry, dict)
+            or not isinstance(entry.get("local_path"), str) or not entry["local_path"]
+            or not isinstance(entry.get("name", ""), str) for entry in data)):
+        raise ValueError("Invalid custom LoRA registry; repair it before saving")
+    return data
 
 
 def _save_custom_loras(entries):
     path = _get_custom_loras_path(for_write=True)
-    current = _load_custom_loras()
-    by_path = {
-        entry.get("local_path", "").replace("\\", "/"): entry
-        for entry in current
-        if isinstance(entry, dict) and entry.get("local_path")
-    }
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        local_path = entry.get("local_path", "").replace("\\", "/")
-        if not local_path:
-            continue
-        by_path[local_path] = entry
-
-    payload = {"lora": list(by_path.values())}
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, ensure_ascii=False)
+    with character_storage_lock(path):
+        current = _load_custom_loras()
+        by_path = {entry["local_path"].replace("\\", "/"): entry for entry in current}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            local_path = entry.get("local_path", "").replace("\\", "/")
+            if local_path:
+                by_path[local_path] = entry
+        with atomic_output_path(path) as temporary:
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump({"lora": list(by_path.values())}, handle, indent=2, ensure_ascii=False)
 
 
 def _remove_custom_lora(local_path=None, name=None):
     normalized_path = (local_path or "").replace("\\", "/")
     normalized_name = (name or "").strip().lower()
-    current = _load_custom_loras()
-    kept = []
-    removed = False
-
-    for entry in current:
-        if not isinstance(entry, dict):
-            continue
-        entry_path = entry.get("local_path", "").replace("\\", "/")
-        entry_name = entry.get("name", "").strip().lower()
-        if (normalized_path and entry_path == normalized_path) or (normalized_name and entry_name == normalized_name):
-            removed = True
-            continue
-        kept.append(entry)
-
-    payload = {"lora": kept}
     path = _get_custom_loras_path(for_write=True)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, ensure_ascii=False)
-    return removed
+    with character_storage_lock(path):
+        current = _load_custom_loras()
+        kept = [entry for entry in current
+                if not ((normalized_path and entry["local_path"].replace("\\", "/") == normalized_path)
+                        or (normalized_name and entry.get("name", "").strip().lower() == normalized_name))]
+        with atomic_output_path(path) as temporary:
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump({"lora": kept}, handle, indent=2, ensure_ascii=False)
+        return len(kept) != len(current)
 
 
 def _build_custom_lora_name(rel_path, used_names=None):
@@ -2219,8 +2208,12 @@ async def cc_download(request):
         return web.json_response({"error": str(exc)}, status=400)
 
     key = f"cc_{category}_{name}"
-    _DOWNLOAD_STATUS[key] = {"status": "queued", "message": "Queued..."}
-    _DOWNLOAD_QUEUE.put((repo_id, key, entry))
+    with _DOWNLOAD_QUEUE_LOCK:
+        current = _DOWNLOAD_STATUS.get(key, {})
+        if current.get("status") in {"queued", "downloading"}:
+            return web.json_response(dict(current))
+        _DOWNLOAD_STATUS[key] = {"status": "queued", "message": "Queued..."}
+        _DOWNLOAD_QUEUE.put((repo_id, key, entry))
     return web.json_response({"status": "queued", "message": f"Download queued for {name}"})
 
 

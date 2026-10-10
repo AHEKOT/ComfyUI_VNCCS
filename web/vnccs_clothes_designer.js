@@ -652,6 +652,7 @@ app.registerExtension({
                 }
 
                 const els = {};
+                node._vnccsCostumeDraft = saved.costume_info ? { character: state.character, costume: state.costume } : null;
                 let spritePreviewNavigator = null;
                 const beginPreviewRequest = createRequestGuard(node);
                 const beginSelectionRequest = createRequestGuard(node);
@@ -865,6 +866,7 @@ app.registerExtension({
                                             if (els[key].autoResize) els[key].autoResize();
                                         }
                                     });
+                                    node._vnccsCostumeDraft = { character: state.character, costume: state.costume };
                                     saveState();
                                     await saveCostumeToBackend();
                                     return false;
@@ -1205,6 +1207,7 @@ app.registerExtension({
 
                     inp.oninput = (e) => {
                         state.costume_info[key] = e.target.value;
+                        node._vnccsCostumeDraft = { character: state.character, costume: state.costume };
                         saveState();
                     };
                     inp.onchange = (e) => {
@@ -1889,10 +1892,16 @@ app.registerExtension({
                             character_info: { ...defaultState.character_info, ...restored.character_info },
                             gen_settings: { ...defaultState.gen_settings, ...restored.gen_settings },
                         });
+                        node._vnccsCostumeDraft = restored.costume_info ? { character: state.character, costume: state.costume } : null;
+                        for (const key of Object.keys(defaultState.costume_info)) {
+                            if (els[key]) els[key].value = state.costume_info[key];
+                        }
+                        if (els.charSelect) els.charSelect.value = state.character;
+                        if (els.costSel) els.costSel.value = state.costume;
                         syncGenerationControls();
                     } catch (error) { console.warn("[VNCCS] Clothes Designer state restore failed", error); }
                 };
-                registerCleanup(node, () => { delete node._vnccsRestoreClothesState; });
+                registerCleanup(node, () => { delete node._vnccsRestoreClothesState; delete node._vnccsCostumeDraft; });
 
                 // Initial Load
                 (async () => {
@@ -1914,7 +1923,7 @@ app.registerExtension({
 
                     if (!currentSelection()) return;
                     if (!await loadCharacterInfo() || !currentSelection()) return;
-                    if (!await loadCostumes() || !currentSelection()) return;
+                    if (!await loadCostumes(true) || !currentSelection()) return;
                     if (currentPreview()) updatePreviewImage();
                     saveState();
                 })();
@@ -1956,7 +1965,7 @@ app.registerExtension({
                     syncCostumeEditControls();
                     saveState();
                 };
-                const loadCostumes = async () => {
+                const loadCostumes = async (preserveDraft = false) => {
                     const currentRequest = beginCostumesRequest();
                     const c = state.character;
                     if (!c) return;
@@ -1968,6 +1977,9 @@ app.registerExtension({
 
                         // Filter base sprite sets from display list.
                         const displayList = list.filter(i => i !== "Naked" && i !== "Original");
+                        if (preserveDraft && node._vnccsCostumeDraft?.character === c
+                            && node._vnccsCostumeDraft?.costume === state.costume && hasSelectedEditableCostume()
+                            && !displayList.includes(state.costume)) displayList.push(state.costume);
 
                         els.costSel.innerHTML = "";
                         displayList.forEach(i => els.costSel.add(new Option(i, i)));
@@ -1993,7 +2005,7 @@ app.registerExtension({
                             els.costSel.value = state.costume;
                         }
 
-                        if (!await loadCostumeInfo()) return false;
+                        if (!await loadCostumeInfo(preserveDraft)) return false;
                         syncCostumeEditControls();
                         return true;
                     } catch (error) {
@@ -2003,7 +2015,7 @@ app.registerExtension({
                 };
 
                 const beginCostumeInfoRequest = createRequestGuard(node);
-                const loadCostumeInfo = async () => {
+                const loadCostumeInfo = async (preserveDraft = false) => {
                     const currentRequest = beginCostumeInfoRequest();
                     const c = state.character;
                     const cos = state.costume;
@@ -2023,14 +2035,17 @@ app.registerExtension({
                         }
 
                         state.costume_info = {
+                            ...info,
                             top: info.top || "",
                             bottom: info.bottom || "",
                             head: info.head || "",
                             face: info.face || "",
-                            shoes: info.shoes || ""
+                            shoes: info.shoes || "",
+                            ...(preserveDraft && node._vnccsCostumeDraft?.character === c
+                                && node._vnccsCostumeDraft?.costume === cos ? state.costume_info : {})
                         };
 
-                        for (const k in state.costume_info) {
+                        for (const k of ["top", "bottom", "head", "face", "shoes"]) {
                             if (els[k]) {
                                 els[k].value = state.costume_info[k];
                                 if (els[k].autoResize) els[k].autoResize();
@@ -2044,7 +2059,8 @@ app.registerExtension({
                         return true;
                     } catch (error) {
                         if (currentRequest() && state.character === c && state.costume === cos) {
-                            resetCostumeSelection();
+                            if (!(preserveDraft && node._vnccsCostumeDraft?.character === c
+                                && node._vnccsCostumeDraft?.costume === cos)) resetCostumeSelection();
                             showInfo("Error", error.message || String(error));
                         }
                         return false;

@@ -16,8 +16,9 @@ from ..utils import (
     load_character_info,
     apply_sex, append_age, generate_seed, build_face_details,
     list_costumes, load_costume_info, ensure_safe_name, safe_join_under,
-    privileged_route, file_fingerprint, config_path
+    privileged_route, file_fingerprint, config_path, atomic_output_path, character_storage_lock
 )
+from .emotion_library import load_emotion_library, save_emotion_library
 from .character_creator_v2 import (
     ANIMA_DEFAULTS,
     ILLUSTRIOUS_DEFAULTS,
@@ -70,15 +71,7 @@ def get_custom_node_path():
 
 # Helper function to load the emotions JSON
 def load_emotions_data():
-    """Load emotions.json from the emotions-config folder."""
-    config_path = os.path.join(get_custom_node_path(), "emotions-config", "emotions.json")
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"emotions.json not found at {config_path}")
-    
-    with open(config_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    
-    return data
+    return load_emotion_library(emotions_config_path(), user_emotions_config_path())
 
 
 def emotions_config_path():
@@ -87,6 +80,14 @@ def emotions_config_path():
 
 def emotion_images_dir():
     return os.path.join(get_custom_node_path(), "emotions-config", "images")
+
+
+def user_emotions_config_path():
+    return safe_join_under(os.path.dirname(emotions_config_path()), "user", "emotions.json")
+
+
+def user_emotion_images_dir():
+    return os.path.join(os.path.dirname(user_emotions_config_path()), "images")
 
 
 def make_unique_emotion_safe_name(title, existing_names):
@@ -121,8 +122,9 @@ def save_custom_emotion_image(image_data, safe_name):
 
     with Image.open(io.BytesIO(raw)) as img:
         img = ImageOps.exif_transpose(img).convert("RGBA")
-        os.makedirs(emotion_images_dir(), exist_ok=True)
-        img.save(os.path.join(emotion_images_dir(), f"{safe_name}.webp"), format="WEBP", quality=92, method=6)
+        path = safe_join_under(user_emotion_images_dir(), f"{ensure_safe_name(safe_name, 'emotion')}.webp")
+        with atomic_output_path(path) as temporary:
+            img.save(temporary, format="WEBP", quality=92, method=6)
 
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -330,7 +332,7 @@ def list_costume_sprite_paths(character, costume):
     return paths
 
 
-def load_costume_sprite_images(character, costume, selected_pose_indices=None):
+def load_costume_sprite_images(character, costume, selected_pose_indices=None, *, first_only=False):
     """Decode only the requested current neutral/source sprites for a costume."""
     paths = list_costume_sprite_paths(character, costume)
     selected = set(selected_pose_indices) if selected_pose_indices is not None else None
@@ -342,6 +344,8 @@ def load_costume_sprite_images(character, costume, selected_pose_indices=None):
         try:
             image, mask = _load_sprite_tensor(path)
             loaded.append((image, mask, path))
+            if first_only:
+                return loaded
         except Exception as exc:
             log_event('warning', component='EmotionStudio', level='warning', message=f'Failed to load sprite {path}: {exc}', error=str(exc))
 
@@ -414,31 +418,34 @@ if server:
             if not natural_prompt:
                 natural_prompt = f"The character expresses {title}."
 
-            config_path = emotions_config_path()
-            data = load_emotions_data()
-            existing_names = {
-                str(emotion.get("safe_name", "")).strip()
-                for emotion_list in data.values()
-                for emotion in emotion_list
-                if isinstance(emotion, dict)
-            }
-            safe_name = make_unique_emotion_safe_name(title, existing_names)
-            save_custom_emotion_image(payload.get("image_data"), safe_name)
+            with character_storage_lock(user_emotions_config_path()):
+                config_path = user_emotions_config_path()
+                data = load_emotions_data()
+                existing_names = {
+                    str(emotion.get("safe_name", "")).strip()
+                    for emotion_list in data.values()
+                    for emotion in emotion_list
+                    if isinstance(emotion, dict)
+                }
+                safe_name = make_unique_emotion_safe_name(title, existing_names)
+                save_custom_emotion_image(payload.get("image_data"), safe_name)
 
-            emotion = {
-                "key": title,
-                "description": description,
-                "safe_name": safe_name,
-                "natural_prompt": natural_prompt,
-            }
-            category = "Custom"
-            data.setdefault(category, []).append(emotion)
+                emotion = {
+                    "key": title,
+                    "description": description,
+                    "safe_name": safe_name,
+                    "natural_prompt": natural_prompt,
+                }
+                category = "Custom"
+                data.setdefault(category, []).append(emotion)
 
-            tmp_path = f"{config_path}.tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=4)
-                f.write("\n")
-            os.replace(tmp_path, config_path)
+                try:
+                    with open(config_path, "r", encoding="utf-8") as handle:
+                        users = json.load(handle)
+                except FileNotFoundError:
+                    users = {}
+                users[category] = data[category]
+                save_emotion_library(config_path, users)
 
             try:
                 EmotionGeneratorV2.SAFE_NAME_MAP = None
@@ -476,7 +483,8 @@ if server:
 
         try:
             costume = request.rel_url.query.get("costume", "Naked")
-            sprites = load_costume_sprite_images(character, costume) or load_costume_sprite_images(character, "Original")
+            sprites = (load_costume_sprite_images(character, costume, first_only=True)
+                       or load_costume_sprite_images(character, "Original", first_only=True))
             if not sprites:
                 return web.Response(status=404, text="No sprites found. Generate sprites first.")
 
@@ -498,6 +506,9 @@ if server:
         try:
             name = ensure_safe_name(request.rel_url.query.get("name", ""), "emotion")
             image_path = safe_join_under(emotion_images_dir(), f"{name}.webp")
+            user_image_path = safe_join_under(user_emotion_images_dir(), f"{name}.webp")
+            if os.path.exists(user_image_path):
+                image_path = user_image_path
         except ValueError as error:
             return web.Response(status=400, text=str(error))
 
@@ -519,14 +530,13 @@ class EmotionGeneratorV2:
     @classmethod
     def _setup_emotions_data(cls):
         path = emotions_config_path()
-        fingerprint = file_fingerprint(path)
+        fingerprint = (file_fingerprint(path), file_fingerprint(user_emotions_config_path()))
         cached = cls.SAFE_NAME_MAP
         if cached is not None and cls.EMOTIONS_FINGERPRINT == fingerprint:
             return cached
 
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            data = load_emotions_data()
 
             safe_name_map = {}
             for category, emotion_list in data.items():
@@ -542,7 +552,7 @@ class EmotionGeneratorV2:
             log_event('warning', component='EmotionStudio', level='warning', message=f'ERROR: Failed to load emotions data: {e}', error=str(e))
             safe_name_map = {}
         cls.SAFE_NAME_MAP = safe_name_map
-        cls.EMOTIONS_FINGERPRINT = fingerprint
+        cls.EMOTIONS_FINGERPRINT = (file_fingerprint(path), file_fingerprint(user_emotions_config_path()))
         return safe_name_map
 
     @classmethod
@@ -571,7 +581,7 @@ class EmotionGeneratorV2:
 
     @classmethod
     def IS_CHANGED(cls, character="Character Name", costumes_data="[]", **kwargs):
-        paths = [config_path(character), emotions_config_path()]
+        paths = [config_path(character), emotions_config_path(), user_emotions_config_path()]
         for costume in json.loads(costumes_data):
             paths.extend(list_costume_sprite_paths(character, costume))
         return json.dumps([file_fingerprint(path) for path in paths])

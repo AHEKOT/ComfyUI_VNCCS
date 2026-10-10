@@ -90,16 +90,23 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             return web.json_response({"error": "name required"}, status=400)
         
         try:
-            from .utils import character_dir, safe_join_under, base_output_dir, ensure_safe_name
+            from .utils import character_dir, safe_join_under, base_output_dir, ensure_safe_name, character_storage_lock
+            from .nodes.preview_runtime import run_preview_job
+            from .nodes.generator_context import forget_character_contexts
             import shutil
             name = ensure_safe_name(name, "character")
             char_path = character_dir(name)
             safe_join_under(base_output_dir(), os.path.relpath(char_path, base_output_dir()))
-            if not os.path.exists(char_path):
+            def remove_character():
+                with character_storage_lock(char_path):
+                    if not os.path.exists(char_path):
+                        return False
+                    shutil.rmtree(char_path)
+                    forget_character_contexts(char_path)
+                    return True
+
+            if not await run_preview_job(remove_character):
                 return web.json_response({"error": f"Character '{name}' not found"}, status=404)
-                
-            # Permanent Delete as requested
-            shutil.rmtree(char_path)
             
             return web.json_response({"ok": True, "name": name, "deleted": True})
             
@@ -148,6 +155,11 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
 
     @PromptServer.instance.routes.get("/vnccs/create_costume")
     async def vnccs_create_costume(request):
+        try:
+            from .utils import validate_privileged_request
+            validate_privileged_request(request)
+        except ValueError as error:
+            return web.json_response({"error": str(error)}, status=403)
         character_name = request.rel_url.query.get("character", "").strip()
         costume_name = request.rel_url.query.get("costume", "").strip()
         if not character_name or not costume_name:
@@ -159,27 +171,19 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         except ValueError as e:
             return web.json_response({"error": str(e)}, status=400)
         try:
-            from .utils import load_config, save_config, ensure_costume_structure
-            config = load_config(character_name)
-            if not config:
-                config = {"character_info": {}, "costumes": {}}
-            if "costumes" not in config:
-                config["costumes"] = {}
-            if costume_name in config["costumes"]:
-                return web.json_response({"error": "Costume already exists"})
-            config["costumes"][costume_name] = {
-                "face": "",
-                "head": "",
-                "top": "",
-                "bottom": "",
-                "shoes": "",
-                "negative_prompt": ""
-            }
-            if save_config(character_name, config):
+            from .utils import load_config, save_config, ensure_costume_structure, character_dir, character_storage_lock
+            with character_storage_lock(character_dir(character_name)):
+                config = load_config(character_name, strict=True)
+                if config is None:
+                    config = {"character_info": {}, "costumes": {}}
+                costumes = config.setdefault("costumes", {})
+                if costume_name in costumes:
+                    return web.json_response({"error": "Costume already exists"})
+                costumes[costume_name] = dict.fromkeys(("face", "head", "top", "bottom", "shoes", "negative_prompt"), "")
                 ensure_costume_structure(character_name, costume_name)
+                if not save_config(character_name, config):
+                    return web.json_response({"error": "Failed to save"}, status=500)
                 return web.json_response({"ok": True, "costume": costume_name})
-            else:
-                return web.json_response({"error": "Failed to save"}, status=500)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 

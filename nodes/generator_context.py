@@ -81,6 +81,17 @@ def _forget_generator_context(unique_id, scope=None):
         _LIVE_GENERATOR_CONTEXTS.pop(_generator_context_key(unique_id, scope), None)
 
 
+def forget_character_contexts(character_path):
+    """Drop stale Regenerate inputs after deletion under the inference lock."""
+    from ..utils import is_path_under
+    with _lock:
+        for key, context in list(_LIVE_GENERATOR_CONTEXTS.items()):
+            if context.get("cache_dir") and is_path_under(character_path, context["cache_dir"]):
+                del _LIVE_GENERATOR_CONTEXTS[key]
+                if isinstance(key, tuple):
+                    expire_cache_progress(hashlib.sha256(key[0].encode("utf-8")).hexdigest())
+
+
 def _generator_context_key(unique_id, scope=None):
     node_id = str(unique_id or "").strip()
     return (str(scope), node_id) if scope else node_id

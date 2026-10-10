@@ -1179,33 +1179,15 @@ class TestCustomLoraHelpers:
 
         assert [entry["name"] for entry in merged["lora"]] == ["base", "custom_one"]
 
-    def test_remove_custom_lora_by_path(self, monkeypatch):
-        stored = [
-            {"name": "keep", "local_path": "models/loras/keep.safetensors", "custom": True},
-            {"name": "drop", "local_path": "models/loras/drop.safetensors", "custom": True},
-        ]
-        saved = {}
+    def test_remove_custom_lora_by_path(self, monkeypatch, tmp_path):
+        path = tmp_path / "vnccs_custom_loras.json"
+        stored = [{"name": "keep", "local_path": "models/loras/keep.safetensors", "custom": True},
+                  {"name": "drop", "local_path": "models/loras/drop.safetensors", "custom": True}]
+        path.write_text(json.dumps({"lora": stored}))
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_get_custom_loras_path", lambda **kwargs: str(path))
+        assert _remove_custom_lora(local_path="models/loras/drop.safetensors") is True
+        assert json.loads(path.read_text())["lora"] == [stored[0]]
 
-        monkeypatch.setattr("nodes.vnccs_control_center._load_custom_loras", lambda: stored)
-        monkeypatch.setattr("nodes.vnccs_control_center._get_custom_loras_path", lambda *args, **kwargs: "/tmp/vnccs_custom_loras.json")
-        monkeypatch.setattr("nodes.vnccs_control_center.os.makedirs", lambda *args, **kwargs: None)
-
-        class _FakeFile:
-            def __enter__(self):
-                return self
-            def __exit__(self, exc_type, exc, tb):
-                return False
-            def write(self, text):
-                saved.setdefault("text", "")
-                saved["text"] += text
-
-        monkeypatch.setattr("builtins.open", lambda *args, **kwargs: _FakeFile())
-
-        removed = _remove_custom_lora(local_path="models/loras/drop.safetensors")
-
-        assert removed is True
-        assert "drop.safetensors" not in saved["text"]
-        assert "keep.safetensors" in saved["text"]
 
 
 # ── VNCCSPipeProxy ────────────────────────────────────────────────────────────

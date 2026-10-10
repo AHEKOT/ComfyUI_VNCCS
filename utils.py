@@ -99,7 +99,7 @@ def _is_under_any_model_folder(path: str, folders: List[str]) -> bool:
         path_abs = os.path.abspath(normalize_filesystem_path(path))
         for folder in folders:
             folder_abs = os.path.abspath(normalize_filesystem_path(folder))
-            if os.path.commonpath([folder_abs, path_abs]) == folder_abs:
+            if os.path.commonpath([os.path.realpath(folder_abs), os.path.realpath(path_abs)]) == os.path.realpath(folder_abs):
                 return True
     except Exception:
         return False
@@ -112,11 +112,15 @@ def get_full_path_agnostic(folder_paths, category: str, name: str, require_exist
     first_match = None
 
     for candidate in _model_path_variants(name):
+        if any(part in {".", ".."} or "\0" in part for part in _portable_parts(candidate)):
+            continue
+        if is_absolute_path_any_os(candidate) and not _is_under_any_model_folder(candidate, folders):
+            continue
         try:
             found = folder_paths.get_full_path(category, candidate)
         except Exception:
             found = None
-        if found:
+        if found and _is_under_any_model_folder(found, folders):
             if os.path.exists(found):
                 return found
             if first_match is None:
@@ -124,6 +128,8 @@ def get_full_path_agnostic(folder_paths, category: str, name: str, require_exist
 
         for folder in folders:
             joined = os.path.join(folder, normalize_filesystem_path(candidate))
+            if not _is_under_any_model_folder(joined, folders):
+                continue
             if os.path.exists(joined):
                 return joined
             if first_match is None:

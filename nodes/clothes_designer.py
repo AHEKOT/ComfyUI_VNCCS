@@ -1,6 +1,7 @@
 from ..operation_logger import log_event, log_stage, logged_operation
 
 from .preview_runtime import run_wizard_job
+from .generator_context import serialized_generator
 
 import os
 import json
@@ -545,6 +546,7 @@ class ClothesDesigner:
             return self._pil_image_tensor(img)
 
     @logged_operation("ClothesDesigner", "preview")
+    @serialized_generator
     def process(self, pipe=None, widget_data="{}", unique_id=None):
         # CRITICAL FIX: Ensure PromptServer has last_prompt_id for preview system
         if not hasattr(server.PromptServer.instance, "last_prompt_id"):

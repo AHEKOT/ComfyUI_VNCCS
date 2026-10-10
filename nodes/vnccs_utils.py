@@ -582,7 +582,7 @@ class VNCCSChromaKey:
                 ["Sam3ImageSegmentation", "easy sam3ImageSegmentation"],
                 method_names=("segment", "segment_image", "process", "execute"),
                 sam3_model=sam3_model,
-                images=image[index:index + 1],
+                images=image[index:index + 1, ..., :3],
                 prompt=str(settings.get("sam3_prompt", "face, clothes, accessories, hat, boots, eyes")),
                 threshold=float(settings.get("sam3_threshold", 0.40)),
                 keep_model_loaded=index < batch_size - 1,

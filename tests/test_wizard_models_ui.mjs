@@ -131,7 +131,7 @@ test('workflow restoration merges generation defaults and preserves manual resol
     const node = {};
     let synchronized = 0;
     const context = createWidgetContext({
-        node, state, dataWidget,
+        node, state, dataWidget, els: {},
         defaultState: { gen_settings: { target_size: null, seed: 0 }, character_info: {}, costume_info: {} },
         syncGenerationControls: () => synchronized++,
     });

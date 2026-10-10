@@ -18,6 +18,7 @@ from ..utils import (
     character_storage_lock,
 )
 from .preview_runtime import run_wizard_job
+from .generator_context import serialized_generator
 
 MAX_SOURCE_IMAGES = 1
 MAX_GRID_PIXELS = 16 * 1024 * 1024
@@ -110,6 +111,7 @@ class CharacterCloner:
     CATEGORY = "VNCCS"
 
     @logged_operation("Cloner", "import_reference")
+    @serialized_generator
     def process(self, widget_data="{}", unique_id=None):
         try:
             data = json.loads(widget_data)
@@ -132,7 +134,7 @@ class CharacterCloner:
         log_event("reference_inputs", character=character_name, images=len(source_images), background=background_color)
 
         # 4. Process Images
-        # Load all source images, make a grid
+        # Load the validated single reference image
         images_tensors = []
         source_pixels = 0
         if source_images:
@@ -165,61 +167,7 @@ class CharacterCloner:
                         log_event('warning', component='Cloner', level='warning', message=f"Failed to load source image '{img_name}': {exc}", error=str(exc))
         
         if images_tensors:
-            # Create a simple grid: standard collage
-            # Smart Grid: Minimize aspect ratio difference from 1.0 (Square)
-            count = len(images_tensors)
-            max_w = max(img.width for img in images_tensors)
-            max_h = max(img.height for img in images_tensors)
-
-            best_cols = 1
-            best_rows = count
-            best_diff = float('inf')
-
-            # Naively try all column counts
-            for c in range(1, count + 1):
-                r = int(np.ceil(count / c))
-                # Grid dimensions if we use this layout (assuming max_w/max_h cells)
-                w_total = c * max_w
-                h_total = r * max_h
-                
-                ratio = w_total / h_total  # width / height
-                
-                # Symmetric score: penalize deviation from 1.0 equally for tall vs wide
-                # e.g. ratio 0.5 -> 2.0; ratio 2.0 -> 2.0
-                symmetric_ratio = ratio if ratio >= 1 else 1 / ratio
-                
-                # Tie-breaker: Prefer square grid of CELLS (c approx r)
-                # This helps when 1x4 (ratio 0.5) and 2x2 (ratio 2.0) have same symmetric score.
-                # 2x2 is "structurally" squarer.
-                grid_diff = abs(c - r)
-                
-                # Weighted score: Main priority is image aspect, secondary is grid shape
-                score = symmetric_ratio + (grid_diff * 0.01)
-
-                if score < best_diff:
-                    best_diff = score
-                    best_cols = c
-                    best_rows = r
-            
-            cols = best_cols
-            rows = best_rows
-            
-            grid_w = cols * max_w
-            grid_h = rows * max_h
-            if grid_w * grid_h > MAX_GRID_PIXELS:
-                raise ValueError(f"Character reference grid exceeds {MAX_GRID_PIXELS:,} pixels. Use fewer or smaller images.")
-            grid = Image.new("RGB", (grid_w, grid_h), "black")
-            
-            for idx, img in enumerate(images_tensors):
-                r = idx // cols
-                c = idx % cols
-                
-                # Center image in cell
-                x = c * max_w + (max_w - img.width) // 2
-                y = r * max_h + (max_h - img.height) // 2
-                grid.paste(img, (x, y))
-            
-            final_image = pil2tensor(grid)
+            final_image = pil2tensor(images_tensors[0])
 
         else:
             message = "Upload a character image in Character Cloner first."

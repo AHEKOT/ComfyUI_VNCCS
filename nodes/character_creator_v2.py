@@ -34,6 +34,7 @@ from ..utils import (
 )
 from .qwen_vl import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
 from .runtime_cleanup import inference_stage
+from .generator_context import serialized_generator
 from .qwen_vl import configure_qwen_text_chat, parse_wizard_json, _validate_gguf_file
 from .character_presets import CHARACTER_PRESETS, RACE_PRESETS, preset_key, race_features, race_prompt
 from .character_styles import (
@@ -2010,6 +2011,7 @@ class CharacterCreatorV2:
         return json.dumps([file_fingerprint(path) for path in paths])
 
     @logged_operation("Creator", "workflow")
+    @serialized_generator
     def process(self, widget_data="{}", unique_id=None):
         # Clear Preview Cache to free memory for workflow run
         global PREVIEW_CACHE

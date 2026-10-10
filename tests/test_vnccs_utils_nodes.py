@@ -197,9 +197,12 @@ def test_sam3_recovery_supports_legacy_combined_mask_output():
     assert candidates.shape == (1, 6, 8)
 
 
-def test_sam3_recovery_segments_batch_one_image_at_a_time(monkeypatch):
+@pytest.mark.parametrize("channels", [3, 4])
+@pytest.mark.parametrize("batch_size", [1, 3])
+def test_sam3_recovery_segments_batch_one_rgb_image_at_a_time(monkeypatch, channels, batch_size):
     node = VNCCSChromaKey()
-    image = torch.zeros((3, 6, 8, 3), dtype=torch.float32)
+    image = torch.linspace(0.0, 1.0, batch_size * 6 * 8 * channels).reshape(batch_size, 6, 8, channels)
+    original = image.clone()
     model = object()
     loader_calls = []
     segment_calls = []
@@ -217,7 +220,11 @@ def test_sam3_recovery_segments_batch_one_image_at_a_time(monkeypatch):
                 "stack expects each tensor to be equal size, "
                 "but got [3, 4] at entry 0 and [6, 4] at entry 2"
             )
-        assert kwargs["images"].shape == (1, 6, 8, 3)
+        # RGB channel statistics reproduce the model's normalization boundary.
+        normalized = kwargs["images"][0].movedim(-1, 0) - torch.zeros((3, 1, 1))
+        assert normalized.shape == (3, 6, 8)
+        index = len(segment_calls)
+        torch.testing.assert_close(kwargs["images"], original[index:index + 1, ..., :3])
         segment_calls.append(kwargs["keep_model_loaded"])
         mask_value = len(segment_calls) / 10.0
         combined = torch.full((1, 6, 8), mask_value, dtype=torch.float32)
@@ -234,11 +241,12 @@ def test_sam3_recovery_segments_batch_one_image_at_a_time(monkeypatch):
 
     candidates = node._run_sam3_recovery_masks(image, target_hw=(6, 8))
 
-    assert len(candidates) == 3
+    assert len(candidates) == batch_size
     assert all(mask.shape == (2, 6, 8) for mask in candidates)
-    assert [candidates[index][0, 0, 0].item() for index in range(3)] == pytest.approx([0.1, 0.2, 0.3])
+    assert [mask[0, 0, 0].item() for mask in candidates] == pytest.approx([(index + 1) / 10.0 for index in range(batch_size)])
     assert loader_calls == ["sam3.safetensors"]
-    assert segment_calls == [True, True, False]
+    assert segment_calls == [True] * (batch_size - 1) + [False]
+    torch.testing.assert_close(image, original)
 
 
 def test_sam3_recovery_forwards_generator_settings(monkeypatch):

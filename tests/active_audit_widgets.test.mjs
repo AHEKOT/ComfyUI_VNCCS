@@ -204,7 +204,7 @@ test('Clothes Designer serializes typing before blur and saves to backend on cha
     const h = domHarness();
     const state = { costume_info: {} }, els = {};
     let saved, backendSaves = 0;
-    Object.assign(h.context, { state, els, helpFor: () => '', setHelpText() {},
+    Object.assign(h.context, { state, els, node: {}, helpFor: () => '', setHelpText() {},
         saveState() { saved = JSON.stringify(state); }, saveCostumeToBackend: async () => { backendSaves++; },
         showInfo() { assert.fail('Unexpected save error'); } });
     const text = source('vnccs_clothes_designer');
