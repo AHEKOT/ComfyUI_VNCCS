@@ -23,6 +23,7 @@ function setup(state = {}) {
         CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
         setTimeout: callback => { timers.push(callback); return timers.length; },
         clearTimeout() {},
+        requestAnimationFrame() {},
         _injectVNCCSControlCenterStyles() {},
     });
     vm.runInContext(common.slice(common.indexOf("export function registerCleanup"), common.indexOf("// ── DOM Widget Width Sync"))
@@ -32,11 +33,12 @@ function setup(state = {}) {
     const node = { id: 1, widgets: [serialized], setDirtyCanvas() {} };
     const widget = Object.create(context.Widget.prototype);
     Object.assign(widget, {
-        node, state, config: catalog, statusText: {}, scrollArea: { appendChild() {}, querySelector: () => null },
+        node, state, config: catalog, statusText: {}, scrollArea: { appendChild() {}, querySelector: () => null, contains: () => false },
         _beginConfigRequest: context.createRequestGuard(node),
         _beginDownloadStatusRequest: context.createRequestGuard(node),
         _getRepoId: () => "", _syncOutputSlots() {}, _syncCnetSlots() {},
         _syncCustomModelInput() { this.inputSyncs = (this.inputSyncs || 0) + 1; }, _dispatchLoraOptions() {}, _renderAll() {},
+        _setConfigLoading() {},
         showMessage(message) { this.message = message; },
     });
     return { widget, node, serialized, pending, context, timers };
@@ -668,8 +670,8 @@ test("custom LoRA deletion in the current context still persists and refreshes",
     let confirm, refreshed = 0;
     widget._getRepoId = () => "owner/models";
     widget.showConfirm = (_, callback) => { confirm = callback; };
-    widget.fetchConfig = async repo => { assert.equal(repo, "owner/models"); };
-    widget._refreshLoraBlock = () => { refreshed++; };
+    widget.fetchConfig = async repo => { assert.equal(repo, "owner/models"); refreshed++; };
+    widget._refreshLoraBlock = () => { assert.fail("A refreshed catalog must not render LoRA cards twice"); };
     await widget._removeCustomLora({ name: "Style", local_path: "models/loras/style.safetensors" });
     const deletion = confirm();
     respond(pending[0], { status: "ok" });
@@ -684,7 +686,7 @@ for (const change of [null, "reconfiguration"]) {
         const { widget, context, pending, serialized } = fixture;
         const elements = [], refreshes = [];
         context.document.createElement = tag => {
-            const element = { children: [], style: {}, classList: { add() {} },
+            const element = { children: [], style: {}, dataset: {}, classList: { add() {} },
                 appendChild(child) { this.children.push(child); if (tag === "select") this.value ||= child.value; },
                 append(...children) { children.forEach(child => this.appendChild(child)); },
                 remove() { this.removed = true; },
@@ -714,7 +716,7 @@ for (const change of [null, "reconfiguration"]) {
         await adding;
         assert.equal(serialized.value, saved);
         assert.equal(refreshes.length, previousRefreshes + (change ? 0 : 1));
-        assert.equal(refreshedBlocks, change ? 0 : 1);
+        assert.equal(refreshedBlocks, 0, "The config refresh owns the new cards without replacing them twice");
     });
 }
 
@@ -725,7 +727,7 @@ for (const change of [null, "reconfiguration", "repository", "family", "removal"
         const elements = [];
         context.setHelpText = () => {};
         context.document.createElement = () => {
-            const element = { children: [], classList: { add() {} },
+            const element = { children: [], style: {}, dataset: {}, classList: { add() {} },
                 appendChild(child) { this.children.push(child); },
                 append(...children) { children.forEach(child => this.appendChild(child)); },
                 querySelector(selector) { return elements.find(item => `#${item.id}` === selector); },
@@ -737,6 +739,7 @@ for (const change of [null, "reconfiguration", "repository", "family", "removal"
         widget.container = { appendChild() {} };
         widget._getRepoId = () => "owner/original";
         widget.fetchConfig = async () => {};
+        widget._finishBlock = block => block;
         widget._showSettings();
         elements.find(element => element.id === "vnccs-cc-unet-dtype").value = "fp8_e4m3fn";
         if (change) changeCustomLoraContext(fixture, change);

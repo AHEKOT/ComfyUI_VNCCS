@@ -1,6 +1,6 @@
 // Style selection stays in widget_data; the user library lives on the server.
 export function createStylePicker({ host, catalog, getInfo, save, fetchApi, cleanup,
-    getPreviewPayload, imageURL = value => value, listenPreview, showModal }) {
+    getPreviewPayload, imageURL = value => value, listenPreview, showModal, allowNone = () => false }) {
     const make = (tag, className, text) => {
         const element = document.createElement(tag);
         element.className = className;
@@ -10,6 +10,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
     };
     const allStyles = () => catalog.groups.flatMap(group => group.styles.map(style => ({ ...style, group: group.label })));
     const custom = { id: "custom", label: "Custom style", description: "Describe your own visual style", reference: "Your prompt", image: catalog.custom_preview || "" };
+    const noStyle = { id: "none", label: "None", description: "Use the model's native style", reference: "", prompt: "" };
     const root = make("div", "vnccs-creator-field");
     root.append(make("div", "vnccs-creator-label", "Style"));
     const trigger = make("button", "vnccs-style-summary");
@@ -72,11 +73,11 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
     const setValue = (value, persist = false) => {
         const info = getInfo();
         info.style = catalog.aliases?.[value] || value || catalog.default_style || "custom";
-        const style = info.style === "custom" ? custom : selectedStyle();
+        const style = info.style === "none" ? noStyle : info.style === "custom" ? custom : selectedStyle();
         paintPreview(thumbnail, style);
         name.textContent = style?.label || info.style_label || "Unavailable style";
         description.textContent = style?.description || info.style_description || "Saved style; restore its library to edit it";
-        reference.textContent = `Reference: ${style?.reference || info.style_reference || "Not specified"}`;
+        reference.textContent = info.style === "none" ? "No style selected" : `Reference: ${style?.reference || info.style_reference || "Not specified"}`;
         description.title = description.textContent;
         reference.title = reference.textContent;
         customInput.value = info.custom_style || "";
@@ -188,7 +189,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
             grid.replaceChildren();
             previewSlots.clear();
             const query = search.value.trim().toLowerCase();
-            const styles = [custom, ...allStyles()].filter(style =>
+            const styles = [...(allowNone() ? [noStyle] : []), custom, ...allStyles()].filter(style =>
                 (!filter.value || style.group === filter.value) &&
                 [style.label, style.description, style.reference].join(" ").toLowerCase().includes(query));
             status.textContent = styles.length ? `${styles.length} styles` : "No matching styles";

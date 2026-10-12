@@ -1,7 +1,7 @@
 """Compact VNCCS operation summaries through ComfyUI's standard logging setup.
 
-Console messages use one line of key=value fields. LogRecord.vnccs contains
-the same fields as a dictionary for handlers that need structured records.
+Routine events use one line of key=value fields; detailed reports use readable
+multiline text. LogRecord.vnccs retains structured fields for diagnostic handlers.
 DEBUG is off by default. Enable diagnostics with
 logging.getLogger("VNCCS").setLevel(logging.DEBUG).
 """
@@ -21,8 +21,8 @@ if logger.level == logging.NOTSET:
 _current_operation = ContextVar("vnccs_log_operation", default=None)
 
 
-def log_event(event, *, component=None, level="info", exc_info=False, **fields):
-    """Emit one searchable line; bound values and escape embedded newlines."""
+def log_event(event, *, component=None, level="info", exc_info=False, truncate=True, display_text=None, **fields):
+    """Emit one searchable line; full diagnostics use truncate=False."""
     severity = getattr(logging, level.upper())
     if not logger.isEnabledFor(severity):
         return
@@ -36,13 +36,19 @@ def log_event(event, *, component=None, level="info", exc_info=False, **fields):
     for key, value in values.items():
         if value is None:
             continue
-        if isinstance(value, str) and len(value) > 240:
+        if truncate and isinstance(value, str) and len(value) > 240:
             value = value[:237] + "..."
         structured[key] = value
-        parts.append(f"{key}={json.dumps(value, ensure_ascii=False, default=str)}")
-    logger.log(severity, "[VNCCS] " + " ".join(parts),
+        if display_text is None:
+            parts.append(f"{key}={json.dumps(value, ensure_ascii=False, default=str)}")
+    message = "[VNCCS] " + " ".join(parts)
+    if display_text is not None:
+        title = values.get("context") or event.replace("_", " ").title()
+        operation = f" [{values['operation']}]" if values.get("operation") else ""
+        message = f"[VNCCS] {values.get('component', 'Operation')} | {title}{operation}\n\n{display_text}\n"
+    logger.log(severity, message,
                extra={"vnccs": structured},
-               exc_info=True if exc_info and logger.isEnabledFor(logging.DEBUG) else None)
+               exc_info=True if exc_info and (not truncate or logger.isEnabledFor(logging.DEBUG)) else None)
 
 
 def log_stage(stage, status="running", *, current=None, total=None, **fields):

@@ -185,6 +185,33 @@ function setup(kind) {
         counts: () => ({ configured, initialized, serialized, galleryClosed }), load: context.load, save: context.save };
 }
 
+test('Creator restores legacy breast tags and serializes the separate field for immediate reload', () => {
+    const h = setup('creator');
+    h.dataWidget.value = JSON.stringify({ character: 'Alice', character_info: {
+        name: 'Alice', sex: 'female', body: 'small_breasts, custom build',
+    } });
+    const original = h.dataWidget.value;
+    h.node.onConfigure();
+    assert.equal(h.dataWidget.value, original, 'Configuration preserves original saved bytes');
+    h.context.els.breastSection = {};
+    h.context.els.breast_size = { setValue(value) { this.value = value; } };
+    h.context.els.body = { setValue(value) { this.value = value; } };
+    vm.runInContext(between(source('vnccs_character_creator_v2'), 'const syncCharacterFields =', 'const syncBackgroundForGenerationMode =')
+        + 'globalThis.syncTraits = syncCharacterFields;', h.context);
+    h.context.syncTraits();
+    assert.equal(h.context.els.breast_size.value, 'small_breasts');
+    assert.equal(h.context.els.body.value, 'custom build');
+    h.state.character_info.breast_size = 'medium breasts';
+    h.save();
+    const payload = { widgets_values: ['stale bytes'] };
+    h.node.onSerialize(payload);
+    const restored = setup('creator');
+    restored.dataWidget.value = payload.widgets_values[0];
+    restored.node.onConfigure();
+    assert.equal(restored.state.character_info.breast_size, 'medium breasts');
+    assert.equal(restored.state.character_info.body, 'custom build');
+});
+
 for (const kind of ['creator', 'cloner']) {
     for (const [value, enabled] of [
         ['false', false], ['0', false], ['off', false], [false, false],
@@ -337,6 +364,7 @@ for (const kind of ['creator', 'cloner']) {
                 saveCurrentGenerationModeValues() {}, getModeProfile: () => ({}),
                 fetchCcConfig: async () => ({}), applyPromptModeToFields() {}, syncCharacterFields() {},
                 MODE_PROMPT_DEFAULTS: { illustrious: {}, anima: {}, qi2: {} }, PROMPT_DEFAULTS_VERSION: 1,
+                STYLE_PROMPT_KEYS: JSON.parse(source('vnccs_character_creator_v2').match(/const STYLE_PROMPT_KEYS = (\[[^\n]+\]);/)[1]),
                 ANIMA_CLIP_NAME: 'clip', ANIMA_VAE_NAME: 'vae', QI2_MODEL_NAME: 'model', QI2_CLIP_NAME: 'clip', QI2_VAE_NAME: 'vae',
                 isCreatorOverhaulLora: () => false, clearSourceImages() { h.state.source_images = []; },
                 spritePreviewNavigator: { invalidate() {}, load: async () => {}, hideNav() {} },
@@ -392,6 +420,7 @@ for (const kind of ['creator', 'cloner']) {
             syncGenerationControls() {}, refreshGenerationModeUI() {}, applyGenerationProfile() {},
             saveCurrentGenerationModeValues() {}, getModeProfile: () => ({}), fetchCcConfig: async () => ({}),
             MODE_PROMPT_DEFAULTS: { illustrious: {}, anima: {}, qi2: {} }, PROMPT_DEFAULTS_VERSION: 1,
+            STYLE_PROMPT_KEYS: JSON.parse(source('vnccs_character_creator_v2').match(/const STYLE_PROMPT_KEYS = (\[[^\n]+\]);/)[1]),
             ANIMA_CLIP_NAME: 'clip', ANIMA_VAE_NAME: 'vae', QI2_MODEL_NAME: 'model', QI2_CLIP_NAME: 'clip', QI2_VAE_NAME: 'vae',
             isCreatorOverhaulLora: () => false, hideSpriteNav() {}, tryCachePreview() {}, clearCharacterSelection() {},
             spritePreviewNavigator: { invalidate() {}, load: async () => {}, hideNav() {} }, mediaURL: value => value,

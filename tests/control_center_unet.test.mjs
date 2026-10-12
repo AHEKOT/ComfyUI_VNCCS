@@ -114,6 +114,17 @@ test("built-in QI2 Turbo selects 8/1 without Viggle and restores base defaults",
     assert.equal(restored._currentModelParams().cfg, 1);
 });
 
+test("Turbo LoRA section is hidden for built-in QI2 Turbo and remains available for the base model", () => {
+    const config = JSON.parse(readFileSync(new URL("../control_center.json", import.meta.url), "utf8"));
+    const { widget } = setup({ active_kind: "QI2", selected_type: "unet",
+        selected_model: "Qwen Image 2.1 Turbo INT8 ConvRot" }, config);
+    assert.equal(widget._buildModelTurboInlineSection(), null);
+    assert.ok(widget._compatibleTurboLoras().length, "The catalog remains available for state cleanup");
+    widget._setSelectedModelName("unet", defaultName);
+    assert.equal(widget._isQi2TurboModel(widget._getSelectedModelEntry()), false);
+    assert.ok(widget._compatibleTurboLoras().length);
+});
+
 test("packaged workflows select QI2 without legacy model state", () => {
     let count = 0;
     function inspect(value) {

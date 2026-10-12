@@ -46,7 +46,8 @@ def test_style_selector_is_between_framing_and_race_with_custom_first():
     race = 'createField("Race", "race")'
 
     assert SOURCE.index(framing) < SOURCE.index(style) < SOURCE.index(race)
-    assert 'style: DEFAULT_CHARACTER_STYLE, custom_style: ""' in SOURCE
+    assert 'style: "none", custom_style: ""' in SOURCE
+    assert 'allowNone: () => state.gen_settings.generation_mode !== "qi2"' in SOURCE
     assert 'api.fetchApi("/vnccs/character_styles")' in SOURCE
     assert "createStylePicker({" in SOURCE
     assert "getInfo: () => state.character_info" in SOURCE
@@ -86,12 +87,11 @@ def test_style_selector_has_readable_character_focused_options():
     assert "Fortiche / Arcane" not in SOURCE
 
 
-def test_aesthetics_defaults_do_not_force_anime():
-    assert "const PROMPT_DEFAULTS_VERSION = 3;" in SOURCE
-    assert 'aesthetics: "masterpiece, best quality, score_7"' in SOURCE
+def test_anima_restores_legacy_quality_tags_without_changing_qi2():
+    assert "const PROMPT_DEFAULTS_VERSION = 4;" in SOURCE
+    assert 'aesthetics: "masterpiece, best quality, score_7, anime"' in SOURCE
     assert 'aesthetics: "",' in SOURCE
-    assert 'aesthetics: "masterpiece, best quality, score_7, anime"' not in SOURCE
-    assert 'removePromptToken(mergedModes.anima.aesthetics, "anime")' in SOURCE
+    assert 'removePromptToken(mergedModes.anima.aesthetics, "anime")' not in SOURCE
     assert 'removePromptToken(mergedModes.qi2.aesthetics, "anime")' in SOURCE
 
 
@@ -115,4 +115,4 @@ def test_qi2_generation_profile_exposes_model_cache_and_viggle_controls():
     assert 'renderModeLoraCards(els.qi2LoraCards, "qi2")' in SOURCE
     assert 'state.gen_settings.steps = mode === "qi2" ? 6 : 12;' in SOURCE
     assert 'const QI2_DEFAULTS = {' in SOURCE
-    assert 'steps: 25, cfg: 3.0' in SOURCE
+    assert 'steps: 25, cfg: 1.0' in SOURCE

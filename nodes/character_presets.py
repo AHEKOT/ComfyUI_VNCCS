@@ -23,7 +23,7 @@ for preset in CHARACTER_PRESETS["tags"]["races"]:
         RACE_PRESETS[preset_key(alias)] = preset
 
 
-def race_features(value):
+def race_features(value, *, plain=False):
     """Explain known species once, without changing supplied character fields."""
     source = str(value or "").strip()
     descriptions = []
@@ -34,9 +34,13 @@ def race_features(value):
         preset = RACE_PRESETS.get(preset_key(token))
         if preset and preset["tag"] not in seen:
             seen.add(preset["tag"])
-            descriptions.append(f'{preset["label"]}: {preset["prompt"]}')
+            if plain and preset["tag"] == "human":
+                continue
+            descriptions.append(preset["prompt"] if plain else f'{preset["label"]}: {preset["prompt"]}')
     if not descriptions:
         return ""
+    if plain:
+        return " ".join(descriptions)
     return (
         "Typical species features (explicit character traits override these defaults): "
         + " ".join(descriptions)

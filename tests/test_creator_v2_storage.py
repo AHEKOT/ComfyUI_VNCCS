@@ -20,11 +20,11 @@ def creator(monkeypatch, tmp_path):
 def test_new_character_uses_creator_v2_prompt_and_storage(creator):
     result = creator.CharacterCreatorV2.create_character("Alice", "creator_v2")
     config = utils.load_config("Alice", strict=True)
-    positive, negative = creator.CharacterCreatorV2.construct_prompt(config["character_info"])
+    positive, negative = creator.CharacterCreatorV2.construct_creator_prompt(config["character_info"])
     assert result["positive_prompt"] == positive
     assert result["negative_prompt"] == negative
     assert "cowboy_shot" in positive
-    assert ":1.0" not in positive
+    assert "(human:1.0)" in positive
     assert config["character_info"]["hair"] == "black hair, waist-length hair"
     assert config["costumes"] == {}
     assert config["character_path"] == utils.character_dir("Alice")

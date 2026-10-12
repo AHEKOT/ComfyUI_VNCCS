@@ -8,6 +8,7 @@ const qi2Models = catalog.models.filter(entry => entry.kind === 'QI2');
 const turboName = 'qwen_image_2.1_turbo_int8_convrot.safetensors';
 
 for (const [filename, stateKey] of [['vnccs_character_creator_v2', 'gen_settings'], ['vnccs_emotion_v2', 'gen']]) {
+    const baseCfg = stateKey === 'gen_settings' ? 1 : 3;
     const source = readFileSync(new URL(`../web/${filename}.js`, import.meta.url), 'utf8');
     const modelCheck = source.match(/const isQi2TurboModel = .*;/)?.[0] || '';
     test(`${filename}: QI2 catalog cards keep Turbo second`, () => {
@@ -46,7 +47,7 @@ for (const [filename, stateKey] of [['vnccs_character_creator_v2', 'gen_settings
         assert.equal(saved.steps, 10);
         context.select('qwen_image_2.1_int8_convrot.safetensors');
         assert.equal(saved.steps, 25);
-        assert.equal(saved.cfg, 3);
+        assert.equal(saved.cfg, baseCfg);
     });
 
     test(`${filename}: built-in Turbo blocks Viggle callbacks while base QI2 still supports them`, () => {
@@ -84,7 +85,7 @@ for (const [filename, stateKey] of [['vnccs_character_creator_v2', 'gen_settings
         context.toggle(false, 'viggle.safetensors');
         assert.equal(saved.turbo_enabled, false);
         assert.equal(saved.steps, 25);
-        assert.equal(saved.cfg, 3);
+        assert.equal(saved.cfg, baseCfg);
     });
 
     test(`${filename}: built-in Turbo renders no Viggle controls and clears old cards`, () => {

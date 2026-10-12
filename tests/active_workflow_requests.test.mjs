@@ -95,6 +95,7 @@ for (const widget of ['clothes', 'cloner', 'creator']) {
             spritePreviewNavigator: { load: async name => previews.push(name) },
             getDefaultCharacterInfo: () => ({}), syncBackgroundForGenerationMode() {},
             MODE_PROMPT_DEFAULTS: { illustrious: {}, anima: {}, qi2: {} }, PROMPT_DEFAULTS_VERSION: 1,
+            STYLE_PROMPT_KEYS: JSON.parse(source('vnccs_character_creator_v2').match(/const STYLE_PROMPT_KEYS = (\[[^\n]+\]);/)[1]),
             applyPromptModeToFields() {}, syncCharacterFields() {}, hideSpriteNav() {},
             tryCachePreview: name => previews.push(name), showSpritePreview: name => previews.push(name),
         });
@@ -515,6 +516,7 @@ for (const widget of ['creator', 'cloner']) {
             spritePreviewNavigator: { invalidate() {}, load: async () => {} },
             getDefaultCharacterInfo: () => ({}), syncBackgroundForGenerationMode() {},
             MODE_PROMPT_DEFAULTS: { illustrious: {}, anima: {}, qi2: {} }, PROMPT_DEFAULTS_VERSION: 1,
+            STYLE_PROMPT_KEYS: JSON.parse(source('vnccs_character_creator_v2').match(/const STYLE_PROMPT_KEYS = (\[[^\n]+\]);/)[1]),
             applyPromptModeToFields() {}, syncCharacterFields() {}, hideSpriteNav() {}, tryCachePreview() {},
             showModal() { assert.fail('Unexpected error'); }, showAlertModal() { assert.fail('Unexpected error'); },
             api: { fetchApi: route => route.includes('preview_meta') ? Promise.resolve(response({ count: 0 })) : pending.promise },

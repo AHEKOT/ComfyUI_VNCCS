@@ -564,6 +564,19 @@ ${SAKURA_THEME_CSS}
     border-top: 1px solid var(--accent-border);
     flex-shrink: 0;
 }
+.vnccs-creator-breast-section {
+    border: 0;
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+}
+.vnccs-creator-breast-section:disabled {
+    opacity: 0.5;
+}
+.vnccs-creator-breast-section:disabled button,
+.vnccs-creator-breast-section:disabled input {
+    cursor: not-allowed;
+}
 .vnccs-creator-trait-row {
     display: grid;
     grid-template-columns: minmax(56px, 18%) minmax(0, 1fr) 44px;
@@ -1481,22 +1494,25 @@ app.registerExtension({
                     character: "",
                     prompt_modes: {
                         illustrious: {
+                            style: "none",
                             aesthetics: "masterpiece, best quality",
                             negative_prompt: "bad quality, worst quality",
                         },
                         anima: {
-                            aesthetics: "masterpiece, best quality, score_7",
+                            style: "none",
+                            aesthetics: "masterpiece, best quality, score_7, anime",
                             negative_prompt: "bad quality, worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia",
                         },
                         qi2: {
+                            style: DEFAULT_CHARACTER_STYLE,
                             aesthetics: "",
                             negative_prompt: "bad quality, worst quality, low quality, blurry, jpeg artifacts",
                         },
                     },
                     prompt_defaults_version: 1,
                     character_info: {
-                        sex: "female", age: 18, framing: "cowboy_shot", style: DEFAULT_CHARACTER_STYLE, custom_style: "", race: "human", skin_color: "",
-                        hair: "black hair, waist-length hair", eyes: "", face: "", body: "", additional_details: "",
+                        sex: "female", age: 18, framing: "cowboy_shot", style: "none", custom_style: "", race: "human", skin_color: "",
+                        hair: "black hair, waist-length hair", eyes: "", face: "", body: "", breast_size: "", additional_details: "",
                         nsfw: false, aesthetics: "masterpiece, best quality",
                         negative_prompt: "bad quality, worst quality",
                         lora_prompt: "", background_color: "Green"
@@ -1549,12 +1565,13 @@ app.registerExtension({
                                 target_size: 1024,
                                 clip_type: "qwen_image",
                                 sampler: "euler", scheduler: "simple",
-                                steps: 25, cfg: 3.0, seed: 0, seed_mode: "fixed",
+                                steps: 25, cfg: 1.0, seed: 0, seed_mode: "fixed",
                                 turbo_enabled: false,
                                 dmd_lora_name: "QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
                                 dmd_lora_strength: 1.0,
                                 turbo_previous_settings: null,
                                 qi2_overhaul_strength: 0.5,
+                                qi2_prompt_enhancement: true,
                                 qi2_cache: { device: "gpu", dtype: "int8" },
                                 lora_stack: [
                                     { name: "", strength: 1.0 },
@@ -1627,12 +1644,13 @@ app.registerExtension({
                     target_size: 1024,
                     clip_type: "qwen_image",
                     sampler: "euler", scheduler: "simple",
-                    steps: 25, cfg: 3.0, seed: 0, seed_mode: "fixed",
+                    steps: 25, cfg: 1.0, seed: 0, seed_mode: "fixed",
                     turbo_enabled: false,
                     dmd_lora_name: QI2_TURBO_LORA_NAME,
                     dmd_lora_strength: 1.0,
                     turbo_previous_settings: null,
                     qi2_overhaul_strength: 0.5,
+                    qi2_prompt_enhancement: true,
                     qi2_cache: { device: "gpu", dtype: "int8" },
                     lora_stack: [
                         { name: "", strength: 1.0 },
@@ -1643,22 +1661,26 @@ app.registerExtension({
                     ]
                 };
                 const GENERATION_DEFAULTS_VERSION = 6;
-                const PROMPT_DEFAULTS_VERSION = 3;
+                const PROMPT_DEFAULTS_VERSION = 4;
+                const STYLE_PROMPT_KEYS = ["style", "custom_style", "style_prompt", "style_label", "style_description", "style_reference"];
                 const MODE_SETTING_KEYS = {
                     illustrious: ["target_size", "ckpt_name", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "dmd_lora_name", "dmd_lora_strength", "turbo_previous_settings", "age_lora_name", "lora_stack"],
                     anima: ["target_size", "diffusion_model_name", "clip_name", "vae_name", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "turbo_enabled", "dmd_lora_name", "dmd_lora_strength", "turbo_previous_settings", "lora_stack"],
-                    qi2: ["target_size", "diffusion_model_name", "clip_name", "vae_name", "clip_type", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "turbo_enabled", "dmd_lora_name", "dmd_lora_strength", "turbo_previous_settings", "qi2_cache", "qi2_overhaul_strength", "lora_stack"],
+                    qi2: ["target_size", "diffusion_model_name", "clip_name", "vae_name", "clip_type", "sampler", "scheduler", "steps", "cfg", "seed", "seed_mode", "turbo_enabled", "dmd_lora_name", "dmd_lora_strength", "turbo_previous_settings", "qi2_cache", "qi2_overhaul_strength", "qi2_prompt_enhancement", "lora_stack"],
                 };
                 const MODE_PROMPT_DEFAULTS = {
                     illustrious: {
+                        style: "none",
                         aesthetics: "masterpiece, best quality",
                         negative_prompt: "bad quality, worst quality",
                     },
                     anima: {
-                        aesthetics: "masterpiece, best quality, score_7",
+                        style: "none",
+                        aesthetics: "masterpiece, best quality, score_7, anime",
                         negative_prompt: "bad quality, worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia",
                     },
                     qi2: {
+                        style: DEFAULT_CHARACTER_STYLE,
                         aesthetics: "",
                         negative_prompt: "bad quality, worst quality, low quality, blurry, jpeg artifacts",
                     },
@@ -1905,6 +1927,7 @@ app.registerExtension({
                     }
                     if (els.qi2CacheDevice) els.qi2CacheDevice.value = g.qi2_cache?.device || "gpu";
                     if (els.qi2CacheDtype) els.qi2CacheDtype.value = g.qi2_cache?.dtype || "int8";
+                    els.qi2PromptEnhancement?.setValue(g.qi2_prompt_enhancement !== false);
                     if (els.ageSelect) {
                         ensureOption(els.ageSelect, g.age_lora_name);
                         els.ageSelect.value = g.age_lora_name || "";
@@ -1994,15 +2017,26 @@ app.registerExtension({
                     updateSpriteNav();
                 };
 
-                const getDefaultCharacterInfo = () => ({
-                    sex: "female", age: 18, framing: "cowboy_shot", style: DEFAULT_CHARACTER_STYLE, custom_style: "", race: "human", skin_color: "",
-                    hair: "black hair, waist-length hair", eyes: "", face: "", body: "", additional_details: "",
+                const getDefaultCharacterInfo = (mode = state.gen_settings.generation_mode) => ({
+                    sex: "female", age: 18, framing: "cowboy_shot", style: MODE_PROMPT_DEFAULTS[mode || "illustrious"].style, custom_style: "", race: "human", skin_color: "",
+                    hair: "black hair, waist-length hair", eyes: "", face: "", body: "", breast_size: "", additional_details: "",
                     nsfw: false, aesthetics: "masterpiece, best quality",
                     negative_prompt: "bad quality, worst quality",
                     lora_prompt: "", background_color: "Green"
                 });
 
                 const syncCharacterFields = () => {
+                    const body = [], breasts = [];
+                    for (const token of String(state.character_info.body || "").split(",").map(value => value.trim()).filter(Boolean)) {
+                        const key = token.replaceAll("_", " ").toLowerCase().replace(/\s+/g, " ");
+                        if (/^(?:flat chest|(?:small|medium|large|huge|big) breasts|breasts|alternate breast size \(larger\))$/.test(key)) breasts.push(token);
+                        else body.push(token);
+                    }
+                    if (breasts.length) {
+                        state.character_info.body = body.join(", ");
+                        state.character_info.breast_size ||= breasts.join(", ");
+                    }
+                    if (els.breastSection) els.breastSection.disabled = state.character_info.sex !== "female";
                     Object.keys(state.character_info).forEach(k => {
                         if (els[k]) {
                             let val = state.character_info[k];
@@ -2207,7 +2241,7 @@ app.registerExtension({
                                 const parsedCharacter = String(parsed.character || state.character || "").trim();
                                 if (infoName && infoName === parsedCharacter) {
                                     for (const key of Object.keys(state.character_info)) delete state.character_info[key];
-                                    Object.assign(state.character_info, getDefaultCharacterInfo(), parsed.character_info);
+                                    Object.assign(state.character_info, getDefaultCharacterInfo(parsed.gen_settings?.generation_mode), parsed.character_info);
                                     restoredWidgetInfoCharacter = parsedCharacter;
                                 } else {
                                     console.warn("[VNCCS V2] Ignoring unverified widget character_info:", infoName || "(missing name)", "current:", parsedCharacter);
@@ -2286,6 +2320,8 @@ app.registerExtension({
                     state.character_info.negative_prompt = promptState.negative_prompt;
                     if (els.aesthetics) els.aesthetics.value = promptState.aesthetics;
                     if (els.negative_prompt) els.negative_prompt.value = promptState.negative_prompt;
+                    for (const key of STYLE_PROMPT_KEYS) state.character_info[key] = promptState[key] ?? "";
+                    els.style?.setValue?.(state.character_info.style);
                 };
 
                 const saveCurrentPromptModeValues = () => {
@@ -2293,6 +2329,7 @@ app.registerExtension({
                     if (!state.prompt_modes[mode]) state.prompt_modes[mode] = { ...MODE_PROMPT_DEFAULTS[mode] };
                     state.prompt_modes[mode].aesthetics = state.character_info.aesthetics || "";
                     state.prompt_modes[mode].negative_prompt = state.character_info.negative_prompt || "";
+                    for (const key of STYLE_PROMPT_KEYS) state.prompt_modes[mode][key] = state.character_info[key] ?? "";
                 };
 
                 const migratePromptModes = () => {
@@ -2304,15 +2341,20 @@ app.registerExtension({
                         qi2: { ...MODE_PROMPT_DEFAULTS.qi2, ...(existingModes.qi2 || {}) },
                     };
 
-                    if ((state.prompt_defaults_version || 0) < PROMPT_DEFAULTS_VERSION) {
+                    if ((state.prompt_defaults_version || 0) < 3) {
                         mergedModes.illustrious.aesthetics = state.character_info.aesthetics || mergedModes.illustrious.aesthetics;
                         mergedModes.illustrious.negative_prompt = state.character_info.negative_prompt || mergedModes.illustrious.negative_prompt;
                         mergedModes.anima.aesthetics = mergePromptDefaultWithCustom(mergedModes.anima.aesthetics, MODE_PROMPT_DEFAULTS.anima.aesthetics);
-                        mergedModes.anima.aesthetics = removePromptToken(mergedModes.anima.aesthetics, "anime");
                         mergedModes.anima.negative_prompt = mergePromptDefaultWithCustom(mergedModes.anima.negative_prompt, MODE_PROMPT_DEFAULTS.anima.negative_prompt);
                         mergedModes.qi2.aesthetics = mergePromptDefaultWithCustom(mergedModes.qi2.aesthetics, MODE_PROMPT_DEFAULTS.qi2.aesthetics);
                         mergedModes.qi2.aesthetics = removePromptToken(mergedModes.qi2.aesthetics, "anime");
                         mergedModes.qi2.negative_prompt = mergePromptDefaultWithCustom(mergedModes.qi2.negative_prompt, MODE_PROMPT_DEFAULTS.qi2.negative_prompt);
+                    }
+                    if ((state.prompt_defaults_version || 0) < 4) {
+                        mergedModes.anima.aesthetics = mergePromptDefaultWithCustom(mergedModes.anima.aesthetics, MODE_PROMPT_DEFAULTS.anima.aesthetics);
+                    }
+                    if (!existingModes[currentMode]?.style && state.character_info.style) {
+                        for (const key of STYLE_PROMPT_KEYS) mergedModes[currentMode][key] = state.character_info[key] ?? "";
                     }
 
                     state.prompt_modes = mergedModes;
@@ -2346,6 +2388,7 @@ app.registerExtension({
                 };
 
                 const setGenerationMode = (mode) => {
+                    els.style?.close?.(false);
                     const nextMode = (mode || "illustrious").toLowerCase();
                     const currentMode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
                     saveCurrentPromptModeValues();
@@ -2384,7 +2427,7 @@ app.registerExtension({
                         state.gen_settings.turbo_enabled = false;
                         const previous = state.gen_settings.turbo_previous_settings || {};
                         state.gen_settings.steps = previous.steps ?? (mode === "qi2" ? 25 : 30);
-                        state.gen_settings.cfg = previous.cfg ?? (mode === "qi2" ? 3.0 : 4.0);
+                        state.gen_settings.cfg = previous.cfg ?? (mode === "qi2" ? 1.0 : 4.0);
                         state.gen_settings.turbo_previous_settings = null;
                     }
                     syncGenerationControls();
@@ -2401,12 +2444,14 @@ app.registerExtension({
                     custom_style: "Custom visual style description added to the character prompt.",
                     race: "Species presets with automatic visual descriptions in the prompt. Combine species for hybrids or add custom traits; explicit traits override preset defaults.",
                     skin_color: "Natural and fantasy skin tones. Use the preset picker or enter a custom description.",
-                    body: "Body type and silhouette details, including chest/body build tags.",
+                    body: "Body type, build, and silhouette details.",
+                    breast_size: "Breast size presets or a custom description. Available only for female characters; ignored for male characters.",
+                    qi2_prompt_enhancement: "Expands character details with Generate Text before QI2 encoding. Disable to use the structured character prompt directly.",
                     face: "Face-specific details such as freckles, scars, makeup, or other defining features.",
                     hair: "Hair color, color pattern, length, texture, style, and face-framing details.",
                     eyes: "Iris colors, eye shapes, pupils, and other eye features.",
                     additional_details: "Extra persistent character traits that should appear across outfits and emotions.",
-                    aesthetics: "Visual style notes for the character, such as mood, fashion direction, or rendering flavor.",
+                    aesthetics: "Model-specific quality tags for Anima and Illustrious, or additional visual style notes for QI2.",
                     generation_mode: "Chooses the generation backend profile. Illustrious uses checkpoint-style generation; Anima uses the Qwen/Anima stack.",
                     target_size: "Sets the generated portrait area from 1.0 to 4.0 megapixels while preserving its aspect ratio.",
                     ckpt_name: "Checkpoint used for Illustrious generation.",
@@ -2430,7 +2475,7 @@ app.registerExtension({
                 const createTraitField = (lbl, key, targetObj = state.character_info) => {
                     const { element, input } = createTraitInput({
                         prefix: "vnccs-creator", label: lbl, key, target: targetObj,
-                        save: debouncedSave, choose: input => openTagConstructor(key, input),
+                        save: key === "breast_size" ? saveState : debouncedSave, choose: input => openTagConstructor(key, input),
                     });
                     setHelpText(element, helpFor(key));
                     els[key] = input;
@@ -2438,7 +2483,7 @@ app.registerExtension({
                 };
 
                 const createField = (lbl, key, type = "text", opts = [], targetObj = state.character_info) => {
-                    if (type === "text" && ["hair", "eyes", "race", "skin_color", "body", "face", "additional_details"].includes(key)) {
+                    if (type === "text" && ["hair", "eyes", "race", "skin_color", "body", "breast_size", "face", "additional_details"].includes(key)) {
                         return createTraitField(lbl, key, targetObj);
                     }
                     const wrap = document.createElement("div");
@@ -2551,6 +2596,7 @@ app.registerExtension({
                             btn.classList.toggle("is-active", btnValue === normalized);
                             btn.setAttribute("aria-pressed", btnValue === normalized ? "true" : "false");
                         });
+                        if (persist && key === "sex") syncCharacterFields();
                         if (persist) saveState();
                     };
                     options.forEach(option => {
@@ -2571,7 +2617,9 @@ app.registerExtension({
                 const createStyleField = () => {
                     const picker = createStylePicker({
                         host: container, catalog: characterStyleCatalog,
-                        getInfo: () => state.character_info, save: saveState,
+                        getInfo: () => state.character_info,
+                        allowNone: () => state.gen_settings.generation_mode !== "qi2",
+                        save: () => { saveCurrentPromptModeValues(); saveState(); },
                         fetchApi: (...args) => {
                             if (node._vnccsStateRestoreError) throw new Error(node._vnccsStateRestoreError);
                             return api.fetchApi(...args);
@@ -3003,7 +3051,7 @@ app.registerExtension({
                     const previousTurboModel = isQi2TurboModel(state.gen_settings.diffusion_model_name);
                     if (rel !== state.gen_settings.diffusion_model_name && (turboModel || previousTurboModel)) {
                         state.gen_settings.steps = turboModel ? 8 : 25;
-                        state.gen_settings.cfg = turboModel ? 1.0 : 3.0;
+                        state.gen_settings.cfg = 1.0;
                         state.gen_settings.turbo_enabled = false;
                         state.gen_settings.turbo_previous_settings = null;
                     }
@@ -3404,6 +3452,7 @@ app.registerExtension({
 
                 const applyCharacterWizardData = (data) => {
                     const textKeys = ["race", "skin_color", "body", "face", "hair", "eyes", "additional_details"];
+                    state.character_info.breast_size = data.breast_size || "";
                     if (data.sex) {
                         const sex = String(data.sex).toLowerCase().startsWith("m") ? "male" : "female";
                         state.character_info.sex = sex;
@@ -3423,6 +3472,7 @@ app.registerExtension({
                         if (els[key]?.setValue) els[key].setValue(value);
                         else if (els[key]) els[key].value = value;
                     });
+                    syncCharacterFields();
                     state.preview_valid = false;
                     saveState(false);
                 };
@@ -3648,6 +3698,7 @@ app.registerExtension({
 
                 const openTagConstructor = async (fieldKey, inputEl) => {
                     if (node._vnccsStateRestoreError) return;
+                    if (fieldKey === "breast_size" && state.character_info.sex !== "female") return;
                     const character = state.character;
                     const currentRequest = beginCharacterWizardRequest();
                     const isCurrent = () => currentRequest() && !node._vnccsStateRestoreError && state.character === character;
@@ -3665,7 +3716,10 @@ app.registerExtension({
                     }
                     if (!isCurrent()) return;
 
-                    const allTags = presetGroups(TAG_DATA, fieldKey);
+                    const category = fieldKey === "body" ? "body_type" : fieldKey === "breast_size" ? "breast_size" : null;
+                    const allTags = category
+                        ? [{ header: fieldKey === "body" ? "Build" : "Breast size", items: TAG_DATA?.tags?.[category] || [] }].filter(group => group.items.length)
+                        : presetGroups(TAG_DATA, fieldKey);
                     if (!allTags.length) {
                         showAlertModal("No Presets", "No presets found for this category.");
                         return;
@@ -3730,6 +3784,7 @@ app.registerExtension({
                             class: "vnccs-creator-btn-primary",
                             action: overlay => {
                                 if (!isCurrent() || !overlay.isConnected) return false;
+                                if (fieldKey === "breast_size" && state.character_info.sex !== "female") return false;
                                 const final = selected.value();
                                 inputEl.value = final;
                                 // Trigger oninput so state.character_info is updated
@@ -3824,6 +3879,13 @@ app.registerExtension({
                 traitList.appendChild(createField("Race", "race"));
                 traitList.appendChild(createField("Skin", "skin_color"));
                 traitList.appendChild(createField("Body", "body"));
+                const breastSection = document.createElement("fieldset");
+                breastSection.className = "vnccs-creator-breast-section";
+                breastSection.setAttribute("aria-label", "Breast size");
+                breastSection.disabled = state.character_info.sex !== "female";
+                breastSection.appendChild(createField("Breast size", "breast_size"));
+                els.breastSection = breastSection;
+                traitList.appendChild(breastSection);
                 traitList.appendChild(createField("Face", "face"));
                 traitList.appendChild(createField("Hair", "hair"));
                 traitList.appendChild(createField("Eyes", "eyes"));
@@ -3909,6 +3971,49 @@ app.registerExtension({
                 qi2ModelCards.className = "vnccs-creator-model-card-list";
                 els.qi2ModelCards = qi2ModelCards;
                 qi2Models.appendChild(qi2ModelCards);
+                const promptEnhancementRow = document.createElement("div");
+                promptEnhancementRow.className = "vnccs-creator-model-card is-installed";
+                setHelpText(promptEnhancementRow, helpFor("qi2_prompt_enhancement"));
+                const promptEnhancementTop = document.createElement("div");
+                promptEnhancementTop.className = "vnccs-creator-model-card-top";
+                const promptEnhancementBadge = document.createElement("span");
+                promptEnhancementBadge.className = "vnccs-creator-model-card-badge ok";
+                const promptEnhancementLabel = document.createElement("div");
+                promptEnhancementLabel.className = "vnccs-creator-model-card-name";
+                promptEnhancementLabel.textContent = "Prompt Enhancement";
+                const promptEnhancementStatus = document.createElement("div");
+                const promptEnhancementToggle = document.createElement("label");
+                promptEnhancementToggle.className = "vnccs-creator-toggle vnccs-creator-model-card-toggle";
+                promptEnhancementToggle.onclick = event => event.stopPropagation();
+                const promptEnhancementInput = document.createElement("input");
+                promptEnhancementInput.type = "checkbox";
+                promptEnhancementInput.setAttribute("aria-label", "Prompt Enhancement");
+                promptEnhancementInput.setValue = enabled => {
+                    promptEnhancementInput.checked = enabled;
+                    promptEnhancementRow.classList.toggle("is-selected", enabled);
+                    promptEnhancementStatus.className = "vnccs-creator-model-card-status" + (enabled ? " ok" : "");
+                    promptEnhancementStatus.textContent = enabled ? "Enabled" : "Disabled";
+                };
+                promptEnhancementInput.setValue(state.gen_settings.qi2_prompt_enhancement !== false);
+                promptEnhancementInput.onchange = event => {
+                    state.gen_settings.qi2_prompt_enhancement = event.target.checked;
+                    promptEnhancementInput.setValue(event.target.checked);
+                    saveState();
+                };
+                promptEnhancementInput.onclick = event => event.stopPropagation();
+                promptEnhancementRow.onclick = () => {
+                    promptEnhancementInput.checked = !promptEnhancementInput.checked;
+                    promptEnhancementInput.dispatchEvent(new Event("change"));
+                };
+                const promptEnhancementTrack = document.createElement("div");
+                promptEnhancementTrack.className = "vnccs-creator-toggle-track";
+                const promptEnhancementThumb = document.createElement("div");
+                promptEnhancementThumb.className = "vnccs-creator-toggle-thumb";
+                promptEnhancementToggle.append(promptEnhancementInput, promptEnhancementTrack, promptEnhancementThumb);
+                promptEnhancementTop.append(promptEnhancementBadge, promptEnhancementLabel, promptEnhancementStatus, promptEnhancementToggle);
+                promptEnhancementRow.appendChild(promptEnhancementTop);
+                els.qi2PromptEnhancement = promptEnhancementInput;
+                qi2Models.appendChild(promptEnhancementRow);
                 colRight.appendChild(qi2Models);
 
                 const resolutionWrap = document.createElement("label");
@@ -4403,18 +4508,23 @@ app.registerExtension({
                             syncBackgroundForGenerationMode(true);
                             state.prompt_modes = {
                                 illustrious: {
+                                    ...MODE_PROMPT_DEFAULTS.illustrious,
                                     aesthetics: state.character_info.aesthetics || MODE_PROMPT_DEFAULTS.illustrious.aesthetics,
                                     negative_prompt: state.character_info.negative_prompt || MODE_PROMPT_DEFAULTS.illustrious.negative_prompt,
                                 },
                                 anima: {
+                                    ...MODE_PROMPT_DEFAULTS.anima,
                                     aesthetics: MODE_PROMPT_DEFAULTS.anima.aesthetics,
                                     negative_prompt: MODE_PROMPT_DEFAULTS.anima.negative_prompt,
                                 },
                                 qi2: {
+                                    ...MODE_PROMPT_DEFAULTS.qi2,
                                     aesthetics: MODE_PROMPT_DEFAULTS.qi2.aesthetics,
                                     negative_prompt: MODE_PROMPT_DEFAULTS.qi2.negative_prompt,
                                 },
                             };
+                            const promptMode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
+                            for (const key of STYLE_PROMPT_KEYS) state.prompt_modes[promptMode][key] = state.character_info[key] ?? "";
                             state.prompt_defaults_version = PROMPT_DEFAULTS_VERSION;
                             applyPromptModeToFields((state.gen_settings.generation_mode || "illustrious").toLowerCase());
                         }

@@ -70,12 +70,25 @@ test("polling updates real progress while preserving the focused input and scrol
     const state = setup();
     await state.poll({ status: "downloading", progress: 37, message: "Downloading: 37%" });
     assert.equal(state.label.textContent, "Downloading: 37%");
-    assert.equal(state.row.bg.style.width, "37%");
+    assert.equal(state.row.bg.style.transform, "scaleX(0.37)");
     assert.equal(state.badge.textContent, "⬇");
     assert.equal(state.widget.renders, 0);
     assert.equal(state.document.activeElement, state.input);
     assert.equal(state.widget.scrollArea.scrollTop, 120);
     assert.equal(state.widget.scrollArea.scrollLeft, 8);
+});
+
+test("idle download progress updates retain the layer without rebuilding the cards", async () => {
+    const state = setup();
+    state.document.activeElement = null;
+    await state.poll({ status: "downloading", progress: 10 });
+    const layer = state.row.bg;
+    await state.poll({ status: "downloading", progress: 45 });
+    assert.equal(state.row.bg, layer);
+    assert.equal(layer.style.transform, "scaleX(0.45)");
+    assert.equal(state.widget.renders, 0);
+    await state.poll({ status: "error", message: "Transfer interrupted" });
+    assert.equal(state.widget.renders, 1, "An error rebuilds the card to expose its retry button");
 });
 
 test("completion while editing keeps its pending refresh until the input loses focus", async () => {
@@ -100,11 +113,13 @@ test("completion while editing keeps its pending refresh until the input loses f
 test("unknown progress remains indeterminate, and measured zero remains zero", () => {
     const { widget, row } = setup();
     widget._applyProgressLayer(row, "cc_lora_model", { status: "downloading" });
+    const layer = row.bg;
     assert.match(row.bg.style.background, /repeating-linear-gradient/);
     widget._applyProgressLayer(row, "cc_lora_model", { status: "downloading", progress: 0 });
-    assert.equal(row.bg.style.width, "0%");
+    assert.equal(row.bg, layer, "Progress updates retain the same layer so CSS can interpolate");
+    assert.equal(row.bg.style.transform, "scaleX(0)");
     widget._applyProgressLayer(row, "cc_lora_model", { status: "downloading", progress: 150 });
-    assert.equal(row.bg.style.width, "100%");
+    assert.equal(row.bg.style.transform, "scaleX(1)");
     widget._applyProgressLayer(row, "cc_lora_model", { status: "success" });
     assert.equal(row.bg, null);
 });

@@ -27,7 +27,7 @@ def test_full_body_framing_replaces_cowboy_shot():
     assert "cowboy_shot" not in positive
 
 
-def test_generation_prompt_log_summarizes_without_printing_prompts(caplog):
+def test_generation_prompt_log_prints_complete_prompts_at_info(caplog):
     CharacterCreatorV2.log_generation_prompts(
         "Workflow",
         "masterpiece, Full_body",
@@ -36,10 +36,14 @@ def test_generation_prompt_log_summarizes_without_printing_prompts(caplog):
     )
 
     events = [record.vnccs for record in caplog.records if record.name == "VNCCS"]
-    assert events == [{"component": "Creator", "event": "prompt_ready", "context": "Workflow",
-                       "framing": "Full_body", "positive_chars": 22, "negative_chars": 11}]
-    assert "masterpiece, Full_body" not in caplog.text
-    assert "bad quality" not in caplog.text
+    assert events == [
+        {"component": "Creator", "event": "prompt_ready", "context": "Workflow",
+         "framing": "Full_body", "positive_chars": 22, "negative_chars": 11},
+        {"component": "Creator", "event": "prompts", "context": "Workflow",
+         "framing": "Full_body", "positive": "masterpiece, Full_body", "negative": "bad quality"},
+    ]
+    assert "masterpiece, Full_body" in caplog.text
+    assert "bad quality" in caplog.text
 
 
 def test_repeated_pose_preview_queries_do_not_write_default_logs(tmp_path, monkeypatch, caplog):
