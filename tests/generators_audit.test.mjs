@@ -1272,12 +1272,19 @@ for (const available of [[], ['Bob']]) {
     });
 }
 
-for (const available of [[], ['Original']]) {
-    test(`Emotion Studio inventory preserves saved missing costumes (${available.length} available)`, async () => {
+for (const available of [[], ['Naked', 'Shelter'], ['Original']]) {
+    test(`Emotion Studio excludes absent Original and preserves saved user costumes (${available.join(', ') || 'empty'})`, async () => {
+        class Element {
+            constructor() { this.children = []; }
+            set innerHTML(value) { this.children = []; }
+            appendChild(child) { this.children.push(child); }
+        }
         const costumes = { name: 'costumes_data', value: '["Original","Coat"]' };
-        const context = createWidgetContext({ state: { character: 'Alice', selectedCostumes: new Set() },
+        const costumesList = new Element();
+        const context = createWidgetContext({ state: { character: 'Alice', costumes: [], selectedCostumes: new Set(['Original', 'Coat']) },
             disposed: false, characterFetchToken: 0, costumesDataWidget: costumes, restoreErrors: new Map(),
-            spritePreviewNavigator: null, renderCostumes() {}, markNodeDirty() {},
+            spritePreviewNavigator: null, costumesList, markNodeDirty() {},
+            document: { createElement: () => new Element() },
             api: { fetchApi: async () => ({ ok: true, json: async () => available }) },
         });
         const parseStart = emotionSource.indexOf('                function parseSelection(');
@@ -1288,13 +1295,33 @@ for (const available of [[], ['Original']]) {
         const updateEnd = emotionSource.indexOf('                function updateEmotionsData()', updateStart);
         const fetchStart = emotionSource.indexOf('                async function fetchCharacterData(');
         const fetchEnd = emotionSource.indexOf('                // Initial Load', fetchStart);
+        const renderStart = emotionSource.indexOf('                function renderCostumes()');
+        const renderEnd = emotionSource.indexOf('                function renderEmotions()', renderStart);
         vm.runInContext(emotionSource.slice(parseStart, parseEnd) + emotionSource.slice(commitStart, commitEnd)
-            + emotionSource.slice(updateStart, updateEnd) + emotionSource.slice(fetchStart, fetchEnd), context);
+            + emotionSource.slice(updateStart, updateEnd) + emotionSource.slice(renderStart, renderEnd)
+            + emotionSource.slice(fetchStart, fetchEnd), context);
+        const labels = () => costumesList.children.map(label => label.children[1].innerText);
+        context.renderCostumes();
+        assert.deepEqual(labels(), ['Coat (missing sprites)']);
+        assert.equal(costumes.value, '["Original","Coat"]', 'Rendering before inventory must preserve saved data');
         await context.fetchCharacterData('Alice');
-        assert.deepEqual([...context.state.selectedCostumes], ['Original', 'Coat']);
-        assert.equal(costumes.value, '["Original","Coat"]');
+        const expected = available.includes('Original') ? ['Original', 'Coat'] : ['Coat'];
+        assert.deepEqual([...context.state.selectedCostumes], expected);
+        assert.deepEqual(labels(), [...available, 'Coat (missing sprites)']);
+        assert.equal(costumes.value, JSON.stringify(expected));
         context.updateCostumesData();
-        assert.equal(costumes.value, '["Original","Coat"]');
+        assert.equal(costumes.value, JSON.stringify(expected));
+        if (available.includes('Original')) {
+            const checkbox = costumesList.children[0].children[0].children[0];
+            assert.equal(checkbox.checked, true);
+            checkbox.checked = false;
+            checkbox.onchange();
+            assert.equal(costumes.value, '["Coat"]');
+        }
+        costumes.value = '["Original","Coat"]';
+        context.api.fetchApi = async () => ({ ok: false, status: 503 });
+        await context.fetchCharacterData('Alice');
+        assert.equal(costumes.value, '["Original","Coat"]', 'Failed inventory must preserve saved data');
     });
 }
 

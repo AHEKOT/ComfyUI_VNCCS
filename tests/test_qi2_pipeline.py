@@ -140,6 +140,7 @@ def test_viggle_turbo_uses_unmerged_lora_cache_and_latent_dependent_sigmas(monke
 
 
 def test_viggle_sigma_shift_depends_on_sampler_latent_resolution():
+    assert VIGGLE_TURBO_NODES == (1.0, 0.9375, 0.875, 0.75, 0.5, 0.25)
     small = viggle_turbo_sigmas({"samples": torch.zeros(1, 4, 64, 64)})
     large = viggle_turbo_sigmas({"samples": torch.zeros(1, 4, 128, 128)})
     assert len(small) == len(VIGGLE_TURBO_NODES) + 1

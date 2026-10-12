@@ -1354,7 +1354,10 @@ class CharacterGeneratorWidget {
         }
         if (this.isEmotions) {
             this.onEmotionStudioModeChanged = () => {
-                if (this.syncModelResolution()) writeData(this.node, this.data);
+                const sourceChanged = this.syncCharacterSourceData();
+                const modelChanged = this.syncModelResolution();
+                if (!sourceChanged && !modelChanged) return;
+                writeData(this.node, this.data);
                 this.renderSettings();
             };
             window.addEventListener("vnccs-emotion-studio-generation-mode-changed", this.onEmotionStudioModeChanged);

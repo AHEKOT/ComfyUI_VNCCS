@@ -99,8 +99,12 @@ def _is_under_any_model_folder(path: str, folders: List[str]) -> bool:
         path_abs = os.path.abspath(normalize_filesystem_path(path))
         for folder in folders:
             folder_abs = os.path.abspath(normalize_filesystem_path(folder))
-            if os.path.commonpath([os.path.realpath(folder_abs), os.path.realpath(path_abs)]) == os.path.realpath(folder_abs):
-                return True
+            try:
+                if os.path.commonpath([os.path.realpath(folder_abs), os.path.realpath(path_abs)]) == os.path.realpath(folder_abs):
+                    return True
+            except ValueError:
+                # Windows paths on different drives have no common path.
+                continue
     except Exception:
         return False
     return False
@@ -559,34 +563,34 @@ def age_body_descriptor(age: int, sex: str) -> str:
         return ""
     if sex == "female":
         if age_int <= 3:
-            return "(toddler girl:1.0)"
+            return "toddler girl"
         elif age_int <= 11:
-            return "(loli:1.0)"
+            return "loli"
         elif age_int <= 18:
-            return "(teenager girl:1.0)"
+            return "teenager girl"
         elif age_int <= 24:
-            return "(young_adult woman:1.0)"
+            return "young_adult woman"
         elif age_int <= 50:
-            return "(adult woman:1.0)"
+            return "adult woman"
         elif age_int <= 60:
-            return "(old woman:1.0)"
+            return "old woman"
         else:
             return ""
     else:
         if age_int <= 3:
-            return "(toddler boy:1.0)"
+            return "toddler boy"
         elif age_int <= 11:
-            return "(shota:1.0)"
+            return "shota"
         elif age_int <= 16:
-            return "(teenager boy:1.0)"
+            return "teenager boy"
         elif age_int <= 18:
-            return "(young_adult man:1.0)"
+            return "young_adult man"
         elif age_int <= 24:
-            return "(young_adult man:1.5)"
+            return "young_adult man"
         elif age_int <= 50:
-            return "(adult man:1.0)"
+            return "adult man"
         elif age_int <= 60:
-            return "(old man:1.0)"
+            return "old man"
         else:
             return ""
 

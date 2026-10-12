@@ -3086,6 +3086,7 @@ app.registerExtension({
                 function renderCostumes() {
                     costumesList.innerHTML = "";
                     new Set([...state.costumes, ...state.selectedCostumes]).forEach(c => {
+                        if (c === "Original" && !state.costumes.includes(c)) return;
                         const lbl = document.createElement("label");
                         lbl.className = "ems-checkbox-item";
 
@@ -3167,6 +3168,7 @@ app.registerExtension({
                         } else {
                             state.selectedCostumes = new Set(state.costumes);
                         }
+                        if (!state.costumes.includes("Original")) state.selectedCostumes.delete("Original");
 
                         renderCostumes();
                         updateCostumesData();

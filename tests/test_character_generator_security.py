@@ -883,14 +883,14 @@ def test_emotion_detailer_prompt_orders_emotion_then_face_details():
 
     result = generator._detailer_positive_prompt(
         "The character is furious.\n\nEmotion Tags: angry, open_mouth",
-        "1girl, blue eyes, long black hair, (wear glasses on face:1.0), (wear hood on head:1.0)",
+        "1girl, blue eyes, long black hair, wear glasses on face, wear hood on head",
     )
 
     assert result.index("The character is furious.") < result.index("Character face details:")
     assert "blue eyes" in result
     assert "long black hair" in result
-    assert "(wear glasses on face:1.0)" in result
-    assert "(wear hood on head:1.0)" in result
+    assert "wear glasses on face" in result
+    assert "wear hood on head" in result
     assert "The character is furious." in result
     assert "Emotion Tags: angry, open_mouth" in result
     assert "masterpiece" not in result

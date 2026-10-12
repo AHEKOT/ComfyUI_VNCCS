@@ -3,13 +3,39 @@
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import json
+import ntpath
 import queue
 import threading
 from types import SimpleNamespace
 
 import pytest
+import utils
 
 from nodes import vnccs_control_center as cc
+
+
+@pytest.mark.parametrize("category,folder,filename", [
+    ("models", "diffusion_models", "qwen_image_2.1_int8_convrot.safetensors"),
+    ("clip", "text_encoders", "qwen3vl_8b_int8_convrot.safetensors"),
+    ("vae", "vae", "qwen_image_2.1_vae_bf16.safetensors"),
+])
+def test_catalog_finds_installed_models_after_another_windows_drive(
+    monkeypatch, category, folder, filename,
+):
+    preferred = ntpath.join("E:\\", "models", folder)
+    local = ntpath.join("F:\\", "ComfyUI", "models", folder)
+    model = ntpath.join(local, filename)
+    windows_os = SimpleNamespace(path=SimpleNamespace(**vars(ntpath)), sep="\\")
+    windows_os.path.exists = windows_os.path.isfile = lambda path: ntpath.normcase(path) == ntpath.normcase(model)
+    monkeypatch.setattr(utils, "os", windows_os)
+    monkeypatch.setattr(cc, "os", windows_os)
+    monkeypatch.setattr(cc.folder_paths, "get_folder_paths", lambda key: [preferred, local])
+    monkeypatch.setattr(cc.folder_paths, "get_full_path", lambda key, name: model if name == filename else None)
+    entry = {"name": "Installed model", "local_path": f"models/{folder}/{filename}"}
+
+    assert cc._find_model_on_disk(entry["local_path"]) == (model, True)
+    assert cc._enrich_config_entries([entry], category)[0]["status"] == "installed"
+    assert not utils._is_under_any_model_folder(ntpath.join("G:\\", filename), [preferred, local])
 
 
 @pytest.mark.parametrize("shadow", [False, True])

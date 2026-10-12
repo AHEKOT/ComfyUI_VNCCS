@@ -3804,9 +3804,9 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         face = str(meta.get("costume_face", "") or "").strip()
         head = str(meta.get("costume_head", "") or "").strip()
         if face:
-            parts.append(f"(wear {face} on face:1.0)")
+            parts.append(f"wear {face} on face")
         if head:
-            parts.append(f"(wear {head} on head:1.0)")
+            parts.append(f"wear {head} on head")
         seen = set()
         unique = []
         for part in parts:

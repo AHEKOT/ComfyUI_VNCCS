@@ -2,7 +2,6 @@
 
 The sigma shift and unmerged LoRA application follow Viggle's ComfyUI reference:
 https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo/blob/main/comfyui/viggle_turbo.py
-VNCCS uses 0.35 for the final raw sigma node.
 """
 
 import json
@@ -14,7 +13,7 @@ import torch.nn.functional as F
 from .vnccs_control_center import _load_lora_file
 
 
-VIGGLE_TURBO_NODES = (1.0, 0.9375, 0.875, 0.75, 0.5, 0.35)
+VIGGLE_TURBO_NODES = (1.0, 0.9375, 0.875, 0.75, 0.5, 0.25)
 
 
 def viggle_turbo_sigmas(latent):

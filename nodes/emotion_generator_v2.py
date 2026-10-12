@@ -389,9 +389,9 @@ def costume_face_details(character, costume):
     face = str(costume_info.get("face", "") or "").strip()
     head = str(costume_info.get("head", "") or "").strip()
     if face:
-        parts.append(f"(wear {face} on face:1.0)")
+        parts.append(f"wear {face} on face")
     if head:
-        parts.append(f"(wear {head} on head:1.0)")
+        parts.append(f"wear {head} on head")
     return ", ".join(parts), face, head
 
 # --------------------------------------------------------------------
@@ -715,11 +715,11 @@ class EmotionGeneratorV2:
                 # Prompt Building (Same as V1)
                 positive_prompt = f"{aesthetics}"
                 if background_color: positive_prompt += f", {background_color} background"
-                if race: positive_prompt += f", ({race} race:1.0)"
-                if hair: positive_prompt += f", ({hair} hair:1.0)"
-                if eyes: positive_prompt += f", ({eyes} eyes:1.0)"
-                if body: positive_prompt += f", ({body} body:1.0)"
-                if skin_color: positive_prompt += f", ({skin_color} skin:1.0)"
+                if race: positive_prompt += f", {race} race"
+                if hair: positive_prompt += f", {hair} hair"
+                if eyes: positive_prompt += f", {eyes} eyes"
+                if body: positive_prompt += f", {body} body"
+                if skin_color: positive_prompt += f", {skin_color} skin"
                 if additional_details: positive_prompt += f", ({additional_details})"
                 
                 positive_prompt, gender_negative = apply_sex(sex, positive_prompt, "")

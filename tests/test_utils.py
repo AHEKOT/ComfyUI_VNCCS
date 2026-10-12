@@ -180,19 +180,19 @@ class TestAgeStrength:
 
 class TestAgeBodyDescriptor:
     @pytest.mark.parametrize("age,sex,expected", [
-        (2,  "female", "(toddler girl:1.0)"),
-        (8,  "female", "(loli:1.0)"),
-        (15, "female", "(teenager girl:1.0)"),
-        (20, "female", "(young_adult woman:1.0)"),
-        (35, "female", "(adult woman:1.0)"),
-        (55, "female", "(old woman:1.0)"),
-        (2,  "male",   "(toddler boy:1.0)"),
-        (8,  "male",   "(shota:1.0)"),
-        (14, "male",   "(teenager boy:1.0)"),
-        (17, "male",   "(young_adult man:1.0)"),
-        (22, "male",   "(young_adult man:1.5)"),
-        (40, "male",   "(adult man:1.0)"),
-        (56, "male",   "(old man:1.0)"),
+        (2,  "female", "toddler girl"),
+        (8,  "female", "loli"),
+        (15, "female", "teenager girl"),
+        (20, "female", "young_adult woman"),
+        (35, "female", "adult woman"),
+        (55, "female", "old woman"),
+        (2,  "male",   "toddler boy"),
+        (8,  "male",   "shota"),
+        (14, "male",   "teenager boy"),
+        (17, "male",   "young_adult man"),
+        (22, "male",   "young_adult man"),
+        (40, "male",   "adult man"),
+        (56, "male",   "old man"),
     ])
     def test_descriptor(self, age, sex, expected):
         assert U.age_body_descriptor(age, sex) == expected
