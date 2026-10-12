@@ -1,7 +1,8 @@
+import { createSakuraSelect, openSakuraDropdown, closeSakuraDropdown, playSakuraMotion, stopSakuraMotion, animateSakuraIndicator } from "./sakura_interactions.mjs";
 // web/vnccs_control_center.js
 import { app } from "../../scripts/app.js";
 import { vnccsApi as api, storage, sessionStore, serverRegistry } from "./vnccs_transport.js";
-import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard } from "./vnccs_common.js";
+import { SAKURA_INTERACTION_CSS, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard } from "./vnccs_common.js";
 
 // Global registry cache — prevents API storms when multiple CC nodes exist
 
@@ -39,6 +40,7 @@ function _injectVNCCSControlCenterStyles() {
     const s = document.createElement("style");
     s.id = "vnccs-cc-styles";
     s.textContent = `
+${SAKURA_INTERACTION_CSS}
 /* ── VNCCS Control Center – Sakura Design ─────────────────────────────── */
 
 .vnccs-cc-root {
@@ -343,61 +345,7 @@ function _injectVNCCSControlCenterStyles() {
     background: linear-gradient(100deg, transparent 30%, rgba(184,169,232,0.15) 50%, transparent 70%);
     animation: vnccs-cc-loading-sweep 1800ms ease-in-out infinite;
 }
-.vnccs-cc-select-trigger {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 6px;
-    cursor: pointer;
-    text-align: left;
-    text-transform: none;
-    letter-spacing: normal;
-    background-image: none !important;
-}
-.vnccs-cc-select-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.vnccs-cc-select-trigger::after {
-    content: "";
-    flex-shrink: 0;
-    width: 5px;
-    height: 5px;
-    border-right: 1.5px solid currentColor;
-    border-bottom: 1.5px solid currentColor;
-    transform: rotate(45deg);
-    transition: transform 180ms ease;
-}
-.vnccs-cc-select-trigger[aria-expanded="true"] { border-color: var(--vnccs-cc-accent); box-shadow: 0 0 0 2px rgba(255,143,163,0.08); }
-.vnccs-cc-select-trigger[aria-expanded="true"]::after { transform: rotate(225deg); }
-.vnccs-cc-dropdown {
-    position: absolute;
-    z-index: 2000;
-    box-sizing: border-box;
-    overflow: auto;
-    padding: 4px;
-    border: 1px solid rgba(255,143,163,0.28);
-    border-radius: 9px;
-    background: #17121d;
-    box-shadow: 0 12px 28px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,143,163,0.04);
-    scrollbar-width: thin;
-    scrollbar-color: rgba(255,143,163,0.3) transparent;
-}
-.vnccs-cc-dropdown-option {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 28px;
-    padding: 4px 8px;
-    box-sizing: border-box;
-    border-radius: 5px;
-    color: #e8e8f0;
-    font-size: 11px;
-    line-height: 1.4;
-    overflow-wrap: anywhere;
-    cursor: pointer;
-    transition: background-color 120ms ease, color 120ms ease;
-}
-.vnccs-cc-dropdown-option::before { content: ""; width: 10px; flex-shrink: 0; }
-.vnccs-cc-dropdown-option[aria-selected="true"]::before { content: "✓"; color: var(--vnccs-cc-accent); }
-.vnccs-cc-dropdown-option--active { background: rgba(255,143,163,0.14); color: #ffe8ef; }
+
 .vnccs-cc-block-body {
     padding: 4px 6px 6px;
     display: flex;
@@ -2059,7 +2007,7 @@ class VNCCSControlCenterWidget {
     _buildUI() {
         // Create container first, then pass it to addDOMWidget (same pattern as Pose Studio)
         const c = document.createElement("div");
-        c.className = "vnccs-cc-root";
+        c.className = "vnccs-cc-root vnccs-common-ui-host";
         this.container = c;
         enableMiddleMouseCanvasPan(c);
         attachHelpTooltips(c);
@@ -2904,161 +2852,15 @@ class VNCCSControlCenterWidget {
     }
 
     _selectControl(id, choices, value, onChange, className = "vnccs-cc-select") {
-        const options = choices.map(option => typeof option === "string" ? { value: option, label: option } : option);
-        const button = document.createElement("button");
-        button.type = "button";
-        button.id = id;
-        button.dataset.focusKey = id;
-        button.className = `${className} vnccs-cc-select-trigger`;
-        button.role = "combobox";
-        button.ariaHasPopup = "listbox";
-        button.ariaExpanded = "false";
-        button.disabled = !options.length;
-        button.value = options.find(option => option.value === value)?.value ?? options[0]?.value ?? "";
-        const label = document.createElement("span");
-        label.className = "vnccs-cc-select-text";
-        label.textContent = options.find(option => option.value === button.value)?.label || "No options";
-        button.appendChild(label);
-        button.onchange = () => onChange?.(button.value);
-        button.onclick = () => {
-            if (this._dropdown?.trigger === button) this._closeDropdown();
-            else this._openDropdown(button, options, label);
-        };
-        button.onkeydown = event => {
-            if (this._dropdown?.trigger === button) {
-                this._dropdown.handleKey(event);
-            } else if (["Enter", " ", "ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
-                || (event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey)) {
-                event.preventDefault();
-                event.stopPropagation();
-                this._openDropdown(button, options, label);
-                if (["Home", "End"].includes(event.key) || (event.key.length === 1 && event.key !== " ")) this._dropdown?.handleKey(event);
-            }
-        };
-        return button;
+        return createSakuraSelect(this, id, choices, value, onChange, className);
     }
 
     _openDropdown(trigger, options, label) {
-        if (this._removed || trigger.disabled || !trigger.isConnected) return;
-        this._closeDropdown(false);
-        const menu = document.createElement("div");
-        menu.className = "vnccs-cc-dropdown";
-        menu.role = "listbox";
-        menu.ariaLabel = trigger.ariaLabel || label.textContent;
-        this._dropdownSequence = (this._dropdownSequence || 0) + 1;
-        menu.id = `vnccs-cc-options-${this.node.id}-${this._dropdownSequence}`;
-        trigger.setAttribute("aria-controls", menu.id);
-        trigger.ariaExpanded = "true";
-        let active = Math.max(0, options.findIndex(option => option.value === trigger.value));
-        const rows = [];
-        const highlight = (index, reveal = false) => {
-            active = (index + options.length) % options.length;
-            rows.forEach((row, rowIndex) => row.classList.toggle("vnccs-cc-dropdown-option--active", rowIndex === active));
-            trigger.setAttribute("aria-activedescendant", rows[active].id);
-            if (reveal) {
-                const row = rows[active];
-                if (row.offsetTop < menu.scrollTop) menu.scrollTop = row.offsetTop;
-                else if (row.offsetTop + row.offsetHeight > menu.scrollTop + menu.clientHeight) {
-                    menu.scrollTop = row.offsetTop + row.offsetHeight - menu.clientHeight;
-                }
-            }
-        };
-        const choose = index => {
-            const value = options[index].value;
-            const changed = value !== trigger.value;
-            trigger.value = value;
-            label.textContent = options[index].label;
-            if (changed) this._playMotion(label, [{ opacity: 0.35, transform: "translateY(2px)" }, { opacity: 1, transform: "none" }], 160);
-            this._closeDropdown();
-            if (changed) trigger.onchange?.();
-        };
-        options.forEach((option, index) => {
-            const row = document.createElement("div");
-            row.className = "vnccs-cc-dropdown-option";
-            row.id = `${menu.id}-${index}`;
-            row.role = "option";
-            row.ariaSelected = String(option.value === trigger.value);
-            row.textContent = option.label;
-            row.onpointerenter = () => highlight(index);
-            row.onpointerdown = event => event.preventDefault();
-            row.onclick = () => choose(index);
-            rows.push(row);
-            menu.appendChild(row);
-        });
-        let typed = "", typedAt = 0;
-        const handleKey = event => {
-            if (event.key === "Tab") { this._closeDropdown(false); return; }
-            if (event.key === "Escape") {
-                event.preventDefault(); event.stopPropagation(); this._closeDropdown(); return;
-            }
-            if (["Enter", " "].includes(event.key)) {
-                event.preventDefault(); event.stopPropagation(); choose(active); return;
-            }
-            let next;
-            if (event.key === "ArrowDown") next = active + 1;
-            if (event.key === "ArrowUp") next = active - 1;
-            if (event.key === "Home") next = 0;
-            if (event.key === "End") next = options.length - 1;
-            if (event.key === "PageDown") next = Math.min(options.length - 1, active + 8);
-            if (event.key === "PageUp") next = Math.max(0, active - 8);
-            if (event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
-                typed = (Date.now() - typedAt < 700 ? typed : "") + event.key.toLowerCase();
-                typedAt = Date.now();
-                const query = [...typed].every(char => char === typed[0]) ? typed[0] : typed;
-                for (let offset = 1; offset <= options.length; offset++) {
-                    const index = (active + offset) % options.length;
-                    if (options[index].label.toLowerCase().startsWith(query)) { next = index; break; }
-                }
-            }
-            if (next !== undefined) {
-                event.preventDefault(); event.stopPropagation(); highlight(next, true);
-            }
-        };
-        const outside = event => {
-            if (!menu.contains(event.target) && !trigger.contains(event.target)) this._closeDropdown(false);
-        };
-        this._dropdown = { trigger, menu, handleKey, outside };
-        this.container.appendChild(menu);
-        this.container.addEventListener("pointerdown", outside, true);
-        const root = this.container.getBoundingClientRect();
-        const anchor = trigger.getBoundingClientRect();
-        const scaleX = root.width / this.container.clientWidth || 1;
-        const scaleY = root.height / this.container.clientHeight || 1;
-        const top = (anchor.top - root.top) / scaleY;
-        const bottom = (anchor.bottom - root.top) / scaleY;
-        const above = Math.max(0, top - 12);
-        const below = Math.max(0, this.container.clientHeight - bottom - 12);
-        const openAbove = below < 140 && above > below;
-        const height = Math.min(280, options.length * 32 + 8, openAbove ? above : below);
-        const width = Math.min(Math.max(anchor.width / scaleX, 200), this.container.clientWidth - 16);
-        menu.style.width = `${width}px`;
-        menu.style.maxHeight = `${height}px`;
-        menu.style.left = `${Math.max(8, Math.min((anchor.left - root.left) / scaleX, this.container.clientWidth - width - 8))}px`;
-        menu.style.top = `${openAbove ? top - height - 4 : bottom + 4}px`;
-        const savedScroll = this._dropdownScrolls?.get(trigger.dataset.focusKey);
-        if (savedScroll) {
-            menu.scrollTop = savedScroll.top;
-            menu.scrollLeft = savedScroll.left;
-        }
-        highlight(active, !savedScroll);
-        trigger.focus({ preventScroll: true });
-        this._playMotion(menu, [{ opacity: 0, transform: `translateY(${openAbove ? 4 : -4}px)` }, { opacity: 1, transform: "none" }], 180);
+        return openSakuraDropdown(this, trigger, options, label);
     }
 
     _closeDropdown(restoreFocus = true) {
-        const dropdown = this._dropdown;
-        if (!dropdown) return;
-        this._dropdown = null;
-        const { trigger, menu, outside } = dropdown;
-        this._dropdownScrolls ??= new Map();
-        this._dropdownScrolls.set(trigger.dataset.focusKey, { top: menu.scrollTop, left: menu.scrollLeft });
-        this.container.removeEventListener("pointerdown", outside, true);
-        trigger.ariaExpanded = "false";
-        trigger.removeAttribute("aria-activedescendant");
-        menu.inert = true;
-        menu.style.pointerEvents = "none";
-        this._playMotion(menu, [{ opacity: 1 }, { opacity: 0, transform: "translateY(-3px)" }], 120, () => menu.remove());
-        if (restoreFocus && !this._removed && trigger.isConnected) trigger.focus({ preventScroll: true });
+        return closeSakuraDropdown(this, restoreFocus);
     }
 
     _numInput(val, min, max, step, onChange) {
@@ -3217,35 +3019,11 @@ class VNCCSControlCenterWidget {
     }
 
     _playMotion(element, keyframes, duration = 240, onFinish) {
-        if (this._removed || !element?.animate || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
-            onFinish?.();
-            return;
-        }
-        this._motionByElement ??= new WeakMap();
-        this._motionAnimations ??= new Set();
-        const previous = this._motionByElement.get(element);
-        if (previous) {
-            const opacity = window.getComputedStyle?.(element).opacity;
-            if (opacity !== undefined && keyframes[0].opacity !== undefined) keyframes[0].opacity = Number(opacity);
-            previous.cancel();
-        }
-        const animation = element.animate(keyframes, { duration, easing: "cubic-bezier(0.22, 1, 0.36, 1)" });
-        this._motionByElement.set(element, animation);
-        this._motionAnimations.add(animation);
-        let settled = false;
-        animation.onfinish = animation.oncancel = () => {
-            if (settled) return;
-            settled = true;
-            this._motionAnimations.delete(animation);
-            if (this._motionByElement.get(element) === animation) this._motionByElement.delete(element);
-            onFinish?.();
-        };
-        return animation;
+        return playSakuraMotion(this, element, keyframes, duration, onFinish);
     }
 
     _stopMotion() {
-        this._closeDropdown(false);
-        for (const animation of [...(this._motionAnimations || [])]) animation.cancel();
+        return stopSakuraMotion(this);
     }
 
     _captureMotion() {
@@ -3298,10 +3076,7 @@ class VNCCSControlCenterWidget {
                 }
             } else if (key.startsWith("tab:")) {
                 if (previous && previous.signature !== current.signature) {
-                    const glide = this._motionGhost(previous, true);
-                    this._playMotion(glide, [{ opacity: 1, transform: "none" }, {
-                        opacity: 0, transform: `translate(${-dx}px, ${-dy}px) scale(${current.width / previous.width}, ${current.height / previous.height})`,
-                    }], 280, () => glide.remove());
+                    animateSakuraIndicator(this, previous, current);
                 }
             } else if (!previous || previous.signature !== current.signature) {
                 if (previous && previous.element !== current.element) {

@@ -7,7 +7,7 @@ import { createWidgetContext } from "./widget_context.mjs";
 const source = readFileSync(new URL("../web/vnccs_control_center.js", import.meta.url), "utf8");
 const common = readFileSync(new URL("../web/vnccs_common.js", import.meta.url), "utf8");
 const constants = source.slice(source.indexOf("const INITIAL_NODE_W"), source.indexOf("function _injectVNCCSControlCenterStyles"));
-const css = source.match(/s.textContent = `([\s\S]*?)`;/)[1];
+const css = source.match(/s.textContent = `([\s\S]*?)`;/)[1].replace("${SAKURA_INTERACTION_CSS}", common.match(/export const SAKURA_INTERACTION_CSS = `([\s\S]*?)`;/)[1]);
 
 function setup(state = {}, { loaded = true, repoId = "" } = {}) {
     const frames = [];
@@ -353,7 +353,7 @@ test("family and model mode switches animate their indicators and settle repeate
     widget.scrollArea.scrollTop = 210;
     widget.scrollArea.scrollLeft = 3;
     widget._setSelectedType("custom");
-    assert.ok(document.animations.some(animation => animation.element.classList.contains("vnccs-cc-tab-glide")));
+    assert.ok(document.animations.some(animation => animation.element.classList.contains("vnccs-common-ui-tab-glide")));
     widget._setSelectedType("unet");
     widget._setActiveKind("Klein9b");
     flush();
@@ -397,7 +397,7 @@ test("reduced motion skips visual effects while dropdowns, progress, and disclos
     focused("block-models").onclick();
     assert.equal(widget.scrollArea.querySelector(".vnccs-cc-disclosure").inert, true);
     assert.equal(document.animations.length, 0);
-    assert.equal(widget.container.querySelectorAll(".vnccs-cc-dropdown").length, 0);
+    assert.equal(widget.container.querySelectorAll(".vnccs-common-ui-dropdown").length, 0);
     assert.match(css, /transition: transform 360ms linear/);
     assert.doesNotMatch(css, /transition: width/);
     assert.doesNotMatch(css.match(/@media \(prefers-reduced-motion: reduce\)[\s\S]*$/)[0], /\.vnccs-cc-root \* \{[^}]*transform:/);

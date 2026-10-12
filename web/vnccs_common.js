@@ -4,6 +4,7 @@
  */
 import { vnccsApi as api, mediaURL, storage, serverRegistry } from "./vnccs_transport.js";
 import { app } from "../../scripts/app.js";
+import { mountSakuraDialogMotion } from "./sakura_interactions.mjs";
 
 // ── Shared Input Normalization ───────────────────────────────────────────────
 export const SAKURA_THEME_CSS = `
@@ -307,7 +308,7 @@ export function createQwenVLModelLoader(node, showModal, createProgressModal, vi
     };
 }
 
-export function createTraitInput({ prefix, label: lbl, key, target: targetObj, save, choose }) {
+export function createTraitInput({ prefix, label: lbl, key, target: targetObj, save, choose, removable = false, motion }) {
     const wrap = document.createElement("div");
     wrap.className = `${prefix}-trait-row`;
     const label = document.createElement("span");
@@ -315,8 +316,9 @@ export function createTraitInput({ prefix, label: lbl, key, target: targetObj, s
     label.textContent = lbl;
     const editor = document.createElement("div");
     editor.className = `${prefix}-trait-editor`;
-    const values = document.createElement("button");
-    values.type = "button";
+    const values = document.createElement(removable ? "div" : "button");
+    if (removable) { values.setAttribute("role", "group"); values.tabIndex = -1; }
+    else values.type = "button";
     values.className = `${prefix}-trait-values`;
     const inp = document.createElement("input");
     inp.type = "text";
@@ -324,14 +326,58 @@ export function createTraitInput({ prefix, label: lbl, key, target: targetObj, s
     inp.setAttribute("aria-label", lbl);
     inp.placeholder = "Add tags";
     inp.hidden = true;
-    const renderTags = () => {
-        values.replaceChildren();
-        const tokens = inp.value.split(",").map(token => token.trim()).filter(Boolean);
-        for (const token of tokens.length ? tokens : ["Add tags"]) {
-            const chip = document.createElement("span");
-            chip.className = tokens.length ? `${prefix}-trait-token` : `${prefix}-trait-empty`;
-            chip.textContent = token;
-            values.appendChild(chip);
+    let chips = [];
+    const renderTags = (animate = false) => {
+        const previous = [...chips];
+        const entering = [];
+        const tokens = inp.value.split(",").map((text, index) => ({ text: text.trim(), index })).filter(token => token.text);
+        chips = tokens.map(({ text, index }, position) => {
+            const existing = previous.findIndex(chip => chip.tag === text);
+            const chip = existing >= 0 ? previous.splice(existing, 1)[0] : document.createElement("span");
+            if (existing < 0) entering.push(chip);
+            chip.tag = text;
+            chip.className = `${prefix}-trait-token`;
+            if (!removable) chip.textContent = text;
+            else {
+                chip.setAttribute("data-tag", text);
+                if (!chip.children.length) {
+                    const textLabel = document.createElement("span");
+                    textLabel.className = `${prefix}-trait-text`; textLabel.textContent = text;
+                    textLabel.setAttribute("aria-hidden", "true");
+                    const edit = document.createElement("button");
+                    edit.type = "button"; edit.className = `${prefix}-trait-edit`;
+                    edit.setAttribute("aria-label", `Edit ${lbl.toLowerCase()} tag: ${text}`);
+                    edit.onclick = event => { event.stopPropagation(); inp.startEditing(); };
+                    const remove = document.createElement("button");
+                    remove.type = "button"; remove.className = `${prefix}-trait-remove`;
+                    remove.innerHTML = '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="m3 3 6 6m0-6-6 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+                    remove.setAttribute("aria-label", `Remove ${lbl.toLowerCase()} tag: ${text}`);
+                    remove.title = `Remove ${text}`;
+                    chip.append(edit, remove, textLabel);
+                }
+                chip.children[1].onclick = event => {
+                    event.stopPropagation();
+                    const parts = inp.value.split(",");
+                    parts.splice(index, 1);
+                    inp.value = parts.some(part => part.trim()) ? parts.join(",") : "";
+                    targetObj[key] = inp.value;
+                    save();
+                    renderTags();
+                    (chips[Math.min(position, chips.length - 1)]?.children[1] || add).focus({ preventScroll: true });
+                };
+            }
+            return chip;
+        });
+        values.replaceChildren(...chips);
+        if (!tokens.length) {
+            const empty = document.createElement(removable ? "button" : "span");
+            empty.className = `${prefix}-trait-empty`;
+            empty.textContent = "Add tags";
+            if (removable) { empty.type = "button"; empty.onclick = () => inp.startEditing(); }
+            values.appendChild(empty);
+        }
+        if (animate && !values.hidden) for (const chip of entering) {
+            motion?.(chip, [{ opacity: 0, transform: "translateY(6px) scale(0.96)" }, { opacity: 1, transform: "none" }], 240);
         }
         values.setAttribute("aria-label", `Edit ${lbl.toLowerCase()} tags: ${inp.value || "Add tags"}`);
     };
@@ -342,7 +388,7 @@ export function createTraitInput({ prefix, label: lbl, key, target: targetObj, s
     inp.setValue(targetObj[key]);
     inp.oninput = (e) => {
         targetObj[key] = e.target.value;
-        renderTags();
+        renderTags(true);
         save();
     };
     inp.startEditing = () => {
@@ -1097,6 +1143,7 @@ export function showModal(container, title, contentFunc, buttons) {
     injectStyles(COMMON_CSS, "vnccs-common");
     const parentModal = _modalStack.at(-1);
     const openers = [document.activeElement, ...(_modalOpeners.get(parentModal) || [])];
+    const motion = {};
 
     const overlay = document.createElement("div");
     overlay.className = "vnccs-common-modal-overlay";
@@ -1170,6 +1217,7 @@ export function showModal(container, title, contentFunc, buttons) {
         if (index >= 0) _modalStack.splice(index, 1);
         document.removeEventListener("focusin", containFocus, true);
         observer?.disconnect();
+        for (const animation of [...(motion._motionAnimations || [])]) animation.cancel();
         if (wasTop) openers.find(element => element?.isConnected)?.focus({ preventScroll: true });
     };
     overlay.remove = function () {
@@ -1208,6 +1256,7 @@ export function showModal(container, title, contentFunc, buttons) {
 
     overlay.appendChild(m);
     container.appendChild(overlay);
+    mountSakuraDialogMotion(motion, overlay, m);
     _modalStack.push(m);
     document.addEventListener("focusin", containFocus, true);
     if (typeof MutationObserver !== "undefined") {
@@ -1254,6 +1303,7 @@ export function showMessage(container, text, isError = false) {
 
     overlay.appendChild(box);
     container.appendChild(overlay);
+    mountSakuraDialogMotion({}, overlay, box);
     return overlay;
 }
 
@@ -1279,3 +1329,88 @@ export function createLoadingOverlay(container, message = "Generating preview") 
 export function generateRandomSeed() {
     return Math.floor(Math.random() * 10000000000000);
 }
+
+
+export const SAKURA_INTERACTION_CSS = `
+.vnccs-common-ui-host { --vnccs-common-ui-accent: var(--accent, #ff8fa3); }
+.vnccs-common-ui-select-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    cursor: pointer;
+    text-align: left;
+    text-transform: none;
+    letter-spacing: normal;
+    background-image: none !important;
+}
+.vnccs-common-ui-select-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vnccs-common-ui-select-trigger::after {
+    content: "";
+    flex-shrink: 0;
+    width: 5px;
+    height: 5px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg);
+    transition: transform 180ms ease;
+}
+.vnccs-common-ui-select-trigger[aria-expanded="true"] { border-color: var(--vnccs-common-ui-accent); box-shadow: 0 0 0 2px rgba(255,143,163,0.08); }
+.vnccs-common-ui-select-trigger[aria-expanded="true"]::after { transform: rotate(225deg); }
+.vnccs-common-ui-dropdown {
+    pointer-events: auto;
+    position: absolute;
+    z-index: 2000;
+    box-sizing: border-box;
+    overflow: auto;
+    padding: 4px;
+    border: 1px solid rgba(255,143,163,0.28);
+    border-radius: 9px;
+    background: #17121d;
+    box-shadow: 0 12px 28px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,143,163,0.04);
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,143,163,0.3) transparent;
+}
+.vnccs-common-ui-dropdown-option {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 28px;
+    padding: 4px 8px;
+    box-sizing: border-box;
+    border-radius: 5px;
+    color: #e8e8f0;
+    font-size: 11px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+    transform: none !important;
+    translate: none !important;
+    scale: none !important;
+    background: transparent;
+    transition: color 120ms ease;
+}
+.vnccs-common-ui-dropdown::before {
+    content: ""; position: absolute; top: 0; left: 4px; right: 4px;
+    height: var(--highlight-height, 28px); border-radius: 5px; background: rgba(255,143,163,0.14);
+    transform: translateY(var(--highlight-y, 4px)); pointer-events: none;
+    transition: transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.vnccs-common-ui-dropdown-option::before { content: ""; width: 10px; flex-shrink: 0; }
+.vnccs-common-ui-dropdown-option[aria-selected="true"]::before { content: "✓"; color: var(--vnccs-common-ui-accent); }
+.vnccs-common-ui-dropdown-option--active { color: #ffe8ef; }
+.vnccs-common-ui-host > .vnccs-common-ui-motion-ghost,
+.vnccs-common-ui-preview-host > .vnccs-common-ui-motion-ghost { position: absolute; pointer-events: none; z-index: 3; margin: 0 !important; }
+.vnccs-common-ui-tab-glide {
+    border: 1px solid rgba(255,143,163,0.55);
+    border-radius: 8px;
+    background: rgba(255,143,163,0.12);
+    transform-origin: top left;
+}
+.vnccs-common-ui-host .vnccs-common-ui-select-trigger:focus-visible { outline: 2px solid #ff8fa3; outline-offset: -2px; }
+@media (prefers-reduced-motion: reduce) {
+    .vnccs-common-ui-host .vnccs-common-ui-select-trigger, .vnccs-common-ui-host .vnccs-common-ui-select-trigger::after,
+    .vnccs-common-ui-dropdown-option, .vnccs-common-ui-dropdown::before { transition: none !important; }
+}`;

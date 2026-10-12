@@ -17,6 +17,7 @@ class Element {
     constructor() {
         this.children = [];
         this.attrs = {};
+        this.style = { setProperty(name, value) { this[name] = value; } };
         this.classList = { add() {}, toggle() {} };
     }
     appendChild(child) { this.children.push(child); }

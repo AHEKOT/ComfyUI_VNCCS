@@ -1,3 +1,5 @@
+import { mountSakuraDialogMotion } from "./sakura_interactions.mjs";
+
 // Style selection stays in widget_data; the user library lives on the server.
 export function createStylePicker({ host, catalog, getInfo, save, fetchApi, cleanup,
     getPreviewPayload, imageURL = value => value, listenPreview, showModal, allowNone = () => false }) {
@@ -34,6 +36,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
     root.append(trigger, customInput);
     let overlay = null;
     let disposed = false;
+    const motion = { get _removed() { return disposed; } };
     let requestId = 0;
     let contextRevision = 0;
     let inertChildren = [];
@@ -106,9 +109,12 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         for (const [element, previous] of inertChildren) element.inert = previous;
         inertChildren = [];
         trigger.setAttribute("aria-expanded", "false");
-        if (restoreFocus && !disposed) trigger.focus();
+        if (restoreFocus && !disposed) trigger.focus({ preventScroll: true });
     };
-    cleanup(() => { disposed = true; close(false); });
+    cleanup(() => {
+        disposed = true; close(false);
+        for (const animation of [...(motion._motionAnimations || [])]) animation.cancel();
+    });
     const open = async () => {
         if (overlay || disposed) return;
         if (!batch) progressMessage = "";
@@ -169,8 +175,9 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         inertChildren = [...host.children].map(element => [element, element.inert]);
         for (const [element] of inertChildren) element.inert = true;
         host.append(overlay);
+        mountSakuraDialogMotion(motion, overlay, overlay);
         trigger.setAttribute("aria-expanded", "true");
-        search.focus();
+        search.focus({ preventScroll: true });
         let loadingCatalog = true;
         const previewSlots = new Map();
         updateGallery = (styleId) => {

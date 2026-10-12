@@ -1,8 +1,9 @@
 import { createStylePicker } from "./character_styles.mjs";
+import { createSakuraInteractions } from "./sakura_interactions.mjs";
 import { app } from "../../scripts/app.js";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, refreshPreviewImage, watchConnection } from "./vnccs_transport.js";
 import { presetGroups, presetSelection } from "./character_presets.mjs";
-import { createTraitInput, createQwenVLModelLoader, SAKURA_THEME_CSS, debounce, registerCleanup, injectStyles, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard, createControlCenterClient, installResolvedSeedTransport, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
+import { createTraitInput, createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, debounce, registerCleanup, injectStyles, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard, createControlCenterClient, installResolvedSeedTransport, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
 
 const QI2_OVERHAUL_LORA_NAME = "QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.safetensors";
 const QI2_OVERHAUL_TITLE = "Qwen Image2.1 Character Overhaul";
@@ -28,6 +29,7 @@ const LEGACY_ANIMA_RESOLUTION_SCALES = {
 // --- STYLES: Sakura Archive Design System ---
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+${SAKURA_INTERACTION_CSS}
 
 .vnccs-creator-container {
 ${SAKURA_THEME_CSS}
@@ -211,7 +213,7 @@ ${SAKURA_THEME_CSS}
 }
 .vnccs-style-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; flex-shrink: 0; }
 .vnccs-style-toolbar input { flex: 1; min-width: 120px; }
-.vnccs-style-toolbar select { width: auto; max-width: 240px; }
+.vnccs-style-toolbar :is(select, .vnccs-common-ui-select-trigger) { width: auto; max-width: 240px; }
 .vnccs-style-heading { font-size: 18px; margin-right: auto; }
 .vnccs-creator-container .vnccs-style-gallery .vnccs-creator-btn {
     flex: 0 0 auto; background: var(--bg-surface); border: 1px solid var(--accent-border);
@@ -311,10 +313,36 @@ ${SAKURA_THEME_CSS}
     min-height: 0;
 }
 .vnccs-creator-preview-img {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    transform: translateX(-50%);
+    z-index: 1;
     width: 100%;
     height: 100%;
     object-fit: contain;
-    animation: vnccs-creator-fadein 0.4s ease;
+}
+.vnccs-creator-preview-aura {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    pointer-events: none;
+    background: radial-gradient(ellipse at center, rgba(255,143,163,0.35), rgba(184,169,232,0.15) 45%, transparent 75%);
+}
+.vnccs-creator-placeholder { position: relative; z-index: 1; padding: 18px; text-align: center; }
+.vnccs-creator-placeholder-title { color: var(--text-primary); font-size: 15px; font-weight: 600; }
+.vnccs-creator-placeholder-hint { color: var(--text-secondary); line-height: 1.5; max-width: 240px; }
+.vnccs-creator-placeholder[data-phase="new"] .vnccs-creator-placeholder-icon { opacity: 0.65; color: var(--accent); }
+.vnccs-creator-container :is(.vnccs-creator-segmented-btn, .vnccs-creator-tab, .vnccs-creator-model-card) {
+    transition: border-color 180ms ease, background-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
+}
+.vnccs-creator-container .vnccs-common-ui-select-trigger { min-width: 0; }
+.vnccs-creator-container [role="button"]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+@media (prefers-reduced-motion: reduce) {
+    .vnccs-creator-container *, .vnccs-creator-container *::before, .vnccs-creator-container *::after {
+        animation: none !important;
+        transition: none !important;
+    }
 }
 .vnccs-creator-preview-img.vnccs-creator-character-preview {
     width: auto;
@@ -611,6 +639,9 @@ ${SAKURA_THEME_CSS}
     cursor: pointer;
 }
 .vnccs-creator-trait-token {
+    position: relative;
+    min-width: 0;
+    box-sizing: border-box;
     max-width: 100%;
     padding: 5px 8px;
     border: 1px solid rgba(255,182,200,0.22);
@@ -621,6 +652,30 @@ ${SAKURA_THEME_CSS}
     overflow: hidden;
     text-overflow: ellipsis;
 }
+.vnccs-creator-trait-token:has(.vnccs-creator-trait-remove) { overflow: visible; }
+.vnccs-creator-trait-text { display: block; overflow: hidden; text-overflow: ellipsis; }
+.vnccs-creator-trait-edit, .vnccs-creator-trait-remove {
+    appearance: none; min-width: 0; min-height: 0; margin: 0; padding: 0;
+    border: 0 !important; background: transparent !important; box-shadow: none !important;
+    transform: none !important; font: inherit; line-height: inherit; cursor: pointer;
+}
+.vnccs-creator-trait-edit { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: inherit; }
+.vnccs-creator-trait-remove {
+    position: absolute; top: -5px; right: -5px; width: 12px; height: 12px; z-index: 2;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%; background: var(--accent) !important; color: var(--bg-primary);
+    box-shadow: 0 0 0 2px var(--bg-secondary) !important;
+    transition: background-color 180ms ease, box-shadow 180ms ease;
+}
+.vnccs-creator-trait-remove::after { content: ""; position: absolute; inset: -4px; border-radius: inherit; }
+.vnccs-creator-trait-remove svg { width: 12px; height: 12px; pointer-events: none; }
+.vnccs-creator-trait-remove:hover { background: var(--accent-hover) !important; }
+.vnccs-creator-trait-empty { border: 0; padding: 0; min-height: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.vnccs-creator-trait-token:focus-within { border-color: var(--accent); }
+.vnccs-creator-trait-edit:focus-visible, .vnccs-creator-trait-remove:focus-visible, button.vnccs-creator-trait-empty:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: -2px;
+}
+.vnccs-creator-trait-remove:focus-visible { outline: 2px solid var(--text-primary); outline-offset: 2px; }
 .vnccs-creator-trait-empty { color: var(--text-secondary); }
 .vnccs-creator-trait-input { min-height: 44px; font-size: 13px; }
 .vnccs-creator-trait-values[hidden], .vnccs-creator-trait-input[hidden] { display: none; }
@@ -730,6 +785,7 @@ ${SAKURA_THEME_CSS}
     transform: translateX(16px);
     background: var(--accent);
 }
+.vnccs-creator-toggle input:focus-visible ~ .vnccs-creator-toggle-track { outline: 2px solid var(--accent); outline-offset: 2px; }
 .vnccs-creator-toggle-label {
     font-size: 12px;
     font-weight: 500;
@@ -742,6 +798,8 @@ ${SAKURA_THEME_CSS}
 }
 
 .vnccs-creator-segmented-field {
+    position: relative;
+    isolation: isolate;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 4px;
@@ -751,6 +809,14 @@ ${SAKURA_THEME_CSS}
     background: rgba(0,0,0,0.18);
     min-height: 48px;
     box-sizing: border-box;
+}
+.vnccs-creator-segmented-field::before {
+    content: ""; position: absolute; top: 4px; bottom: 4px; left: 4px; z-index: -1;
+    width: calc((100% - 8px - (var(--segments, 2) - 1) * 4px) / var(--segments, 2));
+    border-radius: var(--radius-md); background: linear-gradient(180deg, #ff9bad 0%, #ff87a0 100%);
+    box-shadow: 0 10px 22px rgba(255,143,163,0.22); pointer-events: none;
+    transform: translateX(calc(var(--selected, 0) * (100% + 4px)));
+    transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .vnccs-creator-segmented-field.is-three {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -765,7 +831,7 @@ ${SAKURA_THEME_CSS}
     font-size: 14px;
     font-weight: 800;
     cursor: pointer;
-    transition: all var(--transition);
+    transition: color 180ms ease;
 }
 
 .vnccs-creator-segmented-btn:disabled {
@@ -779,8 +845,8 @@ ${SAKURA_THEME_CSS}
 
 .vnccs-creator-segmented-btn.is-active {
     color: #20141a;
-    background: linear-gradient(180deg, #ff9bad 0%, #ff87a0 100%);
-    box-shadow: 0 10px 22px rgba(255,143,163,0.22);
+    background: transparent;
+    box-shadow: none;
 }
 
 .vnccs-creator-graphic-toggle {
@@ -907,10 +973,19 @@ ${SAKURA_THEME_CSS}
 }
 
 .vnccs-creator-tab-row {
+    position: relative;
+    isolation: isolate;
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 8px;
     margin-bottom: 6px;
+}
+.vnccs-creator-tab-row::before {
+    content: ""; position: absolute; inset: 0 auto 0 0; z-index: -1;
+    width: calc((100% - 16px) / 3); box-sizing: border-box;
+    border: 1px solid var(--accent); border-radius: 8px; background: rgba(255,143,163,0.12);
+    transform: translateX(calc(var(--selected, 0) * (100% + 8px)));
+    transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1); pointer-events: none;
 }
 
 .vnccs-creator-tab {
@@ -934,10 +1009,10 @@ ${SAKURA_THEME_CSS}
 }
 
 .vnccs-creator-tab.is-active {
-    border-color: var(--accent);
+    border-color: transparent;
     color: var(--accent-hover);
-    background: rgba(255,143,163,0.12);
-    box-shadow: 0 0 0 1px rgba(255,143,163,0.14) inset;
+    background: transparent;
+    box-shadow: none;
 }
 
 .vnccs-creator-subsection {
@@ -1271,6 +1346,9 @@ ${SAKURA_THEME_CSS}
     height: 24px;
     display: block;
 }
+.vnccs-creator-seed-row .vnccs-creator-gen-param-input.is-random {
+    border-color: var(--accent-border); color: var(--accent-hover); background: var(--accent-subtle);
+}
 
 .vnccs-creator-character-wizard-btn {
     width: 100%;
@@ -1442,8 +1520,10 @@ app.registerExtension({
 
                 node._randomizeSeedIfNeeded = () => {
                     if (state.gen_settings.seed_mode === "randomize") {
+                        const before = els._ui?.captureValues([els.seed]);
                         state.gen_settings.seed = generateRandomSeed();
                         if (els.seed) els.seed.value = state.gen_settings.seed;
+                        els._ui?.animateValues(before);
                         saveState();
                     }
                 };
@@ -1885,6 +1965,7 @@ app.registerExtension({
                 };
 
                 const syncGenerationControls = () => {
+                    const before = els._ui?.captureValues([els.steps?.num, els.cfg?.num, els.seed]);
                     const g = state.gen_settings;
                     if (els.ckptSelect) {
                         ensureOption(els.ckptSelect, g.ckpt_name);
@@ -1913,6 +1994,8 @@ app.registerExtension({
                         els.seed_mode.classList.toggle("is-active", randomMode);
                         els.seed_mode.title = randomMode ? "Random seed" : "Fixed seed";
                         els.seed_mode.setAttribute("aria-pressed", randomMode ? "true" : "false");
+                        els.seed_mode.setAttribute("aria-label", randomMode ? "Use fixed seed" : "Use random seed");
+                        els.seed?.classList.toggle("is-random", randomMode);
                     }
                     if (els.dmdSelect) {
                         ensureOption(els.dmdSelect, g.dmd_lora_name);
@@ -1943,6 +2026,8 @@ app.registerExtension({
                         });
                     }
                     renderControlCenterCards();
+                    els._ui?.animateValues(before);
+                    els._ui?.syncSelects();
                 };
 
                 const migrateGenerationModeSettings = () => {
@@ -2053,6 +2138,7 @@ app.registerExtension({
                             else els[k].value = val;
                         }
                     });
+                    els._ui?.syncSelects();
                 };
 
                 const syncBackgroundForGenerationMode = (force = false) => {
@@ -2092,11 +2178,12 @@ app.registerExtension({
                         els.previewImg.removeAttribute("src");
                         els.previewImg.style.display = "none";
                     }
-                    if (els.placeholder) {
+                    if (els.placeholder && !els._ui) {
                         els.placeholder.innerText = "Create a character to begin";
                         els.placeholder.style.display = "block";
                     }
                     syncCharacterFields();
+                    if (els._ui && els.previewImg && els.placeholder) els._ui.emptyPreview(els.previewImg, els.placeholder, "", "Create a character to begin");
                 };
 
                 const tryCachePreview = (character) => {
@@ -2114,8 +2201,8 @@ app.registerExtension({
                         console.warn("[VNCCS] Both pose and cache preview failed.");
                         setPreviewLoading(false);
                         els.previewImg.style.display = "none";
-                        els.placeholder.innerText = "No Preview Image";
-                        els.placeholder.style.display = "block";
+                        if (els._ui) els._ui.emptyPreview(els.previewImg, els.placeholder, character, "Generate a preview to bring this character to life.", els._ui._characterMode);
+                        else { els.placeholder.innerText = "No Preview Image"; els.placeholder.style.display = "block"; }
                         els.previewImg.onerror = null;
                         state.preview_valid = false;
                         state.preview_source = "gen";
@@ -2125,9 +2212,8 @@ app.registerExtension({
                     loader.onload = () => {
                         if (!isCurrent()) return;
                         setPreviewLoading(false);
-                        els.previewImg.src = cacheUrl;
-                        els.previewImg.style.display = "block";
-                        els.placeholder.style.display = "none";
+                        if (els._ui) els._ui.presentPreview(els.previewImg, els.placeholder, cacheUrl, character);
+                        else { els.previewImg.src = cacheUrl; els.previewImg.style.display = "block"; els.placeholder.style.display = "none"; }
                         state.preview_valid = true;
                         state.preview_source = "gen";
                         hideSpriteNav();
@@ -2174,9 +2260,8 @@ app.registerExtension({
                     loader.onload = () => {
                         if (!isCurrent()) return;
                         clearPreviewHandlers();
-                        els.previewImg.src = url;
-                        els.previewImg.style.display = "block";
-                        els.placeholder.style.display = "none";
+                        if (els._ui) els._ui.presentPreview(els.previewImg, els.placeholder, url, character);
+                        else { els.previewImg.src = url; els.previewImg.style.display = "block"; els.placeholder.style.display = "none"; }
                         setPreviewLoading(false);
                         state.preview_valid = true;
                         state.preview_source = "pose";
@@ -2371,7 +2456,9 @@ app.registerExtension({
                     if (els.modeTabs) {
                         Object.entries(els.modeTabs).forEach(([key, btn]) => {
                             btn.classList.toggle("is-active", key === mode);
+                            btn.setAttribute("aria-pressed", String(key === mode));
                         });
+                        els.modeTabRow?.style.setProperty("--selected", String(Math.max(0, Object.keys(els.modeTabs).indexOf(mode))));
                     }
                     if (els.illustriousModels) els.illustriousModels.style.display = !isAnima && !isQi2 ? "flex" : "none";
                     if (els.animaModels) els.animaModels.style.display = isAnima ? "flex" : "none";
@@ -2476,6 +2563,7 @@ app.registerExtension({
                     const { element, input } = createTraitInput({
                         prefix: "vnccs-creator", label: lbl, key, target: targetObj,
                         save: key === "breast_size" ? saveState : debouncedSave, choose: input => openTagConstructor(key, input),
+                        removable: true, motion: (...args) => els._ui?._playMotion(...args),
                     });
                     setHelpText(element, helpFor(key));
                     els[key] = input;
@@ -2570,6 +2658,7 @@ app.registerExtension({
                     wrap.innerHTML = `<div class="vnccs-creator-label">${lbl}</div>`;
                     const segmented = document.createElement("div");
                     segmented.className = "vnccs-creator-segmented-field";
+                    segmented.style.setProperty("--segments", String(options.length));
                     if (options.length === 3) segmented.classList.add("is-three");
                     const buttons = [];
                     const setValue = (value, persist = false) => {
@@ -2598,6 +2687,7 @@ app.registerExtension({
                         });
                         if (persist && key === "sex") syncCharacterFields();
                         if (persist) saveState();
+                        segmented.style.setProperty("--selected", String(Math.max(0, buttons.findIndex(item => item.value === normalized))));
                     };
                     options.forEach(option => {
                         const btn = document.createElement("button");
@@ -2807,12 +2897,23 @@ app.registerExtension({
 
                     const card = document.createElement("div");
                     card.className = "vnccs-creator-model-card";
+                    card.dataset.focusKey = `asset-${cat}-${rel}-${pickerHead ? "head" : "option"}`;
+                    if (pickerHead) card.dataset.sakuraFocusDefault = "true";
                     card.classList.toggle("is-picker-head", pickerHead);
                     card.classList.toggle("is-installed", installed);
                     card.classList.toggle("is-selected", selected || toggled);
                     card.classList.toggle("is-missing", !installed);
                     if (installed || pickerHead) {
                         card.onclick = () => onSelect?.(rel, entry);
+                        card.role = "button";
+                        card.tabIndex = 0;
+                        card.ariaPressed = String(selected || toggled);
+                        card.ariaLabel = entry.name || rel || "Model";
+                        card.onkeydown = event => {
+                            if (event.target !== card || !["Enter", " "].includes(event.key)) return;
+                            event.preventDefault(); event.stopPropagation();
+                            if (!event.repeat) card.onclick();
+                        };
                     }
 
                     const top = document.createElement("div");
@@ -2840,10 +2941,13 @@ app.registerExtension({
                     top.appendChild(statusEl);
 
                     if (onToggle && installed) {
+                        card.dataset.toggleState = String(!!toggled);
                         const toggle = document.createElement("label");
                         toggle.className = "vnccs-creator-toggle vnccs-creator-model-card-toggle";
+                        toggle.onclick = event => event.stopPropagation();
                         const input = document.createElement("input");
                         input.type = "checkbox";
+                        input.ariaLabel = `Enable ${entry.name || rel}`;
                         input.checked = !!toggled;
                         input.onchange = (event) => {
                             event.stopPropagation();
@@ -3108,7 +3212,6 @@ app.registerExtension({
                         syncGenerationControls();
                         saveState();
                     }
-                    renderControlCenterCards();
                 };
 
                 const setCcAgeLora = (enabled, rel) => {
@@ -3191,6 +3294,8 @@ app.registerExtension({
                     containerEl.innerHTML = "";
                     const picker = document.createElement("div");
                     picker.className = "vnccs-creator-model-picker";
+                    picker.dataset.mode = mode;
+                    picker.dataset.sakuraFocusGroup = mode;
                     picker.classList.toggle("is-open", !!modelPickerOpen[mode]);
                     containerEl.appendChild(picker);
 
@@ -3220,6 +3325,7 @@ app.registerExtension({
 
                     const menu = document.createElement("div");
                     menu.className = "vnccs-creator-model-picker-menu";
+                    menu.dataset.sakuraScroll = `model-picker-${mode}`;
                     picker.appendChild(menu);
 
                     const appendGroup = (title, groupEntries) => {
@@ -3247,6 +3353,7 @@ app.registerExtension({
                 };
 
                 const renderControlCenterCards = () => {
+                    const view = els._ui?.captureView();
                     closeOverhaulHelp?.();
                     if (!els.animaModelCards && !els.illustriousModelCards && !els.qi2ModelCards) return;
                     const currentMode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
@@ -3378,6 +3485,7 @@ app.registerExtension({
                     if (els.qi2Models) els.qi2Models.style.display = isQi2Mode ? "flex" : "none";
                     if (els.animaModels) els.animaModels.style.display = isAnimaMode ? "flex" : "none";
                     if (els.illustriousModels) els.illustriousModels.style.display = !isAnimaMode && !isQi2Mode ? "flex" : "none";
+                    if (view) els._ui.restoreView(view);
                 };
 
                 const isSelectedCcAssetInstalled = (section, kind, key, predicate = null) => {
@@ -3394,6 +3502,10 @@ app.registerExtension({
                 // 5. Build Layout
                 const container = document.createElement("div");
                 container.className = "vnccs-creator-container";
+                container.classList.add("vnccs-common-ui-host");
+                els._ui = createSakuraInteractions(container, node);
+                node._creatorUI = els._ui;
+                registerCleanup(node, () => els._ui.dispose());
                 enableMiddleMouseCanvasPan(container);
                 attachHelpTooltips(container);
                 container.addEventListener("scroll", () => closeOverhaulHelp?.(), true);
@@ -3406,9 +3518,11 @@ app.registerExtension({
                 // COL 1: LEFT (Preview)
                 const colLeft = document.createElement("div");
                 colLeft.className = "vnccs-creator-col";
+                colLeft.dataset.sakuraScroll = "characters";
                 colLeft.innerHTML = '<div class="vnccs-creator-section-title">Character Select</div>';
 
                 const charSel = document.createElement("select"); charSel.className = "vnccs-creator-select";
+                charSel.ariaLabel = "Character";
                 charSel.onchange = async (e) => {
                     await loadChar(e.target.value);
                 };
@@ -3603,7 +3717,7 @@ app.registerExtension({
                                     const exists = Array.from(els.charSelect.options).some(o => o.value === n);
                                     if (!exists) els.charSelect.add(new Option(n, n));
 
-                                    return !await loadChar(n);
+                                    return !await loadChar(n, false, "new");
                                 } catch (e) {
                                     if (!isCurrent()) return false;
                                     showAlertModal("Create Failed", e);
@@ -3666,6 +3780,7 @@ app.registerExtension({
                                     });
                                     if (!isCurrent()) return false;
                                     if (r.ok) {
+                                        els._ui?.prepareCharacter(els.previewImg, els.placeholder, "", "delete");
                                         const opts = Array.from(els.charSelect.options);
                                         const idx = opts.findIndex(o => o.value === charName);
                                         if (idx > -1) els.charSelect.remove(idx);
@@ -3804,13 +3919,19 @@ app.registerExtension({
 
                 const frame = document.createElement("div");
                 frame.className = "vnccs-creator-preview-container";
-                frame.innerHTML = `<div class="vnccs-creator-placeholder">
-                    <svg class="vnccs-creator-placeholder-icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                frame.classList.add("vnccs-common-ui-preview-host");
+                frame.innerHTML = `<div class="vnccs-creator-placeholder" role="status" aria-live="polite">
+                    <svg class="vnccs-creator-placeholder-icon" aria-hidden="true" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <circle cx="24" cy="18" r="8" stroke="currentColor" stroke-width="2"/>
                         <path d="M8 42c0-8.837 7.163-16 16-16s16 7.163 16 16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                     </svg>
-                    No Preview
+                    <div class="vnccs-creator-placeholder-title">Create a character</div>
+                    <div class="vnccs-creator-placeholder-hint">Your character preview will appear here</div>
                 </div>`;
+                const aura = document.createElement("div");
+                aura.className = "vnccs-creator-preview-aura";
+                aura.ariaHidden = "true";
+                frame.appendChild(aura);
                 const img = document.createElement("img");
                 img.className = "vnccs-creator-preview-img vnccs-creator-character-preview"; img.style.display = "none";
                 frame.appendChild(img);
@@ -3850,6 +3971,7 @@ app.registerExtension({
                 // COL 2: CENTER (Attributes)
                 const colCenter = document.createElement("div");
                 colCenter.className = "vnccs-creator-col";
+                colCenter.dataset.sakuraScroll = "traits";
                 colCenter.innerHTML = '<div class="vnccs-creator-section-title">Attributes</div>';
 
                 const characterWizardBtn = document.createElement("button");
@@ -3898,10 +4020,12 @@ app.registerExtension({
                 // COL 3: RIGHT (Generation)
                 const colRight = document.createElement("div");
                 colRight.className = "vnccs-creator-col";
+                colRight.dataset.sakuraScroll = "generation";
                 colRight.innerHTML = '<div class="vnccs-creator-section-title">Generation</div>';
 
                 const tabRow = document.createElement("div");
                 tabRow.className = "vnccs-creator-tab-row";
+                els.modeTabRow = tabRow;
                 els.modeTabs = {};
                 [
                     ["qi2", "Qwen Image 2.1"],
@@ -4090,6 +4214,7 @@ app.registerExtension({
                     </svg>`;
                 seedMode.onclick = () => {
                     state.gen_settings.seed_mode = (state.gen_settings.seed_mode || "fixed") === "randomize" ? "fixed" : "randomize";
+                    if (state.gen_settings.seed_mode === "randomize") state.gen_settings.seed = generateRandomSeed();
                     syncGenerationControls();
                     saveState();
                 };
@@ -4309,6 +4434,7 @@ app.registerExtension({
                     hideOnZoom: false,
                 });
                 syncDOMWidgetWidthSoon(node, "ui");
+                els._ui.syncSelects();
 
                 // 6. Logic
 
@@ -4482,7 +4608,7 @@ app.registerExtension({
                 const beginCharacterRequest = createRequestGuard(node);
                 let currentInitializationSelection = beginCharacterRequest();
                 const beginCharacterWizardRequest = createRequestGuard(node);
-                const loadChar = async (n, skipInfoLoad = false) => {
+                const loadChar = async (n, skipInfoLoad = false, transition = "switch") => {
                     els.style?.close?.(false);
                     beginCharacterWizardRequest();
                     const currentRequest = beginCharacterRequest();
@@ -4533,6 +4659,8 @@ app.registerExtension({
                         if (!isCurrent()) return false;
                         state.character = n;
                         if (els.charSelect) els.charSelect.value = n;
+                        els._ui?.syncSelects();
+                        els._ui?.prepareCharacter(els.previewImg, els.placeholder, n, transition);
                         syncCharacterFields();
                         saveState();
 
@@ -4569,6 +4697,7 @@ app.registerExtension({
                     } catch (error) {
                         if (!isCurrent()) return false;
                         if (els.charSelect) els.charSelect.value = state.character;
+                        els._ui?.syncSelects();
                         showAlertModal("Character Load Failed", error.message || error);
                         return false;
                     }
@@ -4644,9 +4773,8 @@ app.registerExtension({
                         if (d.image) {
                             clearPreviewHandlers();
                             setPreviewLoading(false);
-                            els.previewImg.src = "data:image/png;base64," + d.image;
-                            els.previewImg.style.display = "block";
-                            els.placeholder.style.display = "none";
+                            if (els._ui) els._ui.presentPreview(els.previewImg, els.placeholder, "data:image/png;base64," + d.image, character);
+                            else { els.previewImg.src = "data:image/png;base64," + d.image; els.previewImg.style.display = "block"; els.placeholder.style.display = "none"; }
                             // Successful generation -> Cache is Valid AND source is 'gen'
                             state.preview_source = "gen";
                             hideSpriteNav();
@@ -4688,6 +4816,7 @@ app.registerExtension({
             const onResize = nodeType.prototype.onResize;
             nodeType.prototype.onResize = function (size) {
                 onResize?.apply(this, arguments);
+                this._creatorUI?._closeDropdown(false);
                 syncDOMWidgetWidth(this, "ui");
                 requestAnimationFrame(() => syncDOMWidgetWidth(this, "ui"));
             };

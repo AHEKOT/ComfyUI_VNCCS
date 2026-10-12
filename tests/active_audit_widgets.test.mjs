@@ -8,8 +8,9 @@ const source = name => readFileSync(new URL(`../web/${name}.js`, import.meta.url
 const between = (text, start, end) => text.slice(text.indexOf(start), text.indexOf(end, text.indexOf(start)));
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 
-function domHarness() {
+function domHarness(motion = false) {
     const listeners = new Map(), observers = [], frames = [];
+    const animations = [];
     let document;
     class Element {
         constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.style = {}; this.attrs = {}; this.handlers = {}; this.tabIndex = -1; }
@@ -17,19 +18,31 @@ function domHarness() {
         append(...children) { children.forEach(child => this.appendChild(child)); }
         replaceChildren(...children) { this.children = []; this.append(...children); }
         setAttribute(key, value) { this.attrs[key] = value; }
+        removeAttribute(key) { delete this.attrs[key]; delete this[key]; }
         addEventListener(key, callback) { this.handlers[key] = callback; }
         remove() { if (!this.parentNode) return; this.parentNode.children = this.parentNode.children.filter(child => child !== this); this.parentNode = null; }
         get isConnected() { return this === document.body || this === document.head || !!this.parentNode?.isConnected; }
         contains(target) { return this === target || this.children.some(child => child.contains(target)); }
         descendants() { return this.children.flatMap(child => [child, ...child.descendants()]); }
-        querySelectorAll() { return this.descendants().filter(child => ['BUTTON', 'INPUT', 'TEXTAREA', 'SELECT', 'A'].includes(child.tagName) || child.tabIndex >= 0); }
+        querySelectorAll(selector) { return selector === '*' ? this.descendants() : this.descendants().filter(child => ['BUTTON', 'INPUT', 'TEXTAREA', 'SELECT', 'A'].includes(child.tagName) || child.tabIndex >= 0); }
         querySelector() { return this.querySelectorAll().find(child => ['INPUT', 'TEXTAREA', 'SELECT'].includes(child.tagName) && child.type !== 'hidden' && !child.disabled) || null; }
         closest() { return this.attrs.inert !== undefined ? this : this.parentNode?.closest() || null; }
         getClientRects() { return this.hidden || this.style.display === 'none' ? [] : [{}]; }
         focus() { document.activeElement = this; for (const callback of [...listeners.get('focusin') || []]) callback({ target: this }); }
         select() { this.selected = true; }
         click() { return this.onclick?.(); }
+        cloneNode(deep) {
+            const clone = new Element(this.tagName);
+            clone.attrs = { ...this.attrs }; clone.style = { ...this.style };
+            clone.className = this.className; clone.id = this.id; clone.textContent = this.textContent;
+            if (deep) for (const child of this.children) clone.appendChild(child.cloneNode(true));
+            return clone;
+        }
     }
+    if (motion) Element.prototype.animate = function (keyframes, options) {
+        const animation = { target: this, keyframes, options, cancel() { this.cancelled = true; this.oncancel?.(); }, finish() { this.onfinish?.(); } };
+        animations.push(animation); return animation;
+    };
     document = {
         createElement: tag => new Element(tag),
         addEventListener(key, fn) { if (!listeners.has(key)) listeners.set(key, new Set()); listeners.get(key).add(fn); },
@@ -43,12 +56,50 @@ function domHarness() {
         disconnect() { this.active = false; }
     }
     const context = createWidgetContext({ document, MutationObserver: Observer,
+        window: { matchMedia: () => ({ matches: !!document.reducedMotion }), getComputedStyle: () => ({ opacity: '0.6' }), addEventListener() {}, removeEventListener() {} },
         requestAnimationFrame: fn => frames.push(fn), setTimeout: () => 0, app: {}, console });
     const common = source('vnccs_common').replace(/^import .*;\n/gm, '').replaceAll('export ', '');
     vm.runInContext(`${common}\nglobalThis.openModal = showModal; globalThis.styles = injectStyles; globalThis.tooltip = getHelpTooltip;`, context);
-    return { context, document, listeners, observers, frames, Element,
+    return { context, document, listeners, observers, frames, animations, Element,
         flush() { for (const fn of frames.splice(0)) fn(); for (const observer of observers) if (observer.active) observer.callback(); } };
 }
+
+test('modal motion matches Control Center and closes logically before the exit fade', () => {
+    const h = domHarness(true);
+    const opener = h.document.body.appendChild(new h.Element('button')); opener.focus();
+    const content = new h.Element('input'); content.scrollTop = 173; content.scrollLeft = 7;
+    const { modal, overlay } = h.context.openModal(h.document.body, 'Presets', () => content, [{ text: 'Apply', class: 'primary' }]);
+    h.flush();
+    assert.deepEqual(h.animations.map(animation => animation.options.duration), [180, 240]);
+    assert.ok(h.animations.every(animation => animation.options.easing === 'cubic-bezier(0.22, 1, 0.36, 1)'));
+    overlay.remove();
+    assert.equal(overlay.isConnected, false);
+    assert.equal(h.document.activeElement, opener);
+    assert.equal(h.listeners.get('focusin').size, 0);
+    const exit = h.animations.at(-1), ghost = exit.target;
+    assert.equal(exit.options.duration, 140); assert.equal(exit.keyframes[0].opacity, 0.6);
+    assert.equal(ghost.isConnected, true); assert.equal(ghost.inert, true); assert.equal(ghost.attrs['aria-hidden'], 'true');
+    assert.ok(ghost.descendants().every(element => !element.id));
+    const copied = ghost.descendants().find(element => element.tagName === 'INPUT');
+    assert.equal(copied.scrollTop, 173); assert.equal(copied.scrollLeft, 7);
+    assert.ok(h.animations.slice(0, 2).every(animation => animation.cancelled));
+    overlay.remove(); assert.equal(h.animations.at(-1), exit);
+    exit.finish(); assert.equal(ghost.isConnected, false);
+    assert.equal(modal.isConnected, false);
+});
+
+test('reduced motion and container removal leave modal focus and animations clean', () => {
+    const h = domHarness(true); h.document.reducedMotion = true;
+    const opener = h.document.body.appendChild(new h.Element('button')); opener.focus();
+    const dialog = h.context.openModal(h.document.body, 'Message', () => new h.Element('input'), [{ text: 'Close' }]);
+    dialog.overlay.remove(); assert.equal(h.animations.length, 0); assert.equal(h.document.activeElement, opener);
+    h.document.reducedMotion = false;
+    const host = h.document.body.appendChild(new h.Element('div'));
+    h.context.openModal(host, 'Presets', () => new h.Element('input'), [{ text: 'Close' }]);
+    host.remove(); h.flush();
+    assert.equal(h.listeners.get('focusin').size, 0);
+    assert.ok(h.animations.every(animation => animation.cancelled));
+});
 
 function key(modal, name, target, shiftKey = false) {
     const event = { key: name, target, shiftKey, prevented: false, preventDefault() { this.prevented = true; }, stopPropagation() {} };

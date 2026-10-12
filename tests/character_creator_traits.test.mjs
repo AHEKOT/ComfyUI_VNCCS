@@ -9,6 +9,7 @@ const source = readFileSync(new URL("../web/vnccs_character_creator_v2.js", impo
 const common = readFileSync(new URL("../web/vnccs_common.js", import.meta.url), "utf8");
 const guards = common.slice(common.indexOf('export function registerCleanup'), common.indexOf('// ── DOM Widget Width Sync')).replaceAll('export ', '');
 const catalog = JSON.parse(readFileSync(new URL("../character_template/character_presets_v2.json", import.meta.url), "utf8"));
+const tagTexts = values => values.children.map(chip => chip.attrs["data-tag"] || chip.textContent);
 const block = (start, end) => {
     const offset = source.indexOf(start);
     const limit = source.indexOf(end, offset);
@@ -21,7 +22,7 @@ class Element {
         this.tagName = tagName;
         this.children = [];
         this.attrs = {};
-        this.style = {};
+        this.style = { setProperty(key, value) { this[key] = value; } };
         this.classList = { toggle() {}, add() {} };
         this.value = "";
     }
@@ -75,9 +76,15 @@ test("character traits use label, editable tags and a plus button", () => {
         const [values, input] = row.children[1].children;
         assert.equal(input, context.els[key]);
         assert.equal(input.hidden, true);
-        assert.equal(values.tagName, "button");
+        assert.equal(values.tagName, "div");
+        assert.equal(values.attrs.role, "group");
         assert.match(values.attrs["aria-label"], /^Edit /);
-        assert.deepEqual(values.children.map(chip => chip.textContent), (info[key] || "Add tags").split(", "));
+        assert.deepEqual(tagTexts(values), (info[key] || "Add tags").split(", "));
+        if (info[key]) for (const chip of values.children) {
+            assert.equal(chip.children[0].tagName, "button");
+            assert.equal(chip.children[1].tagName, "button");
+            assert.match(chip.children[1].attrs["aria-label"], /^Remove /);
+        }
         assert.equal(row.children[2].textContent, "+");
         assert.equal(row.children[2].attrs["aria-label"], `Choose ${label.toLowerCase()} presets`);
     }
@@ -192,7 +199,7 @@ test("manual tag editing persists raw text and requests focus without scrolling"
     input.dispatchEvent(new Event("input"));
     assert.equal(state.character_info.hair, input.value);
     assert.equal(JSON.parse(widget.value).character_info.hair, input.value);
-    assert.deepEqual(values.children.map(chip => chip.textContent), ["silver hair", "My Custom Hair", "blue ribbons"]);
+    assert.deepEqual(tagTexts(values), ["silver hair", "My Custom Hair", "blue ribbons"]);
     input.onkeydown({ key: "Enter", preventDefault() {} });
     assert.equal(input.hidden, true);
     assert.equal(values.hidden, false);
@@ -208,10 +215,10 @@ test("restored fields, wizard results and preset Apply update the same tag rows"
     const eyeRow = context.makeField("Eyes", "eyes");
     state.character_info.hair = "white hair, waist-length hair";
     context.sync();
-    assert.deepEqual(values.children.map(chip => chip.textContent), ["white hair", "waist-length hair"]);
+    assert.deepEqual(tagTexts(values), ["white hair", "waist-length hair"]);
     context.wizard({ hair: "silver hair, My Custom Hair", eyes: "green eyes" });
-    assert.deepEqual(values.children.map(chip => chip.textContent), ["silver hair", "My Custom Hair"]);
-    assert.equal(eyeRow.children[1].children[0].children[0].textContent, "green eyes");
+    assert.deepEqual(tagTexts(values), ["silver hair", "My Custom Hair"]);
+    assert.deepEqual(tagTexts(eyeRow.children[1].children[0]), ["green eyes"]);
     await row.children[2].onclick();
     assert.equal(modal().title, "Choose Presets: hair");
     const chips = modal().content.children[1].children;
@@ -219,7 +226,47 @@ test("restored fields, wizard results and preset Apply update the same tag rows"
     modal().actions.find(action => action.text === "APPLY").action(modal().overlay);
     assert.equal(input.value, "silver hair, My Custom Hair, black hair");
     assert.equal(JSON.parse(widget.value).character_info.hair, input.value);
-    assert.deepEqual(values.children.map(chip => chip.textContent), ["silver hair", "My Custom Hair", "black hair"]);
+    assert.deepEqual(tagTexts(values), ["silver hair", "My Custom Hair", "black hair"]);
+});
+
+test("preset Apply animates only newly added tags and reuses existing boxes", async () => {
+    const { context, modal } = setup({ hair: "My custom hair" });
+    const animations = [];
+    context.els._ui = { _playMotion: (...args) => animations.push(args) };
+    const row = context.makeField("Hair", "hair"), values = row.children[1].children[0];
+    const original = values.children[0];
+    assert.equal(animations.length, 0);
+    await row.children[2].onclick();
+    modal().content.children[1].children.find(chip => chip.innerText === "Black").onclick();
+    modal().actions.find(action => action.text === "APPLY").action(modal().overlay);
+    assert.equal(values.children[0], original);
+    assert.deepEqual(tagTexts(values), ["My custom hair", "black hair"]);
+    assert.equal(animations.length, 1);
+    assert.equal(animations[0][0], values.children[1]);
+    assert.equal(animations[0][2], 240);
+    modal().actions.find(action => action.text === "APPLY").action(modal().overlay);
+    assert.equal(animations.length, 1);
+});
+
+test("a tag cross removes only its token, preserves raw remaining text, and never opens editing", () => {
+    const { context, state, widget } = setup({ hair: "  silver hair, , ribbon, silver hair  " });
+    const row = context.makeField("Hair", "hair"), [values, input] = row.children[1].children;
+    let stopped = 0;
+    const click = { stopPropagation() { stopped++; } };
+    values.children[0].children[1].onclick(click);
+    assert.equal(stopped, 1); assert.equal(input.hidden, true);
+    assert.equal(input.value, " , ribbon, silver hair  ");
+    assert.equal(state.character_info.hair, input.value);
+    assert.equal(JSON.parse(widget.value).character_info.hair, input.value);
+    assert.deepEqual(tagTexts(values), ["ribbon", "silver hair"]);
+    assert.equal(values.children[0].children[1].focusOptions.preventScroll, true);
+    values.children[0].children[0].onclick(click);
+    assert.equal(input.hidden, false); input.blur();
+    values.children[1].children[1].onclick(click);
+    values.children[0].children[1].onclick(click);
+    assert.equal(input.value, ""); assert.equal(state.character_info.hair, "");
+    assert.deepEqual(tagTexts(values), ["Add tags"]);
+    assert.equal(row.children[2].focusOptions.preventScroll, true);
 });
 
 for (const obsolete of ['switch', 'configure', 'removal', 'close']) {

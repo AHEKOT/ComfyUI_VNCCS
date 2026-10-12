@@ -69,6 +69,27 @@ test("Creator hover styling only applies to enabled, unselected segmented button
     assert.ok(creator.selectors.some(selector => selector.includes(".vnccs-creator-segmented-btn:focus-visible")));
 });
 
+test("Creator tag controls cannot enlarge their original text boxes or enter layout flow", () => {
+    const css = sheets.find(sheet => sheet.name === "vnccs_character_creator_v2.js").css;
+    const token = css.match(/\.vnccs-creator-trait-token\s*\{([^}]*)\}/)[1];
+    assert.match(token, /padding:\s*5px 8px/); assert.match(token, /line-height:\s*1\.4/);
+    assert.match(css, /\.vnccs-creator-trait-edit\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0/);
+    assert.match(css, /\.vnccs-creator-trait-remove\s*\{[^}]*position:\s*absolute;[^}]*width:\s*24px;[^}]*height:\s*24px/);
+    assert.match(css, /\.vnccs-creator-trait-remove\s*\{[^}]*border-radius:\s*50%;[^}]*background:\s*var\(--accent\) !important/);
+    assert.match(css, /\.vnccs-creator-trait-remove::after\s*\{[^}]*inset:\s*-4px/);
+    assert.doesNotMatch(css, /trait-token:has\([^)]*\)\s*\{[^}]*padding:\s*0/);
+});
+
+test("Creator portrait and sliders keep their layout anchors throughout transitions", () => {
+    const css = sheets.find(sheet => sheet.name === "vnccs_character_creator_v2.js").css;
+    assert.match(css, /\.vnccs-creator-preview-img\s*\{[^}]*position:\s*absolute;[^}]*left:\s*50%;[^}]*transform:\s*translateX\(-50%\)/);
+    for (const name of ["segmented-field", "tab-row"]) {
+        const marker = css.match(new RegExp(`\\.vnccs-creator-${name}::before\\s*\\{([^}]*)\\}`))[1];
+        assert.match(marker, /transition:\s*transform 280ms cubic-bezier\(0\.22, 1, 0\.36, 1\)/);
+        assert.doesNotMatch(marker, /opacity:/);
+    }
+});
+
 for (const [name, controls] of [
     ["vnccs_character_creator_v2.js", [
         ["vnccs-creator-segmented-btn", "is-active"],
