@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
-import { vnccsApi as api, mediaURL, storage, serverRegistry } from "./vnccs_transport.js";
-import { registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator } from "./vnccs_common.js";
+import { vnccsApi as api, mediaURL, storage } from "./vnccs_transport.js";
+import { showModal as showCommonModal, SAKURA_THEME_CSS, registerCleanup, createRequestGuard, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createControlCenterClient, installResolvedSeedTransport } from "./vnccs_common.js";
 
 // --- CSS STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -8,30 +8,7 @@ const STYLE = `
 
 /* ── Variables ── */
 .ems-container {
-    --bg-primary: #0a0a0f;
-    --bg-secondary: #12121a;
-    --bg-elevated: #1a1a26;
-    --bg-surface: #22222e;
-    --bg-hover: #2a2a38;
-    --text-primary: #e8e8f0;
-    --text-secondary: #9898a8;
-    --text-muted: #5e5e70;
-    --accent: #ff8fa3;
-    --accent-hover: #ffb6c8;
-    --accent-glow: rgba(255, 143, 163, 0.3);
-    --accent-subtle: rgba(255, 143, 163, 0.1);
-    --accent-border: rgba(255, 143, 163, 0.22);
-    --accent-lavender: #b8a9e8;
-    --success: #00d68f;
-    --error: #ff4757;
-    --border: rgba(255, 255, 255, 0.06);
-    --border-hover: rgba(255, 255, 255, 0.12);
-    --font: 'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
-    --radius-sm: 8px;
-    --radius-md: 12px;
-    --radius-lg: 20px;
-    --transition: 0.2s ease;
+${SAKURA_THEME_CSS}
 }
 
 /* ── Container ── */
@@ -1127,10 +1104,11 @@ app.registerExtension({
     name: "VNCCS.EmotionGeneratorV2",
 
     async setup() {
+        installResolvedSeedTransport(app, ["EmotionGeneratorV2"], "generation_settings");
         const queuePrompt = app.queuePrompt;
         const origQueuePrompt = (...args) => queuePrompt.apply(app, args);
         app.queuePrompt = async function(...args) {
-            const nodes = app.graph?._nodes?.filter(n => n.type === "EmotionGeneratorV2") || [];
+            const nodes = app.graph?._nodes?.filter(n => n.type === "EmotionGeneratorV2" && n.mode !== 2 && n.mode !== 4) || [];
             for (const node of nodes) {
                 node._randomizeSeedIfNeeded?.();
                 if (node._validateBeforeQueue && !node._validateBeforeQueue()) {
@@ -1164,7 +1142,15 @@ app.registerExtension({
                 if (costumesDataWidget) costumesDataWidget.hidden = true;
                 if (emotionsDataWidget) emotionsDataWidget.hidden = true;
                 if (modelWidget) modelWidget.hidden = true;
-                if (generationSettingsWidget) generationSettingsWidget.hidden = true;
+                if (generationSettingsWidget) {
+                    generationSettingsWidget.hidden = true;
+                    generationSettingsWidget.options ||= {};
+                    generationSettingsWidget.options.dynamicPrompts = false;
+                }
+                const restoreErrors = new Map();
+                let disposed = false;
+                registerCleanup(node, () => { disposed = true; characterFetchToken++; characterListRefreshToken++; });
+                const beginSelectionRequest = createRequestGuard(node);
 
                 const generateRandomSeed = () => Math.floor(Math.random() * 9007199254740991);
                 const ANIMA_TURBO_LORA_NAME = "anima\\anima-turbo-lora-v0.1.safetensors";
@@ -1172,6 +1158,8 @@ app.registerExtension({
                 const ANIMA_VAE_NAME = "qwen_image_vae.safetensors";
                 const QI2_TURBO_LORA_NAME = "QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors";
                 const QI2_MODEL_NAME = "qwen_image_2.1_int8_convrot.safetensors";
+                const QI2_TURBO_MODEL_NAME = "qwen_image_2.1_turbo_int8_convrot.safetensors";
+                const isQi2TurboModel = modelName => String(modelName || "").replace(/\\/g, "/").split("/").pop() === QI2_TURBO_MODEL_NAME;
                 const QI2_CLIP_NAME = "qwen3vl_8b_int8_convrot.safetensors";
                 const QI2_VAE_NAME = "qwen_image_2.1_vae_bf16.safetensors";
                 const promptStyleForMode = (mode) => String(mode || "anima").toLowerCase() === "anima" ? "Anima" : "SDXL Style";
@@ -1258,9 +1246,49 @@ app.registerExtension({
                 function parseGenerationSettings() {
                     try {
                         const parsed = generationSettingsWidget?.value ? JSON.parse(generationSettingsWidget.value) : {};
-                        return { ...GENERATION_DEFAULTS, ...parsed };
+                        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Generation settings must be an object.");
+                        const isObject = value => value !== null && typeof value === "object" && !Array.isArray(value);
+                        const profiles = parsed.mode_settings === undefined ? {} : parsed.mode_settings;
+                        if (!isObject(profiles)) throw new Error("Model profiles must be an object.");
+                        for (const settings of [parsed, ...Object.values(profiles)]) {
+                            if (!isObject(settings)) throw new Error("Model profiles must contain objects.");
+                            if (settings.qi2_cache !== undefined && !isObject(settings.qi2_cache)) throw new Error("QI2 cache settings must be an object.");
+                            if (settings.turbo_previous_settings != null && !isObject(settings.turbo_previous_settings)) throw new Error("Previous turbo settings must be an object or null.");
+                            if (settings.lora_stack !== undefined && (!Array.isArray(settings.lora_stack) || settings.lora_stack.some(item => !isObject(item)))) throw new Error("LoRA settings must be objects in a list.");
+                        }
+                        const poses = parsed.selected_pose_indices;
+                        if (poses != null && (!Array.isArray(poses) || poses.some(value => {
+                            if (typeof value !== "number" && (typeof value !== "string" || !/^[+-]?\d(?:_?\d)*$/.test(value.trim()))) return true;
+                            const index = Number(String(value).replaceAll("_", ""));
+                            return !Number.isInteger(index) || index <= 0;
+                        }))) throw new Error("Selected pose indices must be positive integers in a list.");
+                        restoreErrors.delete("generation_settings");
+                        const mode = String(parsed.generation_mode || modelWidget?.value || "anima").toLowerCase();
+                        const restored = { ...GENERATION_DEFAULTS, ...GENERATION_DEFAULTS.mode_settings[mode], ...parsed, ...parsed.mode_settings?.[mode], generation_mode: mode };
+                        for (const key of ["seed", "seed_mode"]) {
+                            if (key in parsed) restored[key] = parsed[key];
+                        }
+                        for (const key of ["selected_pose_indices", "selected_preview_sprite"]) {
+                            if (key in parsed) restored[key] = parsed[key];
+                            else delete restored[key];
+                        }
+                        return restored;
                     } catch (e) {
+                        restoreErrors.set("generation_settings", e.message);
                         return { ...GENERATION_DEFAULTS };
+                    }
+                }
+
+                function parseSelection(widget) {
+                    if (!widget) return new Set();
+                    try {
+                        const values = JSON.parse(widget?.value || "[]");
+                        if (!Array.isArray(values)) throw new Error("Selection must be a list.");
+                        restoreErrors.delete(widget.name);
+                        return new Set(values);
+                    } catch (error) {
+                        restoreErrors.set(widget.name, error.message);
+                        return new Set();
                     }
                 }
 
@@ -1268,32 +1296,23 @@ app.registerExtension({
                 let state = {
                     character: charWidget ? charWidget.value : "",
                     costumes: [],
-                    selectedCostumes: new Set(),
+                    selectedCostumes: parseSelection(costumesDataWidget),
                     emotions: [],
-                    selectedEmotions: new Set(),
+                    selectedEmotions: parseSelection(emotionsDataWidget),
                     searchTerm: "",
                     selectedPreviewSprite: null,
                     selectedPoseIndices: null,
                     poseCount: 0,
                     gen: parseGenerationSettings()
                 };
-                if (Array.isArray(state.gen.selected_pose_indices)) {
-                    state.selectedPoseIndices = new Set(
-                        state.gen.selected_pose_indices
-                            .map(value => Number.parseInt(value, 10))
-                            .filter(value => Number.isInteger(value) && value > 0)
-                    );
-                }
+                restorePoseSelectionFromGenerationSettings();
                 let receivedSerializedConfig = false;
                 let characterFetchToken = 0;
                 let spritePreviewNavigator = null;
                 let poseSelectionSummary = null;
                 let poseSelectionGrid = null;
                 const CC_REPO_ID = "MIUProject/VNCCS_v3.0";
-                const CC_CACHE_KEY = `vnccs_cc_cache_${CC_REPO_ID}`;
-                let ccConfig = null;
-                let ccDlStatus = {};
-                let ccPollingInterval = null;
+                const ccState = { config: null, downloadStatus: {} };
                 let localAssets = {
                     checkpoints: [],
                     diffusion_models: [],
@@ -1322,7 +1341,7 @@ app.registerExtension({
                     return parts[parts.length - 1] || "";
                 };
                 const ccEntries = (section, kind, predicate = null) => {
-                    const entries = ccConfig?.[section] || [];
+                    const entries = ccState.config?.[section] || [];
                     return entries.filter(entry => {
                         const kindOk = !kind || ccKind(entry) === ccNormalize(kind);
                         return kindOk && (!predicate || predicate(entry));
@@ -1357,7 +1376,7 @@ app.registerExtension({
                 };
                 const ccResolveStatus = (entry, cat) => {
                     const transient = new Set(["queued", "downloading", "error", "auth_required"]);
-                    const dls = ccDlStatus[ccStatusKey(cat, entry)] || {};
+                    const dls = ccState.downloadStatus[ccStatusKey(cat, entry)] || {};
                     return transient.has(dls.status) ? dls.status : (entry?.status || "missing");
                 };
                 const ccFirstEntry = (section, kind, predicate = null) => ccEntries(section, kind, predicate)[0] || null;
@@ -1381,6 +1400,7 @@ app.registerExtension({
                 }
 
                 function commitWidget(widget, value, callCallback = true) {
+                    if (disposed || restoreErrors.size) return;
                     if (!widget) return;
                     widget.value = value;
                     if (callCallback) widget.callback?.(value);
@@ -1390,7 +1410,7 @@ app.registerExtension({
                 function selectedPoseIndexList() {
                     if (state.selectedPoseIndices === null) return null;
                     return Array.from(state.selectedPoseIndices)
-                        .filter(index => Number.isInteger(index) && index > 0 && (!state.poseCount || index <= state.poseCount))
+                        .filter(index => Number.isInteger(index) && index > 0)
                         .sort((a, b) => a - b);
                 }
 
@@ -1405,7 +1425,7 @@ app.registerExtension({
                     state.selectedPoseIndices = Array.isArray(stored)
                         ? new Set(
                             stored
-                                .map(value => Number.parseInt(value, 10))
+                                .map(value => Number(String(value).replaceAll("_", "")))
                                 .filter(value => Number.isInteger(value) && value > 0)
                         )
                         : null;
@@ -1419,7 +1439,7 @@ app.registerExtension({
                     if (state.poseCount <= 0) return 0;
                     return state.selectedPoseIndices === null
                         ? state.poseCount
-                        : selectedPoseIndexList().length;
+                        : selectedPoseIndexList().filter(index => index <= state.poseCount).length;
                 }
 
                 function renderPoseSelection() {
@@ -1542,7 +1562,7 @@ app.registerExtension({
                 }
 
                 const cardStatusLabel = (status, entry, cat) => {
-                    const dls = ccDlStatus[ccStatusKey(cat, entry)] || {};
+                    const dls = ccState.downloadStatus[ccStatusKey(cat, entry)] || {};
                     if (status === "installed") return "Installed";
                     if (status === "queued") return "Queued";
                     if (status === "downloading") return dls.message || "Downloading";
@@ -1551,10 +1571,12 @@ app.registerExtension({
                     return "Missing";
                 };
 
+                const { fetchConfig: fetchCcConfig, startPolling: startCcPolling, stopPolling: stopCcPolling } =
+                    createControlCenterClient(CC_REPO_ID, ccHasRequiredFamilies, ccState, () => renderControlCenterCards(), node);
                 const ccDownloadEntry = async (cat, entry) => {
-                    if (!entry?.name) return;
+                    if (disposed || !entry?.name) return;
                     const key = ccStatusKey(cat, entry);
-                    ccDlStatus[key] = { status: "queued", message: "Queued..." };
+                    ccState.downloadStatus[key] = { status: "queued", message: "Queued..." };
                     renderControlCenterCards();
                     try {
                         const response = await api.fetchApi("/vnccs/control_center/download", {
@@ -1563,86 +1585,32 @@ app.registerExtension({
                             body: JSON.stringify({ repo_id: CC_REPO_ID, category: cat, name: entry.name }),
                         });
                         const payload = await response.json();
+                        if (disposed) return;
                         if (!response.ok || payload.error) {
-                            ccDlStatus[key] = { status: "error", message: payload.error || "Download failed" };
+                            ccState.downloadStatus[key] = { status: "error", message: payload.error || "Download failed" };
                             renderControlCenterCards();
                             return;
                         }
                         startCcPolling();
                     } catch (error) {
-                        ccDlStatus[key] = { status: "error", message: String(error?.message || error) };
+                        if (disposed) return;
+                        ccState.downloadStatus[key] = { status: "error", message: String(error?.message || error) };
                         renderControlCenterCards();
                     }
-                };
-
-                const fetchCcConfig = async (force = false) => {
-                    if (!force && serverRegistry("VNCCS_CC_REGISTRY")?.[CC_REPO_ID] && ccHasRequiredFamilies(serverRegistry("VNCCS_CC_REGISTRY")[CC_REPO_ID])) {
-                        ccConfig = serverRegistry("VNCCS_CC_REGISTRY")[CC_REPO_ID];
-                        renderControlCenterCards();
-                        return ccConfig;
-                    }
-                    if (!force && ccConfig && ccHasRequiredFamilies(ccConfig)) return ccConfig;
-                    if (!force) {
-                        try {
-                            const cached = storage.getItem(CC_CACHE_KEY);
-                            if (cached) {
-                                ccConfig = JSON.parse(cached);
-                                if (ccHasRequiredFamilies(ccConfig)) renderControlCenterCards();
-                                else ccConfig = null;
-                            }
-                        } catch (_) {}
-                    }
-
-                    const url = `/vnccs/control_center/check?repo_id=${encodeURIComponent(CC_REPO_ID)}${force ? "&force_refresh=true" : ""}`;
-                    const response = await api.fetchApi(url);
-                    const payload = await response.json();
-                    if (!response.ok || payload.error) throw new Error(payload.error || "Failed to load Control Center config");
-                    ccConfig = payload;
-
-                    serverRegistry("VNCCS_CC_REGISTRY")[CC_REPO_ID] = payload;
-                    storage.setItem(CC_CACHE_KEY, JSON.stringify(payload));
-                    renderControlCenterCards();
-                    return payload;
-                };
-
-                const refreshCcDownloadStatus = async () => {
-                    try {
-                        const response = await api.fetchApi("/vnccs/manager/status");
-                        if (!response.ok) return;
-                        ccDlStatus = await response.json();
-                        const active = Object.values(ccDlStatus || {}).some(item => ["queued", "downloading"].includes(item?.status));
-                        if (!active) {
-                            stopCcPolling();
-                            await fetchCcConfig(true);
-                        } else {
-                            renderControlCenterCards();
-                        }
-                    } catch (_) {}
-                };
-                const startCcPolling = () => {
-                    if (ccPollingInterval) return;
-                    ccPollingInterval = setInterval(refreshCcDownloadStatus, 2000);
-                };
-                const stopCcPolling = () => {
-                    if (!ccPollingInterval) return;
-                    clearInterval(ccPollingInterval);
-                    ccPollingInterval = null;
                 };
 
                 const ensureAnimaDefaultAux = () => {
                     const clip = ccFirstEntry("clip", "Anima");
                     const vae = ccFirstEntry("vae", "Anima");
-                    if (clip) state.gen.clip_name = ccRelPath(clip);
-                    else if (!state.gen.clip_name) state.gen.clip_name = ANIMA_CLIP_NAME;
-                    if (vae) state.gen.vae_name = ccRelPath(vae);
-                    else if (!state.gen.vae_name) state.gen.vae_name = ANIMA_VAE_NAME;
+                    state.gen.clip_name ||= clip ? ccRelPath(clip) : ANIMA_CLIP_NAME;
+                    state.gen.vae_name ||= vae ? ccRelPath(vae) : ANIMA_VAE_NAME;
                 };
 
                 const ensureQi2DefaultAux = () => {
                     const clip = ccFirstEntry("clip", "QI2");
                     const vae = ccFirstEntry("vae", "QI2");
-                    state.gen.clip_name = clip ? ccRelPath(clip) : (state.gen.clip_name || QI2_CLIP_NAME);
-                    state.gen.vae_name = vae ? ccRelPath(vae) : (state.gen.vae_name || QI2_VAE_NAME);
+                    state.gen.clip_name ||= clip ? ccRelPath(clip) : QI2_CLIP_NAME;
+                    state.gen.vae_name ||= vae ? ccRelPath(vae) : QI2_VAE_NAME;
                     state.gen.clip_type = "qwen_image";
                     state.gen.qi2_cache = {
                         device: state.gen.qi2_cache?.device || "gpu",
@@ -1664,9 +1632,19 @@ app.registerExtension({
                 };
 
                 const selectQi2Model = (rel) => {
+                    if (!rel) return;
+                    const turboModel = isQi2TurboModel(rel);
+                    const previousTurboModel = isQi2TurboModel(state.gen.diffusion_model_name);
+                    if (rel !== state.gen.diffusion_model_name && (turboModel || previousTurboModel)) {
+                        state.gen.steps = turboModel ? 8 : 25;
+                        state.gen.cfg = turboModel ? 1.0 : 3.0;
+                        state.gen.turbo_enabled = false;
+                        state.gen.turbo_previous_settings = null;
+                    }
                     ensureQi2DefaultAux();
                     modelPickerOpen.qi2 = false;
                     selectCcAsset("diffusion_model_name", rel);
+                    syncGenerationControls();
                 };
 
                 const selectIllustriousModel = (rel) => {
@@ -1694,6 +1672,7 @@ app.registerExtension({
 
                 const setCcTurboMode = (enabled, rel) => {
                     const mode = (state.gen.generation_mode || "anima").toLowerCase();
+                    if (mode === "qi2" && isQi2TurboModel(state.gen.diffusion_model_name)) return;
                     if (mode === "anima") {
                         state.gen.dmd_lora_name = rel || state.gen.dmd_lora_name || "";
                         setAnimaTurboMode(enabled, rel || state.gen.dmd_lora_name || ANIMA_TURBO_LORA_NAME);
@@ -1836,14 +1815,22 @@ app.registerExtension({
                     return wrap;
                 }
 
-                function createNumberInput(key, min, max, step) {
+                function createNumberInput(key, min, max, step, onChange = null) {
                     const input = document.createElement("input");
                     input.className = "ems-input";
                     input.type = "number";
-                    input.min = min;
-                    input.max = max;
+                    if (min !== undefined) input.min = min;
+                    if (max !== undefined) input.max = max;
                     input.step = step;
-                    input.onchange = () => updateGenerationValue(key, step < 1 ? parseFloat(input.value) : parseInt(input.value));
+                    input.onchange = () => {
+                        const value = input.valueAsNumber;
+                        if (!input.checkValidity() || !Number.isFinite(value)) {
+                            syncGenerationControls();
+                            return;
+                        }
+                        if (onChange) onChange(value);
+                        else updateGenerationValue(key, value);
+                    };
                     return input;
                 }
 
@@ -1923,14 +1910,15 @@ app.registerExtension({
                 const renderModeLoraCards = (containerEl, mode) => {
                     if (!containerEl) return;
                     containerEl.innerHTML = "";
+                    if (mode === "qi2" && isQi2TurboModel(state.gen.diffusion_model_name)) return;
                     const kindOk = (entry) => {
                         const kind = ccKind(entry);
                         if (mode === "anima") return kind === "anima";
                         if (mode === "qi2") return kind === "qi2";
                         return kind === "sdxl" || kind === "illustrious";
                     };
-                    const turboEntries = (ccConfig?.lora || []).filter(entry => kindOk(entry) && ccType(entry) === "turbolora");
-                    if (!turboEntries.length) {
+                    const turboEntries = (ccState.config?.lora || []).filter(entry => kindOk(entry) && ccType(entry) === "turbolora");
+                    if (!turboEntries.length && mode !== "illustrious") {
                         const fallbackName = mode === "qi2" ? QI2_TURBO_LORA_NAME : ANIMA_TURBO_LORA_NAME;
                         const fallback = {
                             name: mode === "qi2" ? "Qwen Image 2.1 Viggle Turbo" : "Anima Turbo LoRA",
@@ -2057,7 +2045,7 @@ app.registerExtension({
                     if (isQi2Mode && !currentQi2 && qi2Models[0]) selectQi2Model(ccRelPath(qi2Models[0]));
                     if (isQi2Mode) ensureQi2DefaultAux();
 
-                    const illustriousDefaults = (ccConfig?.models || []).filter(entry => {
+                    const illustriousDefaults = (ccState.config?.models || []).filter(entry => {
                         const kind = ccKind(entry);
                         return (kind === "illustrious" || kind === "sdxl") && ccType(entry) === "checkpoint";
                     });
@@ -2108,10 +2096,12 @@ app.registerExtension({
                 }
 
                 async function loadGenerationAssets() {
+                    if (disposed) return;
                     try {
                         const response = await api.fetchApi("/vnccs/context_lists");
                         if (!response.ok) return;
                         const data = await response.json();
+                        if (disposed) return;
                         localAssets = {
                             checkpoints: data.checkpoints || [],
                             diffusion_models: data.diffusion_models || [],
@@ -2136,6 +2126,7 @@ app.registerExtension({
                         try {
                             await fetchCcConfig(false);
                         } catch (error) {
+                            if (disposed) return;
                             console.warn("[VNCCS Emotion Studio] Failed to load Control Center config", error);
                             renderControlCenterCards();
                         }
@@ -2183,7 +2174,7 @@ app.registerExtension({
                             if (row.strength) row.strength.value = item.strength ?? 1;
                         });
                     }
-                    if (ccConfig) renderControlCenterCards();
+                    if (ccState.config) renderControlCenterCards();
                 }
 
                 // Create UI Container
@@ -2286,6 +2277,8 @@ app.registerExtension({
                 charSection.appendChild(poseSelection);
 
                 spritePreviewNavigator = createSpritePreviewNavigator({
+                    node,
+                    isSelectionCurrent: preview => !disposed && preview.character === state.character,
                     image: charImg,
                     placeholder: charPlaceholder,
                     loading: charPreviewLoading,
@@ -2295,11 +2288,6 @@ app.registerExtension({
                     countLabel: spriteCount,
                     onLoaded: (_url, previewState) => {
                         state.poseCount = Math.max(0, Number(previewState.count || 0));
-                        if (state.selectedPoseIndices !== null) {
-                            state.selectedPoseIndices = new Set(
-                                selectedPoseIndexList().filter(index => index <= state.poseCount)
-                            );
-                        }
                         state.selectedPreviewSprite = previewState.count > 0
                             ? {
                                 character: previewState.character,
@@ -2470,10 +2458,7 @@ app.registerExtension({
                 generationEls.qi2CacheDevice = qi2CacheDevice;
                 generationEls.qi2CacheDtype = qi2CacheDtype;
 
-                const seedInput = document.createElement("input");
-                seedInput.className = "ems-input";
-                seedInput.type = "number";
-                seedInput.onchange = () => updateGenerationValue("seed", parseInt(seedInput.value || "0"));
+                const seedInput = createNumberInput("seed", undefined, undefined, 1);
                 const seedDice = document.createElement("button");
                 seedDice.type = "button";
                 seedDice.className = "ems-seed-dice";
@@ -2518,18 +2503,17 @@ app.registerExtension({
                     row.className = "ems-lora-row";
                     setHelpText(row, helpFor("lora_stack"));
                     const name = createSelectInput(`lora_${i}`, ["", "None"]);
-                    const strength = createNumberInput(`lora_strength_${i}`, 0, 2, 0.05);
+                    const strength = createNumberInput(`lora_strength_${i}`, 0, 2, 0.05, value => {
+                        state.gen.lora_stack = state.gen.lora_stack || [];
+                        state.gen.lora_stack[i] = state.gen.lora_stack[i] || { name: "", strength: 1.0 };
+                        state.gen.lora_stack[i].strength = value;
+                        saveGenerationSettings();
+                    });
                     setHelpText(strength, helpFor("lora_strength"));
                     name.onchange = () => {
                         state.gen.lora_stack = state.gen.lora_stack || [];
                         state.gen.lora_stack[i] = state.gen.lora_stack[i] || { name: "", strength: 1.0 };
                         state.gen.lora_stack[i].name = name.value === "None" ? "" : name.value;
-                        saveGenerationSettings();
-                    };
-                    strength.onchange = () => {
-                        state.gen.lora_stack = state.gen.lora_stack || [];
-                        state.gen.lora_stack[i] = state.gen.lora_stack[i] || { name: "", strength: 1.0 };
-                        state.gen.lora_stack[i].strength = parseFloat(strength.value || "1");
                         saveGenerationSettings();
                     };
                     name.value = "None";
@@ -2559,7 +2543,9 @@ app.registerExtension({
                     const previous = preferred || state.character || charWidget?.value || charSelect.value || "";
                     const values = Array.isArray(characters) ? characters.filter(Boolean) : [];
                     charSelect.innerHTML = "";
-                    if (!values.length) {
+                    const savedMissing = previous && previous !== "Character Name" && !values.includes(previous);
+                    if (savedMissing) charSelect.appendChild(new Option(`${previous} (missing)`, previous));
+                    if (!values.length && !savedMissing) {
                         charSelect.appendChild(new Option("No characters", ""));
                         state.character = "";
                         spritePreviewNavigator?.hideNav();
@@ -2567,11 +2553,11 @@ app.registerExtension({
                         return "";
                     }
                     values.forEach(name => charSelect.appendChild(new Option(name, name)));
-                    const selected = values.includes(previous) ? previous : values[0];
+                    const selected = values.includes(previous) || savedMissing ? previous : values[0];
                     charSelect.value = selected;
                     state.character = selected;
                     if (charWidget) {
-                        charWidget.options.values = values;
+                        charWidget.options.values = savedMissing ? [previous, ...values] : values;
                         if (charWidget.value !== selected) commitWidget(charWidget, selected, false);
                     }
                     return selected;
@@ -2579,12 +2565,13 @@ app.registerExtension({
 
                 let characterListRefreshToken = 0;
                 const refreshCharacterList = async ({ fetchData = false } = {}) => {
+                    if (disposed) return;
                     const token = ++characterListRefreshToken;
                     try {
                         const response = await api.fetchApi("/vnccs/list_characters", { cache: "no-store" });
                         if (!response.ok) throw new Error(`HTTP ${response.status}`);
                         const characters = await response.json();
-                        if (token !== characterListRefreshToken) return;
+                        if (disposed || token !== characterListRefreshToken) return;
                         const before = state.character || charSelect.value || "";
                         const selected = setCharacterOptions(characters, before);
                         if (selected && (fetchData || selected !== before)) {
@@ -2621,10 +2608,9 @@ app.registerExtension({
 
                 const onCharactersUpdated = () => refreshCharacterList({ fetchData: true });
                 window.addEventListener("vnccs.characters.updated", onCharactersUpdated);
-                window.addEventListener("vnccs.migration.complete", onCharactersUpdated);
                 registerCleanup(node, () => {
+                    stopCcPolling();
                     window.removeEventListener("vnccs.characters.updated", onCharactersUpdated);
-                    window.removeEventListener("vnccs.migration.complete", onCharactersUpdated);
                 });
 
                 const styleWidget = node.widgets.find(w => w.name === "prompt_style");
@@ -2647,7 +2633,14 @@ app.registerExtension({
                 const origSerialize = node.onSerialize;
                 node.onSerialize = function(info) {
                     persistAllState();
-                    return origSerialize?.apply(this, arguments);
+                    const result = origSerialize?.apply(this, arguments);
+                    if (Array.isArray(info?.widgets_values)) {
+                        for (const widget of [modelWidget, generationSettingsWidget, styleWidget, charWidget, costumesDataWidget, emotionsDataWidget]) {
+                            const index = this.widgets.indexOf(widget);
+                            if (index >= 0) info.widgets_values[index] = widget.value;
+                        }
+                    }
+                    return result;
                 };
 
                 // Fix layout after tab switch: ComfyUI detaches/reattaches DOM widgets
@@ -2666,46 +2659,29 @@ app.registerExtension({
                 };
 
                 function showModalText(title, message, onConfirm = null) {
-                    const backdrop = document.createElement("div");
-                    backdrop.className = "ems-modal-backdrop";
-
-                    const modal = document.createElement("div");
-                    modal.className = "ems-modal";
-
-                    const text = document.createElement("div");
-                    text.className = "ems-modal-text";
-                    const titleEl = document.createElement("strong");
-                    titleEl.textContent = String(title ?? "");
-                    const messageEl = document.createElement("div");
-                    messageEl.textContent = String(message ?? "");
-                    messageEl.style.whiteSpace = "pre-wrap";
-                    text.append(titleEl, document.createElement("br"), messageEl);
-
-                    const actions = document.createElement("div");
-                    actions.className = "ems-modal-actions";
-
-                    if (onConfirm) {
-                        const btnCancel = document.createElement("button");
-                        btnCancel.className = "ems-modal-btn ems-modal-btn--cancel";
-                        btnCancel.innerText = "Cancel";
-                        btnCancel.onclick = () => backdrop.remove();
-                        actions.appendChild(btnCancel);
-                    }
-
-                    const btnOk = document.createElement("button");
-                    btnOk.className = "ems-modal-btn ems-modal-btn--confirm";
-                    btnOk.innerText = onConfirm ? "Proceed" : "OK";
-                    btnOk.onclick = () => {
-                        backdrop.remove();
+                    const buttons = onConfirm ? [{ text: "Cancel" }] : [];
+                    buttons.push({ text: onConfirm ? "Proceed" : "OK", autofocus: true, action: overlay => {
+                        overlay.remove();
                         onConfirm?.();
-                    };
-
-                    actions.appendChild(btnOk);
-                    modal.appendChild(text);
-                    modal.appendChild(actions);
-                    backdrop.appendChild(modal);
-                    container.appendChild(backdrop);
-                    btnOk.focus();
+                    } });
+                    const dialog = showCommonModal(container, String(title ?? ""), () => {
+                        const text = document.createElement("div");
+                        text.className = "ems-modal-text";
+                        const heading = document.createElement("strong");
+                        heading.textContent = String(title ?? "");
+                        const body = document.createElement("div");
+                        body.textContent = String(message ?? "");
+                        body.style.whiteSpace = "pre-wrap";
+                        text.append(heading, document.createElement("br"), body);
+                        return text;
+                    }, buttons);
+                    dialog.overlay.className = "ems-modal-backdrop";
+                    dialog.modal.className = "ems-modal";
+                    dialog.title.hidden = true;
+                    dialog.actions.className = "ems-modal-actions";
+                    dialog.buttons.forEach((button, index) => {
+                        button.className = `ems-modal-btn ems-modal-btn--${onConfirm && index === 0 ? "cancel" : "confirm"}`;
+                    });
                 }
 
                 function createCustomEmotionField(labelText, inputEl) {
@@ -2722,8 +2698,11 @@ app.registerExtension({
                 }
 
                 function showCustomEmotionModal() {
+                    const requestIsCurrent = beginSelectionRequest();
+                    const character = state.character;
                     const backdrop = document.createElement("div");
                     backdrop.className = "ems-modal-backdrop";
+                    const isCurrent = () => requestIsCurrent() && state.character === character && backdrop.isConnected;
 
                     const modal = document.createElement("div");
                     modal.className = "ems-modal ems-modal--custom-emotion";
@@ -2775,6 +2754,7 @@ app.registerExtension({
                         }
                         const reader = new FileReader();
                         reader.onload = () => {
+                            if (!isCurrent() || fileInput.files?.[0] !== file) return;
                             imageData = String(reader.result || "");
                             const img = document.createElement("img");
                             img.className = "ems-custom-preview";
@@ -2817,6 +2797,7 @@ app.registerExtension({
                     btnSave.className = "ems-modal-btn ems-modal-btn--confirm";
                     btnSave.innerText = "Save";
                     btnSave.onclick = async () => {
+                        if (!isCurrent()) return;
                         const name = nameInput.value.trim();
                         if (!name) {
                             error.innerText = "Name is required.";
@@ -2839,6 +2820,7 @@ app.registerExtension({
                                 }),
                             });
                             const data = await res.json().catch(() => ({}));
+                            if (!isCurrent()) return;
                             if (!res.ok) throw new Error(data.error || "Failed to save custom emotion.");
 
                             const emotion = data.emotion;
@@ -2850,6 +2832,7 @@ app.registerExtension({
                             updateEmotionsData();
                             backdrop.remove();
                         } catch (e) {
+                            if (!isCurrent()) return;
                             error.innerText = e.message || String(e);
                             btnSave.disabled = false;
                             btnSave.innerText = "Save";
@@ -2864,6 +2847,10 @@ app.registerExtension({
                 }
 
                 node._validateBeforeQueue = function() {
+                    if (restoreErrors.size) {
+                        showModalText("Settings restore failed", `Unable to restore saved state: ${Array.from(restoreErrors.keys()).join(", ")}. The saved data is preserved. Reload a valid workflow before editing or running.`);
+                        return false;
+                    }
                     if (state.selectedCostumes.size === 0 && state.selectedEmotions.size === 0) {
                         showModalText("Nothing selected", "Please select at least one costume and one emotion before running.");
                         return false;
@@ -2886,6 +2873,8 @@ app.registerExtension({
                 const showConfirm = (title, message, onConfirm) => showModalText(title, message, onConfirm);
 
                 function restoreStateFromWidgets() {
+                    if (disposed) return;
+                    beginSelectionRequest();
                     // 1. Character
                     if (charWidget && charWidget.value) {
                         state.character = charWidget.value;
@@ -2902,7 +2891,7 @@ app.registerExtension({
                     if (modelWidget && modelWidget.value) {
                         state.gen.generation_mode = String(modelWidget.value).toLowerCase();
                     }
-                    if (generationSettingsWidget && generationSettingsWidget.value) {
+                    if (generationSettingsWidget) {
                         state.gen = parseGenerationSettings();
                         restorePoseSelectionFromGenerationSettings();
                     }
@@ -2911,25 +2900,17 @@ app.registerExtension({
                     renderPoseSelection();
 
                     // 3. Costumes & Emotions (from hidden text strings)
-                    if (costumesDataWidget && costumesDataWidget.value) {
-                        try {
-                            const savedCostumes = JSON.parse(costumesDataWidget.value);
-                            state.selectedCostumes = new Set(savedCostumes);
-                            renderCostumes();
-                        } catch (e) { }
+                    if (costumesDataWidget) {
+                        state.selectedCostumes = parseSelection(costumesDataWidget);
+                        renderCostumes();
                     }
-                    if (emotionsDataWidget && emotionsDataWidget.value) {
-                        try {
-                            const savedEmotions = JSON.parse(emotionsDataWidget.value);
-                            state.selectedEmotions = new Set(savedEmotions);
-                            // renderEmotions is called after api.fetchApi("/vnccs/get_emotions"), need to wait?
-                            // No, renderEmotions() just needs state.emotions to be populated.
-                            // The fetch happens async.
-                        } catch (e) { }
+                    if (emotionsDataWidget) {
+                        state.selectedEmotions = parseSelection(emotionsDataWidget);
                     }
                 }
 
                 node._vnccsEmotionRestoreFromWidgets = () => {
+                    if (disposed) return;
                     restoreStateFromWidgets();
                     renderEmotions();
                     renderCostumes();
@@ -2954,7 +2935,9 @@ app.registerExtension({
                 node._vnccsEmotionPersistAllState = persistAllState;
 
                 // Apply size on explicit resize too
+                const originalResize = node.onResize;
                 node.onResize = function (size) {
+                    originalResize?.apply(this, arguments);
                     syncDOMWidgetWidth(node, "emotion_ui_v2");
                     requestAnimationFrame(() => syncDOMWidgetWidth(node, "emotion_ui_v2"));
                     applySize();
@@ -3010,8 +2993,11 @@ app.registerExtension({
                         const numCostumes = state.selectedCostumes.size;
                         const numPoses = selectedPoseCount();
                         const total = numEmotions * numCostumes * numPoses;
+                        const isCurrent = beginSelectionRequest();
+                        const character = state.character;
 
                         showConfirm("Select visible emotions", `Emotions: ${numEmotions}\nCostumes: ${numCostumes}\nPoses: ${numPoses}\nTotal: ${total} images.`, () => {
+                            if (!isCurrent() || state.character !== character) return;
                             filtered.forEach(e => state.selectedEmotions.add(e.safe_name));
                             renderEmotions();
                             updateEmotionsData();
@@ -3032,6 +3018,7 @@ app.registerExtension({
                 }
 
                 function resetSelectedEmotionsForCharacterChange() {
+                    beginSelectionRequest();
                     state.selectedEmotions = new Set();
                     state.selectedPoseIndices = null;
                     state.poseCount = 0;
@@ -3098,7 +3085,8 @@ app.registerExtension({
 
                 function renderCostumes() {
                     costumesList.innerHTML = "";
-                    state.costumes.forEach(c => {
+                    new Set([...state.costumes, ...state.selectedCostumes]).forEach(c => {
+                        if (c === "Original" && !state.costumes.includes(c)) return;
                         const lbl = document.createElement("label");
                         lbl.className = "ems-checkbox-item";
 
@@ -3124,7 +3112,7 @@ app.registerExtension({
                         toggle.appendChild(thumb);
 
                         const span = document.createElement("span");
-                        span.innerText = c;
+                        span.innerText = state.costumes.includes(c) ? c : `${c} (missing sprites)`;
 
                         lbl.appendChild(toggle);
                         lbl.appendChild(span);
@@ -3159,7 +3147,7 @@ app.registerExtension({
                 }
 
                 async function fetchCharacterData(charName) {
-                    if (!charName || charName === "Character Name") return;
+                    if (disposed || !charName || charName === "Character Name") return;
                     const token = ++characterFetchToken;
 
                     spritePreviewNavigator?.load(charName);
@@ -3167,20 +3155,20 @@ app.registerExtension({
                     // Costumes
                     try {
                         const res = await api.fetchApi(`/vnccs/get_character_costumes?character=${encodeURIComponent(charName)}`);
+                        if (!res.ok) throw new Error(`HTTP ${res.status}`);
                         const validCostumes = await res.json();
-                        if (token !== characterFetchToken || charName !== state.character) return;
-                        state.costumes = validCostumes || [];
+                        if (disposed || token !== characterFetchToken || charName !== state.character) return;
+                        if (!Array.isArray(validCostumes)) throw new Error("Costume list must be an array.");
+                        state.costumes = validCostumes;
 
                         if (costumesDataWidget && costumesDataWidget.value) {
-                            try {
-                                const saved = JSON.parse(costumesDataWidget.value);
-                                state.selectedCostumes = new Set(saved.filter(c => state.costumes.includes(c)));
-                            } catch (e) {
-                                state.selectedCostumes = new Set(state.costumes);
-                            }
+                            const saved = parseSelection(costumesDataWidget);
+                            if (restoreErrors.size) return;
+                            state.selectedCostumes = saved;
                         } else {
                             state.selectedCostumes = new Set(state.costumes);
                         }
+                        if (!state.costumes.includes("Original")) state.selectedCostumes.delete("Original");
 
                         renderCostumes();
                         updateCostumesData();
@@ -3193,11 +3181,14 @@ app.registerExtension({
                 api.fetchApi("/vnccs/get_emotions").then(async (res) => {
                     if (res.ok) {
                         const data = await res.json();
+                        if (disposed) return;
                         let flat = [];
                         for (let cat in data) {
                             data[cat].forEach(e => flat.push({ ...e, category: cat }));
                         }
-                        state.emotions = flat;
+                        const byName = new Map(flat.map(emotion => [emotion.safe_name, emotion]));
+                        state.emotions.forEach(emotion => byName.set(emotion.safe_name, emotion));
+                        state.emotions = Array.from(byName.values());
                         renderEmotions();
 
                         // NOW restore selection state (after list loaded)
@@ -3239,10 +3230,8 @@ app.registerExtension({
             const onConfigure = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function (info) {
                 onConfigure?.apply(this, arguments);
-                setTimeout(() => {
-                    this._vnccsEmotionApplySerializedInfo?.(info);
-                    this._vnccsEmotionRestoreFromWidgets?.();
-                }, 0);
+                this._vnccsEmotionApplySerializedInfo?.(info);
+                this._vnccsEmotionRestoreFromWidgets?.();
                 syncDOMWidgetWidth(this, "emotion_ui_v2");
                 setTimeout(() => syncDOMWidgetWidth(this, "emotion_ui_v2"), 100);
             };

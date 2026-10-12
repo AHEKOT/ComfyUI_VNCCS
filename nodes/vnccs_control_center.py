@@ -1,5 +1,8 @@
+from ..operation_logger import log_event, log_stage, logged_operation
+
 from .preview_runtime import run_preview_job
 import json
+import math
 import os
 import io
 import base64
@@ -23,7 +26,6 @@ from aiohttp import web
 from huggingface_hub import hf_hub_download
 from PIL import Image
 import numpy as np
-import traceback
 import struct
 
 try:
@@ -39,6 +41,8 @@ try:
         normalize_filesystem_path,
         validate_privileged_request,
         privileged_route,
+        atomic_output_path, character_storage_lock,
+        safe_join_under,
     )
 except Exception:
     from utils import (
@@ -48,41 +52,24 @@ except Exception:
         normalize_filesystem_path,
         validate_privileged_request,
         privileged_route,
+        atomic_output_path, character_storage_lock,
+        safe_join_under,
     )
 
 
-class AnyType(str):
-    def __ne__(self, other):
-        return False
-
-
-any_type = AnyType("*")
-
-
-class _TautologyStr(str):
-    def __ne__(self, other):
-        return False
-
-
-class _ByPassTypeTuple(tuple):
-    def __getitem__(self, index):
-        if index > 0:
-            index = 0
-        item = super().__getitem__(index)
-        if isinstance(item, str):
-            return _TautologyStr(item)
-        return item
-
-
 _CC_CONFIG_CACHE = {}
-_CC_CONFIG_SYNC_LOCK = threading.Lock()
+_CC_CONFIG_REQUESTS = {}
+_CC_CONFIG_SYNC_LOCK = threading.RLock()
 _MODEL_ASSET_CACHE = {}
 _MODEL_ASSET_LOCK = threading.RLock()
 _DOWNLOAD_STATUS = {}
+_DOWNLOAD_TARGETS = {}
 _DOWNLOAD_QUEUE = queue.Queue()
+_DOWNLOAD_QUEUE_LOCK = threading.Lock()
 _CUSTOM_LORAS_FILE = "vnccs_custom_loras.json"
 _PACKAGED_CC_REPO_IDS = {"MIUProject/VNCCS_v3.0"}
 DEFAULT_QI2_MODEL = "Qwen Image 2.1 INT8 ConvRot"
+QI2_TURBO_MODEL_NAME = "qwen_image_2.1_turbo_int8_convrot.safetensors"
 QI2_CACHE_DEFAULTS = {"device": "gpu", "dtype": "int8"}
 _PIPELINE_LOCAL_LORAS = {
     "clothescore",
@@ -435,7 +422,7 @@ def _purge_legacy_download_credentials():
             if path and os.path.isfile(path):
                 os.remove(path)
         except OSError as exc:
-            print(f"[VNCCS Control Center] Failed to remove obsolete secret store '{path}': {exc}")
+            log_event('warning', component='ControlCenter', level='warning', message=f"Failed to remove obsolete secret store '{path}': {exc}", error=str(exc))
 
 
 _purge_legacy_download_credentials()
@@ -532,10 +519,7 @@ def _resolve_model_download_path(local_path):
         raise ValueError(f"Unsupported model folder '{folder_type}'")
     _validate_model_filename(parts[-1])
     target_root = _configured_model_folder(folder_type)
-    target = os.path.abspath(os.path.join(target_root, *parts[2:]))
-    if os.path.commonpath([target_root, target]) != target_root:
-        raise ValueError("Model local_path escapes ComfyUI models directory")
-    return target
+    return safe_join_under(target_root, *parts[2:])
 
 
 def _validate_downloaded_model_file(path, expected_name="model"):
@@ -582,79 +566,65 @@ def _get_custom_loras_path(for_write=False):
 
 def _load_custom_loras():
     path = _get_custom_loras_path()
-    if not os.path.exists(path):
-        return []
     try:
         with open(path, "r", encoding="utf-8") as handle:
             data = json.load(handle)
-        if isinstance(data, dict):
-            data = data.get("lora", [])
-        return data if isinstance(data, list) else []
-    except Exception:
+    except FileNotFoundError:
         return []
+    if isinstance(data, dict):
+        data = data.get("lora")
+    if (not isinstance(data, list) or any(not isinstance(entry, dict)
+            or not isinstance(entry.get("local_path"), str) or not entry["local_path"]
+            or not isinstance(entry.get("name", ""), str) for entry in data)):
+        raise ValueError("Invalid custom LoRA registry; repair it before saving")
+    return data
 
 
 def _save_custom_loras(entries):
     path = _get_custom_loras_path(for_write=True)
-    current = _load_custom_loras()
-    by_path = {
-        entry.get("local_path", "").replace("\\", "/"): entry
-        for entry in current
-        if isinstance(entry, dict) and entry.get("local_path")
-    }
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        local_path = entry.get("local_path", "").replace("\\", "/")
-        if not local_path:
-            continue
-        by_path[local_path] = entry
-
-    payload = {"lora": list(by_path.values())}
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, ensure_ascii=False)
+    with character_storage_lock(path):
+        current = _load_custom_loras()
+        by_path = {entry["local_path"].replace("\\", "/"): entry for entry in current}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            local_path = entry.get("local_path", "").replace("\\", "/")
+            if local_path:
+                by_path[local_path] = entry
+        with atomic_output_path(path) as temporary:
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump({"lora": list(by_path.values())}, handle, indent=2, ensure_ascii=False)
 
 
 def _remove_custom_lora(local_path=None, name=None):
     normalized_path = (local_path or "").replace("\\", "/")
     normalized_name = (name or "").strip().lower()
-    current = _load_custom_loras()
-    kept = []
-    removed = False
-
-    for entry in current:
-        if not isinstance(entry, dict):
-            continue
-        entry_path = entry.get("local_path", "").replace("\\", "/")
-        entry_name = entry.get("name", "").strip().lower()
-        if (normalized_path and entry_path == normalized_path) or (normalized_name and entry_name == normalized_name):
-            removed = True
-            continue
-        kept.append(entry)
-
-    payload = {"lora": kept}
     path = _get_custom_loras_path(for_write=True)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, ensure_ascii=False)
-    return removed
+    with character_storage_lock(path):
+        current = _load_custom_loras()
+        kept = [entry for entry in current
+                if not (entry["local_path"].replace("\\", "/") == normalized_path if normalized_path
+                        else normalized_name and entry.get("name", "").strip().lower() == normalized_name)]
+        with atomic_output_path(path) as temporary:
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump({"lora": kept}, handle, indent=2, ensure_ascii=False)
+        return len(kept) != len(current)
 
 
 def _build_custom_lora_name(rel_path, used_names=None):
-    used_names = used_names or set()
+    used_names = {name.strip().lower() for name in (used_names or set())}
     normalized = rel_path.replace("\\", "/").strip("/")
     base_name = os.path.splitext(os.path.basename(normalized))[0]
     candidate = base_name
     parent = os.path.dirname(normalized)
-    if candidate in used_names and parent:
+    if candidate.lower() in used_names and parent:
         candidate = f"{base_name} ({parent})"
-    if candidate in used_names:
+    if candidate.lower() in used_names:
         candidate = normalized
 
     suffix = 2
     unique = candidate
-    while unique in used_names:
+    while unique.lower() in used_names:
         unique = f"{candidate} [{suffix}]"
         suffix += 1
     return unique
@@ -709,18 +679,22 @@ def get_installed_version_info():
         return {}
     try:
         with open(registry_path, "r", encoding="utf-8") as handle:
-            return json.load(handle)
-    except Exception:
+            data = json.load(handle)
+    except FileNotFoundError:
         return {}
+    if not isinstance(data, dict):
+        raise ValueError("Invalid installed model registry; repair it before saving")
+    return data
 
 
 def update_installed_version(model_name, version):
     registry_path = _control_center_data_path("vnccs_installed_models.json", for_write=True)
-    data = get_installed_version_info()
-    data[model_name] = version
-    os.makedirs(os.path.dirname(registry_path), exist_ok=True)
-    with open(registry_path, "w", encoding="utf-8") as handle:
-        json.dump(data, handle, indent=2)
+    with character_storage_lock(registry_path):
+        data = get_installed_version_info()
+        data[model_name] = version
+        with atomic_output_path(registry_path) as temporary:
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, indent=2)
 
 
 def _get_packaged_cc_path():
@@ -760,10 +734,10 @@ def _sync_packaged_cc_config(repo_id, data):
                 json.dump(data, handle, indent=2, ensure_ascii=False)
                 handle.write("\n")
             os.replace(tmp_path, target)
-            print(f"[VNCCS Control Center] Replaced local catalog from '{repo_id}'.")
+            log_event("catalog_updated", component="ControlCenter", repository=repo_id)
             return True
     except Exception as exc:
-        print(f"[VNCCS Control Center] Failed to update packaged catalog: {exc}")
+        log_event('warning', component='ControlCenter', level='warning', message=f'Failed to update packaged catalog: {exc}', error=str(exc))
         if tmp_path:
             try:
                 if os.path.exists(tmp_path):
@@ -795,6 +769,9 @@ def _get_cc_config(repo_id, prefer_remote=False):
     if not prefer_remote and cached and now - cached.get("ts", 0) < 300:
         return _dedupe_config_by_name(_without_gan_upscalers(_merge_custom_loras(cached["data"])))
 
+    request_id = object()
+    with _CC_CONFIG_SYNC_LOCK:
+        _CC_CONFIG_REQUESTS[repo_id] = request_id
     source = "packaged"
     if _uses_packaged_cc_config(repo_id) and not prefer_remote:
         path = _get_packaged_cc_path()
@@ -811,7 +788,7 @@ def _get_cc_config(repo_id, prefer_remote=False):
         except Exception as exc:
             if not _uses_packaged_cc_config(repo_id):
                 raise
-            print(f"[VNCCS Control Center] Remote catalog unavailable; using local catalog: {exc}")
+            log_event('fallback', component='ControlCenter', level='warning', message=f'Remote catalog unavailable; using local catalog: {exc}', error=str(exc))
             path = _get_packaged_cc_path()
     with open(path, "r", encoding="utf-8") as handle:
         data = _without_gan_upscalers(json.load(handle))
@@ -827,9 +804,13 @@ def _get_cc_config(repo_id, prefer_remote=False):
                     e for e in packaged.get(category, [])
                     if _entry_kind(e) == "qi2" and e.get("name") not in names
                 ]
-                data[category] = additions + remote_entries
-        _sync_packaged_cc_config(repo_id, data)
-    _CC_CONFIG_CACHE[repo_id] = {"ts": now, "data": data, "source": source}
+                data[category] = remote_entries + additions if category == "models" else additions + remote_entries
+    # An older remote response must not undo a newer refresh on disk or in memory.
+    with _CC_CONFIG_SYNC_LOCK:
+        if _CC_CONFIG_REQUESTS.get(repo_id) is request_id:
+            if source == "huggingface":
+                _sync_packaged_cc_config(repo_id, data)
+            _CC_CONFIG_CACHE[repo_id] = {"ts": now, "data": data, "source": source}
     return _dedupe_config_by_name(_merge_custom_loras(data))
 
 
@@ -977,7 +958,11 @@ def _rel_within_folder(local_path):
 
 
 def _find_model_on_disk(local_path):
-    if not local_path:
+    if not isinstance(local_path, str) or not local_path:
+        return "", False
+    if is_absolute_path_any_os(local_path) or any(
+        part in {".", ".."} or "\0" in part for part in local_path.replace("\\", "/").split("/")
+    ):
         return "", False
     try:
         _validate_model_filename(local_path)
@@ -1002,21 +987,14 @@ def _find_model_on_disk(local_path):
         searches = [rel_within, filename] if rel_within != filename else [filename]
         for search in searches:
             found = get_full_path_agnostic(folder_paths, key, search, require_exists=True)
-            if found:
+            if found and os.path.isfile(found):
                 return found, True
-            try:
-                for folder in folder_paths.get_folder_paths(key) or []:
-                    candidate = os.path.join(folder, search.replace("\\", os.sep).replace("/", os.sep))
-                    if os.path.exists(candidate):
-                        return candidate, True
-            except Exception as exc:
-                print(f"[VNCCS Control Center] folder_paths.get_folder_paths failed for {key}: {exc}")
 
     try:
         fallback = _resolve_model_download_path(local_path)
     except ValueError:
         return "", False
-    return fallback, os.path.exists(fallback)
+    return fallback, os.path.isfile(fallback)
 
 
 def _entry_family_stem(local_path):
@@ -1096,26 +1074,6 @@ def _apply_active_installed_paths(config):
     return result
 
 
-def _build_dynamic_paths(config, output_slot_names):
-    all_entries = {}
-    for entry in config.get("controlnet", []):
-        all_entries[entry["name"]] = entry
-    for entry in config.get("other", []):
-        all_entries[entry["name"]] = entry
-
-    paths = []
-    for name in output_slot_names or []:
-        if not name or name == "-":
-            continue
-        entry = all_entries.get(name)
-        if not entry:
-            paths.append("")
-            continue
-        _, exists = _find_model_on_disk(entry["local_path"])
-        paths.append(_rel_within_folder(entry["local_path"]) if exists else "")
-    return paths
-
-
 def _normalize_meta_value(value):
     return str(value or "").strip().lower()
 
@@ -1151,6 +1109,10 @@ def _is_qwen_model_entry(model_entry):
         str((model_entry or {}).get("local_path", "")),
     ]).lower()
     return "qwen" in identity or "qi2" in identity
+
+
+def is_qi2_turbo_model(model_name):
+    return basename_agnostic(str(model_name or "")) == QI2_TURBO_MODEL_NAME
 
 
 def _is_turbo_preset(model_params, model_entry=None):
@@ -1304,16 +1266,30 @@ def _load_gguf(full_path):
 
     loader_info = _describe_gguf_loader(loader_cls)
     if loader_info.get("warning"):
-        print(
-            "[VNCCS Control Center] Warning: "
-            f"{loader_info['warning']} Active loader: "
-            f"{loader_info.get('folder') or loader_info.get('module') or loader_info.get('file') or 'unknown'}"
-        )
+        log_event("warning", component="ControlCenter", level="warning", message=f"Warning: {loader_info['warning']} Active loader: {loader_info.get('folder') or loader_info.get('module') or loader_info.get('file') or 'unknown'}")
 
     def load():
         loader = loader_cls()
+        unet_name = basename_agnostic(full_path)
+        for folder_type in _FOLDER_MAP["gguf"]:
+            try:
+                roots = folder_paths.get_folder_paths(folder_type) or []
+            except Exception:
+                continue
+            for root in roots:
+                try:
+                    relative = os.path.relpath(os.path.realpath(full_path), os.path.realpath(root))
+                except ValueError:
+                    continue
+                if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+                    continue
+                unet_name = relative
+                break
+            else:
+                continue
+            break
         try:
-            model, = loader.load_unet(basename_agnostic(full_path))
+            model, = loader.load_unet(unet_name)
         except ValueError as exc:
             message = str(exc)
             if "Unexpected architecture type" in message and "qwen_image" in message:
@@ -1328,60 +1304,8 @@ def _load_gguf(full_path):
     return _cached_model_asset("model", (full_path,), ("gguf", loader_cls), load)
 
 
-def _get_nunchaku_load_candidates(full_path):
-    # TECH DEBT: Nunchaku loading is disabled. Keep this legacy helper only so
-    # stale imports fail gracefully until the old code is deleted.
-    normalized = os.path.abspath(full_path)
-    candidates = []
-
-    def add_candidate(path):
-        if not path:
-            return
-        abs_path = os.path.abspath(path)
-        if abs_path not in candidates:
-            candidates.append(abs_path)
-
-    if os.path.isdir(normalized):
-        add_candidate(normalized)
-        return candidates
-
-    parent_dir = os.path.dirname(normalized)
-    stem_dir = os.path.splitext(normalized)[0]
-
-    for candidate_dir in (parent_dir, stem_dir):
-        if not os.path.isdir(candidate_dir):
-            continue
-        if (
-            os.path.exists(os.path.join(candidate_dir, "comfy_config.json"))
-            or os.path.exists(os.path.join(candidate_dir, "config.json"))
-        ):
-            add_candidate(candidate_dir)
-
-    add_candidate(normalized)
-    return candidates
-
-
-def _resolve_nunchaku_loader_cls(model_entry, full_path):
-    # TECH DEBT: legacy Nunchaku loader resolution is disabled. Delete later.
-    raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
-
-
-def _resolve_nunchaku_lora_loader_cls(model, model_entry=None):
-    # TECH DEBT: legacy Nunchaku LoRA resolution is disabled. Delete later.
-    raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
-
-
-def _run_nunchaku_loader(loader_cls, load_target, settings):
-    # TECH DEBT: legacy Nunchaku model invocation is disabled. Delete later.
-    raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
-
-
-def _load_nunchaku(full_path, settings, model_entry=None):
-    # TECH DEBT: legacy Nunchaku model loading is disabled. Delete later.
-    raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
-
-
 def _load_clips(clip_entries, selected_names):
+    log_stage("loading_text_encoder", count=len(selected_names or []))
     if not selected_names:
         raise RuntimeError("[VNCCS Control Center] No CLIP selected.")
 
@@ -1409,6 +1333,7 @@ def _load_clips(clip_entries, selected_names):
 
 
 def _load_vae(vae_entries, selected_name):
+    log_stage("loading_vae", model=selected_name)
     if not selected_name:
         raise RuntimeError("[VNCCS Control Center] No VAE selected.")
     entry = _find_entry(vae_entries, selected_name)
@@ -1435,6 +1360,7 @@ def _load_model_block(
     custom_clip=None,
     custom_vae=None,
 ):
+    log_stage("loading_models", loader=selected_type, model=model_entry.get("name") if model_entry else None)
     if selected_type == "custom":
         if custom_model is None:
             raise RuntimeError("[VNCCS Control Center] Custom model input is not connected.")
@@ -1486,11 +1412,6 @@ def _apply_lora_standard(model, clip, full_path, strength):
     return comfy.sd.load_lora_for_models(model, clip, lora_sd, strength, clip_strength)
 
 
-def _apply_lora_nunchaku(model, full_path, strength, settings=None, model_entry=None):
-    # TECH DEBT: legacy Nunchaku LoRA application is disabled. Delete later.
-    raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
-
-
 def _apply_loras(model, clip, lora_states, config, model_type, type_settings=None, model_entry=None):
     entries = config.get("lora", [])
     is_nunchaku = False
@@ -1518,7 +1439,7 @@ def _apply_loras(model, clip, lora_states, config, model_type, type_settings=Non
         identity = f"{name} {basename_agnostic(entry.get('local_path', ''))}".lower()
         normalized_name = "".join(char for char in identity if char.isalnum())
         if any("".join(char for char in target if char.isalnum()) in normalized_name for target in _PIPELINE_LOCAL_LORAS):
-            print(f"[VNCCS Control Center] Deferring LoRA to downstream pipeline: {name}")
+            log_event("lora_deferred", component="ControlCenter", model=name)
             continue
         state = state_by_name.get(name, {})
         if not state.get("auto_apply", False):
@@ -1529,10 +1450,10 @@ def _apply_loras(model, clip, lora_states, config, model_type, type_settings=Non
 
         full_path, exists = _find_model_on_disk(entry["local_path"])
         if not exists:
-            print(f"[VNCCS Control Center] LoRA not on disk: '{name}', skipping.")
+            log_event("fallback", component="ControlCenter", level="warning", message=f"LoRA not on disk: '{name}', skipping.")
             continue
 
-        print(f"[VNCCS Control Center] Applying LoRA: {name} (strength={strength})")
+        log_event("lora_applied", component="ControlCenter", model=name, strength=strength)
         model, clip = _apply_lora_standard(model, clip, full_path, strength)
 
     return model, clip
@@ -1700,9 +1621,11 @@ def _download_worker_loop():
         repo_id, model_key, target_model = task
         download_repo_id = target_model.get("hf_repo", repo_id)
         temp_path = ""
+        download_started = time.perf_counter()
 
         try:
             _DOWNLOAD_STATUS[model_key] = {"status": "downloading", "message": "Initializing..."}
+            log_event("download_started", component="ControlCenter", model=model_key, repository=download_repo_id)
             target_abs_path = _resolve_model_download_path(target_model["local_path"])
             if target_model.get("url"):
                 raise ValueError("Direct URL downloads are disabled; use hf_repo and hf_path")
@@ -1753,12 +1676,14 @@ def _download_worker_loop():
             os.replace(temp_path, target_abs_path)
             update_installed_version(model_key, target_model.get("version", ""))
             _DOWNLOAD_STATUS[model_key] = {"status": "success", "message": "Installed"}
+            log_event("download_completed", component="ControlCenter", model=model_key, bytes=total_size,
+                      duration_s=round(time.perf_counter() - download_started, 2))
         except Exception as exc:
             if temp_path and os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
                 except Exception as cleanup_exc:
-                    print(f"[VNCCS Control Center] Failed to remove temp download '{temp_path}': {cleanup_exc}")
+                    log_event('warning', component='ControlCenter', level='warning', message=f"Failed to remove temp download '{temp_path}': {cleanup_exc}", error=str(cleanup_exc))
             response = getattr(exc, "response", None)
             is_auth_error = getattr(response, "status_code", None) == 401
 
@@ -1770,7 +1695,8 @@ def _download_worker_loop():
                 message = "File not found (404)"
 
             _DOWNLOAD_STATUS[model_key] = {"status": status, "message": message}
-            print(f"[VNCCS Control Center] Download failed for '{model_key}': {message}")
+            log_event("download_failed", component="ControlCenter", level="error", model=model_key,
+                      error=message, duration_s=round(time.perf_counter() - download_started, 2))
         finally:
             _DOWNLOAD_QUEUE.task_done()
 
@@ -1806,8 +1732,52 @@ class VNCCSPipeProxy:
 _CUSTOM_PREVIEW_PIPES = WeakValueDictionary()
 
 
+def _parse_control_center_state(node_state):
+    state = json.loads(node_state or "{}") if isinstance(node_state, str) else node_state
+    if not isinstance(state, dict):
+        raise ValueError("State must be an object")
+    for key in ("selected_models", "selected_types_by_kind", "model_params", "model_params_by_kind", "type_settings", "qi2_cache", "collapsed"):
+        if key in state and not isinstance(state[key], dict):
+            raise ValueError(f"{key} must be an object")
+    for key in ("model_params_by_kind", "type_settings"):
+        if any(not isinstance(value, dict) for value in state.get(key, {}).values()):
+            raise ValueError(f"{key} entries must be objects")
+    for key in ("selected_models", "selected_types_by_kind"):
+        if any(not isinstance(value, str) for value in state.get(key, {}).values()):
+            raise ValueError(f"{key} entries must be strings")
+    for key in ("active_kind", "selected_type", "selected_model", "unsupported_model_kind"):
+        if key in state and not isinstance(state[key], str):
+            raise ValueError(f"{key} must be a string")
+    if "loras" in state and (not isinstance(state["loras"], list) or any(
+            not isinstance(item, dict) or ("name" in item and not isinstance(item["name"], str))
+            for item in state["loras"])):
+        raise ValueError("LoRA states must be objects in an array")
+    numeric_values = []
+    for params in [state.get("model_params", {}), *state.get("model_params_by_kind", {}).values()]:
+        for field, convert in (("steps", int), ("cfg", float)):
+            value = params.get(field)
+            if value is not None and not (field == "steps" and value == ""):
+                numeric_values.append((value, convert, field))
+        for field in ("sampler", "scheduler"):
+            if params.get(field) is not None and not isinstance(params[field], str):
+                raise ValueError(f"{field} must be a string")
+    for field in ("device", "dtype"):
+        if state.get("qi2_cache", {}).get(field) is not None and not isinstance(state["qi2_cache"][field], str):
+            raise ValueError(f"qi2_cache.{field} must be a string")
+    for item in state.get("loras", []):
+        if "strength" in item:
+            numeric_values.append((item["strength"], float, "LoRA strength"))
+    for value, convert, field in numeric_values:
+        try:
+            if not math.isfinite(convert(value)):
+                raise ValueError("Non-finite number")
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"{field} must be a finite number") from exc
+    return state
+
+
 def _preview_state_key(repo_id, node_state):
-    state = json.loads(node_state) if isinstance(node_state, str) else node_state
+    state = _parse_control_center_state(node_state)
     return str(repo_id), json.dumps(state, sort_keys=True, separators=(",", ":"))
 
 
@@ -1837,6 +1807,7 @@ class VNCCS_ControlCenter:
     FUNCTION = "execute"
     CATEGORY = "VNCCS/manager"
 
+    @logged_operation("ControlCenter", "load_pipeline")
     def execute(self, repo_id, node_state="{}", model=None, clip=None, vae=None, audio_vae=None, unique_id=None):
         pipe = _build_control_center_pipe(
             repo_id,
@@ -1864,11 +1835,9 @@ def _build_control_center_pipe(
     custom_audio_vae=None,
 ):
     try:
-        state = json.loads(node_state) if isinstance(node_state, str) and node_state.strip() else (node_state or {})
-        if not isinstance(state, dict):
-            state = {}
-    except Exception:
-        state = {}
+        state = _parse_control_center_state(node_state)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("[VNCCS Control Center] Invalid node_state; repair the saved workflow before running.") from exc
 
     active_kind = str(state.get("active_kind", "") or "").strip()
     if active_kind.lower() == "qie2511" or state.get("unsupported_model_kind") == "QIE2511":
@@ -1883,7 +1852,10 @@ def _build_control_center_pipe(
     selected_models = state.get("selected_models", {})
     if active_kind and isinstance(selected_models, dict):
         selected_model = selected_models.get(f"{active_kind}:{selected_type}", selected_model)
-    loras = state.get("loras", [])
+    loras = [dict(item) for item in state.get("loras", [])]
+    for item in loras:
+        if "auto_apply" not in item and "enabled" in item:
+            item["auto_apply"] = item["enabled"] is not False
     type_settings = state.get("type_settings", {})
     model_params = state.get("model_params", {})
     model_params_by_kind = state.get("model_params_by_kind", {})
@@ -1916,26 +1888,8 @@ def _build_control_center_pipe(
                     "[VNCCS Control Center] No native QI2 UNet model in the catalog. "
                     "Refresh the Control Center catalog to load Qwen Image 2.1."
                 )
+    selected_type = selected_type or _entry_type(model_entry)
     loras = _ensure_required_turbo_lora_state(loras, config, model_entry, model_params)
-    lora_entry_by_name = {
-        entry.get("name"): entry
-        for entry in config.get("lora", [])
-        if isinstance(entry, dict) and entry.get("name")
-    }
-    has_enabled_loras = False
-    for item in loras:
-        if not item.get("name") or not item.get("auto_apply", False):
-            continue
-        lora_entry = lora_entry_by_name.get(item.get("name"))
-        if not lora_entry:
-            continue
-        is_turbo = _entry_type(lora_entry) == "turbolora"
-        if not is_turbo and abs(float(item.get("strength", 1.0))) <= 1e-6:
-            continue
-        if lora_entry.get("custom") or (is_turbo and _lora_matches_model_kind(lora_entry, model_entry)):
-            has_enabled_loras = True
-            break
-
     if selected_type == "nunchaku":
         # TECH DEBT: old saved workflows may still request Nunchaku. Delete this
         # guard together with all legacy Nunchaku state after migration.
@@ -1945,10 +1899,10 @@ def _build_control_center_pipe(
     if model_kind == "qie2511":
         raise RuntimeError("[VNCCS Control Center] QIE2511 is no longer supported. Select a QI2 model.")
     selected_audio_vae_name = ""
-    if selected_type == "custom":
+    if selected_type in {"custom", "checkpoint"}:
         all_clip_names = []
         first_vae_name = ""
-        if model_kind == "minimaxh3" and custom_audio_vae is None:
+        if selected_type == "custom" and model_kind == "minimaxh3" and custom_audio_vae is None:
             raise RuntimeError("[VNCCS Control Center] Custom MiniMax H3 audio VAE input is not connected.")
     else:
         compatible_clips = _filter_entries_by_kind(config.get("clip", []), model_kind)
@@ -2032,6 +1986,8 @@ def _build_control_center_pipe(
 
     default_steps = 8 if model_kind == "minimaxh3" else 25 if model_kind == "qi2" else DEFAULT_MODEL_STEPS
     default_cfg = 3.0 if model_kind == "qi2" else DEFAULT_MODEL_CFG
+    if model_kind == "qi2" and is_qi2_turbo_model(model_entry.get("local_path")):
+        default_steps, default_cfg = 8, 1.0
     default_sampler = "res_multistep" if model_kind == "minimaxh3" else None
     pipe.sample_steps = int(model_params.get("steps") or default_steps)
     pipe.cfg = float(model_params.get("cfg") if model_params.get("cfg") is not None else default_cfg)
@@ -2065,6 +2021,9 @@ async def cc_dependencies(request):
         data = await request.json()
     except Exception:
         data = {}
+    if not isinstance(data, dict) or any(not isinstance(data.get(field, ""), str)
+                                        for field in ("model_type", "model_name", "model_path")):
+        return web.json_response({"error": "Dependency identity fields must be strings in an object"}, status=400)
 
     model_type = data.get("model_type", "")
     model_name = data.get("model_name", "")
@@ -2084,6 +2043,14 @@ async def cc_dependencies(request):
 
 
 def _clothes_preview_response(data):
+    if not isinstance(data, dict) or not isinstance(data.get("repo_id", ""), str):
+        return web.Response(status=400, text="Preview fields must be an object with a string repo_id")
+    if not isinstance(data.get("clothes_state", {}), dict):
+        return web.Response(status=400, text="clothes_state must be an object")
+    try:
+        state = _parse_control_center_state(data.get("node_state", "{}"))
+    except (TypeError, ValueError) as exc:
+        return web.Response(status=400, text=f"Invalid node_state: {exc}")
     try:
         repo_id = (data.get("repo_id") or "").strip()
         node_state = data.get("node_state", "{}")
@@ -2092,7 +2059,6 @@ def _clothes_preview_response(data):
         if not repo_id:
             return web.Response(status=400, text="Missing repo_id")
 
-        state = json.loads(node_state) if isinstance(node_state, str) else node_state
         selected_type = (state.get("selected_types_by_kind") or {}).get(state.get("active_kind"), state.get("selected_type"))
         if selected_type == "custom":
             pipe = _CUSTOM_PREVIEW_PIPES.get(str(data.get("control_center_id", "")))
@@ -2120,7 +2086,7 @@ def _clothes_preview_response(data):
         b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
         return web.json_response({"image": b64})
     except Exception as e:
-        traceback.print_exc()
+        log_event('exception', component='ControlCenter', level='error', exc_info=True, message='Operation failed', error=str(e))
         return web.Response(status=500, text=str(e))
 
 
@@ -2130,9 +2096,12 @@ def _clothes_preview_response(data):
 async def cc_clothes_preview(request):
     try:
         data = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    try:
         return await run_preview_job(_clothes_preview_response, data)
     except Exception as exc:
-        traceback.print_exc()
+        log_event('exception', component='ControlCenter', level='error', exc_info=True, message='Operation failed', error=str(exc))
         return web.json_response({"error": str(exc)}, status=500)
 
 @server.PromptServer.instance.routes.get("/vnccs/control_center/check")
@@ -2297,12 +2266,16 @@ async def cc_download(request):
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
+    if not isinstance(data, dict) or any(not isinstance(data.get(field, ""), str) for field in ("repo_id", "category", "name")):
+        return web.json_response({"error": "Download fields must be strings in an object"}, status=400)
     repo_id = data.get("repo_id", "").strip()
     category = data.get("category", "models")
     name = data.get("name", "")
 
     if not repo_id or " " in repo_id:
         return web.json_response({"error": "Invalid repo_id"}, status=400)
+    if category not in {"models", "clip", "vae", "lora", "controlnet", "other"}:
+        return web.json_response({"error": "Unsupported model category"}, status=400)
 
     try:
         import asyncio
@@ -2316,7 +2289,7 @@ async def cc_download(request):
     if not entry:
         return web.json_response({"error": f"Entry '{name}' not found in '{category}'"}, status=404)
     try:
-        _resolve_model_download_path(entry.get("local_path", ""))
+        target_path = _resolve_model_download_path(entry.get("local_path", ""))
         if entry.get("url"):
             return web.json_response({"error": "Direct URL downloads are disabled; use hf_repo and hf_path"}, status=400)
         if not entry.get("hf_path"):
@@ -2325,15 +2298,27 @@ async def cc_download(request):
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
 
-    key = f"cc_{category}_{name}"
-    _DOWNLOAD_STATUS[key] = {"status": "queued", "message": "Queued..."}
-    _DOWNLOAD_QUEUE.put((repo_id, key, entry))
+    key = f"cc_{category}_{entry['name']}"
+    target = (repo_id, target_path)
+    with _DOWNLOAD_QUEUE_LOCK:
+        current = _DOWNLOAD_STATUS.get(key, {})
+        if current.get("status") in {"queued", "downloading"}:
+            if _DOWNLOAD_TARGETS.get(key, target) != target:
+                return web.json_response({"error": "A different catalog model with this name is already downloading. Wait for it to finish, then retry."}, status=409)
+            return web.json_response(dict(current))
+        _DOWNLOAD_TARGETS[key] = target
+        _DOWNLOAD_STATUS[key] = {"status": "queued", "message": "Queued..."}
+        _DOWNLOAD_QUEUE.put((repo_id, key, entry))
     return web.json_response({"status": "queued", "message": f"Download queued for {name}"})
 
 
 @server.PromptServer.instance.routes.get("/vnccs/manager/status")
 async def get_download_status(request):
-    return web.json_response(_DOWNLOAD_STATUS)
+    repo_id = request.rel_url.query.get("repo_id", "").strip()
+    with _DOWNLOAD_QUEUE_LOCK:
+        statuses = {key: value for key, value in _DOWNLOAD_STATUS.items()
+                    if not repo_id or key not in _DOWNLOAD_TARGETS or _DOWNLOAD_TARGETS[key][0] == repo_id}
+    return web.json_response(statuses)
 
 
 @server.PromptServer.instance.routes.get("/vnccs/manager/install_policy")
@@ -2355,6 +2340,8 @@ async def vnccs_manager_enable_personal_cloud(request):
         data = await request.json()
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Manager policy fields must be an object"}, status=400)
     if data.get("confirmation") != "enable_personal_cloud":
         return web.json_response({"error": "Explicit confirmation is required."}, status=400)
 

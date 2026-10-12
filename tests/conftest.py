@@ -51,6 +51,7 @@ aiohttp = _make_stub("aiohttp")
 aiohttp.web = _make_stub("aiohttp.web")
 
 # ── other optional deps ───────────────────────────────────────────────────────
+_make_stub("node_helpers")
 _make_stub("requests")
 _hf_hub = _make_stub("huggingface_hub")
 _hf_hub.hf_hub_download = lambda *a, **kw: None
@@ -132,10 +133,3 @@ class _NodeAliasFinder(importlib.abc.MetaPathFinder):
 
 
 sys.meta_path.insert(0, _NodeAliasFinder())
-
-
-# Pre-load node files that use `from ..utils import` (relative double-dot imports).
-# Other node files use absolute imports and load fine on demand.
-if importlib.util.find_spec("torch") is not None:
-    for _basename in ("character_creator", "dataset_generator"):
-        _preload_node(_basename)

@@ -3,14 +3,8 @@ numpy
 Pillow
 opencv-python
 llama-cpp-python>=0.3.16
-einops
 safetensors
 huggingface-hub[torch]>=0.22
 json_repair
 aiohttp
-timm
-torchvision
-transformers
-kornia
 pymatting
-transparent-background

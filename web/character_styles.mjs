@@ -34,6 +34,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
     let overlay = null;
     let disposed = false;
     let requestId = 0;
+    let contextRevision = 0;
     let inertChildren = [];
     let batch = null;
     let deleting = false;
@@ -230,6 +231,8 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
                                     if (deleting || disposed || overlay !== currentOverlay) return false;
                                     deleting = true;
                                     updateGallery();
+                                    const selection = JSON.stringify(getInfo());
+                                    const selectionRevision = contextRevision;
                                     try {
                                         const response = await fetchApi(`/vnccs/character_styles/delete?style=${encodeURIComponent(style.id)}`, {
                                             method: "POST", headers: { "X-VNCCS-CSRF": "1" },
@@ -240,7 +243,8 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
                                         if (disposed) return false;
                                         for (const group of catalog.groups) group.styles = group.styles.filter(item => item.id !== style.id);
                                         catalog.groups = catalog.groups.filter(group => group.label !== "My styles" || group.styles.length);
-                                        if (getInfo().style === style.id) setValue(catalog.default_style, true);
+                                        if (contextRevision === selectionRevision && getInfo().style === style.id && JSON.stringify(getInfo()) === selection)
+                                            setValue(catalog.default_style, true);
                                         progressMessage = `Deleted: ${style.label}`;
                                         refreshLibrary();
                                         if (overlay === currentOverlay) search.focus();
@@ -433,5 +437,6 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
     };
     trigger.onclick = open;
     setValue(getInfo().style);
-    return { root, setValue, customInput, generatePreviews: (...args) => generatePreviews(...args) };
+    return { root, setValue, close: (restoreFocus = true) => { contextRevision++; close(restoreFocus); },
+        customInput, generatePreviews: (...args) => generatePreviews(...args) };
 }

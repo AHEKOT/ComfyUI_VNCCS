@@ -16,7 +16,7 @@ from nodes import clothes_designer as clothes
 from nodes import emotion_generator_v2 as emotions
 from nodes import character_generator as generator
 from nodes import vnccs_control_center as control
-from nodes import vnccs_utils as helpers
+from nodes import qwen_vl as helpers
 
 
 @pytest.fixture
@@ -42,6 +42,54 @@ def test_emotion_image_rejects_file_symlink_escape(responses, monkeypatch, tmp_p
     monkeypatch.setattr(emotions, "emotion_images_dir", lambda: str(root))
     result = asyncio.run(emotions.get_emotion_image(SimpleNamespace(rel_url=SimpleNamespace(query={"name": "happy"}))))
     assert result.status == 400
+
+
+@pytest.mark.parametrize("broken_first", [False, True])
+def test_emotion_preview_decodes_only_first_readable_sprite(responses, monkeypatch, broken_first):
+    decoded = []
+    monkeypatch.setattr(emotions, "list_costume_sprite_paths", lambda *args: [f"pose-{i}" for i in range(20)])
+    def decode(path):
+        decoded.append(path)
+        if broken_first and path == "pose-0":
+            raise OSError("broken sprite")
+        return torch.ones(1, 2, 3, 3), None
+    monkeypatch.setattr(emotions, "_load_sprite_tensor", decode)
+    result = asyncio.run(emotions.get_character_sheet_preview(SimpleNamespace(
+        rel_url=SimpleNamespace(query={"character": "Alice", "costume": "Dress"}))))
+    assert result.status == 200 and result.content_type == "image/png"
+    assert decoded == (["pose-0", "pose-1"] if broken_first else ["pose-0"])
+    import io
+    with Image.open(io.BytesIO(result.body)) as image:
+        assert image.size == (3, 2) and image.getpixel((0, 0)) == (255, 255, 255)
+
+
+def test_custom_emotion_route_preserves_defaults_and_serves_new_and_legacy_images(responses, monkeypatch, tmp_path):
+    import base64
+    import io
+    defaults = tmp_path / "emotions.json"
+    defaults.write_text('{"Mood": []}')
+    original = defaults.read_bytes()
+    monkeypatch.setattr(emotions, "emotions_config_path", lambda: str(defaults))
+    monkeypatch.setattr(emotions, "emotion_images_dir", lambda: str(tmp_path / "images"))
+    picture = io.BytesIO()
+    Image.new("RGB", (2, 2), "red").save(picture, format="PNG")
+    payload = {"name": "Smile", "description": "smile", "image_data": "data:image/png;base64," + base64.b64encode(picture.getvalue()).decode()}
+    async def body():
+        return payload
+    request = SimpleNamespace(json=body, headers={"X-VNCCS-CSRF": "1"})
+    first = asyncio.run(emotions.add_custom_emotion(request))
+    second = asyncio.run(emotions.add_custom_emotion(request))
+    assert first.status == second.status == 200
+    assert [first.data["emotion"]["safe_name"], second.data["emotion"]["safe_name"]] == ["smile", "smile-2"]
+    assert defaults.read_bytes() == original
+    assert len(json.loads((tmp_path / "user" / "emotions.json").read_text())["Custom"]) == 2
+    assert set(emotions.EmotionGeneratorV2._setup_emotions_data()) == {"smile", "smile-2"}
+    image_request = lambda name: SimpleNamespace(rel_url=SimpleNamespace(query={"name": name}))
+    served = asyncio.run(emotions.get_emotion_image(image_request("smile")))
+    assert served.path == str(tmp_path / "user" / "images" / "smile.webp")
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "legacy.webp").write_bytes(b"legacy")
+    assert asyncio.run(emotions.get_emotion_image(image_request("legacy"))).path == str(tmp_path / "images" / "legacy.webp")
 
 
 def test_costume_sprite_enumeration_rejects_escape(tmp_path, monkeypatch):
@@ -200,7 +248,7 @@ def test_custom_lora_rejects_invalid_bodies_before_persistence(handler, field, i
     assert result.status == 400
 
 
-def test_generator_cleanup_warning_keeps_successful_publication(tmp_path, monkeypatch, capsys):
+def test_generator_cleanup_warning_keeps_successful_publication(tmp_path, monkeypatch, caplog):
     target = tmp_path / "Alice" / "Sprites" / "Naked" / "Neutral"
     target.mkdir(parents=True)
     Image.new("RGB", (2, 2), "red").save(target / "old.png")
@@ -216,7 +264,7 @@ def test_generator_cleanup_warning_keeps_successful_publication(tmp_path, monkey
     with Image.open(paths[0]) as image:
         assert image.getpixel((0, 0)) == (255, 255, 255)
     assert (target / "V1" / "old.png").exists()
-    assert "Sprites published; could not remove rollback directory" in capsys.readouterr().out
+    assert "Sprites published; could not remove rollback directory" in caplog.text
 
 
 def test_cloner_grid_limits_apply_before_decoding(tmp_path, monkeypatch):

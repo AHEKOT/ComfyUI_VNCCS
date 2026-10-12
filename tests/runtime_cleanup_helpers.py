@@ -15,9 +15,10 @@ def install_node_calls(monkeypatch, call):
     from nodes import character_generator as cg
 
     names = [
+        "VNCCS_Flux_Klein_Encoder",
         "MiniMaxH3ReferenceToVideo", "SamplerCustomAdvanced", "VAEDecode",
         "BasicGuider", "RandomNoise", "KSamplerSelect", "BasicScheduler",
-        "VNCCS_Flux_Klein_Encoder", "ProbeEncode", "KSampler", "VAEDecodeTiled",
+        "ProbeEncode", "KSampler", "VAEDecodeTiled",
         "ImageScale", "SeedVR2Preprocess", "VAEEncodeTiled", "SeedVR2Conditioning",
         "SeedVR2PostProcessing",
     ]

@@ -1,4 +1,4 @@
-"""Tests for nodes/vnccs_utils.py — image helpers and processing nodes."""
+"""Tests for nodes/vnccs_utils.py — internal image processing helpers."""
 
 import os
 import sys
@@ -13,59 +13,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 import nodes.vnccs_utils as vnccs_utils
 from nodes.vnccs_utils import (
-    tensor2pil, pil2tensor, _ensure_float01,
-    _unwrap_node_result,
-    VNCCS_ClothesTemplates,
-    VNCCS_VLAnalyzer,
-    _build_vl_analyzer_prompt,
-    VNCCS_ColorFix,
-    VNCCSChromaKey,
-    VNCCS_Resize,
-    VNCCS_MaskExtractor,
-    VNCCS_RMBG2,
-    NODE_CLASS_MAPPINGS,
-    NODE_DISPLAY_NAME_MAPPINGS,
+    _ensure_float01, _unwrap_node_result,
+    VNCCSChromaKey, VNCCS_MaskExtractor,
 )
-
-
-# ── tensor2pil ────────────────────────────────────────────────────────────────
-
-def test_rmbg2_return_type_tolerates_legacy_high_slot_validation():
-    assert VNCCS_RMBG2.RETURN_TYPES[5] == "IMAGE"
-
-
-def test_removed_background_model_is_not_exposed():
-    removed_model = "BE" + "N2"
-    assert removed_model not in vnccs_utils.AVAILABLE_MODELS
-    assert removed_model not in VNCCS_RMBG2().models
-
-
-def test_qwen_download_disables_hub_credentials(tmp_path, monkeypatch):
-    model_path = tmp_path / "model.gguf"
-    model_path.write_bytes(b"GGUF" + b"\0" * (1024 * 1024))
-    captured = {}
-
-    def fake_download(**kwargs):
-        captured.update(kwargs)
-        return str(model_path)
-
-    monkeypatch.setattr(vnccs_utils, "hf_hub_download", fake_download)
-
-    result = vnccs_utils._download_qwen_vl_file(
-        "public/repository",
-        "model.gguf",
-        str(tmp_path),
-        revision="pinned-revision",
-    )
-
-    assert result == str(model_path)
-    assert captured == {
-        "repo_id": "public/repository",
-        "filename": "model.gguf",
-        "revision": "pinned-revision",
-        "local_dir": str(tmp_path),
-        "token": False,
-    }
 
 
 def test_registered_node_result_unwraps_comfy_node_output():
@@ -77,29 +27,23 @@ def test_registered_node_result_unwraps_comfy_node_output():
     assert _unwrap_node_result(output) is output.result[0]
 
 
-def test_chroma_key_defaults_match_balanced_profile_and_expose_sam3_checkbox():
-    required = VNCCSChromaKey.INPUT_TYPES()["required"]
-    expected_defaults = {
-        "tolerance": 0.15,
-        "softness": 0.12,
-        "despill_strength": 0.65,
-        "edge_width": 3,
-        "matte_cleanup": 0.10,
-        "foreground_recover": 0.35,
-        "edge_decontaminate": 0.75,
-        "edge_choke": 0.08,
-        "matte_method": "guided_edge",
-        "output_mode": "straight_rgba",
-    }
+def test_standalone_chroma_key_executes_saved_widget_values():
+    node = vnccs_utils.NODE_CLASS_MAPPINGS["VNCCSChromaKey"]()
+    widget_values = [0.2, 0.1, 0.7, 3, 0.1, 0.3, 0.8, 0.1, "guided_edge", "auto", "straight_rgba", False]
+    widget_names = list(node.INPUT_TYPES()["required"])[1:]
+    image = torch.zeros((1, 32, 32, 3), dtype=torch.float32)
+    image[..., 1] = 1.0
+    image[:, 8:24, 8:24] = torch.tensor([1.0, 0.0, 0.0])
 
-    actual_defaults = {
-        name: required[name][1]["default"]
-        for name in expected_defaults
-    }
+    rgba, matte, debug = getattr(node, node.FUNCTION)(image=image, **dict(zip(widget_names, widget_values, strict=True)))
 
-    assert actual_defaults == expected_defaults
-    assert required["use_sam3_recovery_mask"][0] == "BOOLEAN"
-    assert required["use_sam3_recovery_mask"][1]["default"] is False
+    assert rgba.shape == (1, 32, 32, 4)
+    assert matte.shape == (1, 32, 32)
+    assert debug.shape == (1, 32, 32, 3)
+    assert matte[0, 0, 0].item() == pytest.approx(0.0)
+    assert matte[0, 16, 16].item() == pytest.approx(1.0)
+    assert torch.equal(rgba[..., 3], matte)
+    assert torch.isfinite(rgba).all() and torch.isfinite(debug).all()
 
 
 def test_chroma_key_disabled_sam3_recovery_does_not_call_recovery(monkeypatch):
@@ -225,7 +169,7 @@ def test_sam3_recovery_preserves_candidates_across_arbitrary_wrapper_axes():
     assert candidates[:, 0, 0].tolist() == pytest.approx([0.25, 0.75])
 
 
-def test_sam3_recovery_falls_back_to_combined_mask_for_uninterpretable_candidates(capsys):
+def test_sam3_recovery_falls_back_to_combined_mask_for_uninterpretable_candidates(caplog):
     node = VNCCSChromaKey()
     combined = torch.full((1, 6, 8), 0.6, dtype=torch.float32)
     invalid_candidates = torch.ones((7,), dtype=torch.float32)
@@ -238,7 +182,7 @@ def test_sam3_recovery_falls_back_to_combined_mask_for_uninterpretable_candidate
 
     assert candidates.shape == (1, 6, 8)
     assert candidates[0, 0, 0].item() == pytest.approx(0.6)
-    assert "individual mask shape (7,)" in capsys.readouterr().out
+    assert "individual mask shape (7,)" in caplog.text
 
 
 def test_sam3_recovery_supports_legacy_combined_mask_output():
@@ -253,9 +197,12 @@ def test_sam3_recovery_supports_legacy_combined_mask_output():
     assert candidates.shape == (1, 6, 8)
 
 
-def test_sam3_recovery_segments_batch_one_image_at_a_time(monkeypatch):
+@pytest.mark.parametrize("channels", [3, 4])
+@pytest.mark.parametrize("batch_size", [1, 3])
+def test_sam3_recovery_segments_batch_one_rgb_image_at_a_time(monkeypatch, channels, batch_size):
     node = VNCCSChromaKey()
-    image = torch.zeros((3, 6, 8, 3), dtype=torch.float32)
+    image = torch.linspace(0.0, 1.0, batch_size * 6 * 8 * channels).reshape(batch_size, 6, 8, channels)
+    original = image.clone()
     model = object()
     loader_calls = []
     segment_calls = []
@@ -273,7 +220,11 @@ def test_sam3_recovery_segments_batch_one_image_at_a_time(monkeypatch):
                 "stack expects each tensor to be equal size, "
                 "but got [3, 4] at entry 0 and [6, 4] at entry 2"
             )
-        assert kwargs["images"].shape == (1, 6, 8, 3)
+        # RGB channel statistics reproduce the model's normalization boundary.
+        normalized = kwargs["images"][0].movedim(-1, 0) - torch.zeros((3, 1, 1))
+        assert normalized.shape == (3, 6, 8)
+        index = len(segment_calls)
+        torch.testing.assert_close(kwargs["images"], original[index:index + 1, ..., :3])
         segment_calls.append(kwargs["keep_model_loaded"])
         mask_value = len(segment_calls) / 10.0
         combined = torch.full((1, 6, 8), mask_value, dtype=torch.float32)
@@ -290,11 +241,12 @@ def test_sam3_recovery_segments_batch_one_image_at_a_time(monkeypatch):
 
     candidates = node._run_sam3_recovery_masks(image, target_hw=(6, 8))
 
-    assert len(candidates) == 3
+    assert len(candidates) == batch_size
     assert all(mask.shape == (2, 6, 8) for mask in candidates)
-    assert [candidates[index][0, 0, 0].item() for index in range(3)] == pytest.approx([0.1, 0.2, 0.3])
+    assert [mask[0, 0, 0].item() for mask in candidates] == pytest.approx([(index + 1) / 10.0 for index in range(batch_size)])
     assert loader_calls == ["sam3.safetensors"]
-    assert segment_calls == [True, True, False]
+    assert segment_calls == [True] * (batch_size - 1) + [False]
+    torch.testing.assert_close(image, original)
 
 
 def test_sam3_recovery_forwards_generator_settings(monkeypatch):
@@ -778,110 +730,6 @@ def test_edge_color_bleed_uses_interior_anchor_for_opaque_boundary_spill():
     assert torch.allclose(cleaned[14, 6], foreground, atol=1e-4)
 
 
-class TestClothesTemplates:
-    def test_registered_with_display_name(self):
-        assert NODE_CLASS_MAPPINGS["VNCCS_ClothesTemplates"] is VNCCS_ClothesTemplates
-        assert NODE_DISPLAY_NAME_MAPPINGS["VNCCS_ClothesTemplates"] == "VNCCS Clothes Templates"
-
-    def test_aesthetic_choices_include_all_and_json_values(self):
-        choices = VNCCS_ClothesTemplates.INPUT_TYPES()["required"]["aesthetic"][0]
-        assert choices[0] == "ALL"
-        assert "Techwear" in choices
-
-    def test_random_template_filters_by_aesthetic_and_explicit(self, monkeypatch):
-        sample = [
-            {"aesthetic": "Techwear", "content": "techwear, jacket", "is_explicit": True},
-            {"aesthetic": "Casual", "content": "hoodie, jeans", "is_explicit": False},
-        ]
-        monkeypatch.setattr(VNCCS_ClothesTemplates, "_load_outfits", classmethod(lambda cls: sample))
-
-        result, = VNCCS_ClothesTemplates().random_template("Casual", False)
-
-        assert result == "hoodie, jeans"
-
-    def test_random_template_errors_when_no_match(self, monkeypatch):
-        sample = [{"aesthetic": "Techwear", "content": "techwear, jacket", "is_explicit": True}]
-        monkeypatch.setattr(VNCCS_ClothesTemplates, "_load_outfits", classmethod(lambda cls: sample))
-
-        with pytest.raises(RuntimeError, match="no outfits found"):
-            VNCCS_ClothesTemplates().random_template("Techwear", False)
-
-
-class TestVLAnalyzer:
-    def test_registered_with_display_name(self):
-        assert NODE_CLASS_MAPPINGS["VNCCS_VLAnalyzer"] is VNCCS_VLAnalyzer
-        assert NODE_DISPLAY_NAME_MAPPINGS["VNCCS_VLAnalyzer"] == "VNCCS VL analyzer"
-
-    def test_input_contract(self):
-        required = VNCCS_VLAnalyzer.INPUT_TYPES()["required"]
-        assert set(required.keys()) == {"image", "clothing_tags"}
-        assert VNCCS_VLAnalyzer.RETURN_TYPES == ("STRING",)
-        assert VNCCS_VLAnalyzer.RETURN_NAMES == ("description",)
-
-    def test_prompt_uses_clothing_tags_as_mandatory_hints(self):
-        prompt = _build_vl_analyzer_prompt("techwear, black_jacket, thighhighs")
-        assert "Clothing tags that must be used as mandatory hints" in prompt
-        assert "techwear, black_jacket, thighhighs" in prompt
-        assert "Do not output raw comma-separated tags" in prompt
-
-
-class TestTensor2Pil:
-    def test_returns_pil_image(self):
-        t = torch.rand(32, 32, 3)
-        result = tensor2pil(t)
-        assert isinstance(result, Image.Image)
-
-    def test_values_scaled_to_0_255(self):
-        t = torch.ones(4, 4, 3)  # all 1.0
-        result = tensor2pil(t)
-        arr = np.array(result)
-        assert arr.max() == 255
-
-    def test_zero_tensor_gives_black(self):
-        t = torch.zeros(4, 4, 3)
-        result = tensor2pil(t)
-        arr = np.array(result)
-        assert arr.max() == 0
-
-    def test_clips_above_1(self):
-        t = torch.full((4, 4, 3), 2.0)
-        result = tensor2pil(t)
-        arr = np.array(result)
-        assert arr.max() == 255
-
-
-# ── pil2tensor ────────────────────────────────────────────────────────────────
-
-class TestPil2Tensor:
-    def test_returns_tensor(self):
-        img = Image.new("RGB", (8, 8), (128, 64, 32))
-        result = pil2tensor(img)
-        assert isinstance(result, torch.Tensor)
-
-    def test_has_batch_dim(self):
-        img = Image.new("RGB", (8, 8))
-        result = pil2tensor(img)
-        assert result.shape[0] == 1
-
-    def test_normalized_to_0_1(self):
-        img = Image.new("RGB", (4, 4), (255, 255, 255))
-        result = pil2tensor(img)
-        assert result.max().item() <= 1.0
-        assert result.min().item() >= 0.0
-
-    def test_shape_hwc(self):
-        img = Image.new("RGB", (16, 8))
-        result = pil2tensor(img)
-        assert result.shape == (1, 8, 16, 3)
-
-    def test_roundtrip_close(self):
-        img = Image.new("RGB", (4, 4), (100, 150, 200))
-        t = pil2tensor(img)
-        back = tensor2pil(t[0])
-        arr = np.array(back)
-        assert np.allclose(arr[0, 0], [100, 150, 200], atol=1)
-
-
 # ── _ensure_float01 ───────────────────────────────────────────────────────────
 
 class TestEnsureFloat01:
@@ -912,81 +760,7 @@ class TestEnsureFloat01:
         assert result.min().item() == 0.0
 
 
-# ── VNCCS_ColorFix ────────────────────────────────────────────────────────────
-
-class TestColorFix:
-    def _rgb(self, h=8, w=8):
-        return torch.rand(h, w, 3)
-
-    def test_neutral_params_identity(self):
-        rgb = self._rgb()
-        result = VNCCS_ColorFix()._apply_to_rgb(rgb, contrast=1.0, saturation=1.0)
-        # Should be very close to input
-        assert torch.allclose(result, rgb, atol=1e-4)
-
-    def test_zero_saturation_makes_grayscale(self):
-        rgb = torch.rand(4, 4, 3)
-        result = VNCCS_ColorFix()._apply_to_rgb(rgb, contrast=1.0, saturation=0.0)
-        # All channels should be equal (grayscale)
-        assert torch.allclose(result[:, :, 0], result[:, :, 1], atol=1e-4)
-        assert torch.allclose(result[:, :, 1], result[:, :, 2], atol=1e-4)
-
-    def test_output_clamped_to_01(self):
-        rgb = torch.rand(4, 4, 3)
-        result = VNCCS_ColorFix()._apply_to_rgb(rgb, contrast=5.0, saturation=3.0)
-        assert result.max().item() <= 1.0
-        assert result.min().item() >= 0.0
-
-    def test_high_contrast_increases_variance(self):
-        rgb = torch.rand(8, 8, 3)
-        low = VNCCS_ColorFix()._apply_to_rgb(rgb.clone(), contrast=0.5, saturation=1.0)
-        high = VNCCS_ColorFix()._apply_to_rgb(rgb.clone(), contrast=2.0, saturation=1.0)
-        assert high.var().item() >= low.var().item()
-
-    def test_color_fix_preserves_alpha(self):
-        image = torch.rand(1, 8, 8, 4)
-        result, = VNCCS_ColorFix().color_fix(image, contrast=1.0, saturation=1.0)
-        assert result.shape[-1] == 4
-        assert torch.allclose(result[:, :, :, 3], image[:, :, :, 3], atol=1e-4)
-
-    def test_color_fix_rgb_image(self):
-        image = torch.rand(1, 8, 8, 3)
-        result, = VNCCS_ColorFix().color_fix(image, contrast=1.2, saturation=0.8)
-        assert result.shape == image.shape
-
-
-# ── VNCCS_Resize ──────────────────────────────────────────────────────────────
-
-class TestResize:
-    def test_resize_smaller(self):
-        img = torch.rand(64, 64, 3)
-        result = VNCCS_Resize()._resize_single(img, 32, 32, "bilinear")
-        assert result.shape == (32, 32, 3)
-
-    def test_resize_larger(self):
-        img = torch.rand(16, 16, 3)
-        result = VNCCS_Resize()._resize_single(img, 64, 64, "bilinear")
-        assert result.shape == (64, 64, 3)
-
-    def test_resize_preserves_alpha(self):
-        img = torch.rand(32, 32, 4)
-        result = VNCCS_Resize()._resize_single(img, 16, 16, "bilinear")
-        assert result.shape[2] == 4
-
-    def test_resize_non_square(self):
-        img = torch.rand(32, 64, 3)
-        result = VNCCS_Resize()._resize_single(img, 16, 48, "bilinear")
-        assert result.shape == (48, 16, 3)
-
-    def test_lanczos_method(self):
-        img = torch.rand(32, 32, 3)
-        result = VNCCS_Resize()._resize_single(img, 16, 16, "lanczos")
-        assert result.shape == (16, 16, 3)
-
-
-# ── VNCCS_MaskExtractor ───────────────────────────────────────────────────────
-
-class TestMaskExtractor:
+class TestAlphaFill:
     def test_rgba_extracts_rgb(self):
         image = torch.rand(1, 8, 8, 4)
         result, = VNCCS_MaskExtractor().fill_alpha_with_color(image)
@@ -997,93 +771,3 @@ class TestMaskExtractor:
         result, = VNCCS_MaskExtractor().fill_alpha_with_color(image)
         assert result.shape[-1] == 3
 
-
-@pytest.mark.parametrize("directory", ["llm", "LLM", "llm/Qwen3.5-4B"])
-def test_qwen35_text_wizard_reuses_local_model_without_projector(tmp_path, monkeypatch, directory):
-    monkeypatch.setattr(vnccs_utils.folder_paths, "models_dir", str(tmp_path))
-    model = tmp_path / directory / vnccs_utils.QWEN_VL_MODEL_FILENAME
-    model.parent.mkdir(parents=True)
-    model.write_bytes(b"GGUF" + bytes(1024 * 1024))
-    monkeypatch.setattr(vnccs_utils, "hf_hub_download", lambda **kwargs: pytest.fail("Local model must not download"))
-    found, projector = vnccs_utils._ensure_qwen_vl_assets(allow_download=False, require_mmproj=False)
-    assert os.path.samefile(found, model)
-    assert projector is None
-
-
-def test_qwen35_missing_model_does_not_download_without_consent(tmp_path, monkeypatch):
-    monkeypatch.setattr(vnccs_utils.folder_paths, "models_dir", str(tmp_path))
-    legacy = tmp_path / "llm" / "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
-    legacy.parent.mkdir()
-    legacy.write_bytes(b"GGUF" + bytes(1024 * 1024))
-    monkeypatch.setattr(vnccs_utils, "hf_hub_download", lambda **kwargs: pytest.fail("Missing model must only prompt"))
-    with pytest.raises(FileNotFoundError, match="Qwen3.5-4B-Q8_0.gguf"):
-        vnccs_utils._ensure_qwen_vl_assets(allow_download=False, require_mmproj=False)
-
-
-@pytest.mark.parametrize("vision", [False, True])
-def test_qwen35_download_uses_pinned_public_assets(tmp_path, monkeypatch, vision):
-    monkeypatch.setattr(vnccs_utils.folder_paths, "models_dir", str(tmp_path))
-    calls = []
-    def download(**kwargs):
-        calls.append(kwargs)
-        path = Path(kwargs["local_dir"]) / kwargs["filename"]
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"GGUF" + bytes(1024 * 1024))
-        return str(path)
-    from pathlib import Path
-    monkeypatch.setattr(vnccs_utils, "hf_hub_download", download)
-    model, projector = vnccs_utils._ensure_qwen_vl_assets(require_mmproj=vision)
-    assert len(calls) == (2 if vision else 1)
-    assert model.endswith("llm/Qwen3.5-4B/Qwen3.5-4B-Q8_0.gguf")
-    assert bool(projector) == vision
-    for call in calls:
-        assert call["token"] is False
-        assert call["revision"] == vnccs_utils.QWEN_VL_MODEL_REVISION
-        assert call["repo_id"] == "unsloth/Qwen3.5-4B-GGUF"
-    vnccs_utils._ensure_qwen_vl_assets(allow_download=False, require_mmproj=vision)
-    assert len(calls) == (2 if vision else 1)
-
-
-def test_qwen35_does_not_reuse_ambiguous_legacy_projector(tmp_path, monkeypatch):
-    monkeypatch.setattr(vnccs_utils.folder_paths, "models_dir", str(tmp_path))
-    directory = tmp_path / "llm"
-    directory.mkdir()
-    model = directory / vnccs_utils.QWEN_VL_MODEL_FILENAME
-    model.write_bytes(b"GGUF" + bytes(1024 * 1024))
-    (directory / "mmproj-F16.gguf").write_bytes(b"GGUF" + bytes(1024 * 1024))
-    with pytest.raises(FileNotFoundError, match="vision projector"):
-        vnccs_utils._ensure_qwen_vl_assets(allow_download=False)
-    projector = directory / "mmproj-Qwen3.5-4B-F16.gguf"
-    projector.write_bytes(b"GGUF" + bytes(1024 * 1024))
-    assert vnccs_utils._ensure_qwen_vl_assets(allow_download=False) == (str(model), str(projector))
-
-
-def test_qwen_status_check_does_not_finish_an_active_download(tmp_path, monkeypatch):
-    monkeypatch.setattr(vnccs_utils.folder_paths, "models_dir", str(tmp_path))
-    model = tmp_path / "llm" / vnccs_utils.QWEN_VL_MODEL_FILENAME
-    model.parent.mkdir()
-    model.write_bytes(b"GGUF" + bytes(1024 * 1024))
-    monkeypatch.setattr(vnccs_utils, "_QWEN_VL_DOWNLOAD_STATUS", {"status": "downloading", "progress": 42})
-    vnccs_utils._ensure_qwen_vl_assets(allow_download=False, require_mmproj=False)
-    assert vnccs_utils._QWEN_VL_DOWNLOAD_STATUS == {"status": "downloading", "progress": 42}
-
-
-def test_qwen_download_repairs_invalid_model_after_confirmation(tmp_path, monkeypatch):
-    from pathlib import Path
-    monkeypatch.setattr(vnccs_utils.folder_paths, "models_dir", str(tmp_path))
-    model = tmp_path / "llm" / vnccs_utils.QWEN_VL_MODEL_FILENAME
-    model.parent.mkdir()
-    model.write_bytes(b"incomplete")
-    calls = []
-    def download(**kwargs):
-        calls.append(kwargs)
-        destination = Path(kwargs["local_dir"]) / kwargs["filename"]
-        destination.write_bytes(b"GGUF" + bytes(1024 * 1024))
-        return str(destination)
-    monkeypatch.setattr(vnccs_utils, "hf_hub_download", download)
-    with pytest.raises(ValueError):
-        vnccs_utils._ensure_qwen_vl_assets(allow_download=False, require_mmproj=False)
-    assert calls == []
-    vnccs_utils._ensure_qwen_vl_assets(require_mmproj=False)
-    assert calls[0]["force_download"] is True
-    assert calls[0]["token"] is False

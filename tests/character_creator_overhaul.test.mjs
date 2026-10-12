@@ -41,11 +41,11 @@ function setup(saved) {
         els: {},
         state, node: { id: 42, widgets: [widget] }, localStorage: { setItem() {} },
         document: { createElement: tag => new Element(tag) },
-        ccConfig: { lora: [
+        ccState: { downloadStatus: {}, config: { lora: [
             { name: "Turbo", kind: "QI2", type: "TurboLora", local_path: "models/loras/turbo.safetensors", status: "installed" },
             { name: "VNCCS Overhaul QI2", kind: "QI2", type: "Helper", local_path: "models/loras/QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.safetensors", status: "installed" },
             { name: "Other Helper", kind: "QI2", type: "Helper", local_path: "models/loras/other.safetensors" },
-        ] },
+        ] } },
         ccKind: entry => entry.kind?.toLowerCase(), ccType: entry => entry.type?.toLowerCase(),
         ccRelPath: entry => entry.local_path.replace(/^models\/loras\//, ""),
         ccResolveStatus: entry => entry.status || "missing",
@@ -61,7 +61,7 @@ function setup(saved) {
         block("const migrateGenerationModeSettings", "const clearPreviewHandlers") +
         block("const syncBackgroundForGenerationMode", "const clearCharacterSelection") +
         block("const buildAssetCard", "const selectCcAsset") +
-        block("const renderModeLoraCards", "const renderCardSection") +
+        block("const renderModeLoraCards", "const renderModelPicker") +
         `this.render = renderModeLoraCards; this.makeCard = buildOverhaulCard;
          this.migrate = migrateGenerationModeSettings; this.applyProfile = applyGenerationProfile;
          this.saveProfile = saveCurrentGenerationModeValues; this.normalize = normalizeOverhaulStrength;`, ctx);
@@ -121,7 +121,7 @@ test("slider saves every step, invalidates preview and preserves focus through l
 
 test("missing card retains catalog identity for Download and can be set to zero", () => {
     const { ctx, downloads, state } = setup();
-    ctx.ccConfig.lora[1].status = "missing";
+    ctx.ccState.config.lora[1].status = "missing";
     const root = new Element("div");
     ctx.render(root, "qi2");
     const card = root.children[1];
@@ -136,7 +136,7 @@ test("missing card retains catalog identity for Download and can be set to zero"
 
 test("catalog Overhaul version stays installed and cannot enter manual slots", () => {
     const { ctx } = setup();
-    ctx.ccConfig.lora[1].local_path = "models/loras/QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.2.safetensors";
+    ctx.ccState.config.lora[1].local_path = "models/loras/QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.2.safetensors";
     const root = new Element("div");
     ctx.render(root, "qi2");
     assert.equal(walk(root.children[1]).some(el => el.className === "vnccs-creator-model-card-download"), false);

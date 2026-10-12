@@ -75,7 +75,7 @@ def test_creator_reuses_saved_preview_without_loading_models(runtime, monkeypatc
 
 
 @pytest.mark.parametrize('failed_stage', ['loading generation models', 'sampling the character image', 'decoding the character image'])
-def test_creator_errors_include_stage_and_traceback(runtime, monkeypatch, capsys, failed_stage):
+def test_creator_errors_include_stage_and_optional_traceback(runtime, monkeypatch, caplog, failed_stage):
     creator = runtime.creator
     monkeypatch.setattr(creator, 'load_generation_assets', lambda *a: ('key', object(), object(), object()))
     monkeypatch.setattr(creator, 'encode_generation_conditioning', lambda *a, **k: ('pos', 'neg', 'prompt'))
@@ -90,10 +90,12 @@ def test_creator_errors_include_stage_and_traceback(runtime, monkeypatch, capsys
     with pytest.raises(RuntimeError, match=failed_stage) as caught:
         creator.CharacterCreatorV2().process(json.dumps({'character': 'Alice', 'preview_valid': False}), unique_id='42')
     assert isinstance(caught.value.__cause__, RuntimeError)
-    logged = capsys.readouterr()
-    assert 'Alice' in logged.out and 'node 42' in logged.out
-    assert 'simulated device error' in logged.out
-    assert 'Traceback' in logged.err
+    failures = [record for record in caplog.records if record.name == 'VNCCS' and record.vnccs['event'] == 'failed']
+    assert len(failures) == 1
+    assert failures[0].vnccs['node_id'] == '42'
+    assert 'Alice' in failures[0].vnccs['error'] and failed_stage in failures[0].vnccs['error']
+    assert 'simulated device error' in failures[0].vnccs['error']
+    assert failures[0].exc_info is None
 
 
 def test_clothes_cache_and_comfy_signature_follow_primary_reference(runtime, tmp_path, monkeypatch):
@@ -104,7 +106,7 @@ def test_clothes_cache_and_comfy_signature_follow_primary_reference(runtime, tmp
     calls = []
     def call_node(name, **kwargs):
         calls.append(name)
-        if name == cd.KLEIN_ENCODER_CLASS:
+        if name == "VNCCS_Flux_Klein_Encoder":
             return 'pos', 'neg', {}
         if name == 'KSampler':
             return ({},)
@@ -148,7 +150,8 @@ def test_pose_prompt_lists_survive_caching_and_single_pose_regeneration(runtime,
     monkeypatch.setattr(node, '_emit', lambda *a, **k: None)
     monkeypatch.setattr(node, '_extract_pipe', lambda *a: {'seed': 0})
     monkeypatch.setattr(node, '_run_source_upscaler', lambda image, *a, **k: image)
-    state = {'regenerate_from': 'pose_generation', 'regenerate_index': 1} if regenerate else {}
+    stage = 'original_pose_generation' if node_name == 'VNCCS_CharacterCloneGenerator' else 'pose_generation'
+    state = {'regenerate_from': stage, 'regenerate_index': 1} if regenerate else {}
     with pytest.raises(ReachedEncoder):
         node.process(poses, character, SimpleNamespace(), prompts, widget_data=json.dumps(state))
     assert cached[0]['prompt'] == prompts
@@ -181,12 +184,12 @@ def test_each_pose_encoder_receives_its_own_prompt(runtime, monkeypatch, kind):
     monkeypatch.setattr(node, '_extract_pipe', lambda *a: values)
     monkeypatch.setattr(node, '_apply_pose_lora_to_model', lambda model, *a: model)
     monkeypatch.setattr(node, '_emit', lambda *a, **k: None)
-    monkeypatch.setattr(cg, 'VNCCS_MaskExtractor', lambda: SimpleNamespace(fill_alpha_with_color=lambda image: (image,)))
+    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", type("MaskExtractor", (), {"fill_alpha_with_color": staticmethod(lambda image: (image,))}))
     seen = []
     class EncodingVerified(Exception):
         pass
     def capture(name, **kwargs):
-        if name in {'TextEncodeQwenImage21', 'VNCCS_Flux_Klein_Encoder', 'MiniMaxH3ReferenceToVideo'}:
+        if name in {'TextEncodeQwenImage21', "VNCCS_Flux_Klein_Encoder", 'MiniMaxH3ReferenceToVideo'}:
             seen.append(kwargs['prompt'])
             if len(seen) == 2:
                 raise EncodingVerified()

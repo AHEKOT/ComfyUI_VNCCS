@@ -2,7 +2,6 @@
 
 The sigma shift and unmerged LoRA application follow Viggle's ComfyUI reference:
 https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo/blob/main/comfyui/viggle_turbo.py
-VNCCS uses 0.35 for the final raw sigma node.
 """
 
 import json
@@ -14,7 +13,7 @@ import torch.nn.functional as F
 from .vnccs_control_center import _load_lora_file
 
 
-VIGGLE_TURBO_NODES = (1.0, 0.9375, 0.875, 0.75, 0.5, 0.35)
+VIGGLE_TURBO_NODES = (1.0, 0.9375, 0.875, 0.75, 0.5, 0.25)
 
 
 def viggle_turbo_sigmas(latent):
@@ -26,72 +25,6 @@ def viggle_turbo_sigmas(latent):
     nodes = torch.tensor(VIGGLE_TURBO_NODES, dtype=torch.float64)
     shifted = math.exp(shift) / (math.exp(shift) + (1 / nodes - 1))
     return torch.cat((shifted, shifted.new_zeros(1))).float()
-
-
-class ViggleDetailerSchedule:
-    """Bridge Viggle's latent-aware schedule into Impact Pack FaceDetailer.
-
-    Impact Pack asks a scheduler function for sigmas after its detailer hook has
-    encoded the detected crop.  Keeping that latent on the hook lets us reuse
-    the exact Viggle shift calculation for every face crop instead of guessing
-    its dimensions from the source image.
-    """
-
-    def __init__(self):
-        self.latent = None
-
-    def scheduler_func(self, _model, _sampler_name, _steps):
-        if self.latent is None:
-            raise RuntimeError("Viggle FaceDetailer schedule was requested before the crop latent was encoded.")
-        return viggle_turbo_sigmas(self.latent)
-
-    def touch_scaled_size(self, width, height):
-        return width, height
-
-    def post_upscale(self, image, _noise_mask):
-        return image
-
-    def get_skip_sampling(self):
-        return False
-
-    def post_encode(self, latent):
-        self.latent = latent
-        return latent
-
-    def get_custom_sampler(self):
-        return None
-
-    def set_steps(self, _steps):
-        return None
-
-    def cycle_latent(self, latent):
-        return latent
-
-    def pre_ksample(self, model, seed, steps, cfg, sampler_name, scheduler,
-                    positive, negative, latent, denoise):
-        self.latent = latent
-        return model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent, denoise
-
-    def get_custom_noise(self, _seed, noise, is_touched=False):
-        return noise, is_touched
-
-    def pre_decode(self, latent):
-        return latent
-
-    def post_decode(self, image):
-        return image
-
-    def post_crop_region(self, _width, _height, _bbox, crop_region):
-        return crop_region
-
-    def post_detection(self, segs):
-        return segs
-
-    def post_paste(self, image):
-        return image
-
-    def should_retry_patch(self, _patch):
-        return False
 
 
 def _lora_linear(tensor, pair):

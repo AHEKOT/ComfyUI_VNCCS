@@ -5,8 +5,9 @@ import test from "node:test";
 import vm from "node:vm";
 
 const source = readFileSync(new URL("../web/vnccs_control_center.js", import.meta.url), "utf8");
+const common = readFileSync(new URL("../web/vnccs_common.js", import.meta.url), "utf8");
 
-function setup() {
+function setup(fetchApi) {
     const input = {};
     const label = { textContent: "⏳ Queued" };
     const badge = {};
@@ -32,14 +33,18 @@ function setup() {
     };
     const context = createWidgetContext({
         document,
-        api: { fetchApi: async () => ({ ok: true, json: async () => statuses }) },
+        api: { fetchApi: fetchApi || (async () => ({ ok: true, json: async () => statuses })) },
         setInterval: callback => { poll = callback; return 1; },
         clearInterval: () => {},
     });
-    vm.runInContext(source.slice(source.indexOf("class VNCCSControlCenterWidget"))
+    vm.runInContext(common.slice(common.indexOf("export function registerCleanup"), common.indexOf("// ── DOM Widget Width Sync"))
+        .replaceAll("export ", "") + source.slice(source.indexOf("class VNCCSControlCenterWidget"))
         + "\nthis.Widget = VNCCSControlCenterWidget;", context);
+    const node = {};
     const widget = Object.create(context.Widget.prototype);
     Object.assign(widget, {
+        node,
+        _beginDownloadStatusRequest: context.createRequestGuard(node),
         container: { contains: element => element === input },
         scrollArea: { scrollTop: 120, scrollLeft: 8, querySelectorAll: () => [row] },
         dlStatus: { cc_lora_model: { status: "queued" } },
@@ -52,7 +57,8 @@ function setup() {
     });
     widget._startPolling();
     return {
-        widget, row, label, badge, document, input,
+        widget, node, row, label, badge, document, input, context,
+        pollOnce: () => poll(),
         async poll(status) {
             statuses = { cc_lora_model: status };
             await poll();
@@ -111,3 +117,67 @@ test("download failures become visible without replacing the focused form", asyn
     assert.equal(state.widget.renders, 0);
     assert.equal(state.document.activeElement, state.input);
 });
+
+test("a slow status poll prevents overlapping requests and still publishes its response", async () => {
+    const pending = [];
+    const state = setup(() => new Promise(resolve => pending.push(resolve)));
+    const old = state.pollOnce();
+    await state.pollOnce();
+    await state.pollOnce();
+    assert.equal(pending.length, 1);
+    pending[0]({ ok: true, json: async () => ({ cc_lora_model: { status: "success" } }) });
+    await old;
+    assert.equal(state.widget.dlStatus.cc_lora_model.status, "success");
+    assert.equal(state.widget._downloadRefreshPending, true);
+    assert.equal(state.widget._downloadStatusPolling, false);
+    const next = state.pollOnce();
+    assert.equal(pending.length, 2);
+    pending[1]({ ok: true, json: async () => ({ cc_lora_model: { status: "error", message: "Retry failed" } }) });
+    await next;
+    assert.equal(state.label.textContent, "Retry failed");
+});
+
+test("removal invalidates an in-flight status poll before DOM updates or refresh", async () => {
+    let resolve;
+    const state = setup(() => new Promise(complete => { resolve = complete; }));
+    state.document.activeElement = null;
+    const request = state.pollOnce();
+    state.node.onRemoved();
+    resolve({ ok: true, json: async () => ({ cc_lora_model: { status: "success" } }) });
+    await request;
+    assert.equal(state.widget.dlStatus.cc_lora_model.status, "queued");
+    assert.equal(state.widget._downloadRefreshPending, false);
+    assert.equal(state.widget.refreshes, 0);
+    assert.equal(state.widget.renders, 0);
+    assert.equal(state.widget._downloadStatusPolling, false);
+});
+
+for (const previousStatus of [{}, { cc_lora_model: { status: "success" } }]) {
+    test(`a status snapshot started before a new download cannot erase its queued state (${JSON.stringify(previousStatus)})`, async () => {
+        const pending = [];
+        const state = setup((route, options) => new Promise(resolve => pending.push({ route, options, resolve })));
+        state.widget.state = {};
+        state.widget._activeKind = () => "QI2";
+        state.widget.dlStatus = {};
+        state.context.CustomEvent = class { constructor(type, options) { this.type = type; this.detail = options.detail; } };
+        state.context.window.dispatchEvent = () => {};
+
+        const previousPoll = state.pollOnce();
+        const download = state.widget._downloadEntry("lora", { name: "model" });
+        assert.equal(state.widget.dlStatus.cc_lora_model.status, "queued");
+        assert.equal(pending[0].route, "/vnccs/manager/status?repo_id=public%2Fmodels");
+        assert.equal(pending[1].route, "/vnccs/control_center/download");
+        pending[0].resolve({ ok: true, json: async () => previousStatus });
+        await previousPoll;
+        assert.equal(state.widget.dlStatus.cc_lora_model.status, "queued");
+        assert.equal(state.widget._downloadStatusPolling, false);
+
+        pending[1].resolve({ ok: true, text: async () => '{"status":"queued"}' });
+        await download;
+        const currentPoll = state.pollOnce();
+        pending[2].resolve({ ok: true, json: async () => ({ cc_lora_model: { status: "downloading", progress: 25 } }) });
+        await currentPoll;
+        assert.equal(state.widget.dlStatus.cc_lora_model.status, "downloading");
+        assert.equal(state.widget.dlStatus.cc_lora_model.progress, 25);
+    });
+}

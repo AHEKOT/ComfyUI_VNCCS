@@ -6,6 +6,8 @@ import { presetGroups, presetSelection } from "../web/character_presets.mjs";
 import { createWidgetContext } from "./widget_context.mjs";
 
 const source = readFileSync(new URL("../web/vnccs_character_creator_v2.js", import.meta.url), "utf8");
+const common = readFileSync(new URL("../web/vnccs_common.js", import.meta.url), "utf8");
+const guards = common.slice(common.indexOf('export function registerCleanup'), common.indexOf('// ── DOM Widget Width Sync')).replaceAll('export ', '');
 const catalog = JSON.parse(readFileSync(new URL("../character_template/character_presets_v2.json", import.meta.url), "utf8"));
 const block = (start, end) => {
     const offset = source.indexOf(start);
@@ -42,10 +44,11 @@ function setup(info = {}) {
         setHelpText() {}, helpFor: () => "", syncBackgroundForGenerationMode() {}, saveCurrentGenerationModeValues() {},
         TAG_DATA: catalog, presetGroups, presetSelection,
         showModal(title, builder, actions) {
-            modal = { title, content: builder({ style: {} }), actions };
+            modal = { title, content: builder({ style: {} }), actions, overlay: { isConnected: true } };
         },
     });
     vm.runInContext(
+        guards + 'const beginCharacterWizardRequest = createRequestGuard(node); this.invalidate = beginCharacterWizardRequest;' +
         block("const saveState =", "const clearPreviewHandlers") +
         "const debouncedSave = () => saveState();" +
         block("const createTraitField =", "const createSegmentedField =") +
@@ -118,8 +121,26 @@ test("restored fields, wizard results and preset Apply update the same tag rows"
     assert.equal(modal().title, "Choose Presets: hair");
     const chips = modal().content.children[1].children;
     chips.find(chip => chip.innerText === "Black").onclick();
-    modal().actions.find(action => action.text === "APPLY").action();
+    modal().actions.find(action => action.text === "APPLY").action(modal().overlay);
     assert.equal(input.value, "silver hair, My Custom Hair, black hair");
     assert.equal(JSON.parse(widget.value).character_info.hair, input.value);
     assert.deepEqual(values.children.map(chip => chip.textContent), ["silver hair", "My Custom Hair", "black hair"]);
 });
+
+for (const obsolete of ['switch', 'configure', 'removal', 'close']) {
+    test(`Creator preset Apply preserves authored fields after ${obsolete}`, async () => {
+        const { context, state, widget, modal } = setup({ hair: 'Alice hair' });
+        const row = context.makeField('Hair', 'hair');
+        await row.children[2].onclick();
+        if (obsolete === 'switch') state.character = 'Bob';
+        if (obsolete === 'configure') context.invalidate();
+        if (obsolete === 'removal') context.node.onRemoved();
+        if (obsolete === 'close') modal().overlay.isConnected = false;
+        state.character_info.hair = 'new authored hair';
+        context.sync();
+        const original = JSON.stringify(state);
+        modal().actions.find(action => action.text === 'APPLY').action(modal().overlay);
+        assert.equal(JSON.stringify(state), original);
+        assert.equal(widget.value, '');
+    });
+}

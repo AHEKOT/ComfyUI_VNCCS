@@ -4,6 +4,9 @@ import { webcrypto } from 'node:crypto';
 
 const transport = readFileSync(new URL('../web/vnccs_transport.js', import.meta.url), 'utf8')
     .replace(/^import .*;\n/gm, '').replaceAll('export ', '');
+const common = readFileSync(new URL('../web/vnccs_common.js', import.meta.url), 'utf8');
+const shared = common.slice(common.indexOf('// ── Shared Input Normalization'), common.indexOf('// ── Debounce'));
+const sharedNames = [...shared.matchAll(/export (?:const|function) (\w+)/g)].map(match => match[1]);
 
 // Source-level widget tests still execute the real shared transport helpers.
 export function createWidgetContext(sandbox = {}) {
@@ -19,5 +22,9 @@ export function createWidgetContext(sandbox = {}) {
         ...sandbox, api,
     });
     vm.runInContext(transport, context);
+    const helpers = vm.runInContext(`(() => { ${shared.replaceAll('export ', '')}; return { ${sharedNames.join(', ')} }; })()`, context);
+    for (const [name, value] of Object.entries(helpers)) {
+        if (!(name in sandbox)) context[name] = value;
+    }
     return context;
 }

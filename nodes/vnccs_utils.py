@@ -1,56 +1,20 @@
-"""VNCCS Utility Nodes
-Contains utility image processing nodes for future extraction to separate repository:
-- VNCCSChromaKey - Green screen removal
-- VNCCS_ColorFix - Contrast and saturation adjustment
-- VNCCS_Resize - Image resizing
-- VNCCS_MaskExtractor - Alpha channel extraction
-- VNCCS_RMBG2 - Background removal using various models
-"""
+"""Shared image processing and the standalone VNCCS Chroma Key node."""
+from ..operation_logger import log_event, log_stage
 
 import os
-import json
-import random
-import base64
-import io
 import inspect
 import math
 import platform
 import threading
 import torch
 import numpy as np
-from typing import Tuple
-from PIL import Image, ImageFilter
-from torchvision import transforms
 import cv2
 import torch.nn.functional as F
 
 try:
-    from aiohttp import web
+    from ..utils import get_full_path_agnostic
 except Exception:
-    web = None
-
-try:
-    import server
-except Exception:
-    server = None
-
-try:
-    from ..utils import get_full_path_agnostic, privileged_route
-except Exception:
-    from utils import get_full_path_agnostic, privileged_route
-
-try:
-    from .qwen_vl import get_qwen_vl_chat_handler
-except Exception:
-    from nodes.qwen_vl import get_qwen_vl_chat_handler
-
-
-class _CompatReturnTypes(tuple):
-    def __getitem__(self, index):
-        if isinstance(index, int) and index >= len(self):
-            index = len(self) - 1
-        return super().__getitem__(index)
-
+    from utils import get_full_path_agnostic
 
 try:
     import folder_paths
@@ -62,7 +26,7 @@ try:
 except ImportError:
     hf_hub_download = None
 
-# Device selection used by RMBG/BiRefNet models
+# Device selection for optional SAM3 recovery
 def _select_torch_device():
     if torch.cuda.is_available():
         return "cuda"
@@ -70,33 +34,8 @@ def _select_torch_device():
         return "xpu"
     return "cpu"
 
-
-device = _select_torch_device()
-OUTFITS_JSON_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "character_template",
-    "outfits.json",
-)
-QWEN_VL_MODEL_FILENAME = "Qwen3.5-4B-Q8_0.gguf"
-QWEN_VL_MODEL_NAMES = [QWEN_VL_MODEL_FILENAME]
-QWEN_VL_MMPROJ_NAMES = ["mmproj-Qwen3.5-4B-F16.gguf", "mmproj-Qwen3.5-4B-BF16.gguf"]
-QWEN_VL_MODEL_REPO_ID = "unsloth/Qwen3.5-4B-GGUF"
-QWEN_VL_MMPROJ_FILENAME = "mmproj-F16.gguf"
-QWEN_VL_MODEL_REVISION = "e966ccab6d3f3c91e94d858b4a01c921a5d7ef53"
-_QWEN_VL_DOWNLOAD_LOCK = threading.Lock()
-_QWEN_VL_DOWNLOAD_STATUS = {
-    "status": "idle",
-    "progress": 0,
-    "current_file": "",
-    "total_size": 0,
-    "downloaded_size": 0,
-    "error": "",
-}
-
-# Ensure RMBG model folder paths are registered
+# Register the optional SAM3 model directory
 if folder_paths:
-    folder_paths.add_model_folder_path("rmbg", os.path.join(folder_paths.models_dir, "RMBG"))
-    folder_paths.add_model_folder_path("birefnet", os.path.join(folder_paths.models_dir, "RMBG", "BiRefNet"))
     folder_paths.add_model_folder_path("sam3", os.path.join(folder_paths.models_dir, "sam3"))
 
 SAM3_MODEL_REPO_ID = "yolain/sam3-safetensors"
@@ -104,19 +43,11 @@ SAM3_MODEL_FILENAME = "sam3-fp16.safetensors"
 SAM3_MODEL_REVISION = "eb174af94625028887dfe92d2d8483ca5a5d3336"
 _SAM3_DOWNLOAD_LOCK = threading.Lock()
 
-
 def _sam3_recovery_runtime_supported():
     """Easy SAM3 currently requires Triton/decord and cannot run on macOS/MPS."""
     return platform.system().lower() != "darwin"
 
 # --- Shared helpers ---
-def tensor2pil(image):
-    return Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
-
-
-def pil2tensor(image):
-    return torch.from_numpy(np.array(image).astype(np.float32) / 255.0).unsqueeze(0)
-
 
 def _flatten_image_tensors(value):
     if isinstance(value, tuple):
@@ -133,7 +64,6 @@ def _flatten_image_tensors(value):
             result.extend(_flatten_image_tensors(item))
         return result
     return []
-
 
 def _normalize_image_batch(value, target_hw=None, stage="utils batch"):
     items = []
@@ -153,7 +83,7 @@ def _normalize_image_batch(value, target_hw=None, stage="utils batch"):
     shapes = [(int(item.shape[1]), int(item.shape[2]), int(item.shape[3])) for item in items]
     target_shape = (int(target_hw[0]), int(target_hw[1]), target_channels)
     if any(shape != target_shape for shape in shapes):
-        print(f"[VNCCS Batch Safety] Normalizing {stage}: {shapes} -> {target_shape}")
+        log_event("diagnostic", component="ImageProcessing", level="debug", message=f'Normalizing {stage}: {shapes} -> {target_shape}')
     normalized = []
     for item in items:
         if item.shape[-1] < target_channels:
@@ -172,437 +102,6 @@ def _normalize_image_batch(value, target_hw=None, stage="utils batch"):
         normalized.append(item)
     return torch.cat(normalized, dim=0)
 
-
-def handle_model_error(message):
-    print(f"[RMBG ERROR] {message}")
-    raise RuntimeError(message)
-
-
-def _validate_gguf_file(path, file_label="File"):
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"{file_label} was not written: {path}")
-
-    size = os.path.getsize(path)
-    if size < 1024 * 1024:
-        raise ValueError(f"{file_label} is too small to be a valid GGUF file ({size} bytes)")
-
-    with open(path, "rb") as file:
-        magic = file.read(4)
-    if magic != b"GGUF":
-        raise ValueError(f"{file_label} is not a valid GGUF file (magic={magic!r})")
-
-
-def _llm_search_dirs():
-    if not folder_paths or not hasattr(folder_paths, "models_dir"):
-        return []
-    base_path = folder_paths.models_dir
-    roots = [os.path.join(base_path, "llm"), os.path.join(base_path, "LLM"), base_path]
-    return [directory for root in roots for directory in (root, os.path.join(root, "Qwen3.5-4B"))]
-
-
-def _find_qwen_vl_model():
-    for directory in _llm_search_dirs():
-        if not os.path.isdir(directory):
-            continue
-        for name in QWEN_VL_MODEL_NAMES:
-            path = os.path.join(directory, name)
-            if os.path.exists(path):
-                return path
-    return None
-
-
-def _find_qwen_vl_mmproj(model_path):
-    if not model_path:
-        return None
-
-    model_dir = os.path.dirname(model_path)
-    # Generic projector names are safe only inside this model's own directory.
-    directories = [os.path.join(model_dir, "Qwen3.5-4B")]
-    if "qwen3.5-4b" in os.path.basename(model_dir).lower():
-        directories.insert(0, model_dir)
-    for directory in directories:
-        for name in ("mmproj-F16.gguf", "mmproj-BF16.gguf", "mmproj-F32.gguf"):
-            path = os.path.join(directory, name)
-            if os.path.isfile(path):
-                return path
-    for name in QWEN_VL_MMPROJ_NAMES:
-        path = os.path.join(model_dir, name)
-        if os.path.exists(path):
-            return path
-
-    return None
-
-
-def _qwen_vl_download_dir():
-    if not folder_paths or not getattr(folder_paths, "models_dir", None):
-        return os.path.join("models", "llm", "Qwen3.5-4B")
-    return os.path.join(folder_paths.models_dir, "llm", "Qwen3.5-4B")
-
-
-def _set_qwen_vl_download_status(**updates):
-    _QWEN_VL_DOWNLOAD_STATUS.update(updates)
-
-
-def _reset_qwen_vl_download_status(status="idle"):
-    _QWEN_VL_DOWNLOAD_STATUS.update({
-        "status": status,
-        "progress": 0,
-        "current_file": "",
-        "total_size": 0,
-        "downloaded_size": 0,
-        "error": "",
-    })
-
-
-def _download_qwen_vl_file(repo_id, filename, target_dir, revision=None):
-    if hf_hub_download is None:
-        raise RuntimeError(
-            "huggingface_hub is not installed. Install it or place "
-            f"'{filename}' in '{target_dir}'."
-        )
-    os.makedirs(target_dir, exist_ok=True)
-    print(f"[VNCCS QwenVL] Downloading '{filename}' from Hugging Face repo '{repo_id}'...")
-    _set_qwen_vl_download_status(
-        status="downloading",
-        current_file=filename,
-        progress=0,
-        total_size=0,
-        downloaded_size=0,
-        error="",
-    )
-    try:
-        download_options = {}
-        existing = os.path.join(target_dir, filename)
-        if os.path.isfile(existing):
-            try:
-                _validate_gguf_file(existing, filename)
-            except ValueError:
-                download_options["force_download"] = True
-        path = hf_hub_download(
-            repo_id=repo_id,
-            filename=filename,
-            revision=revision,
-            local_dir=target_dir,
-            token=False,
-            **download_options,
-        )
-        _validate_gguf_file(path, filename)
-        downloaded_size = os.path.getsize(path)
-        _set_qwen_vl_download_status(
-            current_file=filename,
-            progress=100,
-            downloaded_size=downloaded_size,
-            total_size=downloaded_size,
-        )
-        print(f"[VNCCS QwenVL] File ready: {path}")
-        return path
-    except Exception:
-        raise
-
-
-def _local_qwen_vl_assets(require_mmproj=True):
-    model_path = _find_qwen_vl_model()
-    if not model_path:
-        raise FileNotFoundError(f"{QWEN_VL_MODEL_FILENAME} is missing from models/llm. Download it from Hugging Face to continue.")
-    _validate_gguf_file(model_path, os.path.basename(model_path))
-    mmproj_path = _find_qwen_vl_mmproj(model_path)
-    if require_mmproj:
-        if not mmproj_path:
-            raise FileNotFoundError("Qwen3.5-4B vision projector is missing. Download it from Hugging Face to continue.")
-        _validate_gguf_file(mmproj_path, os.path.basename(mmproj_path))
-    return model_path, mmproj_path
-
-
-def _ensure_qwen_vl_assets(allow_download=True, require_mmproj=True):
-    try:
-        return _local_qwen_vl_assets(require_mmproj)
-    except (FileNotFoundError, ValueError):
-        if not allow_download:
-            raise
-
-    with _QWEN_VL_DOWNLOAD_LOCK:
-        try:
-            assets = _local_qwen_vl_assets(require_mmproj)
-        except (FileNotFoundError, ValueError):
-            model_path = _find_qwen_vl_model()
-            target_dir = os.path.dirname(model_path) if model_path else _qwen_vl_download_dir()
-            try:
-                try:
-                    if model_path:
-                        _validate_gguf_file(model_path, QWEN_VL_MODEL_FILENAME)
-                except ValueError:
-                    model_path = None
-                if not model_path:
-                    model_path = _download_qwen_vl_file(
-                        QWEN_VL_MODEL_REPO_ID, QWEN_VL_MODEL_FILENAME, target_dir,
-                        revision=QWEN_VL_MODEL_REVISION,
-                    )
-                if require_mmproj:
-                    mmproj_path = _find_qwen_vl_mmproj(model_path)
-                    try:
-                        if mmproj_path:
-                            _validate_gguf_file(mmproj_path, "Vision projector")
-                    except ValueError:
-                        mmproj_path = None
-                    if not mmproj_path:
-                        model_dir = os.path.dirname(model_path)
-                        projector_dir = model_dir if "qwen3.5-4b" in os.path.basename(model_dir).lower() else os.path.join(model_dir, "Qwen3.5-4B")
-                        _download_qwen_vl_file(
-                            QWEN_VL_MODEL_REPO_ID, QWEN_VL_MMPROJ_FILENAME, projector_dir,
-                            revision=QWEN_VL_MODEL_REVISION,
-                        )
-                assets = _local_qwen_vl_assets(require_mmproj)
-            except Exception as exc:
-                _set_qwen_vl_download_status(status="error", error=str(exc))
-                raise RuntimeError(f"Failed to prepare Qwen3.5 assets from Hugging Face: {exc}") from exc
-        _set_qwen_vl_download_status(status="completed", progress=100, current_file="Qwen3.5 assets ready", error="")
-        return assets
-
-
-def _qwen_vl_download_worker(require_mmproj=True):
-    try:
-        _ensure_qwen_vl_assets(require_mmproj=require_mmproj)
-        _set_qwen_vl_download_status(status="completed", progress=100, current_file="Qwen3.5 assets ready", error="")
-    except Exception as exc:
-        _set_qwen_vl_download_status(status="error", error=str(exc))
-
-
-if server is not None and web is not None:
-    @server.PromptServer.instance.routes.get("/vnccs/qwen_vl_model_status")
-    async def qwen_vl_model_status(request):
-        try:
-            _ensure_qwen_vl_assets(allow_download=False, require_mmproj=request.rel_url.query.get("vision") != "false")
-            return web.json_response({"ready": True, "model_name": QWEN_VL_MODEL_FILENAME})
-        except (FileNotFoundError, ValueError) as exc:
-            return web.json_response({"ready": False, "model_name": QWEN_VL_MODEL_FILENAME, "message": str(exc)})
-
-    @server.PromptServer.instance.routes.get("/vnccs/qwen_vl_download_status")
-    async def qwen_vl_download_status(request):
-        return web.json_response(dict(_QWEN_VL_DOWNLOAD_STATUS))
-
-    @server.PromptServer.instance.routes.post("/vnccs/qwen_vl_download_model")
-    @privileged_route
-    async def qwen_vl_download_model(request):
-        require_mmproj = request.rel_url.query.get("vision") != "false"
-        if _QWEN_VL_DOWNLOAD_STATUS.get("status") == "downloading":
-            return web.json_response(dict(_QWEN_VL_DOWNLOAD_STATUS), status=409)
-        try:
-            model_path = _find_qwen_vl_model()
-            mmproj_path = _find_qwen_vl_mmproj(model_path) if model_path else None
-            if model_path and (mmproj_path or not require_mmproj):
-                _validate_gguf_file(model_path, os.path.basename(model_path))
-                if require_mmproj:
-                    _validate_gguf_file(mmproj_path, os.path.basename(mmproj_path))
-                _set_qwen_vl_download_status(
-                    status="completed",
-                    progress=100,
-                    current_file="QwenVL assets ready",
-                    error="",
-                )
-                return web.json_response(dict(_QWEN_VL_DOWNLOAD_STATUS))
-        except Exception:
-            pass
-
-        _reset_qwen_vl_download_status("downloading")
-        thread = threading.Thread(target=_qwen_vl_download_worker, args=(require_mmproj,), daemon=True)
-        thread.start()
-        return web.json_response({"status": "started"})
-
-
-def _get_qwen_vl_chat_handler(llama_cpp):
-    return get_qwen_vl_chat_handler(llama_cpp)
-
-
-def _tensor_to_vl_data_uri(image, max_size=768):
-    if isinstance(image, list):
-        image = image[0]
-    if len(image.shape) == 4:
-        image = image[0]
-
-    pil_image = tensor2pil(_ensure_float01(image)).convert("RGB")
-    width, height = pil_image.size
-    if max(width, height) > max_size:
-        scale = max_size / float(max(width, height))
-        new_size = (max(1, int(width * scale)), max(1, int(height * scale)))
-        pil_image = pil_image.resize(new_size, Image.Resampling.LANCZOS)
-
-    buffer = io.BytesIO()
-    pil_image.save(buffer, format="JPEG", quality=85)
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return f"data:image/jpeg;base64,{encoded}"
-
-
-def _normalize_clothing_tags(clothing_tags):
-    if isinstance(clothing_tags, list):
-        clothing_tags = clothing_tags[0]
-    return str(clothing_tags or "").strip().strip(",").strip()
-
-
-def _build_vl_analyzer_prompt(clothing_tags):
-    tags = _normalize_clothing_tags(clothing_tags)
-    tags_text = tags if tags else "(no clothing tags provided)"
-    return f"""
-Analyze the clothes worn by the character in the image.
-
-Clothing tags that must be used as mandatory hints:
-{tags_text}
-
-Rules:
-- Output plain natural language only.
-- Describe only clothing and wearable accessories.
-- Use the image as visual evidence, but you must account for the provided clothing tags when describing the outfit.
-- If a tag is not clearly visible but is plausible, include it in natural wording.
-- Do not output raw comma-separated tags.
-- Do not mention pose, body shape, face, hair, background, camera, image quality, nudity, or sex acts.
-- Do not use elegant, poetic, luxury, fashion-magazine, or marketing phrases.
-- Keep it practical and direct, 1 to 3 short sentences.
-- If color or material is unclear, use simple cautious wording.
-""".strip()
-
-
-class VNCCS_ClothesTemplates:
-    """Return a random clothes tag template from character_template/outfits.json."""
-
-    ALL_AESTHETICS = "ALL"
-    OUTFITS_PATH = OUTFITS_JSON_PATH
-
-    @classmethod
-    def _load_outfits(cls) -> list[dict]:
-        try:
-            with open(cls.OUTFITS_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except FileNotFoundError as exc:
-            raise RuntimeError(f"VNCCS Clothes Templates: outfits.json not found: {cls.OUTFITS_PATH}") from exc
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"VNCCS Clothes Templates: invalid outfits.json: {exc}") from exc
-
-        if not isinstance(data, list):
-            raise RuntimeError("VNCCS Clothes Templates: outfits.json must contain a list of outfit records.")
-        return [entry for entry in data if isinstance(entry, dict) and str(entry.get("content", "")).strip()]
-
-    @classmethod
-    def _aesthetic_choices(cls) -> list[str]:
-        try:
-            outfits = cls._load_outfits()
-            aesthetics = sorted({str(entry.get("aesthetic", "")).strip() for entry in outfits if entry.get("aesthetic")})
-        except RuntimeError:
-            aesthetics = []
-        return [cls.ALL_AESTHETICS] + aesthetics
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "aesthetic": (cls._aesthetic_choices(), {"default": cls.ALL_AESTHETICS}),
-                "is_explicit": ("BOOLEAN", {"default": True}),
-            }
-        }
-
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("content",)
-    CATEGORY = "VNCCS"
-    FUNCTION = "random_template"
-
-    @classmethod
-    def IS_CHANGED(cls, aesthetic, is_explicit):
-        return random.random()
-
-    def random_template(self, aesthetic=ALL_AESTHETICS, is_explicit=True):
-        if isinstance(aesthetic, list):
-            aesthetic = aesthetic[0]
-        if isinstance(is_explicit, list):
-            is_explicit = is_explicit[0]
-
-        aesthetic = str(aesthetic)
-        want_explicit = bool(is_explicit)
-        outfits = self._load_outfits()
-
-        matches = [
-            entry for entry in outfits
-            if (aesthetic in (self.ALL_AESTHETICS, "ALL") or str(entry.get("aesthetic", "")) == aesthetic)
-            and bool(entry.get("is_explicit", False)) == want_explicit
-        ]
-
-        if not matches:
-            explicit_label = "true" if want_explicit else "false"
-            raise RuntimeError(
-                f"VNCCS Clothes Templates: no outfits found for aesthetic='{aesthetic}', is_explicit={explicit_label}."
-            )
-
-        content = str(random.choice(matches).get("content", "")).strip().strip(",").strip()
-        return (content,)
-
-
-class VNCCS_VLAnalyzer:
-    """Analyze character clothing from an image using the same Qwen VL GGUF stack as the wizards."""
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "image": ("IMAGE",),
-                "clothing_tags": ("STRING", {"default": "", "multiline": True}),
-            }
-        }
-
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("description",)
-    CATEGORY = "VNCCS"
-    FUNCTION = "analyze_clothes"
-
-    def analyze_clothes(self, image, clothing_tags=""):
-        try:
-            import llama_cpp
-            import llama_cpp.llama_chat_format
-        except Exception as exc:
-            raise RuntimeError(f"llama-cpp-python is required for VNCCS VL analyzer: {exc}") from exc
-
-        try:
-            model_path, mmproj_path = _ensure_qwen_vl_assets()
-        except Exception as exc:
-            raise RuntimeError(f"VNCCS VL analyzer: failed to prepare QwenVL assets: {exc}") from exc
-
-        prompt = _build_vl_analyzer_prompt(clothing_tags)
-        image_uri = _tensor_to_vl_data_uri(image)
-        HandlerCls = _get_qwen_vl_chat_handler(llama_cpp)
-
-        print(f"[VNCCS VL Analyzer] Loading model: {model_path}")
-        print(f"[VNCCS VL Analyzer] Loading mmproj: {mmproj_path}")
-        chat_handler = HandlerCls(clip_model_path=mmproj_path, enable_thinking=False, verbose=False)
-        llm = llama_cpp.Llama(
-            model_path=model_path,
-            chat_handler=chat_handler,
-            n_ctx=4096,
-            n_gpu_layers=-1,
-            verbose=False,
-        )
-
-        system_prompt = (
-            "You are a practical anime/game character clothing analyst. "
-            "Describe visible clothes in simple natural language. "
-            "Follow the user's clothing tag hints."
-        )
-        response = llm.create_chat_completion(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": image_uri}},
-                ]},
-            ],
-            max_tokens=350,
-            temperature=0.2,
-        )
-
-        content = response["choices"][0]["message"]["content"]
-        description = str(content or "").strip()
-        if not description:
-            raise RuntimeError("VNCCS VL analyzer: empty response from QwenVL.")
-
-        print(f"[VNCCS VL Analyzer] Output: {description}")
-        return (description,)
-
-
 def _ensure_float01(tensor: torch.Tensor) -> torch.Tensor:
     """Normalize tensor to float in [0, 1] range."""
     t = tensor
@@ -612,7 +111,6 @@ def _ensure_float01(tensor: torch.Tensor) -> torch.Tensor:
         t = t / 255.0
     return t.clamp(0.0, 1.0)
 
-
 def _box_blur_2d(mask: torch.Tensor, radius: int) -> torch.Tensor:
     if radius <= 0:
         return mask
@@ -620,7 +118,6 @@ def _box_blur_2d(mask: torch.Tensor, radius: int) -> torch.Tensor:
     src = mask.unsqueeze(0).unsqueeze(0)
     blurred = F.avg_pool2d(src, kernel_size=kernel_size, stride=1, padding=radius)
     return blurred.squeeze(0).squeeze(0)
-
 
 def _morph(mask: torch.Tensor, radius: int, mode: str) -> torch.Tensor:
     if radius <= 0:
@@ -635,7 +132,6 @@ def _morph(mask: torch.Tensor, radius: int, mode: str) -> torch.Tensor:
         raise ValueError(f"Unsupported morph mode: {mode}")
     return out.squeeze(0).squeeze(0)
 
-
 def _remove_small_islands(mask: torch.Tensor, min_neighbors: int) -> torch.Tensor:
     if min_neighbors <= 0:
         return mask
@@ -645,14 +141,12 @@ def _remove_small_islands(mask: torch.Tensor, min_neighbors: int) -> torch.Tenso
     keep = (neighbors.squeeze(0).squeeze(0) >= float(min_neighbors)).float()
     return torch.where(keep > 0.0, mask, torch.zeros_like(mask))
 
-
 def _as_bool(value, default=False):
     if value is None:
         return bool(default)
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
-
 
 def _get_comfy_node_class(class_names):
     try:
@@ -666,10 +160,8 @@ def _get_comfy_node_class(class_names):
             return cls
     return None
 
-
 def _is_comfy_node_output(value):
     return hasattr(value, "result") and hasattr(value, "args") and type(value).__name__ == "NodeOutput"
-
 
 def _unwrap_node_result(value):
     if _is_comfy_node_output(value):
@@ -680,7 +172,6 @@ def _unwrap_node_result(value):
     if isinstance(value, tuple) and len(value) == 1:
         return value[0]
     return value
-
 
 def _call_registered_node(class_names, method_names=None, **kwargs):
     cls = _get_comfy_node_class(class_names)
@@ -721,7 +212,6 @@ def _call_registered_node(class_names, method_names=None, **kwargs):
 
     raise RuntimeError(f"Node '{'/'.join(class_names)}' has no callable FUNCTION")
 
-
 def _sam3_model_dir():
     if folder_paths is None or not getattr(folder_paths, "models_dir", None):
         return os.path.join("models", "sam3")
@@ -734,7 +224,6 @@ def _sam3_model_dir():
         pass
     return os.path.join(folder_paths.models_dir, "sam3")
 
-
 def _find_sam3_model_file(filename):
     if folder_paths is not None:
         try:
@@ -745,7 +234,6 @@ def _find_sam3_model_file(filename):
             pass
     target = os.path.join(_sam3_model_dir(), filename)
     return target if os.path.exists(target) else None
-
 
 def _ensure_sam3_model_available():
     filename = SAM3_MODEL_FILENAME
@@ -768,7 +256,7 @@ def _ensure_sam3_model_available():
         revision = SAM3_MODEL_REVISION
         target_dir = _sam3_model_dir()
         os.makedirs(target_dir, exist_ok=True)
-        print(f"[VNCCS SAM3] '{filename}' not found. Downloading from Hugging Face repo '{repo_id}'...")
+        log_stage("download", component="SAM3", file=filename, repository=repo_id)
         try:
             path = hf_hub_download(
                 repo_id=repo_id,
@@ -786,9 +274,8 @@ def _ensure_sam3_model_available():
 
         if not os.path.exists(path):
             raise RuntimeError(f"SAM3 download completed but '{path}' was not created")
-        print(f"[VNCCS SAM3] Model ready: {path}")
+        log_event("asset_ready", component="SAM3", file=os.path.basename(path))
         return filename
-
 
 def _normalize_mask_batch(value, target_hw, batch_size, stage="mask"):
     tensors = []
@@ -847,190 +334,7 @@ def _normalize_mask_batch(value, target_hw, batch_size, stage="mask"):
         raise RuntimeError(f"VNCCS Chroma Key: {stage} returned {mask.shape[0]} masks for {batch_size} images")
     return mask[:batch_size].clamp(0.0, 1.0)
 
-
-
-
-
 # --- Guided Filter Helper ---
-class FastGuidedFilter:
-    """
-    Fast Guided Filter implementation in PyTorch.
-    Used for mask refinement (matting) by using the original image as guidance.
-    """
-    def __init__(self, r: int, eps: float):
-        self.r = r
-        self.eps = eps
-
-    def box_filter(self, x: torch.Tensor):
-        return F.avg_pool2d(x, self.r * 2 + 1, stride=1, padding=self.r)
-
-    def filter(self, guidance: torch.Tensor, input_mask: torch.Tensor):
-        """
-        guidance: [1, 3, H, W]
-        input_mask: [1, 1, H, W]
-        """
-        # guidance should be luminance or handled per-channel, 
-        # but for matting we usually use the RGB channels to build the model
-        
-        # Mean
-        mean_I = self.box_filter(guidance)
-        mean_p = self.box_filter(input_mask)
-        mean_Ip = self.box_filter(guidance * input_mask)
-        cov_Ip = mean_Ip - mean_I * mean_p
-        
-        mean_II = self.box_filter(guidance * guidance)
-        var_I = mean_II - mean_I * mean_I
-        
-        # Linear coefficients
-        a = cov_Ip / (var_I + self.eps)
-        b = mean_p - a * mean_I
-        
-        # Average coefficients
-        mean_a = self.box_filter(a)
-        mean_b = self.box_filter(b)
-        
-        # Resulting sharpened mask
-        output = (mean_a * guidance + mean_b).mean(dim=1, keepdim=True)
-        return torch.clamp(output, 0.0, 1.0)
-
-
-# --- Color Fix Node ---
-class VNCCS_ColorFix:
-    """Adjust contrast and saturation of an image. Supports alpha channel."""
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "image": ("IMAGE",),
-                "contrast": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-                "saturation": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.01}),
-            }
-        }
-
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
-    CATEGORY = "VNCCS"
-    FUNCTION = "color_fix"
-
-    def _apply_to_rgb(self, rgb: torch.Tensor, contrast: float, saturation: float) -> torch.Tensor:
-        lum = rgb[..., 0] * 0.299 + rgb[..., 1] * 0.587 + rgb[..., 2] * 0.114
-        lum = lum.unsqueeze(-1)
-        rgb = lum * (1.0 - saturation) + rgb * saturation
-        rgb = (rgb - 0.5) * contrast + 0.5
-        return rgb.clamp(0.0, 1.0)
-
-    def color_fix(self, image, contrast=1.0, saturation=1.0):
-        image = _normalize_image_batch(image, stage="color fix")
-
-        if len(image.shape) == 4:
-            results = []
-            for i in range(image.shape[0]):
-                out = self._process_single(image[i], contrast, saturation)
-                results.append(out)
-            return (torch.stack(results),)
-
-        out = self._process_single(image, contrast, saturation)
-        return (out.unsqueeze(0),)
-
-    def _process_single(self, img: torch.Tensor, contrast: float, saturation: float) -> torch.Tensor:
-        img = _ensure_float01(img)
-        h, w, c = img.shape
-
-        has_alpha = (c == 4)
-        if has_alpha:
-            rgb = img[..., :3]
-            alpha = img[..., 3:4]
-        else:
-            rgb = img
-            alpha = None
-
-        rgb = self._apply_to_rgb(rgb, float(contrast), float(saturation))
-
-        if has_alpha:
-            out = torch.cat([rgb, alpha.clamp(0.0, 1.0)], dim=-1)
-        else:
-            out = rgb
-
-        return out
-
-
-# --- Resize Node ---
-class VNCCS_Resize:
-    """Resize an image to specified width and height using chosen resample method."""
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "image": ("IMAGE",),
-                "width": ("INT", {"default": 512, "min": 1, "max": 8192, "step": 1}),
-                "height": ("INT", {"default": 512, "min": 1, "max": 8192, "step": 1}),
-                "method": (["nearest", "bilinear", "bicubic", "lanczos"], {"default": "bilinear"}),
-            }
-        }
-
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
-    CATEGORY = "VNCCS"
-    FUNCTION = "resize"
-
-    def _ensure_uint8_pil(self, tensor: torch.Tensor) -> Image.Image:
-        t = tensor
-        if not torch.is_floating_point(t):
-            t = t.float()
-        if t.max() <= 1.5:
-            arr = (t.cpu().numpy() * 255.0).astype('uint8')
-        else:
-            arr = t.cpu().numpy().astype('uint8')
-        return Image.fromarray(arr)
-
-    def _pil_to_tensor(self, img: Image.Image) -> torch.Tensor:
-        a = np.array(img).astype(np.float32) / 255.0
-        return torch.from_numpy(a)
-
-    def resize(self, image, width, height, method="bilinear"):
-        image = _normalize_image_batch(image, target_hw=(int(height), int(width)), stage="resize")
-
-        if len(image.shape) == 4:
-            results = []
-            for i in range(image.shape[0]):
-                out = self._resize_single(image[i], int(width), int(height), method)
-                results.append(out)
-            return (torch.stack(results),)
-
-        out = self._resize_single(image, int(width), int(height), method)
-        return (out.unsqueeze(0),)
-
-    def _resize_single(self, img: torch.Tensor, width: int, height: int, method: str) -> torch.Tensor:
-        img = _ensure_float01(img)
-        h, w, c = img.shape
-        has_alpha = (c == 4)
-
-        pil_img = self._ensure_uint8_pil(img[..., :3] if has_alpha else img)
-
-        resample_map = {
-            "nearest": Image.NEAREST,
-            "bilinear": Image.BILINEAR,
-            "bicubic": Image.BICUBIC,
-            "lanczos": Image.LANCZOS
-        }
-
-        resample = resample_map.get(method, Image.BILINEAR)
-        pil_resized = pil_img.resize((width, height), resample=resample)
-
-        if has_alpha:
-            pil_alpha = self._ensure_uint8_pil(img[..., 3])
-            pil_alpha_resized = pil_alpha.resize((width, height), resample=Image.NEAREST)
-            pil_rgba = Image.merge('RGBA', (*pil_resized.split(), pil_alpha_resized))
-            out = self._pil_to_tensor(pil_rgba)
-        else:
-            out = self._pil_to_tensor(pil_resized)
-
-        return out
-
-
-# --- Mask Extractor Node ---
 class VNCCS_MaskExtractor:
     """Fill alpha channel with bright green color."""
     
@@ -1046,16 +350,6 @@ class VNCCS_MaskExtractor:
     RETURN_NAMES = ("IMAGE",)
     FUNCTION = "fill_alpha_with_color"
     CATEGORY = "VNCCS"
-
-    def _hex_to_rgb_norm(self, hex_color: str = "#00FF00"):
-        c = (hex_color or "#00FF00").strip().lstrip('#')
-        if len(c) == 3:
-            c = ''.join(ch*2 for ch in c)
-        c = c[:6].ljust(6, '0')
-        r = int(c[0:2], 16) / 255.0
-        g = int(c[2:4], 16) / 255.0
-        b = int(c[4:6], 16) / 255.0
-        return r, g, b
 
     def fill_alpha_with_color(self, image):
         if image is None:
@@ -1073,7 +367,7 @@ class VNCCS_MaskExtractor:
         if alpha.ndim == 4 and alpha.shape[1] == 1:
             alpha = alpha.squeeze(1)
         alpha = alpha.clamp(0.0, 1.0)
-        r, g, b = self._hex_to_rgb_norm()
+        r, g, b = 0.0, 1.0, 0.0
         device = rgb.device
         dtype = rgb.dtype
         bg = torch.tensor([r, g, b], dtype=dtype, device=device).view(1, 1, 1, 3)
@@ -1082,589 +376,6 @@ class VNCCS_MaskExtractor:
         if added_batch:
             out = out.squeeze(0)
         return (out,)
-
-
-# --- RMBG Model Loaders ---
-# Security model: RMBG/BEN architecture code is vendored in this repository.
-# The HuggingFace downloads below are limited to model weights/config data.
-AVAILABLE_MODELS = {
-    "RMBG-2.0": {
-        "type": "rmbg",
-        "repo_id": "1038lab/RMBG-2.0",
-        "revision": "1cd4787601caeb4c8e826dba7ea8e2163b5208df",
-        "files": {
-            "config.json": "config.json",
-            "model.safetensors": "model.safetensors"
-        },
-        "cache_dir": "RMBG-2.0"
-    },
-    "INSPYRENET": {
-        "type": "inspyrenet",
-        "repo_id": "1038lab/inspyrenet",
-        "revision": "0f5946638dcbc7dbc1e56306b823959958ac0ae0",
-        "files": {
-            "inspyrenet.safetensors": "inspyrenet.safetensors"
-        },
-        "cache_dir": "INSPYRENET"
-    },
-    "BEN": {
-        "type": "ben",
-        "repo_id": "1038lab/BEN",
-        "revision": "12124b2fa3f6a519e7b8771a81fa9f5cb5ed5078",
-        "files": {
-            "BEN_Base.pth": "BEN_Base.pth"
-        },
-        "cache_dir": "BEN"
-    },
-}
-
-
-class BaseModelLoader:
-    def __init__(self):
-        self.model = None
-        self.current_model_version = None
-        self.base_cache_dir = os.path.join(folder_paths.models_dir, "RMBG") if folder_paths else "models/RMBG"
-    
-    def get_cache_dir(self, model_name):
-        cache_path = os.path.join(self.base_cache_dir, AVAILABLE_MODELS[model_name]["cache_dir"])
-        os.makedirs(cache_path, exist_ok=True)
-        return cache_path
-    
-    def check_model_cache(self, model_name):
-        model_info = AVAILABLE_MODELS[model_name]
-        cache_dir = self.get_cache_dir(model_name)
-        
-        if not os.path.exists(cache_dir):
-            return False, "Model directory not found"
-        
-        missing_files = []
-        for filename in model_info["files"].keys():
-            if not os.path.exists(os.path.join(cache_dir, model_info["files"][filename])):
-                missing_files.append(filename)
-        
-        if missing_files:
-            return False, f"Missing model files: {', '.join(missing_files)}"
-            
-        return True, "Model cache verified"
-    
-    def download_model(self, model_name):
-        model_info = AVAILABLE_MODELS[model_name]
-        cache_dir = self.get_cache_dir(model_name)
-        revision = model_info.get("revision")
-        
-        try:
-            os.makedirs(cache_dir, exist_ok=True)
-            print(f"Downloading {model_name} model files...")
-            
-            for filename in model_info["files"].keys():
-                print(f"Downloading {filename}...")
-                hf_hub_download(
-                    repo_id=model_info["repo_id"],
-                    filename=filename,
-                    revision=revision,
-                    local_dir=cache_dir,
-                    token=False,
-                )
-                    
-            return True, "Model files downloaded successfully"
-            
-        except Exception as e:
-            return False, f"Error downloading model files: {str(e)}"
-    
-    def clear_model(self):
-        if self.model is not None:
-            self.model.cpu()
-            del self.model
-
-            import gc
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if hasattr(torch, "xpu") and torch.xpu.is_available():
-                torch.xpu.empty_cache()
-        self.model = None
-        self.current_model_version = None
-
-
-class RMBGModel(BaseModelLoader):
-    def __init__(self):
-        super().__init__()
-        
-    def load_model(self, model_name):
-        if self.current_model_version != model_name:
-            self.clear_model()
-            cache_dir = self.get_cache_dir(model_name)
-            try:
-                try:
-                    from ._vendored_birefnet import BiRefNet
-                    from ._vendored_birefnet_config import BiRefNetConfig
-                except Exception:
-                    from _vendored_birefnet import BiRefNet
-                    from _vendored_birefnet_config import BiRefNetConfig
-
-                self.model = BiRefNet(config=BiRefNetConfig())
-                weights_path = os.path.join(cache_dir, "model.safetensors")
-                try:
-                    try:
-                        import safetensors.torch
-                        self.model.load_state_dict(safetensors.torch.load_file(weights_path))
-                    except ImportError:
-                        from transformers.modeling_utils import load_state_dict
-                        state_dict = load_state_dict(weights_path)
-                        self.model.load_state_dict(state_dict)
-                except Exception as load_error:
-                    pytorch_weights = os.path.join(cache_dir, "pytorch_model.bin")
-                    if os.path.exists(pytorch_weights):
-                        self.model.load_state_dict(torch.load(pytorch_weights, map_location="cpu"))
-                    else:
-                        raise RuntimeError(f"Failed to load weights: {str(load_error)}")
-
-            except Exception as e:
-                handle_model_error(f"Error loading model: {str(e)}")
-
-            self.model.eval()
-            for param in self.model.parameters():
-                param.requires_grad = False
-
-            torch.set_float32_matmul_precision('high')
-            self.model.to(device)
-            self.current_model_version = model_name
-            
-    def process_image(self, images, model_name, params):
-        try:
-            self.load_model(model_name)
-
-            transform_image = transforms.Compose([
-                transforms.Resize((params["process_res"], params["process_res"])),
-                transforms.ToTensor(),
-                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-            ])
-
-            if isinstance(images, torch.Tensor):
-                if len(images.shape) == 3:
-                    images = [images]
-                else:
-                    images = [img for img in images]
-
-            original_sizes = [tensor2pil(img).size for img in images]
-
-            input_tensors = [transform_image(tensor2pil(img)).unsqueeze(0) for img in images]
-            input_batch = torch.cat(input_tensors, dim=0).to(device)
-
-            with torch.no_grad():
-                outputs = self.model(input_batch)
-                
-                if isinstance(outputs, list) and len(outputs) > 0:
-                    results = outputs[-1].sigmoid().cpu()
-                elif isinstance(outputs, dict) and 'logits' in outputs:
-                    results = outputs['logits'].sigmoid().cpu()
-                elif isinstance(outputs, torch.Tensor):
-                    results = outputs.sigmoid().cpu()
-                else:
-                    try:
-                        if hasattr(outputs, 'last_hidden_state'):
-                            results = outputs.last_hidden_state.sigmoid().cpu()
-                        else:
-                            for k, v in outputs.items():
-                                if isinstance(v, torch.Tensor):
-                                    results = v.sigmoid().cpu()
-                                    break
-                    except:
-                        handle_model_error("Unable to recognize model output format")
-                
-                masks = []
-                
-                for i, (result, (orig_w, orig_h)) in enumerate(zip(results, original_sizes)):
-                    result = result.squeeze()
-                    result = result * (1 + (1 - params["sensitivity"]))
-                    result = torch.clamp(result, 0, 1)
-
-                    result = F.interpolate(result.unsqueeze(0).unsqueeze(0),
-                                         size=(orig_h, orig_w),
-                                         mode='bilinear').squeeze()
-                    
-                    masks.append(tensor2pil(result))
-
-                return masks
-
-        except Exception as e:
-            handle_model_error(f"Error in batch processing: {str(e)}")
-
-
-class CustomBiRefNetModel(RMBGModel):
-    def load_model(self, model_name):
-        if self.current_model_version != model_name:
-            self.clear_model()
-            
-            model_path = get_full_path_agnostic(folder_paths, "birefnet", model_name, require_exists=True) if folder_paths else None
-            if not model_path or not os.path.exists(model_path):
-                raise RuntimeError(f"Custom model file {model_name} not found")
-
-            if os.path.isdir(model_path):
-                handle_model_error(
-                    "Loading local HuggingFace BiRefNet directories is disabled because it requires "
-                    "trust_remote_code. Use a safetensors/pth BiRefNet weights file with the pinned "
-                    "RMBG-2.0 architecture instead."
-                )
-            else:
-                try:
-                    try:
-                        from ._vendored_birefnet import BiRefNet
-                        from ._vendored_birefnet_config import BiRefNetConfig
-                    except Exception:
-                        from _vendored_birefnet import BiRefNet
-                        from _vendored_birefnet_config import BiRefNetConfig
-
-                    self.model = BiRefNet(config=BiRefNetConfig())
-                    weights_path = model_path
-                    try:
-                        if weights_path.endswith(".safetensors"):
-                            try:
-                                import safetensors.torch
-                                state_dict = safetensors.torch.load_file(weights_path)
-                            except ImportError:
-                                from transformers.modeling_utils import load_state_dict
-                                state_dict = load_state_dict(weights_path)
-                        else:
-                            state_dict = torch.load(weights_path, map_location="cpu")
-                            
-                        if "state_dict" in state_dict:
-                            state_dict = state_dict["state_dict"]
-                        elif "net" in state_dict:
-                            state_dict = state_dict["net"]
-                        
-                        unwrapped_state_dict = {}
-                        for k, v in state_dict.items():
-                            if k.startswith('module.'):
-                                unwrapped_state_dict[k[7:]] = v
-                            else:
-                                unwrapped_state_dict[k] = v
-
-                        self.model.load_state_dict(unwrapped_state_dict)
-                    except Exception as load_error:
-                        raise RuntimeError(f"Failed to load weights from {weights_path}: {str(load_error)}")
-
-                except Exception as e:
-                    handle_model_error(f"Error loading custom BiRefNet file {model_name}: {str(e)}")
-
-            self.model.eval()
-            for param in self.model.parameters():
-                param.requires_grad = False
-
-            torch.set_float32_matmul_precision('high')
-            self.model.to(device)
-            self.current_model_version = model_name
-
-
-class InspyrenetModel(BaseModelLoader):
-    def __init__(self):
-        super().__init__()
-        
-    def load_model(self, model_name):
-        if self.current_model_version != model_name:
-            self.clear_model()
-            
-            try:
-                import transparent_background
-                self.model = transparent_background.Remover()
-                self.current_model_version = model_name
-            except Exception as e:
-                handle_model_error(f"Failed to initialize transparent_background: {str(e)}")
-    
-    def process_image(self, image, model_name, params):
-        try:
-            self.load_model(model_name)
-            
-            orig_image = tensor2pil(image)
-            w, h = orig_image.size
-            
-            aspect_ratio = h / w
-            new_w = params["process_res"]
-            new_h = int(params["process_res"] * aspect_ratio)
-            resized_image = orig_image.resize((new_w, new_h), Image.LANCZOS)
-            
-            foreground = self.model.process(resized_image, type='rgba')
-            foreground = foreground.resize((w, h), Image.LANCZOS)
-            mask = foreground.split()[-1]
-            
-            return mask
-            
-        except Exception as e:
-            handle_model_error(f"Error in Inspyrenet processing: {str(e)}")
-
-
-class BENModel(BaseModelLoader):
-    def __init__(self):
-        super().__init__()
-        
-    def load_model(self, model_name):
-        if self.current_model_version != model_name:
-            self.clear_model()
-            
-            cache_dir = self.get_cache_dir(model_name)
-            try:
-                from ._vendored_ben import BEN_Base
-            except Exception:
-                from _vendored_ben import BEN_Base
-            
-            model_weights_path = os.path.join(cache_dir, "BEN_Base.pth")
-            self.model = BEN_Base()
-            self.model.loadcheckpoints(model_weights_path)
-            
-            self.model.eval()
-            for param in self.model.parameters():
-                param.requires_grad = False
-            
-            torch.set_float32_matmul_precision('high')
-            self.model.to(device)
-            self.current_model_version = model_name
-    
-    def process_image(self, image, model_name, params):
-        try:
-            self.load_model(model_name)
-            
-            orig_image = tensor2pil(image)
-            w, h = orig_image.size
-            
-            aspect_ratio = h / w
-            new_w = params["process_res"]
-            new_h = int(params["process_res"] * aspect_ratio)
-            resized_image = orig_image.resize((new_w, new_h), Image.LANCZOS)
-            
-            processed_input = resized_image.convert("RGBA")
-            
-            with torch.no_grad():
-                _, foreground = self.model.inference(processed_input)
-            
-            foreground = foreground.resize((w, h), Image.LANCZOS)
-            mask = foreground.split()[-1]
-            
-            return mask
-            
-        except Exception as e:
-            handle_model_error(f"Error in BEN processing: {str(e)}")
-
-
-def refine_foreground(image_bchw, masks_b1hw):
-    b, c, h, w = image_bchw.shape
-    if b != masks_b1hw.shape[0]:
-        raise ValueError("images and masks must have the same batch size")
-    
-    image_np = image_bchw.cpu().numpy()
-    mask_np = masks_b1hw.cpu().numpy()
-    
-    refined_fg = []
-    for i in range(b):
-        mask = mask_np[i, 0]      
-        thresh = 0.45
-        mask_binary = (mask > thresh).astype(np.float32)
-        
-        edge_blur = cv2.GaussianBlur(mask_binary, (3, 3), 0)
-        transition_mask = np.logical_and(mask > 0.05, mask < 0.95)
-        
-        alpha = 0.85
-        mask_refined = np.where(transition_mask,
-                              alpha * mask + (1-alpha) * edge_blur,
-                              mask_binary)
-        
-        edge_region = np.logical_and(mask > 0.2, mask < 0.8)
-        mask_refined = np.where(edge_region,
-                              mask_refined * 0.98,
-                              mask_refined)
-        
-        result = []
-        for c_idx in range(image_np.shape[1]):
-            channel = image_np[i, c_idx]
-            refined = channel * mask_refined
-            result.append(refined)
-            
-        refined_fg.append(np.stack(result))
-    
-    return torch.from_numpy(np.stack(refined_fg))
-
-
-# --- RMBG2 Node ---
-class VNCCS_RMBG2:
-    def __init__(self):
-        self.models = {
-            "RMBG-2.0": RMBGModel(),
-            "INSPYRENET": InspyrenetModel(),
-            "BEN": BENModel(),
-        }
-    
-    @classmethod
-    def INPUT_TYPES(s):
-        tooltips = {
-            "image": "Input image to be processed for background removal.",
-            "model": "Select the background removal model to use.",
-            "sensitivity": "Adjust the strength of mask detection.",
-            "process_res": "Set the processing resolution.",
-            "mask_blur": "Amount of blur to apply to mask edges.",
-            "mask_offset": "Adjust the mask boundary.",
-            "background": "Choose output type: Alpha (transparent) or Color.",
-            "invert_output": "Enable to invert both the image and mask output.",
-            "refine_foreground": "Use Fast Foreground Colour Estimation."
-        }
-        
-        birefnet_models = [f for f in folder_paths.get_filename_list("birefnet") if f.endswith((".safetensors", ".pth"))] if folder_paths else []
-        all_models = list(AVAILABLE_MODELS.keys()) + birefnet_models
-        
-        return {
-            "required": {
-                "image": ("IMAGE", {"tooltip": tooltips["image"]}),
-                "model": (all_models, {"tooltip": tooltips["model"]}),
-            },
-            "optional": {
-                "sensitivity": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "process_res": ("INT", {"default": 1024, "min": 256, "max": 2048, "step": 8}),
-                "mask_blur": ("INT", {"default": 0, "min": 0, "max": 64, "step": 1}),
-                "mask_offset": ("INT", {"default": 0, "min": -64, "max": 64, "step": 1}),
-                "invert_output": ("BOOLEAN", {"default": False}),
-                "refine_foreground": ("BOOLEAN", {"default": False}),
-                "background": (["Alpha", "Green", "Blue", "White"], {"default": "Alpha"}),
-            }
-        }
-
-    RETURN_TYPES = _CompatReturnTypes(("IMAGE", "MASK", "IMAGE"))
-    RETURN_NAMES = ("IMAGE", "MASK", "MASK_IMAGE")
-    FUNCTION = "process_image"
-    CATEGORY = "VNCCS"
-
-    def process_image(self, image, model, **params):
-        try:
-            image = _normalize_image_batch(image, stage="rmbg input")
-            processed_images = []
-            processed_masks = []
-            
-            if model in AVAILABLE_MODELS:
-                model_instance = self.models[model]
-                
-                cache_status, message = model_instance.check_model_cache(model)
-                if not cache_status:
-                    print(f"Cache check: {message}")
-                    print("Downloading required model files...")
-                    download_status, download_message = model_instance.download_model(model)
-                    if not download_status:
-                        handle_model_error(download_message)
-                    print("Model files downloaded successfully")
-                
-                model_type = AVAILABLE_MODELS[model]["type"]
-            else:
-                if not hasattr(self, "custom_birefnet_model"):
-                    self.custom_birefnet_model = CustomBiRefNetModel()
-                model_instance = self.custom_birefnet_model
-                model_type = "rmbg" # BiRefNet behaves identical to rmbg output-wise
-            
-            def _process_pair(img, mask):
-                if isinstance(mask, list):
-                    masks = [m.convert("L") for m in mask if isinstance(m, Image.Image)]
-                    mask_local = masks[0] if masks else None
-                elif isinstance(mask, Image.Image):
-                    mask_local = mask.convert("L")
-                else:
-                    mask_local = mask
-                
-                mask_tensor_local = pil2tensor(mask_local)
-                mask_tensor_local = mask_tensor_local * (1 + (1 - params["sensitivity"]))
-                mask_tensor_local = torch.clamp(mask_tensor_local, 0, 1)
-                mask_img_local = tensor2pil(mask_tensor_local)
-                
-                if params["mask_blur"] > 0:
-                    mask_img_local = mask_img_local.filter(ImageFilter.GaussianBlur(radius=params["mask_blur"]))
-                
-                if params["mask_offset"] != 0:
-                    if params["mask_offset"] > 0:
-                        for _ in range(params["mask_offset"]):
-                            mask_img_local = mask_img_local.filter(ImageFilter.MaxFilter(3))
-                    else:
-                        for _ in range(-params["mask_offset"]):
-                            mask_img_local = mask_img_local.filter(ImageFilter.MinFilter(3))
-                
-                if params["invert_output"]:
-                    mask_img_local = Image.fromarray(255 - np.array(mask_img_local))
-                
-                img_tensor_local = torch.from_numpy(np.array(tensor2pil(img))).permute(2, 0, 1).unsqueeze(0) / 255.0
-                mask_tensor_b1hw = torch.from_numpy(np.array(mask_img_local)).unsqueeze(0).unsqueeze(0) / 255.0
-                
-                orig_image_local = tensor2pil(img)
-                
-                if params.get("refine_foreground", False):
-                    refined_fg_local = refine_foreground(img_tensor_local, mask_tensor_b1hw)
-                    refined_fg_local = tensor2pil(refined_fg_local[0].permute(1, 2, 0))
-                    r, g, b = refined_fg_local.split()
-                    foreground_local = Image.merge('RGBA', (r, g, b, mask_img_local))
-                else:
-                    orig_rgba_local = orig_image_local.convert("RGBA")
-                    r, g, b, _ = orig_rgba_local.split()
-                    foreground_local = Image.merge('RGBA', (r, g, b, mask_img_local))
-                
-                def hex_to_rgba(hex_color):
-                    hex_color = hex_color.lstrip('#')
-                    if len(hex_color) == 6:
-                        r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
-                        a = 255
-                    elif len(hex_color) == 8:
-                        r, g, b, a = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16), int(hex_color[6:8], 16)
-                    else:
-                        raise ValueError("Invalid color format")
-                    return (r, g, b, a)
-                
-                if params["background"] == "Green":
-                    rgba = hex_to_rgba("#00FF00")
-                    bg_image = Image.new('RGBA', orig_image_local.size, rgba)
-                    composite_image = Image.alpha_composite(bg_image, foreground_local)
-                    processed_images.append(pil2tensor(composite_image.convert("RGB")))
-                elif params["background"] == "Blue":
-                    rgba = hex_to_rgba("#0000FF")
-                    bg_image = Image.new('RGBA', orig_image_local.size, rgba)
-                    composite_image = Image.alpha_composite(bg_image, foreground_local)
-                    processed_images.append(pil2tensor(composite_image.convert("RGB")))
-                elif params["background"] == "White":
-                    rgba = hex_to_rgba("#FFFFFF")
-                    bg_image = Image.new('RGBA', orig_image_local.size, rgba)
-                    composite_image = Image.alpha_composite(bg_image, foreground_local)
-                    processed_images.append(pil2tensor(composite_image.convert("RGB")))
-                else:
-                    processed_images.append(pil2tensor(foreground_local))
-                
-                processed_masks.append(pil2tensor(mask_img_local))
-            
-            if model_type == "rmbg":
-                images_list = [img for img in image]
-                chunk_size = 4
-                for start in range(0, len(images_list), chunk_size):
-                    batch_imgs = images_list[start:start + chunk_size]
-                    masks = model_instance.process_image(batch_imgs, model, params)
-                    if isinstance(masks, Image.Image):
-                        masks = [masks]
-                    for img_item, mask_item in zip(batch_imgs, masks):
-                        _process_pair(img_item, mask_item)
-            else:
-                for img in image:
-                    mask = model_instance.process_image(img, model, params)
-                    _process_pair(img, mask)
-            
-            mask_images = []
-            for mask_tensor in processed_masks:
-                mask_image = mask_tensor.reshape((-1, 1, mask_tensor.shape[-2], mask_tensor.shape[-1])).movedim(1, -1).expand(-1, -1, -1, 3)
-                mask_images.append(mask_image)
-            
-            target_hw = None
-            if processed_images:
-                first = processed_images[0]
-                target_hw = (int(first.shape[1]), int(first.shape[2]))
-            mask_image_output = _normalize_image_batch(mask_images, target_hw=target_hw, stage="rmbg mask image")
-            processed_image_output = _normalize_image_batch(processed_images, target_hw=target_hw, stage="rmbg output")
-            processed_mask_output = torch.cat(processed_masks, dim=0)
-            
-            return (processed_image_output, processed_mask_output, mask_image_output)
-            
-        except Exception as e:
-            handle_model_error(f"Error in image processing: {str(e)}")
-            empty_mask = torch.zeros((image.shape[0], image.shape[2], image.shape[3]))
-            empty_mask_image = empty_mask.reshape((-1, 1, empty_mask.shape[-2], empty_mask.shape[-1])).movedim(1, -1).expand(-1, -1, -1, 3)
-            return (image, empty_mask, empty_mask_image)
-
 
 class VNCCSChromaKey:
     """VNCCS Chroma Key - soft chroma key with edge decontamination."""
@@ -1729,7 +440,7 @@ class VNCCSChromaKey:
         image = _normalize_image_batch(image, stage="chroma key input")
         if _as_bool(use_sam3_recovery_mask, False):
             if not _sam3_recovery_runtime_supported():
-                print("[VNCCS] SAM3 recovery is unsupported on macOS; using chroma key without recovery")
+                log_event("fallback", component="ImageProcessing", level="warning", message='SAM3 recovery is unsupported on macOS; using chroma key without recovery')
             else:
                 try:
                     return self._chroma_key_with_sam3_recovery(
@@ -1748,10 +459,7 @@ class VNCCSChromaKey:
                         sam3_settings=sam3_settings,
                     )
                 except Exception as exc:
-                    print(
-                        "[VNCCS] SAM3 recovery failed; using chroma key without recovery: "
-                        f"{type(exc).__name__}: {exc}"
-                    )
+                    log_event('fallback', component='ImageProcessing', level='warning', message=f'SAM3 recovery failed; using chroma key without recovery: {type(exc).__name__}: {exc}', error=str(exc))
 
         if len(image.shape) == 4:
             rgba_list = []
@@ -1874,7 +582,7 @@ class VNCCSChromaKey:
                 ["Sam3ImageSegmentation", "easy sam3ImageSegmentation"],
                 method_names=("segment", "segment_image", "process", "execute"),
                 sam3_model=sam3_model,
-                images=image[index:index + 1],
+                images=image[index:index + 1, ..., :3],
                 prompt=str(settings.get("sam3_prompt", "face, clothes, accessories, hat, boots, eyes")),
                 threshold=float(settings.get("sam3_threshold", 0.40)),
                 keep_model_loaded=index < batch_size - 1,
@@ -1903,11 +611,8 @@ class VNCCSChromaKey:
             if candidates is not None:
                 return candidates
 
-            print(
-                f"[VNCCS Chroma Key] {stage} could not interpret individual mask shape "
-                f"{tuple(raw_masks.shape)}; using the combined SAM3 mask",
-                flush=True,
-            )
+            log_event("fallback", component="ImageProcessing", level="warning",
+                      message=f"{stage} could not interpret individual mask shape {tuple(raw_masks.shape)}; using the combined SAM3 mask")
 
         combined_source = result[0] if isinstance(result, (tuple, list)) and result else result
         combined = _normalize_mask_batch(
@@ -2016,11 +721,7 @@ class VNCCSChromaKey:
             foreground_overlap = (hard_candidate * confident_foreground).sum() / candidate_area
             if float(foreground_overlap.item()) >= min_overlap:
                 kept.append(candidate)
-        print(
-            f"[VNCCS Chroma Key] SAM3 recovery kept {len(kept)}/{int(candidates.shape[0])} "
-            "object mask(s) after foreground-overlap filtering",
-            flush=True,
-        )
+        log_event("sam3_recovery", component="ImageProcessing", level="debug", kept=len(kept), candidates=int(candidates.shape[0]))
         if not kept:
             return torch.zeros_like(alpha)
         return torch.stack(kept, dim=0).amax(dim=0).clamp(0.0, 1.0)
@@ -2617,33 +1318,12 @@ class VNCCSChromaKey:
         return torch.lerp(image, nearest, weight).clamp(0.0, 1.0)
 
 
-# --- Node Registration ---
 NODE_CLASS_MAPPINGS = {
-    "VNCCS_ClothesTemplates": VNCCS_ClothesTemplates,
-    "VNCCS_VLAnalyzer": VNCCS_VLAnalyzer,
     "VNCCSChromaKey": VNCCSChromaKey,
-    "VNCCS_ColorFix": VNCCS_ColorFix,
-    "VNCCS_Resize": VNCCS_Resize,
     "VNCCS_MaskExtractor": VNCCS_MaskExtractor,
-    "VNCCS_RMBG2": VNCCS_RMBG2,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "VNCCS_ClothesTemplates": "VNCCS Clothes Templates",
-    "VNCCS_VLAnalyzer": "VNCCS VL analyzer",
     "VNCCSChromaKey": "VNCCS Chroma Key",
-    "VNCCS_ColorFix": "VNCCS Color Fix",
-    "VNCCS_Resize": "VNCCS Resize",
     "VNCCS_MaskExtractor": "VNCCS Mask Extractor",
-    "VNCCS_RMBG2": "VNCCS RMBG2",
-}
-
-NODE_CATEGORY_MAPPINGS = {
-    "VNCCS_ClothesTemplates": "VNCCS",
-    "VNCCS_VLAnalyzer": "VNCCS",
-    "VNCCSChromaKey": "VNCCS",
-    "VNCCS_ColorFix": "VNCCS",
-    "VNCCS_Resize": "VNCCS",
-    "VNCCS_MaskExtractor": "VNCCS",
-    "VNCCS_RMBG2": "VNCCS",
 }

@@ -6,6 +6,9 @@ SOURCE = (
 ).read_text(encoding="utf-8")
 
 
+COMMON = (Path(__file__).resolve().parents[1] / "web" / "vnccs_common.js").read_text(encoding="utf-8")
+
+
 def test_emotions_generator_hides_face_denoise_slider_for_qi2():
     assert "face_denoise: 0.55" in SOURCE
     assert 'slider.type = "range"' in SOURCE
@@ -39,12 +42,12 @@ def test_seedvr_upscaler_exposes_resolution_controls():
 def test_pose_resolution_control_uses_clear_label():
     assert 'caption.textContent = "resolution scale"' in SOURCE
     assert 'slider.type = "range"' in SOURCE
-    assert "RESOLUTION_SCALE_MIN_MP = 1" in SOURCE
-    assert "RESOLUTION_SCALE_MAX_MP = 4" in SOURCE
-    assert "RESOLUTION_SCALE_STEP_MP = 0.1" in SOURCE
-    assert "[1.3, 1344]" in SOURCE
-    assert "[1.5, 1536]" in SOURCE
-    assert "resolutionScaleValue(slider.value)" in SOURCE
+    assert "RESOLUTION_SCALE_MIN_MP = 1" in COMMON
+    assert "RESOLUTION_SCALE_MAX_MP = 4" in COMMON
+    assert "RESOLUTION_SCALE_STEP_MP = 0.1" in COMMON
+    assert "[1.3, 1344]" in COMMON
+    assert "[1.5, 1536]" in COMMON
+    assert "finiteResolutionScaleValue(slider.value)" in SOURCE
     assert '"target_size", "scale area", "select"' not in SOURCE
 
 

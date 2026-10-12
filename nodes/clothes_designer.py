@@ -1,4 +1,7 @@
+from ..operation_logger import log_event, log_stage, logged_operation
+
 from .preview_runtime import run_wizard_job
+from .generator_context import serialized_generator
 
 import os
 import json
@@ -7,9 +10,8 @@ import torch
 import folder_paths
 import server
 from aiohttp import web
-from PIL import Image
+from PIL import Image, ImageOps
 import numpy as np
-import traceback
 import re
 
 from ..utils import (
@@ -17,7 +19,7 @@ from ..utils import (
     load_costume_info, list_costumes, ensure_costume_structure,
     sheets_dir,
     ensure_safe_name, safe_join_under, safe_relative_path, atomic_output_path,
-    validate_costume_info, privileged_route
+    validate_costume_info, privileged_route, character_storage_lock
 )
 from .character_generator import (
     _call_comfy_node,
@@ -28,11 +30,10 @@ from .character_generator import (
     NATIVE_BACKGROUND_PROMPT,
 )
 from .vnccs_control_center import _entry_kind, _find_model_on_disk, _apply_lora_standard
-from .vnccs_utils import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
-from .qwen_vl import configure_qwen_text_chat
+from .qwen_vl import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
+from .qwen_vl import configure_qwen_text_chat, parse_wizard_json, _validate_gguf_file
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-KLEIN_ENCODER_CLASS = "VNCCS_Flux_Klein_Encoder"
 WORKFLOW_SAMPLER_DEFAULTS = {
     "seed": 200413815563996,
     "steps": 4,
@@ -58,15 +59,16 @@ def _save_preview_cache(image, image_path, info_path, info):
     # Invalidate the old image/metadata pair before publishing either new file.
     # Failure preserves the previous image but cannot authorize its reuse with
     # a different prompt or reference. A later normal run can rebuild the cache.
-    try:
-        os.unlink(info_path)
-    except FileNotFoundError:
-        pass
-    with atomic_output_path(image_path) as temporary:
-        image.save(temporary, format="PNG")
-    with atomic_output_path(info_path) as temporary:
-        with open(temporary, "w", encoding="utf-8") as handle:
-            json.dump(info, handle)
+    with character_storage_lock(os.path.dirname(os.path.dirname(image_path))):
+        try:
+            os.unlink(info_path)
+        except FileNotFoundError:
+            pass
+        with atomic_output_path(image_path) as temporary:
+            image.save(temporary, format="PNG")
+        with atomic_output_path(info_path) as temporary:
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(info, handle)
 
 
 def _qi2_edit_system_prompt():
@@ -141,7 +143,7 @@ def _rewrite_qi2_clothes_prompt(clip, prompt, references, background_color, syst
         f"{prompt}\n{constraints}\n"
         "This is an outfit edit of the target canvas, preserving its framing and aspect ratio."
     )
-    print("[ClothesDesigner] Rewriting QI2 edit prompt...")
+    log_stage("rewriting_prompt", component="ClothesDesigner")
     generated_text = _call_comfy_node(
         "TextGenerate", clip=clip,
         prompt=f"{system_prompt}\n\n{request}",
@@ -167,8 +169,16 @@ def _clothes_target_size(settings, model_kind):
     return _resolution_scale_value(size, default=default)
 
 
-def _latest_image_file(files):
-    files = [path for path in files if os.path.isfile(path) and os.path.splitext(path)[1].lower() in IMAGE_EXTS]
+def _latest_image_file(files, root):
+    safe_files = []
+    for path in files:
+        try:
+            path = safe_join_under(root, os.path.relpath(path, root))
+        except ValueError:
+            continue
+        if os.path.isfile(path) and os.path.splitext(path)[1].lower() in IMAGE_EXTS:
+            safe_files.append(path)
+    files = safe_files
     if not files:
         return None
     return max(files, key=lambda path: (os.path.getmtime(path), path))
@@ -176,17 +186,22 @@ def _latest_image_file(files):
 
 def get_latest_sprite_path(character, costume="Naked"):
     try:
-        base = os.path.join(character_dir(character), "Sprites", costume)
+        character_root = character_dir(character)
+        costume = ensure_safe_name(costume, "costume")
+        base = safe_join_under(character_root, "Sprites", costume)
         if not os.path.isdir(base):
             return None
 
-        neutral_dir = os.path.join(base, "Neutral")
-        if os.path.isdir(neutral_dir):
+        try:
+            neutral_dir = safe_join_under(character_root, "Sprites", costume, "Neutral")
+        except ValueError:
+            neutral_dir = None
+        if neutral_dir and os.path.isdir(neutral_dir):
             neutral_files = []
             for root, _dirs, filenames in os.walk(neutral_dir):
                 for filename in filenames:
                     neutral_files.append(os.path.join(root, filename))
-            best = _latest_image_file(neutral_files)
+            best = _latest_image_file(neutral_files, character_root)
             if best:
                 return best
 
@@ -195,7 +210,7 @@ def get_latest_sprite_path(character, costume="Naked"):
             for filename in os.listdir(base)
             if os.path.isfile(os.path.join(base, filename))
         ]
-        best = _latest_image_file(direct_files)
+        best = _latest_image_file(direct_files, character_root)
         if best:
             return best
 
@@ -203,7 +218,7 @@ def get_latest_sprite_path(character, costume="Naked"):
         for root, _dirs, filenames in os.walk(base):
             for filename in filenames:
                 nested_files.append(os.path.join(root, filename))
-        return _latest_image_file(nested_files)
+        return _latest_image_file(nested_files, character_root)
     except Exception:
         return None
 
@@ -211,6 +226,8 @@ def get_latest_sprite_path(character, costume="Naked"):
 def list_preview_sprite_files(character, costume=None):
     try:
         base_char_path = character_dir(character)
+        if costume:
+            costume = ensure_safe_name(costume, "costume")
         sprite_roots = []
         if costume:
             sprite_roots.extend([
@@ -224,19 +241,27 @@ def list_preview_sprite_files(character, costume=None):
             os.path.join(base_char_path, "Sprites", "Original"),
         ])
         for root in sprite_roots:
+            try:
+                root = safe_join_under(base_char_path, os.path.relpath(root, base_char_path))
+            except ValueError:
+                continue
             if not os.path.isdir(root):
                 continue
-            files = [
-                os.path.join(root, filename)
-                for filename in os.listdir(root)
-                if os.path.isfile(os.path.join(root, filename))
-                and os.path.splitext(filename)[1].lower() in IMAGE_EXTS
-            ]
+            files = []
+            for filename in os.listdir(root):
+                if os.path.splitext(filename)[1].lower() not in IMAGE_EXTS:
+                    continue
+                try:
+                    path = safe_join_under(base_char_path, os.path.relpath(os.path.join(root, filename), base_char_path))
+                except ValueError:
+                    continue
+                if os.path.isfile(path):
+                    files.append(path)
             if files:
                 return sorted(files)
         return []
     except Exception as exc:
-        print(f"[ClothesDesigner] Failed to list preview sprites for {character}/{costume}: {exc}")
+        log_event('warning', component='ClothesDesigner', level='warning', message=f'Failed to list preview sprites for {character}/{costume}: {exc}', error=str(exc))
         return []
 
 
@@ -273,20 +298,6 @@ def _clone_reference_digest(image_path):
     return digest.hexdigest()
 
 
-def _validate_clothes_wizard_gguf(path, file_label="File"):
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"{file_label} was not written: {path}")
-
-    size = os.path.getsize(path)
-    if size < 1024 * 1024:
-        raise ValueError(f"{file_label} is too small to be a valid GGUF file ({size} bytes)")
-
-    with open(path, "rb") as file:
-        magic = file.read(4)
-    if magic != b"GGUF":
-        raise ValueError(f"{file_label} is not a valid GGUF file (magic={magic!r})")
-
-
 def _find_clothes_wizard_model():
     return _find_qwen_vl_model()
 
@@ -297,32 +308,8 @@ def _ensure_clothes_wizard_model():
 
 
 def _parse_clothes_wizard_json(content):
-    data = None
-    try:
-        import json_repair
-        data = json_repair.loads(content)
-    except Exception:
-        data = None
-
-    if isinstance(data, list) and data and isinstance(data[0], dict):
-        data = data[0]
-
-    if not isinstance(data, dict):
-        try:
-            json_str = content.strip()
-            if "```json" in json_str:
-                json_str = json_str.split("```json", 1)[1].split("```", 1)[0]
-            elif "```" in json_str:
-                json_str = json_str.split("```", 1)[1].split("```", 1)[0]
-            else:
-                match = re.search(r"\{.*\}", json_str, re.DOTALL)
-                if match:
-                    json_str = match.group(0)
-            data = json.loads(json_str.strip())
-        except Exception:
-            data = None
-
-    if not isinstance(data, dict):
+    data = parse_wizard_json(content)
+    if data is None:
         return None
 
     result = {}
@@ -445,6 +432,7 @@ class ClothesDesigner:
 
     @staticmethod
     def _pil_image_tensor(image):
+        image = ImageOps.exif_transpose(image)
         has_alpha = image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info)
         converted = image.convert("RGBA" if has_alpha else "RGB")
         array = np.asarray(converted, dtype=np.float32) / 255.0
@@ -543,11 +531,11 @@ class ClothesDesigner:
             return "".join([c for c in n if c.isalnum() or c in (' ', '_', '-')]).strip().replace(' ', '_')
         
         safe_costume = clean_name(costume)
-        cache_dir = os.path.join(character_dir(character), "cache")
+        cache_dir = safe_join_under(character_dir(character), "cache")
         os.makedirs(cache_dir, exist_ok=True)
         
-        img_path = os.path.join(cache_dir, f"preview_{safe_costume}.png")
-        info_path = os.path.join(cache_dir, f"preview_info_{safe_costume}.json")
+        img_path = safe_join_under(cache_dir, f"preview_{safe_costume}.png")
+        info_path = safe_join_under(cache_dir, f"preview_info_{safe_costume}.json")
         return img_path, info_path
 
     @staticmethod
@@ -566,9 +554,9 @@ class ClothesDesigner:
                     if files:
                         sprite_path = files[index % len(files)]
                         return sprite_path
-                    print(f"[ClothesDesigner] Selected preview sprite list is empty for {character_name}/{costume}; falling back to latest base sprite.")
+                    log_event("fallback", component="ClothesDesigner", level="warning", message=f'Selected preview sprite list is empty for {character_name}/{costume}; falling back to latest base sprite.')
                 except Exception as exc:
-                    print(f"[ClothesDesigner] Failed to load selected preview sprite {selected}: {exc}. Falling back to latest base sprite.")
+                    log_event('fallback', component='ClothesDesigner', level='warning', message=f'Failed to load selected preview sprite {selected}: {exc}. Falling back to latest base sprite.', error=str(exc))
 
             sprite_path = get_latest_sprite_path(character_name, "Naked") or get_latest_sprite_path(character_name, "Original")
             return sprite_path
@@ -582,6 +570,8 @@ class ClothesDesigner:
         with Image.open(sprite_path) as img:
             return self._pil_image_tensor(img)
 
+    @logged_operation("ClothesDesigner", "preview")
+    @serialized_generator
     def process(self, pipe=None, widget_data="{}", unique_id=None):
         # CRITICAL FIX: Ensure PromptServer has last_prompt_id for preview system
         if not hasattr(server.PromptServer.instance, "last_prompt_id"):
@@ -591,13 +581,18 @@ class ClothesDesigner:
             if isinstance(widget_data, str):
                 data = json.loads(widget_data)
             else: data = widget_data
-        except:
-            data = {}
+        except (TypeError, ValueError) as error:
+            raise ValueError("Clothes Designer widget data is invalid.") from error
+        if not isinstance(data, dict):
+            raise ValueError("Clothes Designer widget data must be an object.")
+        if not isinstance(data.get("gen_settings", {}), dict) or not isinstance(data.get("costume_info", {}), dict):
+            raise ValueError("Costume info and generation settings must be objects.")
 
         character_name = data.get("character", "Unknown")
         costume_name = str(data.get("costume") or "").strip()
         gen_settings = data.get("gen_settings", {})
         active_tab = data.get("activeTab", "generate")
+        log_event("preview_settings", character=character_name, costume=costume_name, mode=active_tab)
 
         if not self._is_editable_costume(costume_name):
             message = "Create a new costume first, then select it before generating a preview."
@@ -643,7 +638,8 @@ class ClothesDesigner:
             seed_value = getattr(pipe, "seed_int", getattr(pipe, "seed", None))
         seed_int = int(WORKFLOW_SAMPLER_DEFAULTS["seed"] if seed_value is None else seed_value)
         sample_steps = int(getattr(pipe, "sample_steps", getattr(pipe, "steps", 0)) or default_steps)
-        cfg = float(getattr(pipe, "cfg", 0.0) or default_cfg)
+        cfg_value = getattr(pipe, "cfg", None)
+        cfg = float(default_cfg if cfg_value is None else cfg_value)
         denoise = float(getattr(pipe, "denoise", 0.0) or WORKFLOW_SAMPLER_DEFAULTS["denoise"])
         sampler_name = getattr(pipe, "sampler_name", None) or WORKFLOW_SAMPLER_DEFAULTS["sampler_name"]
         scheduler = getattr(pipe, "scheduler", None) or WORKFLOW_SAMPLER_DEFAULTS["scheduler"]
@@ -708,13 +704,13 @@ class ClothesDesigner:
                 with open(c_info_path, "r", encoding="utf-8") as f:
                     cache_info = json.load(f)
                 if cache_info.get("hash") == input_hash:
-                    print(f"[ClothesDesigner] Cache hit for {character_name}/{costume_name}; reusing existing preview.")
+                    log_event("preview_cache", component="ClothesDesigner", character=character_name, costume=costume_name, cache="hit")
                     with Image.open(c_img_path) as img:
                         image = self._pil_image_tensor(img)
                     server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": str(unique_id), "character": character_name})
                     return (image, sheet_path, self._background_output_value(background_color))
             except Exception as exc:
-                print(f"[ClothesDesigner] Cache read failed, regenerating preview: {exc}")
+                log_event('fallback', component='ClothesDesigner', level='warning', message=f'Cache read failed, regenerating preview: {exc}', error=str(exc))
 
         ref_image = self._prepare_reference_background(
             ref_image, background_color, preserve_transparency=is_qi2,
@@ -724,7 +720,7 @@ class ClothesDesigner:
         clone_image_tensor = None
         if active_tab == "clone" and data.get("clone_image"):
              try:
-                 print(f"[ClothesDesigner] Clone reference image resolved: {clone_image_path}")
+                 log_event("diagnostic", component="ClothesDesigner", level="debug", message=f'Clone reference image resolved: {clone_image_path}')
                  
                  with Image.open(clone_image_path) as source_image:
                      i = self._pil_image_tensor(source_image)
@@ -734,7 +730,7 @@ class ClothesDesigner:
                  
                  clone_image_tensor = i
              except Exception as e:
-                 print(f"[ClothesDesigner] Failed to load clone image for encoder: {e}")
+                 log_event('warning', component='ClothesDesigner', level='warning', message=f'Failed to load clone image for encoder: {e}', error=str(e))
                  raise
 
         image2 = clone_image_tensor if active_tab == "clone" and clone_image_tensor is not None else None
@@ -743,11 +739,7 @@ class ClothesDesigner:
                 clip, positive_prompt, (ref_image,),
                 background_color, edit_system_prompt,
             )
-        print(
-            "[ClothesDesigner] Encoder inputs: "
-            f"mode={active_tab}, image1=reference sprite, "
-            f"image2={'clone reference' if image2 is not None else 'none'}, prompt={positive_prompt!r}"
-        )
+        log_event("encoder_inputs", component="ClothesDesigner", mode=active_tab, clone_reference=image2 is not None, prompt_chars=len(positive_prompt))
         is_klein = model_kind == "klein9b"
         if not (is_h3 or is_qi2 or is_klein):
             raise ValueError(f"Unsupported clothes model family: {model_kind or 'unknown'}")
@@ -786,7 +778,7 @@ class ClothesDesigner:
                 negative_prompt=negative_prompt,
             )
         else:
-            pos_cond, neg_cond, empty_latent = _call_comfy_node(KLEIN_ENCODER_CLASS, **encoder_kwargs)
+            pos_cond, neg_cond, empty_latent = _call_comfy_node("VNCCS_Flux_Klein_Encoder", **encoder_kwargs)
         
         out_pipe = PipeContext(
             source=pipe,
@@ -802,7 +794,7 @@ class ClothesDesigner:
 
         sampler_model = model
         if clothes_core_lora:
-            print(f"[ClothesDesigner] Applying VNCCS Clothes Core LoRA from pipe: {clothes_core_lora} (strength=1)")
+            log_event("lora_applied", component="ClothesDesigner", model=clothes_core_lora, strength=1)
             lora_path, exists = _find_model_on_disk(f"models/loras/{clothes_core_lora}")
             if not exists:
                 raise ValueError(f"VNCCS Clothes Core LoRA is not installed: {clothes_core_lora}")
@@ -814,7 +806,7 @@ class ClothesDesigner:
             )
 
         # 4. Sampling using the incoming Control Center pipe configuration
-        print("[ClothesDesigner] Sampling...")
+        log_stage("sampling", component="ClothesDesigner")
         if is_h3:
             sampler = _call_comfy_node("KSamplerSelect", sampler_name=sampler_name)[0]
             sigmas = _call_comfy_node("BasicScheduler", model=sampler_model, scheduler=scheduler, steps=sample_steps, denoise=denoise)[0]
@@ -854,7 +846,7 @@ class ClothesDesigner:
         latent_for_decode = normalize_decode_input(latent_result)
 
         # 5. Decode
-        print("[ClothesDesigner] VAE Decoding...")
+        log_stage("decoding", component="ClothesDesigner")
         if is_qi2 or is_h3:
             with torch.inference_mode():
                 image, = _call_comfy_node("VAEDecode", vae=vae, samples=latent_for_decode)
@@ -868,7 +860,7 @@ class ClothesDesigner:
                         **WORKFLOW_DECODE_DEFAULTS,
                     )
             except Exception as e:
-                print(f"[ClothesDesigner] VAEDecodeTiled failed ({e}), falling back to VAEDecode...")
+                log_event('fallback', component='ClothesDesigner', level='warning', message=f'VAEDecodeTiled failed ({e}), falling back to VAEDecode...', error=str(e))
                 with torch.inference_mode():
                     image, = _call_comfy_node("VAEDecode", vae=vae, samples=latent_for_decode)
 
@@ -879,11 +871,11 @@ class ClothesDesigner:
         i_pil = Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
         _save_preview_cache(i_pil, c_img_path, c_info_path, {"hash": input_hash, "widget_data": data})
         try:
-             print(f"[ClothesDesigner] Sending Preview Update Event: ID={unique_id}, Char={character_name}")
+             log_event("diagnostic", component="ClothesDesigner", level="debug", message=f'Sending Preview Update Event: ID={unique_id}, Char={character_name}')
              server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": str(unique_id), "character": character_name})
         except Exception as e:
-             print(f"[ClothesDesigner] Failed to send preview update: {e}")
-             traceback.print_exc()
+             log_event('warning', component='ClothesDesigner', level='warning', message=f'Failed to send preview update: {e}', error=str(e))
+             log_event('exception', component='ClothesDesigner', level='debug', exc_info=True, message='Operation failed', error=str(e))
 
         return (image, sheet_path, self._background_output_value(background_color))
 
@@ -926,9 +918,13 @@ async def vnccs_save_costume(request):
         if not character or not costume: return web.Response(status=400)
         character = ensure_safe_name(character, "character")
         costume = ensure_safe_name(costume, "costume")
-        ensure_costume_structure(character, costume)
-        if not save_costume_info(character, costume, info):
-            return web.json_response({"error": f"Could not save costume '{costume}'. Check storage permissions and free space."}, status=500)
+        with character_storage_lock(character_dir(character)):
+            if data.get("create_only") is True and (costume.casefold() in {"naked", "original"}
+                    or any(existing.casefold() == costume.casefold() for existing in list_costumes(character))):
+                return web.json_response({"error": f"Costume '{costume}' already exists. Choose a new name or edit the existing costume."}, status=409)
+            ensure_costume_structure(character, costume)
+            if not save_costume_info(character, costume, info):
+                return web.json_response({"error": f"Could not save costume '{costume}'. Check storage permissions and free space."}, status=500)
         return web.json_response({"status": "ok"})
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)
@@ -958,6 +954,7 @@ async def vnccs_delete_costume(request):
         return web.json_response({"error": str(error)}, status=500)
 
 
+@logged_operation("ClothesDesigner", "wizard")
 def _clothes_wizard_response(post):
     try:
         try:
@@ -983,7 +980,7 @@ def _clothes_wizard_response(post):
             }, status=500)
 
         try:
-            _validate_clothes_wizard_gguf(model_path, os.path.basename(model_path))
+            _validate_gguf_file(model_path, os.path.basename(model_path))
         except Exception as e:
             return web.json_response({
                 "error": "MODEL_INVALID",
@@ -1028,7 +1025,7 @@ Example for "Santa Claus costume":
 }}
 """
 
-        print(f"[ClothesDesigner] Clothes Wizard loading model: {model_path}")
+        log_stage("loading_wizard_model", component="ClothesDesigner", model=os.path.basename(model_path))
         llm = llama_cpp.Llama(
             model_path=model_path,
             n_ctx=4096,
@@ -1037,6 +1034,7 @@ Example for "Santa Claus costume":
         )
 
         configure_qwen_text_chat(llm)
+        log_stage("generating_description")
         response = llm.create_chat_completion(
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -1046,8 +1044,9 @@ Example for "Santa Claus costume":
             temperature=0.35,
         )
 
+        log_stage("parsing_description")
         content = response["choices"][0]["message"]["content"]
-        print(f"[ClothesDesigner] Clothes Wizard raw output: {content}")
+        log_event("wizard_output", component="ClothesDesigner", level="debug", output=content)
         parsed = _parse_clothes_wizard_json(content or "")
         if parsed is None:
             return web.json_response({
@@ -1058,7 +1057,7 @@ Example for "Santa Claus costume":
 
         return web.json_response(parsed)
     except Exception as e:
-        traceback.print_exc()
+        log_event('exception', component='ClothesDesigner', level='debug', exc_info=True, message='Operation failed', error=str(e))
         return web.json_response({
             "error": "INFERENCE_ERROR",
             "message": f"Engine Error: {e}",
@@ -1092,18 +1091,34 @@ async def vnccs_get_preview(request):
     naked_sprite = get_latest_sprite_path(character, "Naked")
     original_sprite = get_latest_sprite_path(character, "Original")
     if not naked_sprite and not original_sprite:
-         return web.Response(status=400, text="Character incomplete. Run migration or generate sprites first.")
+         return web.Response(status=400, text="Character incomplete. Generate sprites first.")
 
     force_cache = request.rel_url.query.get("force_cache", "") == "true"
     
     target_file = None
     
-    # helper logic duplicated/inlined since we can't easily call instance static method from here without instance
-    # actually we can use ClothesDesigner.get_cache_paths
-    cache_file, _ = ClothesDesigner.get_cache_paths(character, costume)
+    cache_file, cache_info_file = ClothesDesigner.get_cache_paths(character, costume)
+    cached_preview = None
+    with character_storage_lock(character_dir(character)):
+        try:
+            if os.path.exists(cache_info_file):
+                with open(cache_info_file, "r", encoding="utf-8") as handle:
+                    owner = json.load(handle)["widget_data"]
+                cache_owned = owner.get("character") == character and owner.get("costume") == costume
+            else:
+                # shortcut: legacy caches have no owner; use them only without ambiguous costume names.
+                cache_owned = not any(
+                    name != costume and name.replace(" ", "_").casefold() == costume.replace(" ", "_").casefold()
+                    for name in list_costumes(character)
+                )
+            if cache_owned and os.path.exists(cache_file):
+                with open(cache_file, "rb") as handle:
+                    cached_preview = handle.read()
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
+            log_event("fallback", component="ClothesDesigner", level="warning", message=f"Cannot read clothes preview cache ownership: {error}")
 
     # If force_cache is true, try cache first
-    if force_cache and os.path.exists(cache_file):
+    if force_cache and cached_preview is not None:
         target_file = cache_file
 
     # Otherwise, try costume sprites first.
@@ -1116,12 +1131,14 @@ async def vnccs_get_preview(request):
 
     # Fallback to cache if sprites are not available for this costume.
     if not target_file:
-         if os.path.exists(cache_file): target_file = cache_file
+         if cached_preview is not None: target_file = cache_file
          
     # Final fallback to base sprites.
     if not target_file:
          target_file = naked_sprite or original_sprite
 
+    if target_file == cache_file and cached_preview is not None:
+         return web.Response(body=cached_preview, content_type="image/png")
     if target_file and os.path.exists(target_file):
          with open(target_file, "rb") as f:
              return web.Response(body=f.read(), content_type="image/png")

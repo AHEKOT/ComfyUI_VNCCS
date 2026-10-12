@@ -24,7 +24,6 @@ from nodes.vnccs_control_center import (
     _apply_lora_standard,
     _filter_entries_by_kind,
     _is_audio_vae_entry,
-    _build_dynamic_paths,
     _build_custom_lora_name,
     _build_custom_lora_entry,
     _dedupe_config_by_name,
@@ -43,6 +42,70 @@ from nodes.vnccs_control_center import (
 )
 
 _CONTROL_CENTER_MODULE = sys.modules[_sync_packaged_cc_config.__module__]
+
+
+def test_packaged_qi2_turbo_is_second_and_qie2511_is_absent():
+    with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "control_center.json"), encoding="utf-8") as handle:
+        config = json.load(handle)
+    models = [entry for entry in config["models"] if entry.get("kind") == "QI2"]
+    assert [entry["hf_path"] for entry in models] == [
+        "diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
+        "diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
+    ]
+    assert models[1]["hf_repo"] == "Comfy-Org/Qwen-Image-2.1"
+    assert models[1]["type"] == "unet"
+    assert "QIE2511" not in json.dumps(config)
+
+
+@pytest.mark.parametrize("params, expected", [({}, (8, 1.0)), ({"steps": 10, "cfg": 1.5}, (10, 1.5))])
+def test_control_center_builtin_qi2_turbo_keeps_standard_loading(monkeypatch, params, expected):
+    entry = {
+        "name": "Qwen Image 2.1 Turbo INT8 ConvRot", "type": "unet", "kind": "QI2",
+        "local_path": "models/diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
+    }
+    model, clip, vae = object(), object(), object()
+    monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_get_cc_config", lambda repo: {
+        "models": [entry],
+        "clip": [{"name": "clip", "kind": "QI2"}],
+        "vae": [{"name": "vae", "kind": "QI2"}],
+        "lora": [{
+            "name": "Qwen Image 2.1 Viggle Turbo", "type": "TurboLora", "kind": "QI2",
+        }],
+    })
+    def load(model_entry, selected_type, *args, **kwargs):
+        assert (model_entry, selected_type) == (entry, "unet")
+        return model, clip, vae
+    monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_load_model_block", load)
+    def loras(model, clip, states, *args, **kwargs):
+        assert states == []
+        return model, clip
+    monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_apply_loras", loras)
+    pipe = _build_control_center_pipe("demo/repo", {
+        "active_kind": "QI2", "selected_type": "unet", "selected_model": entry["name"],
+        "model_params": params,
+    })
+    assert (pipe.model, pipe.clip, pipe.vae) == (model, clip, vae)
+    assert (pipe.sample_steps, pipe.cfg) == expected
+    assert pipe.model_kind == "qi2"
+    assert pipe.lora_states == []
+
+
+def test_remote_catalog_keeps_base_qi2_before_packaged_turbo(monkeypatch, tmp_path):
+    with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), "control_center.json"), encoding="utf-8") as handle:
+        packaged = json.load(handle)
+    local_path = tmp_path / "packaged.json"
+    local_path.write_text(json.dumps(packaged), encoding="utf-8")
+    remote = dict(packaged)
+    remote["models"] = [entry for entry in packaged["models"] if "turbo_int8_convrot" not in entry["hf_path"]]
+    remote_path = tmp_path / "remote.json"
+    remote_path.write_text(json.dumps(remote), encoding="utf-8")
+    monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_get_packaged_cc_path", lambda: str(local_path))
+    monkeypatch.setattr(_CONTROL_CENTER_MODULE, "hf_hub_download", lambda **kwargs: str(remote_path))
+    monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_merge_custom_loras", lambda config: config)
+    monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_CC_CONFIG_CACHE", {})
+    config = _get_cc_config("MIUProject/VNCCS_v3.0", prefer_remote=True)
+    models = [entry for entry in config["models"] if entry.get("kind") == "QI2"]
+    assert [entry["name"] for entry in models] == ["Qwen Image 2.1 INT8 ConvRot", "Qwen Image 2.1 Turbo INT8 ConvRot"]
 
 
 class TestManagerInstallPolicy:
@@ -435,43 +498,7 @@ class TestKindFiltering:
             _filter_entries_by_kind(entries, "QIE2511")
 
 
-# ── _build_dynamic_paths ──────────────────────────────────────────────────────
 
-class TestBuildDynamicPaths:
-    def test_empty_slot_names(self):
-        assert _build_dynamic_paths({}, []) == []
-
-    def test_unknown_entry_returns_empty_string(self):
-        config = {"controlnet": [], "other": []}
-        result = _build_dynamic_paths(config, ["UnknownModel"])
-        assert result == [""]
-
-    def test_known_entry_found_on_disk(self, tmp_path, monkeypatch):
-        import folder_paths as fp
-        f = tmp_path / "ctrl.safetensors"
-        f.write_bytes(b"x")
-
-        monkeypatch.setattr(fp, "get_full_path", lambda key, name: str(f) if "ctrl" in name else None)
-        monkeypatch.setattr(fp, "get_folder_paths", lambda key: [str(tmp_path)])
-
-        config = {
-            "controlnet": [{"name": "MyCtrl", "local_path": "models/controlnet/ctrl.safetensors"}],
-            "other": [],
-        }
-        result = _build_dynamic_paths(config, ["MyCtrl"])
-        assert result == ["ctrl.safetensors"]
-
-    def test_known_entry_not_on_disk_returns_empty(self, monkeypatch):
-        import folder_paths as fp
-        monkeypatch.setattr(fp, "get_full_path", lambda *a: None)
-        monkeypatch.setattr(fp, "get_folder_paths", lambda *a: [])
-
-        config = {
-            "controlnet": [{"name": "Missing", "local_path": "models/controlnet/ghost.safetensors"}],
-            "other": [],
-        }
-        result = _build_dynamic_paths(config, ["Missing"])
-        assert result == [""]
 
 
 class TestEnrichConfigEntries:
@@ -769,13 +796,12 @@ class TestPackagedConfigSync:
         assert [_is_audio_vae_entry(entry) for entry in h3_vaes] == [False, True]
         assert {entry["name"] for entry in h3_loras} == {
             "MiniMax H3 Pose Studio",
-            "MiniMax H3 Ref2V Turbo 8-Step 768p",
+            "VNCCS Clothes Core MiniMaxH3",
+            "TaoMate-H3 3-Step LoRA",
         }
         h3_turbo = next(entry for entry in h3_loras if entry["type"] == "TurboLora")
-        assert h3_turbo["hf_repo"] == "lightx2v/Minimax-h3-Turbo"
-        assert h3_turbo["hf_path"] == (
-            "minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors"
-        )
+        assert h3_turbo["hf_repo"] == "Robert1212star/TaoMate-H3-3Step-ComfyUI"
+        assert h3_turbo["hf_path"] == "taomate_h3_3step_comfy.safetensors"
 
 
 class TestControlCenterFamilyState:
@@ -1058,7 +1084,12 @@ class TestControlCenterFrontendFamilies:
         assert 'sync("model", "MODEL"' in sync_source
         assert 'sync("clip", "CLIP"' in sync_source
         assert 'sync("vae", "VAE"' in sync_source
-        assert source.count("this._syncCustomModelInput();") >= 7
+        fetch_source = source.split("async fetchConfig(repoId", 1)[1].split("// ── Rendering", 1)[0]
+        cached_branch, completion = fetch_source.split("// Debounce: reuse in-flight fetch", 1)
+        assert "this._syncCustomModelInput();" in cached_branch
+        assert completion.index("data = await fetchPromise;") < completion.index("this._syncCustomModelInput();")
+        assert 'const previousPromise = serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId]' in completion
+        assert 'let fetchPromise = !force && previousPromise' in completion
 
 class TestClothesPreviewFrontendContract:
     def test_custom_preview_never_submits_graph_execution(self):
@@ -1153,33 +1184,15 @@ class TestCustomLoraHelpers:
 
         assert [entry["name"] for entry in merged["lora"]] == ["base", "custom_one"]
 
-    def test_remove_custom_lora_by_path(self, monkeypatch):
-        stored = [
-            {"name": "keep", "local_path": "models/loras/keep.safetensors", "custom": True},
-            {"name": "drop", "local_path": "models/loras/drop.safetensors", "custom": True},
-        ]
-        saved = {}
+    def test_remove_custom_lora_by_path(self, monkeypatch, tmp_path):
+        path = tmp_path / "vnccs_custom_loras.json"
+        stored = [{"name": "keep", "local_path": "models/loras/keep.safetensors", "custom": True},
+                  {"name": "drop", "local_path": "models/loras/drop.safetensors", "custom": True}]
+        path.write_text(json.dumps({"lora": stored}))
+        monkeypatch.setattr(_CONTROL_CENTER_MODULE, "_get_custom_loras_path", lambda **kwargs: str(path))
+        assert _remove_custom_lora(local_path="models/loras/drop.safetensors") is True
+        assert json.loads(path.read_text())["lora"] == [stored[0]]
 
-        monkeypatch.setattr("nodes.vnccs_control_center._load_custom_loras", lambda: stored)
-        monkeypatch.setattr("nodes.vnccs_control_center._get_custom_loras_path", lambda *args, **kwargs: "/tmp/vnccs_custom_loras.json")
-        monkeypatch.setattr("nodes.vnccs_control_center.os.makedirs", lambda *args, **kwargs: None)
-
-        class _FakeFile:
-            def __enter__(self):
-                return self
-            def __exit__(self, exc_type, exc, tb):
-                return False
-            def write(self, text):
-                saved.setdefault("text", "")
-                saved["text"] += text
-
-        monkeypatch.setattr("builtins.open", lambda *args, **kwargs: _FakeFile())
-
-        removed = _remove_custom_lora(local_path="models/loras/drop.safetensors")
-
-        assert removed is True
-        assert "drop.safetensors" not in saved["text"]
-        assert "keep.safetensors" in saved["text"]
 
 
 # ── VNCCSPipeProxy ────────────────────────────────────────────────────────────

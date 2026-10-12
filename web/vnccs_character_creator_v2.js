@@ -1,8 +1,8 @@
 import { createStylePicker } from "./character_styles.mjs";
 import { app } from "../../scripts/app.js";
-import { vnccsApi as api, mediaURL, checkedJSON, storage, serverRegistry, refreshPreviewImage, watchConnection } from "./vnccs_transport.js";
+import { vnccsApi as api, mediaURL, checkedJSON, storage, refreshPreviewImage, watchConnection } from "./vnccs_transport.js";
 import { presetGroups, presetSelection } from "./character_presets.mjs";
-import { debounce, registerCleanup, injectStyles, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard } from "./vnccs_common.js";
+import { createTraitInput, createQwenVLModelLoader, SAKURA_THEME_CSS, debounce, registerCleanup, injectStyles, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard, createControlCenterClient, installResolvedSeedTransport, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
 
 const QI2_OVERHAUL_LORA_NAME = "QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.safetensors";
 const QI2_OVERHAUL_TITLE = "Qwen Image2.1 Character Overhaul";
@@ -19,67 +19,21 @@ const normalizeOverhaulStrength = value => {
 const isCreatorOverhaulLora = name => /^vnccs_qi2_animeoverhaulv\d+(?:[._]\d+)*\.safetensors$/i
     .test(String(name || "").replace(/\\/g, "/").split("/").pop());
 
-const RESOLUTION_SCALE_BASE = 1024;
-const RESOLUTION_SCALE_MIN_MP = 1;
-const RESOLUTION_SCALE_MAX_MP = 4;
-const RESOLUTION_SCALE_STEP_MP = 0.1;
-const RESOLUTION_SCALE_PRESETS = new Map([
-    [1.3, 1344],
-    [1.5, 1536],
-]);
 const LEGACY_ANIMA_RESOLUTION_SCALES = {
     normal: 1024,
     high: 1741,
     maximum: 2458,
 };
 
-const resolutionScaleMegapixels = value => {
-    const numeric = Number(value);
-    const megapixels = Number.isFinite(numeric) ? numeric / RESOLUTION_SCALE_BASE : RESOLUTION_SCALE_MIN_MP;
-    return Math.max(RESOLUTION_SCALE_MIN_MP, Math.min(RESOLUTION_SCALE_MAX_MP, megapixels));
-};
-const resolutionScaleValue = megapixels => {
-    const clamped = Math.max(
-        RESOLUTION_SCALE_MIN_MP,
-        Math.min(RESOLUTION_SCALE_MAX_MP, Number(megapixels) || RESOLUTION_SCALE_MIN_MP)
-    );
-    const stepped = Number((Math.round(clamped / RESOLUTION_SCALE_STEP_MP) * RESOLUTION_SCALE_STEP_MP).toFixed(1));
-    return RESOLUTION_SCALE_PRESETS.get(stepped) ?? Math.round(stepped * RESOLUTION_SCALE_BASE);
-};
-const resolutionScaleText = value => `${resolutionScaleMegapixels(value).toFixed(1)} MP`;
-
 // --- STYLES: Sakura Archive Design System ---
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 .vnccs-creator-container {
-    --bg-primary: #0a0a0f;
-    --bg-secondary: #12121a;
-    --bg-elevated: #1a1a26;
-    --bg-surface: #22222e;
-    --bg-hover: #2a2a38;
-    --text-primary: #e8e8f0;
-    --text-secondary: #9898a8;
-    --text-muted: #5e5e70;
-    --accent: #ff8fa3;
-    --accent-hover: #ffb6c8;
-    --accent-glow: rgba(255, 143, 163, 0.3);
-    --accent-subtle: rgba(255, 143, 163, 0.1);
-    --accent-border: rgba(255, 143, 163, 0.22);
-    --accent-lavender: #b8a9e8;
-    --success: #00d68f;
+${SAKURA_THEME_CSS}
     --warning: #ffaa00;
-    --error: #ff4757;
-    --border: rgba(255, 255, 255, 0.06);
-    --border-hover: rgba(255, 255, 255, 0.12);
-    --font: 'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
-    --radius-sm: 8px;
-    --radius-md: 12px;
-    --radius-lg: 20px;
     --shadow-subtle: 0 2px 8px rgba(0,0,0,0.3);
     --shadow-elevated: 0 8px 32px rgba(0,0,0,0.5);
-    --transition: 0.2s ease;
 }
 
 /* Main Host */
@@ -1411,11 +1365,16 @@ app.registerExtension({
     name: "VNCCS.CharacterCreatorV2",
 
     async setup() {
+        installResolvedSeedTransport(app, ["CharacterCreatorV2"]);
+        if (app._vnccsCreatorQueuePatched) return;
+        app._vnccsCreatorQueuePatched = true;
         const queuePrompt = app.queuePrompt;
         const origQueuePrompt = (...args) => queuePrompt.apply(app, args);
         app.queuePrompt = async function(...args) {
             const nodes = app.graph?._nodes?.filter(n => n.type === "CharacterCreatorV2") || [];
             for (const node of nodes) {
+                if ([2, 4].includes(node.mode)) continue;
+                if (node._vnccsStateRestoreError) throw new Error(node._vnccsStateRestoreError);
                 node._randomizeSeedIfNeeded?.();
             }
             return origQueuePrompt(...args);
@@ -1480,14 +1439,14 @@ app.registerExtension({
                 const origSerialize = node.onSerialize;
                 node.onSerialize = function (o) {
                     if (origSerialize) origSerialize.apply(this, arguments);
-                    syncBackgroundForGenerationMode();
+                    if (!node._vnccsStateRestoreError) syncBackgroundForGenerationMode();
 
                     // Critical Sync: Ensure widget_data receives latest state
                     const w = node.widgets ? node.widgets.find(w => w.name === "widget_data") : null;
-                    if (w) {
+                    if (w && !node._vnccsStateRestoreError) {
                         saveCurrentGenerationModeValues();
                         w.value = JSON.stringify(state);
-                    } else {
+                    } else if (!w && !node._vnccsStateRestoreError) {
                         // Should have been created, but safety net
                         console.warn("[VNCCS] widget_data missing on serialize, creating...");
                         saveCurrentGenerationModeValues();
@@ -1620,12 +1579,15 @@ app.registerExtension({
                     }
                 };
 
+                const defaultGenerationSettings = JSON.parse(JSON.stringify(state.gen_settings));
                 const debouncedSave = debounce(() => saveState(), 300);
                 const ANIMA_TURBO_LORA_NAME = "anima\\anima-turbo-lora-v0.1.safetensors";
                 const ANIMA_CLIP_NAME = "qwen_3_06b_base.safetensors";
                 const ANIMA_VAE_NAME = "qwen_image_vae.safetensors";
                 const QI2_TURBO_LORA_NAME = "QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors";
                 const QI2_MODEL_NAME = "qwen_image_2.1_int8_convrot.safetensors";
+                const QI2_TURBO_MODEL_NAME = "qwen_image_2.1_turbo_int8_convrot.safetensors";
+                const isQi2TurboModel = modelName => String(modelName || "").replace(/\\/g, "/").split("/").pop() === QI2_TURBO_MODEL_NAME;
                 const QI2_CLIP_NAME = "qwen3vl_8b_int8_convrot.safetensors";
                 const QI2_VAE_NAME = "qwen_image_2.1_vae_bf16.safetensors";
                 const ILLUSTRIOUS_DEFAULTS = {
@@ -1702,11 +1664,8 @@ app.registerExtension({
                     },
                 };
                 const CC_REPO_ID = "MIUProject/VNCCS_v3.0";
-                const CC_CACHE_KEY = `vnccs_cc_cache_${CC_REPO_ID}`;
                 let TAG_DATA = null;
-                let ccConfig = null;
-                let ccDlStatus = {};
-                let ccPollingInterval = null;
+                const ccState = { config: null, downloadStatus: {} };
                 const modelPickerOpen = {
                     illustrious: false,
                     anima: false,
@@ -1727,7 +1686,7 @@ app.registerExtension({
                 const ccStatusKey = (cat, entry) => `cc_${cat}_${entry?.name || ""}`;
                 const ccResolveStatus = (entry, cat) => {
                     const transient = new Set(["queued", "downloading", "error", "auth_required"]);
-                    const dls = ccDlStatus[ccStatusKey(cat, entry)] || {};
+                    const dls = ccState.downloadStatus[ccStatusKey(cat, entry)] || {};
                     return transient.has(dls.status) ? dls.status : (entry?.status || "missing");
                 };
                 const ccRelPath = (entry) => {
@@ -1737,7 +1696,7 @@ app.registerExtension({
                     return parts[parts.length - 1] || "";
                 };
                 const ccEntries = (section, kind, predicate = null) => {
-                    const entries = ccConfig?.[section] || [];
+                    const entries = ccState.config?.[section] || [];
                     return entries.filter(entry => {
                         const kindOk = !kind || ccKind(entry) === ccNormalize(kind);
                         return kindOk && (!predicate || predicate(entry));
@@ -1800,10 +1759,13 @@ app.registerExtension({
                         && vaes.some(entry => ccKind(entry) === "qi2");
                     return hasAnima && hasIllustrious && hasQi2;
                 };
+                const { fetchConfig: fetchCcConfig, startPolling: startCcPolling, stopPolling: stopCcPolling } =
+                    createControlCenterClient(CC_REPO_ID, ccHasRequiredFamilies, ccState, () => renderControlCenterCards(), node);
+                const isCcMounted = createRequestGuard(node)();
                 const ccDownloadEntry = async (cat, entry) => {
-                    if (!entry?.name) return;
+                    if (!isCcMounted() || !entry?.name) return;
                     const key = ccStatusKey(cat, entry);
-                    ccDlStatus[key] = { status: "queued", message: "Queued…" };
+                    ccState.downloadStatus[key] = { status: "queued", message: "Queued…" };
                     renderControlCenterCards();
                     try {
                         const response = await api.fetchApi("/vnccs/control_center/download", {
@@ -1812,68 +1774,18 @@ app.registerExtension({
                             body: JSON.stringify({ repo_id: CC_REPO_ID, category: cat, name: entry.name }),
                         });
                         const payload = await response.json();
+                        if (!isCcMounted()) return;
                         if (!response.ok || payload.error) {
-                            ccDlStatus[key] = { status: "error", message: payload.error || "Download failed" };
+                            ccState.downloadStatus[key] = { status: "error", message: payload.error || "Download failed" };
                             renderControlCenterCards();
                             return;
                         }
                         startCcPolling();
                     } catch (error) {
-                        ccDlStatus[key] = { status: "error", message: String(error?.message || error) };
+                        if (!isCcMounted()) return;
+                        ccState.downloadStatus[key] = { status: "error", message: String(error?.message || error) };
                         renderControlCenterCards();
                     }
-                };
-                const fetchCcConfig = async (force = false) => {
-                    if (!force && serverRegistry("VNCCS_CC_REGISTRY")?.[CC_REPO_ID] && ccHasRequiredFamilies(serverRegistry("VNCCS_CC_REGISTRY")[CC_REPO_ID])) {
-                        ccConfig = serverRegistry("VNCCS_CC_REGISTRY")[CC_REPO_ID];
-                        renderControlCenterCards();
-                        return ccConfig;
-                    }
-                    if (!force && ccConfig && ccHasRequiredFamilies(ccConfig)) return ccConfig;
-                    if (!force) {
-                        try {
-                            const cached = storage.getItem(CC_CACHE_KEY);
-                            if (cached) {
-                                ccConfig = JSON.parse(cached);
-                                if (ccHasRequiredFamilies(ccConfig)) renderControlCenterCards();
-                                else ccConfig = null;
-                            }
-                        } catch (_) {}
-                    }
-
-                    const url = `/vnccs/control_center/check?repo_id=${encodeURIComponent(CC_REPO_ID)}${force ? "&force_refresh=true" : ""}`;
-                    const response = await api.fetchApi(url);
-                    const payload = await response.json();
-                    if (!response.ok || payload.error) throw new Error(payload.error || "Failed to load Control Center config");
-                    ccConfig = payload;
-
-                    serverRegistry("VNCCS_CC_REGISTRY")[CC_REPO_ID] = payload;
-                    storage.setItem(CC_CACHE_KEY, JSON.stringify(payload));
-                    renderControlCenterCards();
-                    return payload;
-                };
-                const refreshCcDownloadStatus = async () => {
-                    try {
-                        const response = await api.fetchApi("/vnccs/manager/status");
-                        if (!response.ok) return;
-                        ccDlStatus = await response.json();
-                        const active = Object.values(ccDlStatus || {}).some(item => ["queued", "downloading"].includes(item?.status));
-                        if (!active) {
-                            stopCcPolling();
-                            await fetchCcConfig(true);
-                        } else {
-                            renderControlCenterCards();
-                        }
-                    } catch (_) {}
-                };
-                const startCcPolling = () => {
-                    if (ccPollingInterval) return;
-                    ccPollingInterval = setInterval(refreshCcDownloadStatus, 2000);
-                };
-                const stopCcPolling = () => {
-                    if (!ccPollingInterval) return;
-                    clearInterval(ccPollingInterval);
-                    ccPollingInterval = null;
                 };
 
                 const els = {};
@@ -1986,17 +1898,22 @@ app.registerExtension({
                     }
                     if (els.dmdSlider) {
                         const mode = (g.generation_mode || "illustrious").toLowerCase();
-                        els.dmdSlider.checked = mode === "anima" || mode === "qi2"
+                        els.dmdSlider.disabled = mode === "qi2" && isQi2TurboModel(g.diffusion_model_name);
+                        els.dmdSlider.checked = !els.dmdSlider.disabled && (mode === "anima" || mode === "qi2"
                             ? !!g.turbo_enabled
-                            : (g.dmd_lora_strength ?? 1.0) > 0;
+                            : (g.dmd_lora_strength ?? 1.0) > 0);
                     }
                     if (els.qi2CacheDevice) els.qi2CacheDevice.value = g.qi2_cache?.device || "gpu";
                     if (els.qi2CacheDtype) els.qi2CacheDtype.value = g.qi2_cache?.dtype || "int8";
-                    if (els.ageSelect) els.ageSelect.value = g.age_lora_name || "";
+                    if (els.ageSelect) {
+                        ensureOption(els.ageSelect, g.age_lora_name);
+                        els.ageSelect.value = g.age_lora_name || "";
+                    }
                     if (els.loraStackSelects) {
                         ensureLoraStack(g);
                         els.loraStackSelects.forEach((ref, i) => {
                             const item = g.lora_stack[i] || { name: "", strength: 1.0 };
+                            ensureOption(ref.sel, item.name);
                             ref.sel.value = item.name || "";
                             ref.rng.value = item.strength ?? 1.0;
                             ref.sel.closest(".vnccs-creator-lora-item")?.classList.toggle("is-empty", !item.name);
@@ -2032,6 +1949,7 @@ app.registerExtension({
                 };
 
                 const saveState = (isValid = false) => {
+                    if (node._vnccsStateRestoreError) return;
                     syncBackgroundForGenerationMode();
                     saveCurrentGenerationModeValues();
                     state.character_info.name = state.character || state.character_info.name || "";
@@ -2123,6 +2041,7 @@ app.registerExtension({
                 };
 
                 const clearCharacterSelection = () => {
+                    els.style?.close?.(false);
                     beginCharacterRequest();
                     beginCharacterWizardRequest();
                     beginPreviewRequest();
@@ -2264,40 +2183,60 @@ app.registerExtension({
                 };
 
                 const loadState = () => {
-                    beginCharacterRequest();
+                    els.style?.close?.(false);
+                    currentInitializationSelection = beginCharacterRequest();
                     beginCharacterWizardRequest();
+                    beginPreviewRequest();
                     // 1. Try Widget Data (Graph Persistence)
                     const w = node.widgets.find(x => x.name === "widget_data");
                     if (w && w.value && w.value !== "{}") {
                         try {
                             const parsed = JSON.parse(w.value);
+                            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+                                || ["character_info", "gen_settings", "prompt_modes"].some(key => parsed[key] !== undefined
+                                    && (!parsed[key] || typeof parsed[key] !== "object" || Array.isArray(parsed[key])))) {
+                                throw new Error("Saved character state must contain objects.");
+                            }
+                            delete node._vnccsStateRestoreError;
                             // Merge from Graph Data
-                            if (parsed.character) state.character = parsed.character;
+                            if (Object.prototype.hasOwnProperty.call(parsed, "character")) state.character = parsed.character || "";
                             if (parsed.prompt_modes) state.prompt_modes = parsed.prompt_modes;
                             if (parsed.prompt_defaults_version !== undefined) state.prompt_defaults_version = parsed.prompt_defaults_version;
                             if (parsed.character_info) {
                                 const infoName = String(parsed.character_info.name || "").trim();
                                 const parsedCharacter = String(parsed.character || state.character || "").trim();
                                 if (infoName && infoName === parsedCharacter) {
-                                    Object.assign(state.character_info, parsed.character_info);
+                                    for (const key of Object.keys(state.character_info)) delete state.character_info[key];
+                                    Object.assign(state.character_info, getDefaultCharacterInfo(), parsed.character_info);
                                     restoredWidgetInfoCharacter = parsedCharacter;
                                 } else {
                                     console.warn("[VNCCS V2] Ignoring unverified widget character_info:", infoName || "(missing name)", "current:", parsedCharacter);
                                 }
                             }
                             if (parsed.gen_settings) {
-                                Object.assign(state.gen_settings, parsed.gen_settings);
+                                Object.assign(state.gen_settings, JSON.parse(JSON.stringify(defaultGenerationSettings)), parsed.gen_settings);
                                 ensureLoraStack(state.gen_settings);
                             }
-                            if (parsed.preview_valid !== undefined) state.preview_valid = parsed.preview_valid;
+                            state.preview_valid = parsed.preview_valid === true;
+                            state.preview_source = parsed.preview_source === "pose" ? "pose" : "gen";
+                            state.sprite_preview_index = Number.isInteger(parsed.sprite_preview_index) && parsed.sprite_preview_index >= 0
+                                ? parsed.sprite_preview_index : 0;
+                            state.sprite_preview_count = 0;
 
                             console.log("[VNCCS V2] Loaded state from graph widget. Character:", state.character);
-                            return;
-                        } catch (e) { console.error("Error loading widget data", e); }
+                            return true;
+                        } catch (e) {
+                            node._vnccsStateRestoreError = "Cannot restore saved character state. Original widget data is preserved. Restore a valid workflow before editing or running.";
+                            console.error("Error loading widget data", e);
+                            showAlertModal("State Restore Failed", node._vnccsStateRestoreError);
+                            return false;
+                        }
                     }
 
                     // 2. Fallback to LocalStorage (Global Preferences for new nodes)
+                    delete node._vnccsStateRestoreError;
                     applyStoredPrefs(false);
+                    return true;
                 };
 
                 const syncSliderValue = (ref, value) => {
@@ -2381,22 +2320,6 @@ app.registerExtension({
                     applyPromptModeToFields(currentMode);
                 };
 
-                const applyGenerationDefaults = (mode, force = false) => {
-                    const defaults = getGenerationDefaults(mode);
-                    const markerKey = mode === "qi2" ? "qi2_defaults_applied" : mode === "anima" ? "anima_defaults_applied" : "illustrious_defaults_applied";
-                    if (!force && state.gen_settings[markerKey]) return;
-
-                    state.gen_settings.mode_settings[mode] = {
-                        ...defaults,
-                        ...(["illustrious", "anima", "qi2"].includes(mode) ? { lora_stack: cloneSettingsValue(defaults.lora_stack) } : {}),
-                    };
-                    if (mode === state.gen_settings.generation_mode) {
-                        applyGenerationProfile(mode);
-                        syncGenerationControls();
-                    }
-                    state.gen_settings[markerKey] = true;
-                    state.gen_settings.generation_defaults_version = GENERATION_DEFAULTS_VERSION;
-                };
 
                 const refreshGenerationModeUI = () => {
                     const mode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
@@ -2445,6 +2368,7 @@ app.registerExtension({
                 const setAnimaTurboMode = (enabled) => {
                     const mode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
                     if (!["anima", "qi2"].includes(mode)) return;
+                    if (mode === "qi2" && isQi2TurboModel(state.gen_settings.diffusion_model_name)) return;
                     if (enabled) {
                         if (!state.gen_settings.turbo_enabled) {
                             state.gen_settings.turbo_previous_settings = {
@@ -2504,71 +2428,13 @@ app.registerExtension({
 
                 // 4. UI Builders
                 const createTraitField = (lbl, key, targetObj = state.character_info) => {
-                    const wrap = document.createElement("div");
-                    wrap.className = "vnccs-creator-trait-row";
-                    setHelpText(wrap, helpFor(key));
-                    const label = document.createElement("span");
-                    label.className = "vnccs-creator-trait-label";
-                    label.textContent = lbl;
-                    const editor = document.createElement("div");
-                    editor.className = "vnccs-creator-trait-editor";
-                    const values = document.createElement("button");
-                    values.type = "button";
-                    values.className = "vnccs-creator-trait-values";
-                    const inp = document.createElement("input");
-                    inp.type = "text";
-                    inp.className = "vnccs-creator-input vnccs-creator-trait-input";
-                    inp.setAttribute("aria-label", lbl);
-                    inp.placeholder = "Add tags";
-                    inp.hidden = true;
-                    const renderTags = () => {
-                        values.replaceChildren();
-                        const tokens = inp.value.split(",").map(token => token.trim()).filter(Boolean);
-                        for (const token of tokens.length ? tokens : ["Add tags"]) {
-                            const chip = document.createElement("span");
-                            chip.className = tokens.length ? "vnccs-creator-trait-token" : "vnccs-creator-trait-empty";
-                            chip.textContent = token;
-                            values.appendChild(chip);
-                        }
-                        values.setAttribute("aria-label", `Edit ${lbl.toLowerCase()} tags: ${inp.value || "Add tags"}`);
-                    };
-                    inp.setValue = value => {
-                        inp.value = value ?? "";
-                        renderTags();
-                    };
-                    inp.setValue(targetObj[key]);
-                    inp.oninput = (e) => {
-                        targetObj[key] = e.target.value;
-                        renderTags();
-                        debouncedSave();
-                    };
-                    values.onclick = () => {
-                        values.hidden = true;
-                        inp.hidden = false;
-                        inp.focus({ preventScroll: true });
-                    };
-                    inp.onblur = () => {
-                        inp.hidden = true;
-                        values.hidden = false;
-                    };
-                    inp.onkeydown = e => {
-                        if (e.key === "Enter") {
-                            e.preventDefault();
-                            inp.blur();
-                            values.focus({ preventScroll: true });
-                        }
-                    };
-                    const add = document.createElement("button");
-                    add.type = "button";
-                    add.className = "vnccs-creator-trait-add";
-                    add.textContent = "+";
-                    add.setAttribute("aria-label", `Choose ${lbl.toLowerCase()} presets`);
-                    add.title = "Choose Presets";
-                    add.onclick = () => openTagConstructor(key, inp);
-                    editor.append(values, inp);
-                    wrap.append(label, editor, add);
-                    els[key] = inp;
-                    return wrap;
+                    const { element, input } = createTraitInput({
+                        prefix: "vnccs-creator", label: lbl, key, target: targetObj,
+                        save: debouncedSave, choose: input => openTagConstructor(key, input),
+                    });
+                    setHelpText(element, helpFor(key));
+                    els[key] = input;
+                    return element;
                 };
 
                 const createField = (lbl, key, type = "text", opts = [], targetObj = state.character_info) => {
@@ -2706,11 +2572,15 @@ app.registerExtension({
                     const picker = createStylePicker({
                         host: container, catalog: characterStyleCatalog,
                         getInfo: () => state.character_info, save: saveState,
-                        fetchApi: (...args) => api.fetchApi(...args),
+                        fetchApi: (...args) => {
+                            if (node._vnccsStateRestoreError) throw new Error(node._vnccsStateRestoreError);
+                            return api.fetchApi(...args);
+                        },
                         cleanup: callback => registerCleanup(node, callback),
                         showModal: (...args) => showCommonModal(...args),
                         imageURL: mediaURL,
                         getPreviewPayload: () => {
+                            if (node._vnccsStateRestoreError) throw new Error(node._vnccsStateRestoreError);
                             saveCurrentGenerationModeValues();
                             saveState();
                             return { node_id: String(node.id), character_info: state.character_info, gen_settings: state.gen_settings };
@@ -2721,7 +2591,7 @@ app.registerExtension({
                         },
                     });
                     setHelpText(picker.root, helpFor("style"));
-                    els.style = { setValue: picker.setValue };
+                    els.style = { setValue: picker.setValue, close: picker.close };
                     els.custom_style = picker.customInput;
                     return picker.root;
                 };
@@ -2745,17 +2615,20 @@ app.registerExtension({
                         </span>
                         <span class="vnccs-creator-graphic-toggle-switch" aria-hidden="true"></span>
                     `;
+                    let enabled = false;
                     const setValue = (value, persist = false) => {
-                        const enabled = !!value;
-                        targetObj[key] = enabled;
+                        enabled = value === true || ["true", "1", "yes"].includes(String(value).toLowerCase());
                         btn.classList.toggle("is-active", enabled);
                         btn.setAttribute("aria-pressed", enabled ? "true" : "false");
-                        if (persist) saveState();
+                        if (persist) {
+                            targetObj[key] = enabled;
+                            saveState();
+                        }
                     };
-                    btn.onclick = () => setValue(!targetObj[key], true);
+                    btn.onclick = () => setValue(!enabled, true);
                     wrap.appendChild(btn);
-                    els[key] = { type: "graphic-toggle", setValue, get checked() { return !!targetObj[key]; } };
-                    setValue(!!targetObj[key]);
+                    els[key] = { type: "graphic-toggle", setValue, get checked() { return enabled; } };
+                    setValue(targetObj[key]);
                     return wrap;
                 };
 
@@ -2775,6 +2648,7 @@ app.registerExtension({
 
                     const num = document.createElement("input");
                     num.type = "number"; num.className = "vnccs-creator-slider-val";
+                    num.min = min; num.max = max;
                     num.step = step;
                     num.value = targetObj[key];
 
@@ -2785,8 +2659,11 @@ app.registerExtension({
                         debouncedSave();
                     };
                     num.onchange = (e) => {
-                        let v = parseFloat(e.target.value);
-                        if (v < min) v = min; if (v > max) v = max;
+                        const v = e.target.valueAsNumber;
+                        if (!e.target.checkValidity() || !Number.isFinite(v)) {
+                            num.value = targetObj[key];
+                            return;
+                        }
                         num.value = v; range.value = v;
                         targetObj[key] = v;
                         saveState();
@@ -2814,10 +2691,11 @@ app.registerExtension({
                     input.step = step;
                     input.value = targetObj[key];
                     input.onchange = (e) => {
-                        let value = parseFloat(e.target.value);
-                        if (Number.isNaN(value)) value = targetObj[key] ?? min;
-                        if (value < min) value = min;
-                        if (value > max) value = max;
+                        const value = e.target.valueAsNumber;
+                        if (!e.target.checkValidity() || !Number.isFinite(value)) {
+                            e.target.value = targetObj[key];
+                            return;
+                        }
                         e.target.value = value;
                         targetObj[key] = value;
                         saveState();
@@ -2863,7 +2741,7 @@ app.registerExtension({
                 };
 
                 const cardStatusLabel = (status, entry, cat) => {
-                    const dls = ccDlStatus[ccStatusKey(cat, entry)] || {};
+                    const dls = ccState.downloadStatus[ccStatusKey(cat, entry)] || {};
                     if (status === "installed") return "Installed";
                     if (status === "queued") return "Queued";
                     if (status === "downloading") return dls.message || "Downloading";
@@ -3076,10 +2954,8 @@ app.registerExtension({
                 const ensureAnimaDefaultAux = () => {
                     const clip = ccFirstEntry("clip", "Anima");
                     const vae = ccFirstEntry("vae", "Anima");
-                    if (clip) state.gen_settings.clip_name = ccRelPath(clip);
-                    else if (!state.gen_settings.clip_name) state.gen_settings.clip_name = ANIMA_CLIP_NAME;
-                    if (vae) state.gen_settings.vae_name = ccRelPath(vae);
-                    else if (!state.gen_settings.vae_name) state.gen_settings.vae_name = ANIMA_VAE_NAME;
+                    if (!state.gen_settings.clip_name) state.gen_settings.clip_name = clip ? ccRelPath(clip) : ANIMA_CLIP_NAME;
+                    if (!state.gen_settings.vae_name) state.gen_settings.vae_name = vae ? ccRelPath(vae) : ANIMA_VAE_NAME;
                     if (els.clip_name) {
                         ensureOption(els.clip_name, state.gen_settings.clip_name);
                         els.clip_name.value = state.gen_settings.clip_name || "";
@@ -3093,8 +2969,8 @@ app.registerExtension({
                 const ensureQi2DefaultAux = () => {
                     const clip = ccFirstEntry("clip", "QI2");
                     const vae = ccFirstEntry("vae", "QI2");
-                    state.gen_settings.clip_name = clip ? ccRelPath(clip) : (state.gen_settings.clip_name || QI2_CLIP_NAME);
-                    state.gen_settings.vae_name = vae ? ccRelPath(vae) : (state.gen_settings.vae_name || QI2_VAE_NAME);
+                    if (!state.gen_settings.clip_name) state.gen_settings.clip_name = clip ? ccRelPath(clip) : QI2_CLIP_NAME;
+                    if (!state.gen_settings.vae_name) state.gen_settings.vae_name = vae ? ccRelPath(vae) : QI2_VAE_NAME;
                     state.gen_settings.clip_type = "qwen_image";
                     state.gen_settings.qi2_cache = {
                         device: state.gen_settings.qi2_cache?.device || "gpu",
@@ -3122,9 +2998,19 @@ app.registerExtension({
                 };
 
                 const selectQi2Model = (rel) => {
+                    if (!rel) return;
+                    const turboModel = isQi2TurboModel(rel);
+                    const previousTurboModel = isQi2TurboModel(state.gen_settings.diffusion_model_name);
+                    if (rel !== state.gen_settings.diffusion_model_name && (turboModel || previousTurboModel)) {
+                        state.gen_settings.steps = turboModel ? 8 : 25;
+                        state.gen_settings.cfg = turboModel ? 1.0 : 3.0;
+                        state.gen_settings.turbo_enabled = false;
+                        state.gen_settings.turbo_previous_settings = null;
+                    }
                     ensureQi2DefaultAux();
                     modelPickerOpen.qi2 = false;
                     selectCcAsset("diffusion_model_name", rel);
+                    syncGenerationControls();
                 };
 
                 const downloadAnimaBundle = async (cat, entry) => {
@@ -3147,6 +3033,7 @@ app.registerExtension({
 
                 const setCcTurboMode = (enabled, rel) => {
                     const mode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
+                    if (mode === "qi2" && isQi2TurboModel(state.gen_settings.diffusion_model_name)) return;
                     if (mode === "anima" || mode === "qi2") {
                         state.gen_settings.dmd_lora_name = rel || state.gen_settings.dmd_lora_name || "";
                         setAnimaTurboMode(enabled);
@@ -3195,8 +3082,9 @@ app.registerExtension({
                         if (mode === "qi2") return kind === "qi2";
                         return kind === "sdxl" || kind === "illustrious";
                     };
-                    const turboEntries = (ccConfig?.lora || []).filter(entry => kindOk(entry) && ccType(entry) === "turbolora");
-                    const ageEntries = (ccConfig?.lora || []).filter(entry => kindOk(entry) && ccType(entry) === "ageslider");
+                    const turboEntries = mode === "qi2" && isQi2TurboModel(state.gen_settings.diffusion_model_name)
+                        ? [] : (ccState.config?.lora || []).filter(entry => kindOk(entry) && ccType(entry) === "turbolora");
+                    const ageEntries = (ccState.config?.lora || []).filter(entry => kindOk(entry) && ccType(entry) === "ageslider");
 
                     const addGroup = (title, entries, renderer) => {
                         if (!entries.length) return;
@@ -3227,7 +3115,7 @@ app.registerExtension({
                     });
 
                     if (mode === "qi2") {
-                        const entry = (ccConfig?.lora || []).find(item =>
+                        const entry = (ccState.config?.lora || []).find(item =>
                             ccKind(item) === "qi2" && ccType(item) === "helper"
                             && (item.name === QI2_OVERHAUL_ENTRY.name || isCreatorOverhaulLora(ccRelPath(item)))
                         ) || QI2_OVERHAUL_ENTRY;
@@ -3248,26 +3136,6 @@ app.registerExtension({
 
                     const isCurrentMode = (state.gen_settings.generation_mode || "illustrious").toLowerCase() === mode;
                     containerEl.style.display = isCurrentMode && containerEl.children.length ? "flex" : "none";
-                };
-
-                const renderCardSection = (containerEl, entries, cat, key, emptyText) => {
-                    if (!containerEl) return;
-                    containerEl.innerHTML = "";
-                    if (!entries.length) {
-                        const empty = document.createElement("div");
-                        empty.className = "vnccs-creator-model-card-desc";
-                        empty.textContent = emptyText;
-                        containerEl.appendChild(empty);
-                        return;
-                    }
-                    entries.forEach(entry => {
-                        containerEl.appendChild(buildAssetCard({
-                            entry,
-                            cat,
-                            selectedValue: state.gen_settings[key] || "",
-                            onSelect: rel => selectCcAsset(key, rel),
-                        }));
-                    });
                 };
 
                 const renderModelPicker = ({ containerEl, entries, cat, key, mode, emptyText, onSelect, onDownload = null }) => {
@@ -3367,11 +3235,11 @@ app.registerExtension({
                     installedAnimaDefaults.forEach(([key, entries, cat]) => {
                         const current = String(state.gen_settings[key] || "").replace(/\\/g, "/");
                         const firstEntry = entries[0];
-                        if (!current && firstEntry && ccConfig) {
+                        if (isAnimaMode && !current && firstEntry && ccState.config) {
                             selectAnimaModel(ccRelPath(firstEntry));
                         }
                     });
-                    ensureAnimaDefaultAux();
+                    if (isAnimaMode) ensureAnimaDefaultAux();
 
                     const qi2Models = mergeCcAndLocalEntries(
                         ccEntries("models", "QI2", entry => ccType(entry) === "unet"),
@@ -3391,7 +3259,7 @@ app.registerExtension({
                         onDownload: downloadQi2Bundle,
                     });
                     const currentQi2 = String(state.gen_settings.diffusion_model_name || "").replace(/\\/g, "/");
-                    if (isQi2Mode && !currentQi2 && qi2Models[0] && ccConfig) {
+                    if (isQi2Mode && !currentQi2 && qi2Models[0] && ccState.config) {
                         selectQi2Model(ccRelPath(qi2Models[0]));
                     }
                     if (isQi2Mode) ensureQi2DefaultAux();
@@ -3421,7 +3289,7 @@ app.registerExtension({
                         }
                     }
 
-                    const illustriousDefaults = (ccConfig?.models || []).filter(entry => {
+                    const illustriousDefaults = (ccState.config?.models || []).filter(entry => {
                         const kind = ccKind(entry);
                         return (kind === "illustrious" || kind === "sdxl") && ccType(entry) === "checkpoint";
                     });
@@ -3437,7 +3305,7 @@ app.registerExtension({
                         if (illustriousCkpts.length) {
                             els.illustriousFallback.style.display = "none";
                             const firstEntry = illustriousCkpts[0];
-                            if (!state.gen_settings.ckpt_name && firstEntry && ccConfig) {
+                            if (!state.gen_settings.ckpt_name && firstEntry && ccState.config) {
                                 selectCcAsset("ckpt_name", ccRelPath(firstEntry));
                             }
                             renderModelPicker({
@@ -3467,7 +3335,7 @@ app.registerExtension({
                 const isSelectedCcAssetInstalled = (section, kind, key, predicate = null) => {
                     const selected = String(state.gen_settings[key] || "").replace(/\\/g, "/");
                     if (!selected) return false;
-                    if (!ccConfig) return true;
+                    if (!ccState.config) return true;
                     const entries = ccEntries(section, kind, predicate);
                     if (!entries.length) return true;
                     const match = entries.find(entry => ccRelPath(entry) === selected);
@@ -3571,33 +3439,7 @@ app.registerExtension({
                     }, [{ text: "OK", class: "vnccs-creator-btn-primary" }]);
                 };
 
-                const ensureQwenVLReady = async () => {
-                    const statusResponse = await api.fetchApi("/vnccs/qwen_vl_model_status?vision=false");
-                    if (!statusResponse.ok) throw new Error("Failed to check Qwen3.5 model files.");
-                    const modelStatus = await statusResponse.json();
-                    if (modelStatus.ready) return true;
-                    const approved = await new Promise(resolve => {
-                        const { modal } = showModal("Qwen3.5 Model Required", () => {
-                            const text = document.createElement("div");
-                            text.textContent = `${modelStatus.message || modelStatus.model_name} Download the required files from Hugging Face now?`;
-                            return text;
-                        }, [
-                            { text: "Cancel", action: () => { resolve(false); return false; } },
-                            { text: "DOWNLOAD & INSTALL", class: "vnccs-creator-btn-primary", action: () => { resolve(true); return false; } },
-                        ]);
-                        modal.addEventListener("keydown", event => {
-                            if (event.key === "Escape") resolve(false);
-                        }, true);
-                    });
-                    if (!approved) return false;
-
-                    const start = await api.fetchApi("/vnccs/qwen_vl_download_model?vision=false", { method: "POST" });
-                    if (!start.ok && start.status !== 409) {
-                        let err;
-                        try { err = await start.json(); } catch (e) { err = { error: await start.text() }; }
-                        throw new Error(err?.error || err?.message || "Failed to start QwenVL download.");
-                    }
-
+                const ensureQwenVLReady = createQwenVLModelLoader(node, showModal, () => {
                     const { overlay, modal } = showModal("Downloading QwenVL...", () => {
                         const d = document.createElement("div");
                         d.className = "vnccs-creator-character-wizard-modal";
@@ -3614,41 +3456,11 @@ app.registerExtension({
                     const statusEl = modal.querySelector("#vnccs-qwenvl-status");
                     const barEl = modal.querySelector("#vnccs-qwenvl-bar");
                     const pctEl = modal.querySelector("#vnccs-qwenvl-pct");
-
-                    return await new Promise((resolve, reject) => {
-                        const poll = async () => {
-                            try {
-                                const r = await api.fetchApi("/vnccs/qwen_vl_download_status");
-                                if (!r.ok) throw new Error(await r.text());
-                                const d = await r.json();
-                                const progress = Math.max(0, Math.min(100, Number(d.progress) || 0));
-                                statusEl.innerText = d.current_file ? `Downloading ${d.current_file}...` : "Preparing model files...";
-                                barEl.style.width = `${progress}%`;
-                                pctEl.innerText = `${progress}%`;
-                                if (d.status === "completed") {
-                                    statusEl.innerText = "QwenVL ready.";
-                                    barEl.style.width = "100%";
-                                    pctEl.innerText = "100%";
-                                    setTimeout(() => overlay.remove(), 450);
-                                    resolve(true);
-                                    return;
-                                }
-                                if (d.status === "error") {
-                                    overlay.remove();
-                                    reject(new Error(d.error || "QwenVL download failed."));
-                                    return;
-                                }
-                                setTimeout(poll, 700);
-                            } catch (e) {
-                                overlay.remove();
-                                reject(e);
-                            }
-                        };
-                        poll();
-                    });
-                };
+                    return { overlay, statusEl, barEl, pctEl, completedMessage: "QwenVL ready." };
+                }, false);
 
                 const openCharacterWizard = () => {
+                    if (node._vnccsStateRestoreError) return;
                     const character = state.character;
                     const currentRequest = beginCharacterWizardRequest();
                     let input;
@@ -3714,6 +3526,9 @@ app.registerExtension({
                 };
 
                 const doCreate = () => {
+                    if (node._vnccsStateRestoreError) return;
+                    const currentRequest = beginCharacterRequest();
+                    const character = state.character;
                     let inpRef;
                     const { content } = showModal("New Character", () => {
                         const inp = document.createElement("input");
@@ -3727,15 +3542,20 @@ app.registerExtension({
                             text: "Create",
                             class: "vnccs-creator-btn-primary",
                             action: async (ol, btn) => {
+                                const isCurrent = () => currentRequest() && ol.isConnected
+                                    && !node._vnccsStateRestoreError && state.character === character;
+                                if (!isCurrent()) return false;
                                 const n = inpRef.value.trim();
                                 if (!n) return true; // Keep open
                                 try {
                                     await checkedJSON("/vnccs/create", { method: "POST", body: JSON.stringify({ name: n, catalog: "creator_v2" }) });
+                                    if (!isCurrent()) return false;
                                     const exists = Array.from(els.charSelect.options).some(o => o.value === n);
                                     if (!exists) els.charSelect.add(new Option(n, n));
 
                                     return !await loadChar(n);
                                 } catch (e) {
+                                    if (!isCurrent()) return false;
                                     showAlertModal("Create Failed", e);
                                     return true;
                                 }
@@ -3746,11 +3566,13 @@ app.registerExtension({
                 };
 
                 const doDelete = () => {
+                    if (node._vnccsStateRestoreError) return;
                     const charName = state.character;
                     if (!charName || charName === "None" || charName === "Unknown") {
                         showAlertModal("Delete Character", "Please select a character to delete.");
                         return;
                     }
+                    const currentRequest = beginCharacterRequest();
 
                     showModal("Delete Character", () => {
                         const div = document.createElement("div");
@@ -3781,6 +3603,9 @@ app.registerExtension({
                             text: "CONFIRM DELETE",
                             class: "vnccs-creator-btn-danger",
                             action: async (ol, btn) => {
+                                const isCurrent = () => currentRequest() && ol.isConnected
+                                    && !node._vnccsStateRestoreError && state.character === charName;
+                                if (!isCurrent()) return false;
                                 try {
                                     btn.innerText = "DELETING...";
                                     btn.disabled = true;
@@ -3789,6 +3614,7 @@ app.registerExtension({
                                         headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
                                         body: JSON.stringify({ name: charName }),
                                     });
+                                    if (!isCurrent()) return false;
                                     if (r.ok) {
                                         const opts = Array.from(els.charSelect.options);
                                         const idx = opts.findIndex(o => o.value === charName);
@@ -3804,12 +3630,14 @@ app.registerExtension({
                                         return false;
                                     } else {
                                         const err = await r.json();
+                                        if (!isCurrent()) return false;
                                         showAlertModal("Delete Failed", err.error || "Unknown Error");
                                         btn.innerText = "CONFIRM DELETE";
                                         btn.disabled = false;
                                         return true;
                                     }
                                 } catch (e) {
+                                    if (!isCurrent()) return false;
                                     showAlertModal("Delete Failed", e);
                                     return false; // Close on crash to avoid Stuck UI
                                 }
@@ -3819,6 +3647,10 @@ app.registerExtension({
                 };
 
                 const openTagConstructor = async (fieldKey, inputEl) => {
+                    if (node._vnccsStateRestoreError) return;
+                    const character = state.character;
+                    const currentRequest = beginCharacterWizardRequest();
+                    const isCurrent = () => currentRequest() && !node._vnccsStateRestoreError && state.character === character;
                     // 1. Ensure Data
                     if (!TAG_DATA) {
                         try {
@@ -3826,10 +3658,12 @@ app.registerExtension({
                             if (r.ok) TAG_DATA = await r.json();
                             else throw new Error("Failed to load presets");
                         } catch (e) {
+                            if (!isCurrent()) return;
                             showAlertModal("Preset Catalog Error", "Error loading character presets: " + e);
                             return;
                         }
                     }
+                    if (!isCurrent()) return;
 
                     const allTags = presetGroups(TAG_DATA, fieldKey);
                     if (!allTags.length) {
@@ -3894,7 +3728,8 @@ app.registerExtension({
                         {
                             text: "APPLY",
                             class: "vnccs-creator-btn-primary",
-                            action: () => {
+                            action: overlay => {
+                                if (!isCurrent() || !overlay.isConnected) return false;
                                 const final = selected.value();
                                 inputEl.value = final;
                                 // Trigger oninput so state.character_info is updated
@@ -4125,7 +3960,12 @@ app.registerExtension({
                 const seedInp = document.createElement("input"); seedInp.className = "vnccs-creator-gen-param-input";
                 seedInp.type = "number"; seedInp.value = state.gen_settings.seed;
                 seedInp.onchange = (e) => {
-                    state.gen_settings.seed = parseInt(e.target.value);
+                    const value = e.target.valueAsNumber;
+                    if (!e.target.checkValidity() || !Number.isFinite(value)) {
+                        e.target.value = state.gen_settings.seed;
+                        return;
+                    }
+                    state.gen_settings.seed = value;
                     saveState();
                 };
                 els.seed = seedInp;
@@ -4305,7 +4145,12 @@ app.registerExtension({
                     rng.type = "number"; rng.step = "0.05"; rng.style.flex = "1";
 
                     rng.onchange = (e) => {
-                        state.gen_settings.lora_stack[i].strength = parseFloat(e.target.value);
+                        const value = e.target.valueAsNumber;
+                        if (!e.target.checkValidity() || !Number.isFinite(value)) {
+                            e.target.value = state.gen_settings.lora_stack[i].strength;
+                            return;
+                        }
+                        state.gen_settings.lora_stack[i].strength = value;
                         saveState();
                     };
 
@@ -4428,11 +4273,17 @@ app.registerExtension({
                 }, registerCleanup);
                 registerCleanup(node, () => stopCcPolling());
 
-                const init = async () => {
-                    loadState();
+                const beginInitRequest = createRequestGuard(node);
+                const init = async (selectionIntent = currentInitializationSelection) => {
+                    const currentInit = beginInitRequest();
+                    const restoreSelection = selectionIntent();
+                    if (restoreSelection && !loadState()) return;
+                    const currentSelection = restoreSelection ? currentInitializationSelection : selectionIntent;
                     try {
                         const r = await api.fetchApi("/vnccs/context_lists");
                         const d = await r.json();
+                        if (!currentInit()) return;
+                        if (!r.ok || !Array.isArray(d.characters)) throw new Error("Failed to load character context.");
 
                         const pop = (el, items, none = false) => {
                             if (!el) return; el.innerHTML = "";
@@ -4467,8 +4318,11 @@ app.registerExtension({
                         });
 
                         const characters = Array.isArray(d.characters) ? d.characters : [];
+                        const selectedBeforeInventory = els.charSelect.value;
+                        const pendingOptions = currentSelection() ? [] : Array.from(els.charSelect.options, option => option.value);
                         els.charSelect.innerHTML = "";
-                        characters.forEach(c => els.charSelect.add(new Option(c, c)));
+                        [...new Set([...characters, ...pendingOptions])].forEach(c => els.charSelect.add(new Option(c, c)));
+                        if (!currentSelection()) els.charSelect.value = selectedBeforeInventory;
 
                         // Restore values or defaults into independent per-mode profiles.
                         const g = state.gen_settings;
@@ -4506,10 +4360,13 @@ app.registerExtension({
                         syncGenerationControls();
                         refreshGenerationModeUI();
 
-                        const selected = characters.includes(state.character) ? state.character : characters[0] || "";
+                        if (!currentSelection()) return;
+                        const selected = state.character || characters[0] || "";
+                        ensureOption(els.charSelect, selected);
                         const hasWidgetData = restoredWidgetInfoCharacter && restoredWidgetInfoCharacter === selected;
                         if (selected) await loadChar(selected, hasWidgetData);
                         else clearCharacterSelection();
+                        if (!currentInit()) return;
 
                         // Sync widget state. Preview validity is set by image onload handler, not preemptively.
                         saveState();
@@ -4518,12 +4375,17 @@ app.registerExtension({
                 };
 
                 const beginCharacterRequest = createRequestGuard(node);
+                let currentInitializationSelection = beginCharacterRequest();
                 const beginCharacterWizardRequest = createRequestGuard(node);
                 const loadChar = async (n, skipInfoLoad = false) => {
+                    els.style?.close?.(false);
                     beginCharacterWizardRequest();
                     const currentRequest = beginCharacterRequest();
                     const currentPreview = beginPreviewRequest();
                     const originalCharacter = state.character;
+                    const restoredPreview = skipInfoLoad && state.preview_valid;
+                    const restoredPreviewSource = state.preview_source;
+                    const restoredPreviewIndex = state.sprite_preview_index;
                     const isCurrent = () => currentRequest() && (state.character === originalCharacter || state.character === n);
                     if (!n) return false;
                     try {
@@ -4566,6 +4428,10 @@ app.registerExtension({
 
                         // 2. Fetch Preview Image
                         if (!currentPreview()) return;
+                        if (restoredPreview && restoredPreviewSource === "gen") {
+                            tryCachePreview(n);
+                            return true;
+                        }
                         try {
                             const metaResponse = await api.fetchApi(`/vnccs/get_character_pose_preview_meta?character=${encodeURIComponent(n)}&t=${Date.now()}`);
                             const meta = metaResponse.ok ? await metaResponse.json() : {};
@@ -4575,7 +4441,8 @@ app.registerExtension({
                             state.sprite_preview_cache_bust = `${n}:${Date.now()}`;
 
                             if (count > 0) {
-                                const index = Math.floor(Math.random() * count);
+                                const index = restoredPreview && restoredPreviewSource === "pose"
+                                    ? restoredPreviewIndex : Math.floor(Math.random() * count);
                                 showSpritePreview(n, index);
                             } else {
                                 hideSpriteNav();
@@ -4598,6 +4465,7 @@ app.registerExtension({
                 };
 
                 const doGenerate = async () => {
+                    if (node._vnccsStateRestoreError) return;
                     if (els.btnGen.disabled) return;
                     if (!state.character) {
                         showAlertModal("No Character", "Create a character before generating a preview.");
@@ -4643,17 +4511,18 @@ app.registerExtension({
 
                     const character = state.character;
                     const currentPreview = beginPreviewRequest();
-                    const isCurrent = () => currentPreview() && state.character === character;
+                    const previewInputs = () => JSON.stringify({
+                        _vnccs_seed_resolved: true,
+                        character: state.character,
+                        character_info: state.character_info,
+                        gen_settings: { ...state.gen_settings,
+                            lora_stack: state.gen_settings.lora_stack.filter(x => x.name && x.name !== "None") }
+                    });
+                    const inputs = previewInputs();
+                    const isCurrent = () => currentPreview() && state.character === character && previewInputs() === inputs;
                     try {
-                        const payload = {
-                            character: state.character,
-                            character_info: state.character_info,
-                            gen_settings: { ...state.gen_settings }
-                        };
-                        // Clean stack in the copy
-                        payload.gen_settings.lora_stack = payload.gen_settings.lora_stack.filter(x => x.name && x.name !== "None");
 
-                        const r = await api.fetchApi("/vnccs/preview_generate", { method: "POST", body: JSON.stringify(payload) });
+                        const r = await api.fetchApi("/vnccs/preview_generate", { method: "POST", body: inputs });
 
                         if (!r.ok) {
                             const errText = await r.text();
@@ -4685,31 +4554,25 @@ app.registerExtension({
 
                 // 7. Graph Restore Hook / Main Entry Point
                 let initialized = false;
+                let initTimer;
+                const origConfigure = node.onConfigure;
                 node.onConfigure = function () {
+                    origConfigure?.apply(this, arguments);
+                    clearTimeout(initTimer);
                     syncDOMWidgetWidth(node, "ui");
                     setTimeout(() => syncDOMWidgetWidth(node, "ui"), 100);
-                    if (initialized) return;
-                    // Prevent double init if called multiple times
-                    // But we might need to re-load state if configure happens again? 
-                    // Usually configure happens once on load.
-
                     initialized = true;
-                    // Check if widget_data has value NOW
-                    const w = node.widgets.find(x => x.name === "widget_data");
-                    if (w && w.value) {
-                        // We have data, init will use it via loadState
-                    }
-
-                    init();
+                    init(beginCharacterRequest());
                 };
 
                 // Fallback for new nodes (onConfigure runs on add too, but just in case)
-                setTimeout(() => {
+                initTimer = setTimeout(() => {
                     if (!initialized) {
                         initialized = true;
                         init();
                     }
                 }, 100);
+                registerCleanup(node, () => clearTimeout(initTimer));
             };
 
             const onResize = nodeType.prototype.onResize;

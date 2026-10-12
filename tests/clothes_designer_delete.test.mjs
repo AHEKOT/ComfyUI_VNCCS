@@ -12,7 +12,7 @@ const between = (text, start, end) => {
     assert.ok(offset >= 0 && finish > offset);
     return text.slice(offset, finish);
 };
-const guards = between(common, 'export function registerCleanup', '// ── Widget Data Sync').replaceAll('export ', '');
+const guards = between(common, 'export function registerCleanup', '// ── DOM Widget Width Sync').replaceAll('export ', '');
 const deferred = () => {
     let resolve;
     const promise = new Promise(done => { resolve = done; });
@@ -65,6 +65,7 @@ function setup({ costumes = ['Naked', 'Dress', 'Casual'], deletion, costumeInfo,
     vm.runInContext(`${guards}
         const beginDeleteRequest = createRequestGuard(node);
         const beginClothesWizardRequest = createRequestGuard(node);
+        const beginClothesUploadRequest = createRequestGuard(node);
         const beginSelectionRequest = createRequestGuard(node);
         const beginPreviewRequest = createRequestGuard(node);
         ${between(source, 'const saveState = () =>', 'node._randomizeSeedIfNeeded =')}
