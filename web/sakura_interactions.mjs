@@ -279,6 +279,7 @@ export function animateSakuraIndicator(owner, previous, current) {
 
 export function createSakuraInteractions(container, node) {
     const owner = { container, node, _removed: false };
+    const scrollPositions = new Map();
     owner._closeDropdown = restore => closeSakuraDropdown(owner, restore);
     owner._openDropdown = (...args) => openSakuraDropdown(owner, ...args);
     owner._playMotion = (...args) => playSakuraMotion(owner, ...args);
@@ -290,14 +291,20 @@ export function createSakuraInteractions(container, node) {
             if (select.closest("[inert]")) continue;
             if (!selects.has(select)) {
                 const labels = [...(select.labels || [])];
-                const label = select.ariaLabel || labels[0]?.textContent || select.parentElement.querySelector(".vnccs-creator-label")?.textContent || "Selection";
+                const label = select.ariaLabel || labels[0]?.textContent || select.parentElement.querySelector("[class$='-label']")?.textContent || "Selection";
                 const button = createSakuraSelect(owner, `vnccs-common-ui-select-${node.id}-${++selectSequence}`, [], "", value => {
                     select.value = value;
                     select.dispatchEvent(new Event("change", { bubbles: true }));
                     owner.syncSelects();
                 }, select.className);
                 button.ariaLabel = label;
+                button.dataset.focusKey = select.dataset.focusKey || button.id;
                 button.style.cssText = select.style.cssText;
+                button.onfocus = event => select.onfocus?.apply(select, [event]);
+                button.onpointerdown = event => {
+                    select.onpointerdown?.apply(select, [event]);
+                    owner.syncSelects();
+                };
                 select.hidden = true;
                 select.tabIndex = -1;
                 select.ariaHidden = "true";
@@ -308,16 +315,31 @@ export function createSakuraInteractions(container, node) {
             const choices = [...select.options].map(option => ({ value: option.value, label: option.textContent }));
             if (choices.length && select.value === "" && !choices.some(option => option.value === "")) choices.unshift({ value: "", label: "Select…" });
             selects.get(select).setChoices(choices, select.value);
-            selects.get(select).disabled = select.disabled || !choices.length;
+            const button = selects.get(select);
+            const disabled = !!select.disabled || !choices.length;
+            if (button.disabled !== disabled) button.disabled = disabled;
+            if (button.style.cssText !== select.style.cssText) button.style.cssText = select.style.cssText;
         }
         for (const [select, button] of selects) if (!container.contains(select)) { button.remove(); selects.delete(select); }
     };
     const observer = typeof MutationObserver === "function" ? new MutationObserver(owner.syncSelects) : null;
-    observer?.observe(container, { childList: true, subtree: true });
+    observer?.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled", "style"] });
     const scroll = event => {
         if (owner._dropdown && !owner._dropdown.menu.contains(event.target)) owner._closeDropdown(false);
     };
     container.addEventListener("scroll", scroll, true);
+    owner.syncSelection = (group) => {
+        if (owner._removed || !group) return;
+        const buttons = [...group.children];
+        group.classList.add("vnccs-common-ui-segmented");
+        group.style.setProperty("--segments", String(buttons.length));
+        buttons.forEach(button => {
+            button.classList.add("vnccs-common-ui-segment");
+            button.setAttribute("aria-pressed", String(button.classList.contains("is-active") || button.classList.contains("active")));
+        });
+        const index = buttons.findIndex(button => button.getAttribute("aria-pressed") === "true");
+        group.style.setProperty("--segment-index", String(Math.max(0, index)));
+    };
     owner.captureSelection = elements => {
         const element = elements.find(element => element.classList.contains("is-active") || element.classList.contains("is-selected"));
         return element && container.clientWidth ? { element, ...sakuraRect(owner, element) } : null;
@@ -338,30 +360,41 @@ export function createSakuraInteractions(container, node) {
     };
     owner.captureView = () => {
         const positions = new Map([...container.querySelectorAll("[data-sakura-scroll]")]
-            .map(region => [region.dataset.sakuraScroll, { top: region.scrollTop, left: region.scrollLeft }]));
+            .map(region => {
+                const actual = { top: region.scrollTop, left: region.scrollLeft };
+                const saved = scrollPositions.get(region.dataset.sakuraScroll);
+                const position = saved && saved.actual.top === actual.top && saved.actual.left === actual.left ? saved.position : actual;
+                return [region.dataset.sakuraScroll, position];
+            }));
         const active = document.activeElement;
         const focusKey = container.contains(active) ? active.dataset?.focusKey : null;
         const focusGroup = container.contains(active) ? active.closest("[data-sakura-focus-group]")?.dataset.sakuraFocusGroup : null;
-        const heads = new Map([...container.querySelectorAll(".vnccs-creator-model-card.is-picker-head")]
+        const selection = focusKey && typeof active.selectionStart === "number"
+            ? { start: active.selectionStart, end: active.selectionEnd, direction: active.selectionDirection } : null;
+        const heads = new Map([...container.querySelectorAll(".vnccs-creator-model-card.is-picker-head, [data-sakura-picker-head]")]
             .filter(element => element.getClientRects().length && container.clientWidth)
-            .map(element => [element.closest(".vnccs-creator-model-picker").dataset.mode,
+            .map(element => [element.closest(".vnccs-creator-model-picker, [data-sakura-picker]").dataset.mode,
                 { element, rect: sakuraRect(owner, element), signature: element.textContent }]));
         const toggles = new Map([...container.querySelectorAll("[data-toggle-state]")].map(card => {
-            const thumb = card.querySelector(".vnccs-creator-toggle-thumb");
-            const track = card.querySelector(".vnccs-creator-toggle-track");
+            const thumb = card.querySelector(".vnccs-creator-toggle-thumb, .vnccs-common-ui-toggle-thumb");
+            const track = card.querySelector(".vnccs-creator-toggle-track, .vnccs-common-ui-toggle-track");
             return [card.dataset.focusKey, { checked: card.dataset.toggleState === "true",
                 transform: window.getComputedStyle?.(thumb).transform, background: window.getComputedStyle?.(track).backgroundColor,
                 animation: owner._motionByElement?.get(thumb), trackAnimation: owner._motionByElement?.get(track) }];
         }));
-        return { positions, focusKey, focusGroup, heads, toggles };
+        return { positions, focusKey, focusGroup, selection, heads, toggles };
     };
-    owner.restoreView = ({ positions, focusKey, focusGroup, heads, toggles }) => {
+    owner.restoreView = ({ positions, focusKey, focusGroup, selection, heads, toggles }) => {
         if (owner._removed) return;
         const restore = () => {
             if (owner._removed) return;
             for (const region of container.querySelectorAll("[data-sakura-scroll]")) {
                 const position = positions.get(region.dataset.sakuraScroll);
-                if (position) { region.scrollTop = position.top; region.scrollLeft = position.left; }
+                if (position) {
+                    region.scrollTop = position.top; region.scrollLeft = position.left;
+                    // Retain the requested position while a filter or collapsed panel temporarily clamps it.
+                    scrollPositions.set(region.dataset.sakuraScroll, { position, actual: { top: region.scrollTop, left: region.scrollLeft } });
+                }
             }
         };
         if (focusKey) {
@@ -370,7 +403,10 @@ export function createSakuraInteractions(container, node) {
                 const group = [...container.querySelectorAll("[data-sakura-focus-group]")].find(element => element.dataset.sakuraFocusGroup === focusGroup);
                 replacement = group?.querySelector("[data-sakura-focus-default]");
             }
-            if (replacement?.getClientRects().length) replacement.focus({ preventScroll: true });
+            if (replacement?.getClientRects().length) {
+                replacement.focus({ preventScroll: true });
+                if (selection && typeof replacement.selectionStart === "number") replacement.setSelectionRange?.(selection.start, selection.end, selection.direction);
+            }
         }
         restore();
         const after = owner.captureView();
@@ -380,10 +416,10 @@ export function createSakuraInteractions(container, node) {
             if (!previous || (previous.checked === checked && !previous.animation)) continue;
             const duration = previous.checked === checked ? Math.max(1, 280 - Number(previous.animation.currentTime || 0)) : 280;
             previous.animation?.cancel(); previous.trackAnimation?.cancel();
-            const thumb = card.querySelector(".vnccs-creator-toggle-thumb");
+            const thumb = card.querySelector(".vnccs-creator-toggle-thumb, .vnccs-common-ui-toggle-thumb");
             playSakuraMotion(owner, thumb, [{ transform: previous.transform || (previous.checked ? "translateX(16px)" : "none") },
                 { transform: checked ? "translateX(16px)" : "none" }], duration);
-            const track = card.querySelector(".vnccs-creator-toggle-track");
+            const track = card.querySelector(".vnccs-creator-toggle-track, .vnccs-common-ui-toggle-track");
             playSakuraMotion(owner, track, [{ backgroundColor: previous.background || (previous.checked ? "rgba(255,143,163,0.2)" : "rgba(255,255,255,0.08)") },
                 { backgroundColor: checked ? "rgba(255,143,163,0.2)" : "rgba(255,255,255,0.08)" }], duration);
         }
@@ -411,19 +447,22 @@ export function createSakuraInteractions(container, node) {
     owner.emptyPreview = (image, placeholder, name, message, mode = "idle") => {
         if (owner._removed) return;
         owner._previewRevision = (owner._previewRevision || 0) + 1;
+        owner._previewSource = null;
+        owner._previewGhost?.remove();
+        owner._previewGhost = null;
         owner._motionByElement?.get(image)?.cancel();
         image.style.display = "none";
         image.style.opacity = "";
         placeholder.style.display = "flex";
-        const title = placeholder.querySelector(".vnccs-creator-placeholder-title");
-        const hint = placeholder.querySelector(".vnccs-creator-placeholder-hint");
-        title.textContent = name || "Create a character";
-        hint.textContent = mode === "new" ? "Ready for the first preview" : message;
+        const title = placeholder.querySelector(".vnccs-creator-placeholder-title, .vnccs-common-ui-placeholder-title");
+        const hint = placeholder.querySelector(".vnccs-creator-placeholder-hint, .vnccs-common-ui-placeholder-hint");
+        if (title) title.textContent = name || "Create a character";
+        if (hint) hint.textContent = mode === "new" ? "Ready for the first preview" : message;
         placeholder.dataset.phase = mode;
         if (owner._emptyCharacter !== name) {
             playSakuraMotion(owner, placeholder, [{ opacity: 0, transform: "translateY(6px)" }, { opacity: 1, transform: "none" }]);
             owner._emptyCharacter = name;
-            const aura = image.parentElement.querySelector(".vnccs-creator-preview-aura");
+            const aura = image.parentElement.querySelector(".vnccs-creator-preview-aura, .vnccs-common-ui-preview-aura");
             if (mode === "new" && aura) playSakuraMotion(owner, aura, [{ opacity: 0, transform: "scale(0.75)" }, { opacity: 0.5, offset: 0.4 }, { opacity: 0, transform: "scale(1.1)" }], 700);
         }
     };
@@ -441,7 +480,8 @@ export function createSakuraInteractions(container, node) {
     };
     owner.presentPreview = (image, placeholder, src, name) => {
         if (owner._removed) return;
-        const first = !owner._portraitShown;
+        if (owner._previewSource === src && image.style.display !== "none") return;
+        owner._previewSource = src;
         const revision = owner._previewRevision = (owner._previewRevision || 0) + 1;
         const previous = image.style.display !== "none" && image.style.opacity !== "0" && image.getAttribute("src")
             ? { clone: image.cloneNode(true), rect: sakuraRect(owner, image, image.parentElement) } : null;
@@ -455,7 +495,6 @@ export function createSakuraInteractions(container, node) {
         image.style.opacity = "0";
         const reveal = () => {
             if (owner._removed || owner._previewRevision !== revision) return;
-            owner._portraitShown = true;
             image.style.opacity = "";
             placeholder.style.display = "none";
             if (owner._previewGhost) {
@@ -463,9 +502,9 @@ export function createSakuraInteractions(container, node) {
                 owner._previewGhost = null;
                 playSakuraMotion(owner, ghost, [{ opacity: 1 }, { opacity: 0 }], 160, () => ghost.remove());
             }
-            playSakuraMotion(owner, image, [{ opacity: 0, filter: first ? "blur(5px)" : "blur(2px)" }, { opacity: 1, filter: "blur(0px)" }], first ? 420 : 240);
-            const aura = image.parentElement.querySelector(".vnccs-creator-preview-aura");
-            if (first && aura) playSakuraMotion(owner, aura, [{ opacity: 0, transform: "scale(0.75)" }, { opacity: 0.5, offset: 0.4 }, { opacity: 0, transform: "scale(1.1)" }], 700);
+            playSakuraMotion(owner, image, [{ opacity: 0, filter: "blur(5px)" }, { opacity: 1, filter: "blur(0px)" }], 420);
+            const aura = image.parentElement.querySelector(".vnccs-creator-preview-aura, .vnccs-common-ui-preview-aura");
+            if (aura) playSakuraMotion(owner, aura, [{ opacity: 0, transform: "scale(0.75)" }, { opacity: 0.5, offset: 0.4 }, { opacity: 0, transform: "scale(1.1)" }], 700);
         };
         if (image.decode) image.decode().then(reveal, reveal);
         else reveal();
@@ -479,6 +518,7 @@ export function createSakuraInteractions(container, node) {
         owner._previewGhost?.remove();
         owner._previewGhost = null;
         selects.clear();
+        scrollPositions.clear();
     };
     return owner;
 }

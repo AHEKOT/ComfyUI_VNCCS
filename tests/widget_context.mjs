@@ -11,6 +11,14 @@ const sharedNames = [...shared.matchAll(/export (?:const|function) (\w+)/g)].map
 
 // Source-level widget tests still execute the real shared transport helpers.
 export function createWidgetContext(sandbox = {}) {
+    if (sandbox.document?.createElement) {
+        const createElement = sandbox.document.createElement;
+        sandbox.document.createElement = function () {
+            const element = createElement.apply(this, arguments);
+            element.dataset ||= {};
+            return element;
+        };
+    }
     const api = sandbox.api || {};
     api.apiURL ||= route => route;
     api.fetchApi ||= sandbox.fetch || (() => { throw new Error('Unexpected request'); });

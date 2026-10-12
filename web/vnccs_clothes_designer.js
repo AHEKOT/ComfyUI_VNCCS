@@ -1,9 +1,11 @@
 import { app } from "../../scripts/app.js";
+import { createSakuraInteractions } from "./sakura_interactions.mjs";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, refreshPreviewImage, watchConnection } from "./vnccs_transport.js";
-import { createQwenVLModelLoader, SAKURA_THEME_CSS, registerCleanup, injectStyles, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP, normalizeUploadFile, normalizeAgeValue } from "./vnccs_common.js";
+import { createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, registerCleanup, injectStyles, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP, normalizeUploadFile, normalizeAgeValue } from "./vnccs_common.js";
 
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+${SAKURA_INTERACTION_CSS}
 
 .vnccs-clothes-container {
 ${SAKURA_THEME_CSS}
@@ -11,6 +13,7 @@ ${SAKURA_THEME_CSS}
 }
 
 .vnccs-clothes-container {
+    position: relative;
     display: flex; flex-direction: column;
     background: var(--bg-primary); color: var(--text-primary);
     font-family: var(--font); font-size: 13px;
@@ -68,7 +71,7 @@ ${SAKURA_THEME_CSS}
     background: rgba(255,255,255,0.04); border: 1px solid var(--border);
     color: var(--text-primary); border-radius: var(--radius-md);
     padding: 8px 12px; font-family: var(--font); font-size: 12px;
-    width: 100%; box-sizing: border-box; zoom: 1.5; transition: all var(--transition);
+    width: 100%; box-sizing: border-box; transition: all var(--transition);
     color-scheme: dark;
 }
 .vnccs-clothes-select option {
@@ -343,8 +346,8 @@ ${SAKURA_THEME_CSS}
     overflow: hidden; position: relative; min-height: 0;
 }
 .vnccs-clothes-preview-img {
+    position: absolute; inset: 0;
     width: 100%; height: 100%; object-fit: contain;
-    animation: cd-fadein 0.4s ease;
 }
 .vnccs-clothes-preview-loading {
     position: absolute;
@@ -412,7 +415,6 @@ ${SAKURA_THEME_CSS}
     font-size: 10px;
     color: var(--text-secondary);
 }
-@keyframes cd-fadein { from { opacity: 0; } to { opacity: 1; } }
 @keyframes cd-spin { to { transform: rotate(360deg); } }
 .vnccs-clothes-placeholder {
     display: flex; flex-direction: column; align-items: center; gap: 10px;
@@ -553,6 +555,16 @@ ${SAKURA_THEME_CSS}
 @keyframes cd-dots {
     0%,20% { content: ''; } 40% { content: '.'; } 60% { content: '..'; } 80%,100% { content: '...'; }
 }
+
+.vnccs-clothes-container :is(button, [role="button"]):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.vnccs-clothes-container :is(input, select, .vnccs-common-ui-select-trigger) { box-sizing: border-box; }
+@media (prefers-reduced-motion: reduce) {
+    .vnccs-clothes-container *, .vnccs-clothes-container *::before, .vnccs-clothes-container *::after {
+        animation: none !important; transition: none !important;
+    }
+}
+.vnccs-clothes-input, .vnccs-clothes-select { height: 34px; min-height: 34px; }
+.cd-tab { font-family: var(--font); min-height: 34px; }
 `;
 
 app.registerExtension({
@@ -1225,6 +1237,7 @@ app.registerExtension({
 
                     const inp = document.createElement(multiline ? "textarea" : "input");
                     inp.className = multiline ? "vnccs-clothes-textarea" : "vnccs-clothes-input";
+                    inp.dataset.focusKey = `costume-${key}`;
                     if (placeholder) inp.placeholder = placeholder;
 
                     inp.value = state.costume_info[key] || "";
@@ -1288,6 +1301,7 @@ app.registerExtension({
                             btn.classList.toggle("is-active", selected);
                             btn.setAttribute("aria-pressed", String(selected));
                         });
+                        els._ui?.syncSelection(segmented);
                         if (persist) saveState();
                     };
 
@@ -1348,6 +1362,7 @@ app.registerExtension({
                     els.background_color?.setValue?.(state.gen_settings.background_color || "Green");
                     renderClothesCoreLoraCard();
                     if (backgroundChanged) saveState();
+                    els._ui?.syncSelects();
                 };
 
                 const renderClothesCoreLoraCard = (entryOrPath = null) => {
@@ -1499,6 +1514,7 @@ app.registerExtension({
 
                 // Helper to render Clone Panel (New Tab)
                 const renderClonePanel = (container) => {
+                    const view = els._ui.captureView();
                     container.innerHTML = '';
 
                     const desc = document.createElement("div");
@@ -1598,15 +1614,21 @@ app.registerExtension({
 
                     pContainer.appendChild(overlay);
                     container.appendChild(pContainer);
+                    els._ui.syncSelects();
+                    els._ui.restoreView(view);
                 };
 
 
                 // --- MAIN LAYOUT ---
                 const container = document.createElement("div"); container.className = "vnccs-clothes-container";
+                container.classList.add("vnccs-common-ui-host");
+                els._ui = createSakuraInteractions(container, node);
+                registerCleanup(node, () => els._ui.dispose());
                 const topRow = document.createElement("div"); topRow.className = "vnccs-clothes-top-row";
 
                 // --- COL 1: DESIGN STUDIO ---
                 const colLeft = document.createElement("div"); colLeft.className = "vnccs-clothes-col";
+                colLeft.dataset.sakuraScroll = "character";
                 colLeft.innerHTML = '<div class="vnccs-clothes-section-title">Design Studio</div>';
 
                 // Character Select
@@ -1852,9 +1874,7 @@ app.registerExtension({
                             const d = await r.json();
                             if (!isCurrent()) return;
                             if (d.image) {
-                                els.previewImg.src = "data:image/png;base64," + d.image;
-                                els.previewImg.style.display = "block";
-                                els.placeholder.style.display = "none";
+                                els._ui.presentPreview(els.previewImg, els.placeholder, "data:image/png;base64," + d.image, state.character);
                             }
                         } else {
                             const message = await r.text();
@@ -1872,6 +1892,7 @@ app.registerExtension({
 
                 // Preview
                 const frame = document.createElement("div"); frame.className = "vnccs-clothes-preview-container";
+                frame.classList.add("vnccs-common-ui-preview-host");
                 frame.style.marginTop = "5px";
                 frame.innerHTML = `<div class="vnccs-clothes-placeholder">
                     <svg class="vnccs-clothes-placeholder-icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1881,6 +1902,9 @@ app.registerExtension({
                     No Preview
                 </div>`;
                 const pImg = document.createElement("img"); pImg.className = "vnccs-clothes-preview-img"; pImg.style.display = "none";
+                const previewAura = document.createElement("div");
+                previewAura.className = "vnccs-common-ui-preview-aura";
+                frame.appendChild(previewAura);
                 pImg.onclick = () => window.open(pImg.src, "_blank");
                 frame.appendChild(pImg);
                 const previewLoading = document.createElement("div");
@@ -1909,6 +1933,7 @@ app.registerExtension({
                     isSelectionCurrent: preview => preview.character === state.character
                         && preview.costume === (hasSelectedEditableCostume() ? state.costume : "Naked"),
                     image: pImg,
+                    interactions: els._ui,
                     placeholder: els.placeholder,
                     loading: previewLoading,
                     nav: spriteNav,
@@ -1943,6 +1968,7 @@ app.registerExtension({
 
                 // --- COL 2: MIDDLE PANEL (Tabs) ---
                 const colMid = document.createElement("div"); colMid.className = "vnccs-clothes-col";
+                colMid.dataset.sakuraScroll = "design";
                 colMid.style.paddingTop = "0"; // Reset padding for tabs
 
                 const controlsWrap = createGenerationControls();
@@ -1953,9 +1979,13 @@ app.registerExtension({
                 // Tab Header
                 const tabBar = document.createElement("div");
                 tabBar.className = "cd-tab-bar";
+                tabBar.setAttribute("role", "group");
+                tabBar.setAttribute("aria-label", "Clothes mode");
 
                 const createTab = (id, label) => {
-                    const t = document.createElement("div");
+                    const t = document.createElement("button");
+                    t.type = "button";
+                    t.dataset.focusKey = `clothes-tab-${id}`;
                     t.className = "cd-tab" + (state.activeTab === id ? " active" : "");
                     t.innerText = label;
                     t.onclick = () => {
@@ -1971,6 +2001,7 @@ app.registerExtension({
                 contentArea.style.flex = "1"; contentArea.style.display = "flex"; contentArea.style.flexDirection = "column";
 
                 const refreshTabs = () => {
+                    const view = els._ui.captureView();
                     tabBar.innerHTML = '';
                     tabBar.appendChild(createTab("generate", "GENERATE CLOTHES"));
                     tabBar.appendChild(createTab("clone", "CLONE CLOTHES"));
@@ -1978,6 +2009,9 @@ app.registerExtension({
                     if (state.activeTab === "generate") renderAttributes(contentArea);
                     else renderClonePanel(contentArea);
                     syncCostumeEditControls();
+                    els._ui.syncSelection(tabBar);
+                    els._ui.syncSelects();
+                    els._ui.restoreView(view);
                 };
 
                 refreshTabs(); // Initial Render
@@ -2232,8 +2266,7 @@ app.registerExtension({
                         const r = await api.fetchApi(url);
                         if (!isCurrent()) return;
                         if (!r.ok) {
-                            els.previewImg.style.display = "none";
-                            els.placeholder.style.display = "block";
+                            els._ui.emptyPreview(els.previewImg, els.placeholder, character, "No preview available");
                             spritePreviewNavigator?.hideNav();
                             state.selected_preview_sprite = null;
                             saveState();

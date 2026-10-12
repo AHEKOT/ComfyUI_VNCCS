@@ -29,6 +29,8 @@ class Element {
         this.classList = { toggle() {}, add() {}, remove() {} };
     }
     append(...children) { this.children.push(...children); }
+    get textContent() { return (this._text || "") + this.children.map(child => child.textContent || "").join(""); }
+    set textContent(value) { this._text = String(value); this.children = []; }
     appendChild(child) { this.append(child); }
     replaceChildren(...children) { this.children = children; }
     setAttribute(name, value) { this.attrs[name] = value; }
@@ -119,7 +121,7 @@ test("presets preserve custom text and the Skin plus button opens existing skin 
     chip.onclick();
     modal.buttons.find(button => button.text === "APPLY").action(modal.overlay);
     assert.equal(state.character_info.skin_color, "golden tan skin");
-    assert.equal(skin.children[1].children[0].children[0].textContent, "golden tan skin");
+    assert.equal(skin.children[1].children[0].textContent, "golden tan skin");
     assert.equal(requests.filter(request => request.path.includes("catalog=creator_v2")).length, 1);
 });
 

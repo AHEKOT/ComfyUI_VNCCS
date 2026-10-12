@@ -74,7 +74,7 @@ test("Creator tag controls cannot enlarge their original text boxes or enter lay
     const token = css.match(/\.vnccs-creator-trait-token\s*\{([^}]*)\}/)[1];
     assert.match(token, /padding:\s*5px 8px/); assert.match(token, /line-height:\s*1\.4/);
     assert.match(css, /\.vnccs-creator-trait-edit\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0/);
-    assert.match(css, /\.vnccs-creator-trait-remove\s*\{[^}]*position:\s*absolute;[^}]*width:\s*24px;[^}]*height:\s*24px/);
+    assert.match(css, /\.vnccs-creator-trait-remove\s*\{[^}]*position:\s*absolute;[^}]*width:\s*12px;[^}]*height:\s*12px/);
     assert.match(css, /\.vnccs-creator-trait-remove\s*\{[^}]*border-radius:\s*50%;[^}]*background:\s*var\(--accent\) !important/);
     assert.match(css, /\.vnccs-creator-trait-remove::after\s*\{[^}]*inset:\s*-4px/);
     assert.doesNotMatch(css, /trait-token:has\([^)]*\)\s*\{[^}]*padding:\s*0/);

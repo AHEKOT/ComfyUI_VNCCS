@@ -1,11 +1,13 @@
 import { app } from "../../scripts/app.js";
+import { createSakuraInteractions } from "./sakura_interactions.mjs";
 import { vnccsApi as api, mediaURL, checkedJSON } from "./vnccs_transport.js";
 import { presetSelection } from "./character_presets.mjs";
-import { createTraitInput, createQwenVLModelLoader, SAKURA_THEME_CSS, showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, registerCleanup, normalizeUploadFile, normalizeAgeValue } from "./vnccs_common.js";
+import { createTraitInput, createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, registerCleanup, normalizeUploadFile, normalizeAgeValue } from "./vnccs_common.js";
 
 // --- STYLES: Sakura Archive Design System ---
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+${SAKURA_INTERACTION_CSS}
 
 /* ── Variables ── */
 .vnccs-cloner-container {
@@ -549,13 +551,13 @@ ${SAKURA_THEME_CSS}
     min-height: 0;
 }
 .vnccs-cloner-preview-img {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
     object-fit: contain;
     display: none;
-    animation: clonerFadein 0.4s ease;
 }
-@keyframes clonerFadein { from { opacity: 0; } to { opacity: 1; } }
 .vnccs-cloner-preview-placeholder {
     display: flex;
     flex-direction: column;
@@ -851,17 +853,6 @@ ${SAKURA_THEME_CSS}
     text-align: left;
     cursor: pointer;
 }
-.vnccs-cloner-trait-token {
-    max-width: 100%;
-    padding: 5px 8px;
-    border: 1px solid rgba(255,182,200,0.22);
-    border-radius: 7px;
-    background: rgba(184,169,232,0.14);
-    line-height: 1.4;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
 .vnccs-cloner-trait-empty { color: var(--text-secondary); }
 .vnccs-cloner-trait-input { min-height: 44px; font-size: 13px; }
 .vnccs-cloner-trait-values[hidden], .vnccs-cloner-trait-input[hidden] { display: none; }
@@ -938,6 +929,52 @@ ${SAKURA_THEME_CSS}
     letter-spacing: 1px;
     text-transform: uppercase;
 }
+
+.vnccs-cloner-container :is(button, [role="button"]):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.vnccs-cloner-container :is(input, select, .vnccs-common-ui-select-trigger) { box-sizing: border-box; }
+@media (prefers-reduced-motion: reduce) {
+    .vnccs-cloner-container *, .vnccs-cloner-container *::before, .vnccs-cloner-container *::after {
+        animation: none !important; transition: none !important;
+    }
+}
+.vnccs-cloner-trait-token {
+    position: relative;
+    min-width: 0;
+    box-sizing: border-box;
+    max-width: 100%;
+    padding: 5px 8px;
+    border: 1px solid rgba(255,182,200,0.22);
+    border-radius: 7px;
+    background: rgba(184,169,232,0.14);
+    line-height: 1.4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.vnccs-cloner-trait-token:has(.vnccs-cloner-trait-remove) { overflow: visible; }
+.vnccs-cloner-trait-text { display: block; overflow: hidden; text-overflow: ellipsis; }
+.vnccs-cloner-trait-edit, .vnccs-cloner-trait-remove {
+    appearance: none; min-width: 0; min-height: 0; margin: 0; padding: 0;
+    border: 0 !important; background: transparent !important; box-shadow: none !important;
+    transform: none !important; font: inherit; line-height: inherit; cursor: pointer;
+}
+.vnccs-cloner-trait-edit { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: inherit; }
+.vnccs-cloner-trait-remove {
+    position: absolute; top: -5px; right: -5px; width: 12px; height: 12px; z-index: 2;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%; background: var(--accent) !important; color: var(--bg-primary);
+    box-shadow: 0 0 0 2px var(--bg-secondary) !important;
+    transition: background-color 180ms ease, box-shadow 180ms ease;
+}
+.vnccs-cloner-trait-remove::after { content: ""; position: absolute; inset: -4px; border-radius: inherit; }
+.vnccs-cloner-trait-remove svg { width: 12px; height: 12px; pointer-events: none; }
+.vnccs-cloner-trait-remove:hover { background: var(--accent-hover) !important; }
+.vnccs-cloner-trait-empty { border: 0; padding: 0; min-height: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.vnccs-cloner-trait-token:focus-within { border-color: var(--accent); }
+.vnccs-cloner-trait-edit:focus-visible, .vnccs-cloner-trait-remove:focus-visible, button.vnccs-cloner-trait-empty:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: -2px;
+}
+.vnccs-cloner-trait-remove:focus-visible { outline: 2px solid var(--text-primary); outline-offset: 2px; }
 `;
 
 app.registerExtension({
@@ -1235,6 +1272,7 @@ app.registerExtension({
                     const { element, input } = createTraitInput({
                         prefix: "vnccs-cloner", label: lbl, key, target: targetObj,
                         save: saveState, choose: input => openTagConstructor(key, input, targetObj),
+                        removable: true, motion: (...args) => els._ui?._playMotion(...args),
                     });
                     setHelpText(element, helpFor(key));
                     els[key] = input;
@@ -1384,6 +1422,7 @@ app.registerExtension({
                             btn.classList.toggle("is-active", btnValue === normalized);
                             btn.setAttribute("aria-pressed", btnValue === normalized ? "true" : "false");
                         });
+                        els._ui?.syncSelection(segmented);
                         if (persist) {
                             saveState();
                             if (key === "sex" || key === "gender") syncPoseStudioGender(normalized);
@@ -1546,6 +1585,7 @@ app.registerExtension({
                     // Images
                     if (renderThumbs) renderThumbs();
                     syncPoseStudioAge();
+                    els._ui?.syncSelects();
                 };
 
                 // --- Helpers (Hoisted) ---
@@ -1914,6 +1954,9 @@ app.registerExtension({
                 // --- LAYOUT ---
                 const container = document.createElement("div");
                 container.className = "vnccs-cloner-container";
+                container.classList.add("vnccs-common-ui-host");
+                els._ui = createSakuraInteractions(container, node);
+                registerCleanup(node, () => els._ui.dispose());
 
                 // Top Row
                 const topRow = document.createElement("div");
@@ -1923,6 +1966,7 @@ app.registerExtension({
                 // COL 1: SOURCE IMAGES (Left Column)
                 const colSrc = document.createElement("div");
                 colSrc.className = "vnccs-cloner-col";
+                colSrc.dataset.sakuraScroll = "source";
 
                 // --- CHARACTER SELECTOR (Moved to Left Top) ---
                 colSrc.innerHTML = '<div class="vnccs-cloner-section-title">Character Select</div>';
@@ -1932,6 +1976,7 @@ app.registerExtension({
 
                 const charSel = document.createElement("select");
                 charSel.className = "vnccs-cloner-select";
+                charSel.ariaLabel = "Character";
                 charSel.onchange = async (e) => {
                     await setCharacter(e.target.value, { clearSources: true });
                 };
@@ -1967,12 +2012,17 @@ app.registerExtension({
 
                 const imgList = document.createElement("div");
                 imgList.className = "vnccs-cloner-img-list";
+                imgList.dataset.sakuraScroll = "source-images";
                 colSrc.appendChild(imgList);
 
                 // --- IMAGE PREVIEW/UPLOAD AREA ---
                 // Container for the Large Preview
                 const previewContainer = document.createElement("div");
                 previewContainer.className = "vnccs-cloner-preview-container";
+                previewContainer.classList.add("vnccs-common-ui-preview-host");
+                const previewAura = document.createElement("div");
+                previewAura.className = "vnccs-common-ui-preview-aura";
+                previewContainer.appendChild(previewAura);
 
                 // The Large Image Element
                 const previewImg = document.createElement("img");
@@ -2108,6 +2158,7 @@ app.registerExtension({
                     node,
                     isSelectionCurrent: preview => preview.character === state.character && !state.source_images.length,
                     image: previewImg,
+                    interactions: els._ui,
                     placeholder: previewPlaceholder,
                     loading: previewLoading,
                     nav: spriteNav,
@@ -2138,6 +2189,7 @@ app.registerExtension({
                 // COL 2: ATTRIBUTES (Auto Gen)
                 const colAttr = document.createElement("div");
                 colAttr.className = "vnccs-cloner-col";
+                colAttr.dataset.sakuraScroll = "attributes";
 
                 const attrHeader = document.createElement("div");
                 attrHeader.className = "vnccs-cloner-section-title";
@@ -2412,6 +2464,7 @@ app.registerExtension({
 
                 // Define Render Thumbs Logic
                 renderThumbs = () => {
+                    const view = els._ui.captureView();
                     imgList.innerHTML = "";
                     const images = state.source_images;
 
@@ -2423,14 +2476,12 @@ app.registerExtension({
                     // Preview Logic
                     if (images.length === 0) {
                         if (state.char_preview_url) {
-                            previewImg.src = mediaURL(state.char_preview_url);
-                            previewImg.style.display = "block";
-                            previewPlaceholder.style.display = "none";
+                            els._ui.presentPreview(previewImg, previewPlaceholder, mediaURL(state.char_preview_url), state.character);
                             uploadOverlay.style.opacity = "0";
                             previewContainer.onmouseenter = () => uploadOverlay.style.opacity = "1";
                             previewContainer.onmouseleave = () => uploadOverlay.style.opacity = "0";
                         } else {
-                            previewImg.style.display = "none";
+                            els._ui.emptyPreview(previewImg, previewPlaceholder, state.character, "Upload a source image");
                             previewImg.src = "";
                             previewPlaceholder.style.display = "flex";
                             uploadOverlay.style.opacity = "1";
@@ -2454,9 +2505,7 @@ app.registerExtension({
                             params.append("filename", name);
                             params.append("type", type);
                             if (sub) params.append("subfolder", sub);
-                            previewImg.src = api.apiURL("/view?" + params.toString());
-                            previewImg.style.display = "block";
-                            previewPlaceholder.style.display = "none";
+                            els._ui.presentPreview(previewImg, previewPlaceholder, api.apiURL("/view?" + params.toString()), state.character);
                             uploadOverlay.style.opacity = "0";
                             previewContainer.onmouseenter = () => uploadOverlay.style.opacity = "1";
                             previewContainer.onmouseleave = () => uploadOverlay.style.opacity = "0";
@@ -2526,6 +2575,8 @@ app.registerExtension({
                         wrap.appendChild(delBtn);
                         imgList.appendChild(wrap);
                     });
+                    els._ui.syncSelects();
+                    els._ui.restoreView(view);
                 };
 
                 const syncBackgroundControl = () => {

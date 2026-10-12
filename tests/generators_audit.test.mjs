@@ -7,6 +7,12 @@ import { createWidgetContext } from './widget_context.mjs';
 const generatorSource = readFileSync(new URL('../web/vnccs_character_generator.js', import.meta.url), 'utf8');
 const emotionSource = readFileSync(new URL('../web/vnccs_emotion_v2.js', import.meta.url), 'utf8');
 const commonSource = readFileSync(new URL('../web/vnccs_common.js', import.meta.url), 'utf8');
+// State tests isolate motion; sakura_interactions.test.mjs exercises the real UI owner.
+const motionUI = {
+    captureView() { return {}; }, restoreView() {}, syncSelects() {}, syncSelection() {}, prepareCharacter() {},
+    presentPreview(image, placeholder, src) { image.src = src; image.style.display = 'block'; placeholder.style.display = 'none'; },
+    emptyPreview(image, placeholder) { image.style.display = 'none'; placeholder.style.display = 'flex'; },
+};
 
 for (const mode of ['illustrious', 'anima', 'qi2']) {
     test(`Emotion Studio ${mode} never offers another family's fallback Turbo LoRA`, () => {
@@ -20,7 +26,7 @@ for (const mode of ['illustrious', 'anima', 'qi2']) {
         const container = new Element('container');
         const state = { gen: { generation_mode: mode, steps: 20, cfg: 8, turbo_enabled: false } };
         const writes = [];
-        const context = createWidgetContext({ state,
+        const context = createWidgetContext({ ui: motionUI, state,
             document: { createElement: tag => new Element(tag), createTextNode: text => ({ text }) },
             ccState: { config: null }, localAssets: { loras: [animaLora, qi2Lora] },
             ANIMA_TURBO_LORA_NAME: animaLora, QI2_TURBO_LORA_NAME: qi2Lora,
@@ -72,7 +78,7 @@ for (const mode of ['anima', 'qi2']) {
                 ...authored, mode_settings: {} }, selectedPoseIndices: null };
             const catalog = { clip: { local_path: `models/text_encoders/${mode}-default-clip.safetensors` },
                 vae: { local_path: `models/vae/${mode}-default-vae.safetensors` } };
-            const context = createWidgetContext({ state, generationSettingsWidget: settings,
+            const context = createWidgetContext({ ui: motionUI, state, generationSettingsWidget: settings,
                 modelWidget: null, styleWidget: null, initialSharedSeed: 721,
                 GENERATION_DEFAULTS: { mode_settings: { anima: {}, qi2: {}, illustrious: {} } },
                 ANIMA_CLIP_NAME: 'anima-clip', ANIMA_VAE_NAME: 'anima-vae',
@@ -119,7 +125,7 @@ for (const removedAt of ['current', 'before-load', 'response', 'json', 'config-e
         };
         const response = deferred(), json = deferred(), config = deferred();
         const updates = [], requests = [], state = { gen: {} };
-        const context = createWidgetContext({ state, disposed: false, localAssets: {},
+        const context = createWidgetContext({ ui: motionUI, state, disposed: false, localAssets: {},
             ANIMA_CLIP_NAME: 'anima-clip', ANIMA_VAE_NAME: 'anima-vae',
             generationEls: { sampler: {}, scheduler: {}, loraSelects: [{}] },
             api: { fetchApi: route => { requests.push(route); return response.promise; } },
@@ -168,7 +174,7 @@ for (const model of ['Illustrious', 'Anima', 'QI2']) {
         const generationSettingsWidget = { name: 'generation_settings', value: '{"seed":721}' };
         const state = { character: 'Alice', gen: {}, selectedCostumes: new Set(), selectedEmotions: new Set() };
         const modes = [];
-        const context = createWidgetContext({ state, modelWidget, generationSettingsWidget,
+        const context = createWidgetContext({ ui: motionUI, state, modelWidget, generationSettingsWidget,
             charWidget: null, styleWidget: null, costumesDataWidget: null, emotionsDataWidget: null,
             poseSelectionSummary: null, poseSelectionGrid: null,
             disposed: false, restoreErrors: new Map(), beginSelectionRequest() {}, markNodeDirty() {},
@@ -223,7 +229,7 @@ for (const indices of [[1.5], ['1garbage'], [true], [0], [-1], '1', {}, [null], 
         const generationSettingsWidget = { name: 'generation_settings', value: raw };
         const state = { character: 'Alice', gen: {}, selectedCostumes: new Set(['Coat']), selectedEmotions: new Set(['smile']) };
         const node = {}, restoreErrors = new Map();
-        const context = createWidgetContext({ node, state, modelWidget, generationSettingsWidget,
+        const context = createWidgetContext({ ui: motionUI, node, state, modelWidget, generationSettingsWidget,
             charWidget: null, styleWidget: null, costumesDataWidget: null, emotionsDataWidget: null,
             disposed: false, restoreErrors, beginSelectionRequest() {}, markNodeDirty() {},
             syncGenerationControls() {}, renderPoseSelection() {}, renderCostumes() {}, showModalText() {},
@@ -262,7 +268,7 @@ function emotionModalContext() {
     const pending = new Promise(done => { resolve = done; });
     const state = { character: 'Alice', emotions: [], selectedEmotions: new Set(), gen: {} };
     const container = new Element('container'), node = {}, writes = [], requests = [], readers = [];
-    const context = createWidgetContext({
+    const context = createWidgetContext({ ui: motionUI,
         state, node, container, disposed: false,
         document: { createElement: tag => new Element(tag) },
         api: { fetchApi: (_, request) => { requests.push(JSON.parse(request.body)); return pending; } },
@@ -404,7 +410,7 @@ for (const removed of [false, true]) {
 test('removed Emotion Studio ignores initialization timers before restoring state or sending character requests', async () => {
     const node = {}, state = { character: 'Alice', gen: {}, selectedCostumes: new Set(), selectedEmotions: new Set() };
     const requests = [], restores = [];
-    const context = createWidgetContext({ node, state, disposed: false, characterFetchToken: 0, characterListRefreshToken: 0,
+    const context = createWidgetContext({ ui: motionUI, node, state, disposed: false, characterFetchToken: 0, characterListRefreshToken: 0,
         charWidget: null, modelWidget: null, generationSettingsWidget: null, styleWidget: null,
         costumesDataWidget: null, emotionsDataWidget: null,
         syncGenerationControls() { restores.push('generation'); }, renderPoseSelection() { restores.push('poses'); },
@@ -432,7 +438,7 @@ test('Emotion download caller keeps new jobs polling and removes its shared clie
     const timers = new Map(), node = {}, ccState = { downloadStatus: {} };
     let reads = 0;
     const response = data => ({ ok: true, json: async () => data });
-    const context = createWidgetContext({ node, ccState, disposed: false, CC_REPO_ID: 'public/catalog',
+    const context = createWidgetContext({ ui: motionUI, node, ccState, disposed: false, CC_REPO_ID: 'public/catalog',
         ccHasRequiredFamilies: () => true, ccStatusKey: () => 'model', renderControlCenterCards() {},
         setInterval(callback) { timers.set(1, callback); return 1; }, clearInterval: id => timers.delete(id),
         api: { fetchApi: async route => route === '/vnccs/manager/status?repo_id=public%2Fcatalog'
@@ -462,7 +468,7 @@ test('Emotion download caller keeps new jobs polling and removes its shared clie
 });
 
 function generatorContext(graph = { _nodes: [], setDirtyCanvas() {} }) {
-    const context = createWidgetContext({ app: { graph, registerExtension(extension) { this.extension = extension; } } });
+    const context = createWidgetContext({ ui: motionUI, app: { graph, registerExtension(extension) { this.extension = extension; } } });
     vm.runInContext(generatorSource.replace(/^import .*;\n/gm, '')
         + '\nthis.Widget = CharacterGeneratorWidget; this.readData = readData; this.writeData = writeData;', context);
     return context;
@@ -848,7 +854,7 @@ for (const [key, text, number, valid] of [
     test(`Emotion numeric controls preserve authored settings for ${key}=${text}`, () => {
         const writes = [], state = { gen: { steps: 30, cfg: 4, seed: 721 } };
         const original = state.gen[key];
-        const context = createWidgetContext({ state,
+        const context = createWidgetContext({ ui: motionUI, state,
             document: { createElement: () => ({}) },
             updateGenerationValue(name, value) { state.gen[name] = value; writes.push(JSON.stringify(state.gen)); },
             syncGenerationControls() {},
@@ -869,7 +875,7 @@ for (const [key, text, number, valid] of [
 for (const [text, number, valid] of [['', NaN, false], ['3', 3, false], ['0', 0, true], ['1.5', 1.5, true]]) {
     test(`Emotion LoRA strength keeps valid state for ${text}`, () => {
         const state = { gen: { lora_stack: [{ name: 'authored.safetensors', strength: 0.75 }] } }, writes = [];
-        const context = createWidgetContext({ state, i: 0,
+        const context = createWidgetContext({ ui: motionUI, state, i: 0,
             document: { createElement: () => ({}) }, syncGenerationControls() {},
             saveGenerationSettings() { writes.push(JSON.stringify(state.gen)); },
             updateGenerationValue() { assert.fail('LoRA must update its own row'); },
@@ -981,7 +987,7 @@ test('generator construction leaves serialized input untouched', () => {
 });
 
 test('Emotion Studio restores configured state before immediate serialization or queueing', async () => {
-    const context = createWidgetContext({
+    const context = createWidgetContext({ ui: motionUI,
         app: { registerExtension(extension) { this.extension = extension; } },
         SAKURA_THEME_CSS: '', syncDOMWidgetWidth() {}, setTimeout: () => 0,
         document: { createElement: () => ({}), head: { appendChild() {} } },
@@ -1014,7 +1020,7 @@ test('Emotion Studio writes latest hidden values into the outgoing workflow', ()
 
 test('muted and bypassed Emotion Studios do not block the queue or randomize seeds', async () => {
     let submitted = 0, seeds = 0;
-    const context = createWidgetContext({ app: {
+    const context = createWidgetContext({ ui: motionUI, app: {
         graph: { _nodes: [2, 4].map(mode => ({ type: 'EmotionGeneratorV2', mode,
             _randomizeSeedIfNeeded() { seeds++; }, _validateBeforeQueue: () => false })) },
         queuePrompt: async () => { submitted++; }, registerExtension(extension) { this.extension = extension; },
@@ -1040,7 +1046,7 @@ test('Emotion queue transports the visible random seed without persisting its ex
         }, async queuePrompt() { return this.graphToPrompt(); },
     };
     let nextSeed = 721;
-    const context = createWidgetContext({
+    const context = createWidgetContext({ ui: motionUI,
         app, node, state, generationSettingsWidget, generationEls,
         modelWidget: {}, styleWidget: null, disposed: false, restoreErrors: new Map(),
         initialSharedSeed: 0, GENERATION_DEFAULTS: { mode_settings: { illustrious: {}, anima: {}, qi2: {} } },
@@ -1076,7 +1082,7 @@ for (const value of ['{broken', 'null', '[]', '{"mode_settings":[]}', '{"mode_se
     test(`Emotion Studio preserves damaged settings on every write: ${value}`, () => {
         const settings = { name: 'generation_settings', value };
         const costumes = { name: 'costumes_data', value: '["Dress"]' };
-        const context = createWidgetContext({ generationSettingsWidget: settings, modelWidget: null, GENERATION_DEFAULTS: { mode_settings: {} },
+        const context = createWidgetContext({ ui: motionUI, generationSettingsWidget: settings, modelWidget: null, GENERATION_DEFAULTS: { mode_settings: {} },
             restoreErrors: new Map(), disposed: false, markNodeDirty() {} });
         const start = emotionSource.indexOf('                function parseGenerationSettings()');
         const end = emotionSource.indexOf('                // State', start);
@@ -1097,7 +1103,7 @@ for (const value of ['{broken', 'null', '[]', '{"mode_settings":[]}', '{"mode_se
 
 test('Emotion Studio retains corrupt selections until a valid configure restores them', () => {
     const selected = { name: 'costumes_data', value: '{broken' };
-    const context = createWidgetContext({ restoreErrors: new Map() });
+    const context = createWidgetContext({ ui: motionUI, restoreErrors: new Map() });
     const start = emotionSource.indexOf('                function parseSelection(');
     const end = emotionSource.indexOf('                // State', start);
     vm.runInContext(emotionSource.slice(start, end), context);
@@ -1171,7 +1177,7 @@ test('download transport failure becomes a visible error', async () => {
 test('Emotion Studio resize preserves the existing lifecycle hook and receiver', () => {
     const calls = [];
     const node = { onResize(size) { calls.push({ node: this, size }); } };
-    const context = createWidgetContext({ node, syncDOMWidgetWidth() {}, applySize() {}, requestAnimationFrame: () => 0 });
+    const context = createWidgetContext({ ui: motionUI, node, syncDOMWidgetWidth() {}, applySize() {}, requestAnimationFrame: () => 0 });
     const start = emotionSource.indexOf('                // Apply size on explicit resize too');
     const end = emotionSource.indexOf('                // Helper', start);
     vm.runInContext(emotionSource.slice(start, end), context);
@@ -1225,7 +1231,7 @@ for (const fail of [false, true]) {
     test(`removed Emotion Studio cannot restart model polling after download ${fail ? 'failure' : 'success'}`, async () => {
         let finish, renders = 0, polls = 0, requests = 0;
         const response = new Promise((resolve, reject) => { finish = fail ? reject : resolve; });
-        const context = createWidgetContext({ disposed: false,
+        const context = createWidgetContext({ ui: motionUI, disposed: false,
             api: { fetchApi() { requests++; return response; } },
             ccStatusKey: (category, entry) => `${category}:${entry.name}`, CC_REPO_ID: 'catalog',
             ccState: { downloadStatus: {} }, renderControlCenterCards() { renders++; }, startCcPolling() { polls++; },
@@ -1250,7 +1256,7 @@ for (const available of [[], ['Bob']]) {
         const character = { name: 'character', value: 'Alice', options: {} };
         const select = { value: 'Alice', appendChild() {} };
         const node = { widgets: [character] };
-        const context = createWidgetContext({ state: { character: 'Alice' }, charWidget: character,
+        const context = createWidgetContext({ ui: motionUI, state: { character: 'Alice' }, charWidget: character,
             charSelect: select, node, spritePreviewNavigator: { hideNav() {} },
             Option: class { constructor(label, value) { this.text = label; this.value = value; } },
             commitWidget(widget, value) { widget.value = value; }, persistAllState() { character.value = context.state.character; },
@@ -1281,7 +1287,7 @@ for (const available of [[], ['Naked', 'Shelter'], ['Original']]) {
         }
         const costumes = { name: 'costumes_data', value: '["Original","Coat"]' };
         const costumesList = new Element();
-        const context = createWidgetContext({ state: { character: 'Alice', costumes: [], selectedCostumes: new Set(['Original', 'Coat']) },
+        const context = createWidgetContext({ ui: motionUI, state: { character: 'Alice', costumes: [], selectedCostumes: new Set(['Original', 'Coat']) },
             disposed: false, characterFetchToken: 0, costumesDataWidget: costumes, restoreErrors: new Map(),
             spritePreviewNavigator: null, costumesList, markNodeDirty() {},
             document: { createElement: () => new Element() },
@@ -1330,7 +1336,7 @@ for (const removed of [false, true]) {
         const cleanups = [], loaders = [], settings = { name: 'generation_settings', value: '{}' };
         const state = { character: 'Alice', gen: { generation_mode: 'anima', seed: 1 },
             selectedPoseIndices: new Set([2, 7]), poseCount: 0 };
-        const context = createWidgetContext({ state, node: {}, disposed: false, URLSearchParams,
+        const context = createWidgetContext({ ui: motionUI, state, node: {}, disposed: false, URLSearchParams,
             registerCleanup(node, cleanup) { cleanups.push(cleanup); },
             Image: class { constructor() { loaders.push(this); } },
             spritePreviewNavigator: null, charImg: { style: {} }, charPlaceholder: { style: {} },

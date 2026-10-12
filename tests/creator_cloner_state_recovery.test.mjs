@@ -65,7 +65,10 @@ for (const phase of ['restored_reference', 'pending_metadata', 'pending_image', 
             previewLoading: loading, previewPlaceholder: element(), previewContainer: element(),
             uploadOverlay: element(), uploadBtn: element(), spriteNav: element(),
             spritePrevBtn: element(), spriteNextBtn: element(), spriteCount: element(),
-            els: {}, defaultCharacterInfo: {}, restoredInfoCharacter: null,
+            els: { _ui: { captureView() { return {}; }, restoreView() {}, syncSelects() {}, prepareCharacter() {},
+                presentPreview(image, placeholder, url) { image.src = url; image.style.display = 'block'; placeholder.style.display = 'none'; },
+                emptyPreview(image, placeholder) { image.style.display = 'none'; placeholder.style.display = 'flex'; },
+            } }, defaultCharacterInfo: {}, restoredInfoCharacter: null,
             saveState() {}, updateUIFromState() { context.render(); }, clearSourceImages() {},
             showModal() { assert.fail('No error modal expected'); }, mediaURL: value => value,
             api: { fetchApi() { requests++; return metadata; } },
@@ -75,7 +78,7 @@ for (const phase of ['restored_reference', 'pending_metadata', 'pending_image', 
             let spritePreviewNavigator, renderThumbs;
             const beginCharacterRequest = createRequestGuard(node), beginCaptionRequest = createRequestGuard(node);
             ${between(text, 'spritePreviewNavigator = createSpritePreviewNavigator(', 'colSrc.appendChild(fileInput);')}
-            ${between(text, 'renderThumbs = () => {\n                    imgList.innerHTML', 'const syncBackgroundControl =')}
+            ${between(text, 'renderThumbs = () => {\n                    const view', 'const syncBackgroundControl =')}
             ${between(text, 'const loadChar = async', 'const loadCharList =')}
             globalThis.load = loadChar; globalThis.render = renderThumbs;`, context);
         const operation = context.load('Alice', true);

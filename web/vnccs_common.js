@@ -506,6 +506,7 @@ export function createSpritePreviewNavigator({
     onLoaded,
     onMissing,
     onError,
+    interactions,
 } = {}) {
     const state = {
         character: "",
@@ -549,17 +550,22 @@ export function createSpritePreviewNavigator({
     };
 
     const applyImage = (url) => {
-        if (image) {
+        if (image && interactions) {
+            interactions.presentPreview(image, placeholder, url, state.character);
+        } else if (image) {
             image.src = url;
             image.style.display = "block";
         }
-        if (placeholder) placeholder.style.display = "none";
+        if (placeholder && !interactions) placeholder.style.display = "none";
         onLoaded?.(url, { ...state });
     };
 
     const applyMissing = () => {
-        if (image) image.style.display = "none";
-        if (placeholder) placeholder.style.display = "flex";
+        if (image && interactions) interactions.emptyPreview(image, placeholder, state.character, "No preview available");
+        else {
+            if (image) image.style.display = "none";
+            if (placeholder) placeholder.style.display = "flex";
+        }
         hideNav();
         onMissing?.({ ...state });
     };
@@ -629,6 +635,9 @@ export function createSpritePreviewNavigator({
 
     const load = async (character, { costume = "", random = true, index = 0, fallbackUrl = "" } = {}) => {
         if (disposed) return;
+        if (interactions && (character !== state.character || costume !== state.costume)) {
+            interactions.prepareCharacter(image, placeholder, character);
+        }
         state.character = character || "";
         state.costume = costume || "";
         state.fallbackUrl = mediaURL(fallbackUrl || "");
@@ -1333,6 +1342,31 @@ export function generateRandomSeed() {
 
 export const SAKURA_INTERACTION_CSS = `
 .vnccs-common-ui-host { --vnccs-common-ui-accent: var(--accent, #ff8fa3); }
+.vnccs-common-ui-host select[hidden] { display: none !important; }
+.vnccs-common-ui-host .vnccs-common-ui-select-trigger { min-width: 0; }
+.vnccs-common-ui-host .vnccs-common-ui-segmented {
+    position: relative; display: grid; grid-template-columns: repeat(var(--segments, 2), minmax(0, 1fr));
+    gap: 4px; padding: 4px; min-height: var(--setup-control-height, 48px); box-sizing: border-box;
+    border: 1px solid var(--border); border-radius: var(--radius-md, 12px);
+    background: rgba(0,0,0,0.18);
+}
+.vnccs-common-ui-segmented::before {
+    content: ""; position: absolute; top: 4px; bottom: 4px; left: 4px;
+    width: calc((100% - 8px - (var(--segments, 2) - 1) * 4px) / var(--segments, 2)); border-radius: var(--radius-md, 12px);
+    background: linear-gradient(180deg, #ff9bad 0%, #ff87a0 100%); box-shadow: 0 10px 22px rgba(255,143,163,0.22);
+    transform: translateX(calc(var(--segment-index, 0) * (100% + 4px))); pointer-events: none;
+    transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.vnccs-common-ui-host .vnccs-common-ui-segmented > .vnccs-common-ui-segment {
+    position: relative; z-index: 1; min-width: 0; min-height: 0; height: 100%;
+    border: 0; background: transparent; box-shadow: none;
+    transition: color 180ms ease; transform: none;
+}
+.vnccs-common-ui-host .vnccs-common-ui-segmented > .vnccs-common-ui-segment[aria-pressed="true"] { color: #20141a; }
+.vnccs-common-ui-preview-aura {
+    position: absolute; inset: 0; opacity: 0; pointer-events: none;
+    background: radial-gradient(ellipse at center, rgba(255,143,163,0.35), rgba(184,169,232,0.15) 45%, transparent 75%);
+}
 .vnccs-common-ui-select-trigger {
     display: flex;
     align-items: center;
@@ -1411,6 +1445,7 @@ export const SAKURA_INTERACTION_CSS = `
 }
 .vnccs-common-ui-host .vnccs-common-ui-select-trigger:focus-visible { outline: 2px solid #ff8fa3; outline-offset: -2px; }
 @media (prefers-reduced-motion: reduce) {
+    .vnccs-common-ui-segmented::before { transition: none !important; }
     .vnccs-common-ui-host .vnccs-common-ui-select-trigger, .vnccs-common-ui-host .vnccs-common-ui-select-trigger::after,
     .vnccs-common-ui-dropdown-option, .vnccs-common-ui-dropdown::before { transition: none !important; }
 }`;

@@ -50,6 +50,7 @@ function setup() {
         dispatchEvent(event) { event.target = this; this[`on${event.type}`]?.(event); this[`listener_${event.type}`]?.(event); }
         focus(options) { document.activeElement = this; this.focusOptions = options; }
         matches(selector) {
+            if (selector.includes(",")) return selector.split(",").some(part => this.matches(part.trim()));
             if (selector === "[id]") return !!this.id;
             const data = selector.match(/^\[data-([\w-]+)\]$/);
             if (data) return data[1].replace(/-([a-z])/g, (_, letter) => letter.toUpperCase()) in this.dataset;
@@ -117,6 +118,138 @@ test("Creator native selectors keep their state while shared dropdowns handle ch
     h.ui.dispose(); assert.equal(h.document.observers[0].disconnected, true);
 });
 
+test("shared selectors follow disabled and visibility changes and retain inventory refresh callbacks", () => {
+    const h = setup(), select = new h.Element("select"), option = new h.Element("option");
+    select.className = "em-select"; select.ariaLabel = "Character";
+    option.value = option.textContent = "Alice"; select.add(option); h.root.appendChild(select);
+    let focused = 0, refreshed = 0;
+    select.onfocus = () => { focused++; };
+    select.onpointerdown = () => { refreshed++; };
+    h.ui.syncSelects();
+    const trigger = h.root.querySelector(".vnccs-common-ui-select-trigger");
+    trigger.onfocus({}); trigger.onpointerdown({});
+    assert.equal(focused, 1); assert.equal(refreshed, 1);
+    select.disabled = true; select.style.cssText = "display: none;";
+    h.document.observers[0].callback();
+    assert.equal(trigger.disabled, true); assert.equal(trigger.style.cssText, "display: none;");
+    select.disabled = false; select.style.cssText = "";
+    h.ui.syncSelects(); h.ui.syncSelects();
+    assert.equal(trigger.disabled, false); assert.equal(trigger.style.cssText, "");
+    assert.equal(h.root.querySelectorAll(".vnccs-common-ui-select-trigger").length, 1);
+});
+
+test("replacement fields keep their draft selection and focus without moving their scroll region", () => {
+    const h = setup(), region = new h.Element("div"), input = new h.Element("textarea");
+    region.dataset.sakuraScroll = "design"; region.scrollTop = 143; region.scrollLeft = 6;
+    input.dataset.focusKey = "costume-top"; input.value = "white shirt";
+    input.selectionStart = 2; input.selectionEnd = 8; input.selectionDirection = "backward";
+    region.appendChild(input); h.root.appendChild(region); input.focus();
+    const view = h.ui.captureView(); input.remove();
+    const replacement = new h.Element("textarea"); replacement.dataset.focusKey = "costume-top";
+    replacement.value = input.value; replacement.selectionStart = 0;
+    replacement.setSelectionRange = (start, end, direction) => Object.assign(replacement, { selectionStart: start, selectionEnd: end, selectionDirection: direction });
+    region.appendChild(replacement); region.scrollTop = region.scrollLeft = 0;
+    h.ui.restoreView(view); h.flush();
+    assert.equal(h.document.activeElement, replacement); assert.equal(replacement.focusOptions.preventScroll, true);
+    assert.equal(replacement.value, "white shirt"); assert.equal(replacement.selectionStart, 2);
+    assert.equal(replacement.selectionEnd, 8); assert.equal(replacement.selectionDirection, "backward");
+    assert.equal(region.scrollTop, 143); assert.equal(region.scrollLeft, 6);
+});
+
+test("shorter filtered content retains the previous position for navigation back", () => {
+    const h = setup(), region = new h.Element("div");
+    region.dataset.sakuraScroll = "emotions"; h.root.appendChild(region);
+    let limit = 400, top = 230;
+    Object.defineProperty(region, "scrollTop", { get: () => top, set: value => { top = Math.min(limit, value); } });
+    const before = h.ui.captureView(); limit = 20;
+    h.ui.restoreView(before); h.flush(); assert.equal(region.scrollTop, 20);
+    const filtered = h.ui.captureView(); limit = 400;
+    h.ui.restoreView(filtered); h.flush(); assert.equal(region.scrollTop, 230);
+    region.scrollTop = 175;
+    const moved = h.ui.captureView();
+    h.ui.restoreView(moved); h.flush(); assert.equal(region.scrollTop, 175);
+});
+
+test("animated sprite navigation cannot reveal a decoded preview from a previous character", async () => {
+    const h = setup(), loaders = [], alice = deferred(), bob = deferred();
+    Object.assign(h.context, { node: h.node, image: h.image, placeholder: h.placeholder, ui: h.ui,
+        Image: class { constructor() { loaders.push(this); } },
+    });
+    h.context.api.fetchApi = async () => ({ ok: true, json: async () => ({ count: 0 }) });
+    const begin = common.indexOf("export function createSpritePreviewNavigator(");
+    const end = common.indexOf("// ── DOM Widget Canvas Navigation", begin);
+    vm.runInContext(common.slice(begin, end).replaceAll("export ", "")
+        + '\nthis.navigator = createSpritePreviewNavigator({ node, image, placeholder, interactions: ui });', h.context);
+    h.image.decode = () => alice.promise;
+    await h.context.navigator.load("Alice", { fallbackUrl: "alice.png" }); loaders[0].onload();
+    assert.equal(h.image.style.opacity, "0");
+    h.image.decode = () => bob.promise;
+    await h.context.navigator.load("Bob", { fallbackUrl: "bob.png" }); loaders[1].onload();
+    bob.resolve(); await bob.promise;
+    const count = h.document.animations.length;
+    alice.resolve(); await alice.promise;
+    assert.equal(h.image.src, "bob.png"); assert.equal(h.document.animations.length, count);
+    assert.equal(h.placeholder.style.display, "none");
+    const carol = deferred(); h.image.decode = () => carol.promise;
+    h.ui.presentPreview(h.image, h.placeholder, "carol.png", "Carol");
+    assert.ok(h.frame.querySelectorAll(".vnccs-common-ui-motion-ghost").length);
+    h.ui.emptyPreview(h.image, h.placeholder, "Carol", "No preview");
+    carol.resolve(); await carol.promise;
+    assert.equal(h.frame.querySelectorAll(".vnccs-common-ui-motion-ghost").length, 0);
+    assert.equal(h.image.style.display, "none");
+});
+
+for (const [file, root, regions] of [
+    ["vnccs_character_cloner.js", "vnccs-cloner", ["source", "source-images", "attributes"]],
+    ["vnccs_clothes_designer.js", "vnccs-clothes", ["character", "design"]],
+    ["vnccs_emotion_v2.js", "ems", ["costumes", "selected-emotions", "emotions", "generation", "model-picker-qi2", "model-picker-anima", "model-picker-illustrious"]],
+]) {
+    test(`${root} reuses Sakura motion, selectors and scroll restoration without changing control state`, async () => {
+        const h = setup();
+        const source = readFileSync(new URL(`../web/${file}`, import.meta.url), "utf8");
+        assert.match(source, /createSakuraInteractions\(container, node\)/);
+        assert.match(source, /interactions: (?:els\._ui|ui)/);
+        assert.match(source, /registerCleanup\(node, \(\) => (?:els\._ui|ui)\.dispose\(\)\)/);
+        h.root.className = `${root}-container vnccs-common-ui-host`;
+        h.frame.className = "vnccs-common-ui-preview-host";
+        h.aura.className = "vnccs-common-ui-preview-aura";
+        h.placeholder.textContent = "No preview";
+        const group = new h.Element("div");
+        h.root.appendChild(group);
+        for (const name of ["A", "B", "C"]) { const button = new h.Element("button"); button.textContent = name; group.appendChild(button); }
+        group.children[0].classList.add("active"); h.ui.syncSelection(group);
+        assert.equal(group.style["--segment-index"], "0");
+        group.children[0].classList.toggle("active", false); group.children[2].classList.add("is-active"); h.ui.syncSelection(group);
+        assert.equal(group.style["--segment-index"], "2"); assert.equal(group.style["--segments"], "3");
+        assert.equal(group.children[2].getAttribute("aria-pressed"), "true");
+        for (const key of regions) {
+            const region = new h.Element("div"); region.dataset.sakuraScroll = key;
+            region.scrollTop = 181; region.scrollLeft = 9; h.root.appendChild(region);
+        }
+        const view = h.ui.captureView();
+        for (const region of h.root.querySelectorAll("[data-sakura-scroll]")) {
+            const replacement = new h.Element("div"); replacement.dataset.sakuraScroll = region.dataset.sakuraScroll;
+            region.remove(); h.root.appendChild(replacement);
+        }
+        h.ui.restoreView(view); h.flush();
+        for (const region of h.root.querySelectorAll("[data-sakura-scroll]")) {
+            assert.equal(region.scrollTop, 181); assert.equal(region.scrollLeft, 9);
+        }
+        h.image.decode = () => Promise.resolve();
+        h.ui.emptyPreview(h.image, h.placeholder, "Alice", "No preview");
+        h.ui.presentPreview(h.image, h.placeholder, "alice.png", "Alice"); await Promise.resolve();
+        assert.equal(h.placeholder.style.display, "none"); assert.equal(h.image.alt, "Preview of Alice");
+        assert.ok(h.document.animations.some(animation => animation.effect.target === h.aura && animation.options.duration === 700));
+        const count = h.document.animations.length;
+        h.ui.presentPreview(h.image, h.placeholder, "alice.png", "Alice"); await Promise.resolve();
+        assert.equal(h.document.animations.length, count, "Refreshing the same portrait does not replay its entrance");
+        h.document.motion = false;
+        h.ui.presentPreview(h.image, h.placeholder, "bob.png", "Bob"); await Promise.resolve();
+        assert.equal(h.image.src, "bob.png"); assert.equal(h.document.animations.length, count);
+        h.ui.dispose(); assert.equal(h.document.observers[0].disconnected, true);
+    });
+}
+
 test("enhancing an unselected model never chooses or saves a default", () => {
     const h = setup(), select = new h.Element("select"), option = new h.Element("option");
     option.value = option.textContent = "First model"; select.add(option); select.value = ""; h.root.appendChild(select);
@@ -143,7 +276,7 @@ test("first portrait waits for decoding and gets the longer reveal and glow", as
     assert.ok(h.document.animations.some(animation => animation.effect.target === h.aura && animation.options.duration === 700));
 });
 
-test("switching characters invalidates an old image decode and uses the shared short transition", async () => {
+test("switching characters invalidates an old image decode and repeats the full reveal and glow", async () => {
     const h = setup(), alice = deferred(), bob = deferred();
     h.image.decode = () => alice.promise; h.ui.presentPreview(h.image, h.placeholder, "alice.png", "Alice");
     h.ui.prepareCharacter(h.image, h.placeholder, "Bob");
@@ -154,7 +287,10 @@ test("switching characters invalidates an old image decode and uses the shared s
     h.ui.prepareCharacter(h.image, h.placeholder, "Carol");
     h.image.decode = () => Promise.resolve(); h.ui.presentPreview(h.image, h.placeholder, "carol.png", "Carol");
     await Promise.resolve();
-    assert.ok(h.document.animations.some(animation => animation.effect.target === h.image && animation.options.duration === 240));
+    const reveal = h.document.animations.filter(animation => animation.effect.target === h.image).at(-1);
+    assert.equal(reveal.options.duration, 420);
+    assert.equal(reveal.keyframes[0].filter, "blur(5px)");
+    assert.equal(h.document.animations.filter(animation => animation.effect.target === h.aura).at(-1).options.duration, 700);
     assert.ok(h.frame.querySelectorAll(".vnccs-common-ui-motion-ghost").length);
     for (const animation of [...h.document.animations]) animation.finish();
     assert.equal(h.frame.querySelectorAll(".vnccs-common-ui-motion-ghost").length, 0);

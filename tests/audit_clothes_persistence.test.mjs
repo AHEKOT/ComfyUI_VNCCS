@@ -27,6 +27,10 @@ function setup({ contexts, metadata, save, nativeCharacterSelect = false, disk =
     const controls = { charSelect: selection(), costSel: selection(),
         ...Object.fromEntries(['btnGen', 'btnDel', 'wizardBtn', 'top', 'bottom', 'head', 'face', 'shoes', 'placeholder', 'previewImg']
             .map(key => [key, { value: '', style: {} }])) };
+    controls._ui = {
+        presentPreview(image, placeholder, src) { image.src = src; image.style.display = 'block'; placeholder.style.display = 'none'; },
+        emptyPreview(image, placeholder) { image.style.display = 'none'; placeholder.style.display = 'flex'; },
+    };
     if (nativeCharacterSelect) {
         let selected = '';
         controls.charSelect = {
