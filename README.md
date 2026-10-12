@@ -33,16 +33,16 @@ For experienced users:
 Find `VNCCS - Visual Novel Character Creation Suite` in Custom Nodes Manager and click install latest version
 
 Manual install:
-1. Place the downloaded folder into `ComfyUI/custom_nodes/`
-2. Alternatively, in the console: go to `ComfyUI/custom_nodes/` and run `git clone https://github.com/AHEKOT/ComfyUI_VNCCS.git`
-3. cd ComfyUI_VNCCS_Utils
-4. pip install -r requirements.txt
+1. Rename the downloaded node folder to `vnccs` and place it into `ComfyUI/custom_nodes/`. The resulting path must be `ComfyUI/custom_nodes/vnccs/`.
+2. Alternatively, in the console: go to `ComfyUI/custom_nodes/` and run `git clone https://github.com/AHEKOT/ComfyUI_VNCCS.git vnccs`
+3. `cd vnccs`
+4. `pip install -r requirements.txt`
 
 Post install steps:
 Launch ComfyUI and open Comfy Manager
 Click "Install missing custom nodes"
 
-## VNCCS 3.0 Workflow
+## VNCCS 3.2 Workflow
 
 Hi! My name is V-chan, and I am going to show you how to use the new VNCCS!
 
@@ -52,7 +52,7 @@ We got a BIIIIIIG update, and now everything is completely new, so listen carefu
 
 Open the workflow:
 
-`VNCCS_3.0_Step1_CharacterCreator.json`
+`VNCCS_3.2_Step1_CharacterCreator.json`
 
 Let's start from the very beginning. The first thing you need to do, besides opening the workflow, silly, is figure out the **VNCCS Control Center**.
 ![Header](images/v3/ReadMe1.png)
@@ -122,7 +122,7 @@ Ready? Then press **Run**! Now just wait, and the magic will do everything for y
 
 Open the workflow:
 
-`VNCCS_3.0_Step1_CharacterCloner.json`
+`VNCCS_3.2_Step1_CharacterCloner.json`
 
 This workflow is basically a complete copy of Character Creator, but it is made for cloning existing character images.
 
@@ -142,7 +142,7 @@ Now press **Run** and look at the result!
 
 Open the workflow:
 
-`VNCCS_3.0_Step2_CharacterClothes.json`
+`VNCCS_3.2_Step2_CharacterClothes.json`
 
 Now we move to the tastiest part! In this workflow, you will make clothes for the character. As many sets as you think you need.
 
@@ -167,7 +167,7 @@ When you finish the first set, you can press **New** again and create as many ou
 
 Open the workflow:
 
-`VNCCS_3.0_Step3_CharacterEmotions.json`
+`VNCCS_3.2_Step3_CharacterEmotions.json`
 
 Here we will create emotions for the character! Up to this moment, all sprites had a calm facial expression. This will be our base.
 
