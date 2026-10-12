@@ -559,11 +559,16 @@ app.registerExtension({
     name: "VNCCS.ClothesDesigner",
 
     async setup() {
+        if (app._vnccsClothesQueuePatched) return;
+        app._vnccsClothesQueuePatched = true;
         const queuePrompt = app.queuePrompt;
         const origQueuePrompt = (...args) => queuePrompt.apply(app, args);
         app.queuePrompt = async function(...args) {
             const nodes = app.graph?._nodes?.filter(n => n.type === "ClothesDesigner") || [];
             for (const node of nodes) {
+                if ([2, 4].includes(node.mode)) continue;
+                if (node._vnccsStateRestoreError) throw new Error(node._vnccsStateRestoreError);
+                if (node._vnccsClothesSelectionPending) throw new Error("Clothes Designer metadata is loading. Wait before running the workflow.");
                 node._randomizeSeedIfNeeded?.();
             }
             return origQueuePrompt(...args);
@@ -635,7 +640,16 @@ app.registerExtension({
                         const ls = storage.getItem("VNCCS_ClothesDesigner_State");
                         if (ls) saved = JSON.parse(ls);
                     }
-                } catch (e) { console.warn("[VNCCS] ClothesDesigner: Error loading state", e); }
+                    if (!saved || typeof saved !== "object" || Array.isArray(saved)
+                        || ["costume_info", "character_info", "gen_settings"].some(key => saved[key] !== undefined
+                            && (!saved[key] || typeof saved[key] !== "object" || Array.isArray(saved[key])))) {
+                        throw new Error("Saved clothes state must contain objects.");
+                    }
+                } catch (e) {
+                    node._vnccsStateRestoreError = "Cannot restore saved clothes state. Original widget data is preserved. Restore a valid workflow before editing or running.";
+                    saved = {};
+                    console.warn("[VNCCS] ClothesDesigner: Error loading state", e);
+                }
 
                 const state = {
                     ...defaultState,
@@ -658,8 +672,10 @@ app.registerExtension({
                 const beginSelectionRequest = createRequestGuard(node);
                 const beginDeleteRequest = createRequestGuard(node);
                 const beginClothesWizardRequest = createRequestGuard(node);
+                const beginClothesUploadRequest = createRequestGuard(node);
 
                 const saveState = () => {
+                    if (node._vnccsStateRestoreError) return;
                     if (dataWidget) dataWidget.value = JSON.stringify(state);
                     try {
                         storage.setItem("VNCCS_ClothesDesigner_State", JSON.stringify(state));
@@ -677,7 +693,7 @@ app.registerExtension({
                 const onSerialize = node.onSerialize;
                 node.onSerialize = function (o) {
                     onSerialize?.apply(this, arguments);
-                    if (dataWidget) dataWidget.value = JSON.stringify(state);
+                    if (dataWidget && !node._vnccsStateRestoreError) dataWidget.value = JSON.stringify(state);
                     const index = node.widgets?.findIndex(widget => widget.name === "widget_data") ?? -1;
                     if (index >= 0 && Array.isArray(o?.widgets_values)) {
                         o.widgets_values[index] = node.widgets[index].value;
@@ -686,11 +702,13 @@ app.registerExtension({
 
                 const pendingCostumeSaves = new Set();
                 const saveCostumeToBackend = async () => {
+                    if (node._vnccsStateRestoreError) throw new Error(node._vnccsStateRestoreError);
+                    if (node._vnccsClothesSelectionPending) throw new Error("Clothes Designer metadata is loading. Wait before saving the costume.");
                     if (!state.character || !state.costume) return;
-                    const request = checkedJSON("/vnccs/save_costume", {
-                        method: "POST",
-                        body: JSON.stringify({ character: state.character, costume: state.costume, info: state.costume_info })
-                    });
+                    const body = JSON.stringify({ character: state.character, costume: state.costume, info: state.costume_info });
+                    const request = Promise.allSettled([...pendingCostumeSaves]).then(() => checkedJSON("/vnccs/save_costume", {
+                        method: "POST", body
+                    }));
                     pendingCostumeSaves.add(request);
                     try { return await request; }
                     finally { pendingCostumeSaves.delete(request); }
@@ -724,7 +742,11 @@ app.registerExtension({
                 };
 
                 const syncCostumeEditControls = () => {
-                    const canEdit = hasSelectedEditableCostume();
+                    const canEdit = !node._vnccsClothesSelectionPending && hasSelectedEditableCostume();
+                    if (els.btnNew) els.btnNew.disabled = !!node._vnccsClothesSelectionPending || !state.character;
+                    if (els.btnGen) els.btnGen.disabled = !canEdit;
+                    if (els.btnDel) els.btnDel.disabled = !canEdit;
+                    if (els.costSel) els.costSel.disabled = !!node._vnccsClothesSelectionPending || !els.costSel.options.length;
                     if (els.wizardBtn) els.wizardBtn.disabled = !canEdit;
                     ["top", "bottom", "head", "face", "shoes"].forEach(k => {
                         if (els[k]) els[k].disabled = !canEdit;
@@ -805,6 +827,7 @@ app.registerExtension({
                 };
 
                 const openClothesWizard = () => {
+                    if (node._vnccsStateRestoreError || node._vnccsClothesSelectionPending) return;
                     if (!hasSelectedEditableCostume()) {
                         showCreateCostumeRequired();
                         return;
@@ -854,6 +877,7 @@ app.registerExtension({
                                     if (!r.ok) {
                                         let err = null;
                                         try { err = await r.json(); } catch (e) { err = { message: await r.text() }; }
+                                        if (!isCurrent()) return false;
                                         showWizardModelError(err);
                                         return false;
                                     }
@@ -1049,6 +1073,7 @@ app.registerExtension({
                         signature: `${Number.isFinite(age) ? Math.round(age) : "?"}|${Number.isFinite(gender) ? gender : "?"}`
                     };
                 };
+                const isPoseStudioMounted = createRequestGuard(node)();
                 let poseStudioSyncRetryCount = 0;
                 const patchPoseStudioSync = () => {
                     const sync = window.__vnccsPoseStudioCharacterCreatorSync;
@@ -1113,6 +1138,7 @@ app.registerExtension({
                     return true;
                 };
                 const applyPoseStudioValues = (options = {}) => {
+                    if (!isPoseStudioMounted() || node._vnccsStateRestoreError) return;
                     node._vnccsGetPoseStudioValues = parsePoseStudioValues;
                     if (patchPoseStudioSync()) {
                         poseStudioSyncRetryCount = 0;
@@ -1140,26 +1166,36 @@ app.registerExtension({
                     }
                 };
                 const beginCharacterInfoRequest = createRequestGuard(node);
-                const loadCharacterInfo = async () => {
+                const loadCharacterInfo = async (character = state.character) => {
                     const currentRequest = beginCharacterInfoRequest();
-                    const character = state.character;
+                    const originalCharacter = state.character;
                     if (!character) return false;
                     try {
                         const r = await api.fetchApi(`/vnccs/character_info?character=${encodeURIComponent(character)}`);
                         if (!r.ok) throw new Error(`Character metadata request failed (${r.status})`);
                         const info = await r.json();
-                        if (!currentRequest() || state.character !== character) return false;
+                        if (!currentRequest() || state.character !== originalCharacter) return false;
+                        if (!info || typeof info !== "object" || Array.isArray(info) || (info.name && info.name !== character)) {
+                            throw new Error(`Invalid character metadata for '${character}'`);
+                        }
+                        const changed = character !== originalCharacter;
                         state.character_info = {
-                            ...state.character_info,
+                            ...(changed ? defaultState.character_info : state.character_info),
                             ...info,
-                            age: normalizeAgeValue(info.age ?? state.character_info.age),
-                            sex: String(info.sex || info.gender || state.character_info.sex || "female").toLowerCase()
+                            name: character,
+                            age: normalizeAgeValue(info.age ?? (changed ? defaultState.character_info.age : state.character_info.age)),
+                            sex: String(info.sex || info.gender || (changed ? defaultState.character_info.sex : state.character_info.sex) || "female").toLowerCase()
                         };
+                        state.character = character;
+                        if (changed) resetCostumeSelection();
                         saveState();
                         applyPoseStudioValues({ force: true });
                         return true;
                     } catch (e) {
-                        console.warn("[VNCCS] ClothesDesigner: Failed to load character info", e);
+                        if (currentRequest() && state.character === originalCharacter) {
+                            if (els.charSelect) els.charSelect.value = state.character;
+                            showInfo("Character Load Failed", e.message || String(e));
+                        }
                         return false;
                     }
                 };
@@ -1206,6 +1242,7 @@ app.registerExtension({
                     }
 
                     inp.oninput = (e) => {
+                        if (node._vnccsClothesSelectionPending) return;
                         state.costume_info[key] = e.target.value;
                         node._vnccsCostumeDraft = { character: state.character, costume: state.costume };
                         saveState();
@@ -1408,7 +1445,12 @@ app.registerExtension({
                     seedInp.type = "number";
                     seedInp.value = state.gen_settings.seed || 0;
                     seedInp.onchange = (e) => {
-                        state.gen_settings.seed = Number(e.target.value) || 0;
+                        const value = e.target.valueAsNumber;
+                        if (!e.target.checkValidity() || !Number.isFinite(value)) {
+                            e.target.value = state.gen_settings.seed;
+                            return;
+                        }
+                        state.gen_settings.seed = value;
                         saveState();
                     };
                     els.seed = seedInp;
@@ -1498,6 +1540,7 @@ app.registerExtension({
                     btn.className = "vnccs-clothes-btn";
                     btn.style.background = "#444"; btn.style.border = "1px dashed #666";
                     btn.innerText = state.clone_image ? "REPLACE IMAGE" : "+ UPLOAD IMAGE";
+                    btn.disabled = !!node._vnccsClothesSelectionPending;
                     if (state.clone_image) { btn.style.opacity = "0.8"; btn.style.fontSize = "10px"; btn.style.padding = "4px 8px"; btn.style.position = "absolute"; btn.style.bottom = "10px"; }
 
                     overlay.appendChild(btn);
@@ -1505,19 +1548,26 @@ app.registerExtension({
                     const fileInp = document.createElement("input");
                     fileInp.type = "file"; fileInp.accept = "image/*"; fileInp.style.display = "none";
                     fileInp.onchange = async (e) => {
+                        if (node._vnccsStateRestoreError || node._vnccsClothesSelectionPending) return;
                         if (e.target.files.length) {
-                            const file = normalizeUploadFile(e.target.files[0], "clone_reference");
+                            const currentRequest = beginClothesUploadRequest();
+                            const character = state.character, costume = state.costume, previousImage = state.clone_image;
+                            const isCurrent = () => currentRequest() && !node._vnccsStateRestoreError && !node._vnccsClothesSelectionPending
+                                && state.character === character && state.costume === costume
+                                && state.activeTab === "clone" && state.clone_image === previousImage;
                             try {
+                                const file = normalizeUploadFile(e.target.files[0], "clone_reference");
                                 btn.innerText = "UPLOADING...";
+                                btn.disabled = true;
                                 const body = new FormData();
                                 body.append("image", file, file.name);
                                 body.append("type", "input");
-                                body.append("overwrite", "true");
                                 const resp = await api.fetchApi("/upload/image", { method: "POST", body });
                                 if (!resp.ok) {
                                     throw new Error(await resp.text() || `Upload failed (${resp.status})`);
                                 }
                                 const json = await resp.json();
+                                if (!isCurrent()) return;
                                 if (!json.name) {
                                     throw new Error("Upload response did not include an image name.");
                                 }
@@ -1530,7 +1580,13 @@ app.registerExtension({
                                 // Update View
                                 renderClonePanel(container);
                             } catch (err) {
-                                showInfo("Upload Failed", err.toString());
+                                if (isCurrent()) showInfo("Upload Failed", err.toString());
+                            } finally {
+                                if (currentRequest()) {
+                                    btn.disabled = false;
+                                    btn.innerText = state.clone_image ? "REPLACE IMAGE" : "+ UPLOAD IMAGE";
+                                    fileInp.value = "";
+                                }
                             }
                         }
                     };
@@ -1559,15 +1615,27 @@ app.registerExtension({
                 charRow.innerHTML = '<div class="vnccs-clothes-label">CHARACTER</div>';
                 const charSel = document.createElement("select"); charSel.className = "vnccs-clothes-select";
                 charSel.onchange = async (e) => {
-                    state.character = e.target.value;
+                    beginClothesUploadRequest();
+                    const character = e.target.value;
+                    els.charSelect.value = character;
                     beginClothesWizardRequest();
                     const currentSelection = beginSelectionRequest();
                     const currentPreview = beginPreviewRequest();
                     spritePreviewNavigator?.invalidate?.();
-                    if (!await loadCharacterInfo() || !currentSelection()) return;
-                    if (!await loadCostumes() || !currentSelection()) return;
-                    if (currentPreview()) updatePreviewImage();
-                    saveState();
+                    node._vnccsClothesSelectionPending = true;
+                    syncCostumeEditControls();
+                    try {
+                        if (!await loadCharacterInfo(character) || !currentSelection()) return;
+                        if (!await loadCostumes() || !currentSelection()) return;
+                        if (currentPreview()) updatePreviewImage();
+                        saveState();
+                    } finally {
+                        if (currentSelection()) {
+                            node._vnccsClothesSelectionPending = false;
+                            els.charSelect.value = state.character;
+                            syncCostumeEditControls();
+                        }
+                    }
                 };
                 charRow.appendChild(charSel);
                 els.charSelect = charSel;
@@ -1579,15 +1647,25 @@ app.registerExtension({
                 costRow.innerHTML = '<div class="vnccs-clothes-label">COSTUME (Select to Edit)</div>';
                 const costSel = document.createElement("select"); costSel.className = "vnccs-clothes-select";
                 costSel.onchange = async (e) => {
-                    state.costume = e.target.value;
+                    beginClothesUploadRequest();
+                    const costume = e.target.value;
                     beginClothesWizardRequest();
-                    beginSelectionRequest();
+                    const currentSelection = beginSelectionRequest();
                     const currentPreview = beginPreviewRequest();
                     spritePreviewNavigator?.invalidate?.();
-                    if (!await loadCostumeInfo()) return false;
+                    node._vnccsClothesSelectionPending = true;
                     syncCostumeEditControls();
-                    if (currentPreview()) updatePreviewImage();
-                    saveState();
+                    try {
+                        if (!await loadCostumeInfo(false, costume) || !currentSelection()) return false;
+                        if (currentPreview()) updatePreviewImage();
+                        saveState();
+                    } finally {
+                        if (currentSelection()) {
+                            node._vnccsClothesSelectionPending = false;
+                            els.costSel.value = state.costume;
+                            syncCostumeEditControls();
+                        }
+                    }
                 };
                 els.costSel = costSel;
                 costRow.appendChild(costSel);
@@ -1602,29 +1680,43 @@ app.registerExtension({
                 btnNewCostume.innerText = "NEW";
                 btnNewCostume.style.fontSize = "10px";
                 btnNewCostume.onclick = () => {
+                    if (node._vnccsStateRestoreError || node._vnccsClothesSelectionPending) return;
+                    const character = state.character;
+                    const currentRequest = beginClothesUploadRequest();
                     showModal("New Costume Name", () => {
                         const inp = document.createElement("input"); inp.className = "vnccs-clothes-input";
                         return inp;
                     }, [{ text: "Cancel" }, {
                         text: "CREATE", class: "vnccs-clothes-btn-primary", action: async (ol, btn) => {
+                            if (node._vnccsStateRestoreError || node._vnccsClothesSelectionPending) return true;
+                            const isCurrent = () => currentRequest() && ol.isConnected
+                                && !node._vnccsStateRestoreError && !node._vnccsClothesSelectionPending
+                                && state.character === character;
+                            if (!isCurrent()) return false;
                             const n = ol.querySelector("input").value.trim();
                             if (n) {
-                                await checkedJSON("/vnccs/save_costume", {
-                                    method: "POST", body: JSON.stringify({ character: state.character, costume: n, info: {} })
-                                });
-                                await loadCostumes();
-                                state.costume = n;
-                                costSel.value = n;
-                                await loadCostumeInfo();
-                                syncCostumeEditControls();
-                                updatePreviewImage();
-                                saveState();
-                                return false;
+                                try {
+                                    await checkedJSON("/vnccs/save_costume", {
+                                        method: "POST", body: JSON.stringify({ character, costume: n, info: {}, create_only: true })
+                                    });
+                                    if (!isCurrent() || !await loadCostumes() || !isCurrent()) return false;
+                                    state.costume = n;
+                                    costSel.value = n;
+                                    if (!await loadCostumeInfo() || !isCurrent()) return false;
+                                    syncCostumeEditControls();
+                                    updatePreviewImage();
+                                    saveState();
+                                    return false;
+                                } catch (error) {
+                                    if (!isCurrent()) return false;
+                                    throw error;
+                                }
                             }
                             return true;
                         }
                     }]);
                 };
+                els.btnNew = btnNewCostume;
                 actionRow.appendChild(btnNewCostume);
 
                 const btnDelCostume = document.createElement("button");
@@ -1632,6 +1724,7 @@ app.registerExtension({
                 btnDelCostume.innerText = "DELETE";
                 btnDelCostume.style.fontSize = "10px";
                 btnDelCostume.onclick = () => {
+                    if (node._vnccsStateRestoreError) return;
                     if (!state.character || !hasSelectedEditableCostume()) {
                         showInfo("Warning", "Select an editable costume first. Base sprite sets cannot be deleted.");
                         return;
@@ -1643,7 +1736,8 @@ app.registerExtension({
                     const character = state.character;
                     const costume = state.costume;
                     const currentRequest = beginDeleteRequest();
-                    const isCurrent = () => currentRequest() && state.character === character && state.costume === costume;
+                    const isCurrent = () => currentRequest() && !node._vnccsStateRestoreError
+                        && state.character === character && state.costume === costume;
                     showModal("Delete", () => {
                         const d = document.createElement("div");
                         d.innerText = `Delete "${costume}" for ${character}? This removes its settings, generated images, and preview.`;
@@ -1652,6 +1746,7 @@ app.registerExtension({
                         [{ text: "Cancel" }, {
                             text: "DELETE", class: "vnccs-clothes-btn-danger", action: async () => {
                                 if (!isCurrent()) return false;
+                                beginClothesUploadRequest();
                                 if (els.btnGen?.disabled) {
                                     showInfo("Warning", "Wait for preview generation to finish before deleting a costume.");
                                     return true;
@@ -1705,6 +1800,8 @@ app.registerExtension({
                 btnGen.style.width = "100%"; btnGen.style.marginBottom = "5px";
                 btnGen.style.flex = "0 0 auto"; // Prevent vertical stretching
                 btnGen.onclick = async () => {
+                    if (node._vnccsStateRestoreError) return;
+                    if (node._vnccsClothesSelectionPending) return;
                     if (!state.character) { showInfo("Error", "Select Character"); return; }
                     if (!hasSelectedEditableCostume()) { showCreateCostumeRequired(); return; }
                     if (state.activeTab === "clone" && !state.clone_image) {
@@ -1734,7 +1831,9 @@ app.registerExtension({
                     const character = state.character;
                     const costume = state.costume;
                     const currentRequest = beginPreviewRequest();
-                    const isCurrent = () => currentRequest() && state.character === character && state.costume === costume;
+                    const draft = JSON.stringify(state);
+                    const isCurrent = () => currentRequest() && !node._vnccsStateRestoreError
+                        && state.character === character && state.costume === costume && JSON.stringify(state) === draft;
                     spritePreviewNavigator?.invalidate?.();
                     btnGen.innerText = "GENERATING..."; btnGen.disabled = true;
                     try {
@@ -1764,7 +1863,8 @@ app.registerExtension({
                     } catch (e) { if (isCurrent()) showInfo("Error", e.toString()); }
                     finally {
                         loadingOverlay.remove();
-                        btnGen.innerText = "GENERATE PREVIEW / SAVE"; btnGen.disabled = false;
+                        btnGen.innerText = "GENERATE PREVIEW / SAVE";
+                        btnGen.disabled = !!node._vnccsClothesSelectionPending || !hasSelectedEditableCostume();
                     }
                 };
                 els.btnGen = btnGen;
@@ -1859,6 +1959,7 @@ app.registerExtension({
                     t.className = "cd-tab" + (state.activeTab === id ? " active" : "");
                     t.innerText = label;
                     t.onclick = () => {
+                        beginClothesUploadRequest();
                         state.activeTab = id;
                         saveState();
                         refreshTabs();
@@ -1876,6 +1977,7 @@ app.registerExtension({
 
                     if (state.activeTab === "generate") renderAttributes(contentArea);
                     else renderClonePanel(contentArea);
+                    syncCostumeEditControls();
                 };
 
                 refreshTabs(); // Initial Render
@@ -1885,9 +1987,25 @@ app.registerExtension({
                 topRow.appendChild(colMid);
 
                 node._vnccsRestoreClothesState = () => {
+                    beginClothesUploadRequest();
+                    beginClothesWizardRequest();
+                    beginDeleteRequest();
+                    spritePreviewNavigator?.invalidate?.();
+                    if (node._vnccsClothesSelectionPending) {
+                        beginSelectionRequest();
+                        beginCharacterInfoRequest();
+                        beginCostumeInfoRequest();
+                        node._vnccsClothesSelectionPending = false;
+                    }
                     try {
                         const restored = JSON.parse(dataWidget.value || "{}");
-                        Object.assign(state, restored, {
+                        if (!restored || typeof restored !== "object" || Array.isArray(restored)
+                            || ["costume_info", "character_info", "gen_settings"].some(key => restored[key] !== undefined
+                                && (!restored[key] || typeof restored[key] !== "object" || Array.isArray(restored[key])))) {
+                            throw new Error("Saved clothes state must contain objects.");
+                        }
+                        delete node._vnccsStateRestoreError;
+                        Object.assign(state, defaultState, restored, {
                             costume_info: { ...defaultState.costume_info, ...restored.costume_info },
                             character_info: { ...defaultState.character_info, ...restored.character_info },
                             gen_settings: { ...defaultState.gen_settings, ...restored.gen_settings },
@@ -1896,10 +2014,21 @@ app.registerExtension({
                         for (const key of Object.keys(defaultState.costume_info)) {
                             if (els[key]) els[key].value = state.costume_info[key];
                         }
-                        if (els.charSelect) els.charSelect.value = state.character;
+                        if (els.charSelect) {
+                            if (state.character && !Array.from(els.charSelect.options).some(option => option.value === state.character)) {
+                                els.charSelect.add(new Option(state.character, state.character));
+                            }
+                            els.charSelect.value = state.character;
+                        }
                         if (els.costSel) els.costSel.value = state.costume;
+                        refreshTabs();
                         syncGenerationControls();
-                    } catch (error) { console.warn("[VNCCS] Clothes Designer state restore failed", error); }
+                        syncCostumeEditControls();
+                    } catch (error) {
+                        node._vnccsStateRestoreError = "Cannot restore saved clothes state. Original widget data is preserved. Restore a valid workflow before editing or running.";
+                        console.warn("[VNCCS] Clothes Designer state restore failed", error);
+                        showInfo("State Restore Failed", node._vnccsStateRestoreError);
+                    }
                 };
                 registerCleanup(node, () => { delete node._vnccsRestoreClothesState; delete node._vnccsCostumeDraft; });
 
@@ -1911,14 +2040,19 @@ app.registerExtension({
                     const r = await api.fetchApi("/vnccs/context_lists");
                     const d = await r.json();
                     if (!isMounted()) return;
+                    if (node._vnccsStateRestoreError) return;
                     setClothesCoreLora();
                     syncGenerationControls();
                     saveState(); // Ensure defaults are persisted immediately
 
                     // Char List
+                    const selectedCharacter = els.charSelect.value || state.character;
                     els.charSelect.innerHTML = "";
                     d.characters.forEach(c => els.charSelect.add(new Option(c, c)));
-                    if (state.character) els.charSelect.value = state.character;
+                    if (selectedCharacter) {
+                        if (!d.characters.includes(selectedCharacter)) els.charSelect.add(new Option(selectedCharacter, selectedCharacter));
+                        els.charSelect.value = selectedCharacter;
+                    }
                     else if (d.characters.length) { state.character = d.characters[0]; els.charSelect.value = state.character; }
 
                     if (!currentSelection()) return;
@@ -1968,11 +2102,14 @@ app.registerExtension({
                 const loadCostumes = async (preserveDraft = false) => {
                     const currentRequest = beginCostumesRequest();
                     const c = state.character;
+                    const originalInfo = state.costume_info;
+                    const isCurrent = () => currentRequest() && state.character === c
+                        && (preserveDraft || state.costume_info === originalInfo);
                     if (!c) return;
                     try {
                         const r = await api.fetchApi(`/vnccs/list_costumes?character=${encodeURIComponent(c)}`);
                         let list = await r.json();
-                        if (!currentRequest() || state.character !== c) return false;
+                        if (!isCurrent()) return false;
                         if (!r.ok || !Array.isArray(list)) throw new Error("Failed to load character costumes.");
 
                         // Filter base sprite sets from display list.
@@ -2009,16 +2146,20 @@ app.registerExtension({
                         syncCostumeEditControls();
                         return true;
                     } catch (error) {
-                        if (currentRequest() && !(state.character !== c)) showInfo("Error", error.message || String(error));
+                        if (isCurrent()) showInfo("Error", error.message || String(error));
                         return false;
                     }
                 };
 
                 const beginCostumeInfoRequest = createRequestGuard(node);
-                const loadCostumeInfo = async (preserveDraft = false) => {
+                const loadCostumeInfo = async (preserveDraft = false, costume = state.costume) => {
                     const currentRequest = beginCostumeInfoRequest();
                     const c = state.character;
-                    const cos = state.costume;
+                    const originalCostume = state.costume;
+                    const originalInfo = state.costume_info;
+                    const cos = costume;
+                    const isCurrent = () => currentRequest() && state.character === c && state.costume === originalCostume
+                        && (preserveDraft || state.costume_info === originalInfo);
                     if (els.btnGen) els.btnGen.disabled = true;
                     if (els.btnDel) els.btnDel.disabled = true;
                     ["top", "bottom", "head", "face", "shoes"].forEach(key => {
@@ -2028,12 +2169,13 @@ app.registerExtension({
                     try {
                         const r = await api.fetchApi(`/vnccs/get_costume?character=${encodeURIComponent(c)}&costume=${encodeURIComponent(cos)}`);
                         const info = await r.json();
-                        if (!currentRequest() || state.character !== c || state.costume !== cos) return false;
+                        if (!isCurrent()) return false;
                         if (!r.ok) throw new Error("Failed to load costume metadata.");
                         if (!info || typeof info !== "object" || Array.isArray(info)) {
                             throw new Error("Invalid costume metadata.");
                         }
 
+                        state.costume = cos;
                         state.costume_info = {
                             ...info,
                             top: info.top || "",
@@ -2058,8 +2200,8 @@ app.registerExtension({
                         saveState();
                         return true;
                     } catch (error) {
-                        if (currentRequest() && state.character === c && state.costume === cos) {
-                            if (!(preserveDraft && node._vnccsCostumeDraft?.character === c
+                        if (isCurrent()) {
+                            if (cos === originalCostume && !(preserveDraft && node._vnccsCostumeDraft?.character === c
                                 && node._vnccsCostumeDraft?.costume === cos)) resetCostumeSelection();
                             showInfo("Error", error.message || String(error));
                         }
@@ -2071,7 +2213,9 @@ app.registerExtension({
                     const currentRequest = beginPreviewRequest();
                     const character = state.character;
                     const costume = state.costume;
-                    const isCurrent = () => currentRequest() && state.character === character && state.costume === costume;
+                    const info = state.costume_info;
+                    const isCurrent = () => currentRequest() && state.character === character && state.costume === costume
+                        && state.costume_info === info;
                     spritePreviewNavigator?.invalidate?.();
                     if (!state.character) return;
                     const ts = Date.now();

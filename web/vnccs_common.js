@@ -88,18 +88,53 @@ export function normalizeAgeValue(value) {
     return Math.max(1, Math.min(100, parsed));
 }
 
+export function installResolvedSeedTransport(app, nodeTypes, inputName = "widget_data") {
+    if (typeof app.graphToPrompt !== "function") return;
+    if (!app._vnccsResolvedSeedInputs) {
+        const inputs = app._vnccsResolvedSeedInputs = new Map();
+        const graphToPrompt = app.graphToPrompt;
+        app.graphToPrompt = async function (...args) {
+            const result = await graphToPrompt.apply(this, args);
+            const output = { ...result.output };
+            for (const [id, entry] of Object.entries(output)) {
+                const name = inputs.get(entry.class_type);
+                const node = app.graph?._nodes?.find(node => String(node.id) === id);
+                if (!name || [2, 4].includes(node?.mode) || typeof entry.inputs?.[name] !== "string") continue;
+                try {
+                    const state = JSON.parse(entry.inputs[name]);
+                    if ((state?.gen_settings || state)?.seed_mode !== "randomize") continue;
+                    // Queue inputs carry the UI seed; workflow state keeps its randomize preference.
+                    output[id] = { ...entry, inputs: { ...entry.inputs,
+                        [name]: JSON.stringify({ ...state, _vnccs_seed_resolved: true }) } };
+                } catch (_) {}
+            }
+            return { ...result, output };
+        };
+    }
+    for (const type of nodeTypes) app._vnccsResolvedSeedInputs.set(type, inputName);
+}
+
 // Each widget keeps its own view state and polling cleanup.
-export function createControlCenterClient(repoId, hasRequiredFamilies, state, render) {
+export function createControlCenterClient(repoId, hasRequiredFamilies, state, render, node) {
     const cacheKey = `vnccs_cc_cache_${repoId}`;
+    const isMounted = node ? createRequestGuard(node)() : () => true;
     let interval = null;
+    let configRequest = 0;
+    let polling = false;
+    let pollingRevision = 0;
     const fetchConfig = async (force = false) => {
-        if (!force && serverRegistry("VNCCS_CC_REGISTRY")?.[repoId] && hasRequiredFamilies(serverRegistry("VNCCS_CC_REGISTRY")[repoId])) {
+        if (!isMounted()) return state.config;
+        const request = ++configRequest;
+        const isCurrent = () => isMounted() && request === configRequest;
+        const promises = serverRegistry("VNCCS_CC_FETCH_PROMISES");
+        const previousPromise = promises[repoId];
+        if (!force && !previousPromise && serverRegistry("VNCCS_CC_REGISTRY")?.[repoId] && hasRequiredFamilies(serverRegistry("VNCCS_CC_REGISTRY")[repoId])) {
             state.config = serverRegistry("VNCCS_CC_REGISTRY")[repoId];
             render();
             return state.config;
         }
-        if (!force && state.config && hasRequiredFamilies(state.config)) return state.config;
-        if (!force) {
+        if (!force && !previousPromise && state.config && hasRequiredFamilies(state.config)) return state.config;
+        if (!force && !previousPromise) {
             try {
                 const cached = storage.getItem(cacheKey);
                 if (cached) {
@@ -110,23 +145,52 @@ export function createControlCenterClient(repoId, hasRequiredFamilies, state, re
             } catch (_) {}
         }
 
-        const url = `/vnccs/control_center/check?repo_id=${encodeURIComponent(repoId)}${force ? "&force_refresh=true" : ""}`;
-        const response = await api.fetchApi(url);
-        const payload = await response.json();
-        if (!response.ok || payload.error) throw new Error(payload.error || "Failed to load Control Center config");
+        let fetchPromise = !force && previousPromise;
+        if (!fetchPromise) {
+            fetchPromise = (async () => {
+                try {
+                    const url = `/vnccs/control_center/check?repo_id=${encodeURIComponent(repoId)}${force ? "&force_refresh=true" : ""}`;
+                    const response = await api.fetchApi(url);
+                    const payload = await response.json();
+                    if (!response.ok || payload.error) throw new Error(payload.error || "Failed to load Control Center config");
+                    if (promises[repoId] === fetchPromise) serverRegistry("VNCCS_CC_REGISTRY")[repoId] = payload;
+                    return payload;
+                } finally {
+                    if (promises[repoId] === fetchPromise) delete promises[repoId];
+                }
+            })();
+            promises[repoId] = fetchPromise;
+            if (previousPromise) previousPromise.replacement = fetchPromise;
+        }
+        let payload;
+        while (true) {
+            try { payload = await fetchPromise; }
+            catch (error) {
+                if (!isCurrent()) return state.config;
+                if (!fetchPromise.replacement) throw error;
+            }
+            if (!isCurrent()) return state.config;
+            if (!fetchPromise.replacement) break;
+            fetchPromise = fetchPromise.replacement;
+        }
+        if (serverRegistry("VNCCS_CC_REGISTRY")[repoId] !== payload) return state.config;
         state.config = payload;
 
-        serverRegistry("VNCCS_CC_REGISTRY")[repoId] = payload;
         storage.setItem(cacheKey, JSON.stringify(payload));
         render();
         return payload;
     };
 
     const refreshDownloadStatus = async () => {
+        if (!isMounted() || polling) return;
+        polling = true;
+        const revision = pollingRevision;
         try {
-            const response = await api.fetchApi("/vnccs/manager/status");
+            const response = await api.fetchApi(`/vnccs/manager/status?repo_id=${encodeURIComponent(repoId)}`);
             if (!response.ok) return;
-            state.downloadStatus = await response.json();
+            const status = await response.json();
+            if (!isMounted() || revision !== pollingRevision) return;
+            state.downloadStatus = status;
             const active = Object.values(state.downloadStatus || {}).some(item => ["queued", "downloading"].includes(item?.status));
             if (!active) {
                 stopPolling();
@@ -135,9 +199,12 @@ export function createControlCenterClient(repoId, hasRequiredFamilies, state, re
                 render();
             }
         } catch (_) {}
+        finally { polling = false; }
     };
 
     const startPolling = () => {
+        if (!isMounted()) return;
+        pollingRevision++;
         if (interval) return;
         interval = setInterval(refreshDownloadStatus, 2000);
     };
@@ -147,6 +214,7 @@ export function createControlCenterClient(repoId, hasRequiredFamilies, state, re
         clearInterval(interval);
         interval = null;
     };
+    if (node) registerCleanup(node, stopPolling);
     return { fetchConfig, startPolling, stopPolling };
 }
 

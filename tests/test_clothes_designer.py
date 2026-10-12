@@ -377,7 +377,8 @@ class TestPipeContext:
     ("Klein9b", None, 1024), ("Klein9b", 2048, 2048),
 ])
 @pytest.mark.parametrize("clone", [False, True])
-def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, size, expected, clone):
+@pytest.mark.parametrize("cfg", [None, 0.0])
+def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, size, expected, clone, cfg):
     from _vnccs.nodes import clothes_designer as cd
     from _vnccs.nodes import character_generator as cg
     from PIL import Image
@@ -447,6 +448,7 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
     pipe = types.SimpleNamespace(
         model=object(), clip=object(), vae=object(), audio_vae=object(), model_entry={"kind": kind},
         model_cache_key={"model": {"kind": kind, "name": "Test catalog model"}},
+        cfg=cfg,
     )
     data = {"character": "Alice", "costume": "Dress", "gen_settings": {
                 "target_size": size,
@@ -531,6 +533,7 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
     else:
         assert calls[sampler_name]["positive"] == "positive"
         assert calls[sampler_name]["negative"] == "negative"
+        assert calls[sampler_name]["cfg"] == (cfg if cfg is not None else 3.0 if kind == "QI2" else 1.0)
 
     node.process(pipe=pipe, widget_data=json.dumps(data), unique_id="123")
     assert call_names.count(encoder_name) == 1

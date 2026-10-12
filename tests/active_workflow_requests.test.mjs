@@ -14,6 +14,55 @@ const deferred = () => {
 };
 const response = data => ({ ok: true, json: async () => data });
 
+for (const kind of ['creator', 'cloner']) {
+    for (const obsolete of ['current', 'before_confirmation', 'selection', 'removal', 'close']) {
+        test(`${kind} character delete preserves selection ownership through ${obsolete}`, async () => {
+            const text = source(kind === 'creator' ? 'vnccs_character_creator_v2' : 'vnccs_character_cloner');
+            const state = { character: 'Alice', character_info: { name: 'Alice', hair: 'Alice hair' } };
+            const node = {}, pending = deferred(), requests = [];
+            const select = { options: [{ value: 'Alice' }, { value: 'Bob' }], remove(index) { this.options.splice(index, 1); } };
+            let buttons;
+            const overlay = { isConnected: true };
+            const replace = name => { state.character = name; state.character_info = { name }; };
+            const context = createWidgetContext({
+                node, state, els: { charSelect: select }, console,
+                document: { createElement: () => ({ style: {}, append() {}, appendChild() {} }) },
+                showModal(title, content, actions) { content(); buttons = actions; },
+                showAlertModal() { assert.fail('Stale deletion must not show an error'); },
+                clearCharacterSelection: () => replace(''), loadChar: async name => replace(name),
+                setCharacter: async name => replace(name), saveState() {},
+                api: { fetchApi(route) { requests.push(route); return pending.promise; } },
+            });
+            const deleteCode = between(text, 'const doDelete =', kind === 'creator' ? 'const openTagConstructor =' : '// --- LAYOUT ---');
+            vm.runInContext(`${guardCode}\nconst beginCharacterRequest = createRequestGuard(node);\n${deleteCode}\nglobalThis.openDelete = doDelete; globalThis.selectCharacter = beginCharacterRequest;`, context);
+            context.openDelete();
+            if (obsolete === 'before_confirmation') {
+                context.selectCharacter();
+                state.character = 'Bob';
+                state.character_info = { name: 'Bob', hair: 'authored Bob draft' };
+                await buttons[1].action(overlay, {});
+                assert.deepEqual(requests, []);
+                assert.equal(state.character_info.hair, 'authored Bob draft');
+                return;
+            }
+            const operation = buttons[1].action(overlay, {});
+            assert.deepEqual(requests, ['/vnccs/delete']);
+            if (obsolete === 'selection') context.selectCharacter();
+            else if (obsolete === 'removal') node.onRemoved();
+            else if (obsolete === 'close') overlay.isConnected = false;
+            if (obsolete !== 'current') {
+                state.character = 'Bob';
+                state.character_info = { name: 'Bob', hair: 'authored Bob draft' };
+            }
+            pending.resolve({ ok: true });
+            await operation;
+            assert.equal(state.character, 'Bob');
+            assert.equal(state.character_info.hair, obsolete === 'current' ? undefined : 'authored Bob draft');
+            assert.equal(select.options.length, obsolete === 'current' ? 1 : 2);
+        });
+    }
+}
+
 test('request guards reject superseded and removed-node responses, preserving cleanup', () => {
     let originalCleanup = 0;
     const node = { onRemoved() { originalCleanup++; } };
@@ -33,7 +82,7 @@ for (const widget of ['clothes', 'cloner', 'creator']) {
     test(`${widget} ignores reversed metadata responses and responses after removal`, async () => {
         const requests = [];
         const previews = [];
-        const state = { character: 'Alice', costume: 'Dress', character_info: {}, gen_settings: {} };
+        const state = { character: 'Alice', costume: 'Dress', character_info: {}, gen_settings: {}, source_images: [] };
         const node = {};
         const context = createWidgetContext({
             state, node, console, els: {},
@@ -139,6 +188,27 @@ function creatorImageHarness() {
     return { context, state, node, els, images, saved, requests, ...context.preview };
 }
 
+for (const previewSource of ['gen', 'pose']) {
+    test(`Creator keeps the restored ${previewSource} preview when loading saved character state`, async () => {
+        const h = creatorImageHarness();
+        Object.assign(h.state, { preview_valid: true, preview_source: previewSource, sprite_preview_index: 3 });
+        const operation = h.loadChar('Alice', true);
+        if (h.requests.length) h.requests[0].resolve(response({ count: 4 }));
+        await operation;
+        assert.equal(h.images.length, 1);
+        if (previewSource === 'gen') {
+            assert.equal(h.requests.length, 0, 'A generated preview must load its cache instead of a random pose');
+            assert.match(h.images[0].src, /get_cached_preview/);
+        } else {
+            assert.match(h.images[0].src, /get_character_pose_preview.*index=3/);
+        }
+        h.images[0].onload();
+        assert.equal(h.state.preview_valid, true);
+        assert.equal(h.state.preview_source, previewSource);
+        if (previewSource === 'pose') assert.equal(h.state.sprite_preview_index, 3);
+    });
+}
+
 test('creator rejects an old pose callback after current cache preview succeeds', () => {
     const h = creatorImageHarness();
     h.showSpritePreview('Alice', 0);
@@ -188,6 +258,36 @@ test('creator generation invalidates older images and ignores responses for a pr
     assert.equal(h.saved.filter(item => item.valid).length, 1);
 });
 
+test('Creator preview submits a temporary resolved-seed marker without saving it in widget state', async () => {
+    const h = creatorImageHarness();
+    Object.assign(h.state.gen_settings, { seed: 23, seed_mode: 'randomize' });
+    const generation = h.doGenerate();
+    const sent = JSON.parse(h.requests[0].options.body);
+    assert.equal(sent._vnccs_seed_resolved, true);
+    assert.equal(sent.gen_settings.seed, 23);
+    assert.equal(sent.gen_settings.seed_mode, 'randomize');
+    assert.equal(h.state._vnccs_seed_resolved, undefined);
+    h.requests[0].resolve(response({ image: 'generated-image' }));
+    await generation;
+    assert.equal(h.state.gen_settings.seed_mode, 'randomize');
+    assert.equal(h.state._vnccs_seed_resolved, undefined);
+});
+
+for (const field of ['hair', 'seed']) {
+    test(`creator ignores pending preview success after ${field} changes on the same character`, async () => {
+        const h = creatorImageHarness();
+        const generation = h.doGenerate();
+        if (field === 'hair') h.state.character_info.hair = 'new authored hair';
+        else h.state.gen_settings.seed = 42;
+        h.requests[0].resolve(response({ image: 'old-generated-image' }));
+        await generation;
+        assert.equal(h.els.previewImg.src, undefined);
+        assert.equal(h.saved.filter(item => item.valid).length, 0);
+        assert.equal(h.state.preview_valid, undefined);
+        assert.equal(h.els.btnGen.disabled, false);
+    });
+}
+
 for (const result of ['poses', 'cache', 'error']) {
     test(`creator ignores old ${result} metadata after a newer generation completes`, async () => {
         const h = creatorImageHarness();
@@ -210,13 +310,13 @@ for (const operation of ['character', 'costume', 'initialization']) {
         let previewUpdates = 0, costumeLoads = 0;
         const context = createWidgetContext({
             state, node, console, charSel: {}, costSel: {},
-            els: { charSelect: { innerHTML: '', add() {} } }, Option: class {},
+            els: { charSelect: { innerHTML: '', add() {} }, costSel: {} }, Option: class {},
             spritePreviewNavigator: { invalidate() {} },
             api: { fetchApi: async () => response({ characters: ['Alice'] }) },
             loadCharacterInfo: () => metadata.promise,
             loadCostumeInfo: () => metadata.promise,
             loadCostumes: async () => { costumeLoads++; state.costumes = ['Dress', 'Casual']; return true; },
-            syncCostumeEditControls() {}, saveState() {}, setClothesCoreLora() {}, syncGenerationControls() {},
+            syncCostumeEditControls() {}, saveState() {}, setClothesCoreLora() {}, syncGenerationControls() {}, beginClothesUploadRequest() {},
             updatePreviewImage: () => { previewUpdates++; },
         });
         const text = source('vnccs_clothes_designer');
@@ -274,12 +374,17 @@ test('delayed clothes initialization cannot take ownership from a newer characte
     let metadataLoads = 0;
     const context = createWidgetContext({
         state, node, console, charSel: {}, Option: class { constructor(label, value) { this.value = value; } },
-        beginClothesWizardRequest: () => () => true,
+        beginClothesWizardRequest: () => () => true, beginClothesUploadRequest() {},
         els: { charSelect: { innerHTML: '', add: option => options.push(option.value) } },
         api: { fetchApi: () => contextRequest.promise }, spritePreviewNavigator: { invalidate() {} },
-        loadCharacterInfo: () => { metadataLoads++; return metadataRequest.promise; },
+        loadCharacterInfo: async character => {
+            metadataLoads++;
+            const ready = await metadataRequest.promise;
+            if (ready) state.character = character;
+            return ready;
+        },
         loadCostumes: async () => { state.costume = 'BobSuit'; return true; },
-        setClothesCoreLora() {}, syncGenerationControls() {}, saveState() {},
+        setClothesCoreLora() {}, syncGenerationControls() {}, syncCostumeEditControls() {}, saveState() {},
         updatePreviewImage: () => shown.push([state.character, state.costume]),
     });
     const text = source('vnccs_clothes_designer');
@@ -402,7 +507,7 @@ for (const widget of ['creator', 'cloner']) {
     }
     test(`${widget} keeps workflow ownership until successful metadata arrival`, async () => {
         const pending = deferred(), saved = [];
-        const state = { character: 'Alice', character_info: { name: 'Alice', hair: 'old', extra: 'only Alice' }, gen_settings: {} };
+        const state = { character: 'Alice', character_info: { name: 'Alice', hair: 'old', extra: 'only Alice' }, gen_settings: {}, source_images: [] };
         const context = createWidgetContext({
             state, node: {}, els: { charSelect: { value: 'Bob' } },
             defaultCharacterInfo: {}, restoredInfoCharacter: null, restoredWidgetInfoCharacter: null,

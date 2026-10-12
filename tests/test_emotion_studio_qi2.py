@@ -56,6 +56,26 @@ def test_emotion_studio_builds_qi2_pipe_with_cache_and_viggle_state(monkeypatch)
     assert vars(pipe) == original
 
 
+@pytest.mark.parametrize("mode,expected", [
+    ("Illustrious", (20, 8.0, "euler", "normal")),
+    ("Anima", (30, 4.0, "er_sde", "simple")),
+    ("QI2", (25, 3.0, "euler", "simple")),
+])
+def test_emotion_selected_model_defaults_do_not_inherit_another_mode(monkeypatch, mode, expected):
+    monkeypatch.setattr(emotion, "load_generation_assets", lambda settings: (None, "model", "clip", "vae"))
+    monkeypatch.setattr(emotion, "load_anima_assets", lambda settings: ("model", "clip", "vae"))
+    monkeypatch.setattr(emotion, "get_lora_full_path", lambda *args: pytest.fail("No adapter is selected in a default request"))
+    for settings in ["{}", '{"seed":721}']:
+        pipe, seed = emotion.build_emotion_pipe(mode, settings)
+        assert (pipe.sample_steps, pipe.cfg, pipe.sampler_name, pipe.scheduler) == expected
+        assert seed == json.loads(settings).get("seed", 0)
+    pipe, seed = emotion.build_emotion_pipe(mode, json.dumps({
+        "mode_settings": {mode.lower(): {"steps": 17, "cfg": 0, "seed": 321, "seed_mode": "fixed"}},
+    }))
+    assert (pipe.sample_steps, pipe.cfg) == (17, 0)
+    assert seed == pipe.seed_int == 321
+
+
 def test_emotion_studio_ui_exposes_qi2_model_cache_and_turbo_controls():
     assert 'tabQi2.innerText = "Qwen Image 2.1"' in UI_SOURCE
     assert 'tabQi2.onclick = () => setGenerationMode("qi2")' in UI_SOURCE

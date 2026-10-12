@@ -53,7 +53,7 @@ function setup(upload) {
         imgList: { querySelectorAll: () => [] }, ensureQwenVLReady: async () => true,
         createLoadingOverlay: () => ({ remove() {} }), console: { log() {} },
         showCommonModal(parent, title, builder, buttons) {
-            const overlay = { removed: false, remove() { this.removed = true; } };
+            const overlay = { removed: false, isConnected: true, remove() { this.removed = true; this.isConnected = false; } };
             const modal = { style: {} }, content = builder(modal);
             modals.push({ parent, title, content, buttons, overlay, modal });
             return { overlay, modal, content };
@@ -77,7 +77,7 @@ function setup(upload) {
         block(source, "const openTagConstructor =", "const beginCharacterRequest =") +
         block(source, "fileInput.onchange =", "// Click anywhere on overlay triggers upload") +
         block(source, "autoGenBtn.onclick =", "// Helper: Progress Polling") +
-        "this.makeField = createField; this.sync = updateUIFromState; this.prompt = showCharacterDescriptionPrompt;", context,
+        "this.makeField = createField; this.sync = updateUIFromState; this.prompt = showCharacterDescriptionPrompt; this.invalidate = beginCaptionRequest;", context,
     );
     return { context, state, widget, modals, requests, events, container, node, fileInput, uploadBtn };
 }
@@ -109,7 +109,7 @@ test("presets preserve custom text and the Skin plus button opens existing skin 
     const { context, state, modals, requests } = setup();
     const hair = context.makeField("Hair", "hair");
     await hair.children[2].onclick();
-    modals.at(-1).buttons.find(button => button.text === "APPLY").action();
+    modals.at(-1).buttons.find(button => button.text === "APPLY").action(modals.at(-1).overlay);
     assert.equal(state.character_info.hair, "Black Hair, My Custom Hair");
     const skin = context.makeField("Skin", "skin_color");
     await skin.children[2].onclick();
@@ -117,11 +117,43 @@ test("presets preserve custom text and the Skin plus button opens existing skin 
     const chip = modal.content.children.find(chip => chip.innerText === "Golden Tan");
     assert.ok(chip);
     chip.onclick();
-    modal.buttons.find(button => button.text === "APPLY").action();
+    modal.buttons.find(button => button.text === "APPLY").action(modal.overlay);
     assert.equal(state.character_info.skin_color, "golden tan skin");
     assert.equal(skin.children[1].children[0].children[0].textContent, "golden tan skin");
     assert.equal(requests.filter(request => request.path.includes("catalog=creator_v2")).length, 1);
 });
+
+for (const obsolete of ['switch', 'configure', 'removal', 'close']) {
+    test(`Cloner preset Apply preserves authored fields after ${obsolete}`, async () => {
+        const { context, state, widget, modals, node } = setup();
+        const row = context.makeField('Hair', 'hair');
+        await row.children[2].onclick();
+        const modal = modals.at(-1);
+        if (obsolete === 'switch') state.character = 'Bob';
+        if (obsolete === 'configure') context.invalidate();
+        if (obsolete === 'removal') node.onRemoved();
+        if (obsolete === 'close') modal.overlay.isConnected = false;
+        state.character_info.hair = 'new authored hair';
+        context.sync();
+        const original = JSON.stringify(state);
+        modal.buttons.find(button => button.text === 'APPLY').action(modal.overlay);
+        assert.equal(JSON.stringify(state), original);
+        assert.equal(widget.value, '');
+    });
+}
+
+for (const obsolete of ['switch', 'configure', 'removal']) {
+    test(`Cloner discards a preset catalog response after ${obsolete}`, async () => {
+        const { context, state, modals, node } = setup();
+        const row = context.makeField('Hair', 'hair');
+        const opening = row.children[2].onclick();
+        if (obsolete === 'switch') state.character = 'Bob';
+        if (obsolete === 'configure') context.invalidate();
+        if (obsolete === 'removal') node.onRemoved();
+        await opening;
+        assert.equal(modals.length, 0);
+    });
+}
 
 test("a single upload replaces the reference and offers the wizard for that image", async () => {
     const { context, fileInput, uploadBtn, state, widget, modals, requests, container } = setup();

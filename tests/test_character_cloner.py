@@ -233,14 +233,39 @@ def test_cloner_rejects_multiple_references_before_processing_or_saving(monkeypa
         cloner.CharacterCloner().process(json.dumps({"character": "Alice", "source_images": ["one.png", "two.png"]}))
 
 
-def _run_wizard(monkeypatch, tmp_path, content):
+def test_cloner_rejects_reference_owned_by_another_character_before_processing_or_saving(monkeypatch):
+    cloner = _load_cloner(monkeypatch)
+    monkeypatch.setattr(cloner, "_source_image_path", lambda image: pytest.fail("A reference for another character must not be read"))
+    monkeypatch.setattr(cloner, "load_config", lambda name: pytest.fail("A reference for another character must not change character data"))
+    with pytest.raises(ValueError, match="reference image for 'Bob'.*'Alice'"):
+        cloner.CharacterCloner().process(json.dumps({"character": "Alice", "character_info": {"name": "Alice"},
+            "source_images": ["bob.png"], "source_images_character": "Bob"}))
+
+
+def test_legacy_reference_composites_on_the_reported_default_background(monkeypatch, tmp_path):
+    from PIL import Image
+    import utils
+
+    cloner = _load_cloner(monkeypatch)
+    monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path / "characters"))
+    monkeypatch.setattr(cloner.folder_paths, "get_input_directory", lambda: str(tmp_path), raising=False)
+    monkeypatch.setattr(cloner, "pil2tensor", lambda image: np.asarray(image))
+    Image.new("RGBA", (2, 2), (255, 0, 0, 0)).save(tmp_path / "transparent.png")
+    image, _, background = cloner.CharacterCloner().process(json.dumps({
+        "character": "Alice", "character_info": {"name": "Alice"}, "source_images": ["transparent.png"],
+    }))
+    assert background == "Green"
+    assert np.all(image == (0, 255, 0))
+
+
+def _run_wizard(monkeypatch, tmp_path, content, image=None):
     """Exercise the real wizard request without tensor or model dependencies."""
     from PIL import Image
 
     cloner = _load_cloner(monkeypatch)
     monkeypatch.setattr(cloner.folder_paths, "get_input_directory", lambda: str(tmp_path), raising=False)
     monkeypatch.setattr(cloner.web, "json_response", lambda data, status=200: types.SimpleNamespace(data=data, status=status), raising=False)
-    Image.new("RGB", (32, 64), "red").save(tmp_path / "reference.png")
+    (image if image is not None else Image.new("RGB", (32, 64), "red")).save(tmp_path / "reference.png")
 
     calls = []
     def complete(**kwargs):
@@ -269,6 +294,32 @@ def test_wizard_requests_visible_character_traits_only(monkeypatch, tmp_path):
     assert "monster arm" in prompt
     assert "Do not include clothing, footwear, wearable accessories, held objects, pose, actions" in prompt
     assert "Do not fill a field just to avoid an empty value" in prompt
+
+
+def test_wizard_cannot_replace_character_ownership_or_authored_generation_settings(monkeypatch, tmp_path):
+    traits = {"hair": "silver hair", "skin_color": "red skin", "age": 24, "nsfw": False}
+    response, _ = _run_wizard(monkeypatch, tmp_path, json.dumps({
+        **traits, "name": "Bob", "seed": 99, "background_color": "Blue",
+        "negative_prompt": "unrequested replacement", "lora_prompt": "unrequested adapter",
+    }))
+    assert response.status == 200
+    assert response.data == traits, "Caption analysis must update visible traits without changing the selected character or generation controls"
+
+
+@pytest.mark.parametrize("mode,size,color", [("LA", (32, 64), (0, 0)), ("RGB", (1, 1024), "red")])
+def test_caption_reference_handles_alpha_and_extreme_aspect_ratio(monkeypatch, tmp_path, mode, size, color):
+    import base64
+    import io
+    from PIL import Image
+
+    response, calls = _run_wizard(monkeypatch, tmp_path, '{"hair":"red hair"}', Image.new(mode, size, color))
+    assert response.status == 200
+    encoded = calls[0]["messages"][1]["content"][1]["image_url"]["url"].split(",", 1)[1]
+    with Image.open(io.BytesIO(base64.b64decode(encoded))) as image:
+        assert image.mode == "RGB"
+        assert image.size == ((32, 64) if mode == "LA" else (1, 512))
+        if mode == "LA":
+            assert image.getpixel((0, 0)) == (255, 255, 255)
 
 
 @pytest.mark.parametrize("content", ["", "wearing white shirt, standing, one arm raised", "[]"])

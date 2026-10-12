@@ -1084,7 +1084,12 @@ class TestControlCenterFrontendFamilies:
         assert 'sync("model", "MODEL"' in sync_source
         assert 'sync("clip", "CLIP"' in sync_source
         assert 'sync("vae", "VAE"' in sync_source
-        assert source.count("this._syncCustomModelInput();") >= 7
+        fetch_source = source.split("async fetchConfig(repoId", 1)[1].split("// ── Rendering", 1)[0]
+        cached_branch, completion = fetch_source.split("// Debounce: reuse in-flight fetch", 1)
+        assert "this._syncCustomModelInput();" in cached_branch
+        assert completion.index("data = await fetchPromise;") < completion.index("this._syncCustomModelInput();")
+        assert 'const previousPromise = serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId]' in completion
+        assert 'let fetchPromise = !force && previousPromise' in completion
 
 class TestClothesPreviewFrontendContract:
     def test_custom_preview_never_submits_graph_execution(self):

@@ -130,7 +130,10 @@ class CharacterCloner:
         source_images = data.get("source_images", []) # List of filenames in input dir
         if not isinstance(source_images, list) or len(source_images) > MAX_SOURCE_IMAGES:
             raise ValueError("Character Cloner accepts only one reference image. Remove extra images or upload a replacement.")
-        background_color = info.get("background_color", "White")
+        source_owner = str(data.get("source_images_character", "") or "").strip()
+        if source_images and source_owner and source_owner != str(character_name):
+            raise ValueError(f"Character Cloner received a reference image for '{source_owner}' while '{character_name}' is selected. Reload the selected character or upload its reference image.")
+        background_color = info.get("background_color", "Green")
         log_event("reference_inputs", character=character_name, images=len(source_images), background=background_color)
 
         # 4. Process Images
@@ -196,9 +199,6 @@ class CharacterCloner:
                 })
                 if not save_config(character_name, config):
                     raise OSError(f"Character Cloner could not save the configuration for '{character_name}'.")
-
-        # Get background color
-        background_color = info.get("background_color", "Green")
 
         return (final_image, sheets_path, background_color)
 
@@ -337,22 +337,8 @@ Return all keys in a raw JSON object. Do not output the word 'tag' as a value.""
                 from PIL import Image
 
                 with Image.open(image_path) as img:
-                    # Convert to RGB to avoid alpha issues with JPEG
-                    if img.mode in ('RGBA', 'P'):
-                        img = img.convert('RGB')
-                    
-                    # Resize if needed
-                    max_size = 512
-                    width, height = img.size
-                    if width > max_size or height > max_size:
-                        if width > height:
-                            new_width = max_size
-                            new_height = int(height * (max_size / width))
-                        else:
-                            new_height = max_size
-                            new_width = int(width * (max_size / height))
-                        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                        log_event("diagnostic", component="Cloner", level="debug", message=f'Resized input image to {new_width}x{new_height}')
+                    img = _composite_pil_alpha(ImageOps.exif_transpose(img))
+                    img.thumbnail((512, 512), Image.Resampling.LANCZOS)
 
                     # Save to buffer
                     buffered = io.BytesIO()
@@ -387,6 +373,8 @@ Return all keys in a raw JSON object. Do not output the word 'tag' as a value.""
 
                 # Only structured character traits may reach the character fields.
                 if isinstance(data, dict):
+                    trait_keys = {"sex", "age", "race", "skin_color", "hair", "eyes", "face", "body", "additional_details", "aesthetics", "nsfw"}
+                    data = {key: value for key, value in data.items() if key in trait_keys}
                     # Ensure keys exist? Frontend handles missing keys.
                     log_event("traits_ready", component="Cloner", fields=len(data))
                     return web.json_response(data)

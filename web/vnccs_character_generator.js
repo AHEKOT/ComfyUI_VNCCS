@@ -1048,13 +1048,19 @@ function readData(node) {
     const widget = node.widgets?.find(w => w.name === "widget_data");
     try {
         const parsed = JSON.parse(widget?.value || "{}");
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Generator settings must be an object.");
+        for (const [section, defaults] of Object.entries(DEFAULT_DATA)) {
+            if (typeof defaults !== "object" || Array.isArray(defaults) || !(section in parsed)) continue;
+            const value = parsed[section];
+            if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${section} settings must be an object.`);
+        }
         const data = deepMerge(DEFAULT_DATA, parsed);
         if (
             parsed?.emotion_generation
             && parsed.emotion_generation.use_sam === undefined
             && parsed.emotion_generation.use_sam_model !== undefined
         ) {
-            data.emotion_generation.use_sam = Boolean(parsed.emotion_generation.use_sam_model);
+            data.emotion_generation.use_sam = booleanValue(parsed.emotion_generation.use_sam_model, false);
         }
         if (String(data.upscaler?.model || "").startsWith("seedvr2_ema_") || String(data.upscaler?.model || "").endsWith(".gguf")) {
             data.upscaler.model = "seedvr2_3b_fp8_e4m3fn.safetensors";
@@ -1066,13 +1072,16 @@ function readData(node) {
             data[section].target_size = finiteResolutionScaleValue(resolutionScaleMegapixels(data[section].target_size));
         }
         normalizeUpscalerSettings(data);
+        delete node._vnccsGeneratorStateError;
         return data;
-    } catch {
+    } catch (error) {
+        node._vnccsGeneratorStateError = `Unable to restore generator settings: ${error.message}. The saved data is preserved. Reload a valid workflow before editing or running.`;
         return JSON.parse(JSON.stringify(DEFAULT_DATA));
     }
 }
 
 function writeData(node, data, { notify = true, trackChange = false } = {}) {
+    if (node._vnccsGeneratorStateError) return;
     const widget = node.widgets?.find(w => w.name === "widget_data");
     if (!widget) return;
     normalizeUpscalerSettings(data);
@@ -1194,14 +1203,19 @@ class CharacterGeneratorWidget {
         const dataWidget = this.node.widgets?.find(w => w.name === "widget_data");
         if (dataWidget) {
             dataWidget.hidden = true;
+            dataWidget.options ||= {};
+            dataWidget.options.dynamicPrompts = false;
             dataWidget.computeSize = () => [0, -4];
         }
 
         this.syncCharacterSourceData();
         this.syncStagesFromData();
         this.syncModelResolution();
-        writeData(this.node, this.data);
         this.node._vnccsCharacterGeneratorSyncBeforeQueue = () => {
+            if (this.node._vnccsGeneratorStateError) {
+                this.showModal("Settings restore failed", this.node._vnccsGeneratorStateError);
+                return false;
+            }
             this.syncCharacterSourceData();
             this.syncStagesFromData();
             this.syncModelResolution();
@@ -1216,7 +1230,6 @@ class CharacterGeneratorWidget {
         this.previewResizeObserver = new ResizeObserver(() => this.renderPreview());
         this.previewResizeObserver.observe(this.previewEl);
         registerCleanup(this.node, () => this.previewResizeObserver?.disconnect());
-        registerCleanup(this.node, () => clearInterval(this.regenerateTimer));
         registerCleanup(this.node, () => clearInterval(this.seedvrPollTimer));
         registerCleanup(this.node, () => {
             this.closeViewer();
@@ -1245,6 +1258,7 @@ class CharacterGeneratorWidget {
 
     bindEvents() {
         this.onStage = (event) => {
+            if (this._disposed) return;
             const detail = event.detail || {};
             if (String(detail.node_id) !== String(this.node.id)) return;
             const scope = this.progressScope();
@@ -1317,7 +1331,12 @@ class CharacterGeneratorWidget {
                 this.refreshProgress().catch(error => console.warn("[VNCCS] Progress refresh failed", error));
             }
         }, 10000);
-        registerCleanup(this.node, () => { this._disposed = true; clearInterval(timer); });
+        registerCleanup(this.node, () => {
+            this._disposed = true;
+            clearInterval(timer);
+            this.finishRegenerate({ render: false });
+            this._configuredRegenerateRequestId = null;
+        });
 
         if (this.isClone) {
             this.onClonerUpdated = () => {
@@ -1776,7 +1795,7 @@ class CharacterGeneratorWidget {
                 }
                 const text = String(input.value).trim().replace(",", ".");
                 const value = Number(text);
-                if (!text || !Number.isFinite(value)) return;
+                if (!text || !Number.isFinite(value) || (field.step >= 1 && !Number.isInteger(value))) return;
                 draft[field.section][field.key] = Math.max(field.min, Math.min(field.max, value));
             };
             if (field.type === "number") {
@@ -1790,7 +1809,8 @@ class CharacterGeneratorWidget {
 
     openGeneratorSettings() {
         this.closeModal();
-        const draft = JSON.parse(JSON.stringify(this.data));
+        const data = this.data;
+        const draft = JSON.parse(JSON.stringify(data));
         const backdrop = document.createElement("div");
         backdrop.className = "vnccs-pipe-modal-backdrop";
         const modal = document.createElement("div");
@@ -1860,7 +1880,13 @@ class CharacterGeneratorWidget {
         apply.className = "vnccs-pipe-modal-btn";
         apply.textContent = "Apply";
         apply.onclick = () => {
-            this.data = deepMerge(DEFAULT_DATA, draft);
+            if (this._disposed || this.modalEl !== backdrop || this.data !== data || this.node._vnccsGeneratorStateError) return;
+            for (const group of groups) {
+                for (const field of group.fields) {
+                    this.data[field.section] ||= {};
+                    this.data[field.section][field.key] = draft[field.section][field.key];
+                }
+            }
             this.syncModelResolution();
             writeData(this.node, this.data, { trackChange: true });
             this.saveBrowserState();
@@ -1968,6 +1994,11 @@ class CharacterGeneratorWidget {
     }
 
     async regenerateFrom(stageKey, imageIndex = null) {
+        if (this._disposed) return;
+        if (this.node._vnccsGeneratorStateError) {
+            this.showModal("Settings restore failed", this.node._vnccsGeneratorStateError);
+            return;
+        }
         if (!this.stages.some(([key]) => key === stageKey)) return;
         this.syncCharacterSourceData();
         this.syncModelResolution();
@@ -1982,6 +2013,8 @@ class CharacterGeneratorWidget {
         if (!this.data.ui) this.data.ui = {};
         this.data.ui.progress_scope = this.progressScope();
         const requestId = cacheIdentity();
+        const requestData = this.data;
+        this._configuredRegenerateRequestId = requestId;
         this.data.ui.progress_request_id = requestId;
         this.data.ui.selected_preview = stageKey;
         this.data.ui.user_selected_preview = false;
@@ -2006,9 +2039,9 @@ class CharacterGeneratorWidget {
             if (!response.ok) {
                 throw new Error(await this.responseErrorMessage(response));
             }
-            if (this._regenerateRequestPending === requestId) this.finishRegenerate();
+            if (!this._disposed && this.data === requestData && this._regenerateRequestPending === requestId) this.finishRegenerate();
         } catch (error) {
-            if (this._regenerateRequestPending !== requestId) return;
+            if (this._disposed || this.data !== requestData || this._regenerateRequestPending !== requestId) return;
             const hadStageEvent = Boolean(this.regenerateState?.sawStageEvent);
             this.finishRegenerate();
             if (!hadStageEvent) {
@@ -2018,11 +2051,13 @@ class CharacterGeneratorWidget {
             }
             throw error;
         } finally {
-            if (this._regenerateRequestPending === requestId) this._regenerateRequestPending = false;
-            if (this.data.ui.progress_request_id === requestId && this.data.regenerate_from === stageKey) {
-                delete this.data.regenerate_from;
-                delete this.data.regenerate_index;
-                writeData(this.node, this.data);
+            if (!this._disposed && this.data === requestData) {
+                if (this._regenerateRequestPending === requestId) this._regenerateRequestPending = false;
+                if (this.data.ui.progress_request_id === requestId && this.data.regenerate_from === stageKey) {
+                    delete this.data.regenerate_from;
+                    delete this.data.regenerate_index;
+                    writeData(this.node, this.data);
+                }
             }
         }
     }
@@ -2158,10 +2193,27 @@ class CharacterGeneratorWidget {
             const title = typeof node?.getTitle === "function" ? node.getTitle() : node?.title;
             return node?.type === type || node?.comfyClass === type || node?.constructor?.type === type || title === displayName;
         };
-        const sourceType = this.isClone ? "CharacterCloner" : "CharacterCreatorV2";
-        const displayName = this.isClone ? "VNCCS Character Cloner" : "VNCCS Character Creator V2";
-        let source = app.graph?._nodes?.find(n => matchesType(n, sourceType, displayName));
-        if (!source && this.isClone) source = app.graph?._nodes?.find(n => matchesType(n, "CharacterCreatorV2", "VNCCS Character Creator V2"));
+        const sourceType = this.isClone ? "CharacterCloner" : (this.isClothes ? "ClothesDesigner" : "CharacterCreatorV2");
+        const displayName = this.isClone ? "VNCCS Character Cloner" : (this.isClothes ? "VNCCS Clothes Designer" : "VNCCS Character Creator V2");
+        const graph = this.node.graph || app.graph;
+        const pending = [this.node];
+        const visited = new Set();
+        let source = null;
+        while (pending.length) {
+            const candidate = pending.shift();
+            if (!candidate || visited.has(candidate)) continue;
+            visited.add(candidate);
+            if (matchesType(candidate, sourceType, displayName)
+                || (this.isClone && matchesType(candidate, "CharacterCreatorV2", "VNCCS Character Creator V2"))) {
+                source = candidate;
+                break;
+            }
+            for (const input of candidate.inputs || []) {
+                const link = input.link == null ? null : graph?.links?.[input.link];
+                const upstream = graph?.getNodeById?.(link?.origin_id);
+                if (upstream) pending.push(upstream);
+            }
+        }
         const widget = source?.widgets?.find(w => w.name === "widget_data");
         const liveState = this.isClone ? source?._vnccsGetClonerState?.() : null;
         if (!widget?.value && !liveState) return;
@@ -2170,6 +2222,10 @@ class CharacterGeneratorWidget {
             const payload = liveState || JSON.parse(widget.value);
             if (payload?.character && this.data.character_name !== payload.character) {
                 this.data.character_name = payload.character;
+                changed = true;
+            }
+            if (this.isClothes && payload?.costume !== undefined && this.data.costume !== payload.costume) {
+                this.data.costume = payload.costume;
                 changed = true;
             }
             if (this.isClone && payload?.character_info && Object.prototype.hasOwnProperty.call(payload.character_info, "nsfw")) {
@@ -2196,8 +2252,8 @@ class CharacterGeneratorWidget {
         try { costumes = JSON.parse(costumesRaw); } catch { costumes = []; }
         try { emotions = JSON.parse(emotionsRaw); } catch { emotions = []; }
         const pairs = [];
-        for (const costume of costumes || []) {
-            for (const emotion of emotions || []) {
+        for (const costume of Array.isArray(costumes) ? costumes : []) {
+            for (const emotion of Array.isArray(emotions) ? emotions : []) {
                 pairs.push({ costume, emotion });
             }
         }
@@ -2296,6 +2352,8 @@ class CharacterGeneratorWidget {
     }
 
     acceptsProgressRequest(requestId) {
+        // Reconfiguration owns a new draft, even if it restored the old request ID.
+        if (requestId && this._configuredRegenerateRequestId !== undefined && requestId !== this._configuredRegenerateRequestId) return false;
         // Only an outstanding Regenerate needs a temporary request filter.
         // A completed request must not hide normal jobs already in the queue.
         const pending = this.regenerateState?.requestId || this._regenerateRequestPending;
@@ -2339,12 +2397,13 @@ class CharacterGeneratorWidget {
         const scope = this.progressScope();
         if (!scope || this._progressPending || this._disposed) return;
         this._progressPending = true;
+        const requestData = this.data;
         const requestId = this.data.ui?.progress_request_id;
         const epoch = this._progressEpoch;
         const revision = this._progressRevision;
         try {
             const { snapshot } = await checkedJSON(`/vnccs/character_generator/progress?scope=${encodeURIComponent(scope)}`);
-            if (this._disposed || scope !== this.progressScope() || requestId !== this.data.ui?.progress_request_id) return;
+            if (this._disposed || this.data !== requestData || scope !== this.progressScope() || requestId !== this.data.ui?.progress_request_id) return;
             if (this._progressEpoch !== epoch && snapshot?.epoch !== this._progressEpoch) return;
             if (!snapshot) {
                 if (this._regenerateRequestPending || revision !== this._progressRevision) return;
@@ -2548,6 +2607,7 @@ class CharacterGeneratorWidget {
     }
 
     async loadNodeDefs() {
+        if (this._disposed) return;
         const names = [
             "VNCCS_QWEN_Encoder",
             "TextEncodeQwenImage21",
@@ -2571,12 +2631,14 @@ class CharacterGeneratorWidget {
                 const r = await api.fetchApi(`/object_info/${encodeURIComponent(name)}`);
                 if (r.ok) {
                     const data = await r.json();
+                    if (this._disposed) return;
                     this.nodeDefs[name] = data?.[name];
                 }
             } catch {
                 // Keep static defaults when an optional internal node is unavailable.
             }
         }));
+        if (this._disposed) return;
         if (names.some(name => !this.nodeDefs[name])) {
             try {
                 const r = await api.fetchApi("/object_info");
@@ -2585,6 +2647,7 @@ class CharacterGeneratorWidget {
                 allNodeDefs = null;
             }
         }
+        if (this._disposed) return;
         for (const name of names) {
             if (!this.nodeDefs[name] && allNodeDefs?.[name]) {
                 this.nodeDefs[name] = allNodeDefs[name];
@@ -2600,14 +2663,16 @@ class CharacterGeneratorWidget {
             this.validateNativeSeedvr(true);
         }
         await this.loadSeedvrAttentionInfo();
-        this.renderSettings();
+        if (!this._disposed) this.renderSettings();
     }
 
     async loadSeedvrAttentionInfo() {
+        if (this._disposed) return;
         try {
             const r = await api.fetchApi("/vnccs/character_generator/seedvr_attention");
             if (!r.ok) return;
             const data = await r.json();
+            if (this._disposed) return;
             const available = Array.isArray(data?.available) && data.available.length ? data.available : SEEDVR_ATTENTION_MODES;
             this.seedvrAttention = {
                 current: data?.current || "sdpa",
@@ -2620,6 +2685,7 @@ class CharacterGeneratorWidget {
                 writeData(this.node, this.data);
             }
         } catch {
+            if (this._disposed) return;
             this.seedvrAttention = { current: null, available: SEEDVR_ATTENTION_MODES };
         }
     }
@@ -2708,7 +2774,7 @@ class CharacterGeneratorWidget {
             input = document.createElement("input");
             input.type = "checkbox";
             this.protectNativeControl(input);
-            input.checked = Boolean(this.data[section][key]);
+            input.checked = booleanValue(this.data[section][key], false);
             input.onchange = () => this.set(section, key, input.checked);
             for (const eventName of ["pointerdown", "mousedown", "mouseup", "dblclick", "touchstart", "touchend", "keydown"]) {
                 wrap.addEventListener(eventName, event => event.stopPropagation());
@@ -2743,7 +2809,7 @@ class CharacterGeneratorWidget {
             if (type === "number") {
                 if (!input.value.trim()) return;
                 raw = Number(input.value);
-                if (!Number.isFinite(raw)) return;
+                if (!Number.isFinite(raw) || (options?.step >= 1 && !Number.isInteger(raw))) return;
                 if (options?.min !== undefined) raw = Math.max(options.min, raw);
                 if (options?.max !== undefined) raw = Math.min(options.max, raw);
             }
@@ -2894,7 +2960,7 @@ class CharacterGeneratorWidget {
         const commit = () => {
             const normalized = String(input.value).trim().replace(",", ".");
             const raw = Number(normalized);
-            if (!normalized || !Number.isFinite(raw)) {
+            if (!normalized || !Number.isFinite(raw) || (step >= 1 && !Number.isInteger(raw))) {
                 input.value = String(this.data.emotion_generation?.[key] ?? DEFAULT_DATA.emotion_generation[key]);
                 this.fieldDrafts.delete(draftKey);
                 return;
@@ -2961,10 +3027,22 @@ class CharacterGeneratorWidget {
         if (!this.isEmotions) return null;
         const pipeInput = (this.node.inputs || []).find(input => input.name === "pipe");
         if (!pipeInput || pipeInput.link == null) return null;
-        const link = app.graph?.links?.[pipeInput.link];
-        const sourceNode = app.graph?.getNodeById?.(link?.origin_id);
-        if (!sourceNode || (sourceNode.type !== "EmotionGeneratorV2" && sourceNode.comfyClass !== "EmotionGeneratorV2")) return null;
-        return sourceNode;
+        const graph = this.node.graph || app.graph;
+        const link = graph?.links?.[pipeInput.link];
+        const pending = [graph?.getNodeById?.(link?.origin_id)];
+        const visited = new Set();
+        while (pending.length) {
+            const source = pending.shift();
+            if (!source || visited.has(source)) continue;
+            visited.add(source);
+            if (source.type === "EmotionGeneratorV2" || source.comfyClass === "EmotionGeneratorV2") return source;
+            for (const input of source.inputs || []) {
+                const upstreamLink = input.link == null ? null : graph?.links?.[input.link];
+                const upstream = graph?.getNodeById?.(upstreamLink?.origin_id);
+                if (upstream) pending.push(upstream);
+            }
+        }
+        return null;
     }
 
     connectedEmotionStudioIsAnima() {
@@ -2976,9 +3054,11 @@ class CharacterGeneratorWidget {
     }
 
     async loadSeedvrAssets(force = false) {
+        if (this._disposed) return;
         try {
             const response = await api.fetchApi(`/vnccs/character_generator/seedvr_models${force ? "?refresh=1" : ""}`);
             const config = await response.json();
+            if (this._disposed) return;
             if (!response.ok || config.error) throw new Error(config.error || "Unable to load SeedVR2 models");
             this.seedvrAssets = {
                 models: config.models || [],
@@ -2995,28 +3075,42 @@ class CharacterGeneratorWidget {
     }
 
     async downloadSeedvrAsset(category, entry) {
+        if (this._disposed) return;
         const key = `${category}:${entry.name}`;
         this.seedvrDownloads[key] = { status: "queued", message: "Queued" };
         this.renderSettings();
-        const response = await api.fetchApi("/vnccs/character_generator/seedvr_download", {
-            method: "POST", headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
-            body: JSON.stringify({ category, name: entry.name }),
-        });
-        const payload = await response.json();
-        if (!response.ok || payload.error) {
-            this.seedvrDownloads[key] = { status: "error", message: payload.error || "Download failed" };
+        try {
+            const response = await api.fetchApi("/vnccs/character_generator/seedvr_download", {
+                method: "POST", headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
+                body: JSON.stringify({ category, name: entry.name }),
+            });
+            const payload = await response.json();
+            if (this._disposed) return;
+            if (!response.ok || payload.error) throw new Error(payload.error || "Download failed");
+        } catch (error) {
+            if (this._disposed) return;
+            this.seedvrDownloads[key] = { status: "error", message: error.message || "Download failed" };
             this.renderSettings();
             return;
         }
         if (!this.seedvrPollTimer) this.seedvrPollTimer = setInterval(async () => {
-            const statusResponse = await api.fetchApi("/vnccs/character_generator/seedvr_download_status");
-            this.seedvrDownloads = await statusResponse.json();
-            const active = Object.values(this.seedvrDownloads).some(item => ["queued", "downloading"].includes(item?.status));
-            if (!active) {
-                clearInterval(this.seedvrPollTimer);
-                this.seedvrPollTimer = null;
-                await this.loadSeedvrAssets(true);
-            } else this.renderSettings();
+            if (this._disposed || this._seedvrPollPending) return;
+            this._seedvrPollPending = true;
+            try {
+                const statusResponse = await api.fetchApi("/vnccs/character_generator/seedvr_download_status");
+                if (!statusResponse.ok) throw new Error(`HTTP ${statusResponse.status}`);
+                const statuses = await statusResponse.json();
+                if (this._disposed) return;
+                this.seedvrDownloads = statuses;
+                const active = Object.values(this.seedvrDownloads).some(item => ["queued", "downloading"].includes(item?.status));
+                if (!active) {
+                    clearInterval(this.seedvrPollTimer);
+                    this.seedvrPollTimer = null;
+                    await this.loadSeedvrAssets(true);
+                } else this.renderSettings();
+            } catch (error) {
+                console.warn("[VNCCS] SeedVR2 download status unavailable", error);
+            } finally { this._seedvrPollPending = false; }
         }, 2000);
     }
 
@@ -3857,9 +3951,20 @@ app.registerExtension({
         nodeType.prototype.onConfigure = function () {
             onConfigure?.apply(this, arguments);
             if (this._vnccsCharacterGeneratorWidget) {
+                const widget = this._vnccsCharacterGeneratorWidget;
+                if (widget._configuredRegenerateRequestId !== undefined) widget._configuredRegenerateRequestId = null;
+                widget.finishRegenerate({ render: false });
                 // Loading a saved workflow must preserve its explicit values.
                 this._vnccsCharacterGeneratorWidget.qi2EmotionDefaultsPending = false;
                 this._vnccsCharacterGeneratorWidget.data = readData(this);
+                widget.closeViewer();
+                widget.viewer = null;
+                widget.viewerFocus = null;
+                widget.restoredViewer = null;
+                widget.stageState = {};
+                widget.selectedPreview = widget.data.ui?.selected_preview || widget.defaultPreviewStage();
+                widget.userSelectedPreview = Boolean(widget.data.ui?.user_selected_preview);
+                if (this._vnccsGeneratorStateError) this._vnccsCharacterGeneratorWidget.showModal("Settings restore failed", this._vnccsGeneratorStateError);
                 this._vnccsCharacterGeneratorWidget.syncCharacterSourceData();
                 this._vnccsCharacterGeneratorWidget.syncStagesFromData();
                 this._vnccsCharacterGeneratorWidget.restoreBrowserState();

@@ -29,7 +29,7 @@ const QI2_TURBO_MODEL_NAME = "qwen_image_2.1_turbo_int8_convrot.safetensors";
 const MODEL_FAMILIES = [
     { kind: "QI2", label: "Qwen Image 2.1", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 25, cfg: 3, sampler: "euler" },
     { kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 4, sampler: "euler" },
-    { kind: "MiniMaxH3", label: "MiniMax H3", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 20, sampler: "res_multistep" },
+    { kind: "MiniMaxH3", label: "MiniMax H3", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 8, sampler: "res_multistep" },
 ];
 
 // ─── CSS injection (once per page load) ──────────────────────────────────────
@@ -1244,6 +1244,8 @@ app.registerExtension({
         const onRemoved = nodeType.prototype.onRemoved;
         nodeType.prototype.onRemoved = function () {
             onRemoved?.apply(this, arguments);
+            if (this._cc_widget) this._cc_widget._removed = true;
+            clearTimeout(this._cc_widget?._initTimer);
             if (this._cc_widget?.pollingInterval)
                 clearInterval(this._cc_widget.pollingInterval);
             if (this._cc_widget?._onGlobalPointerUp)
@@ -1265,6 +1267,8 @@ class VNCCSControlCenterWidget {
     constructor(node) {
         this.node = node;
         this._beginModuleStatusRequest = createRequestGuard(node);
+        this._beginConfigRequest = createRequestGuard(node);
+        this._beginDownloadStatusRequest = createRequestGuard(node);
         this.config   = null;
         this.state    = {};
         this.dlStatus = {};
@@ -1289,7 +1293,8 @@ class VNCCSControlCenterWidget {
         this._fetchSamplerLists();
         this._fetchModuleStatus(); // once on init
 
-        setTimeout(() => {
+        this._initTimer = setTimeout(() => {
+            if (this._removed) return;
             const rw = this.node.widgets?.find(w => w.name === "repo_id");
             if (rw) {
                 const orig = rw.callback;
@@ -1457,11 +1462,16 @@ class VNCCSControlCenterWidget {
     _getSelectedModelName(type = this._getSelectedType()) {
         const selectedByType = this.state.selected_models ?? {};
         const familyKey = `${this._activeKind()}:${type}`;
+        const isCustom = this._getSelectedType() === "custom";
+        const savedName = selectedByType[familyKey] || (isCustom ? selectedByType[type] : "") || this.state.selected_model;
+        const variants = this._visibleModelsByType(type);
+        const findVariant = name => variants.find(entry => entry.name.trim().toLowerCase() === name?.trim().toLowerCase());
+        const selected = findVariant(savedName) || (!selectedByType[familyKey] && !isCustom && this._activeKind() === "QI2"
+            ? findVariant(selectedByType[type]) : null);
+        if (selected) return selected.name;
         if (selectedByType[familyKey]) return selectedByType[familyKey];
         if (this._activeKind() === "QI2") {
-            const legacy = this.state.selected_model;
-            if (legacy && this._visibleModelsByType(type).some(entry => entry.name === legacy)) return legacy;
-            return type === "unet" ? (this._visibleModelsByType(type)[0]?.name || DEFAULT_QI2_MODEL) : "";
+            return type === "unet" ? (variants[0]?.name || DEFAULT_QI2_MODEL) : "";
         }
         return "";
     }
@@ -1554,16 +1564,15 @@ class VNCCSControlCenterWidget {
     _currentModelParams() {
         if (!this.state.model_params_by_kind) this.state.model_params_by_kind = {};
         const kind = this._activeKind();
-        if (!this.state.model_params_by_kind[kind]) {
-            const family = this._familyDefinition(kind);
-            const turboModel = this._isQi2TurboModel(this._getSelectedModelEntry());
-            this.state.model_params_by_kind[kind] = {
-                steps: turboModel ? 8 : family.steps ?? DEFAULT_MODEL_STEPS,
-                cfg: turboModel ? 1.0 : family.cfg ?? DEFAULT_MODEL_CFG,
-                sampler: family.sampler ?? "euler",
-                scheduler: DEFAULT_MODEL_SCHEDULER,
-            };
-        }
+        const family = this._familyDefinition(kind);
+        const turboModel = this._isQi2TurboModel(this._getSelectedModelEntry());
+        this.state.model_params_by_kind[kind] = {
+            steps: turboModel ? 8 : family.steps ?? DEFAULT_MODEL_STEPS,
+            cfg: turboModel ? 1.0 : family.cfg ?? DEFAULT_MODEL_CFG,
+            sampler: family.sampler ?? "euler",
+            scheduler: DEFAULT_MODEL_SCHEDULER,
+            ...(this.state.model_params_by_kind[kind] || {}),
+        };
         return this.state.model_params_by_kind[kind];
     }
 
@@ -1580,6 +1589,7 @@ class VNCCSControlCenterWidget {
         this.state.selected_types_by_kind[kind] = type;
         this.state.selected_type = type;
         this.state.selected_model = this._getSelectedModelName(type);
+        if (this.state.selected_model) this._setSelectedModelName(type, this.state.selected_model);
         this.state.model_params = { ...this._currentModelParams() };
     }
 
@@ -1634,6 +1644,7 @@ class VNCCSControlCenterWidget {
     }
 
     _saveState() {
+        if (this._stateRestoreError || this._removed) return;
         this._syncActiveFamilyState();
         const w = this._getStateWidget();
         if (w) w.value = JSON.stringify(this.state);
@@ -1660,8 +1671,60 @@ class VNCCSControlCenterWidget {
 
     restoreState() {
         const w = this._getStateWidget();
-        if (w?.value && w.value !== "{}") {
-            try { this.state = JSON.parse(w.value); } catch { this.state = {}; }
+        this._stateRestoreError = null;
+        if (w) {
+            try {
+                const state = JSON.parse(w.value === "" ? "{}" : w.value);
+                const isObject = value => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+                if (!isObject(state)) throw new Error("State must be an object");
+                for (const key of ["selected_models", "selected_types_by_kind", "model_params", "model_params_by_kind", "type_settings", "qi2_cache", "collapsed"]) {
+                    if (state[key] !== undefined && !isObject(state[key])) throw new Error(`${key} must be an object`);
+                }
+                for (const key of ["model_params_by_kind", "type_settings"]) {
+                    if (Object.values(state[key] || {}).some(value => !isObject(value))) throw new Error(`${key} entries must be objects`);
+                }
+                for (const key of ["selected_models", "selected_types_by_kind"]) {
+                    if (Object.values(state[key] || {}).some(value => typeof value !== "string")) throw new Error(`${key} entries must be strings`);
+                }
+                for (const key of ["active_kind", "selected_type", "selected_model", "unsupported_model_kind"]) {
+                    if (state[key] !== undefined && typeof state[key] !== "string") throw new Error(`${key} must be a string`);
+                }
+                if (state.loras !== undefined && (!Array.isArray(state.loras) || state.loras.some(lora =>
+                    !isObject(lora) || (lora.name !== undefined && typeof lora.name !== "string")))) {
+                    throw new Error("LoRA states must be objects in an array");
+                }
+                const isFiniteNumber = (value, integer = false) => {
+                    if (typeof value === "string") {
+                        const decimal = integer ? /^[+-]?\d(?:_?\d)*$/
+                            : /^[+-]?(?:\d(?:_?\d)*(?:\.(?:\d(?:_?\d)*)?)?|\.\d(?:_?\d)*)(?:e[+-]?\d(?:_?\d)*)?$/i;
+                        return decimal.test(value.trim()) && Number.isFinite(Number(value.replaceAll("_", "")));
+                    }
+                    return ["number", "boolean"].includes(typeof value) && Number.isFinite(Number(value));
+                };
+                for (const params of [state.model_params || {}, ...Object.values(state.model_params_by_kind || {})]) {
+                    for (const field of ["steps", "cfg"]) {
+                        const value = params[field];
+                        if (value != null && !(field === "steps" && value === "") && !isFiniteNumber(value, field === "steps")) {
+                            throw new Error(`${field} must be a finite number`);
+                        }
+                    }
+                    for (const field of ["sampler", "scheduler"]) {
+                        if (params[field] != null && typeof params[field] !== "string") throw new Error(`${field} must be a string`);
+                    }
+                }
+                for (const field of ["device", "dtype"]) {
+                    const value = state.qi2_cache?.[field];
+                    if (value != null && typeof value !== "string") throw new Error(`qi2_cache.${field} must be a string`);
+                }
+                if (state.loras?.some(lora => lora.strength !== undefined && !isFiniteNumber(lora.strength))) {
+                    throw new Error("LoRA strength must be a finite number");
+                }
+                this.state = state;
+            } catch (error) {
+                this._stateRestoreError = error;
+                this.showMessage("Control Center state could not be restored. Original workflow data is preserved; repair node_state before editing.", true);
+                return;
+            }
         }
         if (Array.isArray(this.state.loras)) {
             this.state.loras = this.state.loras.map(lora => {
@@ -1684,8 +1747,16 @@ class VNCCSControlCenterWidget {
         }
         this.state.active_kind = this._activeKind();
         if (!this.state.selected_types_by_kind) this.state.selected_types_by_kind = {};
-        if (!this.state.selected_types_by_kind.QI2 && this.state.selected_type) {
-            this.state.selected_types_by_kind.QI2 = this.state.selected_type;
+        const kind = this._activeKind();
+        if (this.state.model_params && typeof this.state.model_params === "object") {
+            this.state.model_params_by_kind ??= {};
+            this.state.model_params_by_kind[kind] = {
+                ...this.state.model_params,
+                ...this.state.model_params_by_kind[kind],
+            };
+        }
+        if (!this.state.selected_types_by_kind[kind] && this.state.selected_type) {
+            this.state.selected_types_by_kind[kind] = this.state.selected_type;
         }
         // Control Center now exposes a single pipe output.
         this.state.output_slot_names = [];
@@ -1708,10 +1779,15 @@ class VNCCSControlCenterWidget {
     _startPolling() {
         if (this.pollingInterval) clearInterval(this.pollingInterval);
         this.pollingInterval = setInterval(async () => {
+            if (this._removed || this._downloadStatusPolling) return;
+            this._downloadStatusPolling = true;
+            const isCurrent = this._beginDownloadStatusRequest();
+            const repoId = this._getRepoId();
             try {
-                const r = await api.fetchApi("/vnccs/manager/status");
+                const r = await api.fetchApi(`/vnccs/manager/status?repo_id=${encodeURIComponent(repoId)}`);
                 if (!r.ok) return;
                 const newStatuses = await r.json();
+                if (!isCurrent() || this._getRepoId() !== repoId) return;
 
                 // Detect transitions to "success" → re-fetch config to update disk state
                 for (const key in newStatuses) {
@@ -1723,6 +1799,7 @@ class VNCCSControlCenterWidget {
                     }
                 }
 
+                this._downloadStatusRepoId = repoId;
                 this.dlStatus = newStatuses;
                 this._updateDownloadIndicators();
 
@@ -1737,6 +1814,7 @@ class VNCCSControlCenterWidget {
                     this._renderAll();
                 }
             } catch { /* ignore */ }
+            finally { this._downloadStatusPolling = false; }
         }, 2000);
     }
 
@@ -1950,6 +2028,7 @@ class VNCCSControlCenterWidget {
 
     async _ensureManagerInstallPolicy(items) {
         const policy = await this._getManagerInstallPolicy();
+        if (this._removed) return false;
         if (!policy || policy.install_allowed) return true;
         if (!policy.security_level_allows_install) {
             this.showMessage(
@@ -2079,6 +2158,10 @@ class VNCCSControlCenterWidget {
         try {
             let mode = await this._queueLegacyDependencyInstall(item, uiId);
             if (!mode) {
+                if (this._removed) {
+                    this._dependencyInstallTasks.delete(uiId);
+                    return null;
+                }
                 mode = "modern";
                 tracked.mode = mode;
                 const response = await api.fetchApi("/v2/manager/queue/task", {
@@ -2108,12 +2191,13 @@ class VNCCSControlCenterWidget {
     }
 
     async _installDependency(item, button, options = {}) {
+        if (this._removed) return false;
         const originalLabel = button.textContent;
         if (!options.skipPolicyCheck && !await this._ensureManagerInstallPolicy([item])) return false;
         button.disabled = true;
         button.textContent = "Queueing…";
         try {
-            await this._queueDependencyInstall(item, button);
+            if (!await this._queueDependencyInstall(item, button)) return false;
             return true;
         } catch (error) {
             button.disabled = false;
@@ -2543,9 +2627,15 @@ class VNCCSControlCenterWidget {
 
     _numInput(val, min, max, step, onChange) {
         const i = document.createElement("input");
+        val = Number(typeof val === "string" ? val.replaceAll("_", "") : val);
         i.type = "number"; i.value = val; i.min = min; i.max = max; i.step = step;
         i.className = "vnccs-cc-input";
-        i.onchange = () => onChange(parseFloat(i.value));
+        i.onchange = () => {
+            const value = i.valueAsNumber;
+            if (!i.checkValidity() || !Number.isFinite(value)) { i.value = val; return; }
+            val = value;
+            onChange(value);
+        };
         return i;
     }
 
@@ -2559,6 +2649,13 @@ class VNCCSControlCenterWidget {
     // ── Config fetch ──────────────────────────────────────────────────────────
 
     async fetchConfig(repoId, force = false) {
+        if (this._removed) return;
+        if (this._downloadStatusRepoId !== repoId) {
+            this.dlStatus = {};
+            this._downloadRefreshPending = false;
+            this._downloadStatusRepoId = repoId;
+        }
+        const isCurrent = this._beginConfigRequest();
         this.statusText.textContent = "Loading…";
 
         const cacheKey = `vnccs_cc_cache_${repoId}`;
@@ -2579,36 +2676,40 @@ class VNCCSControlCenterWidget {
         }
 
         // Debounce: reuse in-flight fetch for same repo
-        if (!force && serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId]) {
-            try {
-                const data = await serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId];
-                this.config = data;
-                this.statusText.textContent = data.name || "Control Center";
-                if (!this.state.output_slot_names) this.state.output_slot_names = [];
-                this._syncCustomModelInput();
-                this._renderAll();
-                this._dispatchLoraOptions();
-            } catch { /* already shown by the original caller */ }
-            return;
+        const previousPromise = serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId];
+        let fetchPromise = !force && previousPromise;
+        if (!fetchPromise) {
+            fetchPromise = (async () => {
+                try {
+                    const url = `/vnccs/control_center/check?repo_id=${encodeURIComponent(repoId)}${force ? "&force_refresh=true" : ""}`;
+                    const r = await api.fetchApi(url);
+                    const data = await r.json();
+                    if (!r.ok) throw new Error(data.error || `Catalog request failed (${r.status})`);
+                    if (data.error) throw new Error(data.error);
+                    if (serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId] === fetchPromise) {
+                        serverRegistry("VNCCS_CC_REGISTRY")[repoId] = data;
+                    }
+                    return data;
+                } finally {
+                    if (serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId] === fetchPromise) {
+                        delete serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId];
+                    }
+                }
+            })();
+            serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId] = fetchPromise;
+            if (previousPromise) previousPromise.replacement = fetchPromise;
         }
 
-        const fetchPromise = (async () => {
-            try {
-                const url = `/vnccs/control_center/check?repo_id=${encodeURIComponent(repoId)}${force ? "&force_refresh=true" : ""}`;
-                const r = await api.fetchApi(url);
-                const data = await r.json();
-                if (data.error) throw new Error(data.error);
-                serverRegistry("VNCCS_CC_REGISTRY")[repoId] = data;
-                return data;
-            } finally {
-                delete serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId];
-            }
-        })();
-
-        serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId] = fetchPromise;
-
         try {
-            const data = await fetchPromise;
+            let data;
+            while (true) {
+                try { data = await fetchPromise; }
+                catch (error) { if (!fetchPromise.replacement) throw error; }
+                if (!isCurrent()) return;
+                if (!fetchPromise.replacement) break;
+                fetchPromise = fetchPromise.replacement;
+            }
+            if (!isCurrent() || serverRegistry("VNCCS_CC_REGISTRY")[repoId] !== data) return;
             this.config = data;
             this.statusText.textContent = data.name || "Control Center";
             storage.setItem(cacheKey, JSON.stringify(data));
@@ -2620,6 +2721,7 @@ class VNCCSControlCenterWidget {
                 detail: { repo_id: repoId }
             }));
         } catch (e) {
+            if (!isCurrent()) return;
             this.statusText.textContent = "Error";
             this.scrollArea.innerHTML = "";
             const err = document.createElement("div");
@@ -2958,8 +3060,13 @@ class VNCCSControlCenterWidget {
             this.showMessage("Load control center config first.", true);
             return;
         }
+        const state = this.state;
+        const kind = this._activeKind();
+        const isCurrent = () => !this._removed && !this._stateRestoreError && this.state === state
+            && this._getRepoId() === repoId && this._activeKind() === kind;
 
         this.showConfirm(`Remove custom LoRA \"${entry.name}\" from the list?`, async () => {
+            if (!isCurrent()) return;
             try {
                 const response = await api.fetchApi("/vnccs/control_center/custom_lora/delete", {
                     method: "POST",
@@ -2973,13 +3080,14 @@ class VNCCSControlCenterWidget {
                 const result = await response.json();
                 if (!response.ok || result.error) throw new Error(result.error || "Failed to remove custom LoRA");
 
+                delete serverRegistry("VNCCS_CC_REGISTRY")[repoId];
+                if (!isCurrent()) return;
                 this.state.loras = (this.state.loras || []).filter(lora => lora.name !== entry.name);
                 this._saveState();
-                delete serverRegistry("VNCCS_CC_REGISTRY")[repoId];
                 await this.fetchConfig(repoId, true);
-                this._refreshLoraBlock();
+                if (isCurrent()) this._refreshLoraBlock();
             } catch (error) {
-                this.showMessage(String(error?.message || error), true);
+                if (isCurrent()) this.showMessage(String(error?.message || error), true);
             }
         });
     }
@@ -2990,6 +3098,10 @@ class VNCCSControlCenterWidget {
             this.showMessage("Load control center config first.", true);
             return;
         }
+        const state = this.state;
+        const kind = this._activeKind();
+        const isCurrent = () => !this._removed && !this._stateRestoreError && this.state === state
+            && this._getRepoId() === repoId && this._activeKind() === kind;
 
         let payload;
         try {
@@ -2997,9 +3109,10 @@ class VNCCSControlCenterWidget {
             payload = await response.json();
             if (!response.ok || payload.error) throw new Error(payload.error || "Failed to load LoRA list");
         } catch (error) {
-            this.showMessage(String(error?.message || error), true);
+            if (isCurrent()) this.showMessage(String(error?.message || error), true);
             return;
         }
+        if (!isCurrent()) return;
 
         const items = (payload.items || []).filter(item => !item.already_added);
         if (!items.length) {
@@ -3043,6 +3156,7 @@ class VNCCSControlCenterWidget {
         btns.className = "vnccs-cc-settings-btns";
         const cancelBtn = this._btn("Cancel", () => ov.remove());
         const saveBtn = this._btn("Add", async () => {
+            if (!isCurrent()) { ov.remove(); return; }
             const path = select.value;
             if (!path) return;
             saveBtn.disabled = true;
@@ -3051,16 +3165,18 @@ class VNCCSControlCenterWidget {
                 const response = await api.fetchApi("/vnccs/control_center/custom_lora", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ repo_id: repoId, path, kind: this._activeKind() }),
+                    body: JSON.stringify({ repo_id: repoId, path, kind }),
                 });
                 const result = await response.json();
                 if (!response.ok || result.error) throw new Error(result.error || "Failed to add custom LoRA");
 
                 ov.remove();
                 delete serverRegistry("VNCCS_CC_REGISTRY")[repoId];
+                if (!isCurrent()) return;
                 await this.fetchConfig(repoId, true);
-                this._refreshLoraBlock();
+                if (isCurrent()) this._refreshLoraBlock();
             } catch (error) {
+                if (!isCurrent()) { ov.remove(); return; }
                 saveBtn.disabled = false;
                 saveBtn.textContent = "Add";
                 this.showMessage(String(error?.message || error), true);
@@ -3504,7 +3620,13 @@ class VNCCSControlCenterWidget {
 
     _renderModelParams() {
         const p  = this._currentModelParams();
-        const mp = { steps: DEFAULT_MODEL_STEPS, cfg: DEFAULT_MODEL_CFG, ...p };
+        const family = this._familyDefinition();
+        const turbo = this._isQi2TurboModel(this._getSelectedModelEntry());
+        const steps = p.steps || (turbo ? 8 : family.steps ?? DEFAULT_MODEL_STEPS);
+        const mp = {
+            steps: Math.trunc(Number(typeof steps === "string" ? steps.replaceAll("_", "") : steps)),
+            cfg: p.cfg ?? (turbo ? 1.0 : family.cfg ?? DEFAULT_MODEL_CFG),
+        };
 
         const panel = document.createElement("div");
         panel.className = "vnccs-cc-params";
@@ -3532,7 +3654,8 @@ class VNCCSControlCenterWidget {
 
     _renderModelSamplerParams() {
         const p  = this._currentModelParams();
-        const mp = { sampler: "euler", scheduler: DEFAULT_MODEL_SCHEDULER, ...p };
+        const mp = { sampler: p.sampler || this._familyDefinition().sampler || "euler",
+            scheduler: p.scheduler || DEFAULT_MODEL_SCHEDULER };
 
         const panel = document.createElement("div");
         panel.className = "vnccs-cc-params vnccs-cc-params--right";
@@ -3571,11 +3694,12 @@ class VNCCSControlCenterWidget {
         const status = this._resolveStatus(dls.status, entry.status);
 
         const loraKey = `cc_lora_${entry.name}`;
+        const downloadable = this._isDownloadableStatus(status) && (!entry.custom || entry.hf_path);
         const card = document.createElement("div");
         card.className = "vnccs-cc-model-card vnccs-cc-lora-card";
         if (active && !isPipeMode) card.classList.add("vnccs-cc-lora-card--active");
         if (compact) card.classList.add("vnccs-cc-lora-card--compact");
-        if (compact && this._isDownloadableStatus(status)) card.classList.add("vnccs-cc-lora-card--downloadable");
+        if (compact && downloadable) card.classList.add("vnccs-cc-lora-card--downloadable");
         if (entry.custom) card.classList.add("vnccs-cc-lora-card--has-remove");
         this._applyProgressLayer(card, loraKey, dls);
         if (status === "installed" && isInteractive) {
@@ -3601,7 +3725,7 @@ class VNCCSControlCenterWidget {
             card.appendChild(removeBtn);
         }
 
-        if (compact && this._isDownloadableStatus(status)) {
+        if (compact && downloadable) {
             const downloadBtn = document.createElement("button");
             downloadBtn.type = "button";
             downloadBtn.className = "vnccs-cc-lora-download-btn";
@@ -3676,7 +3800,7 @@ class VNCCSControlCenterWidget {
         footer.className = active ? "vnccs-cc-lora-strength-row" : "vnccs-cc-lora-card-actions";
         footer.onclick = e => e.stopPropagation();
 
-        if (this._isDownloadableStatus(status) && !compact) {
+        if (downloadable && !compact) {
             const btn = this._btn(this._downloadLabel(status), () => this._downloadEntry("lora", entry));
             btn.addEventListener("click", e => e.stopPropagation());
             footer.appendChild(btn);
@@ -3686,12 +3810,13 @@ class VNCCSControlCenterWidget {
             warning.textContent = "Authentication required";
             footer.appendChild(warning);
         } else if (status === "installed" && active && !isPipeMode && !isTurboMode) {
+                const strength = Number(typeof ls.strength === "string" ? ls.strength.replaceAll("_", "") : ls.strength ?? 1.0);
                 const slider = document.createElement("input");
                 slider.type = "range";
-                slider.min = -2;
-                slider.max = 2;
+                slider.min = Math.min(-2, strength);
+                slider.max = Math.max(2, strength);
                 slider.step = 0.05;
-                slider.value = ls.strength ?? 1.0;
+                slider.value = strength;
                 slider.className = "vnccs-cc-lora-slider";
 
                 slider.onpointerdown = () => {
@@ -3710,12 +3835,12 @@ class VNCCSControlCenterWidget {
 
                 const val = document.createElement("span");
                 val.className = "vnccs-cc-lora-val";
-                val.textContent = parseFloat(slider.value).toFixed(2);
+                val.textContent = strength.toFixed(2);
 
                 slider.oninput = () => {
                     const strength = parseFloat(slider.value);
                     val.textContent = strength.toFixed(2);
-                    this._updateLora(entry.name, { strength }, { commit: false, persist: false });
+                    this._updateLora(entry.name, { strength }, { commit: false });
                 };
 
                 slider.onchange = () => {
@@ -3844,6 +3969,9 @@ class VNCCSControlCenterWidget {
     // ── Settings overlay ──────────────────────────────────────────────────────
 
     _showSettings() {
+        const state = this.state;
+        const repoId = this._getRepoId();
+        const kind = this._activeKind();
         const ov = document.createElement("div");
         ov.className = "vnccs-cc-settings-overlay";
 
@@ -3902,6 +4030,11 @@ class VNCCSControlCenterWidget {
         const cancelBtn = this._btn("Cancel", () => ov.remove());
 
         const saveBtn = this._btn("Save", async () => {
+            if (this._removed || this._stateRestoreError || this.state !== state
+                || this._getRepoId() !== repoId || this._activeKind() !== kind) {
+                ov.remove();
+                return;
+            }
             this.state.selected_type = this._getSelectedType();
             if (!this.state.type_settings) this.state.type_settings = {};
             this.state.type_settings.unet = {
@@ -3927,8 +4060,15 @@ class VNCCSControlCenterWidget {
     async _downloadEntry(cat, entry) {
         const repoId = this._getRepoId();
         if (!repoId) return;
+        const state = this.state;
+        const kind = this._activeKind();
+        const isCurrent = () => !this._removed && !this._stateRestoreError && this.state === state
+            && this._getRepoId() === repoId && this._activeKind() === kind;
+        if (!isCurrent()) return;
         const key = `cc_${cat}_${entry.name}`;
         // Show the queued state while the server accepts the request.
+        this._beginDownloadStatusRequest();
+        this._downloadStatusRepoId = repoId;
         this.dlStatus[key] = { status: "queued", message: "Queued…" };
         this._renderAll();
         try {
@@ -3940,6 +4080,7 @@ class VNCCSControlCenterWidget {
             const responseText = await r.text();
             let d = {};
             try { d = responseText ? JSON.parse(responseText) : {}; } catch { d = {}; }
+            if (!isCurrent()) return;
             if (!r.ok || d.error) {
                 const message = d.error || responseText || `Download request failed (${r.status})`;
                 this.dlStatus[key] = { status: "error", message };
@@ -3951,6 +4092,7 @@ class VNCCSControlCenterWidget {
                 }));
             }
         } catch (e) {
+            if (!isCurrent()) return;
             const message = String(e?.message || e);
             this.dlStatus[key] = { status: "error", message };
             this._renderAll();
@@ -3960,6 +4102,11 @@ class VNCCSControlCenterWidget {
 
     async _downloadAllMissing() {
         if (!this.config) { this.showMessage("Load config first.", true); return; }
+        const state = this.state;
+        const repoId = this._getRepoId();
+        const kind = this._activeKind();
+        const isCurrent = () => !this._removed && !this._stateRestoreError && this.state === state
+            && this._getRepoId() === repoId && this._activeKind() === kind;
 
         const tasks = [];
 
@@ -3974,6 +4121,7 @@ class VNCCSControlCenterWidget {
         const selectedKind = this._selectedKind();
         for (const cat of ["clip", "vae", "lora", "controlnet", "other"]) {
             for (const e of (this.config[cat] ?? [])) {
+                if (cat === "lora" && e.custom && !e.hf_path) continue;
                 if (["clip", "vae"].includes(cat) && !this._sameKind(e, selectedKind)) continue;
                 if (cat === "lora" && !e.custom && !this._exactKind(e, selectedKind)) continue;
                 if (this._isDownloadableStatus(e.status)) tasks.push({ cat, e });
@@ -3983,6 +4131,7 @@ class VNCCSControlCenterWidget {
         if (!tasks.length) { this.showMessage("All selected items are installed."); return; }
         this.showConfirm(`Download/update ${tasks.length} item(s)?`, async () => {
             for (const { cat, e } of tasks) {
+                if (!isCurrent()) return;
                 await this._downloadEntry(cat, e);
                 await new Promise(r => setTimeout(r, 300));
             }

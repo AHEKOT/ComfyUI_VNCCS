@@ -97,7 +97,8 @@ def make_unique_emotion_safe_name(title, existing_names):
 
     safe_name = base
     counter = 2
-    existing = set(existing_names or [])
+    # Neutral directories contain source poses, never generated emotions.
+    existing = set(existing_names or []) | {"neutral"}
     while safe_name in existing:
         safe_name = f"{base}-{counter}"
         counter += 1
@@ -143,27 +144,37 @@ def default_generation_settings():
     return settings
 
 
-def resolve_generation_seed(gen_settings):
+def resolve_generation_seed(gen_settings, seed_resolved=False):
     seed = int(gen_settings.get("seed", 0) or 0)
-    if str(gen_settings.get("seed_mode", "fixed") or "fixed").lower() == "randomize":
+    if str(gen_settings.get("seed_mode", "fixed") or "fixed").lower() == "randomize" and not seed_resolved:
         return generate_seed(0)
     return seed
 
 
 def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
-    try:
-        parsed = json.loads(generation_settings) if generation_settings else {}
-    except Exception:
-        parsed = {}
+    parsed = json.loads(generation_settings) if generation_settings else {}
+    if not isinstance(parsed, dict):
+        raise ValueError("Emotion generation settings must be an object")
+    profiles = parsed.get("mode_settings", {})
+    if not isinstance(profiles, dict):
+        raise ValueError("Emotion model profiles must be an object")
+    for settings in [parsed, *profiles.values()]:
+        if not isinstance(settings, dict):
+            raise ValueError("Emotion model profiles must contain objects")
+        if "qi2_cache" in settings and not isinstance(settings["qi2_cache"], dict):
+            raise ValueError("Emotion QI2 cache settings must be an object")
+        previous = settings.get("turbo_previous_settings")
+        if previous is not None and not isinstance(previous, dict):
+            raise ValueError("Emotion previous turbo settings must be an object or null")
+        stack = settings.get("lora_stack", [])
+        if not isinstance(stack, list) or any(not isinstance(item, dict) for item in stack):
+            raise ValueError("Emotion LoRA settings must be objects in a list")
+    seed_resolved = parsed.pop("_vnccs_seed_resolved", False) is True
 
     mode = str(generation_model or parsed.get("generation_mode") or "Anima").lower()
     if mode not in ("illustrious", "anima", "qi2"):
         mode = "anima"
 
-    merged = default_generation_settings()
-    if isinstance(parsed, dict):
-        merged.update(parsed)
-    merged["generation_mode"] = mode
     if mode == "qi2":
         gen_settings = dict(QI2_DEFAULTS)
         mode_settings = parsed.get("mode_settings", {}) if isinstance(parsed, dict) else {}
@@ -186,7 +197,7 @@ def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
             gen_settings["cfg"] = 1.0
         model, clip, vae = load_anima_assets(gen_settings)
     else:
-        gen_settings = normalize_gen_settings(merged)
+        gen_settings = normalize_gen_settings({**parsed, "generation_mode": mode})
         _, model, clip, vae = load_generation_assets(gen_settings)
 
     def apply_lora_safe(m, c, lora_name, strength, clip_strength=None):
@@ -231,7 +242,11 @@ def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
             if isinstance(item, dict):
                 model, clip = apply_lora_safe(model, clip, item.get("name"), item.get("strength", 1.0))
 
-    seed = resolve_generation_seed(gen_settings)
+    # Seed controls are shared between model profiles; the selected UI seed wins.
+    for key in ("seed", "seed_mode"):
+        if key in parsed:
+            gen_settings[key] = parsed[key]
+    seed = resolve_generation_seed(gen_settings, seed_resolved=seed_resolved)
     pipe = VNCCS_Pipe().process_pipe(
         model=model, clip=clip, vae=vae, seed_int=seed,
         sample_steps=int(gen_settings.get("steps", 0) or 0),
@@ -297,33 +312,41 @@ def _load_sprite_tensor(path):
 def list_costume_sprite_paths(character, costume):
     """Return sorted current neutral/source sprite paths without decoding them."""
     costume = ensure_safe_name(costume, "costume")
-    root = safe_join_under(character_dir(character), "Sprites", costume)
+    character_path = character_dir(character)
+    try:
+        root = safe_join_under(character_path, "Sprites", costume)
+    except ValueError:
+        return []
     paths = []
     if os.path.isdir(root):
         neutral_paths = []
-        seen_neutral_roots = set()
-        for neutral_name in ("Neutral", "neutral"):
-            neutral_root = safe_join_under(root, neutral_name)
-            if not os.path.isdir(neutral_root):
+        direct_paths = []
+        seen_roots = set()
+        for subfolder in ("Neutral", "neutral", ""):
+            try:
+                source_root = safe_join_under(root, subfolder) if subfolder else root
+                if not os.path.isdir(source_root):
+                    continue
+                directory_stat = os.stat(source_root)
+                names = os.listdir(source_root)
+            except (ValueError, OSError):
                 continue
-            neutral_key = os.path.normcase(os.path.abspath(neutral_root))
-            if neutral_key in seen_neutral_roots:
+            directory_key = (directory_stat.st_dev, directory_stat.st_ino)
+            if directory_key in seen_roots:
                 continue
-            seen_neutral_roots.add(neutral_key)
-            neutral_paths.extend(
-                safe_join_under(neutral_root, name)
-                for name in os.listdir(neutral_root)
-                if os.path.isfile(os.path.join(neutral_root, name))
-                and os.path.splitext(name)[1].lower() in IMAGE_EXTS
-            )
-        direct = [
-            safe_join_under(root, name)
-            for name in os.listdir(root)
-            if os.path.isfile(os.path.join(root, name)) and os.path.splitext(name)[1].lower() in IMAGE_EXTS
-        ]
+            seen_roots.add(directory_key)
+            for name in names:
+                if os.path.splitext(name)[1].lower() not in IMAGE_EXTS:
+                    continue
+                try:
+                    path = safe_join_under(root, subfolder, name) if subfolder else safe_join_under(root, name)
+                except ValueError:
+                    continue
+                if os.path.isfile(path):
+                    (neutral_paths if subfolder else direct_paths).append(path)
         seen_paths = set()
         paths = []
-        for path in sorted(neutral_paths or direct):
+        for path in sorted(neutral_paths or direct_paths):
             path_key = os.path.normcase(os.path.abspath(path))
             if path_key in seen_paths:
                 continue
@@ -357,25 +380,7 @@ def load_costume_sprite_images(character, costume, selected_pose_indices=None, *
 
 
 def costume_has_source_sprites(character, costume):
-    root = safe_join_under(character_dir(character), "Sprites", ensure_safe_name(costume, "costume"))
-    if not os.path.isdir(root):
-        return False
-    search_roots = [
-        safe_join_under(root, "Neutral"),
-        safe_join_under(root, "neutral"),
-        root,
-    ]
-    seen = set()
-    for folder in search_roots:
-        folder_key = os.path.normcase(os.path.abspath(folder))
-        if folder_key in seen or not os.path.isdir(folder):
-            continue
-        seen.add(folder_key)
-        for name in os.listdir(folder):
-            path = safe_join_under(folder, name)
-            if os.path.isfile(path) and os.path.splitext(name)[1].lower() in IMAGE_EXTS:
-                return True
-    return False
+    return bool(list_costume_sprite_paths(character, costume))
 
 
 def costume_face_details(character, costume):
@@ -550,9 +555,10 @@ class EmotionGeneratorV2:
                         }
         except Exception as e:
             log_event('warning', component='EmotionStudio', level='warning', message=f'ERROR: Failed to load emotions data: {e}', error=str(e))
-            safe_name_map = {}
+            raise ValueError(f"Unable to load emotion catalog: {e}. Repair it before generating emotions.") from e
         cls.SAFE_NAME_MAP = safe_name_map
-        cls.EMOTIONS_FINGERPRINT = (file_fingerprint(path), file_fingerprint(user_emotions_config_path()))
+        # A catalog write during loading must invalidate this older snapshot.
+        cls.EMOTIONS_FINGERPRINT = fingerprint
         return safe_name_map
 
     @classmethod
@@ -581,6 +587,13 @@ class EmotionGeneratorV2:
 
     @classmethod
     def IS_CHANGED(cls, character="Character Name", costumes_data="[]", **kwargs):
+        settings = json.loads(kwargs.get("generation_settings") or "{}")
+        mode = str(kwargs.get("generation_model") or settings.get("generation_mode") or "Anima").lower()
+        profiles = settings.get("mode_settings", {})
+        profile = profiles.get(mode, {}) if isinstance(profiles, dict) else {}
+        seed_mode = settings.get("seed_mode", profile.get("seed_mode", "fixed") if isinstance(profile, dict) else "fixed")
+        if str(seed_mode or "fixed").lower() == "randomize" and settings.get("_vnccs_seed_resolved") is not True:
+            return float("nan")
         paths = [config_path(character), emotions_config_path(), user_emotions_config_path()]
         for costume in json.loads(costumes_data):
             paths.extend(list_costume_sprite_paths(character, costume))
@@ -601,27 +614,36 @@ class EmotionGeneratorV2:
         if not isinstance(selected_emotions, list):
             raise ValueError("Selected emotions must be a list")
         for emotion in selected_emotions:
-            ensure_safe_name(emotion, "emotion")
+            if ensure_safe_name(emotion, "emotion").casefold() == "neutral":
+                raise ValueError("Emotion name 'neutral' is reserved for source poses. Add this emotion again with a different name.")
         emotion_map = self._setup_emotions_data()
-        pipe, pipe_seed = build_emotion_pipe(generation_model, generation_settings)
-        mode = str(generation_model or "Anima").lower()
-        effective_prompt_style = "Anima" if mode == "anima" else "SDXL Style"
-
-        try:
-            generation_settings_data = json.loads(generation_settings) if generation_settings else {}
-        except (TypeError, json.JSONDecodeError):
-            generation_settings_data = {}
+        for emotion in selected_emotions:
+            if emotion not in emotion_map:
+                raise ValueError(f"Selected emotion '{emotion}' is not available. Restore its catalog entry or deselect it before generating emotions.")
+        generation_settings_data = json.loads(generation_settings) if generation_settings else {}
+        if not isinstance(generation_settings_data, dict):
+            raise ValueError("Emotion generation settings must be an object")
         raw_pose_indices = generation_settings_data.get("selected_pose_indices")
         selected_pose_indices = None
-        if isinstance(raw_pose_indices, list):
+        if raw_pose_indices is not None:
+            if not isinstance(raw_pose_indices, list):
+                raise ValueError("Selected pose indices must be positive integers in a list.")
             selected_pose_indices = set()
             for value in raw_pose_indices:
                 try:
+                    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+                        raise ValueError
+                    if isinstance(value, str) and not re.fullmatch(r"[+-]?[0-9](?:_?[0-9])*", value.strip()):
+                        raise ValueError
                     index = int(value)
-                except (TypeError, ValueError):
-                    continue
-                if index > 0:
-                    selected_pose_indices.add(index)
+                    if index <= 0 or isinstance(value, float) and value != index:
+                        raise ValueError
+                except (TypeError, ValueError, OverflowError) as error:
+                    raise ValueError("Selected pose indices must be positive integers in a list.") from error
+                selected_pose_indices.add(index)
+        pipe, pipe_seed = build_emotion_pipe(generation_model, generation_settings)
+        mode = str(generation_model or "Anima").lower()
+        effective_prompt_style = "Anima" if mode == "anima" else "SDXL Style"
         
         selected_costumes = [
             costume for costume in selected_costumes
@@ -681,14 +703,9 @@ class EmotionGeneratorV2:
 
             for emotion_key in selected_emotions:
                 
-                emotion_details_data = emotion_map.get(emotion_key)
-                if not emotion_details_data:
-                    log_event("warning", component="EmotionStudio", level="warning", message=f'Warning: Unknown emotion key {emotion_key}')
-                    emotion_description = "unknown emotion"
-                    natural_prompt = ""
-                else:
-                    emotion_description = emotion_details_data['description']
-                    natural_prompt = emotion_details_data.get('natural_prompt', '')
+                emotion_details_data = emotion_map[emotion_key]
+                emotion_description = emotion_details_data['description']
+                natural_prompt = emotion_details_data.get('natural_prompt', '')
 
                 # Path construction
                 sprite_dir = os.path.join(character_path, "Sprites", costume, emotion_key)

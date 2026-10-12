@@ -942,6 +942,19 @@ ${SAKURA_THEME_CSS}
 
 app.registerExtension({
     name: "VNCCS.CharacterCloner",
+    async setup() {
+        if (app._vnccsClonerQueuePatched) return;
+        app._vnccsClonerQueuePatched = true;
+        const queuePrompt = app.queuePrompt;
+        app.queuePrompt = async function (...args) {
+            for (const node of app.graph?._nodes || []) {
+                if (node.type === "CharacterCloner" && ![2, 4].includes(node.mode) && node._vnccsStateRestoreError) {
+                    throw new Error(node._vnccsStateRestoreError);
+                }
+            }
+            return queuePrompt.apply(app, args);
+        };
+    },
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name === "CharacterCloner") {
             const onNodeCreated = nodeType.prototype.onNodeCreated;
@@ -998,6 +1011,7 @@ app.registerExtension({
 
                 const els = {};
                 const saveState = () => {
+                    if (node._vnccsStateRestoreError) return;
                     if (dataWidget) dataWidget.value = JSON.stringify(state);
                     node._vnccsGetClonerState = () => state;
                     app.graph?.setDirtyCanvas(true, true);
@@ -1020,6 +1034,7 @@ app.registerExtension({
                         signature: `${Number.isFinite(age) ? Math.round(age) : "?"}|${Number.isFinite(gender) ? gender : "?"}`
                     };
                 };
+                const isPoseStudioMounted = createRequestGuard(node)();
                 let poseStudioSyncRetryCount = 0;
                 const patchPoseStudioSync = () => {
                     const sync = window.__vnccsPoseStudioCharacterCreatorSync;
@@ -1084,6 +1099,7 @@ app.registerExtension({
                     return true;
                 };
                 const syncPoseStudioAge = (ageValue = state.character_info.age, options = {}) => {
+                    if (!isPoseStudioMounted() || node._vnccsStateRestoreError) return;
                     state.character_info.age = normalizeAgeValue(ageValue);
                     node._vnccsGetPoseStudioValues = parsePoseStudioValues;
                     if (patchPoseStudioSync()) {
@@ -1109,6 +1125,7 @@ app.registerExtension({
                     }
                 };
                 const syncPoseStudioGender = (sexValue = state.character_info.sex) => {
+                    if (!isPoseStudioMounted() || node._vnccsStateRestoreError) return;
                     const sex = String(sexValue || "").toLowerCase();
                     if (sex === "male" || sex === "female") state.character_info.sex = sex;
                     node._vnccsGetPoseStudioValues = parsePoseStudioValues;
@@ -1131,41 +1148,56 @@ app.registerExtension({
                 };
 
                 const loadState = () => {
-                    beginCharacterRequest();
+                    currentInventorySelection = beginCharacterRequest();
                     beginCaptionRequest();
                     restoredInfoCharacter = null;
-                    if (dataWidget && dataWidget.value && dataWidget.value !== "{}") {
+                    if (dataWidget) {
                         try {
                             console.log("[VNCCS] Loading State from widget_data:", dataWidget.value);
-                            const parsed = JSON.parse(dataWidget.value);
-                            if (Object.prototype.hasOwnProperty.call(parsed, "character")) {
-                                state.character = parsed.character || "";
+                            const hasStoredState = !!dataWidget.value && dataWidget.value !== "{}";
+                            const parsed = JSON.parse(dataWidget.value || "{}");
+                            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+                                || (parsed.character_info !== undefined && (!parsed.character_info
+                                    || typeof parsed.character_info !== "object" || Array.isArray(parsed.character_info)))
+                                || (parsed.source_images !== undefined && !Array.isArray(parsed.source_images))) {
+                                throw new Error("Saved cloner state must contain character metadata and a reference list.");
                             }
-                            if (Array.isArray(parsed.source_images)) {
-                                state.source_images = parsed.source_images;
+                            if (parsed.source_images?.length && parsed.source_images_character
+                                && parsed.source_images_character !== parsed.character) {
+                                throw new Error("Saved reference image belongs to another character.");
                             }
-                            if (Object.prototype.hasOwnProperty.call(parsed, "source_images_character")) {
-                                state.source_images_character = parsed.source_images_character || "";
-                            } else if (state.source_images.length && !state.source_images_character) {
-                                state.source_images_character = state.character || "";
-                            }
-                            if (Object.prototype.hasOwnProperty.call(parsed, "selected_idx")) {
-                                state.selected_idx = parsed.selected_idx;
-                            }
+                            delete node._vnccsStateRestoreError;
+                            state.character = parsed.character || "";
+                            state.source_images = parsed.source_images || [];
+                            state.source_images_character = parsed.source_images_character || (state.source_images.length ? state.character : "");
+                            state.selected_idx = parsed.selected_idx ?? 0;
+                            state.selected_preview_sprite = parsed.selected_preview_sprite || null;
+                            state.char_preview_url = null;
                             state.previous_background_color = parsed.previous_background_color || "Green";
+                            for (const key of Object.keys(state.character_info)) delete state.character_info[key];
+                            Object.assign(state.character_info, defaultCharacterInfo, parsed.character_info);
                             if (parsed.character_info && typeof parsed.character_info === "object") {
-                                Object.assign(state.character_info, parsed.character_info);
                                 restoredInfoCharacter = parsed.character || null;
                             }
                             node._vnccsGetClonerState = () => state;
                             // Update UI
                             updateUIFromState();
-                            dataWidget.value = JSON.stringify(state);
+                            if (hasStoredState) dataWidget.value = JSON.stringify(state);
                             console.log("[VNCCS] State loaded successfully.");
                         } catch (e) {
+                            node._vnccsStateRestoreError = "Cannot restore saved cloner state. Original widget data is preserved. Restore a valid workflow before editing or running.";
                             console.error("[VNCCS] Failed to load state:", e);
+                            showModal("State Restore Failed", () => {
+                                const message = document.createElement("div");
+                                message.textContent = node._vnccsStateRestoreError;
+                                return message;
+                            }, [{ text: "Close" }]);
+                            return false;
                         }
+                    } else {
+                        delete node._vnccsStateRestoreError;
                     }
+                    return true;
                 };
 
                 // React to external changes (e.g. reload)
@@ -1179,6 +1211,7 @@ app.registerExtension({
                     syncDOMWidgetWidth(node, "ui");
                     setTimeout(() => syncDOMWidgetWidth(node, "ui"), 100);
                     loadState();
+                    loadCharList();
                 };
 
                 const FIELD_HELP = {
@@ -1403,18 +1436,21 @@ app.registerExtension({
                         <span class="vnccs-cloner-graphic-toggle-switch" aria-hidden="true"></span>
                     `;
 
+                    let enabled = false;
                     const setValue = (value, persist = false) => {
-                        const enabled = !!value;
-                        targetObj[key] = enabled;
+                        enabled = value === true || ["true", "1", "yes"].includes(String(value).toLowerCase());
                         btn.classList.toggle("is-active", enabled);
                         btn.setAttribute("aria-pressed", enabled ? "true" : "false");
-                        if (persist) saveState();
+                        if (persist) {
+                            targetObj[key] = enabled;
+                            saveState();
+                        }
                     };
 
-                    btn.onclick = () => setValue(!targetObj[key], true);
+                    btn.onclick = () => setValue(!enabled, true);
                     wrap.appendChild(btn);
-                    els[key] = { type: "graphic-toggle", setValue, get checked() { return !!targetObj[key]; } };
-                    setValue(!!targetObj[key]);
+                    els[key] = { type: "graphic-toggle", setValue, get checked() { return enabled; } };
+                    setValue(targetObj[key]);
                     return wrap;
                 };
 
@@ -1450,10 +1486,11 @@ app.registerExtension({
                         if (key === "age") syncPoseStudioAge(targetObj[key]);
                     };
                     num.onchange = (e) => {
-                        let v = parseFloat(e.target.value);
-                        if (Number.isNaN(v)) v = min;
-                        if (v < min) v = min;
-                        if (v > max) v = max;
+                        const v = e.target.valueAsNumber;
+                        if (!e.target.checkValidity() || !Number.isFinite(v)) {
+                            num.value = targetObj[key];
+                            return;
+                        }
                         num.value = v;
                         range.value = v;
                         targetObj[key] = v;
@@ -1586,6 +1623,10 @@ app.registerExtension({
                 };
 
                 const openTagConstructor = async (fieldKey, inputEl, targetObj = state.character_info) => {
+                    if (node._vnccsStateRestoreError) return;
+                    const character = state.character;
+                    const currentRequest = beginCaptionRequest();
+                    const isCurrent = () => currentRequest() && !node._vnccsStateRestoreError && state.character === character;
                     if (!TAG_DATA || (fieldKey === "skin_color" && !TAG_DATA.tags?.skin_color)) {
                         try {
                             if (!TAG_DATA) {
@@ -1599,6 +1640,7 @@ app.registerExtension({
                                 TAG_DATA.tags.skin_color = (await r.json()).tags.skin_color;
                             }
                         } catch (e) {
+                            if (!isCurrent()) return;
                             showModal("Error", () => {
                                 const d = document.createElement("div");
                                 d.innerText = "Error loading tag database: " + e;
@@ -1607,6 +1649,7 @@ app.registerExtension({
                             return;
                         }
                     }
+                    if (!isCurrent()) return;
 
                     const map = {
                         hair: ["hair_color", "hairstyles"],
@@ -1685,7 +1728,8 @@ app.registerExtension({
                         {
                             text: "APPLY",
                             class: "vnccs-btn-primary",
-                            action: () => {
+                            action: overlay => {
+                                if (!isCurrent() || !overlay.isConnected) return false;
                                 const final = selected.value();
                                 if (inputEl.setValue) inputEl.setValue(final);
                                 else inputEl.value = final;
@@ -1698,6 +1742,8 @@ app.registerExtension({
                 };
 
                 const beginCharacterRequest = createRequestGuard(node);
+                let currentInventorySelection = beginCharacterRequest();
+                const beginInventoryRequest = createRequestGuard(node);
                 const beginCaptionRequest = createRequestGuard(node);
                 const beginUploadRequest = createRequestGuard(node);
                 const loadChar = async (name, skipInfoLoad = false, { clearSources = false } = {}) => {
@@ -1732,7 +1778,7 @@ app.registerExtension({
                         }
                         updateUIFromState();
                         saveState();
-                        if (name && name !== "None") {
+                        if (name && name !== "None" && !state.source_images.length) {
                             const cacheUrl = mediaURL(`/vnccs/get_cached_preview?character=${encodeURIComponent(name)}&t=${Date.now()}`);
                             await spritePreviewNavigator?.load(name, { fallbackUrl: cacheUrl });
                         }
@@ -1750,17 +1796,30 @@ app.registerExtension({
                 };
 
                 const loadCharList = async () => {
+                    const currentSelection = currentInventorySelection;
+                    const currentInventory = beginInventoryRequest();
                     try {
                         const r = await api.fetchApi("/vnccs/context_lists");
                         if (!r.ok) return;
                         const d = await r.json();
+                        if (!currentInventory() || node._vnccsStateRestoreError) return;
 
+                        const selectedBeforeInventory = els.charSelect.value;
+                        const pendingOptions = currentSelection() ? [] : Array.from(els.charSelect.options, option => option.value);
                         els.charSelect.innerHTML = "";
                         if (!d.characters || !d.characters.length) els.charSelect.add(new Option("None", ""));
                         else d.characters.forEach(c => els.charSelect.add(new Option(c, c)));
+                        pendingOptions.forEach(value => {
+                            if (!Array.from(els.charSelect.options).some(option => option.value === value)) els.charSelect.add(new Option(value, value));
+                        });
+                        if (!currentSelection()) {
+                            els.charSelect.value = selectedBeforeInventory;
+                            return;
+                        }
 
                         const available = Array.from(els.charSelect.options).map(option => option.value);
-                        const selected = available.includes(state.character) ? state.character : available[0] || "";
+                        const selected = state.character || available[0] || "";
+                        if (selected && !available.includes(selected)) els.charSelect.add(new Option(`${selected} (missing)`, selected));
                         const hasWidgetData = restoredInfoCharacter === selected && Boolean(selected);
                         await setCharacter(selected, { clearSources: true, skipInfoLoad: hasWidgetData });
 
@@ -1768,6 +1827,9 @@ app.registerExtension({
                 };
 
                 const doCreate = () => {
+                    if (node._vnccsStateRestoreError) return;
+                    const currentRequest = beginCharacterRequest();
+                    const character = state.character;
                     let inpRef;
                     showModal("New Character", () => {
                         const inp = document.createElement("input");
@@ -1780,14 +1842,19 @@ app.registerExtension({
                         {
                             text: "Create", class: "vnccs-btn-primary",
                             action: async (ol, btn) => {
+                                const isCurrent = () => currentRequest() && ol.isConnected
+                                    && !node._vnccsStateRestoreError && state.character === character;
+                                if (!isCurrent()) return false;
                                 const n = inpRef.value.trim();
                                 if (!n) return true;
                                 try {
                                     await checkedJSON("/vnccs/create", { method: "POST", body: JSON.stringify({ name: n }) });
+                                    if (!isCurrent()) return false;
                                     const exists = Array.from(els.charSelect.options).some(o => o.value === n);
                                     if (!exists) els.charSelect.add(new Option(n, n));
                                     return !await setCharacter(n, { clearSources: true });
                                 } catch (e) {
+                                    if (!isCurrent()) return false;
                                     showModal("Error", () => { const d = document.createElement("div"); d.innerText = "Create Failed: " + e; return d; }, [{ text: "Close" }]);
                                     return true;
                                 }
@@ -1798,8 +1865,10 @@ app.registerExtension({
                 };
 
                 const doDelete = () => {
+                    if (node._vnccsStateRestoreError) return;
                     const charName = state.character;
                     if (!charName || charName === "None") return;
+                    const currentRequest = beginCharacterRequest();
                     showModal("Delete Character", () => {
                         const d = document.createElement("div");
                         d.append("Are you sure you want to delete ");
@@ -1813,12 +1882,17 @@ app.registerExtension({
                         {
                             text: "DELETE", class: "vnccs-btn-danger",
                             action: async (ol, btn) => {
+                                const isCurrent = () => currentRequest() && ol.isConnected
+                                    && !node._vnccsStateRestoreError && state.character === charName;
+                                if (!isCurrent()) return false;
                                 try {
                                     const r = await api.fetchApi("/vnccs/delete", {
                                         method: "POST",
                                         headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
                                         body: JSON.stringify({ name: charName }),
                                     });
+                                    if (!isCurrent()) return false;
+                                    if (!r.ok) throw new Error(await r.text() || `Delete failed (${r.status})`);
                                     if (r.ok) {
                                         const idx = Array.from(els.charSelect.options).findIndex(o => o.value === charName);
                                         if (idx > -1) els.charSelect.remove(idx);
@@ -1828,6 +1902,7 @@ app.registerExtension({
                                         return false;
                                     }
                                 } catch (e) {
+                                    if (!isCurrent()) return false;
                                     showModal("Error", () => { const d = document.createElement("div"); d.innerText = "" + e; return d; }, [{ text: "Close" }]);
                                     return false;
                                 }
@@ -1942,6 +2017,7 @@ app.registerExtension({
                 fileInput.accept = "image/*";
                 fileInput.style.display = "none";
                 fileInput.onchange = async (e) => {
+                    if (node._vnccsStateRestoreError) return;
                     const files = Array.from(e.target.files || []);
                     if (!files.length) return;
                     if (files.length > 1) {
@@ -1956,7 +2032,8 @@ app.registerExtension({
                     const currentRequest = beginUploadRequest();
                     const character = state.character;
                     const sources = state.source_images;
-                    const isCurrent = () => currentRequest() && state.character === character && state.source_images === sources;
+                    const isCurrent = () => currentRequest() && !node._vnccsStateRestoreError
+                        && state.character === character && state.source_images === sources;
                     uploadBtn.innerText = "UPLOADING...";
                     uploadBtn.disabled = true;
                     try {
@@ -2029,7 +2106,7 @@ app.registerExtension({
                 colSrc.appendChild(spriteNav);
                 spritePreviewNavigator = createSpritePreviewNavigator({
                     node,
-                    isSelectionCurrent: preview => preview.character === state.character,
+                    isSelectionCurrent: preview => preview.character === state.character && !state.source_images.length,
                     image: previewImg,
                     placeholder: previewPlaceholder,
                     loading: previewLoading,
@@ -2072,6 +2149,7 @@ app.registerExtension({
                 autoGenBtn.style.flex = "0 0 auto"; // Prevent stretching
                 autoGenBtn.innerText = "Analyze Captions";
                 autoGenBtn.onclick = async () => {
+                    if (node._vnccsStateRestoreError) return;
                     if (autoGenBtn.disabled) return;
 
                     if (!state.source_images.length) {
@@ -2314,6 +2392,7 @@ app.registerExtension({
                         t.value = state.character_info.negative_prompt;
                         t.oninput = (e) => { state.character_info.negative_prompt = e.target.value; saveState(); }
                     }
+                    els[key] = t;
                     // If positive, it's auto-generated... maybe just show extra prompt field?
                     // Let's stick to "LoRA Trigger / Manual Prompt" and "Negative"
                     w.appendChild(t);
@@ -2361,6 +2440,8 @@ app.registerExtension({
                             previewContainer.onmouseleave = null;
                         }
                     } else {
+                        spritePreviewNavigator?.invalidate();
+                        spritePreviewNavigator?.setLoading(false);
                         spritePreviewNavigator?.hideNav();
                         // Show Selected Image
                         const imgObj = images[state.selected_idx];
@@ -2416,6 +2497,8 @@ app.registerExtension({
                         delBtn.className = "vnccs-cloner-thumb-remove";
                         delBtn.onclick = (e) => {
                             e.stopPropagation();
+                            const currentRequest = beginCaptionRequest();
+                            const character = state.character;
                             showModal("Remove Image", () => {
                                 const d = document.createElement("div");
                                 d.innerText = "Are you sure you want to remove this image?";
@@ -2425,7 +2508,9 @@ app.registerExtension({
                                 {
                                     text: "Remove",
                                     class: "vnccs-btn-danger",
-                                    action: () => {
+                                    action: overlay => {
+                                        if (!currentRequest() || !overlay.isConnected || state.character !== character
+                                            || state.source_images !== images || state.source_images[idx] !== imgObj) return false;
                                         beginCaptionRequest();
                                         state.source_images.splice(idx, 1);
                                         if (state.selected_idx >= state.source_images.length) state.selected_idx = Math.max(0, state.source_images.length - 1);
@@ -2462,8 +2547,10 @@ app.registerExtension({
                 const origSerialize = node.onSerialize;
                 node.onSerialize = function (o) {
                     origSerialize?.apply(this, arguments);
-                    syncBackgroundControl();
-                    dataWidget.value = JSON.stringify(state);
+                    if (!node._vnccsStateRestoreError) {
+                        syncBackgroundControl();
+                        dataWidget.value = JSON.stringify(state);
+                    }
                     const index = node.widgets?.indexOf(dataWidget) ?? -1;
                     if (index >= 0 && Array.isArray(o?.widgets_values)) o.widgets_values[index] = dataWidget.value;
                 };

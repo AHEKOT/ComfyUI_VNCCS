@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
 import { createStylePicker } from "../web/character_styles.mjs";
+import { createWidgetContext } from "./widget_context.mjs";
 
 class Element {
     constructor(tag, document) {
@@ -147,6 +150,36 @@ test("user styles save on the server, show inline errors, and edits keep their I
     assert.equal(calls.at(-1).headers["X-VNCCS-CSRF"], "1");
     assert.equal(ctx.snapshots.at(-1).style_prompt, "Graphite");
     assert.equal(ctx.info.style, saved.id);
+});
+
+test('restoring another Creator workflow while saving a style preserves its selected style', async () => {
+    const alice = { name: 'Alice', style: 'legacy' };
+    let current = alice, finish;
+    const snapshots = [];
+    const ctx = setup(alice, async (route, options) => options
+        ? new Promise(resolve => { finish = resolve; }) : response(catalog()), {
+        getInfo: () => current,
+        save: () => snapshots.push(structuredClone(current)),
+    });
+    await find(ctx.picker.root, 'vnccs-style-summary').onclick();
+    const overlay = find(ctx.host, 'vnccs-style-gallery');
+    walk(overlay).find(element => element.textContent === 'New style').onclick();
+    const editor = find(overlay, 'vnccs-style-editor');
+    const fields = walk(editor).filter(element => ['input', 'textarea'].includes(element.tagName));
+    fields[0].value = 'Alice ink';
+    fields[3].value = 'Ink drawing';
+    const saving = editor.onsubmit({ preventDefault() {} });
+    current = { name: 'Bob', style: 'anime_style', style_prompt: 'authored Bob style' };
+    ctx.picker.close?.(false);
+    ctx.picker.setValue(current.style);
+    const original = structuredClone(current);
+    finish(response({ style: { id: 'user_' + 'c'.repeat(32), label: 'Alice ink', prompt: 'Ink drawing', user: true } }));
+    await saving;
+    assert.deepEqual(current, original);
+    assert.equal(alice.style, 'legacy');
+    assert.deepEqual(snapshots, []);
+    assert.equal(find(ctx.host, 'vnccs-style-gallery'), undefined);
+    assert.equal(ctx.background.inert, false);
 });
 
 test("New style creates fields without an existing ID", async () => {
@@ -587,4 +620,77 @@ test("a deletion finishing after reopening cannot be undone by an older catalog 
     assert.equal(find(ctx.host, "vnccs-style-delete"), undefined);
     assert.equal(ctx.info.style, "legacy");
     assert.equal(walk(ctx.host).find(el => el.textContent === "New style").disabled, false);
+});
+
+for (const name of ["Bob", "Alice"]) test(`a late style deletion preserves ${name}'s restored style snapshot`, async () => {
+    const style = userStyle();
+    let finish;
+    const ctx = setup({ name: "Alice", style: style.id, style_prompt: "Alice ink" }, async (_url, options) => {
+        if (!options) return response(userCatalog());
+        return new Promise(resolve => { finish = resolve; });
+    });
+    await find(ctx.picker.root, "vnccs-style-summary").onclick();
+    find(ctx.host, "vnccs-style-delete").onclick();
+    const pending = walk(find(ctx.host, "vnccs-common-modal-overlay")).find(el => el.textContent === "Delete").onclick();
+    ctx.picker.close(false);
+    Object.assign(ctx.info, { name, style: style.id, style_prompt: `${name}'s restored ink` });
+    ctx.picker.setValue(ctx.info.style);
+    const restored = structuredClone(ctx.info);
+    finish(response({ deleted: true, style_id: style.id }));
+    await pending;
+    assert.deepEqual(ctx.info, restored, "A completed deletion must not rewrite a restored workflow");
+    assert.deepEqual(ctx.snapshots, []);
+    assert.equal(find(ctx.host, "vnccs-style-gallery"), undefined);
+});
+
+test("a late deletion preserves an identical character restored into a different workflow", async () => {
+    const style = userStyle();
+    const state = { character: "Alice", character_info: { hair: "", eyes: "", name: "Alice", style: style.id, style_prompt: "Ink" },
+        gen_settings: { generation_mode: "illustrious", steps: 20 } };
+    const widget = { name: "widget_data", value: JSON.stringify(state) }, node = { widgets: [widget] };
+    let finish, context;
+    const ctx = setup(state.character_info, async (_url, options) => {
+        if (!options) return response(userCatalog());
+        return new Promise(resolve => { finish = resolve; });
+    }, { save: () => context.save() });
+    context = createWidgetContext({
+        node, state, els: { style: ctx.picker },
+        defaultGenerationSettings: { generation_mode: "illustrious", steps: 20 },
+        getDefaultCharacterInfo: () => ({ hair: "", eyes: "" }),
+        beginCharacterRequest() {}, beginCharacterWizardRequest() {}, beginPreviewRequest() {},
+        ensureLoraStack() {}, syncBackgroundForGenerationMode() {}, saveCurrentGenerationModeValues() {}, applyStoredPrefs() {},
+        showAlertModal() { assert.fail("Valid workflow must restore"); },
+        console: { log() {}, warn() {}, error() {} }, syncDOMWidgetWidth() {},
+        setTimeout: () => 0, clearTimeout() {}, registerCleanup() {},
+    });
+    const source = readFileSync(new URL("../web/vnccs_character_creator_v2.js", import.meta.url), "utf8");
+    const between = (start, end) => {
+        const offset = source.indexOf(start), limit = source.indexOf(end, offset);
+        assert.ok(offset >= 0 && limit > offset, start);
+        return source.slice(offset, limit);
+    };
+    vm.runInContext(`let restoredWidgetInfoCharacter = null;
+        ${between("const saveState =", "const clearPreviewHandlers =")}
+        ${between("const loadState =", "const syncSliderValue =")}
+        ${between("const origSerialize = node.onSerialize;", "// 3. State & Widget Setup")}
+        const init = () => loadState();
+        ${between("let initialized = false;", "\n            };\n\n            const onResize")}
+        globalThis.save = saveState;`, context);
+    await find(ctx.picker.root, "vnccs-style-summary").onclick();
+    find(ctx.host, "vnccs-style-delete").onclick();
+    const pending = walk(find(ctx.host, "vnccs-common-modal-overlay")).find(el => el.textContent === "Delete").onclick();
+    const selection = JSON.stringify(state.character_info);
+    widget.value = JSON.stringify({ ...state, gen_settings: { generation_mode: "illustrious", steps: 42 } });
+    node.onConfigure();
+    assert.equal(JSON.stringify(state.character_info), selection, "The restored character snapshot is identical");
+    finish(response({ deleted: true, style_id: style.id }));
+    await pending;
+    const workflow = { widgets_values: ["old snapshot"], title: "Restored workflow" };
+    node.onSerialize(workflow);
+    const restored = JSON.parse(workflow.widgets_values[0]);
+    assert.equal(restored.character_info.style, style.id);
+    assert.equal(restored.character_info.style_prompt, "Ink");
+    assert.equal(restored.gen_settings.steps, 42);
+    assert.equal(workflow.title, "Restored workflow");
+    assert.equal(find(ctx.host, "vnccs-style-gallery"), undefined);
 });

@@ -65,6 +65,7 @@ function setup({ costumes = ['Naked', 'Dress', 'Casual'], deletion, costumeInfo,
     vm.runInContext(`${guards}
         const beginDeleteRequest = createRequestGuard(node);
         const beginClothesWizardRequest = createRequestGuard(node);
+        const beginClothesUploadRequest = createRequestGuard(node);
         const beginSelectionRequest = createRequestGuard(node);
         const beginPreviewRequest = createRequestGuard(node);
         ${between(source, 'const saveState = () =>', 'node._randomizeSeedIfNeeded =')}

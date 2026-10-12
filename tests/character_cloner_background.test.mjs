@@ -42,7 +42,7 @@ function setup({ kind = "qi2", background = "Blue", previous = "Blue" } = {}) {
     node.onSerialize = function () { assert.equal(this, node); serialized++; };
     node.onConfigure = function () { assert.equal(this, node); configured++; };
     const context = createWidgetContext({
-        state, node, dataWidget, els: {}, colAttr: new Element(),
+        state, node, dataWidget, els: {}, colAttr: new Element(), defaultCharacterInfo: { background_color: 'Green' },
         app: { graph, canvas: { emitEvent(e) { events.push({ type: e.subType, value: dataWidget.value }); } } },
         document: { createElement: () => new Element() },
         window: {
@@ -55,6 +55,7 @@ function setup({ kind = "qi2", background = "Blue", previous = "Blue" } = {}) {
         setTimeout() {}, console: { log() {}, error(...args) { throw args.at(-1); } },
         setHelpText() {}, helpFor() {}, syncPoseStudioGender() {}, syncPoseStudioAge() {},
         renderThumbs() {}, beginCharacterRequest() {}, beginCaptionRequest() {}, syncDOMWidgetWidth() {},
+        loadCharList: async () => {},
     });
     vm.runInContext(
         block(common, "export function registerCleanup", "// Each loader").replace("export ", "") +

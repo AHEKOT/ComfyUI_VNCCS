@@ -129,11 +129,15 @@ test('workflow restoration merges generation defaults and preserves manual resol
     const state = { gen_settings: { target_size: null, seed: 0 } };
     const dataWidget = { value: JSON.stringify({ gen_settings: { target_size: 2048 } }) };
     const node = {};
-    let synchronized = 0;
+    let synchronized = 0, editControlsSynced = 0;
     const context = createWidgetContext({
         node, state, dataWidget, els: {},
         defaultState: { gen_settings: { target_size: null, seed: 0 }, character_info: {}, costume_info: {} },
+        beginClothesUploadRequest() {}, beginClothesWizardRequest() {}, beginDeleteRequest() {},
+        spritePreviewNavigator: null, refreshTabs() {},
         syncGenerationControls: () => synchronized++,
+        syncCostumeEditControls: () => editControlsSynced++,
+        showInfo: (_title, error) => assert.fail(`Valid restoration failed: ${error}`),
     });
     const start = designer.indexOf('node._vnccsRestoreClothesState =');
     const end = designer.indexOf('registerCleanup(node, () => { delete node._vnccsRestoreClothesState;', start);
@@ -146,6 +150,8 @@ test('workflow restoration merges generation defaults and preserves manual resol
     assert.equal(state.gen_settings.target_size, null);
     assert.equal(state.gen_settings.seed, 99);
     assert.equal(synchronized, 2);
+    assert.equal(editControlsSynced, 2);
+    assert.equal(node._vnccsStateRestoreError, undefined);
 });
 
 test('workflow serialization saves resolution and preserves the original callback', () => {

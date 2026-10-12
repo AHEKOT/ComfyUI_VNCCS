@@ -4,6 +4,7 @@ from .preview_runtime import run_preview_job, run_wizard_job
 
 import os
 import json
+import hashlib
 import torch
 import folder_paths
 import comfy.sd
@@ -12,7 +13,7 @@ import comfy.utils
 import nodes
 import server
 from aiohttp import web
-from PIL import Image
+from PIL import Image, ImageOps, PngImagePlugin
 import io
 import base64
 import numpy as np
@@ -60,28 +61,36 @@ def list_pose_preview_files(character_name, costume=None):
         if costume:
             costume = ensure_safe_name(costume, "costume")
             sprite_roots.extend([
-                safe_join_under(base_char_path, "Sprites", costume, "Neutral"),
-                safe_join_under(base_char_path, "Sprites", costume),
+                os.path.join(base_char_path, "Sprites", costume, "Neutral"),
+                os.path.join(base_char_path, "Sprites", costume),
             ])
         sprite_roots.extend([
-            safe_join_under(base_char_path, "Sprites", "Naked", "Neutral"),
-            safe_join_under(base_char_path, "Sprites", "Original", "Neutral"),
-            safe_join_under(base_char_path, "Sprites", "Naked"),
-            safe_join_under(base_char_path, "Sprites", "Original"),
+            os.path.join(base_char_path, "Sprites", "Naked", "Neutral"),
+            os.path.join(base_char_path, "Sprites", "Original", "Neutral"),
+            os.path.join(base_char_path, "Sprites", "Naked"),
+            os.path.join(base_char_path, "Sprites", "Original"),
         ])
         log_event("pose_preview_scan", component="Creator", level="debug", character=character_name, costume=costume)
 
         image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
         files = []
         for poses_dir in sprite_roots:
+            try:
+                poses_dir = safe_join_under(base_char_path, os.path.relpath(poses_dir, base_char_path))
+            except ValueError:
+                continue
             if not os.path.isdir(poses_dir):
                 continue
-            root_files = [
-                safe_join_under(base_char_path, os.path.relpath(os.path.join(poses_dir, filename), base_char_path))
-                for filename in os.listdir(poses_dir)
-                if os.path.isfile(os.path.join(poses_dir, filename))
-                and os.path.splitext(filename)[1].lower() in image_exts
-            ]
+            root_files = []
+            for filename in os.listdir(poses_dir):
+                if os.path.splitext(filename)[1].lower() not in image_exts:
+                    continue
+                try:
+                    path = safe_join_under(base_char_path, os.path.relpath(os.path.join(poses_dir, filename), base_char_path))
+                except ValueError:
+                    continue
+                if os.path.isfile(path):
+                    root_files.append(path)
             if root_files:
                 files = sorted(root_files)
                 break
@@ -109,8 +118,11 @@ def get_pose_preview(character_name, index=None, costume=None):
             selected_index = int(index) % count
         selected_file = files[selected_index]
         log_event("pose_preview_selected", component="Creator", level="debug", character=character_name, index=selected_index, count=count)
-        img = Image.open(selected_file).convert("RGB")
-        return pil2tensor(img), selected_index, count
+        with Image.open(selected_file) as img:
+            img = ImageOps.exif_transpose(img)
+            has_alpha = img.mode in {"RGBA", "LA"} or (img.mode == "P" and "transparency" in img.info)
+            image = pil2tensor(img.convert("RGBA" if has_alpha else "RGB"))
+        return image, selected_index, count
     except Exception as e:
         log_event('fallback', component='Creator', level='warning', message=f'Pose Preview Fallback Failed: {e}', error=str(e))
         return None, None, 0
@@ -353,9 +365,9 @@ def _load_character_style_catalog(path=CHARACTER_STYLE_CATALOG_PATH):
 ) = _load_character_style_catalog()
 
 
-def resolve_generation_seed(gen_settings):
+def resolve_generation_seed(gen_settings, *, seed_resolved=False):
     seed = int(gen_settings.get("seed", 0) or 0)
-    if str(gen_settings.get("seed_mode", "fixed") or "fixed").lower() == "randomize":
+    if not seed_resolved and str(gen_settings.get("seed_mode", "fixed") or "fixed").lower() == "randomize":
         return generate_seed(0)
     return seed
 
@@ -701,6 +713,20 @@ def normalize_gen_settings(gen_settings):
             merged["steps"] = 6
             merged["cfg"] = 1.0
     return merged
+
+
+def _preview_cache_key(info, gen_settings):
+    settings = normalize_gen_settings(gen_settings)
+    settings["seed"] = gen_settings.get("seed", settings["seed"])
+    settings.pop("mode_settings", None)
+    settings["lora_stack"] = [item for item in settings["lora_stack"] if item.get("name") and item["name"] != "None"]
+    payload = {
+        "character_info": {key: value for key, value in info.items() if key not in {"name", "seed"}},
+        "gen_settings": settings,
+        "prompts": CharacterCreatorV2.construct_prompt(info, settings["generation_mode"]),
+        "style": _character_style_prompt(info),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _invoke_node_method(class_names, method_names, **kwargs):
@@ -1420,7 +1446,7 @@ if server:
             if not character or ".." in character or "/" in character or "\\" in character:
                 return web.Response(status=400)
             
-            c_path = os.path.join(character_dir(character), "cache", "preview.png")
+            c_path = safe_join_under(character_dir(character), "cache", "preview.png")
             if os.path.exists(c_path):
                 return web.FileResponse(c_path)
             log_event("warning", component="Creator", level="warning", message=f'Cached preview not found at: {c_path}')
@@ -1655,6 +1681,9 @@ Example:
                 char_info = {**char_info, "image_type": "Portrait"}
                 char_info.pop("framing", None)
             character_name = data.get("character", "Unknown")
+            info_owner = str(char_info.get("name", "") or "").strip()
+            if style_preview is None and info_owner and info_owner != str(character_name):
+                return web.Response(status=400, text=f"Character metadata belongs to '{info_owner}', but '{character_name}' is selected. Reload the selected character before generating.")
             log_event("generation_settings", character=character_name,
                       mode=gen_settings.get("generation_mode"), steps=gen_settings.get("steps"), cfg=gen_settings.get("cfg"))
 
@@ -1675,7 +1704,8 @@ Example:
             cfg = float(gen_settings.get("cfg", 8.0))
             sampler_name = gen_settings.get("sampler", "euler")
             scheduler = gen_settings.get("scheduler", "normal")
-            seed = resolve_generation_seed(gen_settings)
+            seed = resolve_generation_seed(gen_settings, seed_resolved=data.pop("_vnccs_seed_resolved", False) is True)
+            gen_settings["seed"] = seed
             generation_mode = gen_settings.get("generation_mode", "illustrious")
 
             # Resolution
@@ -1790,9 +1820,11 @@ Example:
                 return web.json_response(save_preview(style_preview, img))
 
             # Save Smart Cache
-            c_path = os.path.join(character_dir(character_name), "cache", "preview.png")
+            c_path = safe_join_under(character_dir(character_name), "cache", "preview.png")
+            metadata = PngImagePlugin.PngInfo()
+            metadata.add_text("vnccs_preview_key", _preview_cache_key(char_info, gen_settings))
             with atomic_output_path(c_path) as temporary:
-                img.save(temporary, format="PNG")
+                img.save(temporary, format="PNG", pnginfo=metadata)
 
             buffered = io.BytesIO()
             img.save(buffered, format="PNG")
@@ -2004,6 +2036,9 @@ class CharacterCreatorV2:
     @classmethod
     def IS_CHANGED(cls, widget_data="{}", **kwargs):
         data = json.loads(widget_data)
+        if (data.get("_vnccs_seed_resolved") is not True
+                and str(normalize_gen_settings(data.get("gen_settings", {})).get("seed_mode", "fixed")).lower() == "randomize"):
+            return float("nan")
         character = data.get("character", "Unknown")
         root = character_dir(character)
         paths = [config_path(character), safe_join_under(root, "cache", "preview.png")]
@@ -2013,6 +2048,16 @@ class CharacterCreatorV2:
     @logged_operation("Creator", "workflow")
     @serialized_generator
     def process(self, widget_data="{}", unique_id=None):
+        try:
+            data = json.loads(widget_data)
+        except (TypeError, ValueError) as error:
+            raise ValueError("Character Creator widget data is invalid; refusing to overwrite character data.") from error
+        if not isinstance(data, dict):
+            raise ValueError("Character Creator widget data must be an object.")
+        character_name = ensure_safe_name(data.get("character"), "character")
+        if not isinstance(data.get("character_info", {}), dict) or not isinstance(data.get("gen_settings", {}), dict):
+            raise ValueError("Character info and generation settings must be objects.")
+
         # Clear Preview Cache to free memory for workflow run
         global PREVIEW_CACHE
         if PREVIEW_CACHE["asset_obj"]:
@@ -2022,15 +2067,11 @@ class CharacterCreatorV2:
         PREVIEW_CACHE["asset_key"] = None
         PREVIEW_CACHE["loras"].clear()
 
-        try:
-            data = json.loads(widget_data)
-        except:
-            data = {}
-
         # Extract values
-        character_name = data.get("character", "Unknown")
         info = data.get("character_info", {})
         gen_settings = normalize_gen_settings(data.get("gen_settings", {}))
+        seed = resolve_generation_seed(gen_settings, seed_resolved=data.pop("_vnccs_seed_resolved", False) is True)
+        gen_settings["seed"] = seed
         log_event("generation_settings", character=character_name,
                   mode=gen_settings.get("generation_mode"), steps=gen_settings.get("steps"), cfg=gen_settings.get("cfg"))
         info_owner = str(info.get("name", "") or "").strip()
@@ -2090,9 +2131,14 @@ class CharacterCreatorV2:
         # 4. Generate Image (Smart Cache Logic)
         
         # Determine Cache Path
-        cache_dir = os.path.join(character_dir(character_name), "cache")
+        cache_dir = safe_join_under(character_dir(character_name), "cache")
         os.makedirs(cache_dir, exist_ok=True)
-        cache_path = os.path.join(cache_dir, "preview.png")
+        cache_path = safe_join_under(cache_dir, "preview.png")
+        cache_key = _preview_cache_key(info, gen_settings)
+        cache_metadata = PngImagePlugin.PngInfo()
+        cache_metadata.add_text("vnccs_preview_key", cache_key)
+        pose_metadata = PngImagePlugin.PngInfo()
+        pose_metadata.add_text("vnccs_preview_key", "pose")
 
         # Check Validity
         preview_valid = data.get("preview_valid", False)
@@ -2130,16 +2176,22 @@ class CharacterCreatorV2:
                        log_event("diagnostic", component="Creator", level="debug", message='Pose preview loaded successfully. Overwriting Cache.')
                        c_img = tensor2pil(image)
                        with atomic_output_path(cache_path) as temporary:
-                           c_img.save(temporary, format="PNG")
+                           c_img.save(temporary, format="PNG", pnginfo=pose_metadata)
                   else:
                        log_event("warning", component="Creator", level="warning", message='Pose preview load failed. Will try cache/regen.')
 
              # If image not set yet (source=gen OR pose load failed), try cache
              if image is None and os.path.exists(cache_path):
-                 log_event("preview_cache", component="Creator", character=character_name, cache="hit")
                  try:
-                     i = Image.open(cache_path)
-                     image = pil2tensor(i)
+                     with Image.open(cache_path) as cached:
+                         saved_key = cached.info.get("vnccs_preview_key")
+                         # shortcut: legacy PNGs trust preview_valid until a new preview records its inputs.
+                         if saved_key is None or saved_key == cache_key:
+                             image = pil2tensor(cached)
+                             log_event("preview_cache", component="Creator", character=character_name, cache="hit")
+                         else:
+                             preview_valid = False
+                             log_event("preview_cache", component="Creator", character=character_name, cache="inputs_changed")
                  except Exception as e:
                      log_event('fallback', component='Creator', level='warning', message=f'Failed to load cache: {e}. Regenerating.', error=str(e))
 
@@ -2152,7 +2204,7 @@ class CharacterCreatorV2:
                      log_event("fallback", component="Creator", level="warning", message=f'Pose Preview Fallback Successful. Updating Cache.')
                      c_img = tensor2pil(image)
                      with atomic_output_path(cache_path) as temporary:
-                        c_img.save(temporary, format="PNG")
+                        c_img.save(temporary, format="PNG", pnginfo=pose_metadata)
                      try:
                         # Notify Frontend
                         server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": unique_id, "character": character_name})
@@ -2250,7 +2302,7 @@ class CharacterCreatorV2:
                 log_stage(stage)
                 sampled = sample_generation_latent(
                     model=model,
-                    seed=resolve_generation_seed(gen_settings),
+                    seed=seed,
                     steps=int(gen_settings.get("steps", ILLUSTRIOUS_DEFAULTS["steps"])),
                     cfg=float(gen_settings.get("cfg", ILLUSTRIOUS_DEFAULTS["cfg"])),
                     sampler_name=gen_settings.get("sampler", ILLUSTRIOUS_DEFAULTS["sampler"]),
@@ -2271,7 +2323,7 @@ class CharacterCreatorV2:
                 log_stage(stage)
                 c_img = tensor2pil(image)
                 with atomic_output_path(cache_path) as temporary:
-                    c_img.save(temporary, format="PNG")
+                    c_img.save(temporary, format="PNG", pnginfo=cache_metadata)
                 log_event("preview_saved", component="Creator", character=character_name)
                 try:
                     # Notify Frontend
