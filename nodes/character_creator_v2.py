@@ -3,6 +3,7 @@ from ..operation_logger import log_event, log_stage, logged_operation
 from .preview_runtime import run_preview_job, run_wizard_job
 
 import os
+import asyncio
 import json
 import hashlib
 import torch
@@ -32,6 +33,7 @@ from ..utils import (
     get_full_path_agnostic, atomic_output_path, safe_join_under,
     privileged_route, file_fingerprint, config_path,
     character_storage_lock, list_pose_preview_files,
+    StorageConflictError,
 )
 from .qwen_vl import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME
 from .runtime_cleanup import inference_stage
@@ -501,6 +503,18 @@ def get_lora_full_path(lora_name):
     return get_full_path_agnostic(folder_paths, "loras", lora_name, require_exists=True)
 
 
+def apply_generation_lora(model, clip, name, strength, clip_strength=None):
+    strength = float(strength or 0)
+    if not name or name == "None" or strength == 0:
+        return model, clip
+    path = get_lora_full_path(name)
+    if not path:
+        raise FileNotFoundError(f"Selected LoRA is not installed: {name}. Install it or disable it before generating.")
+    state, _metadata = control_center._load_lora_file(path)
+    return comfy.sd.load_lora_for_models(model, clip, state, strength,
+                                       strength if clip_strength is None else float(clip_strength))
+
+
 def _ensure_character_wizard_model():
     model_path, _mmproj_path = _ensure_qwen_vl_assets(allow_download=False, require_mmproj=False)
     return model_path
@@ -535,9 +549,7 @@ def _extract_character_tag_options(tags_data):
 SKIN_COLOR_OPTIONS = [item["tag"] for item in CHARACTER_PRESETS["tags"]["skin_color"]]
 
 SKIN_COLOR_HINT_RE = re.compile(
-    r"\b(skin|complexion|pale|fair|light[- ]skinned|tan|tanned|dark[- ]skinned|"
-    r"brown[- ]skinned|black|black[- ]skinned|afro|african|african[- ]american|"
-    r"olive|blue[- ]skinned|green[- ]skinned|grey[- ]skinned|gray[- ]skinned)\b",
+    r"\b(skin|complexion|[a-z]+[- ]skinned)\b",
     re.IGNORECASE,
 )
 
@@ -619,17 +631,17 @@ def _character_style_prompt(info):
 
 def _infer_skin_color_from_description(description):
     text = str(description or "").lower()
-    if re.search(r"\b(afro|african|african[- ]american|black|black[- ]skinned)\b", text):
+    if re.search(r"\b(black[- ]skinned|black (?:skin|complexion)|(?:afro|african(?:[- ]american)?|black)[- _]+(?:student|man|woman|boy|girl|person|character))\b", text):
         return "dark skin"
     if re.search(r"\b(brown[- ]skinned|brown skin)\b", text):
         return "brown skin"
-    if re.search(r"\b(tan|tanned)\b", text):
+    if re.search(r"\b(tan[- ]skinned|(?:tan|tanned) (?:skin|complexion))\b", text):
         return "tan skin"
-    if re.search(r"\bolive\b", text):
+    if re.search(r"\bolive (?:skin|complexion)\b", text):
         return "olive skin"
-    if re.search(r"\bpale\b", text):
+    if re.search(r"\bpale (?:skin|complexion)\b", text):
         return "pale skin"
-    if re.search(r"\b(fair|light[- ]skinned|light skin)\b", text):
+    if re.search(r"\b(light[- ]skinned|(?:fair|light) (?:skin|complexion))\b", text):
         return "fair skin"
     return ""
 
@@ -1658,7 +1670,7 @@ if server:
     @server.PromptServer.instance.routes.get("/vnccs/character_styles")
     async def get_character_styles(request):
         try:
-            styles = load_user_styles()
+            styles = await asyncio.to_thread(load_user_styles)
             groups = [
                 {**group, "styles": [{**style, "image": style_preview_url(style["id"])} for style in group["styles"]]}
                 for group in CHARACTER_STYLE_CATALOG["groups"] + ([{"label": "My styles", "styles": styles}] if styles else [])
@@ -1678,8 +1690,10 @@ if server:
                 body.extend(chunk)
                 if len(body) > 70000:
                     return web.json_response({"error": "Style payload is too large"}, status=413)
-            style = save_user_style(json.loads(body))
+            style = await asyncio.to_thread(save_user_style, json.loads(body))
             return web.json_response({"style": {**style, "image": style_preview_url(style["id"])}})
+        except StorageConflictError as error:
+            return web.json_response({"error": str(error)}, status=409)
         except (ValueError, UnicodeError) as error:
             return web.json_response({"error": str(error)}, status=400)
         except OSError:
@@ -1690,7 +1704,7 @@ if server:
     async def delete_character_style(request):
         try:
             style_id = request.rel_url.query.get("style", "")
-            if not delete_user_style(style_id):
+            if not await asyncio.to_thread(delete_user_style, style_id):
                 return web.json_response({"error": "User style no longer exists"}, status=404)
             return web.json_response({"deleted": True, "style_id": style_id})
         except ValueError as error:
@@ -1751,12 +1765,16 @@ if server:
                 return web.json_response({})
             name = ensure_safe_name(name, "character")
                 
-            config = load_config(name, strict=True)
-            if config is None:
+            def read_profile():
+                with character_storage_lock(character_dir(name)):
+                    config = load_config(name, strict=True)
+                    if config is None:
+                        return None
+                    return config.get("character_info", {})
+            snapshot = await asyncio.to_thread(read_profile)
+            if snapshot is None:
                 return web.json_response({"error": "Character not found"}, status=404)
-            if config and "character_info" in config:
-                return web.json_response(config["character_info"])
-            return web.json_response({})
+            return web.json_response(snapshot)
             
         except Exception as e:
             log_event('exception', component='Creator', level='error', exc_info=True, truncate=False, message='Operation failed', error=str(e))
@@ -2044,13 +2062,7 @@ Example:
                 except ValueError as exc:
                     return web.Response(status=400, text=str(exc))
 
-                def apply_lora_cached(m, c, l_name, l_strength, clip_strength=None):
-                    if not l_name or l_name == "None": return m, c
-                    l_path = get_lora_full_path(l_name)
-                    if l_path:
-                        lora_dict, _metadata = control_center._load_lora_file(l_path)
-                        return comfy.sd.load_lora_for_models(m, c, lora_dict, l_strength, l_strength if clip_strength is None else clip_strength)
-                    return m, c
+                apply_lora_cached = apply_generation_lora
 
                 if generation_mode == "anima":
                     if gen_settings.get("turbo_enabled"):
@@ -2177,7 +2189,8 @@ Example:
                 raise ValueError("Character info and generation settings must be objects")
             if len(json.dumps(data)) > 150000:
                 raise ValueError("Style preview payload is too large")
-            styles = {**CHARACTER_STYLE_PROMPTS, **{style["id"]: style["prompt"] for style in load_user_styles()}}
+            users = await asyncio.to_thread(load_user_styles)
+            styles = {**CHARACTER_STYLE_PROMPTS, **{style["id"]: style["prompt"] for style in users}}
             if style_id == "custom":
                 prompt = info.get("custom_style", "")
                 if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
@@ -2422,7 +2435,7 @@ class CharacterCreatorV2:
         root = character_dir(character)
         paths = [config_path(character), safe_join_under(root, "cache", "preview.png")]
         paths.extend(list_pose_preview_files(character))
-        return json.dumps([[file_fingerprint(path) for path in paths],
+        return json.dumps([_character_style_prompt(data.get("character_info", {})), [file_fingerprint(path) for path in paths],
                            _generation_file_signatures(normalize_gen_settings(data.get("gen_settings", {})))])
 
     @logged_operation("Creator", "workflow")
@@ -2481,10 +2494,10 @@ class CharacterCreatorV2:
         sheets_path = sheets_dir(character_name) # Uses default "Naked", "neutral", "sheet_neutral"
         faces_path = faces_dir(character_name)   # Uses default "Naked", "neutral", "face_neutral"
 
-        ensure_character_structure(character_name)
-
         with character_storage_lock(character_path):
-            config = load_config(character_name, strict=True) or {
+            config = load_config(character_name, strict=True)
+            ensure_character_structure(character_name)
+            config = config or {
                 "character_info": {},
                 "folder_structure": {
                     "main_directories": MAIN_DIRS,
@@ -2496,7 +2509,7 @@ class CharacterCreatorV2:
 
             info["name"] = character_name
             info["seed"] = gen_settings.get("seed", 0)
-            config["character_info"] = info
+            config["character_info"] = {**config.get("character_info", {}), **info}
             config["character_path"] = character_path
             if "costumes" not in config:
                 config["costumes"] = {}
@@ -2601,13 +2614,7 @@ class CharacterCreatorV2:
                 _, model, clip, vae = load_generation_assets(gen_settings)
 
                 # Helper to apply LoRA
-                def apply_lora_safe(m, c, l_name, l_strength, clip_strength=None):
-                    if not l_name or l_name == "None": return m, c
-                    l_path = get_lora_full_path(l_name)
-                    if l_path:
-                        lora = comfy.utils.load_torch_file(l_path, safe_load=True)
-                        return comfy.sd.load_lora_for_models(m, c, lora, l_strength, l_strength if clip_strength is None else clip_strength)
-                    return m, c
+                apply_lora_safe = apply_generation_lora
 
                 stage = "applying generation adapters"
                 log_stage(stage)

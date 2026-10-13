@@ -279,7 +279,7 @@ def test_create_only_costume_requests_are_atomic_and_regular_edits_still_work(cl
     assert utils.load_costume_info("Alice", "Dress") == {"top": winner}
     response = asyncio.run(clothes_paths.vnccs_save_costume(costume_request({
         "character": "Alice", "costume": "Dress", "info": {"top": "edited wool"},
-        "revision": utils.costume_revision(utils.load_costume_info("Alice", "Dress")),
+        "revision": utils.load_costume_snapshot("Alice", "Dress")[1],
     })))
     assert response.status == 200
     assert utils.load_costume_info("Alice", "Dress") == {"top": "edited wool"}
@@ -309,6 +309,7 @@ def test_costume_save_waits_without_blocking_the_event_loop(clothes_paths, monke
     monkeypatch.setattr(clothes_paths.web, "json_response", lambda data, status=200:
         types.SimpleNamespace(data=data, status=status), raising=False)
     utils.save_costume_info("Alice", "Dress", {"top": "cotton"})
+    revision = utils.load_costume_snapshot("Alice", "Dress")[1]
     ready, release = threading.Event(), threading.Event()
     def publish():
         with utils.character_storage_lock(utils.character_dir("Alice")):
@@ -317,7 +318,7 @@ def test_costume_save_waits_without_blocking_the_event_loop(clothes_paths, monke
     async def run():
         task = asyncio.create_task(clothes_paths.vnccs_save_costume(costume_request({
             "character": "Alice", "costume": "Dress", "info": {"top": "silk"},
-            "revision": utils.costume_revision({"top": "cotton"}),
+            "revision": revision,
         })))
         await asyncio.sleep(.01)
         assert not task.done(), "HTTP processing must continue while publication holds the storage lock"

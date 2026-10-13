@@ -28,6 +28,7 @@ from .character_creator_v2 import (
     normalize_gen_settings,
     get_lora_full_path,
     _generation_file_signatures,
+    apply_generation_lora,
 )
 from .vnccs_control_center import is_qi2_turbo_model
 from .vnccs_pipe import VNCCS_Pipe
@@ -203,21 +204,7 @@ def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
         gen_settings = normalize_gen_settings({**parsed, "generation_mode": mode})
         _, model, clip, vae = load_generation_assets(gen_settings)
 
-    def apply_lora_safe(m, c, lora_name, strength, clip_strength=None):
-        if not lora_name or lora_name == "None" or float(strength or 0) == 0:
-            return m, c
-        lora_path = get_lora_full_path(lora_name)
-        if not lora_path:
-            log_event("warning", component="EmotionStudio", level="warning", message=f'LoRA not found: {lora_name}')
-            return m, c
-        lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
-        return comfy.sd.load_lora_for_models(
-            m,
-            c,
-            lora,
-            float(strength),
-            float(strength) if clip_strength is None else float(clip_strength),
-        )
+    apply_lora_safe = apply_generation_lora
 
     if mode == "anima":
         if gen_settings.get("turbo_enabled"):

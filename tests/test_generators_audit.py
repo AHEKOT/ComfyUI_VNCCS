@@ -11,6 +11,17 @@ torch = pytest.importorskip("torch")
 from nodes import character_generator as generator
 
 
+@pytest.mark.parametrize("costume", ["", "Naked", "naked", "Original", "ORIGINAL"])
+def test_clothes_generator_rejects_protected_output_before_cache_or_sampling(monkeypatch, tmp_path, costume):
+    node = generator.VNCCS_ClothesGenerator()
+    monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(generator, "_save_run_inputs", lambda *args, **kwargs: pytest.fail("Protected output must fail before cache writes"))
+    state = {"character_name": "Alice", "costume": costume}
+    with pytest.raises(ValueError, match="editable costume"):
+        node.process(None, None, None, "", widget_data=json.dumps(state))
+    assert not list(tmp_path.iterdir())
+
+
 def test_generator_preserves_zero_guidance():
     pipe = SimpleNamespace(model="model", clip="clip", vae="vae", seed_int=42,
                            sample_steps=20, cfg=0.0, denoise=1.0,
@@ -53,7 +64,7 @@ def test_single_image_regeneration_preserves_published_sprites(tmp_path, monkeyp
             "clothes": generator.VNCCS_ClothesGenerator}[mode]()
     output = tmp_path / "output"
     root = output / "VNCCS" / "Characters" / "Alice"
-    sheets = root / "Sheets" / "Naked" / "neutral"
+    sheets = root / "Sheets" / ("Coat" if mode == "clothes" else "Naked") / "neutral"
     sheets.mkdir(parents=True)
     monkeypatch.setattr(generator.folder_paths, "get_output_directory", lambda: str(output))
     monkeypatch.setattr(node, "_find_pose_lora", lambda *args: {})
@@ -65,7 +76,7 @@ def test_single_image_regeneration_preserves_published_sprites(tmp_path, monkeyp
     state = {"character_name": "Alice", "nsfw_enabled": False, "bg_remove": {"preset": "Native"}}
     arguments = (images, images[:1], object(), "Pose")
     node.process(*arguments, widget_data=json.dumps(state), sheets_path=str(sheets), unique_id="audit")
-    sprite_set = "Original" if mode == "clone" else "Naked"
+    sprite_set = "Original" if mode == "clone" else "Coat" if mode == "clothes" else "Naked"
     target = root / "Sprites" / sprite_set / "Neutral"
     before = {path.name: path.read_bytes() for path in target.glob("*.png")}
     assert len(before) == 3

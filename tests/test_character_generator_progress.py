@@ -225,4 +225,6 @@ def test_entry_points_forward_node_stage_and_actual_pose_count(monkeypatch, mode
             )
         else:
             payload = {} if regenerate_index is None else {"regenerate_from": stage, "regenerate_index": regenerate_index}
+            if mode == "clothes":
+                payload["costume"] = "Coat"
             node.process(poses, poses[:1], object(), "prompt", widget_data=json.dumps(payload), unique_id=["17"])

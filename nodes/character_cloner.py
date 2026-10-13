@@ -185,12 +185,12 @@ class CharacterCloner:
         if character_name:
             # Just ensure folder exists
             with character_storage_lock(character_path):
-                os.makedirs(character_path, exist_ok=True)
                 config = load_config(character_name)
                 if not isinstance(config, dict):
                     if os.path.exists(config_path(character_name)):
                         raise ValueError(f"Cannot read the existing configuration for '{character_name}'; refusing to overwrite it.")
                     config = {}
+                os.makedirs(character_path, exist_ok=True)
                 config.setdefault("folder_structure", {"main_directories": MAIN_DIRS, "emotions": EMOTIONS})
                 config.setdefault("config_version", "2.0")
                 config.update({

@@ -152,6 +152,8 @@ def test_pose_prompt_lists_survive_caching_and_single_pose_regeneration(runtime,
     monkeypatch.setattr(node, '_run_source_upscaler', lambda image, *a, **k: image)
     stage = 'original_pose_generation' if node_name == 'VNCCS_CharacterCloneGenerator' else 'pose_generation'
     state = {'regenerate_from': stage, 'regenerate_index': 1} if regenerate else {}
+    if node_name == 'VNCCS_ClothesGenerator':
+        state['costume'] = 'Coat'
     with pytest.raises(ReachedEncoder):
         node.process(poses, character, SimpleNamespace(), prompts, widget_data=json.dumps(state))
     assert cached[0]['prompt'] == prompts

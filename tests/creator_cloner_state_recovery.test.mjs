@@ -299,7 +299,7 @@ test('Creator repeats configure, preserves the original callback, and cancels co
 test('Creator restores the selected preview source and pose index without inheriting previous selection', () => {
     const h = setup('creator');
     h.dataWidget.value = JSON.stringify({ character: 'Alice', character_info: { name: 'Alice' },
-        preview_valid: true, preview_source: 'pose', sprite_preview_index: 3 });
+        character_revision: 'alice-revision', preview_valid: true, preview_source: 'pose', sprite_preview_index: 3 });
     assert.equal(h.load(), true);
     assert.equal(h.state.preview_valid, true);
     assert.equal(h.state.preview_source, 'pose');
@@ -314,7 +314,7 @@ test('Creator restores the selected preview source and pose index without inheri
 test('Cloner repeated configuration never copies traits from the previous character', () => {
     const h = setup('cloner');
     h.state.character_info.eyes = 'Alice green eyes';
-    h.dataWidget.value = JSON.stringify({ character: 'Bob', character_info: { name: 'Bob', hair: 'Bob hair' } });
+    h.dataWidget.value = JSON.stringify({ character: 'Bob', character_revision: 'bob-revision', character_info: { name: 'Bob', hair: 'Bob hair' } });
     h.node.onConfigure();
     assert.equal(h.state.character_info.eyes, '');
     assert.equal(h.state.character_info.hair, 'Bob hair');

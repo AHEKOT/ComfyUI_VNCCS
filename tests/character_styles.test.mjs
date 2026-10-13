@@ -147,7 +147,7 @@ test("keyboard focus stays in the gallery; Escape and removal discard pending re
 });
 
 test("user styles save on the server, show inline errors, and edits keep their ID", async () => {
-    const saved = { id: "user_" + "a".repeat(32), label: "Mine", description: "Sketch", reference: "Me", prompt: "Ink", user: true };
+    const saved = { id: "user_" + "a".repeat(32), label: "Mine", description: "Sketch", reference: "Me", prompt: "Ink", user: true, revision: "read-revision" };
     const calls = []; let fail = true;
     const data = catalog(); data.groups.push({ label: "My styles", styles: [saved] });
     const ctx = setup({ style: saved.id }, async (url, options) => {
@@ -167,6 +167,7 @@ test("user styles save on the server, show inline errors, and edits keep their I
     fail = false;
     await editor.onsubmit({ preventDefault() {} });
     assert.equal(JSON.parse(calls.at(-1).body).id, saved.id);
+    assert.equal(JSON.parse(calls.at(-1).body).revision, saved.revision);
     assert.equal(calls.at(-1).headers["X-VNCCS-CSRF"], "1");
     assert.equal(ctx.snapshots.at(-1).style_prompt, "Graphite");
     assert.equal(ctx.info.style, saved.id);

@@ -13,6 +13,7 @@ import tempfile
 import hashlib
 import shutil
 import threading
+import uuid
 from contextlib import contextmanager
 from functools import wraps
 from urllib.parse import urlparse
@@ -26,6 +27,11 @@ PRIVILEGED_REQUEST_HEADER = "X-VNCCS-CSRF"
 PRIVILEGED_REQUEST_VALUE = "1"
 _STORAGE_LOCKS = tuple(threading.RLock() for _ in range(64))
 COSTUME_TEXT_FIELDS = {"top", "bottom", "shoes", "head", "face", "negative_prompt"}
+
+
+class StorageConflictError(ValueError):
+    """An older editor cannot replace the current disk document."""
+
 AGE_CONTROL_POINTS = [
     (0, -5.0),
     (3, -4.0),
@@ -627,6 +633,9 @@ def load_config(character_name: str, *, strict=False) -> Optional[Dict[str, Any]
             key in data and not isinstance(data[key], dict) for key in ("character_info", "costumes")
         )):
             raise ValueError("Invalid character configuration structure")
+        if strict and "costume_ids" in data and (not isinstance(data["costume_ids"], dict)
+                or any(not isinstance(value, str) for value in data["costume_ids"].values())):
+            raise ValueError("Invalid costume storage identities")
         return data
     except FileNotFoundError:
         return None
@@ -767,9 +776,20 @@ def load_costume_info(character_name: str, costume_name: str) -> Dict[str, Any]:
     return validate_costume_info(costumes.get(costume_name, {}))
 
 
-def costume_revision(info):
-    content = json.dumps(info, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+def json_revision(info, identity=""):
+    value = [identity, info] if identity else info
+    content = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return f'"{hashlib.sha256(content).hexdigest()}"'
+
+
+costume_revision = json_revision
+
+
+def load_costume_snapshot(character_name, costume_name):
+    with character_storage_lock(character_dir(character_name)):
+        config = load_config(character_name, strict=True) or {}
+        info = validate_costume_info(config.get("costumes", {}).get(costume_name, {}))
+        return info, json_revision(info, config.get("costume_ids", {}).get(costume_name, ""))
 
 
 def save_costume_info(character_name: str, costume_name: str, costume_data: Dict[str, Any]) -> bool:
@@ -781,6 +801,9 @@ def save_costume_info(character_name: str, costume_name: str, costume_data: Dict
             config = {"character_info": {}, "costumes": {}}
         if "costumes" not in config:
             config["costumes"] = {}
+        identities = config.setdefault("costume_ids", {})
+        if costume_name not in config["costumes"] or costume_name not in identities:
+            identities[costume_name] = uuid.uuid4().hex
         config["costumes"][costume_name] = costume_data
         return save_config(character_name, config) != ""
 
@@ -825,6 +848,7 @@ def delete_costume(character_name: str, costume_name: str) -> Optional[str]:
                 moved.append((path, backup))
             if costume_name in costumes:
                 del costumes[costume_name]
+                config.get("costume_ids", {}).pop(costume_name, None)
                 if not save_config(character_name, config):
                     raise OSError(f"Could not save configuration after deleting '{costume_name}'.")
         except BaseException:

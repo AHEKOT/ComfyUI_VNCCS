@@ -761,7 +761,7 @@ app.registerExtension({
 
                 const hasSelectedEditableCostume = () => {
                     const costume = String(state.costume || "").trim();
-                    return !!costume && costume !== "Naked" && costume !== "Original";
+                    return !!costume && !["naked", "original"].includes(costume.toLowerCase());
                 };
 
                 const showCreateCostumeRequired = () => {

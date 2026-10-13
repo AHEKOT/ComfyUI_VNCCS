@@ -331,6 +331,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
                 const token = ++requestId;
                 const payload = Object.fromEntries(Object.entries(fields).map(([key, input]) => [key, input.value]));
                 if (draft.id) payload.id = draft.id;
+                if (draft.revision) payload.revision = draft.revision;
                 const response = await fetchApi("/vnccs/character_styles", {
                     method: "POST", headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" }, body: JSON.stringify(payload),
                 });

@@ -14,6 +14,7 @@ Sampler / scheduler:
 
 """Prepare enumeration lists once for input validation."""
 import os
+from copy import copy
 import folder_paths
 from .sampler_scheduler_picker import (
     fetch_sampler_scheduler_lists,
@@ -197,7 +198,7 @@ class VNCCS_Pipe:
             self.sample_steps if self.sample_steps is not None else 0,
             self.cfg,
             self.denoise,
-            self,
+            copy(self),
             self.sampler_name or "",
             self.scheduler or "",
         )

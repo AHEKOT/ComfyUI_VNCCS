@@ -3112,6 +3112,8 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                 sheets_path,
                 widget_payload.get("costume") or widget_payload.get("costume_name") or "Naked",
             )
+            if costume_name.casefold() in {"naked", "original"}:
+                raise ValueError("Clothes Generator requires an editable costume. Select a costume in Clothes Designer before generating.")
             cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""), unique_id, self._progress_scope)
             _remember_generator_context(unique_id, "VNCCS_ClothesGenerator", cache_dir, pipe, self._progress_scope)
             if regenerate_from:

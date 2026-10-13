@@ -21,7 +21,7 @@ from ..utils import (
     load_costume_info, list_costumes, ensure_costume_structure,
     sheets_dir,
     ensure_safe_name, safe_join_under, safe_relative_path, atomic_output_path,
-    validate_costume_info, privileged_route, character_storage_lock, costume_revision
+    validate_costume_info, privileged_route, character_storage_lock, load_costume_snapshot
 )
 from .character_generator import (
     _call_comfy_node,
@@ -417,7 +417,7 @@ class ClothesDesigner:
     @staticmethod
     def _is_editable_costume(value):
         costume = str(value or "").strip()
-        return bool(costume) and costume not in {"Naked", "Original"}
+        return bool(costume) and costume.casefold() not in {"naked", "original"}
 
     @staticmethod
     def _emit_validation_error(unique_id, message):
@@ -858,8 +858,8 @@ async def vnccs_get_costume(request):
     try:
         character = ensure_safe_name(character, "character")
         costume = ensure_safe_name(costume, "costume")
-        data = load_costume_info(character, costume)
-        return web.json_response(data, headers={"ETag": costume_revision(data)})
+        data, revision = await asyncio.to_thread(load_costume_snapshot, character, costume)
+        return web.json_response(data, headers={"ETag": revision})
     except Exception as e:
         return web.Response(status=500, text=str(e))
 
@@ -886,12 +886,12 @@ async def vnccs_save_costume(request):
                     revision = data.get("revision")
                     if not isinstance(revision, str) or not revision:
                         return web.json_response({"error": "Reload the costume before saving. Your local draft has been preserved."}, status=428)
-                    if costume not in existing or revision != costume_revision(load_costume_info(character, costume)):
+                    if costume not in existing or revision != load_costume_snapshot(character, costume)[1]:
                         return web.json_response({"error": "This costume changed or was deleted in another editor. Your local draft has been preserved; reload the costume before saving."}, status=409)
                 ensure_costume_structure(character, costume)
                 if not save_costume_info(character, costume, info):
                     return web.json_response({"error": f"Could not save costume '{costume}'. Check storage permissions and free space."}, status=500)
-                return web.json_response({"status": "ok", "revision": costume_revision(info)})
+                return web.json_response({"status": "ok", "revision": load_costume_snapshot(character, costume)[1]})
         return await asyncio.to_thread(save)
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)
@@ -1049,8 +1049,7 @@ async def vnccs_clothes_wizard(request):
     return await run_wizard_job(_clothes_wizard_response, post, "clothes")
 
 
-@server.PromptServer.instance.routes.get("/vnccs/get_preview")
-async def vnccs_get_preview(request):
+def _get_preview_response(request):
     character = request.rel_url.query.get("character", "")
     costume = request.rel_url.query.get("costume", "Naked")
     if not character: return web.Response(status=404)
@@ -1116,6 +1115,11 @@ async def vnccs_get_preview(request):
              return web.Response(body=f.read(), content_type="image/png")
              
     return web.Response(status=404)
+
+
+@server.PromptServer.instance.routes.get("/vnccs/get_preview")
+async def vnccs_get_preview(request):
+    return await asyncio.to_thread(_get_preview_response, request)
 
 
 NODE_CLASS_MAPPINGS = {

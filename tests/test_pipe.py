@@ -132,7 +132,7 @@ class TestProcessPipeInheritance:
         result = self._run(pipe=pipe, sampler_name="euler")
         assert result[10] == "euler"
 
-    def test_returns_self_as_pipe_output(self):
+    def test_returns_an_independent_pipe_snapshot(self):
         node = VNCCS_Pipe()
         pipe = _make_pipe()
         defaults = dict(
@@ -143,7 +143,10 @@ class TestProcessPipeInheritance:
             lora_name="none", lora_strength=1.0, lora_options_json='["none"]',
         )
         result = node.process_pipe(**defaults)
-        assert result[9] is node
+        assert result[9] is not node
+        original = result[9].seed_int, result[9].model
+        node.process_pipe(model="next model", seed_int=123)
+        assert (result[9].seed_int, result[9].model) == original
 
 
 # ── process_pipe — sampler/scheduler fallback ─────────────────────────────────
@@ -246,7 +249,8 @@ class TestProcessPipeReturnShape:
             lora_name="none", lora_strength=1.0, lora_options_json='["none"]',
         )
         assert result[0] == "model"
-        assert result[9] is node
+        assert result[9] is not node
+        assert result[9].model == "model"
 
     def test_returns_12_values(self):
         node = VNCCS_Pipe()

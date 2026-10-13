@@ -2191,7 +2191,7 @@ async def cc_check(request):
         import asyncio
 
         loop = asyncio.get_running_loop()
-        config = await loop.run_in_executor(None, lambda: _get_cc_config(repo_id, prefer_remote=True))
+        config = await loop.run_in_executor(None, lambda: _get_cc_config(repo_id, prefer_remote=force))
     except Exception as exc:
         err = str(exc)
         if "404" in err or "not found" in err.lower():

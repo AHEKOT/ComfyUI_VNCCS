@@ -219,6 +219,60 @@ test("generator gallery reserves aligned slots and reveals decoded cards in orde
     assert.ok(tiles.every(tile => !tile.style.width && !tile.style.height), "Mixed image dimensions cannot offset individual frames");
 });
 
+test("generator gallery is created once while detached and survives mounting", () => {
+    const h = setup(); h.root.remove();
+    h.context.app = { registerExtension() {} };
+    vm.runInContext(generator.replace(/^import .*;\n/gm, "") + '\nthis.Generator = CharacterGeneratorWidget;', h.context);
+    const preview = new h.Element("div"); h.root.appendChild(preview);
+    const widget = Object.assign(Object.create(h.context.Generator.prototype), {
+        previewEl: preview, _ui: h.ui, syncStagesFromData() {}, schedulePreviewGridLayout() {},
+        stages: [["pose_generation", "Poses"]], selectedPreview: "pose_generation",
+        stageState: { pose_generation: { status: "waiting" } },
+    });
+    widget.renderPreview();
+    const grid = widget.previewGrid, tabs = widget.previewTabs;
+    for (let i = 0; i < 4; i++) widget.renderPreview();
+    assert.equal(preview.querySelectorAll(".vnccs-pipe-grid").length, 1);
+    assert.equal(preview.querySelectorAll(".vnccs-pipe-preview-head").length, 1);
+    assert.equal(preview.querySelectorAll(".vnccs-pipe-empty").length, 1);
+    h.document.body.appendChild(h.root); widget.renderPreview();
+    assert.equal(widget.previewGrid, grid); assert.equal(widget.previewTabs, tabs);
+    assert.equal(widget.previewLabel.textContent, "Poses");
+    assert.equal(tabs.children.length, 1);
+});
+
+test("decoded generator cards preserve image aspect ratios and stay bounded in workflow-sized galleries", async () => {
+    const h = setup();
+    h.context.app = { registerExtension() {} };
+    vm.runInContext(generator.replace(/^import .*;\n/gm, "") + '\nthis.Generator = CharacterGeneratorWidget;', h.context);
+    const preview = new h.Element("div"); h.root.appendChild(preview);
+    const widget = Object.assign(Object.create(h.context.Generator.prototype), {
+        previewEl: preview, _ui: h.ui, syncStagesFromData() {}, schedulePreviewGridLayout() {},
+        stages: [["pose_generation", "Poses"]], selectedPreview: "pose_generation",
+        stageState: { pose_generation: { status: "done", images: ["portrait", "landscape", "square"] } },
+    });
+    widget.renderPreview();
+    const sizes = [[512, 1024], [1024, 512], [768, 768]];
+    for (const [index, tile] of [...widget.previewGrid.children].entries()) {
+        [tile._pendingImage.naturalWidth, tile._pendingImage.naturalHeight] = sizes[index];
+        await tile._pendingImage.onload();
+    }
+    for (const name of ["Step1_CharacterCreator", "Step1_CharacterCloner", "Step2_CharacterClothes", "Step3_CharacterEmotions"]) {
+        const workflow = JSON.parse(readFileSync(new URL(`../workflows/VNCCS_3.2_${name}.json`, import.meta.url), "utf8"));
+        const node = workflow.nodes.find(node => /^VNCCS_.*Generator$/.test(node.type));
+        widget.previewGrid.clientWidth = node.size[0] - 290 - 24;
+        widget.previewGrid.clientHeight = node.size[1] - 172 - 68;
+        widget.layoutPreviewGrid(widget.previewGrid);
+        [...widget.previewGrid.children].forEach((tile, index) => {
+            const width = parseFloat(tile.style.width), height = parseFloat(tile.style.height);
+            assert.ok(width <= 240 && height <= 320);
+            assert.ok(width > 0 && height > 0);
+            assert.ok(Math.abs(width / height - sizes[index][0] / sizes[index][1]) < 0.001);
+        });
+        assert.doesNotMatch(widget.previewGrid.style.gridTemplateColumns, /1fr/);
+    }
+});
+
 test("Creator native selectors keep their state while shared dropdowns handle choices and dynamic inventory", () => {
     const h = setup();
     const select = new h.Element("select"); select.className = "vnccs-creator-select"; select.ariaLabel = "Character";

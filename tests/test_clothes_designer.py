@@ -299,7 +299,7 @@ class TestEditableCostumeValidation:
     def test_accepts_editable_costumes(self, costume):
         assert ClothesDesigner._is_editable_costume(costume)
 
-    @pytest.mark.parametrize("costume", ["", None, "Naked", "Original"])
+    @pytest.mark.parametrize("costume", ["", None, "Naked", "Original", "naked", "ORIGINAL"])
     def test_rejects_missing_or_base_costumes(self, costume):
         assert not ClothesDesigner._is_editable_costume(costume)
 

@@ -122,6 +122,7 @@ def test_utf8_size_limit_rejects_save_before_replacing_readable_library(tmp_path
     payload = {"label": "Large", "prompt": "界" * 700}
     if edit:
         payload["id"] = kept["id"]
+        payload["revision"] = kept["revision"]
     with pytest.raises(ValueError, match="previous library has been preserved"):
         library.save_user_style(payload, path)
     assert path.read_bytes() == original

@@ -11,7 +11,7 @@ import uuid
 import numpy as np
 from PIL import Image
 
-from ..utils import atomic_output_path, safe_join_under
+from ..utils import atomic_output_path, safe_join_under, json_revision, StorageConflictError
 
 
 USER_CHARACTER_STYLES_PATH = os.path.join(
@@ -117,7 +117,7 @@ def load_user_styles(path=None):
         styles = [validate_user_style(style) for style in library["styles"]]
         if len({style["id"] for style in styles}) != len(styles):
             raise ValueError("Duplicate user style IDs")
-        return styles
+        return [{**style, "revision": json_revision(style)} for style in styles]
 
 
 def save_user_style(value, path=None):
@@ -132,6 +132,9 @@ def save_user_style(value, path=None):
         index = next((i for i, item in enumerate(styles) if item["id"] == style["id"]), None)
         if supplied_id and index is None:
             raise ValueError("User style no longer exists; save it as a new style")
+        if index is not None and value.get("revision") != styles[index]["revision"]:
+            if style != validate_user_style(styles[index]):
+                raise StorageConflictError("This style changed in another editor. Your local draft has been preserved; reload the style before saving.")
         if index is None:
             if len(styles) >= 1000:
                 raise ValueError("User style library supports up to 1000 styles")
@@ -140,11 +143,11 @@ def save_user_style(value, path=None):
             styles[index] = style
         with atomic_output_path(path) as temporary:
             with open(temporary, "w", encoding="utf-8") as output:
-                json.dump({"version": 1, "styles": styles}, output, ensure_ascii=False, indent=2)
+                json.dump({"version": 1, "styles": [validate_user_style(item) for item in styles]}, output, ensure_ascii=False, indent=2)
                 output.write("\n")
             if os.path.getsize(temporary) > _MAX_LIBRARY_BYTES:
                 raise ValueError("User style library is too large; the previous library has been preserved")
-    return style
+    return {**style, "revision": json_revision(style)}
 
 
 def delete_user_style(style_id, path=None):
@@ -167,7 +170,7 @@ def delete_user_style(style_id, path=None):
         try:
             with atomic_output_path(path) as temporary:
                 with open(temporary, "w", encoding="utf-8") as output:
-                    json.dump({"version": 1, "styles": remaining}, output, ensure_ascii=False, indent=2)
+                    json.dump({"version": 1, "styles": [validate_user_style(item) for item in remaining]}, output, ensure_ascii=False, indent=2)
                     output.write("\n")
                 if previous is not None:
                     os.unlink(preview)

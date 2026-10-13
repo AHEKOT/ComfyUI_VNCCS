@@ -19,7 +19,7 @@ def emotion_module(generator_module, monkeypatch):
     creator = types.ModuleType(package + ".character_creator_v2")
     creator.ANIMA_DEFAULTS = {}
     creator.ILLUSTRIOUS_DEFAULTS = {}
-    for name in ("load_generation_assets", "load_anima_assets", "get_lora_full_path"):
+    for name in ("load_generation_assets", "load_anima_assets", "get_lora_full_path", "apply_generation_lora"):
         setattr(creator, name, lambda *args: pytest.fail("No model preparation may begin"))
     creator.normalize_gen_settings = lambda settings: settings
     creator._generation_file_signatures = lambda settings: {}
