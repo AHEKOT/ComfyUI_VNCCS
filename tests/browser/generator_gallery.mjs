@@ -185,6 +185,16 @@ try {
             assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.processing?[index]:[]),[0]);
             assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.waiting?[index]:[]),[1,2,3,4,5]);
             stable(before,await measure(zoom));
+            await page.evaluate(stage=>emit(stage,{status:'done',current:6,total:6,images:urls('original'),run_id:'previous-character'}),stage);
+            await page.evaluate(stage=>emit(stage,{status:'running',current:0,total:6,images:[],run_id:'new-character'}),stage);
+            assert.equal(await page.evaluate(()=>cards().every(card=>!card.src)),true,'A new character run must remove the previous character');
+            assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>getComputedStyle(tile).visibility==='visible')),true,'A new character run must retain the card frames');
+            assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.processing?[index]:[]),[0]);
+            assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.waiting?[index]:[]),[1,2,3,4,5]);
+            stable(before,await measure(zoom));
+            await page.evaluate(stage=>emit(stage,{status:'running',current:1,total:6,images:urls('original'),run_id:'new-character'}),stage);
+            await page.waitForFunction(()=>[...widget.previewGrid.children].every(tile=>tile.dataset.src));
+            stable(before,await measure(zoom));
             const cell=await page.evaluate(()=>({cols:getComputedStyle(widget.previewGrid).gridTemplateColumns.split(' ').length,width:parseFloat(getComputedStyle(widget.previewGrid).gridTemplateColumns),height:parseFloat(getComputedStyle(widget.previewGrid).gridTemplateRows)}));
             const cols=cell.cols;
             before.forEach((rect,index)=>{

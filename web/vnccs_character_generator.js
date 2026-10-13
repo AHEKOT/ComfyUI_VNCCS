@@ -1362,13 +1362,23 @@ class CharacterGeneratorWidget {
                 this._progressRevision = detail.revision;
                 this._progressEpoch = detail.epoch;
             }
-            this.observeProgressRequest(detail.request_id, detail.run_id);
             const stage = detail.stage;
             if (!this.stageState[stage] && stage !== "error") return;
+            const status = detail.status || "waiting";
+            const startsNewRun = Boolean(detail.run_id)
+                && detail.run_id !== this._activeProgressRunId
+                && status === "running"
+                && stage === this.stages[0]?.[0]
+                && Math.max(0, Number(detail.current) || 0) === 0;
+            if (startsNewRun) {
+                const hadImages = Boolean(this.stageState[stage]?.images?.length)
+                    || (this._previewStage === stage && [...(this.previewGrid?.children || [])].some(tile => tile.dataset.src));
+                this._previewPlaceholderStage = hadImages ? stage : null;
+            }
+            this.observeProgressRequest(detail.request_id, detail.run_id);
             if (stage === "error") {
                 this.applyProgressError(detail.message);
             } else {
-                const status = detail.status || "waiting";
                 const previousStageState = this.stageState[stage] || {};
                 const hasImages = Object.prototype.hasOwnProperty.call(detail, "images");
                 const targetedRegenerate = Number.isInteger(this.regenerateState?.imageIndex)
@@ -1385,7 +1395,7 @@ class CharacterGeneratorWidget {
                         this.data.ui.user_selected_preview = false;
                     }
                 }
-                let nextImages = previousStageState.images || null;
+                let nextImages = startsNewRun ? null : (previousStageState.images || null);
                 if (hasImages && detail.replace_images) {
                     nextImages = [...(previousStageState.images || [])];
                     const previewStart = Math.max(0, Number.parseInt(detail.preview_start, 10) || 0);
@@ -1397,7 +1407,7 @@ class CharacterGeneratorWidget {
                 } else if (hasImages && targetedRegenerate && detail.images?.length === 1 && previousStageState.images?.length > 1) {
                     nextImages = [...previousStageState.images];
                     nextImages[this.regenerateState.imageIndex] = detail.images[0];
-                } else if (hasImages && !(status === "running" && !detail.images?.length && previousStageState.images?.length)) {
+                } else if (hasImages && !(status === "running" && !startsNewRun && !detail.images?.length && previousStageState.images?.length)) {
                     nextImages = detail.images;
                 }
                 this.stageState[stage] = {
@@ -2538,12 +2548,23 @@ class CharacterGeneratorWidget {
             this._progressScope = scope;
             this._progressRevision = snapshot.revision;
             this._progressEpoch = snapshot.epoch;
+            const firstStageKey = this.stages[0]?.[0];
+            const firstIncoming = snapshot.stages[firstStageKey];
+            const startsNewRun = Boolean(snapshot.run_id)
+                && snapshot.run_id !== this._activeProgressRunId
+                && firstIncoming?.status === "running"
+                && Math.max(0, Number(firstIncoming.current) || 0) === 0;
+            if (startsNewRun) {
+                const hadImages = Boolean(this.stageState[firstStageKey]?.images?.length)
+                    || (this._previewStage === firstStageKey && [...(this.previewGrid?.children || [])].some(tile => tile.dataset.src));
+                this._previewPlaceholderStage = hadImages ? firstStageKey : null;
+            }
             this.observeProgressRequest(snapshot.request_id, snapshot.run_id);
             let followedStage = null;
             for (const [key] of this.stages) {
                 const incoming = snapshot.stages[key] || { status: "waiting", images: null, message: "" };
                 const previousImages = this.stageState[key]?.images;
-                this.stageState[key] = incoming.status === "running" && !incoming.images?.length && previousImages?.length
+                this.stageState[key] = !startsNewRun && incoming.status === "running" && !incoming.images?.length && previousImages?.length
                     ? { ...incoming, images: previousImages }
                     : incoming;
                 if (["running", "done"].includes(this.stageState[key].status)) followedStage = key;
@@ -3527,6 +3548,7 @@ class CharacterGeneratorWidget {
         const total = Math.max(0, Math.min(512, Number(state.total) || 0));
         const count = Math.min(512, Math.max(images.length, total, state.status === "done" ? 0 : upstream.length));
         const busy = state.status === "running" || this.regenerateState?.activeStage === this.selectedPreview;
+        const showPlaceholders = busy && this._previewPlaceholderStage === this.selectedPreview && !upstream.length;
         const targeted = Number.isInteger(this.regenerateState?.imageIndex) && this.regenerateState?.targetStages?.includes(this.selectedPreview);
         const activeIndex = targeted ? this.regenerateState.imageIndex
             : (Number.isInteger(state.processing_index) ? state.processing_index : Math.max(0, Number(state.current) || 0));
@@ -3559,7 +3581,7 @@ class CharacterGeneratorWidget {
         [...this.previewGrid.children].forEach((tile, index) => {
             const source = (targeted && images.length === 1
                 ? (index === activeIndex ? images[0] : tile._previewSource || upstream[index])
-                : images[index] || upstream[index] || (busy ? tile._previewSource : null));
+                : images[index] || upstream[index] || (busy && !showPlaceholders ? tile._previewSource : null));
             if (source) this.updatePreviewImage(tile, source);
             else {
                 if (tile._pendingImage) {
@@ -3579,7 +3601,8 @@ class CharacterGeneratorWidget {
             tile.setAttribute("aria-busy", String(Boolean(processing || waiting)));
             tile.ariaLabel = `${name} image ${index + 1}${processing ? ", processing" : waiting ? ", waiting" : busy && index < completed ? ", processed" : ""}`;
             tile.tabIndex = tile.dataset.src ? 0 : -1;
-            tile.classList.toggle("is-empty", !tile.dataset.src);
+            tile.classList.toggle("is-placeholder", Boolean(showPlaceholders && !tile.dataset.src));
+            tile.classList.toggle("is-empty", !tile.dataset.src && !showPlaceholders);
             const canRegenerate = state.status === "done" && !this.regenerateState && Boolean(images[index]);
             let regen = tile.querySelector(".vnccs-pipe-img-regen");
             if (canRegenerate && !regen) {
@@ -3646,9 +3669,11 @@ class CharacterGeneratorWidget {
             changed = true;
             const previous = tile._previewImage;
             tile._previewImage = image;
+            tile._previewAspect = image.naturalWidth / image.naturalHeight;
             tile.dataset.src = image.src;
             tile.tabIndex = 0;
             tile.classList.toggle("is-empty", false);
+            tile.classList.toggle("is-placeholder", false);
             const delay = Math.max(0, (this._previewRevealAt || 0) - Date.now());
             this._previewRevealAt = Date.now() + delay + 100;
             image.style.opacity = "1";
@@ -3660,6 +3685,7 @@ class CharacterGeneratorWidget {
                 if (!this._ui) previous.remove();
             }
         }
+        if (changed && [...(this.previewGrid?.children || [])].every(tile => tile.dataset.src)) this._previewPlaceholderStage = null;
         if (changed) this.schedulePreviewGridLayout(this.previewGrid);
         if (changed && this.viewer?.open) this.syncViewerImage();
     }
@@ -3681,7 +3707,9 @@ class CharacterGeneratorWidget {
         const images = [...grid.children].map(tile => tile._previewImage || (tile._pendingImage?._previewReady ? tile._pendingImage : null));
         const known = images.find(image => image?.naturalWidth > 0 && image?.naturalHeight > 0);
         const fallback = known ? known.naturalWidth / known.naturalHeight : 1;
-        const aspects = images.map(image => image?.naturalWidth > 0 && image?.naturalHeight > 0 ? image.naturalWidth / image.naturalHeight : fallback);
+        const aspects = images.map((image, index) => image?.naturalWidth > 0 && image?.naturalHeight > 0
+            ? image.naturalWidth / image.naturalHeight
+            : (Number(grid.children[index]._previewAspect) || fallback));
         let best = null;
         for (let cols = 1; cols <= count; cols++) {
             const rows = Math.ceil(count / cols);
@@ -3706,7 +3734,7 @@ class CharacterGeneratorWidget {
         const lastRowCount = count % best.cols || best.cols;
         const lastRowOffset = lastRowCount < best.cols ? (best.cols - lastRowCount) * (best.trackW + gap) / 2 : 0;
         [...grid.children].forEach((tile, index) => {
-            const size = tile._previewImage ? best.sizes[index] : { width: 0, height: 0 };
+            const size = tile._previewImage || tile.classList.contains("is-placeholder") ? best.sizes[index] : { width: 0, height: 0 };
             tile.style.width = `${size.width}px`;
             tile.style.height = `${size.height}px`;
             tile.style.left = `${index >= count - lastRowCount ? lastRowOffset : 0}px`;
