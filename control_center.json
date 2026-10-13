@@ -255,9 +255,9 @@
       "name": "VNCCS Overhaul QI2",
       "type": "Helper",
       "hf_repo": "MIUProject/VNCCS_v3.0",
-      "hf_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.2.safetensors",
-      "local_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.2.safetensors",
-      "version": "1.2",
+      "hf_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV2.safetensors",
+      "local_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV2.safetensors",
+      "version": "2.0",
       "description": "Overhaul for Character Creator",
       "kind": "QI2"
     },

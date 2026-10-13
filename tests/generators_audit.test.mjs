@@ -544,7 +544,7 @@ for (const [type, flags, savedPreview, legacyPreview] of [
 test('generator restores legacy SAM switches without enabling false string values', async () => {
     const context = generatorContext();
     class Element {
-        constructor() { this.children = []; }
+        constructor() { this.children = []; this.dataset = {}; }
         append(...items) { this.children.push(...items); }
         addEventListener() {}
     }
@@ -740,7 +740,7 @@ test('configure invalidates all overlapping Regenerate requests and leaves a fre
 
 function generatorSettingsContext() {
     class Element {
-        constructor() { this.children = []; }
+        constructor() { this.children = []; this.dataset = {}; }
         append(...items) { this.children.push(...items); }
         appendChild(item) { this.children.push(item); return item; }
         replaceChildren(...items) { this.children = items; }
@@ -807,7 +807,7 @@ for (const [surface, section, key, original, raw, step, expected] of [
 ]) {
     test(`generator ${surface} ${key}=${raw} retains the exact executable value in its workflow`, () => {
         class Element {
-            constructor() { this.children = []; this.classList = { add() {} }; }
+            constructor() { this.children = []; this.dataset = {}; this.classList = { add() {} }; }
             append(...items) { this.children.push(...items); }
             appendChild(item) { this.children.push(item); return item; }
             replaceChildren(...items) { this.children = items; }
@@ -960,7 +960,7 @@ for (const value of ['{broken', 'null', '[]', '{"common":null}', '{"bg_remove":n
 
 test('generator construction leaves serialized input untouched', () => {
     class Element {
-        constructor() { this.style = { setProperty() {} }; this.classList = { toggle() {} }; }
+        constructor() { this.style = { setProperty() {} }; this.classList = { toggle() {}, add() {} }; this.dataset = {}; }
         append() {}
         appendChild() {}
         setAttribute() {}
@@ -969,7 +969,7 @@ test('generator construction leaves serialized input untouched', () => {
     Object.assign(context, {
         document: { getElementById: () => null, createElement: () => new Element(), head: new Element() },
         enableMiddleMouseCanvasPan() {}, attachHelpTooltips() {}, syncDOMWidgetWidthSoon() {},
-        registerCleanup() {}, ResizeObserver: class { observe() {} }, setTimeout: () => 0,
+        registerCleanup() {}, createSakuraInteractions: () => ({ dispose() {} }), ResizeObserver: class { observe() {} }, setTimeout: () => 0,
     });
     for (const name of ['protectNativeControl', 'renderSettings', 'renderPreview', 'renderChain',
         'bindEvents', 'bindModelResolutionSync', 'loadNodeDefs', 'loadSeedvrAssets']) context.Widget.prototype[name] = () => {};
@@ -1281,7 +1281,7 @@ for (const available of [[], ['Bob']]) {
 for (const available of [[], ['Naked', 'Shelter'], ['Original']]) {
     test(`Emotion Studio excludes absent Original and preserves saved user costumes (${available.join(', ') || 'empty'})`, async () => {
         class Element {
-            constructor() { this.children = []; }
+            constructor() { this.children = []; this.dataset = {}; }
             set innerHTML(value) { this.children = []; }
             appendChild(child) { this.children.push(child); }
         }

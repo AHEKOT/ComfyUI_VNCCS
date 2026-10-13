@@ -1113,6 +1113,8 @@ class VNCCS_CharacterGenerator:
         append_images=False,
         replace_images=False,
         preview_paths=None,
+        processing_index=None,
+        processing_indices=None,
     ):
         log_stage(stage, status, node_id=str(self._unwrap_scalar(unique_id)) if unique_id is not None else None,
                   current=current, total=total, message=message)
@@ -1128,6 +1130,10 @@ class VNCCS_CharacterGenerator:
             payload["current"] = int(current)
         if total is not None:
             payload["total"] = int(total)
+        if processing_index is not None:
+            payload["processing_index"] = int(processing_index)
+        if processing_indices is not None:
+            payload["processing_indices"] = list(processing_indices)
         if lora_info is not None:
             payload["lora_info"] = lora_info
         if images is not None:
@@ -1153,7 +1159,7 @@ class VNCCS_CharacterGenerator:
         except Exception as exc:
             log_event('warning', component='Generator', level='warning', message=f"Failed to send stage event '{stage}' for '{unique_id}': {exc}", error=str(exc))
 
-    def _log_stage(self, unique_id, stage, message, status="running", current=None, total=None, cache_dir=None):
+    def _log_stage(self, unique_id, stage, message, status="running", current=None, total=None, cache_dir=None, processing_indices=None):
         self._emit(
             unique_id,
             stage,
@@ -1163,6 +1169,7 @@ class VNCCS_CharacterGenerator:
             current=current,
             total=total,
             cache_dir=cache_dir,
+            processing_indices=processing_indices,
         )
 
     def _batch_shape_label(self, images):
@@ -1863,10 +1870,11 @@ class VNCCS_CharacterGenerator:
         return []
 
     def _stage_progress_callback(self, unique_id, stage, message, lora_info=None):
-        def report(current, total):
+        def report(current, total, processing_index=None):
             self._emit(
                 unique_id, stage, "running", message=message,
                 current=current, total=total, lora_info=lora_info,
+                processing_index=processing_index,
             )
 
         return report
@@ -2108,11 +2116,11 @@ class VNCCS_CharacterGenerator:
                         "Keep the character of <image 2>. " + prompts[index - 1],
                         (pose, character_rgb), target_size=qwen_settings["target_size"],
                     )
-                    encode_progress(index, total)
+                    encode_progress(index, total, index - 1)
                     samples = self._qi2_sample(
                         sampler_model, positive, negative, latent, sampler, turbo=turbo,
                     )
-                    sample_progress(index, total)
+                    sample_progress(index, total, index - 1)
                     decoded.append(self._qi2_decode(samples, pipe_values["vae"]).detach().cpu())
                     decode_progress(index, total)
                 finally:
@@ -2577,7 +2585,7 @@ class VNCCS_CharacterGenerator:
     def _bg_remove_disabled(self, settings):
         return str(settings.get("preset", "") or "").strip().lower() in {"disabled", "native"}
 
-    def _run_bg_remove(self, images, settings, background="Green", unique_id=None, cache_dir=None, stage="bg_remove", normalized=False):
+    def _run_bg_remove(self, images, settings, background="Green", unique_id=None, cache_dir=None, stage="bg_remove", normalized=False, preview_indices=None):
         if self._bg_remove_disabled(settings):
             batch = images if normalized else self._list_to_batch(images)
             total = int(batch.shape[0]) if torch.is_tensor(batch) and batch.ndim == 4 else 0
@@ -2592,7 +2600,7 @@ class VNCCS_CharacterGenerator:
             if requested_screen_mode == "from_background"
             else requested_screen_mode
         )
-        self._log_stage(unique_id, stage, f"Running chroma key preset '{str(settings.get('preset', 'balanced') or 'balanced')}' with screen mode '{screen_mode}' on {self._batch_shape_label(batch)}", current=0, total=total, cache_dir=cache_dir)
+        self._log_stage(unique_id, stage, f"Running chroma key preset '{str(settings.get('preset', 'balanced') or 'balanced')}' with screen mode '{screen_mode}' on {self._batch_shape_label(batch)}", current=0, total=total, cache_dir=cache_dir, processing_indices=preview_indices if preview_indices is not None else list(range(total)))
         started_at = time.time()
         result = VNCCSChromaKey().chroma_key(
             batch,
@@ -2611,7 +2619,7 @@ class VNCCS_CharacterGenerator:
             sam3_settings=settings,
         )[0]
         elapsed = time.time() - started_at
-        self._log_stage(unique_id, stage, f"Chroma key finished in {elapsed:.1f}s; preparing final sprites", current=total, total=total, cache_dir=cache_dir)
+        self._log_stage(unique_id, stage, f"Chroma key finished in {elapsed:.1f}s; preparing final sprites", current=total, total=total, cache_dir=cache_dir, processing_indices=[])
         return result
 
     def _tensor_item_to_pil(self, image):
@@ -3611,6 +3619,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         stage="bg_remove",
         emotion_settings=None,
         normalized=False,
+        preview_indices=None,
     ):
         emotion_settings = emotion_settings if isinstance(emotion_settings, dict) else {}
         raw = images if normalized else self._safe_image_batch(images, stage=f"{stage} emotion raw")
@@ -3632,6 +3641,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 unique_id=unique_id,
                 cache_dir=cache_dir,
                 stage=stage,
+                preview_indices=preview_indices,
             )
 
         base_results = []
@@ -3728,6 +3738,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             unique_id=unique_id,
             cache_dir=cache_dir,
             stage=stage,
+            preview_indices=[preview_indices[entry["index"]] if preview_indices is not None else entry["index"] for entry in patch_entries],
         )
         keyed_batch = self._safe_image_batch(keyed_batch, stage=f"{stage} keyed detailer regions")
 
@@ -4360,6 +4371,12 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                             )
 
                         if raw_result is None or detailer_mask is None:
+                            self._emit(
+                                unique_id, bg_stage_key, "running",
+                                message=f"Generating {stage_label} image {group_position + 1}/{group_total}",
+                                current=batch_start + len(records), total=group_total,
+                                processing_index=group_position,
+                            )
                             seed = int(meta.get("seed", 0) or 0)
                             detailer_input = self._prepare_emotion_detailer_input(
                                 source_image,
@@ -4459,6 +4476,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                             stage=bg_stage_key,
                             emotion_settings=emotion_settings,
                             normalized=self._bg_remove_disabled(bg_settings),
+                            preview_indices=[record["group_position"] for record in bg_records],
                         )
                         cleaned_items = self._split_batch(cleaned)
                         for cleaned_index, record in enumerate(bg_records):

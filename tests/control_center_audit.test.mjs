@@ -827,6 +827,7 @@ test("bulk downloads in the unchanged context enqueue every selected asset", asy
 
 test("missing custom LoRA files are not queued as remote downloads", async () => {
     const { widget, context, pending } = setupDownloads();
+    context.setHelpText = () => {};
     widget.config.models.forEach(entry => { entry.status = "installed"; });
     widget.config.clip.forEach(entry => { entry.status = "installed"; });
     const entry = { name: "Local style", custom: true, kind: "QI2", status: "missing",

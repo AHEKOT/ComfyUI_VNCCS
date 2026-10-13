@@ -6,6 +6,7 @@ import { createWidgetContext } from "./widget_context.mjs";
 
 const creator = readFileSync(new URL("../web/vnccs_character_creator_v2.js", import.meta.url), "utf8");
 const common = readFileSync(new URL("../web/vnccs_common.js", import.meta.url), "utf8");
+const generator = readFileSync(new URL("../web/vnccs_character_generator.js", import.meta.url), "utf8");
 const section = (start, end) => creator.slice(creator.indexOf(start), creator.indexOf(end, creator.indexOf(start)));
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 
@@ -33,6 +34,7 @@ function setup() {
         set innerHTML(value) { for (const child of [...this.children]) child.remove(); this._html = value; }
         get firstChild() { return this.children[0]; }
         appendChild(child) { child.remove(); this.children.push(child); child.parentNode = this; return child; }
+        replaceChild(next, previous) { const index = this.children.indexOf(previous); next.remove(); this.children[index] = next; next.parentNode = this; previous.parentNode = null; }
         append(...children) { children.forEach(child => typeof child === "string" ? this._text = (this._text || "") + child : this.appendChild(child)); }
         add(option) { this.appendChild(option); if (this._value === undefined) this.value = option.value; }
         after(child) { child.remove(); const parent = this.parentNode; parent.children.splice(parent.children.indexOf(this) + 1, 0, child); child.parentNode = parent; }
@@ -51,6 +53,7 @@ function setup() {
         focus(options) { document.activeElement = this; this.focusOptions = options; }
         matches(selector) {
             if (selector.includes(",")) return selector.split(",").some(part => this.matches(part.trim()));
+            if (selector === "[inert]") return !!this.inert;
             if (selector === "[id]") return !!this.id;
             const data = selector.match(/^\[data-([\w-]+)\]$/);
             if (data) return data[1].replace(/-([a-z])/g, (_, letter) => letter.toUpperCase()) in this.dataset;
@@ -72,7 +75,7 @@ function setup() {
             return clone;
         }
         animate(keyframes, options) {
-            const animation = { effect: { target: this }, keyframes, options, finish() { this.onfinish?.(); }, cancel() { this.oncancel?.(); } };
+            const animation = { effect: { target: this, updateTiming(timing) { Object.assign(options, timing); } }, keyframes, options, finish() { this.onfinish?.(); }, cancel() { this.oncancel?.(); } };
             document.animations.push(animation); return animation;
         }
     }
@@ -97,6 +100,124 @@ function setup() {
     const flush = () => { for (const callback of document.frames.splice(0)) callback(); };
     return { document, context, root, node, ui, frame, image, placeholder, aura, Element, flush };
 }
+
+for (const [name, flags] of [["Character", {}], ["Clone", { isClone: true }], ["Clothes", { isClothes: true }], ["Emotions", { isEmotions: true }]]) {
+    test(`${name} Generator uses Sakura controls and preserves its view during progress refreshes`, async () => {
+        const h = setup(); h.root.className = "vnccs-pipe-root vnccs-common-ui-host";
+        h.context.app = { graph: { _nodes: [], setDirtyCanvas() {} }, registerExtension() {} };
+        h.context.setHelpText = () => {};
+        vm.runInContext(generator.replace(/^import .*;\n/gm, "") + '\nthis.Generator = CharacterGeneratorWidget; this.defaults = DEFAULT_DATA;', h.context);
+        const widget = Object.assign(Object.create(h.context.Generator.prototype), {
+            ...flags, node: { id: 7, widgets: [{ name: "widget_data", value: "{}" }] }, root: h.root, _ui: h.ui,
+            data: JSON.parse(JSON.stringify(h.context.defaults)), title: `${name} Generator`, nodeDefs: {}, fieldDrafts: new Map(),
+            stages: [["pose_generation", "Poses"], ["upscaler", "Upscaler"]], selectedPreview: "pose_generation",
+            stageState: { pose_generation: { status: "running", current: 1, total: 10, images: ["sprite.png"] }, upscaler: { status: "waiting" } },
+            syncCharacterSourceData() {}, syncStagesFromData() {}, schedulePreviewGridLayout() {}, saveBrowserState() {},
+            connectedEmotionStudioMode: () => "qi2", seedvrDownloads: {}, seedvrAssets: { models: [] },
+        });
+        for (const [field, key] of [["settingsEl", "settings"], ["previewEl", "preview"], ["chainEl", "stages"]]) {
+            widget[field] = new h.Element("div"); widget[field].dataset.sakuraScroll = key; h.root.appendChild(widget[field]);
+        }
+        widget.settingsEl.scrollTop = 173; widget.settingsEl.scrollLeft = 8;
+        const options = widget.modeTabs("upscaler", "mode", [["seedvr", "SeedVR"], ["off", "OFF"]]);
+        assert.equal(options.style["--segment-index"], "0");
+        widget.renderSettings = () => {};
+        options.children[1].onclick();
+        const off = widget.modeTabs("upscaler", "mode", [["seedvr", "SeedVR"], ["off", "OFF"]]);
+        assert.equal(off.style["--segment-index"], "1");
+        assert.equal(off.children[0].getAttribute("aria-pressed"), "false");
+        assert.equal(off.children[1].getAttribute("aria-pressed"), "true");
+        assert.equal(off.children[1].classList.contains("is-active"), true);
+        assert.equal(JSON.parse(widget.node.widgets[0].value).upscaler.mode, "off");
+        off.children[0].onclick();
+        const on = widget.modeTabs("upscaler", "mode", [["seedvr", "SeedVR"], ["off", "OFF"]]);
+        assert.equal(on.style["--segment-index"], "0");
+        assert.equal(on.children[0].getAttribute("aria-pressed"), "true");
+        assert.equal(on.children[1].getAttribute("aria-pressed"), "false");
+        assert.equal(JSON.parse(widget.node.widgets[0].value).upscaler.mode, "seedvr");
+        assert.doesNotMatch(generator, /\.vnccs-pipe-mode-tab\.is-selected\s*\{/);
+        const field = widget.field("upscaler", "color_correction", "Color correction", "select", ["lab", "adain"]);
+        widget.settingsEl.appendChild(field); h.ui.syncSelects();
+        const trigger = field.querySelector(".vnccs-common-ui-select-trigger");
+        trigger.onclick(); h.ui._dropdown.menu.children[1].onclick();
+        assert.equal(widget.data.upscaler.color_correction, "adain");
+        assert.equal(JSON.parse(widget.node.widgets[0].value).upscaler.color_correction, "adain");
+        const empty = widget.field("upscaler", "model", "Model", "select", []); widget.settingsEl.appendChild(empty); h.ui.syncSelects();
+        assert.equal(empty.querySelector(".vnccs-common-ui-select-trigger").disabled, true);
+        widget.renderPreview(); widget.renderChain(); h.flush();
+        await widget.previewGrid.children[0]._pendingImage.onload();
+        const reveals = () => h.document.animations.filter(animation => animation.options.duration === 420).length;
+        assert.equal(reveals(), 1);
+        widget.renderPreview(); h.flush(); assert.equal(reveals(), 1, "The same images do not replay their reveal on each progress event");
+        widget.stageState.pose_generation.current = 6; widget.renderChain(); h.flush();
+        assert.ok(h.document.animations.some(animation => animation.options.duration === 360 && animation.keyframes[0].transform === "scaleX(0.1)" && animation.keyframes[1].transform === "scaleX(0.6)"));
+        assert.equal(widget.settingsEl.scrollTop, 173); assert.equal(widget.settingsEl.scrollLeft, 8);
+        h.document.motion = false; const count = h.document.animations.length;
+        widget.stageState.pose_generation.images = ["new-sprite.png"]; widget.renderPreview(); h.flush();
+        assert.equal(h.document.animations.length, count);
+        h.ui.dispose(); assert.equal(h.document.observers[0].disconnected, true);
+    });
+}
+
+test("generator gallery reserves aligned slots and reveals decoded cards in order without rebuilding on progress", async () => {
+    const h = setup();
+    h.context.app = { registerExtension() {} };
+    vm.runInContext(generator.replace(/^import .*;\n/gm, "") + '\nthis.Generator = CharacterGeneratorWidget;', h.context);
+    const preview = new h.Element("div"); h.root.appendChild(preview);
+    const widget = Object.assign(Object.create(h.context.Generator.prototype), {
+        previewEl: preview, _ui: h.ui, syncStagesFromData() {},
+        stages: [["pose_generation", "Poses"], ["upscaler", "Upscaler"]], selectedPreview: "pose_generation",
+        stageState: { pose_generation: { status: "running", current: 0, total: 4, images: ["a", "b", "c", "d"] }, upscaler: { status: "waiting" } },
+        schedulePreviewGridLayout() {},
+    });
+    widget.renderPreview();
+    const grid = widget.previewGrid, tiles = [...grid.children], head = preview.children[0];
+    assert.equal(tiles.length, 4);
+    assert.equal(tiles[0].classList.contains("is-processing"), true);
+    assert.equal(tiles[1].classList.contains("is-waiting"), true);
+    await tiles[3]._pendingImage.onload(); await tiles[1]._pendingImage.onload();
+    assert.equal(h.document.animations.filter(a => a.options.duration === 420).length, 0, "Out-of-order downloads cannot overtake the first card");
+    await tiles[0]._pendingImage.onload(); await tiles[2]._pendingImage.onload();
+    const reveal = h.document.animations.filter(a => a.options.duration === 420);
+    assert.deepEqual(reveal.map(a => a.effect.target.parentNode), tiles);
+    assert.ok(reveal.every((a, index) => index === 0 || a.options.delay > reveal[index - 1].options.delay));
+    assert.equal(reveal[0].options.fill, "backwards", "Delayed cards stay hidden until their turn");
+    widget.stageState.pose_generation.current = 1; widget.renderPreview();
+    assert.equal(widget.previewGrid, grid); assert.deepEqual([...grid.children], tiles); assert.equal(preview.children[0], head);
+    assert.equal(tiles[1].classList.contains("is-processing"), true);
+    assert.equal(tiles[0].classList.contains("is-waiting"), false);
+    widget.stageState.pose_generation.processing_index = 0; widget.renderPreview();
+    assert.equal(tiles[0].classList.contains("is-processing"), true, "QI2 phases remain on the same image even when the phase count advances");
+    widget.selectedPreview = "upscaler";
+    widget.stageState.upscaler = { status: "running", current: 0, total: 4 };
+    widget.renderPreview();
+    assert.deepEqual([...grid.children], tiles); assert.deepEqual(Array.from(widget.currentImages()), ["a", "b", "c", "d"]);
+    widget.stageState.upscaler.processing_indices = [2, 3]; widget.renderPreview();
+    assert.equal(tiles[2].classList.contains("is-processing"), true);
+    assert.equal(tiles[3].classList.contains("is-processing"), true);
+    assert.equal(tiles[0].classList.contains("is-waiting"), false, "A later emotion batch does not mark finished cards as waiting");
+    widget.regenerateState = { activeStage: "upscaler", imageIndex: 2, targetStages: ["upscaler"] };
+    widget.stageState.upscaler = { status: "running", current: 0, total: 1, images: ["replacement"] };
+    widget.renderPreview();
+    assert.equal(tiles[2].classList.contains("is-processing"), true);
+    assert.equal(tiles[0]._pendingImage, null);
+    const old = tiles[2]._pendingImage;
+    const staleLoad = old.onload;
+    widget.stageState.upscaler.images = ["latest"]; widget.renderPreview(); await staleLoad();
+    assert.equal(tiles[2].dataset.src, "c", "A stale decode never replaces the visible image");
+    let viewerUpdates = 0;
+    widget.viewer = { open: true };
+    widget.syncViewerImage = () => { viewerUpdates++; };
+    await tiles[2]._pendingImage.onload();
+    assert.equal(tiles[2].dataset.src, "latest");
+    assert.equal(viewerUpdates, 1, "An open viewer follows a successful replacement after decoding");
+    assert.deepEqual(Array.from(widget.currentImages()), ["a", "b", "latest", "d"]);
+    widget.stageState.upscaler.images = ["broken"]; widget.renderPreview(); tiles[2]._pendingImage.onerror();
+    assert.equal(tiles[2].dataset.src, "latest", "A failed replacement keeps the last successful image");
+    grid.clientWidth = 480; grid.clientHeight = 360; widget.layoutPreviewGrid(grid);
+    assert.match(grid.style.gridTemplateColumns, /minmax\(0, 1fr\)/);
+    assert.ok(tiles.every(tile => !tile.style.width && !tile.style.height), "Mixed image dimensions cannot offset individual frames");
+});
 
 test("Creator native selectors keep their state while shared dropdowns handle choices and dynamic inventory", () => {
     const h = setup();
@@ -136,6 +257,73 @@ test("shared selectors follow disabled and visibility changes and retain invento
     h.ui.syncSelects(); h.ui.syncSelects();
     assert.equal(trigger.disabled, false); assert.equal(trigger.style.cssText, "");
     assert.equal(h.root.querySelectorAll(".vnccs-common-ui-select-trigger").length, 1);
+});
+
+for (const [name, flags] of [["Character", {}], ["Clone", { isClone: true }], ["Clothes", { isClothes: true }]]) {
+    test(`${name} Generator keeps its animated upscaler panels through rapid mode changes and model selection`, () => {
+        const h = setup(); h.root.className = "vnccs-pipe-root vnccs-common-ui-host";
+        h.context.app = { graph: { _nodes: [], setDirtyCanvas() {} }, registerExtension() {} };
+        h.context.setHelpText = () => {};
+        vm.runInContext(generator.replace(/^import .*;\n/gm, "") + '\nthis.Generator = CharacterGeneratorWidget; this.defaults = DEFAULT_DATA;', h.context);
+        const first = h.context.defaults.upscaler.model, second = "seedvr2_7b_fp16.safetensors";
+        const widget = Object.assign(Object.create(h.context.Generator.prototype), {
+            ...flags, node: { id: 7, widgets: [{ name: "widget_data", value: "{}" }] }, root: h.root, _ui: h.ui,
+            data: JSON.parse(JSON.stringify(h.context.defaults)), title: name, nodeDefs: {}, fieldDrafts: new Map(),
+            syncCharacterSourceData() {}, syncStagesFromData() {}, saveBrowserState() {}, seedvrDownloads: {},
+            seedvrAssets: { models: [first, second].map(name => ({ name, local_path: `models/diffusion_models/${name}`, status: "installed" })) },
+        });
+        widget.data.upscaler.mode = "off";
+        widget.settingsEl = new h.Element("div"); h.root.appendChild(widget.settingsEl);
+        widget.renderSettings();
+        const panel = widget.upscalerPanel, pickerPanel = widget.seedvrPickerPanel;
+        const tabs = widget.settingsEl.querySelector(".vnccs-pipe-mode-tabs");
+        assert.equal(panel.inert, true); assert.equal(panel.classList.contains("is-open"), false);
+        for (const index of [0, 1, 0, 1, 0]) {
+            tabs.children[index].onclick();
+            assert.equal(widget.upscalerPanel, panel, "The collapsing element must not be removed or replaced");
+            assert.equal(widget.seedvrPickerPanel, pickerPanel);
+            assert.equal(panel.inert, index === 1); assert.equal(panel.ariaHidden, String(index === 1));
+            assert.equal(panel.classList.contains("is-open"), index === 0);
+            assert.equal(JSON.parse(widget.node.widgets[0].value).upscaler.mode, index === 0 ? "seedvr" : "off");
+        }
+        assert.ok(panel.querySelector(".vnccs-common-ui-select-trigger"), "Opening a restored OFF panel must enhance its previously inert selects");
+        const picker = pickerPanel.parentElement;
+        picker.children[0].onclick(); assert.equal(pickerPanel.inert, false);
+        const selected = pickerPanel.querySelectorAll(".vnccs-seedvr-card")[1];
+        selected.onclick();
+        assert.equal(widget.seedvrPickerPanel, pickerPanel); assert.equal(pickerPanel.inert, true);
+        assert.equal(widget.data.upscaler.model, second); assert.equal(JSON.parse(widget.node.widgets[0].value).upscaler.model, second);
+        assert.equal(picker.children[0].dataset.seedvrModel, second);
+        picker.children[0].onclick(); assert.equal(pickerPanel.inert, false);
+        picker.children[0].onclick(); assert.equal(pickerPanel.inert, true);
+        h.ui.dispose();
+        const css = generator.match(/const CSS = `([\s\S]*?)`;/)[1];
+        assert.match(css, /\.vnccs-pipe-disclosure\s*\{[^}]*grid-template-rows: 0fr;[^}]*transition: grid-template-rows 320ms/);
+        assert.match(css, /\.vnccs-pipe-disclosure\.is-open\s*\{[^}]*grid-template-rows: 1fr/);
+        assert.match(css, /prefers-reduced-motion: reduce/);
+    });
+}
+
+test("Generator viewer keeps focus inside its opening and replacement overlays", () => {
+    const h = setup(); h.root.className = "vnccs-pipe-root vnccs-common-ui-host";
+    h.context.app = { registerExtension() {} };
+    h.context.ResizeObserver = class { observe() {} disconnect() {} };
+    h.context.cancelAnimationFrame = () => {};
+    h.context.window.addEventListener = h.context.window.removeEventListener = () => {};
+    h.document.addEventListener = h.document.removeEventListener = () => {};
+    vm.runInContext(generator.replace(/^import .*;\n/gm, "") + '\nthis.Generator = CharacterGeneratorWidget;', h.context);
+    const widget = Object.assign(Object.create(h.context.Generator.prototype), {
+        root: h.root, _ui: h.ui, stages: [["poses", "Poses"], ["upscaler", "Upscaler"]], selectedPreview: "poses",
+        viewer: { index: 0 }, currentImages: () => ["sprite.png"], currentViewerFocus: () => null, fitViewer() {},
+    });
+    const behind = new h.Element("input"); behind.dataset.focusKey = "settings-field";
+    h.root.appendChild(behind); behind.focus();
+    widget.renderViewer(); h.flush();
+    assert.equal(h.document.activeElement, widget.viewer.overlay, "Opening must not restore focus behind the viewer");
+    widget.viewer.stageTabs.children[1].focus(); widget.selectedPreview = "upscaler";
+    widget.renderViewer(); h.flush();
+    assert.equal(h.document.activeElement, widget.viewer.stageTabs.children[1], "Replacement must ignore the inert exit clone");
+    widget.closeViewer(); h.ui.dispose();
 });
 
 test("replacement fields keep their draft selection and focus without moving their scroll region", () => {

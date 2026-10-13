@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
+import { createSakuraInteractions, mountSakuraDialogMotion, sakuraRect } from "./sakura_interactions.mjs";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, workflowScope, cacheIdentity, watchConnection } from "./vnccs_transport.js";
-import { showModal as showCommonModal, registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, resolutionScaleMegapixels, finiteResolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
+import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, showModal as showCommonModal, registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, resolutionScaleMegapixels, finiteResolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
 
 const GENERATOR_QWEN_INSTRUCTION = "Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.";
 const QI2_EMOTION_PROMPT_TEMPLATE = "Upscale face image.\nMake character's face emotion {emotion}\nChange only face. Keep original neck colour, clothes and hairs\nkeep character's clothes";
@@ -225,7 +226,9 @@ const BG_REMOVE_MODES = ["Native", "disabled", "ultra_light", "light", "balanced
 const CLOTHES_CORE_LORA_LABEL = "VNCCS Clothes Core";
 
 const CSS = `
+${SAKURA_INTERACTION_CSS}
 .vnccs-pipe-root {
+${SAKURA_THEME_CSS}
     width: 100%;
     height: 100%;
     display: grid;
@@ -246,7 +249,7 @@ const CSS = `
 }
 .vnccs-seedvr-cards { display:flex; flex-direction:column; gap:7px; }
 .vnccs-seedvr-picker { display:flex; flex-direction:column; gap:8px; }
-.vnccs-seedvr-picker-menu { display:none; flex-direction:column; gap:8px; padding:8px; border:1px solid rgba(255,143,163,.18); border-radius:10px; background:rgba(8,8,12,.48); }
+.vnccs-seedvr-picker-menu { display:flex; flex-direction:column; gap:8px; padding:8px; border:1px solid rgba(255,143,163,.18); border-radius:10px; background:rgba(8,8,12,.48); }
 .vnccs-seedvr-picker.is-open .vnccs-seedvr-picker-menu { display:flex; }
 .vnccs-seedvr-card { display:flex; flex-direction:column; gap:5px; padding:10px 12px 8px; border:1px solid rgba(0,214,143,.25); border-radius:10px; background:rgba(0,214,143,.05); cursor:default; position:relative; overflow:hidden; transition:all .16s ease; }
 .vnccs-seedvr-card.is-picker-head { min-height:58px; cursor:pointer; }
@@ -299,12 +302,14 @@ const CSS = `
 }
 .vnccs-pipe-main {
     min-width: 0;
+    min-height: 0;
     display: grid;
     grid-template-rows: minmax(0, 1fr) 108px;
     overflow: hidden;
 }
-.vnccs-pipe-root.is-clone .vnccs-pipe-main {
-    grid-template-rows: minmax(0, 1fr) auto;
+.vnccs-pipe-root.is-clone .vnccs-pipe-main,
+.vnccs-pipe-root.is-clone-sfw .vnccs-pipe-main {
+    grid-template-rows: minmax(0, 1fr) 172px;
 }
 .vnccs-pipe-title {
     font-size: 10px;
@@ -464,11 +469,6 @@ const CSS = `
     padding: 6px 8px;
     cursor: pointer;
 }
-.vnccs-pipe-mode-tab.is-selected {
-    color: #ffb6c8;
-    border-color: rgba(255,143,163,0.48);
-    background: rgba(255,143,163,0.09);
-}
 .vnccs-pipe-preview {
     min-height: 0;
     padding: 12px;
@@ -486,10 +486,17 @@ const CSS = `
     color: #9898a8;
     font-size: 11px;
     flex-shrink: 0;
+    height: 34px;
+    min-width: 0;
+    gap: 8px;
 }
+.vnccs-pipe-preview-label { flex: 0 1 22%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vnccs-pipe-preview-head .vnccs-pipe-tabs { flex: 1; min-width: 0; flex-wrap: nowrap; overflow-x: auto; justify-content: flex-start; }
+.vnccs-pipe-preview-head .vnccs-pipe-tab { flex-shrink: 0; }
 .vnccs-pipe-grid {
     flex: 1;
     min-height: 0;
+    min-width: 0;
     display: grid;
     gap: 8px;
     align-content: center;
@@ -507,21 +514,34 @@ const CSS = `
     appearance: none;
     padding: 0;
     background: #14141e;
-    background-position: center;
-    background-repeat: no-repeat;
-    background-size: contain;
     border: 1px solid rgba(255,255,255,0.08);
     border-radius: 8px;
     box-sizing: border-box;
     cursor: zoom-in;
     opacity: 1;
-    transition: opacity 0.12s ease;
+    overflow: hidden;
+    isolation: isolate;
+    transform-origin: top left;
+    transition: border-color 240ms ease, box-shadow 240ms ease;
 }
+.vnccs-pipe-img-content { position: absolute; inset: 4px; width: calc(100% - 8px); height: calc(100% - 8px); object-fit: contain; pointer-events: none; }
+.vnccs-pipe-img::before, .vnccs-pipe-img::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 2; opacity: 0; transition: opacity 240ms ease; }
+.vnccs-pipe-img::before { border: 2px solid var(--accent-lavender); }
+.vnccs-pipe-img.is-waiting::before { animation: vnccs-pipe-card-wait 2400ms ease-in-out infinite; animation-delay: var(--wait-phase, 0ms); }
+.vnccs-pipe-img::after { padding: 2px; background: conic-gradient(from var(--vnccs-process-angle, 0deg), transparent 20%, var(--accent) 40%, transparent 65%); mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); mask-composite: exclude; }
+.vnccs-pipe-img.is-processing { border-color: var(--accent); box-shadow: 0 0 12px rgba(255,143,163,0.16); }
+.vnccs-pipe-img.is-processing::after { opacity: 1; animation: vnccs-pipe-card-process 1800ms linear infinite; }
+@property --vnccs-process-angle { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+@keyframes vnccs-pipe-card-wait { 0%, 100% { opacity: 0.16; } 50% { opacity: 0.6; } }
+@keyframes vnccs-pipe-card-process { to { --vnccs-process-angle: 360deg; } }
+.vnccs-pipe-img.is-empty { cursor: default; }
+.vnccs-pipe-img.is-empty:focus-visible { outline-offset: -3px; }
 .vnccs-pipe-img:hover {
     border-color: rgba(255,143,163,0.45);
 }
 .vnccs-pipe-img-regen {
     position: absolute;
+    z-index: 3;
     right: 7px;
     bottom: 7px;
     border: 1px solid rgba(255,143,163,0.48);
@@ -552,6 +572,7 @@ const CSS = `
     color: #5e5e70;
     font-size: 12px;
 }
+.vnccs-pipe-empty[hidden] { display: none; }
 .vnccs-pipe-modal-backdrop {
     position: absolute;
     inset: 0;
@@ -722,7 +743,7 @@ const CSS = `
 }
 .vnccs-pipe-chain.is-clone {
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    grid-auto-rows: minmax(58px, 1fr);
+    grid-auto-rows: minmax(0, 1fr);
     min-height: 0;
     box-sizing: border-box;
     gap: 6px;
@@ -732,11 +753,16 @@ const CSS = `
 .vnccs-pipe-chain.is-clone .vnccs-pipe-stage {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: 20px 24px 12px 4px;
     align-content: start;
     min-height: 0;
     padding: 4px 8px;
     gap: 2px 8px;
+    overflow: hidden;
 }
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-name,
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-lora { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-status { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .vnccs-pipe-chain.is-clone .vnccs-pipe-stage-name,
 .vnccs-pipe-chain.is-clone .vnccs-pipe-stage-status,
 .vnccs-pipe-chain.is-clone .vnccs-pipe-stage-lora {
@@ -828,10 +854,12 @@ const CSS = `
 }
 .vnccs-pipe-stage-progress-fill {
     height: 100%;
-    width: 0%;
+    width: 100%;
     border-radius: inherit;
     background: #ffc074;
-    transition: width 0.45s ease;
+    transform: scaleX(0);
+    transform-origin: left center;
+    transition: transform 360ms linear;
 }
 .vnccs-pipe-regen-status {
     display: inline-flex;
@@ -1015,6 +1043,50 @@ const CSS = `
     opacity: 1;
     visibility: visible;
 }
+
+.vnccs-pipe-root :is(.vnccs-pipe-block, .vnccs-seedvr-card, .vnccs-pipe-stage) {
+    border-radius: var(--radius-md);
+    transition: border-color 180ms ease, background-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
+}
+.vnccs-pipe-root :is(.vnccs-pipe-input, .vnccs-pipe-select, .vnccs-common-ui-select-trigger) { height: 34px; min-height: 34px; }
+.vnccs-pipe-settings-field .vnccs-common-ui-select-trigger {
+    width: 100%; padding: 7px 8px; border: 1px solid var(--border-hover);
+    border-radius: var(--radius-md); background: rgba(255,255,255,0.045);
+    color: var(--text-primary); font-family: var(--font); font-size: 11px;
+}
+.vnccs-pipe-settings-group-fields { align-items: start; }
+.vnccs-pipe-settings-field { min-width: 0; }
+.vnccs-pipe-settings-field:not(.is-check) > .vnccs-pipe-settings-field-label { min-height: 14px; line-height: 14px; }
+.vnccs-pipe-settings-field input:not([type="checkbox"]):not([type="range"]) { height: 34px; }
+.vnccs-pipe-root :is(button, [role="button"], input, textarea):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.vnccs-pipe-root :is(.vnccs-pipe-check, .vnccs-pipe-settings-field.is-check) input[type="checkbox"] {
+    appearance: none; position: relative; flex: 0 0 34px; width: 34px; height: 18px; margin: 0;
+    border: 1px solid var(--border-hover); border-radius: 18px; background: rgba(255,255,255,0.07);
+    cursor: pointer; transition: background-color 180ms ease, border-color 180ms ease;
+}
+.vnccs-pipe-root :is(.vnccs-pipe-check, .vnccs-pipe-settings-field.is-check) input[type="checkbox"]::before {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px;
+    border-radius: 50%; background: var(--text-secondary);
+    transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1), background-color 180ms ease;
+}
+.vnccs-pipe-root :is(.vnccs-pipe-check, .vnccs-pipe-settings-field.is-check) input[type="checkbox"]:checked {
+    border-color: var(--accent-border); background: rgba(255,143,163,0.22);
+}
+.vnccs-pipe-root :is(.vnccs-pipe-check, .vnccs-pipe-settings-field.is-check) input[type="checkbox"]:checked::before { transform: translateX(16px); background: var(--accent); }
+.vnccs-seedvr-card[data-download-status="downloading"], .vnccs-seedvr-card[data-download-status="queued"] { border-color: rgba(184,169,232,0.4); }
+.vnccs-seedvr-card[data-download-status="downloading"] .vnccs-seedvr-card-status, .vnccs-seedvr-card[data-download-status="queued"] .vnccs-seedvr-card-status { color: var(--accent-lavender); }
+.vnccs-seedvr-download { height: 30px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-sizing: border-box; }
+.vnccs-pipe-preview { position: relative; }
+.vnccs-pipe-disclosure { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 320ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease; }
+.vnccs-pipe-disclosure.is-open { grid-template-rows: 1fr; opacity: 1; }
+.vnccs-pipe-disclosure-clip { min-height: 0; overflow: hidden; }
+.vnccs-pipe-disclosure-content { display: flex; flex-direction: column; gap: 7px; padding-top: 7px; }
+.vnccs-pipe-upscaler-block .vnccs-pipe-block-b, .vnccs-seedvr-picker { gap: 0; }
+.vnccs-pipe-root .vnccs-common-ui-preview-aura { z-index: 1; }
+@media (prefers-reduced-motion: reduce) {
+    .vnccs-pipe-root *, .vnccs-pipe-root *::before, .vnccs-pipe-root *::after { animation: none !important; transition: none !important; }
+    .vnccs-pipe-img.is-waiting::before { opacity: 0.35; }
+}
 `;
 
 function injectStyles() {
@@ -1147,7 +1219,6 @@ class CharacterGeneratorWidget {
         this.restoredViewer = null;
         this._saveBrowserStateTimer = null;
         this.nodeDefs = {};
-        this.imageMetrics = new Map();
         this.fieldDrafts = new Map();
         this.previewLayoutFrame = null;
         this.regenerateState = null;
@@ -1165,17 +1236,22 @@ class CharacterGeneratorWidget {
         injectStyles();
         const root = document.createElement("div");
         root.className = "vnccs-pipe-root";
+        root.classList.add("vnccs-common-ui-host");
         this.root = root;
+        this._ui = createSakuraInteractions(root, this.node);
+        registerCleanup(this.node, () => this._ui.dispose());
         enableMiddleMouseCanvasPan(root, this.node);
         attachHelpTooltips(root);
         this.updateModeClasses();
 
         this.settingsEl = document.createElement("div");
         this.settingsEl.className = "vnccs-pipe-settings";
+        this.settingsEl.dataset.sakuraScroll = "settings";
         this.previewEl = document.createElement("div");
         this.previewEl.className = "vnccs-pipe-preview";
         this.chainEl = document.createElement("div");
         this.chainEl.className = "vnccs-pipe-chain";
+        this.chainEl.dataset.sakuraScroll = "stages";
 
         const main = document.createElement("div");
         main.className = "vnccs-pipe-main";
@@ -1186,7 +1262,7 @@ class CharacterGeneratorWidget {
         const settingsIcon = document.createElement("span");
         settingsIcon.className = "vnccs-pipe-settings-open-icon";
         settingsIcon.setAttribute("aria-hidden", "true");
-        settingsIcon.textContent = "⚙";
+        settingsIcon.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m9 3-.8 3-2.7 1.6-3-.8-1.5 2.6 2.2 2.2v3.2L1 17l1.5 2.6 3-.8L8.2 20l.8 3h3l.8-3 2.7-1.6 3 .8 1.5-2.6-2.2-2.2v-3.2L20 9l-1.5-2.6-3 .8L12.8 6 12 3z"/><circle cx="10.5" cy="13" r="3"/></svg>';
         const settingsLabel = document.createElement("span");
         settingsLabel.textContent = "Generator Settings";
         this.settingsButton.append(settingsIcon, settingsLabel);
@@ -1302,6 +1378,9 @@ class CharacterGeneratorWidget {
                     }
                 } else if (hasImages && detail.append_images) {
                     nextImages = [...(previousStageState.images || []), ...(detail.images || [])];
+                } else if (hasImages && targetedRegenerate && detail.images?.length === 1 && previousStageState.images?.length > 1) {
+                    nextImages = [...previousStageState.images];
+                    nextImages[this.regenerateState.imageIndex] = detail.images[0];
                 } else if (hasImages) {
                     nextImages = detail.images;
                 }
@@ -1311,6 +1390,8 @@ class CharacterGeneratorWidget {
                     message: detail.message || "",
                     current: detail.current,
                     total: detail.total,
+                    processing_index: detail.processing_index,
+                    processing_indices: detail.processing_indices,
                 };
                 if (!this.userSelectedPreview && (status === "running" || status === "done" || detail.images)) {
                     this.selectedPreview = stage;
@@ -1806,6 +1887,8 @@ class CharacterGeneratorWidget {
             }
             wrap.append(caption, input);
         }
+        input.dataset.focusKey = `advanced-${field.section}-${field.key}`;
+        input.ariaLabel = field.label;
         this.protectNativeControl(input);
         return wrap;
     }
@@ -1823,6 +1906,7 @@ class CharacterGeneratorWidget {
         heading.textContent = `${this.title} · Settings`;
         const body = document.createElement("div");
         body.className = "vnccs-pipe-modal-body";
+        body.dataset.sakuraScroll = "advanced-settings";
         const intro = document.createElement("p");
         intro.className = "vnccs-pipe-settings-intro";
         intro.textContent = "All processing controls are grouped by the internal node that receives them. Connected MODEL, CLIP, VAE, image and conditioning inputs remain managed by the generator.";
@@ -1830,6 +1914,7 @@ class CharacterGeneratorWidget {
         groupsEl.className = "vnccs-pipe-settings-groups";
         const groups = this.generatorSettingsGroups();
         const renderGroups = () => {
+            const view = this._ui?.captureView();
             groupsEl.replaceChildren();
             for (const group of groups) {
                 const groupEl = document.createElement("section");
@@ -1851,6 +1936,8 @@ class CharacterGeneratorWidget {
                 groupEl.append(title, fields);
                 groupsEl.appendChild(groupEl);
             }
+            this._ui?.syncSelects();
+            if (view) this._ui.restoreView(view);
         };
         renderGroups();
         body.append(intro, groupsEl);
@@ -1914,7 +2001,12 @@ class CharacterGeneratorWidget {
         }, true);
         this.root.appendChild(backdrop);
         this.modalEl = backdrop;
-        requestAnimationFrame(() => modal.querySelector("input, select, textarea")?.focus({ preventScroll: true }));
+        if (this._ui) {
+            this._ui.syncSelects();
+            for (const control of this.root.querySelectorAll(".vnccs-common-ui-select-trigger")) this.protectNativeControl(control);
+        }
+        if (this._ui) mountSakuraDialogMotion(this._ui, backdrop, modal);
+        requestAnimationFrame(() => modal.querySelector('input:not([hidden]), textarea, .vnccs-common-ui-select-trigger')?.focus({ preventScroll: true }));
     }
 
     snapshotStageState() {
@@ -2372,7 +2464,7 @@ class CharacterGeneratorWidget {
         return JSON.stringify([
             this.stages.map(([key]) => {
                 const stage = this.stageState[key] || {};
-                return [key, stage.status || "waiting", stage.images || null, stage.message || "", stage.current ?? null, stage.total ?? null];
+                return [key, stage.status || "waiting", stage.images || null, stage.message || "", stage.current ?? null, stage.total ?? null, stage.processing_index ?? null, stage.processing_indices ?? null];
             }),
             this.selectedPreview,
             this.regenerateState ? [this.regenerateState.from, this.regenerateState.activeStage, this.regenerateState.imageIndex] : null,
@@ -2483,6 +2575,8 @@ class CharacterGeneratorWidget {
                     message: stage.message || "",
                     current: stage.current,
                     total: stage.total,
+                    processing_index: stage.processing_index,
+                    processing_indices: stage.processing_indices,
                 };
             }
         }
@@ -2515,6 +2609,8 @@ class CharacterGeneratorWidget {
                 message: stage.message || "",
                 current: stage.current,
                 total: stage.total,
+                processing_index: stage.processing_index,
+                processing_indices: stage.processing_indices,
             };
         }
         const payload = {
@@ -2541,6 +2637,8 @@ class CharacterGeneratorWidget {
                     message: stage.message || "",
                     current: stage.current,
                     total: stage.total,
+                    processing_index: stage.processing_index,
+                    processing_indices: stage.processing_indices,
                 };
             }
             try {
@@ -2723,15 +2821,46 @@ class CharacterGeneratorWidget {
         for (const [value, label] of options) {
             const btn = document.createElement("button");
             btn.type = "button";
-            btn.className = "vnccs-pipe-mode-tab" + (this.data[section][key] === value ? " is-selected" : "");
+            btn.className = "vnccs-pipe-mode-tab" + (this.data[section][key] === value ? " is-active" : "");
             btn.textContent = label;
+            btn.dataset.focusKey = `mode-${section}-${key}-${value}`;
             btn.onclick = () => {
                 this.set(section, key, value);
-                this.renderSettings();
+                if (section === "upscaler" && key === "mode" && this.upscalerPanel?.isConnected) {
+                    for (let index = 0; index < options.length; index++) {
+                        wrap.children[index].classList.toggle("is-active", this.data[section][key] === options[index][0]);
+                    }
+                    this._ui?.syncSelection(wrap);
+                    this.setDisclosureOpen(this.upscalerPanel, this.data.upscaler.mode !== "off");
+                } else this.renderSettings();
             };
             wrap.appendChild(btn);
         }
+        this._ui?.syncSelection(wrap);
         return wrap;
+    }
+
+    disclosure(content, open) {
+        const panel = document.createElement("div");
+        panel.className = "vnccs-pipe-disclosure";
+        const clip = document.createElement("div");
+        clip.className = "vnccs-pipe-disclosure-clip";
+        clip.appendChild(content);
+        panel.appendChild(clip);
+        this.setDisclosureOpen(panel, open);
+        return panel;
+    }
+
+    setDisclosureOpen(panel, open) {
+        panel.classList.toggle("is-open", open);
+        panel.inert = !open;
+        panel.ariaHidden = String(!open);
+        const trigger = this._ui?._dropdown?.trigger;
+        if (!open && trigger && panel.contains(trigger)) this._ui._closeDropdown(false);
+        if (open && this._ui) {
+            this._ui.syncSelects();
+            for (const control of panel.querySelectorAll(".vnccs-common-ui-select-trigger")) this.protectNativeControl(control);
+        }
     }
 
     field(section, key, label, type = "text", options = null) {
@@ -2764,6 +2893,7 @@ class CharacterGeneratorWidget {
                 option.value = "";
                 option.textContent = "No models found";
                 option.disabled = true;
+                input.disabled = true;
                 input.appendChild(option);
             }
             for (const opt of optionValues) {
@@ -2789,6 +2919,8 @@ class CharacterGeneratorWidget {
                 input.checked = !input.checked;
                 this.set(section, key, input.checked);
             };
+            input.dataset.focusKey = `field-${section}-${key}`;
+            input.ariaLabel = label;
             wrap.append(input, caption);
             return wrap;
         } else if (type === "textarea") {
@@ -2807,6 +2939,8 @@ class CharacterGeneratorWidget {
             this.protectNativeControl(input);
         }
         input.value = this.data[section][key];
+        input.dataset.focusKey = `field-${section}-${key}`;
+        input.ariaLabel = label;
         input.oninput = () => {
             let raw = input.value;
             if (type === "number") {
@@ -2821,6 +2955,7 @@ class CharacterGeneratorWidget {
             }
             this.set(section, key, raw);
         };
+        if (type === "select") input.onchange = input.oninput;
         if (type === "number") input.onblur = () => { input.value = String(this.data[section][key]); };
         wrap.append(caption, input);
         return wrap;
@@ -3127,23 +3262,52 @@ class CharacterGeneratorWidget {
         const selected = this.data.upscaler.model === rel;
         const card = document.createElement("div");
         card.className = `vnccs-seedvr-card ${ready ? "is-installed" : "is-missing"}${selected ? " is-selected" : ""}${pickerHead ? " is-picker-head" : ""}`;
+        card.dataset.focusKey = `seedvr-${pickerHead ? "head" : rel}`;
+        card.dataset.seedvrModel = rel;
+        if (pickerHead) { card.dataset.sakuraPickerHead = ""; card.dataset.sakuraFocusDefault = ""; }
+        if (pickerHead || installed) {
+            card.role = "button";
+            card.tabIndex = 0;
+            card.ariaLabel = entry.name;
+            card.setAttribute("aria-pressed", String(selected));
+            card.onkeydown = event => {
+                if (event.target === card && ["Enter", " "].includes(event.key)) { event.preventDefault(); card.click(); }
+            };
+        }
         const displayStatus = status || "missing";
+        card.dataset.downloadStatus = displayStatus;
+        card.ariaBusy = String(status === "queued" || status === "downloading");
         card.innerHTML = `<div class="vnccs-seedvr-card-head"><span class="vnccs-seedvr-card-dot"></span><span class="vnccs-seedvr-card-name" title="${entry.name}">${entry.name}</span><span class="vnccs-seedvr-card-status">${displayStatus}</span></div><div class="vnccs-seedvr-card-desc">${entry.description || ""}</div>`;
         if (pickerHead) {
             card.onclick = () => {
                 this.seedvrModelPickerOpen = !this.seedvrModelPickerOpen;
-                this.renderSettings();
+                if (this.seedvrPickerPanel?.isConnected) this.setDisclosureOpen(this.seedvrPickerPanel, this.seedvrModelPickerOpen);
+                else this.renderSettings();
             };
         } else if (installed) {
             card.onclick = () => {
                 this.set("upscaler", "model", rel);
                 this.seedvrModelPickerOpen = false;
-                this.renderSettings();
+                if (this.seedvrPickerPanel?.isConnected) {
+                    this.setDisclosureOpen(this.seedvrPickerPanel, false);
+                    const picker = this.seedvrPickerPanel.parentElement;
+                    const head = this.buildSeedvrCard(entry, { pickerHead: true });
+                    picker.replaceChild(head, picker.children[0]);
+                    for (const option of this.seedvrPickerPanel.querySelectorAll(".vnccs-seedvr-card")) {
+                        option.classList.toggle("is-selected", option.dataset.seedvrModel === rel);
+                        option.setAttribute("aria-pressed", String(option.dataset.seedvrModel === rel));
+                    }
+                    this._ui?._playMotion(head, [{ opacity: 0.35 }, { opacity: 1 }], 180);
+                    head.focus({ preventScroll: true });
+                } else this.renderSettings();
             };
         } else {
             const button = document.createElement("button");
             button.className = "vnccs-seedvr-download";
             button.textContent = status === "error" ? (download.message || "Retry") : (["queued", "downloading"].includes(status) ? (download.message || "Downloading…") : "Install / Download");
+            button.ariaLabel = button.textContent;
+            setHelpText(button, button.textContent);
+            setHelpText(card, button.textContent);
             button.disabled = ["queued", "downloading"].includes(status);
             button.onclick = event => {
                 event.stopPropagation();
@@ -3166,16 +3330,22 @@ class CharacterGeneratorWidget {
         if (!selected) return container;
         const picker = document.createElement("div");
         picker.className = `vnccs-seedvr-picker${this.seedvrModelPickerOpen ? " is-open" : ""}`;
+        picker.dataset.sakuraPicker = "seedvr";
+        picker.dataset.mode = "seedvr";
+        picker.dataset.sakuraFocusGroup = "seedvr";
         picker.appendChild(this.buildSeedvrCard(selected, { pickerHead: true }));
         const menu = document.createElement("div");
         menu.className = "vnccs-seedvr-picker-menu";
+        menu.dataset.sakuraScroll = "seedvr-models";
         entries.forEach(entry => menu.appendChild(this.buildSeedvrCard(entry)));
-        picker.appendChild(menu);
+        this.seedvrPickerPanel = this.disclosure(menu, this.seedvrModelPickerOpen);
+        picker.appendChild(this.seedvrPickerPanel);
         container.appendChild(picker);
         return container;
     }
 
     renderSettings() {
+        const view = this._ui?.captureView();
         this.syncCharacterSourceData();
         this.syncStagesFromData();
         this.settingsEl.innerHTML = "";
@@ -3245,188 +3415,254 @@ class CharacterGeneratorWidget {
         const upscalerFields = [
             this.modeTabs("upscaler", "mode", [["seedvr", "SeedVR"], ["off", "OFF"]]),
         ];
-        if (this.data.upscaler.mode !== "off") {
+        {
+            const content = document.createElement("div");
+            content.className = "vnccs-pipe-disclosure-content";
             const resolutionFields = document.createElement("div");
             resolutionFields.className = "vnccs-pipe-field-row";
             resolutionFields.append(
                 this.field("upscaler", "resolution", "target short edge", "number", { min: 16, max: 16384, step: 2 }),
                 this.field("upscaler", "max_resolution", "maximum edge", "number", { min: 0, max: 16384, step: 2 }),
             );
-            upscalerFields.push(
+            content.append(
                 this.seedvrModelCards(),
                 resolutionFields,
                 this.field("upscaler", "color_correction", "color correction", "select", this.getOptions("SeedVR2PostProcessing", "color_correction_method", SEEDVR_COLOR_CORRECTION_MODES, this.data.upscaler.color_correction)),
             );
+            this.upscalerPanel = this.disclosure(content, this.data.upscaler.mode !== "off");
+            upscalerFields.push(this.upscalerPanel);
         }
-        this.settingsEl.appendChild(this.block("Upscaler", upscalerFields));
+        const upscalerBlock = this.block("Upscaler", upscalerFields);
+        upscalerBlock.classList.add("vnccs-pipe-upscaler-block");
+        this.settingsEl.appendChild(upscalerBlock);
         this.settingsEl.appendChild(this.block("BG Remove", this.bgRemoveFields()));
+        if (this._ui) {
+            this._ui.syncSelects();
+            for (const control of this.root.querySelectorAll(".vnccs-common-ui-select-trigger")) this.protectNativeControl(control);
+        }
+        if (view) this._ui.restoreView(view);
     }
 
     renderPreview() {
         this.syncStagesFromData();
-        this.previewEl.innerHTML = "";
-        const head = document.createElement("div");
-        head.className = "vnccs-pipe-preview-head";
-        const label = document.createElement("div");
-        label.className = "vnccs-pipe-preview-label";
-        label.textContent = this.stages.find(([key]) => key === this.selectedPreview)?.[1] || "Results";
-        const tabs = document.createElement("div");
-        tabs.className = "vnccs-pipe-tabs";
-        for (const [key, name] of this.stages) {
-            const tab = document.createElement("button");
-            tab.className = "vnccs-pipe-tab" + (key === this.selectedPreview ? " is-selected" : "");
-            tab.textContent = name;
-            tab.onclick = () => {
-                this.selectedPreview = key;
-                this.userSelectedPreview = true;
-                this.persistUI();
-                this.renderPreview();
-            };
-            tabs.appendChild(tab);
+        if (!this.previewGrid?.isConnected) {
+            const head = document.createElement("div");
+            head.className = "vnccs-pipe-preview-head";
+            this.previewLabel = document.createElement("div");
+            this.previewLabel.className = "vnccs-pipe-preview-label";
+            this.previewTabs = document.createElement("div");
+            this.previewTabs.className = "vnccs-pipe-tabs";
+            this.previewTabs.dataset.sakuraScroll = "preview-tabs";
+            head.append(this.previewLabel, this.previewTabs);
+            this.previewEmpty = document.createElement("div");
+            this.previewEmpty.className = "vnccs-pipe-empty";
+            this.previewGrid = document.createElement("div");
+            this.previewGrid.className = "vnccs-pipe-grid";
+            this.previewEl.append(head, this.previewEmpty, this.previewGrid);
         }
-        if (this.regenerateState) {
-            const regen = document.createElement("div");
-            regen.className = "vnccs-pipe-regen-status";
-            const spinner = document.createElement("span");
-            spinner.className = "vnccs-pipe-regen-spinner";
-            const activeName = this.stages.find(([key]) => key === this.regenerateState.activeStage)?.[1] || "Stage";
-            const itemText = Number.isInteger(this.regenerateState.imageIndex) ? ` #${this.regenerateState.imageIndex + 1}` : "";
-            const text = document.createElement("span");
-            text.textContent = `Regenerating ${activeName}${itemText} · ${this.formatElapsed(this.regenerateState.elapsed)}`;
-            regen.append(spinner, text);
-            head.append(label, regen);
-        } else {
-            head.append(label, tabs);
+        const name = this.stages.find(([key]) => key === this.selectedPreview)?.[1] || "Results";
+        const changedStage = this._previewStage !== this.selectedPreview;
+        if (changedStage) {
+            this._previewRevealAt = 0;
+            this.previewLabel.textContent = name;
+            this._ui?._playMotion(this.previewLabel, [{ opacity: 0.25 }, { opacity: 1 }], 180);
         }
-        this.previewEl.appendChild(head);
+        this._previewStage = this.selectedPreview;
+        const tabsKey = JSON.stringify(this.stages);
+        if (this._previewTabsKey !== tabsKey) {
+            const view = this._ui?.captureView();
+            this.previewTabs.innerHTML = "";
+            for (const [key, title] of this.stages) {
+                const tab = document.createElement("button");
+                tab.className = "vnccs-pipe-tab";
+                tab.textContent = title;
+                tab.dataset.focusKey = `preview-${key}`;
+                tab.onclick = () => {
+                    this.selectedPreview = key;
+                    this.userSelectedPreview = true;
+                    this.persistUI();
+                    this.renderPreview();
+                };
+                this.previewTabs.appendChild(tab);
+            }
+            this._previewTabsKey = tabsKey;
+            if (view) this._ui.restoreView(view);
+        }
+        const previous = this._ui?.captureSelection([...this.previewTabs.children]);
+        for (const tab of this.previewTabs.children) {
+            const selected = tab.dataset.focusKey === `preview-${this.selectedPreview}`;
+            tab.classList.toggle("is-selected", selected);
+            tab.setAttribute("aria-pressed", String(selected));
+        }
+        if (changedStage) this._ui?.animateSelection(previous, [...this.previewTabs.children]);
 
-        const images = this.stageState[this.selectedPreview]?.images;
-        if (!images?.length) {
-            const empty = document.createElement("div");
-            empty.className = "vnccs-pipe-empty";
-            empty.textContent = this.formatStageStatus(this.selectedPreview);
-            this.previewEl.appendChild(empty);
-            return;
-        }
-        const grid = document.createElement("div");
-        grid.className = "vnccs-pipe-grid";
-        const selectedState = this.stageState[this.selectedPreview] || {};
-        const canRegenerateImages = selectedState.status === "done" && !this.regenerateState;
-        images.forEach((source, index) => {
-            const src = mediaURL(source);
+        const state = this.stageState[this.selectedPreview] || {};
+        const images = state.images || [];
+        const stageIndex = this.stages.findIndex(([key]) => key === this.selectedPreview);
+        const upstream = this.stages.slice(0, stageIndex).reverse()
+            .map(([key]) => this.stageState[key]?.images).find(images => images?.length) || [];
+        const total = Math.max(0, Math.min(512, Number(state.total) || 0));
+        const count = Math.min(512, Math.max(this.previewGrid.children.length, images.length, total, upstream.length));
+        const busy = state.status === "running" || this.regenerateState?.activeStage === this.selectedPreview;
+        const targeted = Number.isInteger(this.regenerateState?.imageIndex) && this.regenerateState?.targetStages?.includes(this.selectedPreview);
+        const activeIndex = targeted ? this.regenerateState.imageIndex
+            : (Number.isInteger(state.processing_index) ? state.processing_index : Math.max(0, Number(state.current) || 0));
+        const completed = state.processing_indices?.length
+            ? Math.min(...state.processing_indices) : Math.max(0, Number(state.current) || 0);
+        this.previewEmpty.hidden = count > 0;
+        this.previewEmpty.textContent = this.formatStageStatus(this.selectedPreview);
+        this.previewGrid.style.display = count ? "grid" : "none";
+        while (this.previewGrid.children.length < count) {
+            const index = this.previewGrid.children.length;
             const tile = document.createElement("div");
-            tile.tabIndex = 0;
+            tile.className = "vnccs-pipe-img is-empty";
             tile.role = "button";
-            tile.className = "vnccs-pipe-img";
-            tile.style.backgroundImage = `url("${String(src).replaceAll('"', "%22")}")`;
-            tile.dataset.src = src;
-            tile.onclick = () => this.openViewer(index);
-            tile.onkeydown = (event) => {
-                if (event.target !== tile) return;
-                if (event.key === "Enter" || event.key === " ") {
+            tile.dataset.focusKey = `preview-image-${index}`;
+            tile.style.setProperty("--wait-phase", `${-index * 180}ms`);
+            tile.onclick = () => { if (tile.dataset.src) this.openViewer(index); };
+            tile.onkeydown = event => {
+                if (event.target === tile && ["Enter", " "].includes(event.key)) {
                     event.preventDefault();
-                    this.openViewer(index);
+                    tile.onclick();
                 }
             };
-            if (canRegenerateImages) {
-                const regen = document.createElement("button");
+            this.previewGrid.appendChild(tile);
+        }
+        [...this.previewGrid.children].forEach((tile, index) => {
+            const source = (targeted && images.length === 1
+                ? (index === activeIndex ? images[0] : tile._previewSource || upstream[index])
+                : images[index] || upstream[index]);
+            if (source) this.updatePreviewImage(tile, source);
+            const processing = busy && (Array.isArray(state.processing_indices) && !targeted
+                ? state.processing_indices.includes(index)
+                : index === activeIndex && (targeted || activeIndex < (total || count)));
+            const waiting = busy && !targeted && !processing && index >= completed;
+            tile.classList.toggle("is-processing", Boolean(processing));
+            tile.classList.toggle("is-waiting", Boolean(waiting || (state.status === "waiting" && !this.regenerateState)));
+            tile.setAttribute("aria-busy", String(Boolean(processing || waiting)));
+            tile.ariaLabel = `${name} image ${index + 1}${processing ? ", processing" : waiting ? ", waiting" : busy && index < completed ? ", processed" : ""}`;
+            tile.tabIndex = tile.dataset.src ? 0 : -1;
+            tile.classList.toggle("is-empty", !tile.dataset.src);
+            const canRegenerate = state.status === "done" && !this.regenerateState && Boolean(images[index]);
+            let regen = tile.querySelector(".vnccs-pipe-img-regen");
+            if (canRegenerate && !regen) {
+                regen = document.createElement("button");
                 regen.type = "button";
                 regen.className = "vnccs-pipe-img-regen";
                 regen.textContent = "Regenerate";
-                regen.onclick = (event) => {
+                regen.onclick = event => {
                     event.preventDefault();
                     event.stopPropagation();
-                    this.regenerateFrom(this.selectedPreview, index).catch((error) => {
+                    this.regenerateFrom(this.selectedPreview, index).catch(error => {
                         console.error("[VNCCS Character Generator] Image regenerate failed:", error);
                         this.showModal("Regenerate Failed", error?.message || "Regenerate failed");
                     });
                 };
                 tile.appendChild(regen);
-            }
-            grid.appendChild(tile);
+            } else if (!canRegenerate) regen?.remove();
         });
-        this.previewEl.appendChild(grid);
-        this.schedulePreviewGridLayout(grid, images);
+        this.flushPreviewImages();
+        this.schedulePreviewGridLayout(this.previewGrid);
     }
 
-    schedulePreviewGridLayout(grid, images) {
+    updatePreviewImage(tile, source) {
+        const src = mediaURL(source);
+        if (tile._previewSource === src) return;
+        tile._previewSource = src;
+        if (tile._pendingImage) {
+            tile._pendingImage.onload = tile._pendingImage.onerror = null;
+            tile._pendingImage.remove();
+        }
+        const image = document.createElement("img");
+        image.className = "vnccs-pipe-img-content";
+        image.alt = "";
+        image.decoding = "async";
+        image.style.opacity = "0";
+        tile._pendingImage = image;
+        tile.appendChild(image);
+        const ready = async () => {
+            image.onload = image.onerror = null;
+            try { await image.decode?.(); } catch { /* Keep the last successful preview on a failed load. */ }
+            if (this._disposed || tile._pendingImage !== image || !tile.isConnected) return;
+            image._previewReady = true;
+            this.flushPreviewImages();
+        };
+        image.onload = ready;
+        image.onerror = () => {
+            if (tile._pendingImage !== image) return;
+            tile._pendingImage = null;
+            tile._previewSource = tile.dataset.src || null;
+            image.remove();
+            this.flushPreviewImages();
+        };
+        image.src = src;
+    }
+
+    flushPreviewImages() {
+        let changed = false;
+        for (const tile of this.previewGrid?.children || []) {
+            const image = tile._pendingImage;
+            if (!image) continue;
+            // A later network response must not overtake an earlier card's reveal.
+            if (!image._previewReady) break;
+            tile._pendingImage = null;
+            changed = true;
+            const previous = tile._previewImage;
+            tile._previewImage = image;
+            tile.dataset.src = image.src;
+            tile.tabIndex = 0;
+            tile.classList.toggle("is-empty", false);
+            const delay = Math.max(0, (this._previewRevealAt || 0) - Date.now());
+            this._previewRevealAt = Date.now() + delay + 100;
+            image.style.opacity = "1";
+            const motion = this._ui?._playMotion(image, [{ opacity: 0, filter: "blur(4px)", transform: "scale(0.985)" }, { opacity: 1, filter: "blur(0px)", transform: "none" }], 420);
+            motion?.effect?.updateTiming?.({ delay, fill: "backwards" });
+            if (previous) {
+                const exit = this._ui?._playMotion(previous, [{ opacity: 1 }, { opacity: 0 }], 280, () => previous.remove());
+                exit?.effect?.updateTiming?.({ delay, fill: "backwards" });
+                if (!this._ui) previous.remove();
+            }
+        }
+        if (changed && this.viewer?.open) this.syncViewerImage();
+    }
+
+    schedulePreviewGridLayout(grid) {
         if (this.previewLayoutFrame) cancelAnimationFrame(this.previewLayoutFrame);
         this.previewLayoutFrame = requestAnimationFrame(() => {
             this.previewLayoutFrame = null;
-            this.layoutPreviewGrid(grid, images);
+            this.layoutPreviewGrid(grid);
         });
-        for (const src of images) this.ensureImageMetrics(src, () => this.layoutPreviewGrid(grid, images));
     }
 
-    ensureImageMetrics(src, onReady) {
-        const existing = this.imageMetrics.get(src);
-        if (existing) {
-            if (existing.loading && onReady) existing.callbacks.push(onReady);
-            else onReady?.();
-            return;
-        }
-        this.imageMetrics.set(src, { width: 1, height: 1, loading: true, callbacks: onReady ? [onReady] : [] });
-        const img = new Image();
-        img.onload = () => {
-            const callbacks = this.imageMetrics.get(src)?.callbacks || [];
-            this.imageMetrics.set(src, {
-                width: img.naturalWidth || 1,
-                height: img.naturalHeight || 1,
-                loading: false,
-            });
-            callbacks.forEach(callback => callback?.());
-        };
-        img.onerror = () => {
-            const callbacks = this.imageMetrics.get(src)?.callbacks || [];
-            this.imageMetrics.set(src, { width: 1, height: 1, loading: false });
-            callbacks.forEach(callback => callback?.());
-        };
-        img.src = mediaURL(src);
-    }
-
-    layoutPreviewGrid(grid, images) {
-        if (!grid?.isConnected || !images?.length) return;
-        const rect = grid.getBoundingClientRect();
+    layoutPreviewGrid(grid) {
+        if (!grid?.isConnected || !grid.children.length) return;
         const gap = 8;
-        const availableW = Math.max(1, grid.clientWidth || rect.width || 1);
-        const availableH = Math.max(1, grid.clientHeight || rect.height || 1);
-        const aspects = images.map(src => {
-            const metrics = this.imageMetrics.get(src);
-            return Math.max(0.05, Math.min(20, (metrics?.width || 1) / (metrics?.height || 1)));
-        });
-
+        const availableW = Math.max(1, grid.clientWidth);
+        const availableH = Math.max(1, grid.clientHeight);
+        const count = grid.children.length;
         let best = null;
-        for (let cols = 1; cols <= images.length; cols++) {
-            const rows = Math.ceil(images.length / cols);
+        for (let cols = 1; cols <= count; cols++) {
+            const rows = Math.ceil(count / cols);
             const cellW = (availableW - gap * (cols - 1)) / cols;
             const cellH = (availableH - gap * (rows - 1)) / rows;
-            if (cellW <= 0 || cellH <= 0) continue;
-
-            let minArea = Infinity;
-            let totalArea = 0;
-            for (const aspect of aspects) {
-                const drawW = Math.min(cellW, cellH * aspect);
-                const drawH = drawW / aspect;
-                const area = drawW * drawH;
-                minArea = Math.min(minArea, area);
-                totalArea += area;
-            }
-            const score = minArea * 1000000 + totalArea;
-            if (!best || score > best.score) {
-                best = { cols, rows, cellW, cellH, score };
-            }
+            const width = Math.min(cellW, cellH * 0.75);
+            const area = width * width / 0.75;
+            if (cellW > 0 && cellH > 0 && (!best || area > best.area)) best = { cols, rows, area };
         }
-
         if (!best) return;
-        grid.style.gridTemplateColumns = `repeat(${best.cols}, ${Math.floor(best.cellW)}px)`;
-        grid.style.gridTemplateRows = `repeat(${best.rows}, ${Math.floor(best.cellH)}px)`;
-
+        const layoutKey = `${availableW}:${availableH}:${count}:${best.cols}`;
+        if (grid._previewLayoutKey === layoutKey) return;
+        grid._previewLayoutKey = layoutKey;
+        grid.style.gridTemplateColumns = `repeat(${best.cols}, minmax(0, 1fr))`;
+        grid.style.gridTemplateRows = `repeat(${best.rows}, minmax(0, 1fr))`;
+        const rects = [...grid.children].map(tile => sakuraRect(this._ui, tile, grid));
         [...grid.children].forEach((tile, index) => {
-            const aspect = aspects[index] || 1;
-            const drawW = Math.min(best.cellW, best.cellH * aspect);
-            const drawH = drawW / aspect;
-            tile.style.width = `${Math.max(1, Math.floor(drawW))}px`;
-            tile.style.height = `${Math.max(1, Math.floor(drawH))}px`;
+            const previous = tile._previewRect;
+            const next = rects[index];
+            tile._previewRect = next;
+            if (previous && ["x", "y", "width", "height"].some(key => Math.abs(previous[key] - next[key]) > 1)) {
+                this._ui?._playMotion(tile, [{ transform: `translate(${previous.x - next.x}px, ${previous.y - next.y}px) scale(${previous.width / next.width}, ${previous.height / next.height})` }, { transform: "none" }], 320);
+            }
         });
     }
 
@@ -3463,6 +3699,9 @@ class CharacterGeneratorWidget {
     }
 
     renderChain() {
+        const view = this._ui?.captureView();
+        const fills = new Map([...this.chainEl.querySelectorAll("[data-stage-progress]")].map(fill => [fill.dataset.stageProgress, fill.style.transform]));
+        const statuses = new Map([...this.chainEl.querySelectorAll("[data-stage-status]")].map(stage => [stage.dataset.focusKey, stage.dataset.stageStatus]));
         this.syncStagesFromData();
         this.chainEl.innerHTML = "";
         this.updateModeClasses();
@@ -3472,6 +3711,14 @@ class CharacterGeneratorWidget {
             const status = this.stageState[key]?.status || "waiting";
             const isRegeneratingStage = this.regenerateState?.targetStages?.includes(key);
             stage.className = "vnccs-pipe-stage";
+            stage.dataset.focusKey = `stage-${key}`;
+            stage.dataset.stageStatus = status;
+            stage.role = "button";
+            stage.tabIndex = 0;
+            stage.setAttribute("aria-pressed", String(key === this.selectedPreview));
+            stage.onkeydown = event => {
+                if (event.target === stage && ["Enter", " "].includes(event.key)) { event.preventDefault(); stage.click(); }
+            };
             if (status === "running") stage.classList.add("is-active");
             if (isRegeneratingStage) stage.classList.add("is-regenerating");
             if (status === "done") stage.classList.add("is-done");
@@ -3488,19 +3735,24 @@ class CharacterGeneratorWidget {
             s.className = "vnccs-pipe-stage-status";
             s.textContent = this.formatStageStatus(key);
             stage.append(n, s);
+            const previousStatus = statuses.get(stage.dataset.focusKey);
+            if (previousStatus && previousStatus !== status) this._ui?._playMotion(s, [{ opacity: 0.35 }, { opacity: 1 }], 180);
             if (status === "running" || this.regenerateState?.activeStage === key) {
                 const progress = document.createElement("div");
                 progress.className = "vnccs-pipe-stage-progress";
                 const fill = document.createElement("div");
                 fill.className = "vnccs-pipe-stage-progress-fill";
+                fill.dataset.stageProgress = key;
                 const state = this.stageState[key] || {};
                 const current = Number(state.current);
                 const total = Number(state.total);
                 if (Number.isFinite(current) && Number.isFinite(total) && total > 0) {
-                    fill.style.width = `${Math.max(4, Math.min(100, (current / total) * 100))}%`;
+                    fill.style.transform = `scaleX(${Math.max(0.04, Math.min(1, current / total))})`;
                 } else {
-                    fill.style.width = `${this.estimateRegenerateProgress()}%`;
+                    fill.style.transform = `scaleX(${this.estimateRegenerateProgress() / 100})`;
                 }
+                const previous = fills.get(key);
+                if (previous && previous !== fill.style.transform) this._ui?._playMotion(fill, [{ transform: previous }, { transform: fill.style.transform }], 360);
                 progress.appendChild(fill);
                 stage.appendChild(progress);
             }
@@ -3537,10 +3789,13 @@ class CharacterGeneratorWidget {
             }
             this.chainEl.appendChild(stage);
         }
+        if (view) this._ui.restoreView(view);
     }
 
     currentImages() {
-        return this.stageState[this.selectedPreview]?.images || [];
+        return this.previewGrid?.isConnected && this._previewStage === this.selectedPreview
+            ? [...this.previewGrid.children].map(tile => tile.dataset.src || "")
+            : this.stageState[this.selectedPreview]?.images || [];
     }
 
     openViewer(index = 0, restored = null) {
@@ -3577,6 +3832,8 @@ class CharacterGeneratorWidget {
     }
 
     renderViewer() {
+        const view = this._ui?.captureView();
+        const replacing = !!this.viewer?.overlay?.isConnected;
         const stageScrollLeft = this.viewer?.stageTabs?.scrollLeft || 0;
         this.closeViewer();
         const overlay = document.createElement("div");
@@ -3605,11 +3862,14 @@ class CharacterGeneratorWidget {
         bar.appendChild(back);
         const stageTabs = document.createElement("div");
         stageTabs.className = "vnccs-pipe-viewer-stages";
+        stageTabs.dataset.sakuraScroll = "viewer-stages";
         for (const [key, name] of this.stages) {
             const btn = document.createElement("button");
             btn.type = "button";
             btn.className = "vnccs-pipe-viewer-btn" + (key === this.selectedPreview ? " is-selected" : "");
             btn.textContent = name;
+            btn.dataset.focusKey = `viewer-stage-${key}`;
+            btn.setAttribute("aria-pressed", String(key === this.selectedPreview));
             btn.onclick = () => {
                 this.updateViewerFocus();
                 const viewerFocus = this.currentViewerFocus();
@@ -3650,6 +3910,7 @@ class CharacterGeneratorWidget {
         canvas.appendChild(img);
         overlay.append(bar, canvas);
         this.root.appendChild(overlay);
+        if (!replacing && this._ui) mountSakuraDialogMotion(this._ui, overlay, bar);
         this.viewer.overlay = overlay;
         this.viewer.canvas = canvas;
         this.viewer.img = img;
@@ -3666,7 +3927,11 @@ class CharacterGeneratorWidget {
                 if (this.viewer === viewer && viewer.canvas === canvas) this.fitViewer();
             });
         };
-        img.onload = scheduleFit;
+        img.onload = () => {
+            if (this.viewer !== viewer || !img.isConnected) return;
+            scheduleFit();
+            this._ui?._playMotion(img, [{ opacity: 0, filter: "blur(5px)" }, { opacity: 1, filter: "blur(0px)" }], 420);
+        };
         img.onerror = () => img.classList.remove("is-ready");
         img.decoding = "async";
         img.src = mediaURL(this.currentImages()[this.viewer.index] || "");
@@ -3753,6 +4018,7 @@ class CharacterGeneratorWidget {
             document.removeEventListener("visibilitychange", onVisibilityChange);
         };
         overlay.focus({ preventScroll: true });
+        if (view) this._ui.restoreView(replacing ? view : { ...view, focusKey: null, focusGroup: null, selection: null });
     }
 
     closeViewer(clear = false) {
@@ -3772,7 +4038,7 @@ class CharacterGeneratorWidget {
         if (!this.viewer?.img) return;
         this.viewer.index = this.clampedViewerIndex();
         const src = images[this.viewer.index] || "";
-        if ((this.viewer.img.getAttribute("src") || "") === src) return;
+        if ((this.viewer.img.getAttribute("src") || "") === src || (src && this.viewer.img.src === src)) return;
         this.viewer.restored = { open: true, ...this.currentViewerFocus() };
         this.viewer.fitApplied = false;
         this.viewer.img.classList.remove("is-ready");

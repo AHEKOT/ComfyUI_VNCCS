@@ -665,6 +665,71 @@ test("LoRA cards retain their pre-rollback tools row and responsive sizing indep
     assert.doesNotMatch(css.match(/\.vnccs-cc-lora-remove-btn\s*\{([^}]*)\}/)[1], /position: absolute/);
 });
 
+test("compact LoRA download statuses share one fixed slot with the download button", () => {
+    const { widget } = setup();
+    const entry = { name: "VNCCS Overhaul QI2", kind: "QI2", status: "missing",
+        description: "Overhaul for Character Creator", version: "2.0" };
+    for (const dls of [
+        { status: "queued" },
+        { status: "downloading", progress: 98, message: "Downloading: 98% · 149.0/152.1 MB" },
+        { status: "downloading", message: "Preparing " + "a very long download message ".repeat(30) },
+        { status: "error", message: "Transfer interrupted " + "retry details ".repeat(30) },
+        { status: "auth_required" },
+        { status: "installed" },
+    ]) {
+        entry.status = dls.status;
+        widget.dlStatus = { [`cc_lora_${entry.name}`]: dls };
+        const card = widget._renderLoraCard(entry, { compact: true, mode: "pipe" });
+        const status = card.querySelector(".vnccs-cc-lora-card-status");
+        assert.equal(status.parentNode, card.querySelector(".vnccs-cc-lora-card-tools"));
+        assert.equal(card.querySelector(".vnccs-cc-lora-card-meta").children.length, 1, "Only the name participates in the text column's height");
+        assert.equal(card.querySelector(".vnccs-cc-lora-card-detail-row").textContent, "Overhaul for Character Creatorv2.0");
+        assert.equal(card.querySelector(".vnccs-cc-row-progress"), null, "Compact warnings use the existing status slot");
+        if (dls.status === "downloading") {
+            assert.equal(status.textContent, Number.isFinite(dls.progress) ? "98%" : "Loading");
+            assert.equal(status.ariaLabel, dls.message);
+            assert.equal(status.title, dls.message);
+            assert.equal(status.tabIndex, 0);
+        }
+        if (dls.status === "error") {
+            assert.equal(status.hidden, true);
+            assert.ok(card.querySelector(".vnccs-cc-lora-download-btn"));
+        }
+    }
+    assert.match(css, /\.vnccs-cc-lora-card--compact \.vnccs-cc-lora-card-top\s*\{[^}]*flex-wrap: nowrap/);
+    assert.match(css, /\.vnccs-cc-lora-card--compact \.vnccs-cc-lora-card-tools\s*\{[^}]*flex: 0 0 58px;[^}]*flex-wrap: nowrap;[^}]*height: 24px/);
+    assert.match(css, /\.vnccs-cc-lora-card--compact \.vnccs-cc-lora-card-status\s*\{[^}]*overflow: hidden;[^}]*white-space: nowrap/);
+});
+
+test("live LoRA polling keeps its compact status in the same slot and retains the full message", () => {
+    const { widget } = setup();
+    const entry = { name: "Overhaul", kind: "QI2", status: "missing", description: "Creator style" };
+    const key = `cc_lora_${entry.name}`;
+    widget.dlStatus[key] = { status: "queued" };
+    const card = widget._renderLoraCard(entry, { compact: true, mode: "pipe" });
+    widget.scrollArea.appendChild(card);
+    const status = card.querySelector(".vnccs-cc-lora-card-status"), slot = status.parentNode;
+    widget._downloadRefreshPending = true;
+    for (const [dls, expected] of [
+        [{ status: "downloading", progress: 98, message: "Downloading: 98% · 149.0/152.1 MB" }, "98%"],
+        [{ status: "downloading", progress: 150, message: "Verifying transferred bytes" }, "100%"],
+        [{ status: "downloading", progress: -2, message: "Starting download" }, "0%"],
+        [{ status: "downloading", message: "Unknown size " + "download details ".repeat(100) }, "Loading"],
+        [{ status: "success" }, "Checking"],
+    ]) {
+        widget.dlStatus[key] = dls;
+        widget._updateDownloadIndicators();
+        assert.equal(status.parentNode, slot);
+        assert.equal(status.textContent, expected);
+        assert.equal(status.ariaLabel, dls.message || "Checking installation…");
+        assert.equal(card.querySelector(".vnccs-cc-lora-card-meta").children.length, 1);
+    }
+    const fullCard = widget._renderLoraCard(entry);
+    widget.dlStatus[key] = { status: "downloading", progress: 98, message: "Downloading: 98% · 149.0/152.1 MB" };
+    assert.equal(widget._statusLabel("downloading", widget.dlStatus[key]), "Downloading: 98% · 149.0/152.1 MB");
+    assert.equal(fullCard.classList.contains("vnccs-cc-lora-card--compact"), false);
+});
+
 test("nested dialogs contain Tab, close with Escape, and return focus without scrolling or saving drafts", () => {
     const { widget, document, serialized, flush, focused } = setup();
     const opener = focused("CFG");

@@ -146,6 +146,18 @@ def test_partial_regeneration_keeps_unchanged_previews_and_resets_downstream_sta
     assert snapshot['stages']['bg_remove']['status'] == 'running'
 
 
+def test_processing_card_indices_survive_progress_reconnection():
+    scope = progress.begin_progress('processing-cards', 5, 'run')
+    progress.record_progress(scope, event(current=2, total=6, processing_index=1), 'run')
+    assert progress.progress_snapshot(scope)['stages']['pose_generation']['processing_index'] == 1
+    indices = [2, 3]
+    progress.record_progress(scope, event(current=0, total=2, processing_indices=indices), 'run')
+    indices.clear()
+    assert progress.progress_snapshot(scope)['stages']['pose_generation']['processing_indices'] == [2, 3]
+    progress.record_progress(scope, event(status='done'), 'run')
+    assert 'processing_indices' not in progress.progress_snapshot(scope)['stages']['pose_generation']
+
+
 def test_regenerate_contexts_separate_workflows_with_identical_node_ids(monkeypatch):
     from nodes import generator_context as context
     from collections import OrderedDict

@@ -105,6 +105,8 @@ test("single-image regeneration replaces its preview without dropping siblings",
 
     emit({ status: "running", message: "Regenerating image 2" });
     assert.deepEqual(Array.from(widget.stageState[stage].images), ["first", "second", "third"]);
+    emit({ status: "running", images: ["second-in-progress"], current: 0, total: 1 });
+    assert.deepEqual(Array.from(widget.stageState[stage].images), ["first", "second-in-progress", "third"]);
 
     emit({
         status: "running",

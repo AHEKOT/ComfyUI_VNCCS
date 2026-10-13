@@ -335,7 +335,7 @@ export function createSakuraInteractions(container, node) {
         group.style.setProperty("--segments", String(buttons.length));
         buttons.forEach(button => {
             button.classList.add("vnccs-common-ui-segment");
-            button.setAttribute("aria-pressed", String(button.classList.contains("is-active") || button.classList.contains("active")));
+            button.setAttribute("aria-pressed", String(button.classList.contains("is-active") || button.classList.contains("active") || button.classList.contains("is-selected")));
         });
         const index = buttons.findIndex(button => button.getAttribute("aria-pressed") === "true");
         group.style.setProperty("--segment-index", String(Math.max(0, index)));
@@ -398,9 +398,9 @@ export function createSakuraInteractions(container, node) {
             }
         };
         if (focusKey) {
-            let replacement = [...container.querySelectorAll("[data-focus-key]")].find(element => element.dataset.focusKey === focusKey);
+            let replacement = [...container.querySelectorAll("[data-focus-key]")].find(element => element.dataset.focusKey === focusKey && !element.closest("[inert]"));
             if (!replacement?.getClientRects().length && focusGroup) {
-                const group = [...container.querySelectorAll("[data-sakura-focus-group]")].find(element => element.dataset.sakuraFocusGroup === focusGroup);
+                const group = [...container.querySelectorAll("[data-sakura-focus-group]")].find(element => element.dataset.sakuraFocusGroup === focusGroup && !element.closest("[inert]"));
                 replacement = group?.querySelector("[data-sakura-focus-default]");
             }
             if (replacement?.getClientRects().length) {

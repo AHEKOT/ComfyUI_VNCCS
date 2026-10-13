@@ -62,6 +62,9 @@ def test_pose_progress_tracks_each_phase_and_item(generator, monkeypatch, kind, 
             event = next(event for event in reversed(events) if event["message"] == phase)
             assert event["current"] == completed[phase]
             assert events[-1]["total"] == count
+            if kind == "qi2":
+                active = events[-1].get("processing_index", events[-1]["current"])
+                assert active == completed[phase]
             completed[phase] += 1
             calls.append(class_name)
         if class_name in {"VNCCS_Flux_Klein_Encoder", "ProbeEncode"}:
@@ -97,6 +100,19 @@ def test_pose_progress_tracks_each_phase_and_item(generator, monkeypatch, kind, 
                       else [phase for phase in completed for _ in range(count)])
     assert [phases[name] for name in calls] == expected_calls
     assert result.shape == (count, 8, 8, 3)
+
+
+def test_chroma_preview_indices_identify_the_actual_emotion_sub_batch(generator, monkeypatch):
+    node, _, events = generator
+    images = torch.zeros(2, 8, 8, 3)
+
+    def chroma(*args, **kwargs):
+        assert events[-1]["processing_indices"] == [4, 5]
+        return (images,)
+
+    monkeypatch.setattr(cg.VNCCSChromaKey, "chroma_key", chroma)
+    assert node._run_bg_remove(images, {}, unique_id="node-17", preview_indices=[4, 5]) is images
+    assert events[-1]["processing_indices"] == []
 
 
 def test_failed_item_does_not_advance_progress_or_run_decode(generator, monkeypatch):

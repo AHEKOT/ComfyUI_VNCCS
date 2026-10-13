@@ -26,7 +26,7 @@ async function setup(type) {
     };
     const context = createWidgetContext({
         app,
-        document: { createElement: () => ({ children: [], appendChild(child) { this.children.push(child); } }) },
+        document: { createElement: () => ({ children: [], classList: { toggle() {} }, setAttribute(name, value) { this[name] = value; }, appendChild(child) { this.children.push(child); } }) },
         syncDOMWidgetWidthSoon() {},
     });
     vm.runInContext(source.replace(/^import .*;\n/gm, '')
