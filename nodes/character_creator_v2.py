@@ -31,12 +31,12 @@ from ..utils import (
     sheets_dir, faces_dir, normalize_hair_tags, ensure_safe_name,
     get_full_path_agnostic, atomic_output_path, safe_join_under,
     privileged_route, file_fingerprint, config_path,
-    character_storage_lock,
+    character_storage_lock, list_pose_preview_files,
 )
 from .qwen_vl import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME
 from .runtime_cleanup import inference_stage
 from .generator_context import serialized_generator
-from .qwen_vl import configure_qwen_text_chat, parse_wizard_json, _validate_gguf_file
+from .qwen_vl import configure_qwen_text_chat, parse_wizard_json, normalize_character_wizard_traits, _validate_gguf_file
 from .character_presets import CHARACTER_PRESETS, RACE_PRESETS, preset_key, race_features, race_prompt
 from .character_styles import (
     load_user_styles, save_user_style, delete_user_style, style_preview_path, style_preview_url,
@@ -53,53 +53,6 @@ def pil2tensor(image):
 
 def tensor2pil(image):
     return Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
-
-def list_pose_preview_files(character_name, costume=None):
-    try:
-        base_char_path = character_dir(character_name)
-        sprite_roots = []
-        if costume:
-            costume = ensure_safe_name(costume, "costume")
-            sprite_roots.extend([
-                os.path.join(base_char_path, "Sprites", costume, "Neutral"),
-                os.path.join(base_char_path, "Sprites", costume),
-            ])
-        sprite_roots.extend([
-            os.path.join(base_char_path, "Sprites", "Naked", "Neutral"),
-            os.path.join(base_char_path, "Sprites", "Original", "Neutral"),
-            os.path.join(base_char_path, "Sprites", "Naked"),
-            os.path.join(base_char_path, "Sprites", "Original"),
-        ])
-        log_event("pose_preview_scan", component="Creator", level="debug", character=character_name, costume=costume)
-
-        image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-        files = []
-        for poses_dir in sprite_roots:
-            try:
-                poses_dir = safe_join_under(base_char_path, os.path.relpath(poses_dir, base_char_path))
-            except ValueError:
-                continue
-            if not os.path.isdir(poses_dir):
-                continue
-            root_files = []
-            for filename in os.listdir(poses_dir):
-                if os.path.splitext(filename)[1].lower() not in image_exts:
-                    continue
-                try:
-                    path = safe_join_under(base_char_path, os.path.relpath(os.path.join(poses_dir, filename), base_char_path))
-                except ValueError:
-                    continue
-                if os.path.isfile(path):
-                    root_files.append(path)
-            if root_files:
-                files = sorted(root_files)
-                break
-        log_event("pose_preview_list", component="Creator", level="debug", character=character_name, count=len(files))
-        return files
-    except Exception as e:
-        log_event('warning', component='Creator', level='warning', message=f'Pose Preview List Failed: {e}', error=str(e))
-        return []
-
 
 def get_pose_preview(character_name, index=None, costume=None):
     """
@@ -615,26 +568,7 @@ ATHLETIC_BODY_HINT_RE = re.compile(
 
 def _parse_character_wizard_json(content):
     data = parse_wizard_json(content)
-    if data is None:
-        return None
-
-    result = {}
-    for key in ["race", "skin_color", "hair", "eyes", "face", "body", "additional_details"]:
-        value = data.get(key, "")
-        if isinstance(value, list):
-            value = ", ".join(str(item).strip() for item in value if str(item).strip())
-        elif not isinstance(value, str):
-            value = str(value) if value is not None else ""
-        result[key] = value.strip()
-
-    sex = str(data.get("sex", "female")).strip().lower()
-    result["sex"] = "male" if sex.startswith("m") else "female"
-    try:
-        age = int(float(data.get("age", 18)))
-    except Exception:
-        age = 18
-    result["age"] = max(1, min(100, age))
-    return result
+    return normalize_character_wizard_traits(data) if data is not None else None
 
 
 def _split_prompt_tokens(value):

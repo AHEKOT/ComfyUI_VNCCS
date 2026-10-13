@@ -2,6 +2,7 @@ from ..operation_logger import log_event, log_stage, logged_operation
 
 from .preview_runtime import run_preview_job
 from .runtime_cleanup import inference_stage
+from .progress_state import _valid_scope
 import json
 import math
 import os
@@ -1837,6 +1838,7 @@ def _parse_control_center_state(node_state):
 
 def _preview_state_key(repo_id, node_state):
     state = _parse_control_center_state(node_state)
+    state = {key: value for key, value in state.items() if key != "preview_scope"}
     return str(repo_id), json.dumps(state, sort_keys=True, separators=(",", ":"))
 
 
@@ -1885,11 +1887,13 @@ class VNCCS_ControlCenter:
             custom_audio_vae=audio_vae,
         )
         if unique_id is not None:
-            key = str(unique_id)
-            _CUSTOM_PREVIEW_PIPES.pop(key, None)
-            if model is not None and clip is not None and vae is not None:
-                pipe.preview_state_key = _preview_state_key(repo_id, node_state)
-                _CUSTOM_PREVIEW_PIPES[key] = pipe
+            scope = _parse_control_center_state(node_state).get("preview_scope")
+            if _valid_scope(scope):
+                key = (scope, str(unique_id))
+                _CUSTOM_PREVIEW_PIPES.pop(key, None)
+                if model is not None and clip is not None and vae is not None:
+                    pipe.preview_state_key = _preview_state_key(repo_id, node_state)
+                    _CUSTOM_PREVIEW_PIPES[key] = pipe
         return (pipe,)
 
 
@@ -2129,7 +2133,8 @@ def _clothes_preview_response(data):
 
         selected_type = (state.get("selected_types_by_kind") or {}).get(state.get("active_kind"), state.get("selected_type"))
         if selected_type == "custom":
-            pipe = _CUSTOM_PREVIEW_PIPES.get(str(data.get("control_center_id", "")))
+            scope = data.get("control_center_scope")
+            pipe = _CUSTOM_PREVIEW_PIPES.get((scope, str(data.get("control_center_id", "")))) if _valid_scope(scope) else None
             if pipe is None or pipe.preview_state_key != _preview_state_key(repo_id, node_state):
                 return web.Response(status=409, text=(
                     "Custom model inputs for this Control Center configuration are not available in preview memory. "

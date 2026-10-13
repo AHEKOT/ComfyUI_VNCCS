@@ -3502,7 +3502,7 @@ class CharacterGeneratorWidget {
         const upstream = this.stages.slice(0, stageIndex).reverse()
             .map(([key]) => this.stageState[key]?.images).find(images => images?.length) || [];
         const total = Math.max(0, Math.min(512, Number(state.total) || 0));
-        const count = Math.min(512, Math.max(this.previewGrid.children.length, images.length, total, upstream.length));
+        const count = Math.min(512, Math.max(images.length, total, state.status === "done" ? 0 : upstream.length));
         const busy = state.status === "running" || this.regenerateState?.activeStage === this.selectedPreview;
         const targeted = Number.isInteger(this.regenerateState?.imageIndex) && this.regenerateState?.targetStages?.includes(this.selectedPreview);
         const activeIndex = targeted ? this.regenerateState.imageIndex
@@ -3512,6 +3512,11 @@ class CharacterGeneratorWidget {
         this.previewEmpty.hidden = count > 0;
         this.previewEmpty.textContent = this.formatStageStatus(this.selectedPreview);
         this.previewGrid.style.display = count ? "grid" : "none";
+        while (this.previewGrid.children.length > count) {
+            const tile = this.previewGrid.children[this.previewGrid.children.length - 1];
+            if (tile._pendingImage) tile._pendingImage.onload = tile._pendingImage.onerror = null;
+            tile.remove();
+        }
         while (this.previewGrid.children.length < count) {
             const index = this.previewGrid.children.length;
             const tile = document.createElement("div");
@@ -3533,6 +3538,15 @@ class CharacterGeneratorWidget {
                 ? (index === activeIndex ? images[0] : tile._previewSource || upstream[index])
                 : images[index] || upstream[index]);
             if (source) this.updatePreviewImage(tile, source);
+            else {
+                if (tile._pendingImage) {
+                    tile._pendingImage.onload = tile._pendingImage.onerror = null;
+                    tile._pendingImage.remove();
+                }
+                tile._previewImage?.remove();
+                tile._pendingImage = tile._previewImage = tile._previewSource = null;
+                delete tile.dataset.src;
+            }
             const processing = busy && (Array.isArray(state.processing_indices) && !targeted
                 ? state.processing_indices.includes(index)
                 : index === activeIndex && (targeted || activeIndex < (total || count)));

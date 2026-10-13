@@ -485,6 +485,9 @@ class TestEnsureCharacterStructure:
 
 # ── save_costume_info / load_costume_info ─────────────────────────────────────
 
+def test_legacy_list_details_build_the_same_face_prompt_as_normalized_text():
+    assert U.build_face_details({"additional_details": ["tail", "wings"]}) == U.build_face_details({"additional_details": "tail, wings"})
+
 class TestCostumeIO:
     def test_save_and_load(self, tmp_path, monkeypatch):
         monkeypatch.setattr(U, "base_output_dir", lambda: str(tmp_path))

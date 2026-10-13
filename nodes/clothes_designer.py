@@ -4,6 +4,7 @@ from .preview_runtime import run_wizard_job, run_preview_job
 from .generator_context import serialized_generator, forget_character_contexts
 
 import os
+import asyncio
 import json
 import hashlib
 import torch
@@ -16,10 +17,11 @@ import re
 
 from ..utils import (
     character_dir, save_costume_info, delete_costume,
+    list_pose_preview_files as list_preview_sprite_files,
     load_costume_info, list_costumes, ensure_costume_structure,
     sheets_dir,
     ensure_safe_name, safe_join_under, safe_relative_path, atomic_output_path,
-    validate_costume_info, privileged_route, character_storage_lock
+    validate_costume_info, privileged_route, character_storage_lock, costume_revision
 )
 from .character_generator import (
     _call_comfy_node,
@@ -199,6 +201,7 @@ def get_latest_sprite_path(character, costume="Naked"):
         if neutral_dir and os.path.isdir(neutral_dir):
             neutral_files = []
             for root, _dirs, filenames in os.walk(neutral_dir):
+                _dirs[:] = [name for name in _dirs if not re.fullmatch(r"V[0-9]+", name, re.IGNORECASE)]
                 for filename in filenames:
                     neutral_files.append(os.path.join(root, filename))
             best = _latest_image_file(neutral_files, character_root)
@@ -216,53 +219,12 @@ def get_latest_sprite_path(character, costume="Naked"):
 
         nested_files = []
         for root, _dirs, filenames in os.walk(base):
+            _dirs[:] = [name for name in _dirs if not re.fullmatch(r"V[0-9]+", name, re.IGNORECASE)]
             for filename in filenames:
                 nested_files.append(os.path.join(root, filename))
         return _latest_image_file(nested_files, character_root)
     except Exception:
         return None
-
-
-def list_preview_sprite_files(character, costume=None):
-    try:
-        base_char_path = character_dir(character)
-        if costume:
-            costume = ensure_safe_name(costume, "costume")
-        sprite_roots = []
-        if costume:
-            sprite_roots.extend([
-                os.path.join(base_char_path, "Sprites", costume, "Neutral"),
-                os.path.join(base_char_path, "Sprites", costume),
-            ])
-        sprite_roots.extend([
-            os.path.join(base_char_path, "Sprites", "Naked", "Neutral"),
-            os.path.join(base_char_path, "Sprites", "Original", "Neutral"),
-            os.path.join(base_char_path, "Sprites", "Naked"),
-            os.path.join(base_char_path, "Sprites", "Original"),
-        ])
-        for root in sprite_roots:
-            try:
-                root = safe_join_under(base_char_path, os.path.relpath(root, base_char_path))
-            except ValueError:
-                continue
-            if not os.path.isdir(root):
-                continue
-            files = []
-            for filename in os.listdir(root):
-                if os.path.splitext(filename)[1].lower() not in IMAGE_EXTS:
-                    continue
-                try:
-                    path = safe_join_under(base_char_path, os.path.relpath(os.path.join(root, filename), base_char_path))
-                except ValueError:
-                    continue
-                if os.path.isfile(path):
-                    files.append(path)
-            if files:
-                return sorted(files)
-        return []
-    except Exception as exc:
-        log_event('warning', component='ClothesDesigner', level='warning', message=f'Failed to list preview sprites for {character}/{costume}: {exc}', error=str(exc))
-        return []
 
 
 def resolve_comfy_image_path(image_info):
@@ -897,7 +859,7 @@ async def vnccs_get_costume(request):
         character = ensure_safe_name(character, "character")
         costume = ensure_safe_name(costume, "costume")
         data = load_costume_info(character, costume)
-        return web.json_response(data)
+        return web.json_response(data, headers={"ETag": costume_revision(data)})
     except Exception as e:
         return web.Response(status=500, text=str(e))
 
@@ -914,14 +876,23 @@ async def vnccs_save_costume(request):
         if not character or not costume: return web.Response(status=400)
         character = ensure_safe_name(character, "character")
         costume = ensure_safe_name(costume, "costume")
-        with character_storage_lock(character_dir(character)):
-            if data.get("create_only") is True and (costume.casefold() in {"naked", "original"}
-                    or any(existing.casefold() == costume.casefold() for existing in list_costumes(character))):
-                return web.json_response({"error": f"Costume '{costume}' already exists. Choose a new name or edit the existing costume."}, status=409)
-            ensure_costume_structure(character, costume)
-            if not save_costume_info(character, costume, info):
-                return web.json_response({"error": f"Could not save costume '{costume}'. Check storage permissions and free space."}, status=500)
-        return web.json_response({"status": "ok"})
+        def save():
+            with character_storage_lock(character_dir(character)):
+                existing = list_costumes(character)
+                if data.get("create_only") is True:
+                    if costume.casefold() in {"naked", "original"} or any(name.casefold() == costume.casefold() for name in existing):
+                        return web.json_response({"error": f"Costume '{costume}' already exists. Choose a new name or edit the existing costume."}, status=409)
+                else:
+                    revision = data.get("revision")
+                    if not isinstance(revision, str) or not revision:
+                        return web.json_response({"error": "Reload the costume before saving. Your local draft has been preserved."}, status=428)
+                    if costume not in existing or revision != costume_revision(load_costume_info(character, costume)):
+                        return web.json_response({"error": "This costume changed or was deleted in another editor. Your local draft has been preserved; reload the costume before saving."}, status=409)
+                ensure_costume_structure(character, costume)
+                if not save_costume_info(character, costume, info):
+                    return web.json_response({"error": f"Could not save costume '{costume}'. Check storage permissions and free space."}, status=500)
+                return web.json_response({"status": "ok", "revision": costume_revision(info)})
+        return await asyncio.to_thread(save)
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)
     except Exception as e:

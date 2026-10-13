@@ -617,7 +617,7 @@ def test_creator_and_clothes_routes_report_failed_configuration_saves(creative_m
         m.creator.CharacterCreatorV2().process(json.dumps({'character': 'Alice'}))
     monkeypatch.setattr(m.clothes, 'save_costume_info', lambda *args: False)
     async def payload():
-        return {'character': 'Alice', 'costume': 'Dress', 'info': {'top': 'silk'}}
+        return {'character': 'Alice', 'costume': 'Dress', 'info': {'top': 'silk'}, 'create_only': True}
     response = asyncio.run(m.clothes.vnccs_save_costume(SimpleNamespace(json=payload, headers={'X-VNCCS-CSRF': '1'})))
     assert response.status == 500
     assert 'Could not save costume' in response.data['error']

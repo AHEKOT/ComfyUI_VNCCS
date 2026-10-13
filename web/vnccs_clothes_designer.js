@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { createSakuraInteractions } from "./sakura_interactions.mjs";
-import { vnccsApi as api, mediaURL, checkedJSON, storage, refreshPreviewImage, watchConnection } from "./vnccs_transport.js";
+import { vnccsApi as api, mediaURL, checkedJSON, storage, refreshPreviewImage, watchConnection, workflowScope } from "./vnccs_transport.js";
 import { createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, registerCleanup, injectStyles, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP, normalizeUploadFile, normalizeAgeValue } from "./vnccs_common.js";
 
 const STYLE = `
@@ -619,6 +619,7 @@ app.registerExtension({
                 const defaultState = {
                     character: "",
                     costume: "Naked",
+                    costume_revision: null,
                     activeTab: "generate", // 'generate' or 'clone'
                     clone_image: null,     // { name, type, subfolder }
                     selected_preview_sprite: null,
@@ -717,12 +718,26 @@ app.registerExtension({
                     if (node._vnccsStateRestoreError) throw new Error(node._vnccsStateRestoreError);
                     if (node._vnccsClothesSelectionPending) throw new Error("Clothes Designer metadata is loading. Wait before saving the costume.");
                     if (!state.character || !state.costume) return;
-                    const body = JSON.stringify({ character: state.character, costume: state.costume, info: state.costume_info });
-                    const request = Promise.allSettled([...pendingCostumeSaves]).then(() => checkedJSON("/vnccs/save_costume", {
-                        method: "POST", body
-                    }));
+                    const character = state.character, costume = state.costume;
+                    const info = JSON.parse(JSON.stringify(state.costume_info));
+                    let revision = state.costume_revision;
+                    const request = Promise.allSettled([...pendingCostumeSaves]).then(results => {
+                        for (const result of results) {
+                            if (result.status === "fulfilled" && result.value?.character === character && result.value.costume === costume) revision = result.value.revision;
+                        }
+                        return checkedJSON("/vnccs/save_costume", {
+                            method: "POST", body: JSON.stringify({ character, costume, info, revision })
+                        }).then(result => ({ ...result, character, costume }));
+                    });
                     pendingCostumeSaves.add(request);
-                    try { return await request; }
+                    try {
+                        const result = await request;
+                        if (state.character === character && state.costume === costume && state.costume_revision === revision) {
+                            state.costume_revision = result.revision;
+                            saveState();
+                        }
+                        return result;
+                    }
                     finally { pendingCostumeSaves.delete(request); }
                 };
 
@@ -964,7 +979,7 @@ app.registerExtension({
                     } catch {
                         selected_type = "";
                     }
-                    return { repo_id, node_state, selected_type, control_center_id: String(upstream.id) };
+                    return { repo_id, node_state, selected_type, control_center_id: String(upstream.id), control_center_scope: workflowScope(upstream) };
                 };
 
 
@@ -1853,9 +1868,9 @@ app.registerExtension({
                     const character = state.character;
                     const costume = state.costume;
                     const currentRequest = beginPreviewRequest();
-                    const draft = JSON.stringify(state);
+                    const draft = JSON.stringify({ ...state, costume_revision: null });
                     const isCurrent = () => currentRequest() && !node._vnccsStateRestoreError
-                        && state.character === character && state.costume === costume && JSON.stringify(state) === draft;
+                        && state.character === character && state.costume === costume && JSON.stringify({ ...state, costume_revision: null }) === draft;
                     spritePreviewNavigator?.invalidate?.();
                     btnGen.innerText = "GENERATING..."; btnGen.disabled = true;
                     try {
@@ -2118,6 +2133,7 @@ app.registerExtension({
                 const beginCostumesRequest = createRequestGuard(node);
                 const resetCostumeSelection = () => {
                     state.costume = "";
+                    state.costume_revision = null;
                     state.costume_info = { ...defaultState.costume_info };
                     state.selected_preview_sprite = null;
                     if (els.costSel) els.costSel.value = "";
@@ -2210,6 +2226,13 @@ app.registerExtension({
                         }
 
                         state.costume = cos;
+                        const preservingDraft = preserveDraft && node._vnccsCostumeDraft?.character === c
+                            && node._vnccsCostumeDraft?.costume === cos;
+                        const draftMatchesDisk = preservingDraft && Object.entries(state.costume_info).every(([key, value]) =>
+                            JSON.stringify(value) === JSON.stringify(info[key] ?? defaultState.costume_info[key]));
+                        if (!preservingDraft || draftMatchesDisk) {
+                            state.costume_revision = r.headers?.get?.("ETag") || null;
+                        }
                         state.costume_info = {
                             ...info,
                             top: info.top || "",

@@ -672,3 +672,39 @@ test("removal and reduced motion finish UI operations without leaving animation 
     assert.equal(h.image.src, "bob.png");
     assert.equal(h.document.animations.length, count);
 });
+
+test('a new smaller generation removes old gallery results and pending decodes', async () => {
+    const h = setup();
+    h.context.app = { registerExtension() {} };
+    vm.runInContext(generator.replace(/^import .*;\n/gm, '') + '\nthis.Generator = CharacterGeneratorWidget;', h.context);
+    const preview = new h.Element('div'); h.root.appendChild(preview);
+    const widget = Object.assign(Object.create(h.context.Generator.prototype), {
+        previewEl: preview, syncStagesFromData() {}, schedulePreviewGridLayout() {},
+        stages: [['pose_generation', 'Poses']], selectedPreview: 'pose_generation',
+        stageState: { pose_generation: {status: 'done', total: 3, images: ['old-1', 'old-2', 'old-3']} },
+    });
+    widget.renderPreview();
+    const tiles = [...widget.previewGrid.children];
+    for (const tile of tiles) await tile._pendingImage.onload();
+    widget.stageState.pose_generation.images = ['old-1', 'pending-2', 'pending-3'];
+    widget.renderPreview();
+    const stale = tiles[2]._pendingImage.onload;
+    widget.resetStagesFrom('pose_generation');
+    widget.stageState.pose_generation = {status: 'running', total: 1};
+    widget.renderPreview();
+    assert.equal(widget.previewGrid.children.length, 1);
+    assert.deepEqual(Array.from(widget.currentImages()), ['']);
+    await stale();
+    widget.stageState.pose_generation = {status: 'done', total: 1, images: ['new-1']};
+    widget.renderPreview();
+    await widget.previewGrid.children[0]._pendingImage.onload();
+    assert.deepEqual(Array.from(widget.currentImages()), ['new-1']);
+    assert.ok(tiles.slice(1).every(tile => !tile.isConnected));
+    widget.stages.push(['upscaler', 'Upscaler']);
+    widget.stageState.pose_generation = {status: 'done', total: 3, images: ['source-1', 'source-2', 'source-3']};
+    widget.stageState.upscaler = {status: 'done', total: 1, images: ['final-1']};
+    widget.selectedPreview = 'upscaler';
+    widget.renderPreview();
+    await widget.previewGrid.children[0]._pendingImage.onload();
+    assert.deepEqual(Array.from(widget.currentImages()), ['final-1'], 'Finished results cannot borrow extra images from an earlier stage');
+});

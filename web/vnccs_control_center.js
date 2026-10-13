@@ -1,7 +1,7 @@
 import { createSakuraSelect, openSakuraDropdown, closeSakuraDropdown, playSakuraMotion, stopSakuraMotion, animateSakuraIndicator } from "./sakura_interactions.mjs";
 // web/vnccs_control_center.js
 import { app } from "../../scripts/app.js";
-import { vnccsApi as api, storage, sessionStore, serverRegistry } from "./vnccs_transport.js";
+import { vnccsApi as api, storage, sessionStore, serverRegistry, workflowScope } from "./vnccs_transport.js";
 import { SAKURA_INTERACTION_CSS, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard } from "./vnccs_common.js";
 
 // Global registry cache — prevents API storms when multiple CC nodes exist
@@ -2037,6 +2037,16 @@ class VNCCSControlCenterWidget {
         // Hide node_state widget so it takes no space
         const stateW = this.node.widgets?.find(w => w.name === "node_state");
         if (stateW) {
+            const node = this.node;
+            const serializeValue = stateW.serializeValue;
+            stateW.serializeValue = function () {
+                const raw = serializeValue?.apply(this, arguments) ?? this.value;
+                try {
+                    const state = JSON.parse(raw);
+                    if (!state || typeof state !== "object" || Array.isArray(state)) return raw;
+                    return JSON.stringify({ ...state, preview_scope: workflowScope(node) });
+                } catch { return raw; }
+            };
             stateW.computeSize = () => [0, -4];
             stateW.type = "hidden";
             stateW.draw = () => {};

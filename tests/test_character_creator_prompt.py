@@ -51,7 +51,8 @@ def test_repeated_pose_preview_queries_do_not_write_default_logs(tmp_path, monke
     sprites = root / "Sprites" / "Naked" / "Neutral"
     sprites.mkdir(parents=True)
     (sprites / "pose.png").write_bytes(b"preview")
-    monkeypatch.setattr(character_creator_v2, "character_dir", lambda name: str(root))
+    import utils
+    monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path))
     for _ in range(20):
         assert character_creator_v2.list_pose_preview_files("Alice") == [str(sprites / "pose.png")]
     assert not [record for record in caplog.records if record.name == "VNCCS"]

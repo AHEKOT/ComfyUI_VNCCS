@@ -211,7 +211,7 @@ def test_each_pose_encoder_receives_its_own_prompt(runtime, monkeypatch, kind):
 
 def test_custom_preview_reuses_available_pipe_and_never_builds_missing_inputs(runtime, monkeypatch):
     cc = sys.modules['_vnccs.nodes.vnccs_control_center']
-    state = {'selected_type': 'custom', 'active_kind': 'Klein9b'}
+    state = {'selected_type': 'custom', 'active_kind': 'Klein9b', 'preview_scope': 'workflow-a'}
     pipe = cc.VNCCSPipeProxy(object(), object(), object())
     monkeypatch.setattr(cc, '_build_control_center_pipe', lambda *a, **k: pipe)
     cc.VNCCS_ControlCenter().execute('catalog', state, model=object(), clip=object(), vae=object(), unique_id='test-preview')
@@ -226,7 +226,7 @@ def test_custom_preview_reuses_available_pipe_and_never_builds_missing_inputs(ru
         assert torch.is_inference_mode_enabled()
         return (torch.ones(1, 8, 8, 3),)
     monkeypatch.setattr(runtime.clothes.ClothesDesigner, 'process', preview)
-    payload = {'repo_id': 'catalog', 'node_state': state, 'control_center_id': 'test-preview'}
+    payload = {'repo_id': 'catalog', 'node_state': state, 'control_center_id': 'test-preview', 'control_center_scope': 'workflow-a'}
     assert 'image' in cc._clothes_preview_response(payload)
     assert used == [pipe]
     payload['node_state'] = {**state, 'seed': 99}
@@ -234,3 +234,21 @@ def test_custom_preview_reuses_available_pipe_and_never_builds_missing_inputs(ru
     payload['control_center_id'] = 'missing'
     assert cc._clothes_preview_response(payload)['status'] == 409
     assert used == [pipe]
+    other = cc.VNCCSPipeProxy(object(), object(), object())
+    other_state = {**state, 'preview_scope': 'workflow-b'}
+    monkeypatch.setattr(cc, '_build_control_center_pipe', lambda *a, **k: other)
+    cc.VNCCS_ControlCenter().execute('catalog', other_state, model=object(), clip=object(), vae=object(), unique_id='test-preview')
+    monkeypatch.setattr(cc, '_build_control_center_pipe', forbidden)
+    payload.update(node_state=state, control_center_id='test-preview')
+    assert 'image' in cc._clothes_preview_response(payload)
+    assert used[-1] is pipe
+    payload['control_center_scope'] = 'workflow-b'
+    assert 'image' in cc._clothes_preview_response(payload)
+    assert used[-1] is other
+    payload.pop('control_center_scope')
+    assert cc._clothes_preview_response(payload)['status'] == 409
+
+
+def test_unknown_character_root_is_available_to_emotion_generation(runtime):
+    runtime.creator.CharacterCreatorV2.create_character("Unknown")
+    assert runtime.generator._safe_character_root("Unknown") == runtime.utils.character_dir("Unknown")

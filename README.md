@@ -163,6 +163,10 @@ And that is all! Again, do not forget about **VNCCS Pose Studio**, and press **R
 
 When you finish the first set, you can press **New** again and create as many outfits as you want!
 
+Costume saves detect changes made in another editor. A conflicting save preserves your local draft instead of replacing newer metadata or recreating a deleted costume. Reload the costume before retrying; retain any draft text you want to apply to the current version.
+
+API clients must read `/vnccs/get_costume` and send its `ETag` header as the `revision` field when posting an edit to `/vnccs/save_costume`. Successful saves return the next `revision`; stale edits return HTTP 409, and edits without a revision return HTTP 428. Creating a new costume uses `create_only: true`.
+
 ## Step 3: Character Emotions
 
 Open the workflow:

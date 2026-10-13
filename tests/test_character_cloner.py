@@ -206,12 +206,13 @@ def _load_cloner(monkeypatch):
     """Load the cloner without tensor or model dependencies."""
     monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
     from nodes.qwen_vl import (
-        get_qwen_vl_chat_handler, parse_wizard_json,
+        get_qwen_vl_chat_handler, parse_wizard_json, normalize_character_wizard_traits,
         _start_qwen_vl_download, qwen_vl_download_status,
     )
     assets = types.ModuleType("_vnccs.nodes.qwen_vl")
     assets.get_qwen_vl_chat_handler = get_qwen_vl_chat_handler
     assets.parse_wizard_json = parse_wizard_json
+    assets.normalize_character_wizard_traits = normalize_character_wizard_traits
     assets._start_qwen_vl_download = _start_qwen_vl_download
     assets.qwen_vl_download_status = qwen_vl_download_status
     assets._ensure_qwen_vl_assets = lambda **kwargs: ("model.gguf", "mmproj.gguf")
@@ -294,6 +295,31 @@ def test_wizard_requests_visible_character_traits_only(monkeypatch, tmp_path):
     assert "monster arm" in prompt
     assert "Do not include clothing, footwear, wearable accessories, held objects, pose, actions" in prompt
     assert "Do not fill a field just to avoid an empty value" in prompt
+
+
+def test_wizard_normalizes_list_traits_without_losing_recognized_details(monkeypatch, tmp_path):
+    import utils
+    response, _ = _run_wizard(monkeypatch, tmp_path, json.dumps({
+        "additional_details": ["tail", "wings"], "hair": ["silver hair", "long hair"],
+        "aesthetics": ["anime", "flat color"], "age": "24", "nsfw": "false",
+    }))
+    assert response.status == 200
+    assert response.data == {"additional_details": "tail, wings", "hair": "silver hair, long hair",
+                             "aesthetics": "anime, flat color", "age": 24, "nsfw": False}
+    assert "tail, wings" in utils.build_face_details(response.data)
+
+
+def test_unknown_is_a_real_character_name_when_a_reference_is_uploaded(monkeypatch, tmp_path):
+    from PIL import Image
+    import utils
+    cloner = _load_cloner(monkeypatch)
+    monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path / "characters"))
+    monkeypatch.setattr(cloner.folder_paths, "get_input_directory", lambda: str(tmp_path), raising=False)
+    monkeypatch.setattr(cloner, "pil2tensor", lambda image: np.asarray(image))
+    Image.new("RGB", (2, 2)).save(tmp_path / "reference.png")
+    cloner.CharacterCloner().process(json.dumps({"character": "Unknown", "source_images": ["reference.png"],
+                                               "character_info": {"additional_details": "tail"}}))
+    assert utils.load_character_info("Unknown")["additional_details"] == "tail"
 
 
 def test_wizard_cannot_replace_character_ownership_or_authored_generation_settings(monkeypatch, tmp_path):

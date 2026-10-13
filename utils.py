@@ -732,7 +732,8 @@ def build_face_details(char_info: Dict[str, Any]) -> str:
         details_parts.append(f"{char_info['skin_color']} skin")
     
     if char_info.get("additional_details"):
-        details_parts.append(char_info['additional_details'])
+        details = char_info["additional_details"]
+        details_parts.append(", ".join(str(item) for item in details) if isinstance(details, list) else str(details))
     
     
     return ",".join([p for p in details_parts if p])
@@ -764,6 +765,11 @@ def load_costume_info(character_name: str, costume_name: str) -> Dict[str, Any]:
         return {}
     costumes = config.get("costumes", {})
     return validate_costume_info(costumes.get(costume_name, {}))
+
+
+def costume_revision(info):
+    content = json.dumps(info, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return f'"{hashlib.sha256(content).hexdigest()}"'
 
 
 def save_costume_info(character_name: str, costume_name: str, costume_data: Dict[str, Any]) -> bool:
@@ -864,3 +870,50 @@ def list_costumes(character_name: str) -> List[str]:
 
 
 create_costume_folders = ensure_costume_structure
+
+
+def list_pose_preview_files(character_name, costume=None):
+    try:
+        base_char_path = character_dir(character_name)
+        sprite_roots = []
+        if costume:
+            costume = ensure_safe_name(costume, "costume")
+            sprite_roots.extend([
+                os.path.join(base_char_path, "Sprites", costume, "Neutral"),
+                os.path.join(base_char_path, "Sprites", costume),
+            ])
+        sprite_roots.extend([
+            os.path.join(base_char_path, "Sprites", "Naked", "Neutral"),
+            os.path.join(base_char_path, "Sprites", "Original", "Neutral"),
+            os.path.join(base_char_path, "Sprites", "Naked"),
+            os.path.join(base_char_path, "Sprites", "Original"),
+        ])
+        log_event("pose_preview_scan", component="Creator", level="debug", character=character_name, costume=costume)
+
+        image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+        files = []
+        for poses_dir in sprite_roots:
+            try:
+                poses_dir = safe_join_under(base_char_path, os.path.relpath(poses_dir, base_char_path))
+            except ValueError:
+                continue
+            if not os.path.isdir(poses_dir):
+                continue
+            root_files = []
+            for filename in os.listdir(poses_dir):
+                if os.path.splitext(filename)[1].lower() not in image_exts:
+                    continue
+                try:
+                    path = safe_join_under(base_char_path, os.path.relpath(os.path.join(poses_dir, filename), base_char_path))
+                except ValueError:
+                    continue
+                if os.path.isfile(path):
+                    root_files.append(path)
+            if root_files:
+                files = sorted(root_files)
+                break
+        log_event("pose_preview_list", component="Creator", level="debug", character=character_name, count=len(files))
+        return files
+    except Exception as e:
+        log_event('warning', component='Creator', level='warning', message=f'Pose Preview List Failed: {e}', error=str(e))
+        return []

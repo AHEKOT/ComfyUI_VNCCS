@@ -67,6 +67,21 @@ def test_normal_and_nested_clothes_previews_keep_existing_selection_order(clothe
     assert clothes_paths.get_latest_sprite_path("Alice", "Naked") == str(nested / file.name)
 
 
+def test_archive_timestamps_cannot_select_an_old_reference(clothes_paths):
+    import os
+    neutral = Path(utils.character_dir("Alice")) / "Sprites" / "Naked" / "Neutral"
+    (neutral / "V1").mkdir(parents=True)
+    current, archive = neutral / "pose.png", neutral / "V1" / "pose.png"
+    current.write_bytes(b"current")
+    archive.write_bytes(b"archive")
+    os.utime(current, (1000, 1000))
+    os.utime(archive, (2000, 2000))
+    assert clothes_paths.get_latest_sprite_path("Alice") == str(current)
+    assert clothes_paths.list_preview_sprite_files("Alice") == utils.list_pose_preview_files("Alice") == [str(current)]
+    current.unlink()
+    assert clothes_paths.get_latest_sprite_path("Alice") is None
+
+
 @pytest.mark.parametrize("link_kind", ["file", "neutral_directory"])
 def test_clothes_preview_skips_unsafe_entries_without_hiding_valid_sprites(clothes_paths, tmp_path, link_kind):
     outside = tmp_path / "outside"
@@ -264,6 +279,55 @@ def test_create_only_costume_requests_are_atomic_and_regular_edits_still_work(cl
     assert utils.load_costume_info("Alice", "Dress") == {"top": winner}
     response = asyncio.run(clothes_paths.vnccs_save_costume(costume_request({
         "character": "Alice", "costume": "Dress", "info": {"top": "edited wool"},
+        "revision": utils.costume_revision(utils.load_costume_info("Alice", "Dress")),
     })))
     assert response.status == 200
     assert utils.load_costume_info("Alice", "Dress") == {"top": "edited wool"}
+
+
+def test_stale_costume_edits_preserve_newer_fields_and_cannot_recreate_deleted_costumes(clothes_paths, monkeypatch):
+    monkeypatch.setattr(clothes_paths.web, "json_response", lambda data, status=200, **kwargs:
+        types.SimpleNamespace(data=data, status=status, **kwargs), raising=False)
+    original = {"top": "cotton", "shoes": "boots"}
+    utils.save_costume_info("Alice", "Dress", original)
+    get_request = types.SimpleNamespace(rel_url=types.SimpleNamespace(query={"character": "Alice", "costume": "Dress"}))
+    revision = asyncio.run(clothes_paths.vnccs_get_costume(get_request)).headers["ETag"]
+    async def save(info, version=revision):
+        return await clothes_paths.vnccs_save_costume(costume_request({"character": "Alice", "costume": "Dress", "info": info, "revision": version}))
+    first = asyncio.run(save({**original, "top": "silk"}))
+    assert first.status == 200 and first.data["revision"] != revision
+    assert asyncio.run(save({**original, "shoes": "sandals"})).status == 409
+    assert utils.load_costume_info("Alice", "Dress") == {**original, "top": "silk"}
+    assert asyncio.run(save(original, None)).status == 428
+    utils.delete_costume("Alice", "Dress")
+    assert asyncio.run(save(original, first.data["revision"])).status == 409
+    assert "Dress" not in utils.load_config("Alice")["costumes"]
+    assert not (Path(utils.character_dir("Alice")) / "Sprites" / "Dress").exists()
+
+
+def test_costume_save_waits_without_blocking_the_event_loop(clothes_paths, monkeypatch):
+    monkeypatch.setattr(clothes_paths.web, "json_response", lambda data, status=200:
+        types.SimpleNamespace(data=data, status=status), raising=False)
+    utils.save_costume_info("Alice", "Dress", {"top": "cotton"})
+    ready, release = threading.Event(), threading.Event()
+    def publish():
+        with utils.character_storage_lock(utils.character_dir("Alice")):
+            ready.set()
+            release.wait(2)
+    async def run():
+        task = asyncio.create_task(clothes_paths.vnccs_save_costume(costume_request({
+            "character": "Alice", "costume": "Dress", "info": {"top": "silk"},
+            "revision": utils.costume_revision({"top": "cotton"}),
+        })))
+        await asyncio.sleep(.01)
+        assert not task.done(), "HTTP processing must continue while publication holds the storage lock"
+        release.set()
+        assert (await task).status == 200
+    thread = threading.Thread(target=publish)
+    thread.start()
+    try:
+        assert ready.wait(2)
+        asyncio.run(run())
+    finally:
+        release.set()
+        thread.join(2)

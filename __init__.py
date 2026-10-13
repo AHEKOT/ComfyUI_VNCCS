@@ -1,6 +1,7 @@
 """VNCCS - Visual Novel Character Creator Suite for ComfyUI."""
 
 import importlib.util
+import asyncio
 import os, json
 import sys
 import traceback
@@ -172,18 +173,20 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             return web.json_response({"error": str(e)}, status=400)
         try:
             from .utils import load_config, save_config, ensure_costume_structure, character_dir, character_storage_lock
-            with character_storage_lock(character_dir(character_name)):
-                config = load_config(character_name, strict=True)
-                if config is None:
-                    config = {"character_info": {}, "costumes": {}}
-                costumes = config.setdefault("costumes", {})
-                if costume_name in costumes:
-                    return web.json_response({"error": "Costume already exists"})
-                costumes[costume_name] = dict.fromkeys(("face", "head", "top", "bottom", "shoes", "negative_prompt"), "")
-                ensure_costume_structure(character_name, costume_name)
-                if not save_config(character_name, config):
-                    return web.json_response({"error": "Failed to save"}, status=500)
-                return web.json_response({"ok": True, "costume": costume_name})
+            def create_costume():
+                with character_storage_lock(character_dir(character_name)):
+                    config = load_config(character_name, strict=True)
+                    if config is None:
+                        config = {"character_info": {}, "costumes": {}}
+                    costumes = config.setdefault("costumes", {})
+                    if costume_name in costumes:
+                        return web.json_response({"error": "Costume already exists"})
+                    costumes[costume_name] = dict.fromkeys(("face", "head", "top", "bottom", "shoes", "negative_prompt"), "")
+                    ensure_costume_structure(character_name, costume_name)
+                    if not save_config(character_name, config):
+                        return web.json_response({"error": "Failed to save"}, status=500)
+                    return web.json_response({"ok": True, "costume": costume_name})
+            return await asyncio.to_thread(create_costume)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 

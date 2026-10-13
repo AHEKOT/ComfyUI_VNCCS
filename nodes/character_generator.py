@@ -356,7 +356,7 @@ def _is_under(base, path):
 
 def _safe_character_root(character_name=""):
     character_name = str(character_name or "").strip()
-    if not character_name or character_name == "Unknown":
+    if not character_name:
         return None
     try:
         return character_dir(character_name)

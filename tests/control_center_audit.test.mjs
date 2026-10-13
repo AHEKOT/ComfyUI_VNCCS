@@ -864,3 +864,24 @@ for (const failure of ["HTTP", "network"]) {
         assert.equal(widget.renders, 2);
     });
 }
+
+test('Control Center serialization scopes custom previews without rewriting restored state', () => {
+    const h = setup({ selected_type: 'custom', preview_scope: 'old-session', extension: {keep: true} });
+    h.node.type = 'VNCCS_ControlCenter';
+    h.node.graph = {extra: {vnccs_workflow_id: 'graph-a'}};
+    h.serialized.serializeValue = function () { assert.equal(this, h.serialized); return this.value; };
+    h.context.node = h.node;
+    const start = source.indexOf('const stateW = this.node.widgets?.find');
+    const end = source.indexOf('this._buildStatusStrip();', start);
+    vm.runInContext(`(function () { ${source.slice(start, end)} }).call({node});`, h.context);
+    const original = h.serialized.value;
+    const first = JSON.parse(h.serialized.serializeValue());
+    assert.match(first.preview_scope, /:graph-a:VNCCS_ControlCenter:1$/);
+    h.node.graph = {extra: {vnccs_workflow_id: 'graph-b'}};
+    const second = JSON.parse(h.serialized.serializeValue());
+    assert.notEqual(first.preview_scope, second.preview_scope);
+    assert.deepEqual(second.extension, {keep: true});
+    assert.equal(h.serialized.value, original);
+    h.serialized.value = '{broken';
+    assert.equal(h.serialized.serializeValue(), '{broken');
+});

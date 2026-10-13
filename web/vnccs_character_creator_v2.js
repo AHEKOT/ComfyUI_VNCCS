@@ -3732,7 +3732,7 @@ app.registerExtension({
                 const doDelete = () => {
                     if (node._vnccsStateRestoreError) return;
                     const charName = state.character;
-                    if (!charName || charName === "None" || charName === "Unknown") {
+                    if (!charName) {
                         showAlertModal("Delete Character", "Please select a character to delete.");
                         return;
                     }
