@@ -88,8 +88,10 @@ const server = createServer(async (req, res) => {
         else if (url.pathname === "/scripts/app.js") content = appModule;
         else if (url.pathname === "/scripts/api.js") content = apiModule;
         else if (url.pathname.startsWith("/web/")) {
-            assert.match(url.pathname, /^\/web\/[\w.-]+$/);
-            content = await readFile(new URL(url.pathname.slice(1), project), "utf8");
+            assert.match(url.pathname, /^\/web\/(?:assets\/)?[\w.-]+$/);
+            const binary = url.pathname.endsWith(".png");
+            content = await readFile(new URL(url.pathname.slice(1), project), binary ? undefined : "utf8");
+            if (binary) type = "image/png";
         } else if (url.pathname === "/view") {
             await new Promise(resolve => setTimeout(resolve, Number(url.searchParams.get("delay")) || 0));
             if (url.searchParams.has("broken")) { res.writeHead(404).end(); return; }
@@ -128,13 +130,13 @@ async function measure(zoom){
         const cell=await page.evaluate(()=>({width:parseFloat(getComputedStyle(widget.previewGrid).gridTemplateColumns),height:parseFloat(getComputedStyle(widget.previewGrid).gridTemplateRows)}));
         assert.ok(rect.width<=cell.width*zoom+1&&rect.height<=cell.height*zoom+1);
         assert.ok(Math.abs(rect.width-cell.width*zoom)<=1||Math.abs(rect.height-cell.height*zoom)<=1,'Each image must use the available cell space along one axis');
-        const image=await page.evaluate(index=>{const image=widget.previewGrid.children[index]._previewImage;return {width:image.naturalWidth,height:image.naturalHeight};},index);
-        assert.ok(Math.abs(rect.width-rect.height*image.width/image.height)<=1,'Card frame must preserve the image aspect ratio');
+        const aspect=await page.evaluate(index=>{const tile=widget.previewGrid.children[index],image=tile._previewImage;return image?image.naturalWidth/image.naturalHeight:tile._previewAspect;},index);
+        assert.ok(Math.abs(rect.width-rect.height*aspect)<=1,'Card frame must preserve the image aspect ratio');
     }
     return geometry;
 }
 async function assertPackedRows(zoom){
-    const {cards,grid}=await page.evaluate(()=>({cards:geometry(),grid:widget.previewGrid.getBoundingClientRect().toJSON()}));
+    const {cards,grid}=await page.evaluate(()=>{const element=widget.previewGrid,rect=element.getBoundingClientRect();return {cards:geometry(),grid:{...rect.toJSON(),clientLeft:element.clientLeft,clientWidth:element.clientWidth}};});
     const rows=[];
     for(const card of cards.sort((a,b)=>a.y-b.y||a.x-b.x)){
         const row=rows.find(row=>Math.abs(row[0].y-card.y)<=1);
@@ -144,7 +146,8 @@ async function assertPackedRows(zoom){
         row.sort((a,b)=>a.x-b.x);
         const left=Math.min(...row.map(card=>card.x));
         const right=Math.max(...row.map(card=>card.x+card.width));
-        assert.ok(Math.abs((left+right)/2-(grid.left+grid.right)/2)<=1,'Every gallery row must be visually centered');
+        const contentCenter=grid.left+(grid.clientLeft+grid.clientWidth/2)*zoom;
+        assert.ok(Math.abs((left+right)/2-contentCenter)<=1,'Every gallery row must be visually centered');
         row.slice(1).forEach((card,index)=>assert.ok(Math.abs(card.x-(row[index].x+row[index].width)-8*zoom)<=1,'Cards must use the fixed 8px gallery gap'));
     }
 }
@@ -186,11 +189,21 @@ try {
             assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.waiting?[index]:[]),[1,2,3,4,5]);
             stable(before,await measure(zoom));
             await page.evaluate(stage=>emit(stage,{status:'done',current:6,total:6,images:urls('original'),run_id:'previous-character'}),stage);
-            await page.evaluate(stage=>emit(stage,{status:'running',current:0,total:6,images:[],run_id:'new-character'}),stage);
+            await page.evaluate(()=>{widget.data.gender='male';});
+            await page.evaluate(stage=>emit(stage,{status:'running',current:0,total:6,images:[],run_id:'new-character',preview_aspect:640/1536}),stage);
             assert.equal(await page.evaluate(()=>cards().every(card=>!card.src)),true,'A new character run must remove the previous character');
             assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>getComputedStyle(tile).visibility==='visible')),true,'A new character run must retain the card frames');
+            assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>tile.classList.contains('is-placeholder')&&tile.querySelector('.vnccs-pipe-img-placeholder')?.complete)),true,'New character slots must show the mannequin');
+            assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>tile.querySelector('.vnccs-pipe-img-placeholder')?.src.includes('VNCCS_Character_Mannequin_Male.png'))),true,'Male character data must select the male mannequin');
             assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.processing?[index]:[]),[0]);
             assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.waiting?[index]:[]),[1,2,3,4,5]);
+            stable(before,await measure(zoom));
+            await page.evaluate(stage=>emit(stage,{status:'running',current:1,total:6,images:[urls('incremental')[0]],replace_images:true,preview_start:0,processing_index:1,run_id:'new-character',preview_aspect:640/1536}),stage);
+            await page.waitForFunction(()=>widget.previewGrid.children[0].dataset.src?.includes('v=incremental'));
+            assert.deepEqual(await page.evaluate(()=>cards().map(card=>Boolean(card.src))),[true,false,false,false,false,false]);
+            assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].slice(1).every(tile=>tile.classList.contains('is-placeholder'))),true,'Unfinished sprites must retain mannequin previews');
+            await page.evaluate(()=>{widget._previewPlaceholderStage=null;widget.renderPreview();});
+            assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].slice(1).every(tile=>tile.classList.contains('is-placeholder'))),true,'Reloaded progress must reconstruct unfinished mannequin previews from stage state');
             stable(before,await measure(zoom));
             await page.evaluate(stage=>emit(stage,{status:'running',current:1,total:6,images:urls('original'),run_id:'new-character'}),stage);
             await page.waitForFunction(()=>[...widget.previewGrid.children].every(tile=>tile.dataset.src));
@@ -243,7 +256,7 @@ try {
             await page.evaluate(()=>{widget.regenerateState=null;widget.stageState[widget.selectedPreview].status='done';widget.renderPreview();widget.renderChain();});
             await page.waitForTimeout(700);stable(before,await measure(zoom));
             assert.equal(await page.evaluate(()=>widget.previewGrid.querySelectorAll('.is-processing,.is-waiting').length),0);
-            assert.ok(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>tile.querySelectorAll('img').length===1)));
+            assert.ok(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>tile.querySelectorAll('.vnccs-pipe-img-content').length===1&&tile.querySelectorAll('.vnccs-pipe-img-placeholder').length===1)));
             const label=fixture.node.type+'-'+(zoom===1?'100pct':'workflow');
             await page.screenshot({path:join(output,label+'.png')});
             report.push({workflow:fixture.path,type:fixture.node.type,size:fixture.node.size,zoom,cards:before.map(rect=>({width:rect.width/zoom,height:rect.height/zoom})),screenshot:label+'.png'});

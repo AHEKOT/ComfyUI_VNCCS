@@ -37,8 +37,8 @@ function setup() {
             generation_mode: "qi2", diffusion_model_name: "model", clip_name: "clip", vae_name: "vae", lora_stack: [],
         } },
         console: { warn() {} }, isSelectedCcAssetInstalled: () => true,
-        saveCurrentGenerationModeValues() {}, saveState() {}, refreshPreviewImage() {},
-        createLoadingOverlay: () => ({ remove() {} }),
+        saveCurrentGenerationModeValues() {}, saveState() {}, refreshPreviewImage() {}, setPreviewLoading() {},
+        startPreviewGeneration: () => 1, stopPreviewGeneration() {}, revealGeneratedPreview: async () => true,
         showAlertModal() { assert.fail("Disabled generation must not show dialogs"); },
         showMessage: (_container, message) => messages.push(message),
     });

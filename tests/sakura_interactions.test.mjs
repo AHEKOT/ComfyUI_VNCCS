@@ -6,7 +6,8 @@ import { createWidgetContext } from "./widget_context.mjs";
 
 const creator = readFileSync(new URL("../web/vnccs_character_creator_v2.js", import.meta.url), "utf8");
 const common = readFileSync(new URL("../web/vnccs_common.js", import.meta.url), "utf8");
-const generator = readFileSync(new URL("../web/vnccs_character_generator.js", import.meta.url), "utf8");
+const generator = readFileSync(new URL("../web/vnccs_character_generator.js", import.meta.url), "utf8")
+    .replace(/new URL\(([^,]+), import\.meta\.url\)\.href/g, "$1");
 const section = (start, end) => creator.slice(creator.indexOf(start), creator.indexOf(end, creator.indexOf(start)));
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 

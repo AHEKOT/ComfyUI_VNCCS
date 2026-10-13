@@ -470,6 +470,7 @@ test('Emotion download caller keeps new jobs polling and removes its shared clie
 function generatorContext(graph = { _nodes: [], setDirtyCanvas() {} }) {
     const context = createWidgetContext({ ui: motionUI, app: { graph, registerExtension(extension) { this.extension = extension; } } });
     vm.runInContext(generatorSource.replace(/^import .*;\n/gm, '')
+        .replace(/new URL\(([^,]+), import\.meta\.url\)\.href/g, '$1')
         + '\nthis.Widget = CharacterGeneratorWidget; this.readData = readData; this.writeData = writeData;', context);
     return context;
 }
@@ -897,10 +898,10 @@ for (const [text, number, valid] of [['', NaN, false], ['3', 3, false], ['0', 0,
 for (const clone of [false, true]) {
     test(`generator follows its own character branch (${clone ? 'clone' : 'creator'})`, () => {
         const type = clone ? 'CharacterCloner' : 'CharacterCreatorV2';
-        const character = (id, name, nsfw) => ({ id, type, widgets: [{ name: 'widget_data', value: JSON.stringify({
-            character: name, character_info: { nsfw },
+        const character = (id, name, nsfw, sex) => ({ id, type, widgets: [{ name: 'widget_data', value: JSON.stringify({
+            character: name, character_info: { nsfw, sex },
         }) }] });
-        const alice = character(1, 'Alice', true), bob = character(2, 'Bob', false);
+        const alice = character(1, 'Alice', true, 'female'), bob = character(2, 'Bob', false, 'male');
         const relay = { id: 3, inputs: [{ link: 2 }, { link: 3 }] };
         const node = { id: 4, inputs: [{ link: 1 }] };
         const graph = { _nodes: [alice, bob, relay, node], links: {
@@ -911,6 +912,8 @@ for (const clone of [false, true]) {
         const widget = Object.assign(Object.create(context.Widget.prototype), { node, data: {}, isClone: clone });
         assert.equal(widget.syncCharacterSourceData(), true);
         assert.equal(widget.data.character_name, 'Bob');
+        assert.equal(widget.data.gender, 'male');
+        assert.match(widget.mannequinURL(), /Mannequin_Male\.png$/);
         if (clone) assert.equal(widget.data.nsfw_enabled, false);
         node.inputs = [];
         assert.equal(widget.syncCharacterSourceData(), undefined);

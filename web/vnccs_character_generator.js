@@ -3,6 +3,9 @@ import { createSakuraInteractions, mountSakuraDialogMotion } from "./sakura_inte
 import { vnccsApi as api, mediaURL, checkedJSON, storage, workflowScope, cacheIdentity, watchConnection } from "./vnccs_transport.js";
 import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, showModal as showCommonModal, registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, resolutionScaleMegapixels, finiteResolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
 
+const CHARACTER_MANNEQUIN_URL = new URL("./assets/VNCCS_Character_Mannequin.png", import.meta.url).href;
+const CHARACTER_MANNEQUIN_MALE_URL = new URL("./assets/VNCCS_Character_Mannequin_Male.png", import.meta.url).href;
+const CHARACTER_MANNEQUIN_ASPECT = 2 / 3;
 const GENERATOR_QWEN_INSTRUCTION = "Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.";
 const QI2_EMOTION_PROMPT_TEMPLATE = "Upscale face image.\nMake character's face emotion {emotion}\nChange only face. Keep original neck colour, clothes and hairs\nkeep character's clothes";
 const QI2_EMOTION_BBOX_DEFAULTS = Object.freeze({
@@ -526,7 +529,57 @@ ${SAKURA_THEME_CSS}
     transform-origin: top left;
     transition: border-color 240ms ease, box-shadow 240ms ease;
 }
-.vnccs-pipe-img-content { position: absolute; inset: 4px; width: calc(100% - 8px); height: calc(100% - 8px); object-fit: contain; pointer-events: none; }
+.vnccs-pipe-img-content { position: absolute; z-index: 1; inset: 4px; width: calc(100% - 8px); height: calc(100% - 8px); object-fit: contain; pointer-events: none; }
+.vnccs-pipe-img-placeholder {
+    position: absolute;
+    z-index: 1;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: auto;
+    height: 100%;
+    max-width: none;
+    object-fit: contain;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateX(-50%);
+    filter: saturate(0.8) brightness(0.75);
+    transition: opacity 320ms ease, filter 320ms ease, transform 320ms ease;
+}
+.vnccs-pipe-img.is-placeholder { background: radial-gradient(circle at 50% 40%, rgba(107,74,139,0.18), #11111a 72%); }
+.vnccs-pipe-img.is-placeholder .vnccs-pipe-img-placeholder { opacity: 0.26; }
+.vnccs-pipe-img-placeholder-scan {
+    position: absolute;
+    z-index: 3;
+    left: 0;
+    right: 0;
+    top: -22%;
+    height: 20%;
+    pointer-events: none;
+    opacity: 0;
+    background: linear-gradient(180deg, transparent, rgba(255,143,163,0.22) 30%, rgba(255,235,244,0.94) 50%, rgba(255,143,163,0.28) 68%, transparent);
+    box-shadow: 0 0 22px rgba(255,143,163,0.22);
+    mix-blend-mode: screen;
+}
+.vnccs-pipe-img.is-placeholder.is-processing .vnccs-pipe-img-placeholder {
+    opacity: 0.82;
+    transform: translateX(-50%) scale(1.02);
+    filter: saturate(1.15) brightness(1.04) drop-shadow(0 0 12px rgba(255,143,163,0.42));
+    animation: vnccs-pipe-mannequin-develop 1800ms ease-in-out infinite;
+}
+.vnccs-pipe-img.is-placeholder.is-processing {
+    background:
+        repeating-linear-gradient(180deg, transparent 0 8px, rgba(255,143,163,0.035) 9px 10px),
+        radial-gradient(circle at 50% 40%, rgba(119,57,104,0.34), #11111a 72%);
+}
+.vnccs-pipe-img.is-placeholder.is-processing .vnccs-pipe-img-placeholder-scan {
+    opacity: 1;
+    animation: vnccs-pipe-mannequin-scan 2200ms cubic-bezier(0.4,0,0.2,1) infinite;
+}
+.vnccs-pipe-img.is-placeholder.is-waiting .vnccs-pipe-img-placeholder {
+    animation: vnccs-pipe-mannequin-wait 2600ms ease-in-out infinite;
+    animation-delay: var(--wait-phase, 0ms);
+}
 .vnccs-pipe-img::before, .vnccs-pipe-img::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 2; opacity: 0; transition: opacity 240ms ease; }
 .vnccs-pipe-img::before { border: 2px solid var(--accent-lavender); }
 .vnccs-pipe-img.is-waiting::before { animation: vnccs-pipe-card-wait 2400ms ease-in-out infinite; animation-delay: var(--wait-phase, 0ms); }
@@ -536,6 +589,9 @@ ${SAKURA_THEME_CSS}
 @property --vnccs-process-angle { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
 @keyframes vnccs-pipe-card-wait { 0%, 100% { opacity: 0.16; } 50% { opacity: 0.6; } }
 @keyframes vnccs-pipe-card-process { to { --vnccs-process-angle: 360deg; } }
+@keyframes vnccs-pipe-mannequin-develop { 0%, 100% { opacity: 0.58; filter: saturate(0.9) brightness(0.86) drop-shadow(0 0 5px rgba(255,143,163,0.24)); } 50% { opacity: 0.9; filter: saturate(1.2) brightness(1.08) drop-shadow(0 0 16px rgba(255,143,163,0.5)); } }
+@keyframes vnccs-pipe-mannequin-wait { 0%, 100% { opacity: 0.16; } 50% { opacity: 0.34; } }
+@keyframes vnccs-pipe-mannequin-scan { 0% { top: -22%; } 72%, 100% { top: 104%; } }
 .vnccs-pipe-img.is-empty { visibility: hidden; pointer-events: none; }
 .vnccs-pipe-img.is-empty:focus-visible { outline-offset: -3px; }
 .vnccs-pipe-img:hover {
@@ -1371,9 +1427,7 @@ class CharacterGeneratorWidget {
                 && stage === this.stages[0]?.[0]
                 && Math.max(0, Number(detail.current) || 0) === 0;
             if (startsNewRun) {
-                const hadImages = Boolean(this.stageState[stage]?.images?.length)
-                    || (this._previewStage === stage && [...(this.previewGrid?.children || [])].some(tile => tile.dataset.src));
-                this._previewPlaceholderStage = hadImages ? stage : null;
+                this._previewPlaceholderStage = stage;
             }
             this.observeProgressRequest(detail.request_id, detail.run_id);
             if (stage === "error") {
@@ -1381,12 +1435,16 @@ class CharacterGeneratorWidget {
             } else {
                 const previousStageState = this.stageState[stage] || {};
                 const hasImages = Object.prototype.hasOwnProperty.call(detail, "images");
+                if (detail.run_id && status === "running" && Math.max(0, Number(detail.current) || 0) === 0
+                    && stage.endsWith("pose_generation") && !detail.images?.length && !previousStageState.images?.length) {
+                    this._previewPlaceholderStage = stage;
+                }
                 const targetedRegenerate = Number.isInteger(this.regenerateState?.imageIndex)
                     && this.regenerateState?.targetStages?.includes(stage);
                 if (status === "running") {
                     const continuingBatch = targetedRegenerate || (
                         previousStageState.status === "running"
-                        && (Boolean(detail.append_images) || !hasImages)
+                        && (Boolean(detail.append_images) || Boolean(detail.replace_images) || !hasImages)
                     );
                     if (!continuingBatch) this.resetStagesFrom(stage);
                     if (!continuingBatch && (stage === "pose_generation" || stage === "original_pose_generation" || stage === "source_upscaler")) {
@@ -1418,6 +1476,7 @@ class CharacterGeneratorWidget {
                     total: detail.total,
                     processing_index: detail.processing_index,
                     processing_indices: detail.processing_indices,
+                    preview_aspect: detail.preview_aspect ?? previousStageState.preview_aspect,
                 };
                 if (!this.userSelectedPreview && (status === "running" || status === "done" || detail.images)) {
                     this.selectedPreview = stage;
@@ -2341,6 +2400,14 @@ class CharacterGeneratorWidget {
         let changed = false;
         try {
             const payload = liveState || JSON.parse(widget.value);
+            const gender = payload?.gender ?? payload?.sex ?? payload?.character_info?.gender ?? payload?.character_info?.sex;
+            if (["male", "female"].includes(String(gender || "").trim().toLowerCase())) {
+                const normalizedGender = String(gender).trim().toLowerCase();
+                if (this.data.gender !== normalizedGender) {
+                    this.data.gender = normalizedGender;
+                    changed = true;
+                }
+            }
             if (payload?.character && this.data.character_name !== payload.character) {
                 this.data.character_name = payload.character;
                 changed = true;
@@ -2360,6 +2427,13 @@ class CharacterGeneratorWidget {
             // Leave the previous value if the source widget is mid-edit.
         }
         return changed;
+    }
+
+    mannequinURL() {
+        const gender = this.data?.gender ?? this.data?.sex
+            ?? this.data?.character_info?.gender ?? this.data?.character_info?.sex;
+        return String(gender || "").trim().toLowerCase() === "male"
+            ? CHARACTER_MANNEQUIN_MALE_URL : CHARACTER_MANNEQUIN_URL;
     }
 
     syncEmotionStudioSourceData() {
@@ -2555,9 +2629,7 @@ class CharacterGeneratorWidget {
                 && firstIncoming?.status === "running"
                 && Math.max(0, Number(firstIncoming.current) || 0) === 0;
             if (startsNewRun) {
-                const hadImages = Boolean(this.stageState[firstStageKey]?.images?.length)
-                    || (this._previewStage === firstStageKey && [...(this.previewGrid?.children || [])].some(tile => tile.dataset.src));
-                this._previewPlaceholderStage = hadImages ? firstStageKey : null;
+                this._previewPlaceholderStage = firstStageKey;
             }
             this.observeProgressRequest(snapshot.request_id, snapshot.run_id);
             let followedStage = null;
@@ -2567,6 +2639,8 @@ class CharacterGeneratorWidget {
                 this.stageState[key] = !startsNewRun && incoming.status === "running" && !incoming.images?.length && previousImages?.length
                     ? { ...incoming, images: previousImages }
                     : incoming;
+                if (snapshot.run_id && incoming.status === "running" && key.endsWith("pose_generation")
+                    && !incoming.images?.length && !previousImages?.length) this._previewPlaceholderStage = key;
                 if (["running", "done"].includes(this.stageState[key].status)) followedStage = key;
                 this.updateRegenerateProgress(key, this.stageState[key].status, { render: false });
             }
@@ -3548,7 +3622,10 @@ class CharacterGeneratorWidget {
         const total = Math.max(0, Math.min(512, Number(state.total) || 0));
         const count = Math.min(512, Math.max(images.length, total, state.status === "done" ? 0 : upstream.length));
         const busy = state.status === "running" || this.regenerateState?.activeStage === this.selectedPreview;
-        const showPlaceholders = busy && this._previewPlaceholderStage === this.selectedPreview && !upstream.length;
+        const missingPosePreviews = this.selectedPreview.endsWith("pose_generation")
+            && images.filter(Boolean).length < count;
+        const showPlaceholders = busy && (missingPosePreviews || this._previewPlaceholderStage === this.selectedPreview);
+        const mannequinURL = this.mannequinURL();
         const targeted = Number.isInteger(this.regenerateState?.imageIndex) && this.regenerateState?.targetStages?.includes(this.selectedPreview);
         const activeIndex = targeted ? this.regenerateState.imageIndex
             : (Number.isInteger(state.processing_index) ? state.processing_index : Math.max(0, Number(state.current) || 0));
@@ -3569,6 +3646,15 @@ class CharacterGeneratorWidget {
             tile.role = "button";
             tile.dataset.focusKey = `preview-image-${index}`;
             tile.style.setProperty("--wait-phase", `${-index * 180}ms`);
+            const placeholder = document.createElement("img");
+            placeholder.className = "vnccs-pipe-img-placeholder";
+            placeholder.src = mannequinURL;
+            placeholder.alt = "";
+            placeholder.draggable = false;
+            const scan = document.createElement("span");
+            scan.className = "vnccs-pipe-img-placeholder-scan";
+            scan.ariaHidden = "true";
+            tile.append(placeholder, scan);
             tile.onclick = () => { if (tile.dataset.src) this.openViewer(index); };
             tile.onkeydown = event => {
                 if (event.target === tile && ["Enter", " "].includes(event.key)) {
@@ -3579,9 +3665,11 @@ class CharacterGeneratorWidget {
             this.previewGrid.appendChild(tile);
         }
         [...this.previewGrid.children].forEach((tile, index) => {
+            const placeholder = tile.querySelector(".vnccs-pipe-img-placeholder");
+            if (placeholder && placeholder.src !== mannequinURL) placeholder.src = mannequinURL;
             const source = (targeted && images.length === 1
                 ? (index === activeIndex ? images[0] : tile._previewSource || upstream[index])
-                : images[index] || upstream[index] || (busy && !showPlaceholders ? tile._previewSource : null));
+                : images[index] || (!showPlaceholders ? upstream[index] || (busy ? tile._previewSource : null) : null));
             if (source) this.updatePreviewImage(tile, source);
             else {
                 if (tile._pendingImage) {
@@ -3591,6 +3679,7 @@ class CharacterGeneratorWidget {
                 tile._previewImage?.remove();
                 tile._pendingImage = tile._previewImage = tile._previewSource = null;
                 delete tile.dataset.src;
+                tile._previewAspect = Number(state.preview_aspect) || tile._previewAspect || CHARACTER_MANNEQUIN_ASPECT;
             }
             const processing = busy && (Array.isArray(state.processing_indices) && !targeted
                 ? state.processing_indices.includes(index)
@@ -3670,6 +3759,9 @@ class CharacterGeneratorWidget {
             const previous = tile._previewImage;
             tile._previewImage = image;
             tile._previewAspect = image.naturalWidth / image.naturalHeight;
+            for (const sibling of this.previewGrid?.children || []) {
+                if (!sibling.dataset.src) sibling._previewAspect = tile._previewAspect;
+            }
             tile.dataset.src = image.src;
             tile.tabIndex = 0;
             tile.classList.toggle("is-empty", false);

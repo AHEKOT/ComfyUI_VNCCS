@@ -3,7 +3,10 @@ import { createSakuraInteractions } from "./sakura_interactions.mjs";
 import { app } from "../../scripts/app.js";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, refreshPreviewImage, watchConnection } from "./vnccs_transport.js";
 import { presetGroups, presetSelection } from "./character_presets.mjs";
-import { createTraitInput, createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, debounce, registerCleanup, injectStyles, showModal as showCommonModal, createLoadingOverlay, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard, createControlCenterClient, installResolvedSeedTransport, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
+import { createTraitInput, createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, debounce, registerCleanup, injectStyles, showModal as showCommonModal, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard, createControlCenterClient, installResolvedSeedTransport, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
+
+const CHARACTER_MANNEQUIN_URL = new URL("./assets/VNCCS_Character_Mannequin.png", import.meta.url).href;
+const CHARACTER_MANNEQUIN_MALE_URL = new URL("./assets/VNCCS_Character_Mannequin_Male.png", import.meta.url).href;
 
 const QI2_OVERHAUL_LORA_NAME = "QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.safetensors";
 const QI2_OVERHAUL_TITLE = "Qwen Image2.1 Character Overhaul";
@@ -350,6 +353,50 @@ ${SAKURA_THEME_CSS}
     height: 100%;
     flex: 0 0 auto;
 }
+.vnccs-creator-generation-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    overflow: hidden;
+    pointer-events: none;
+    background: radial-gradient(circle, rgba(255,143,163,0.04) 1px, transparent 1px), #0f0f16;
+    background-size: 20px 20px, 100% 100%;
+}
+.vnccs-creator-generation-layer[hidden] { display: none; }
+.vnccs-creator-generation-img {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: auto;
+    height: 100%;
+    max-width: none;
+    object-fit: contain;
+    transform: translateX(-50%);
+}
+.vnccs-creator-generation-layer.uses-mannequin .vnccs-creator-generation-base {
+    opacity: 0.64;
+    filter: saturate(0.9) brightness(0.88) drop-shadow(0 0 10px rgba(255,143,163,0.3));
+    animation: vnccs-creator-generation-wait 1800ms ease-in-out infinite;
+}
+.vnccs-creator-generation-new {
+    z-index: 1;
+    clip-path: inset(0 0 100% 0);
+}
+.vnccs-creator-generation-scan {
+    position: absolute;
+    z-index: 2;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: clamp(18px, 6%, 42px);
+    transform: translateY(-50%);
+    opacity: 0.78;
+    background: linear-gradient(180deg, transparent, rgba(255,143,163,0.24) 30%, rgba(255,238,246,0.98) 50%, rgba(255,143,163,0.34) 68%, transparent);
+    box-shadow: 0 0 24px rgba(255,143,163,0.3);
+    mix-blend-mode: screen;
+    animation: vnccs-creator-generation-ready 1500ms ease-in-out infinite;
+}
+.vnccs-creator-generation-layer.is-revealing .vnccs-creator-generation-scan { animation: none; }
 .vnccs-creator-preview-loading {
     position: absolute;
     inset: 0;
@@ -424,6 +471,8 @@ ${SAKURA_THEME_CSS}
 }
 @keyframes vnccs-creator-fadein { from { opacity: 0; } to { opacity: 1; } }
 @keyframes vnccs-creator-spin { to { transform: rotate(360deg); } }
+@keyframes vnccs-creator-generation-wait { 0%, 100% { opacity: 0.48; } 50% { opacity: 0.72; } }
+@keyframes vnccs-creator-generation-ready { 0%, 100% { opacity: 0.45; } 50% { opacity: 0.9; } }
 .vnccs-creator-placeholder { color: var(--text-muted); text-align: center; font-size: 11px; }
 
 /* LoRA stack */
@@ -449,7 +498,7 @@ ${SAKURA_THEME_CSS}
 .vnccs-creator-lora-row { display: flex; gap: 6px; align-items: center; }
 
 /* Buttons */
-.vnccs-creator-btn-row { display: flex; gap: 8px; margin-top: auto; flex-shrink: 0; }
+.vnccs-creator-btn-row { display: flex; gap: 8px; margin-top: auto; min-height: 48px; flex-shrink: 0; }
 .vnccs-creator-btn {
     flex: 1;
     padding: 10px;
@@ -2161,6 +2210,7 @@ app.registerExtension({
                 };
 
                 const clearCharacterSelection = () => {
+                    els.cancelPreviewGeneration?.(true);
                     els.style?.close?.(false);
                     beginCharacterRequest();
                     beginCharacterWizardRequest();
@@ -3935,12 +3985,26 @@ app.registerExtension({
                 const img = document.createElement("img");
                 img.className = "vnccs-creator-preview-img vnccs-creator-character-preview"; img.style.display = "none";
                 frame.appendChild(img);
+                const generationLayer = document.createElement("div");
+                generationLayer.className = "vnccs-creator-generation-layer";
+                generationLayer.hidden = true;
+                generationLayer.ariaHidden = "true";
+                generationLayer.innerHTML = `
+                    <img class="vnccs-creator-generation-img vnccs-creator-generation-base" alt="">
+                    <img class="vnccs-creator-generation-img vnccs-creator-generation-new" alt="">
+                    <span class="vnccs-creator-generation-scan"></span>`;
+                frame.appendChild(generationLayer);
                 const previewLoading = document.createElement("div");
                 previewLoading.className = "vnccs-creator-preview-loading";
                 previewLoading.innerHTML = '<div class="vnccs-creator-preview-spinner"></div>';
                 frame.appendChild(previewLoading);
                 els.previewImg = img; els.placeholder = frame.querySelector(".vnccs-creator-placeholder");
                 els.previewLoading = previewLoading;
+                els.previewFrame = frame;
+                els.generationLayer = generationLayer;
+                els.generationBase = generationLayer.querySelector(".vnccs-creator-generation-base");
+                els.generationNew = generationLayer.querySelector(".vnccs-creator-generation-new");
+                els.generationScan = generationLayer.querySelector(".vnccs-creator-generation-scan");
                 colLeft.appendChild(frame);
 
                 const spriteNav = document.createElement("div");
@@ -4609,6 +4673,7 @@ app.registerExtension({
                 let currentInitializationSelection = beginCharacterRequest();
                 const beginCharacterWizardRequest = createRequestGuard(node);
                 const loadChar = async (n, skipInfoLoad = false, transition = "switch") => {
+                    els.cancelPreviewGeneration?.(true);
                     els.style?.close?.(false);
                     beginCharacterWizardRequest();
                     const currentRequest = beginCharacterRequest();
@@ -4703,6 +4768,96 @@ app.registerExtension({
                     }
                 };
 
+                let previewGenerationRevision = 0;
+                const stopPreviewGeneration = (revision, restorePlaceholder = false) => {
+                    if (revision !== undefined && revision !== previewGenerationRevision) return;
+                    previewGenerationRevision += 1;
+                    for (const animation of els.generationLayer?._animations || []) animation.cancel();
+                    if (els.generationLayer) {
+                        els.generationLayer._animations = [];
+                        els.generationLayer.classList.remove("is-revealing", "uses-mannequin");
+                        els.generationLayer.hidden = true;
+                    }
+                    els.previewFrame?.removeAttribute("aria-busy");
+                    if (els.spritePrevBtn) els.spritePrevBtn.disabled = false;
+                    if (els.spriteNextBtn) els.spriteNextBtn.disabled = false;
+                    const visiblePreview = els.previewImg?.style?.display !== "none" && els.previewImg?.getAttribute?.("src");
+                    if (restorePlaceholder && !visiblePreview) {
+                        if (els._ui) els._ui.emptyPreview(els.previewImg, els.placeholder, state.character, "Generate a preview to bring this character to life.");
+                        else if (els.placeholder) els.placeholder.style.display = "block";
+                    }
+                };
+                const startPreviewGeneration = () => {
+                    const revision = ++previewGenerationRevision;
+                    if (!els.generationLayer) return revision;
+                    for (const animation of els.generationLayer._animations || []) animation.cancel();
+                    const existing = els.previewImg?.style?.display !== "none"
+                        ? els.previewImg?.getAttribute?.("src") || els.previewImg?.src : "";
+                    const sex = String(state.character_info?.sex || state.character_info?.gender || "").trim().toLowerCase();
+                    els.generationBase.src = existing || (sex === "male" ? CHARACTER_MANNEQUIN_MALE_URL : CHARACTER_MANNEQUIN_URL);
+                    els.generationBase.style.clipPath = "inset(0% 0 0 0)";
+                    els.generationNew.removeAttribute("src");
+                    els.generationNew.style.clipPath = "inset(0 0 100% 0)";
+                    els.generationScan.style.top = "0%";
+                    els.generationLayer.classList.toggle("uses-mannequin", !existing);
+                    els.generationLayer.classList.remove("is-revealing");
+                    els.generationLayer.hidden = false;
+                    els.previewFrame?.setAttribute("aria-busy", "true");
+                    if (els.spritePrevBtn) els.spritePrevBtn.disabled = true;
+                    if (els.spriteNextBtn) els.spriteNextBtn.disabled = true;
+                    if (els.placeholder) els.placeholder.style.display = "none";
+                    return revision;
+                };
+                const revealGeneratedPreview = async (src, name, revision) => {
+                    if (revision !== previewGenerationRevision) return false;
+                    if (!els.generationLayer) {
+                        if (els._ui) els._ui.presentPreview(els.previewImg, els.placeholder, src, name);
+                        else { els.previewImg.src = src; els.previewImg.style.display = "block"; els.placeholder.style.display = "none"; }
+                        return true;
+                    }
+                    els.generationNew.src = src;
+                    try { await els.generationNew.decode?.(); } catch { /* onload fallback below */ }
+                    if (revision !== previewGenerationRevision) return false;
+                    els.generationLayer.classList.add("is-revealing");
+                    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+                    if (!reducedMotion && els.generationNew.animate && els.generationScan.animate) {
+                        const options = { duration: 1350, easing: "cubic-bezier(0.4, 0, 0.2, 1)", fill: "forwards" };
+                        const reveal = els.generationNew.animate([
+                            { clipPath: "inset(0 0 100% 0)" },
+                            { clipPath: "inset(0 0 0% 0)" },
+                        ], options);
+                        const conceal = els.generationBase.animate([
+                            { clipPath: "inset(0% 0 0 0)" },
+                            { clipPath: "inset(100% 0 0 0)" },
+                        ], options);
+                        const scan = els.generationScan.animate([
+                            { top: "0%", opacity: 0.65 },
+                            { top: "50%", opacity: 1, offset: 0.5 },
+                            { top: "100%", opacity: 0.65 },
+                        ], options);
+                        els.generationLayer._animations = [reveal, conceal, scan];
+                        await Promise.all([reveal.finished.catch(() => {}), conceal.finished.catch(() => {}), scan.finished.catch(() => {})]);
+                    }
+                    if (revision !== previewGenerationRevision) return false;
+                    const width = Number(els.generationNew.naturalWidth || 0);
+                    const height = Number(els.generationNew.naturalHeight || 0);
+                    if (width > 0 && height > 0) els.previewImg.style.aspectRatio = `${width} / ${height}`;
+                    els.previewImg.src = src;
+                    els.previewImg.alt = `Preview of ${name}`;
+                    els.previewImg.style.display = "block";
+                    els.previewImg.style.opacity = "";
+                    try { await els.previewImg.decode?.(); } catch { /* keep the decoded transition image visible until the browser settles */ }
+                    els.previewImg.style.aspectRatio = "";
+                    await new Promise(resolve => window.requestAnimationFrame ? window.requestAnimationFrame(resolve) : resolve());
+                    if (revision !== previewGenerationRevision) return false;
+                    els.placeholder.style.display = "none";
+                    if (els._ui) els._ui._previewSource = src;
+                    stopPreviewGeneration(revision);
+                    return true;
+                };
+                els.cancelPreviewGeneration = restore => stopPreviewGeneration(undefined, restore);
+                registerCleanup(node, () => els.cancelPreviewGeneration?.());
+
                 const doGenerate = async () => {
                     if (node._vnccsStateRestoreError) return;
                     if (els.btnGen.disabled) return;
@@ -4741,12 +4896,12 @@ app.registerExtension({
                     node._randomizeSeedIfNeeded();
                     saveCurrentGenerationModeValues();
 
-                    // Show loading overlay
-                    const loading = createLoadingOverlay(container, "Generating preview");
-
                     previewRunning = true;
                     syncPreviewButton();
                     saveState();
+                    setPreviewLoading(false);
+                    const generationRevision = startPreviewGeneration();
+                    let previewPresented = false;
 
                     const character = state.character;
                     const currentPreview = beginPreviewRequest();
@@ -4773,8 +4928,8 @@ app.registerExtension({
                         if (d.image) {
                             clearPreviewHandlers();
                             setPreviewLoading(false);
-                            if (els._ui) els._ui.presentPreview(els.previewImg, els.placeholder, "data:image/png;base64," + d.image, character);
-                            else { els.previewImg.src = "data:image/png;base64," + d.image; els.previewImg.style.display = "block"; els.placeholder.style.display = "none"; }
+                            previewPresented = await revealGeneratedPreview("data:image/png;base64," + d.image, character, generationRevision);
+                            if (!previewPresented || !isCurrent()) return;
                             // Successful generation -> Cache is Valid AND source is 'gen'
                             state.preview_source = "gen";
                             hideSpriteNav();
@@ -4782,7 +4937,7 @@ app.registerExtension({
                         }
                     } catch (e) { if (isCurrent()) showMessage(container, "Error: " + e, true); }
                     finally {
-                        loading.remove();
+                        if (!previewPresented) stopPreviewGeneration(generationRevision, true);
                         previewRunning = false;
                         syncPreviewButton();
                     }

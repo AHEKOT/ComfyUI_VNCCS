@@ -136,6 +136,46 @@ def test_failed_item_does_not_advance_progress_or_run_decode(generator, monkeypa
     assert all(event["status"] == "running" for event in events)
 
 
+def test_initial_pose_batch_publishes_each_sprite_when_it_finishes(generator, monkeypatch):
+    node, values, events = generator
+    values["model_kind"] = "qi2"
+    image = torch.zeros(1, 8, 8, 3)
+    decoded = []
+
+    monkeypatch.setattr(node, "_qi2_prepare_model", lambda model, *args: (model, False))
+    monkeypatch.setattr(node, "_qi2_encode", lambda *args, **kwargs: ("positive", "negative", "latent"))
+    monkeypatch.setattr(node, "_qi2_sample", lambda *args, **kwargs: "samples")
+
+    def decode(*args, **kwargs):
+        result = torch.full_like(image, len(decoded) + 1)
+        decoded.append(result)
+        return result
+
+    monkeypatch.setattr(node, "_qi2_decode", decode)
+    monkeypatch.setattr(
+        cg, "_tensor_to_preview_urls",
+        lambda images, *args, start_index=0, **kwargs: [f"preview-{start_index}.png"],
+    )
+
+    result = node._run_pose_generation(
+        image.repeat(3, 1, 1, 1), image, object(), ["one", "two", "three"], {},
+        unique_id="node-17", publish_each=True, preview_cache_dir="cache",
+    )
+
+    published = [event for event in events if event.get("replace_images")]
+    assert result.shape == (3, 8, 8, 3)
+    assert [event["preview_start"] for event in published] == [0, 1, 2]
+    assert [event["images"] for event in published] == [
+        ["preview-0.png"], ["preview-1.png"], ["preview-2.png"],
+    ]
+    assert [event["current"] for event in published] == [1, 2, 3]
+    assert all(event["total"] == 3 for event in published)
+    assert [event.get("processing_index") for event in published] == [1, 2, None]
+    phase_events = [event for event in events if event["message"] in {"Encoding poses", "Sampling poses", "Decoding poses"}]
+    assert phase_events and all(event["total"] == 3 for event in phase_events)
+    assert all(0 <= event.get("processing_index", 0) < 3 for event in phase_events)
+
+
 def test_remove_clothes_reports_encoding_sampling_and_decoding(generator, monkeypatch):
     node, values, events = generator
     values["model_kind"] = "klein9b"
