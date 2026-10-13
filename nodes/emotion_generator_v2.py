@@ -19,6 +19,7 @@ from ..utils import (
     privileged_route, file_fingerprint, config_path, atomic_output_path, character_storage_lock
 )
 from .emotion_library import load_emotion_library, save_emotion_library
+from .runtime_cleanup import inference_stage
 from .character_creator_v2 import (
     ANIMA_DEFAULTS,
     ILLUSTRIOUS_DEFAULTS,
@@ -26,6 +27,7 @@ from .character_creator_v2 import (
     load_generation_assets,
     normalize_gen_settings,
     get_lora_full_path,
+    _generation_file_signatures,
 )
 from .vnccs_control_center import is_qi2_turbo_model
 from .vnccs_pipe import VNCCS_Pipe
@@ -151,6 +153,7 @@ def resolve_generation_seed(gen_settings, seed_resolved=False):
     return seed
 
 
+@inference_stage()
 def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
     parsed = json.loads(generation_settings) if generation_settings else {}
     if not isinstance(parsed, dict):
@@ -597,7 +600,8 @@ class EmotionGeneratorV2:
         paths = [config_path(character), emotions_config_path(), user_emotions_config_path()]
         for costume in json.loads(costumes_data):
             paths.extend(list_costume_sprite_paths(character, costume))
-        return json.dumps([file_fingerprint(path) for path in paths])
+        assets = _generation_file_signatures(normalize_gen_settings({**settings, "generation_mode": mode}))
+        return json.dumps([[file_fingerprint(path) for path in paths], assets])
 
     @logged_operation("EmotionStudio", "prepare_tasks")
     def generate_emotions_v2(self, generation_model="Anima", generation_settings="{}", prompt_style="Anima", character="Character Name", costumes_data="[]", emotions_data="[]"):

@@ -19,8 +19,10 @@ def emotion_module(generator_module, monkeypatch):
     creator = types.ModuleType(package + ".character_creator_v2")
     creator.ANIMA_DEFAULTS = {}
     creator.ILLUSTRIOUS_DEFAULTS = {}
-    for name in ("load_generation_assets", "load_anima_assets", "normalize_gen_settings", "get_lora_full_path"):
+    for name in ("load_generation_assets", "load_anima_assets", "get_lora_full_path"):
         setattr(creator, name, lambda *args: pytest.fail("No model preparation may begin"))
+    creator.normalize_gen_settings = lambda settings: settings
+    creator._generation_file_signatures = lambda settings: {}
     monkeypatch.setitem(sys.modules, creator.__name__, creator)
     monkeypatch.setattr(sys.modules[package + ".vnccs_control_center"], "is_qi2_turbo_model", lambda *args: False, raising=False)
     path = Path(__file__).parents[1] / "nodes" / "emotion_generator_v2.py"
@@ -314,6 +316,116 @@ def test_legacy_nested_random_emotion_profiles_are_not_reused_by_node_cache(emot
     first = emotion_module.EmotionGeneratorV2.IS_CHANGED(**arguments)
     second = emotion_module.EmotionGeneratorV2.IS_CHANGED(**arguments)
     assert first != second
+
+
+def test_seedvr_uses_installed_models_from_extra_paths(generator_module, monkeypatch, tmp_path):
+    import folder_paths
+    from nodes import vnccs_control_center as cc
+    external = tmp_path / "external"
+    for folder, name in (("diffusion_models", generator_module.SEEDVR_MODEL_FILES[0]),
+                         ("vae", generator_module.SEEDVR_VAE_FILES[0])):
+        path = external / folder / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"installed weights")
+    monkeypatch.setattr(folder_paths, "models_dir", str(tmp_path / "default"))
+    monkeypatch.setattr(folder_paths, "get_folder_paths", lambda category: [str(external / category)])
+    monkeypatch.setattr(folder_paths, "get_full_path", lambda *args: None)
+    monkeypatch.setattr(generator_module, "_find_model_on_disk", cc._find_model_on_disk)
+    monkeypatch.setattr(generator_module, "_download_seedvr_file", lambda *args: pytest.fail("Installed VAE must not download"))
+    catalog = generator_module._seedvr_catalog()
+    assert catalog["models"][0]["status"] == catalog["vae"][0]["status"] == "installed"
+    name = generator_module.SEEDVR_VAE_FILES[0]
+    assert generator_module._ensure_seedvr_vae_model(name) == str(external / "vae" / name)
+
+
+def test_emotion_shape_lookup_decodes_each_source_only_once(generator_module, monkeypatch, tmp_path):
+    from PIL import Image, PngImagePlugin
+    path = tmp_path / "pose.png"
+    Image.new("RGBA", (10, 20)).save(path)
+    monkeypatch.setattr(generator_module, "_safe_existing_character_image_path", lambda *args: str(path))
+    node = generator_module.VNCCS_EmotionsGenerator()
+    decoded = []
+    load = PngImagePlugin.PngImageFile.load
+    def observed_load(image, *args, **kwargs):
+        if image.tile:
+            decoded.append(image.filename)
+        return load(image, *args, **kwargs)
+    monkeypatch.setattr(PngImagePlugin.PngImageFile, "load", observed_load)
+    monkeypatch.setattr(node, "_emotion_batch_plan", lambda *args: (_ for _ in ()).throw(RuntimeError("shape lookup complete")))
+    tasks = [{"character": "Alice", "source_path": str(path), "emotion_prompt": str(index)} for index in range(20)]
+    with pytest.raises(RuntimeError, match="shape lookup complete"):
+        node.process(None, SimpleNamespace(model_kind="qi2"), tasks,
+                     widget_data='{"character_name":"Alice"}', unique_id="shape-audit")
+    assert decoded == [str(path)]
+
+
+@pytest.mark.parametrize("mode", ["Illustrious", "Anima", "QI2"])
+def test_emotion_workflow_cache_tracks_selected_asset_files(emotion_module, monkeypatch, tmp_path, mode):
+    weights = tmp_path / "selected-model"
+    weights.write_bytes(b"first weights")
+    observed = []
+    def signatures(settings):
+        observed.append(settings)
+        return {"file": [weights.stat().st_size, weights.stat().st_mtime_ns]}
+    monkeypatch.setattr(emotion_module, "_generation_file_signatures", signatures)
+    arguments = {"character": "Alice", "generation_model": mode,
+                 "generation_settings": '{"seed_mode":"fixed"}'}
+    before = emotion_module.EmotionGeneratorV2.IS_CHANGED(**arguments)
+    assert emotion_module.EmotionGeneratorV2.IS_CHANGED(**arguments) == before
+    weights.write_bytes(b"replacement weights")
+    assert emotion_module.EmotionGeneratorV2.IS_CHANGED(**arguments) != before
+    assert all(settings["generation_mode"] == mode.lower() for settings in observed)
+
+
+def test_emotion_model_preparation_waits_for_preview_inference(emotion_module, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from nodes.runtime_cleanup import inference_lock
+    entered = threading.Event()
+    def model_boundary(*args):
+        entered.set()
+        raise RuntimeError("model boundary reached")
+    monkeypatch.setattr(emotion_module, "load_generation_assets", model_boundary)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with inference_lock:
+            future = executor.submit(emotion_module.build_emotion_pipe, "Anima", "{}")
+            assert not entered.wait(0.1)
+        with pytest.raises(RuntimeError, match="model boundary reached"):
+            future.result(timeout=2)
+    assert entered.is_set()
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_seedvr_download_publishes_valid_weights_to_the_configured_folder(
+    generator_module, monkeypatch, tmp_path, valid,
+):
+    import folder_paths
+    import huggingface_hub
+    installed = tmp_path / "external" / "diffusion_models"
+    monkeypatch.setattr(folder_paths, "get_folder_paths", lambda category: [str(installed)])
+    name = generator_module.SEEDVR_MODEL_FILES[0]
+    target = installed / name
+    target.parent.mkdir(parents=True)
+    original = b"original installed model"
+    target.write_bytes(original)
+    cache = tmp_path / "download.safetensors"
+    header = json.dumps({"weight": {"dtype": "U8", "shape": [1024], "data_offsets": [0, 1024]}}).encode()
+    contents = len(header).to_bytes(8, "little") + header + b"\0" * 1024
+    cache.write_bytes(contents if valid else b"invalid downloaded model")
+    def download(**options):
+        assert options["token"] is False
+        assert options["revision"] == generator_module.SEEDVR_HF_REVISION
+        assert options["filename"] == f"diffusion_models/{name}"
+        return str(cache)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+    if valid:
+        assert generator_module._download_seedvr_file("models", name) == str(target)
+        assert target.read_bytes() == contents
+    else:
+        with pytest.raises(ValueError):
+            generator_module._download_seedvr_file("models", name)
+        assert target.read_bytes() == original
+    assert list(installed.iterdir()) == [target]
 
 
 @pytest.mark.parametrize("route", ["vnccs_character_generator_seedvr_download", "vnccs_character_generator_regenerate"])

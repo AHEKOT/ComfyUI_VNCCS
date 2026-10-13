@@ -59,6 +59,8 @@ from .vnccs_control_center import (
     _find_model_on_disk,
     _rel_within_folder,
     _entry_kind,
+    _resolve_model_download_path,
+    _validate_downloaded_model_file,
 )
 from .qi2_viggle import apply_viggle_turbo_lora, viggle_turbo_sigmas
 from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, _flatten_image_tensors, _as_bool
@@ -3852,31 +3854,6 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             parts[-1] = "face_" + basename[len("sprite_"):]
         return safe_join_under(root, "Faces", *parts)
 
-    def _source_shape_report(self, data_items, source_items):
-        seen = {}
-        for index, (source_image, _source_mask) in enumerate(source_items):
-            image = self._list_to_batch(source_image)
-            if not torch.is_tensor(image) or image.ndim != 4:
-                continue
-            shape = (int(image.shape[2]), int(image.shape[1]))
-            meta = data_items[index] if index < len(data_items) and isinstance(data_items[index], dict) else {}
-            source_path = str(meta.get("source_path", "") or f"source #{index + 1}")
-            seen.setdefault(shape, []).append(source_path)
-        if len(seen) <= 1:
-            return None
-
-        lines = []
-        for shape, paths in sorted(seen.items()):
-            preview = ", ".join(os.path.basename(path) for path in paths[:4])
-            if len(paths) > 4:
-                preview += f", +{len(paths) - 4} more"
-            lines.append(f"{shape[0]}x{shape[1]}: {preview}")
-        return (
-            "Emotion source sprites have different canvas sizes. VNCCS Emotions Generator will not resize "
-            "or stretch source sprites. Regenerate the source sprites so every selected sprite "
-            "has the same size.\n" + "\n".join(lines)
-        )
-
     def _pad_tensor_image(self, image, target_hw):
         image = self._list_to_batch(image)
         if not torch.is_tensor(image) or image.ndim != 4 or target_hw is None:
@@ -3916,30 +3893,6 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         x = (target_w - w) // 2
         padded[:, y:y + h, x:x + w] = item
         return padded
-
-    def _pad_alpha_sources_to_uniform_canvas(self, data_items, source_items):
-        shapes = []
-        for source_image, _source_mask in source_items:
-            image = self._list_to_batch(source_image)
-            if torch.is_tensor(image) and image.ndim == 4:
-                shapes.append((int(image.shape[1]), int(image.shape[2])))
-        if not shapes:
-            return source_items, None
-        target_hw = (max(shape[0] for shape in shapes), max(shape[1] for shape in shapes))
-        if len(set(shapes)) <= 1:
-            return source_items, target_hw
-        if any(source_mask is None for _source_image, source_mask in source_items):
-            raise RuntimeError(self._source_shape_report(data_items, source_items))
-
-        padded_items = []
-        for source_image, source_mask in source_items:
-            padded_image = self._pad_tensor_image(source_image, target_hw)
-            padded_mask = self._pad_tensor_mask(source_mask, target_hw)
-            if padded_image is None or padded_mask is None:
-                raise RuntimeError(self._source_shape_report(data_items, source_items))
-            padded_items.append((padded_image, padded_mask))
-        log_event("source_canvas_padded", width=target_hw[1], height=target_hw[0], images=len(padded_items))
-        return padded_items, target_hw
 
     def _emotion_pairs(self, widget_payload, emotions, total):
         pairs = widget_payload.get("emotion_pairs")
@@ -4247,12 +4200,14 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                     ),
                     "",
                 )
+            source_dimensions = {}
             for index, meta in enumerate(data_items):
                 task_character = meta.get("character", character_name) if isinstance(meta, dict) else character_name
-                shape = self._source_sprite_hw(
-                    meta.get("source_path") if isinstance(meta, dict) else "",
-                    task_character,
-                )
+                source_path = meta.get("source_path") if isinstance(meta, dict) else ""
+                source_key = (str(task_character or ""), str(source_path or ""))
+                if source_key not in source_dimensions:
+                    source_dimensions[source_key] = self._source_sprite_hw(source_path, task_character)
+                shape = source_dimensions[source_key]
                 if shape is None and index < len(image_items):
                     fallback = self._list_to_batch(image_items[index])
                     if torch.is_tensor(fallback) and fallback.ndim == 4:
@@ -4609,16 +4564,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             raise
 
 
-def _seedvr_models_root():
-    root = getattr(folder_paths, "models_dir", None) if folder_paths is not None else None
-    if not root:
-        base = getattr(folder_paths, "base_path", os.getcwd()) if folder_paths is not None else os.getcwd()
-        root = os.path.join(base, "models")
-    return os.path.abspath(root)
-
-
 def _seedvr_catalog():
-    root = _seedvr_models_root()
     descriptions = {
         "seedvr2_3b_fp8_e4m3fn.safetensors": "Recommended native SeedVR2 3B model with reduced VRAM usage.",
         "seedvr2_3b_fp16.safetensors": "Native SeedVR2 3B model in full FP16 precision.",
@@ -4634,7 +4580,7 @@ def _seedvr_catalog():
             "name": name,
             "local_path": f"models/{folder}/{name}",
             "description": descriptions[name],
-            "status": "installed" if os.path.isfile(os.path.join(root, folder, name)) else "missing",
+            "status": "installed" if _find_model_on_disk(f"models/{folder}/{name}")[1] else "missing",
             "category": category,
         } for name in files]
 
@@ -4648,27 +4594,22 @@ def _download_seedvr_file(category, name):
     from huggingface_hub import hf_hub_download
 
     folder = "diffusion_models" if category == "models" else "vae"
-    models_root = _seedvr_models_root()
-    target_dir = os.path.join(models_root, folder)
-    os.makedirs(target_dir, exist_ok=True)
+    final_path = _resolve_model_download_path(f"models/{folder}/{name}")
     downloaded = hf_hub_download(
         repo_id=SEEDVR_HF_REPO,
         filename=f"{folder}/{name}",
         revision=SEEDVR_HF_REVISION,
-        local_dir=models_root,
         token=False,
     )
-    final_path = os.path.join(target_dir, name)
-    if os.path.abspath(downloaded) != os.path.abspath(final_path):
-        os.replace(downloaded, final_path)
-    if not os.path.isfile(final_path):
-        raise RuntimeError(f"SeedVR2 download completed but model file is missing: {final_path}")
+    with atomic_output_path(final_path) as temporary:
+        shutil.copyfile(downloaded, temporary)
+        _validate_downloaded_model_file(temporary, name)
     return final_path
 
 
 def _ensure_seedvr_vae_model(name="ema_vae_fp16.safetensors"):
-    target = os.path.join(_seedvr_models_root(), "vae", name)
-    if os.path.isfile(target):
+    target, installed = _find_model_on_disk(f"models/vae/{name}")
+    if installed:
         return target
     key = f"vae:{name}"
     _SEEDVR_DOWNLOAD_STATUS[key] = {"status": "downloading", "message": "Downloading required SeedVR2 VAE…"}

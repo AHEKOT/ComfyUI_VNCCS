@@ -168,6 +168,29 @@ test('workflow cache identity also works outside secure browser contexts', () =>
     assert.notEqual(run(context, 'workflowScope(node)'), first);
 });
 
+test('independent tabs isolate saved workflows while reconnect and reload retain their scope', () => {
+    const values = new Map();
+    const sessionStorage = { getItem: key => values.get(key) || null,
+        setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
+    const create = (type, store = sessionStorage) => {
+        const h = transport({ sessionStorage: store,
+            performance: { getEntriesByType: () => [{ type }] } });
+        h.context.node = { id: 42, type: 'VNCCS_CharacterGenerator',
+            graph: { extra: { vnccs_workflow_id: 'saved-workflow' } } };
+        return h;
+    };
+    const first = create('navigate');
+    const firstScope = run(first.context, 'workflowScope(node)');
+    const copiedValues = new Map(values);
+    const copiedStorage = { getItem: key => copiedValues.get(key) || null,
+        setItem: (key, value) => copiedValues.set(key, value), removeItem: key => copiedValues.delete(key) };
+    const duplicate = create('navigate', copiedStorage);
+    assert.notEqual(run(duplicate.context, 'workflowScope(node)'), firstScope);
+    assert.equal(run(first.context, 'workflowScope(node)'), firstScope);
+    assert.equal(run(create('reload').context, 'workflowScope(node)'), firstScope);
+    assert.equal(first.context.node.graph.extra.vnccs_workflow_id, 'saved-workflow');
+});
+
 test('a restarted server can restore snapshots with a lower revision from a new epoch', async () => {
     const h = generator();
     const scope = h.widget.progressScope();

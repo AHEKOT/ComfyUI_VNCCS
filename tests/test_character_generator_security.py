@@ -574,7 +574,6 @@ def test_emotions_generator_bg_remove_uses_character_background_color(tmp_path, 
     monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(node, "_save_stage", lambda *args, **kwargs: None)
     monkeypatch.setattr(node, "_load_source_sprite_from_path", lambda *args, **kwargs: (None, None))
-    monkeypatch.setattr(node, "_pad_alpha_sources_to_uniform_canvas", lambda data, items: (items, (4, 4)))
     monkeypatch.setattr(
         node,
         "_run_emotion_generation_one",
@@ -662,7 +661,6 @@ def test_emotions_generator_single_bg_regenerate_slices_cached_raw_batch(tmp_pat
     monkeypatch.setattr(node, "_save_stage", lambda *args, **kwargs: None)
     monkeypatch.setattr(cg, "_save_cached_tensor", lambda *args, **kwargs: None)
     monkeypatch.setattr(node, "_load_source_sprite_from_path", lambda *args, **kwargs: (None, None))
-    monkeypatch.setattr(node, "_pad_alpha_sources_to_uniform_canvas", lambda data, items: (items, (4, 4)))
     monkeypatch.setattr(
         node,
         "_run_emotion_generation_one",

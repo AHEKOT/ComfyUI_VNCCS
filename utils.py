@@ -613,7 +613,8 @@ def append_age(positive_prompt: str, age: int, sex: str) -> str:
 
 def config_path(character_name: str) -> str:
     """Get character config file path."""
-    return os.path.join(character_dir(character_name), f"{character_name}_config.json")
+    character_name = ensure_safe_name(character_name, "character")
+    return safe_join_under(character_dir(character_name), f"{character_name}_config.json")
 
 
 def load_config(character_name: str, *, strict=False) -> Optional[Dict[str, Any]]:

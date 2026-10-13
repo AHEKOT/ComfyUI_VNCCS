@@ -1,6 +1,7 @@
 from ..operation_logger import log_event, log_stage, logged_operation
 
 from .preview_runtime import run_preview_job
+from .runtime_cleanup import inference_stage
 import json
 import math
 import os
@@ -1841,6 +1842,14 @@ def _preview_state_key(repo_id, node_state):
 
 class VNCCS_ControlCenter:
     @classmethod
+    def IS_CHANGED(cls, repo_id, **kwargs):
+        config = _apply_active_installed_paths(_get_cc_config(repo_id))
+        files = [_model_file_signature(_find_model_on_disk(entry.get("local_path", ""))[0])
+                 for category in ("models", "clip", "vae", "lora")
+                 for entry in config.get(category, [])]
+        return json.dumps([config, files], sort_keys=True)
+
+    @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
@@ -1884,6 +1893,7 @@ class VNCCS_ControlCenter:
         return (pipe,)
 
 
+@inference_stage()
 def _build_control_center_pipe(
     repo_id,
     node_state,
