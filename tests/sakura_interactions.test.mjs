@@ -15,6 +15,7 @@ function setup() {
     class Element {
         constructor(tag) {
             this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {}; this.style = { setProperty(key, value) { this[key] = value; } }; this.className = "";
+            if (this.tagName === "IMG") { this.naturalWidth = 240; this.naturalHeight = 360; }
             this.scrollTop = this.scrollLeft = 0; this.clientWidth = 500; this.clientHeight = 700;
             this.classList = {
                 contains: name => this.className.split(" ").includes(name),
@@ -179,7 +180,7 @@ test("generator gallery reserves aligned slots and reveals decoded cards in orde
     assert.equal(h.document.animations.filter(a => a.options.duration === 420).length, 0, "Out-of-order downloads cannot overtake the first card");
     await tiles[0]._pendingImage.onload(); await tiles[2]._pendingImage.onload();
     const reveal = h.document.animations.filter(a => a.options.duration === 420);
-    assert.deepEqual(reveal.map(a => a.effect.target.parentNode), tiles);
+    assert.deepEqual(reveal.map(a => a.effect.target), tiles);
     assert.ok(reveal.every((a, index) => index === 0 || a.options.delay > reveal[index - 1].options.delay));
     assert.equal(reveal[0].options.fill, "backwards", "Delayed cards stay hidden until their turn");
     widget.stageState.pose_generation.current = 1; widget.renderPreview();
@@ -215,8 +216,8 @@ test("generator gallery reserves aligned slots and reveals decoded cards in orde
     widget.stageState.upscaler.images = ["broken"]; widget.renderPreview(); tiles[2]._pendingImage.onerror();
     assert.equal(tiles[2].dataset.src, "latest", "A failed replacement keeps the last successful image");
     grid.clientWidth = 480; grid.clientHeight = 360; widget.layoutPreviewGrid(grid);
-    assert.match(grid.style.gridTemplateColumns, /minmax\(0, 1fr\)/);
-    assert.ok(tiles.every(tile => !tile.style.width && !tile.style.height), "Mixed image dimensions cannot offset individual frames");
+    assert.match(grid.style.gridTemplateColumns, /repeat\(\d+, [\d.]+px\)/);
+    assert.ok(tiles.every(tile => Math.abs(parseFloat(tile.style.width) / parseFloat(tile.style.height) - 2 / 3) < 0.001));
 });
 
 test("generator gallery is created once while detached and survives mounting", () => {
@@ -241,7 +242,7 @@ test("generator gallery is created once while detached and survives mounting", (
     assert.equal(tabs.children.length, 1);
 });
 
-test("decoded generator cards preserve image aspect ratios and stay bounded in workflow-sized galleries", async () => {
+test("decoded generator cards preserve image aspect ratios and maximize workflow-sized galleries", async () => {
     const h = setup();
     h.context.app = { registerExtension() {} };
     vm.runInContext(generator.replace(/^import .*;\n/gm, "") + '\nthis.Generator = CharacterGeneratorWidget;', h.context);
@@ -265,7 +266,10 @@ test("decoded generator cards preserve image aspect ratios and stay bounded in w
         widget.layoutPreviewGrid(widget.previewGrid);
         [...widget.previewGrid.children].forEach((tile, index) => {
             const width = parseFloat(tile.style.width), height = parseFloat(tile.style.height);
-            assert.ok(width <= 240 && height <= 320);
+            const cellW = parseFloat(widget.previewGrid.style.gridTemplateColumns.match(/, ([\d.]+)px/)[1]);
+            const cellH = parseFloat(widget.previewGrid.style.gridTemplateRows.match(/, ([\d.]+)px/)[1]);
+            assert.ok(width <= cellW + 0.001 && height <= cellH + 0.001);
+            assert.ok(Math.abs(width - cellW) < 0.001 || Math.abs(height - cellH) < 0.001, "Each image fills its cell along one axis without distortion");
             assert.ok(width > 0 && height > 0);
             assert.ok(Math.abs(width / height - sizes[index][0] / sizes[index][1]) < 0.001);
         });

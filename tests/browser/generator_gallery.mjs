@@ -1,7 +1,7 @@
-// Manual browser regression: provide Playwright through NODE_PATH; optional Chromium executable is argv[2].
+// Manual regression: provide Playwright through NODE_PATH; optional Chromium executable is argv[2].
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { readFile, mkdir } from "node:fs/promises";
+import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,47 +10,73 @@ const { chromium } = createRequire(import.meta.url)("playwright");
 const project = new URL("../../", import.meta.url);
 const output = join(tmpdir(), "vnccs-generator-gallery");
 await mkdir(output, { recursive: true });
-const pageHTML = `<!doctype html><meta charset="utf-8"><style>body{margin:0;background:#181820;padding:18px}#host{width:100%;height:calc(100vh - 36px);transform-origin:top left}</style><div id="host"></div><script type="module">
-import { CharacterGeneratorWidget, DEFAULT_DATA, CSS } from '/web/vnccs_character_generator.js';
-import { createSakuraInteractions } from '/web/sakura_interactions.mjs';
+const fixtures = [];
+for (const name of ["Step1_CharacterCreator", "Step1_CharacterCloner", "Step2_CharacterClothes", "Step3_CharacterEmotions"]) {
+    const path = `workflows/VNCCS_3.2_${name}.json`;
+    const workflow = JSON.parse(await readFile(new URL(path, project), "utf8"));
+    const node = workflow.nodes.find(node => /^VNCCS_.*Generator$/.test(node.type));
+    assert.ok(node && Array.isArray(node.size) && workflow.extra.ds.scale > 0);
+    fixtures.push({ path, node, scale: workflow.extra.ds.scale });
+}
+const layoutScenarios = [
+    ...[3, 6, 7, 12].map(count => ({ count, width: 1024, height: 1024, label: "square" })),
+    ...[3, 6, 7, 12].map(count => ({ count, width: 1536, height: 640, label: "wide" })),
+    ...[3, 6, 7, 12].map(count => ({ count, width: 640, height: 1536, label: "640x1536" })),
+];
+const appModule = `export const app={extensions:[],graph:{_nodes:[],links:{},extra:{},getNodeById(id){return this._nodes.find(node=>node.id===id)},setDirtyCanvas(){}},canvas:{ds:{scale:1,offset:[0,0]}},registerExtension(extension){this.extensions.push(extension)}};`;
+const apiModule = `export const api=new EventTarget();api.apiURL=route=>route;api.fetchApi=(route,options)=>{
+ if(route.startsWith('/vnccs/character_generator/progress')){
+   const w=window.widget;
+   const snapshot=w&&!w._disposed?{scope:w.progressScope(),node_id:String(w.node.id),epoch:w._progressEpoch||'browser',revision:w._progressRevision||0,request_id:w.data.ui?.progress_request_id,run_id:w._activeProgressRunId,stages:structuredClone(w.stageState)}:null;
+   return Promise.resolve(new Response(JSON.stringify({snapshot}),{headers:{'Content-Type':'application/json'}}));
+ }
+ return fetch(route,options);
+};`;
+const pageHTML = `<!doctype html><meta charset="utf-8"><style>body{margin:0;background:#181820;padding:18px}#host{transform-origin:top left}</style><div id="host"></div><script type="module">
+import '/web/vnccs_character_generator.js';
+import { app } from '/scripts/app.js';
 import { api } from '/scripts/api.js';
-const style = document.createElement('style'); style.textContent = CSS; document.head.append(style);
 const animate = Element.prototype.animate;
 window.reveals = [];
 Element.prototype.animate = function(keyframes, options) {
-  const result = animate.apply(this, arguments);
-  if (this.classList.contains('vnccs-pipe-img-content') && options.duration === 420) {
-    reveals.push({ index: [...this.parentNode.parentNode.children].indexOf(this.parentNode), animation: result, image: this });
+  const animation = animate.apply(this, arguments);
+  if (options.duration===420 && (this.classList.contains('vnccs-pipe-img')||this.classList.contains('vnccs-pipe-img-content'))) {
+    const tile=this.classList.contains('vnccs-pipe-img')?this:this.parentNode;
+    reveals.push({index:[...tile.parentNode.children].indexOf(tile),animation});
   }
-  return result;
+  return animation;
 };
-window.setup = flags => {
-  if (window.widget) { widget.node.onRemoved?.(); widget._ui.dispose(); }
-  const host = document.querySelector('#host'); host.replaceChildren();
-  const node = { id: 17, widgets: [{ name:'widget_data',value:'{}' }], properties: {} };
-  const w = Object.assign(Object.create(CharacterGeneratorWidget.prototype), {
-    isClone:false, isClothes:false, isEmotions:false, ...flags, node, data: structuredClone(DEFAULT_DATA), title:'Gallery test', fieldDrafts:new Map(), nodeDefs:{},
-    seedvrDownloads:{}, seedvrAssets:{models:[]},
-    syncCharacterSourceData() {}, connectedEmotionStudioMode:()=> 'qi2', saveBrowserState() {}, refreshProgress() {},
-  });
-  w.data.emotion_pairs = [{costume:'Naked',emotion:'Happy'}, {costume:'Naked',emotion:'Sad'}];
-  w.stages = w.currentStages(); w.selectedPreview = w.stages[0][0];
-  w.stageState = Object.fromEntries(w.stages.map(([key]) => [key,{status:'waiting',images:null}]));
-  w.root = document.createElement('div'); w.root.className='vnccs-pipe-root vnccs-common-ui-host'; host.append(w.root);
-  w.settingsEl=document.createElement('div'); w.settingsEl.className='vnccs-pipe-settings'; w.settingsEl.dataset.sakuraScroll='settings';
-  const main=document.createElement('div'); main.className='vnccs-pipe-main';
-  w.previewEl=document.createElement('div'); w.previewEl.className='vnccs-pipe-preview';
-  w.chainEl=document.createElement('div'); w.chainEl.className='vnccs-pipe-chain'; w.chainEl.dataset.sakuraScroll='stages';
-  main.append(w.previewEl,w.chainEl); w.root.append(w.settingsEl,main);
-  w._ui=createSakuraInteractions(w.root,node); w.updateModeClasses(); w.renderSettings(); w.renderPreview(); w.renderChain(); w.bindEvents();
-  w.observer=new ResizeObserver(()=>w.schedulePreviewGridLayout(w.previewGrid)); w.observer.observe(w.previewEl);
-  const removed=node.onRemoved; node.onRemoved=()=>{w.observer.disconnect();removed?.();};
-  window.widget=w; window.reveals=[];
-  window.imageRun=crypto.randomUUID();
+window.setup = async fixture => {
+  window.widget?.node.onRemoved?.();
+  localStorage.clear();
+  const host=document.querySelector('#host');host.replaceChildren();
+  host.style.width=fixture.node.size[0]+'px';host.style.height=fixture.node.size[1]+'px';host.style.transform='scale('+fixture.zoom+')';
+  app.canvas.ds.scale=fixture.zoom;app.graph._nodes=[];app.graph.extra={};
+  class Node {
+    constructor(){this.id=fixture.node.id;this.type=fixture.node.type;this.inputs=fixture.node.inputs;this.widgets=[{name:'widget_data',value:'{}'}];this.properties={};this.graph=app.graph;this.size=[0,0];}
+    setSize(size){this.size=[...size];this.widgets.find(widget=>widget.element)?.triggerDraw();}
+    addDOMWidget(name,type,element,options){const widget={name,type,element,options,_node:this,triggerDraw:()=>{element.style.width=this.size[0]+'px';}};this.widgets.push(widget);return widget;}
+    onNodeCreated(){this.created=true;}
+    onConfigure(){this.configured=true;}
+  }
+  await app.extensions.find(extension=>extension.name==='VNCCS.CharacterGenerator').beforeRegisterNodeDef(Node,{name:fixture.node.type});
+  const node=new Node();app.graph._nodes.push(node);node.onNodeCreated();
+  const w=node._vnccsCharacterGeneratorWidget;window.widget=w;
+  if(w.root.isConnected)throw new Error('Construction must precede DOM mounting');
+  if(node.widgets[0].value!=='{}')throw new Error('Construction overwrote saved settings before configure');
+  node.setSize(fixture.node.size);
+  node.widgets[0].value=fixture.node.widgets_values.find(value=>typeof value==='string'&&value.startsWith('{'));
+  node.onConfigure();
+  for(let i=0;i<4;i++)w.renderPreview();
+  window.detachedCounts=['.vnccs-pipe-grid','.vnccs-pipe-preview-head','.vnccs-pipe-empty'].map(selector=>w.previewEl.querySelectorAll(selector).length);
+  window.savedGrid=w.previewGrid;window.savedHead=w.previewEl.firstChild;
+  host.append(w.root);node.onResize();w.renderPreview();
+  window.reveals=[];window.imageRun=crypto.randomUUID();
 };
-window.emit=(stage, detail)=>api.dispatchEvent(new CustomEvent('vnccs.character_generator.stage',{detail:{node_id:'17',stage,status:'running',...detail}}));
+window.emit=(stage,detail)=>api.dispatchEvent(new CustomEvent('vnccs.character_generator.stage',{detail:{node_id:String(widget.node.id),stage,status:'running',...detail}}));
 window.geometry=()=>[...widget.previewGrid.children].map(tile=>{const r=tile.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};});
 window.cards=()=>[...widget.previewGrid.children].map(tile=>({src:tile.dataset.src||'',processing:tile.classList.contains('is-processing'),waiting:tile.classList.contains('is-waiting')}));
+window.urls=(version,count=6,width=640,height=1536)=>Array.from({length:count},(_,i)=>'/view?filename=pose_generation_'+String(i+1).padStart(2,'0')+'.png&subfolder=VNCCS/preview&type=output&run='+imageRun+'&v='+version+'&item='+i+'&width='+width+'&height='+height+'&delay='+(i===0?250:5));
 window.ready=true;
 </script>`;
 
@@ -59,143 +85,196 @@ const server = createServer(async (req, res) => {
         const url = new URL(req.url, "http://localhost");
         let content, type = "text/javascript";
         if (url.pathname === "/") { content = pageHTML; type = "text/html"; }
-        else if (url.pathname === "/scripts/app.js") content = "export const app={graph:{_nodes:[],setDirtyCanvas(){}},registerExtension(){}};";
-        else if (url.pathname === "/scripts/api.js") content = "export const api=new EventTarget();api.apiURL=route=>route;api.fetchApi=(route,options)=>fetch(route,options);";
+        else if (url.pathname === "/scripts/app.js") content = appModule;
+        else if (url.pathname === "/scripts/api.js") content = apiModule;
         else if (url.pathname.startsWith("/web/")) {
             assert.match(url.pathname, /^\/web\/[\w.-]+$/);
             content = await readFile(new URL(url.pathname.slice(1), project), "utf8");
-            if (url.pathname.endsWith("vnccs_character_generator.js")) content += "\nexport { CharacterGeneratorWidget, DEFAULT_DATA, CSS };";
-        } else if (url.pathname.startsWith("/image/")) {
+        } else if (url.pathname === "/view") {
             await new Promise(resolve => setTimeout(resolve, Number(url.searchParams.get("delay")) || 0));
             if (url.searchParams.has("broken")) { res.writeHead(404).end(); return; }
-            const index = Number(url.pathname.split("/").pop()) || 0;
-            const width = index % 3 === 0 ? 420 : 240, height = index % 3 === 1 ? 460 : 360;
-            const color = url.searchParams.get("v") === "new" ? "#b8a9e8" : "#ff8fa3";
-            content = '<svg xmlns="http://www.w3.org/2000/svg" width="'+width+'" height="'+height+'" viewBox="0 0 240 360"><rect width="240" height="360" fill="#101923"/><circle cx="120" cy="69" r="34" fill="'+color+'"/><path d="M85 107 Q120 95 155 107 L175 235 L147 237 L141 338 L120 338 L117 245 L108 338 L85 338 L91 237 L66 235Z" fill="'+color+'"/><text x="16" y="25" fill="#e8e8f0" font-family="sans-serif">'+(index+1)+'</text></svg>';
-            type = "image/svg+xml";
-        } else { content = JSON.stringify({ snapshot: null }); type = "application/json"; }
-        res.writeHead(200, { "Content-Type": type, "Cache-Control": "no-store" }).end(content);
-    } catch (error) { res.writeHead(500).end(String(error)); }
+            const index = Number(url.searchParams.get("item")) || 0;
+            const width = Number(url.searchParams.get("width"));
+            const height = Number(url.searchParams.get("height"));
+            const color=url.searchParams.get('v')==='new'?'#b8a9e8':'#ff8fa3';
+            const x=width/2, bodyWidth=Math.min(width*0.4,height*0.2);
+            content='<svg xmlns="http://www.w3.org/2000/svg" width="'+width+'" height="'+height+'" viewBox="0 0 '+width+' '+height+'"><rect width="'+width+'" height="'+height+'" fill="#101923"/><circle cx="'+x+'" cy="'+height*0.2+'" r="'+bodyWidth*0.24+'" fill="'+color+'"/><path d="M'+(x-bodyWidth/2)+' '+height*0.31+' L'+(x+bodyWidth/2)+' '+height*0.31+' L'+(x+bodyWidth*0.6)+' '+height*0.65+' L'+(x+bodyWidth*0.28)+' '+height*0.65+' L'+(x+bodyWidth*0.22)+' '+height*0.94+' L'+(x+bodyWidth*0.05)+' '+height*0.94+' L'+x+' '+height*0.7+' L'+(x-bodyWidth*0.05)+' '+height*0.94+' L'+(x-bodyWidth*0.22)+' '+height*0.94+' L'+(x-bodyWidth*0.28)+' '+height*0.65+' L'+(x-bodyWidth*0.6)+' '+height*0.65+'Z" fill="'+color+'"/><text x="20" y="45" fill="#e8e8f0" font-size="32" font-family="sans-serif">'+(index+1)+'</text></svg>';
+            type="image/svg+xml";
+        } else {
+            type="application/json";
+            if(url.pathname.startsWith('/object_info')) {
+                const name=decodeURIComponent(url.pathname.split('/').pop());
+                content=JSON.stringify({[name]:{input:{required:{color_correction_method:[['lab','adain','none']]}}}});
+            } else if(url.pathname.endsWith('/seedvr_models')) {
+                content=JSON.stringify({models:['seedvr2_3b_fp8_e4m3fn.safetensors','seedvr2_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors'].map(name=>({name,local_path:'models/diffusion_models/'+name,status:'installed',description:'SeedVR test inventory'})),vae:[]});
+            } else content=JSON.stringify({});
+        }
+        res.writeHead(200,{"Content-Type":type,"Cache-Control":"no-store"}).end(content);
+    } catch(error){res.writeHead(500).end(String(error));}
 });
-await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
-const browser = await chromium.launch({ headless: true, ...(process.argv[2] ? { executablePath: process.argv[2] } : {}) });
-const page = await browser.newPage({ viewport: { width: 1100, height: 720 } });
-const errors = [];
-page.on("pageerror", error => errors.push(String(error)));
-const stable = (before, after) => {
-    assert.equal(after.length, before.length);
-    before.forEach((rect, index) => Object.keys(rect).forEach(key => assert.ok(Math.abs(rect[key] - after[index][key]) <= 1, `Card ${index} ${key} moved: ${rect[key]} -> ${after[index][key]}`)));
+await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
+const browser=await chromium.launch({headless:true,...(process.argv[2]?{executablePath:process.argv[2]}:{})}).catch(error=>{server.close();throw error;});
+const page=await browser.newPage({deviceScaleFactor:2});
+const errors=[];
+page.on('pageerror',error=>errors.push(String(error)));
+const stable=(before,after)=>{
+    assert.equal(after.length,before.length);
+    before.forEach((rect,index)=>Object.keys(rect).forEach(key=>assert.ok(Math.abs(rect[key]-after[index][key])<=1,`Card ${index} ${key} moved: ${rect[key]} -> ${after[index][key]}`)));
 };
-let scenarios = 0;
+async function measure(zoom){
+    const geometry=await page.evaluate(()=>geometry());
+    for(const [index,rect] of geometry.entries()){
+        assert.ok(rect.width>0&&rect.height>0);
+        const cell=await page.evaluate(()=>({width:parseFloat(getComputedStyle(widget.previewGrid).gridTemplateColumns),height:parseFloat(getComputedStyle(widget.previewGrid).gridTemplateRows)}));
+        assert.ok(rect.width<=cell.width*zoom+1&&rect.height<=cell.height*zoom+1);
+        assert.ok(Math.abs(rect.width-cell.width*zoom)<=1||Math.abs(rect.height-cell.height*zoom)<=1,'Each image must use the available cell space along one axis');
+        const image=await page.evaluate(index=>{const image=widget.previewGrid.children[index]._previewImage;return {width:image.naturalWidth,height:image.naturalHeight};},index);
+        assert.ok(Math.abs(rect.width-rect.height*image.width/image.height)<=1,'Card frame must preserve the image aspect ratio');
+    }
+    return geometry;
+}
+async function assertPackedRows(zoom){
+    const {cards,grid}=await page.evaluate(()=>({cards:geometry(),grid:widget.previewGrid.getBoundingClientRect().toJSON()}));
+    const rows=[];
+    for(const card of cards.sort((a,b)=>a.y-b.y||a.x-b.x)){
+        const row=rows.find(row=>Math.abs(row[0].y-card.y)<=1);
+        if(row)row.push(card);else rows.push([card]);
+    }
+    for(const row of rows){
+        row.sort((a,b)=>a.x-b.x);
+        const left=Math.min(...row.map(card=>card.x));
+        const right=Math.max(...row.map(card=>card.x+card.width));
+        assert.ok(Math.abs((left+right)/2-(grid.left+grid.right)/2)<=1,'Every gallery row must be visually centered');
+        row.slice(1).forEach((card,index)=>assert.ok(Math.abs(card.x-(row[index].x+row[index].width)-8*zoom)<=1,'Cards must use the fixed 8px gallery gap'));
+    }
+}
+const report=[];
 try {
     await page.goto(`http://127.0.0.1:${server.address().port}`);
-    await page.waitForFunction(() => window.ready);
-    for (const [mode, flags] of [["character", {}], ["clone", { isClone: true }], ["clothes", { isClothes: true }], ["emotions", { isEmotions: true }]]) {
-        for (const viewport of [{ width: 1100, height: 720 }, { width: 730, height: 560 }]) {
-            await page.setViewportSize(viewport);
-            await page.evaluate(flags => setup(flags), flags);
-            const stages = await page.evaluate(() => widget.stages.map(([key]) => key));
-            await page.evaluate(stage => emit(stage, { current: 0, total: 6 }), stages[0]);
-            await page.waitForFunction(() => widget.previewGrid.children.length === 6 && widget.previewGrid.style.gridTemplateColumns);
-            const before = await page.evaluate(() => { window.savedTiles=[...widget.previewGrid.children]; return geometry(); });
-            assert.ok(before.every(r => r.width > 30 && r.height > 30));
-            const sortedRows = new Map();
-            for (const r of before) { const row = Math.round(r.y); if (!sortedRows.has(row)) sortedRows.set(row, []); sortedRows.get(row).push(r); }
-            for (const row of sortedRows.values()) assert.ok(row.every(r => Math.abs(r.height-row[0].height) <= 1 && Math.abs(r.width-row[0].width) <= 1));
-            await page.evaluate(stage => emit(stage, { current: 0, total: 6, images: Array.from({length:6}, (_,i)=>'/image/'+i+'?run='+imageRun+'&delay='+(i===0?250:10)) }), stages[0]);
-            await page.waitForTimeout(100);
-            assert.equal(await page.evaluate(() => reveals.length), 0, "Fast later downloads stay behind the first card");
-            await page.waitForFunction(() => reveals.length === 6);
-            const timings = await page.evaluate(() => reveals.map(r=>({index:r.index,start:r.animation.startTime+r.animation.effect.getTiming().delay,fill:r.animation.effect.getTiming().fill})));
-            assert.deepEqual(timings.map(r=>r.index), [0,1,2,3,4,5]);
-            for (let i=1;i<timings.length;i++) assert.ok(timings[i].start-timings[i-1].start >= 85);
-            assert.ok(timings.every(r=>r.fill === "backwards"));
-            stable(before, await page.evaluate(() => geometry()));
-            await page.waitForTimeout(1000);
-            await page.evaluate(stage => emit(stage, { status:'done',current:6,total:6 }), stages[0]);
-            await page.evaluate(stage => emit(stage, { current:0,total:6 }), stages[1]);
-            stable(before, await page.evaluate(() => geometry()));
-            assert.equal(await page.evaluate(() => [...widget.previewGrid.children].every((tile,i)=>tile===savedTiles[i] && tile.dataset.src)), true);
+    await page.waitForFunction(()=>window.ready);
+    for(const fixture of fixtures){
+        for(const zoom of [fixture.scale,1]){
+            await page.setViewportSize({width:Math.ceil(fixture.node.size[0]*zoom)+36,height:Math.ceil(fixture.node.size[1]*zoom)+36});
+            await page.evaluate(fixture=>setup(fixture),{...fixture,zoom});
+            assert.deepEqual(await page.evaluate(()=>detachedCounts),[1,1,1]);
+            assert.equal(await page.evaluate(()=>widget.previewGrid===savedGrid&&widget.previewEl.firstChild===savedHead),true);
+            await page.waitForFunction(()=>widget.seedvrAssets&&widget.nativeSeedvrAvailable);
+            const tabAlignment=await page.evaluate(()=>{const head=widget.previewEl.firstChild.getBoundingClientRect(),tabs=widget.previewTabs.getBoundingClientRect();return Math.abs(head.right-tabs.right);});
+            assert.ok(tabAlignment<=1,'Stage tabs must stay in the gallery top-right corner');
+            const actual=await page.evaluate(()=>({size:widget.node.size,width:widget.root.clientWidth,height:widget.root.clientHeight}));
+            assert.deepEqual(actual.size,fixture.node.size);assert.equal(actual.width,fixture.node.size[0]);assert.equal(actual.height,fixture.node.size[1]);
             await page.locator('.vnccs-pipe-preview-head .vnccs-pipe-tab').nth(0).click();
-            stable(before,await page.evaluate(()=>geometry()));
+            const stage=await page.evaluate(()=>widget.stages[0][0]);
+            await page.evaluate(stage=>emit(stage,{current:0,total:6}),stage);
+            await page.waitForFunction(()=>widget.previewGrid.children.length===6&&widget.previewGrid.style.gridTemplateColumns);
+            assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>getComputedStyle(tile).visibility==='hidden')),true,'Empty reserved slots must not draw squares');
+            await page.evaluate(stage=>emit(stage,{current:0,total:6,images:urls('original')}),stage);
+            await page.waitForTimeout(100);assert.equal(await page.evaluate(()=>reveals.length),0);
+            await page.waitForFunction(()=>reveals.length===6);
+            await page.waitForFunction(()=>reveals.every(reveal=>reveal.animation.startTime!==null));
+            const timings=await page.evaluate(()=>reveals.map(reveal=>({index:reveal.index,start:reveal.animation.startTime+reveal.animation.effect.getTiming().delay,fill:reveal.animation.effect.getTiming().fill})));
+            assert.deepEqual(timings.map(reveal=>reveal.index),[0,1,2,3,4,5]);
+            timings.slice(1).forEach((timing,index)=>assert.ok(timing.start-timings[index].start>=85));
+            assert.ok(timings.every(timing=>timing.fill==='backwards'));
+            await page.waitForTimeout(1000);
+            const before=await measure(zoom);
+            const previousSources=await page.evaluate(()=>cards().map(card=>card.src));
+            await page.evaluate(stage=>emit(stage,{status:'running',current:0,total:6,images:[]}),stage);
+            assert.deepEqual(await page.evaluate(()=>cards().map(card=>card.src)),previousSources,'A repeated run must keep the displayed gallery');
+            assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>getComputedStyle(tile).visibility==='visible')),true,'A repeated run must keep card frames visible');
+            assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.processing?[index]:[]),[0]);
+            assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.waiting?[index]:[]),[1,2,3,4,5]);
+            stable(before,await measure(zoom));
+            const cell=await page.evaluate(()=>({cols:getComputedStyle(widget.previewGrid).gridTemplateColumns.split(' ').length,width:parseFloat(getComputedStyle(widget.previewGrid).gridTemplateColumns),height:parseFloat(getComputedStyle(widget.previewGrid).gridTemplateRows)}));
+            const cols=cell.cols;
+            before.forEach((rect,index)=>{
+                const column=index%cols,row=Math.floor(index/cols);
+                assert.ok(Math.abs(rect.x+rect.width/2-(before[0].x+before[0].width/2)-column*(cell.width+8)*zoom)<=1);
+                assert.ok(Math.abs(rect.y+rect.height/2-(before[0].y+before[0].height/2)-row*(cell.height+8)*zoom)<=1,'Mixed image formats remain centered in aligned rows');
+            });
+            await page.evaluate(stage=>{window.savedTiles=[...widget.previewGrid.children];emit(stage,{status:'done',current:6,total:6,message:'SeedVR upscaled batch of 6 image(s)'});},stage);
+            const stageLayout=await page.evaluate(()=>{const chain=widget.chainEl.getBoundingClientRect();return {chain:{top:chain.top,bottom:chain.bottom},stages:[...widget.chainEl.children].map(stage=>{const rect=stage.getBoundingClientRect();return {top:rect.top,bottom:rect.bottom,width:rect.width};})};});
+            assert.ok(stageLayout.stages.every(stage=>stage.top>=stageLayout.chain.top-1&&stage.bottom<=stageLayout.chain.bottom+1),'Completed stages must stay inside the footer');
+            assert.ok(Math.max(...stageLayout.stages.map(stage=>stage.width))-Math.min(...stageLayout.stages.map(stage=>stage.width))<=1,'Completed stages must keep the same width');
+            if(fixture.node.type==='VNCCS_EmotionsGenerator'){
+                await page.evaluate(()=>{widget.data.emotion_pairs.push({...widget.data.emotion_pairs[0],emotion:'Browser next stage'});widget.renderPreview();widget.renderChain();});
+            }
+            const next=await page.evaluate(()=>widget.stages[1][0]);
+            await page.evaluate(stage=>emit(stage,{current:0,total:6}),next);
             await page.locator('.vnccs-pipe-preview-head .vnccs-pipe-tab').nth(1).click();
-            stable(before,await page.evaluate(()=>geometry()));
-            for (let current=0;current<6;current++) {
-                await page.evaluate(({stage,current})=>emit(stage,{current,total:6}), {stage:stages[1],current});
-                const cards = await page.evaluate(() => cards());
-                assert.deepEqual(cards.map((c,i)=>c.processing?i:null).filter(i=>i!==null), [current]);
-                assert.deepEqual(cards.map((c,i)=>c.waiting?i:null).filter(i=>i!==null), Array.from({length:5-current},(_,i)=>i+current+1));
-                stable(before, await page.evaluate(() => geometry()));
+            stable(before,await measure(zoom));
+            assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every((tile,index)=>tile===savedTiles[index]&&tile.dataset.src)),true);
+            for(let current=0;current<6;current++){
+                await page.evaluate(({stage,current})=>emit(stage,{current,total:6}),{stage:next,current});
+                const cards=await page.evaluate(()=>cards());
+                assert.deepEqual(cards.flatMap((card,index)=>card.processing?[index]:[]),[current]);
+                assert.deepEqual(cards.flatMap((card,index)=>card.waiting?[index]:[]),Array.from({length:5-current},(_,index)=>current+index+1));
+                stable(before,await measure(zoom));
             }
-            await page.evaluate(stage => emit(stage, { current:2,total:6,processing_index:1 }), stages[1]);
-            assert.deepEqual((await page.evaluate(() => cards())).map((c,i)=>c.processing?i:null).filter(i=>i!==null), [1]);
-            await page.evaluate(stage => emit(stage, { current:0,total:2,processing_indices:[2,3] }), stages[1]);
-            assert.deepEqual((await page.evaluate(() => cards())).map((c,i)=>c.processing?i:null).filter(i=>i!==null), [2,3]);
-            await page.evaluate(stage => emit(stage, { current:1,total:6,images:Array.from({length:6},(_,i)=>'/image/'+i+'?run='+imageRun+'&v=new&delay='+ (i===0?220:5)) }), stages[1]);
-            await page.waitForFunction(() => [...widget.previewGrid.children].every(tile=>tile.dataset.src?.includes('v=new')));
-            for (let frame=0;frame<8;frame++) { await page.waitForTimeout(40); stable(before, await page.evaluate(() => geometry())); }
-            const overlay = await page.evaluate(() => {
-                const tile=widget.previewGrid.children[1], ring=getComputedStyle(tile,'::after');
-                return {mask:ring.maskComposite,inset:ring.inset,text:tile.textContent,fit:getComputedStyle(tile._previewImage).objectFit,animation:ring.animationName};
-            });
-            assert.ok(overlay.mask.split(',').every(value=>value.trim()==="exclude")); assert.equal(overlay.fit,"contain"); assert.equal(overlay.text,"");
-            assert.equal(overlay.animation,"vnccs-pipe-card-process");
-            if (viewport.width===1100 && mode==='character') await page.screenshot({path:join(output,'processing.png')});
-            await page.evaluate(() => {widget.previewGrid.children[3].focus();widget.previewTabs.scrollLeft=31;window.tabScroll=widget.previewTabs.scrollLeft;});
-            await page.evaluate(stage=>emit(stage,{current:3,total:6}),stages[1]);
-            assert.equal(await page.evaluate(()=>document.activeElement===savedTiles[3] && widget.previewTabs.scrollLeft===tabScroll),true);
-            await page.evaluate(()=>widget.openViewer(3));
-            await page.waitForFunction(()=>widget.viewer?.img?.classList.contains('is-ready'));
-            await page.evaluate(stage=>{widget.regenerateState={activeStage:stage,imageIndex:3,targetStages:[stage]};emit(stage,{current:0,total:1,images:['/image/3?v=target']});},stages[1]);
-            assert.deepEqual((await page.evaluate(() => cards())).map((c,i)=>c.processing?i:null).filter(i=>i!==null), [3]);
-            await page.waitForFunction(()=>widget.previewGrid.children[3].dataset.src.includes('v=target'));
-            assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every((tile,i)=>i===3||tile.dataset.src.includes('v=new'))),true,"Regenerating one image preserves its processed siblings");
+            await page.evaluate(stage=>emit(stage,{current:2,total:6,processing_index:1}),next);
+            assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.processing?[index]:[]),[1]);
+            await page.evaluate(stage=>emit(stage,{current:0,total:2,processing_indices:[2,3]}),next);
+            assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.processing?[index]:[]),[2,3]);
+            await page.evaluate(stage=>emit(stage,{current:1,total:6,images:urls('new')}),next);
+            await page.waitForFunction(()=>[...widget.previewGrid.children].every(tile=>tile.dataset.src?.includes('v=new')));
+            for(let frame=0;frame<8;frame++){await page.waitForTimeout(40);stable(before,await measure(zoom));}
+            const ring=await page.evaluate(()=>({mask:getComputedStyle(widget.previewGrid.children[1],'::after').maskComposite,text:widget.previewGrid.children[1].textContent,fit:getComputedStyle(widget.previewGrid.children[1]._previewImage).objectFit}));
+            assert.ok(ring.mask.split(',').every(value=>value.trim()==='exclude'));assert.equal(ring.text,'');assert.equal(ring.fit,'contain');
+            await page.evaluate(()=>widget.openViewer(3));await page.waitForFunction(()=>widget.viewer?.img?.classList.contains('is-ready'));
+            await page.evaluate(stage=>{widget.regenerateState={activeStage:stage,imageIndex:3,targetStages:[stage]};emit(stage,{current:0,total:1,images:[urls('target',4)[3]]});},next);
             await page.waitForFunction(()=>widget.viewer.img.src.includes('v=target')&&widget.viewer.img.classList.contains('is-ready'));
-            await page.keyboard.press('Escape');
-            assert.equal(await page.evaluate(()=>widget.viewer===null),true);
-            stable(before,await page.evaluate(()=>geometry()));
-            if (!flags.isEmotions) {
-                const toggles=page.locator('.vnccs-pipe-mode-tab');
-                await toggles.filter({hasText:'OFF'}).click();
-                for (let frame=0;frame<7;frame++) {await page.waitForTimeout(50);stable(before,await page.evaluate(()=>geometry()));}
-                await toggles.filter({hasText:'SeedVR'}).click();await page.waitForTimeout(360);stable(before,await page.evaluate(()=>geometry()));
+            assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every((tile,index)=>index===3||tile.dataset.src.includes('v=new'))),true);
+            stable(before,await measure(zoom));await page.keyboard.press('Escape');
+            if(fixture.node.type!=='VNCCS_EmotionsGenerator'){
+                const toggles=page.locator('.vnccs-pipe-mode-tab');await toggles.filter({hasText:'OFF'}).click();
+                for(let frame=0;frame<5;frame++){await page.waitForTimeout(70);stable(before,await measure(zoom));}
+                await toggles.filter({hasText:'SeedVR'}).click();await page.waitForTimeout(360);stable(before,await measure(zoom));
             }
-            await page.evaluate(()=>{widget.regenerateState=null;widget.stageState[widget.selectedPreview].status='done';widget.renderPreview();});
-            await page.waitForTimeout(600);
+            await page.evaluate(()=>{widget.regenerateState=null;widget.stageState[widget.selectedPreview].status='done';widget.renderPreview();widget.renderChain();});
+            await page.waitForTimeout(700);stable(before,await measure(zoom));
             assert.equal(await page.evaluate(()=>widget.previewGrid.querySelectorAll('.is-processing,.is-waiting').length),0);
-            assert.ok(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>tile.querySelectorAll('img').length<=1)));
-            if (viewport.width===1100 && mode==='character') await page.screenshot({path:join(output,'complete.png')});
-            await page.evaluate(()=>{document.querySelector('#host').style.transform='scale(0.65)';});
-            const zoomed=await page.evaluate(()=>geometry());
-            await page.evaluate(stage=>emit(stage,{current:0,total:6}),stages[1]);
-            await page.waitForTimeout(180);stable(zoomed,await page.evaluate(()=>geometry()));
-            await page.evaluate(()=>{document.querySelector('#host').style.transform='none';});
-            await page.evaluate(()=>{
-                window.reflowAnimations=[];
-                const play=widget._ui._playMotion;
-                widget._ui._playMotion=(element,keyframes,duration,finish)=>{
-                    const animation=play(element,keyframes,duration,finish);
-                    if (element.classList.contains('vnccs-pipe-img')&&duration===320) reflowAnimations.push(animation);
-                    return animation;
-                };
-                widget.stageState[widget.selectedPreview].total=8; widget.renderPreview();
-            });
-            await page.waitForFunction(()=>reflowAnimations.length>0);
-            assert.equal(await page.evaluate(()=>savedTiles.every((tile,i)=>tile===widget.previewGrid.children[i])),true);
-            await page.waitForTimeout(400);
-            assert.equal(await page.evaluate(()=>widget.previewGrid.children.length),8);
-            scenarios++;
+            assert.ok(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>tile.querySelectorAll('img').length===1)));
+            const label=fixture.node.type+'-'+(zoom===1?'100pct':'workflow');
+            await page.screenshot({path:join(output,label+'.png')});
+            report.push({workflow:fixture.path,type:fixture.node.type,size:fixture.node.size,zoom,cards:before.map(rect=>({width:rect.width/zoom,height:rect.height/zoom})),screenshot:label+'.png'});
+            // A single result must fit the full gallery while preserving its own aspect ratio.
+            await page.evaluate(()=>{widget.stageState[widget.selectedPreview]={status:'done',total:1,images:urls('single',1)};widget.renderPreview();});
+            await page.waitForFunction(()=>widget.previewGrid.children.length===1&&widget.previewGrid.children[0].dataset.src.includes('v=single'));
+            await page.waitForTimeout(500);await measure(zoom);
+            assert.equal(await page.evaluate(()=>widget.previewEl.querySelectorAll('.vnccs-pipe-grid').length),1);
         }
     }
-    await page.emulateMedia({ reducedMotion: "reduce" });
-    await page.evaluate(()=>{setup({});emit(widget.stages[0][0],{current:0,total:2,images:['/image/0','/image/1']});});
-    await page.waitForFunction(()=>[...widget.previewGrid.children].every(tile=>tile.dataset.src));
-    assert.equal(await page.evaluate(()=>reveals.length),0);
+    const layoutReport=[];
+    for(const fixture of fixtures){
+        const zoom=fixture.scale;
+        await page.setViewportSize({width:Math.ceil(fixture.node.size[0]*zoom)+36,height:Math.ceil(fixture.node.size[1]*zoom)+36});
+        for(const scenario of layoutScenarios){
+            await page.evaluate(fixture=>setup(fixture),{...fixture,zoom});
+            await page.waitForFunction(()=>widget.seedvrAssets&&widget.nativeSeedvrAvailable);
+            await page.locator('.vnccs-pipe-preview-head .vnccs-pipe-tab').nth(0).click();
+            await page.evaluate(({count})=>emit(widget.stages[0][0],{current:0,total:count}),scenario);
+            assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>getComputedStyle(tile).visibility==='hidden')),true);
+            await page.evaluate(({count,width,height})=>emit(widget.stages[0][0],{status:'done',current:count,total:count,images:urls('layout',count,width,height)}),scenario);
+            await page.waitForFunction(count=>widget.previewGrid.children.length===count&&[...widget.previewGrid.children].every(tile=>tile.dataset.src),scenario.count);
+            await page.waitForTimeout(460+(scenario.count-1)*100);
+            await measure(zoom);
+            await assertPackedRows(zoom);
+            const screenshot=fixture.node.type+'-'+String(scenario.count).padStart(2,'0')+'-'+scenario.label+'.png';
+            await page.screenshot({path:join(output,screenshot)});
+            layoutReport.push({type:fixture.node.type,zoom,...scenario,screenshot});
+        }
+    }
+    const fixture=fixtures[0],zoom=fixture.scale;
+    await page.emulateMedia({reducedMotion:'reduce'});
+    await page.evaluate(fixture=>setup(fixture),{...fixture,zoom});await page.locator('.vnccs-pipe-preview-head .vnccs-pipe-tab').nth(0).click();
+    await page.evaluate(()=>emit(widget.stages[0][0],{current:0,total:6,images:urls('reduced')}));
+    await page.waitForFunction(()=>[...widget.previewGrid.children].every(tile=>tile.dataset.src));await page.waitForTimeout(50);
+    assert.equal(await page.evaluate(()=>reveals.length),0);await measure(zoom);
     assert.equal(await page.evaluate(()=>getComputedStyle(widget.previewGrid.children[0],'::after').animationName),'none');
-    assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({scenarios, reducedMotion:true, errors, screenshots:output}));
-} catch (error) {
-    await page.screenshot({path:join(output,'failure.png')});
-    console.error(await page.evaluate(()=>({mode:widget.root.className,geometry:geometry(),gridHeight:widget.previewGrid.clientHeight,emptyDisplay:getComputedStyle(widget.previewEmpty).display,headHeight:widget.previewEl.firstChild.clientHeight,previewHeight:widget.previewEl.clientHeight})));
-    throw error;
-} finally { await browser.close(); server.close(); }
+    const removed=await page.evaluate(()=>{const ui=widget._ui;widget.node.onRemoved();return {disposed:widget._disposed,motions:ui._motionAnimations?.size||0};});
+    assert.equal(removed.disposed,true);assert.equal(removed.motions,0);assert.deepEqual(errors,[]);
+    await writeFile(join(output,'report.json'),JSON.stringify({report,layoutReport,deviceScaleFactor:2,reducedMotion:true,errors},null,2));
+    console.log(JSON.stringify({scenarios:report.length,workflowSizes:fixtures.map(f=>({type:f.node.type,size:f.node.size,scale:f.scale})),errors,output}));
+} catch(error){
+    await page.screenshot({path:join(output,'failure.png')});console.error(await page.evaluate(()=>({type:widget?.node.type,geometry:geometry(),grids:widget?.previewEl.querySelectorAll('.vnccs-pipe-grid').length})));throw error;
+} finally{await browser.close();server.close();}

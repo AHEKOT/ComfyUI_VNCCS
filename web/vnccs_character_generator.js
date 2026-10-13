@@ -1,5 +1,5 @@
 import { app } from "../../scripts/app.js";
-import { createSakuraInteractions, mountSakuraDialogMotion, sakuraRect } from "./sakura_interactions.mjs";
+import { createSakuraInteractions, mountSakuraDialogMotion } from "./sakura_interactions.mjs";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, workflowScope, cacheIdentity, watchConnection } from "./vnccs_transport.js";
 import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, showModal as showCommonModal, registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, resolutionScaleMegapixels, finiteResolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
 
@@ -491,9 +491,10 @@ ${SAKURA_THEME_CSS}
     gap: 8px;
 }
 .vnccs-pipe-preview-label { flex: 0 1 22%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.vnccs-pipe-preview-head .vnccs-pipe-tabs { flex: 1; min-width: 0; flex-wrap: nowrap; overflow-x: auto; justify-content: flex-start; }
+.vnccs-pipe-preview-head .vnccs-pipe-tabs { flex: 0 1 auto; max-width: 78%; margin-left: auto; min-width: 0; flex-wrap: nowrap; overflow-x: auto; justify-content: flex-start; }
 .vnccs-pipe-preview-head .vnccs-pipe-tab { flex-shrink: 0; }
 .vnccs-pipe-grid {
+    position: relative;
     flex: 1;
     min-height: 0;
     min-width: 0;
@@ -501,12 +502,13 @@ ${SAKURA_THEME_CSS}
     gap: 8px;
     align-content: center;
     justify-content: center;
-    overflow: hidden;
+    overflow: auto;
+    scrollbar-gutter: stable;
 }
 .vnccs-pipe-img {
     position: relative;
-    width: 100%;
-    height: 100%;
+    width: 0;
+    height: 0;
     display: block;
     min-height: 0;
     justify-self: center;
@@ -534,7 +536,7 @@ ${SAKURA_THEME_CSS}
 @property --vnccs-process-angle { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
 @keyframes vnccs-pipe-card-wait { 0%, 100% { opacity: 0.16; } 50% { opacity: 0.6; } }
 @keyframes vnccs-pipe-card-process { to { --vnccs-process-angle: 360deg; } }
-.vnccs-pipe-img.is-empty { cursor: default; }
+.vnccs-pipe-img.is-empty { visibility: hidden; pointer-events: none; }
 .vnccs-pipe-img.is-empty:focus-visible { outline-offset: -3px; }
 .vnccs-pipe-img:hover {
     border-color: rgba(255,143,163,0.45);
@@ -738,6 +740,10 @@ ${SAKURA_THEME_CSS}
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 10px;
     padding: 10px 12px 12px;
+    min-width: 0;
+    min-height: 0;
+    box-sizing: border-box;
+    overflow: hidden;
     background: #111119;
     border-top: 1px solid rgba(255,143,163,0.14);
 }
@@ -826,6 +832,10 @@ ${SAKURA_THEME_CSS}
 }
 .vnccs-pipe-stage {
     position: relative;
+    height: 100%;
+    min-height: 0;
+    box-sizing: border-box;
+    overflow: hidden;
     border: 1px solid rgba(255,255,255,0.08);
     background: rgba(255,255,255,0.04);
     border-radius: 8px;
@@ -895,9 +905,15 @@ ${SAKURA_THEME_CSS}
     word-break: break-word;
 }
 .vnccs-pipe-stage-actions {
-    margin-top: auto;
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    margin-top: 0;
     display: flex;
     justify-content: flex-end;
+}
+.vnccs-pipe-chain.is-clone .vnccs-pipe-stage-actions {
+    position: static;
 }
 .vnccs-pipe-regen {
     border: 1px solid rgba(255,143,163,0.36);
@@ -938,10 +954,10 @@ ${SAKURA_THEME_CSS}
     white-space: nowrap;
 }
 .vnccs-pipe-root.is-emotions .vnccs-pipe-tabs {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-width: 0;
     flex-wrap: nowrap;
-    overflow: hidden;
+    overflow-x: auto;
 }
 .vnccs-pipe-root.is-emotions .vnccs-pipe-tab {
     flex: 1 1 0;
@@ -1381,7 +1397,7 @@ class CharacterGeneratorWidget {
                 } else if (hasImages && targetedRegenerate && detail.images?.length === 1 && previousStageState.images?.length > 1) {
                     nextImages = [...previousStageState.images];
                     nextImages[this.regenerateState.imageIndex] = detail.images[0];
-                } else if (hasImages) {
+                } else if (hasImages && !(status === "running" && !detail.images?.length && previousStageState.images?.length)) {
                     nextImages = detail.images;
                 }
                 this.stageState[stage] = {
@@ -2525,7 +2541,11 @@ class CharacterGeneratorWidget {
             this.observeProgressRequest(snapshot.request_id, snapshot.run_id);
             let followedStage = null;
             for (const [key] of this.stages) {
-                this.stageState[key] = snapshot.stages[key] || { status: "waiting", images: null, message: "" };
+                const incoming = snapshot.stages[key] || { status: "waiting", images: null, message: "" };
+                const previousImages = this.stageState[key]?.images;
+                this.stageState[key] = incoming.status === "running" && !incoming.images?.length && previousImages?.length
+                    ? { ...incoming, images: previousImages }
+                    : incoming;
                 if (["running", "done"].includes(this.stageState[key].status)) followedStage = key;
                 this.updateRegenerateProgress(key, this.stageState[key].status, { render: false });
             }
@@ -3445,7 +3465,9 @@ class CharacterGeneratorWidget {
 
     renderPreview() {
         this.syncStagesFromData();
-        if (!this.previewGrid?.isConnected) {
+        if (!this.previewGrid || this.previewGrid.parentNode !== this.previewEl) {
+            this.previewEl.innerHTML = "";
+            this._previewStage = this._previewTabsKey = null;
             const head = document.createElement("div");
             head.className = "vnccs-pipe-preview-head";
             this.previewLabel = document.createElement("div");
@@ -3458,6 +3480,7 @@ class CharacterGeneratorWidget {
             this.previewEmpty.className = "vnccs-pipe-empty";
             this.previewGrid = document.createElement("div");
             this.previewGrid.className = "vnccs-pipe-grid";
+            this.previewGrid.dataset.sakuraScroll = "preview-gallery";
             this.previewEl.append(head, this.previewEmpty, this.previewGrid);
         }
         const name = this.stages.find(([key]) => key === this.selectedPreview)?.[1] || "Results";
@@ -3536,7 +3559,7 @@ class CharacterGeneratorWidget {
         [...this.previewGrid.children].forEach((tile, index) => {
             const source = (targeted && images.length === 1
                 ? (index === activeIndex ? images[0] : tile._previewSource || upstream[index])
-                : images[index] || upstream[index]);
+                : images[index] || upstream[index] || (busy ? tile._previewSource : null));
             if (source) this.updatePreviewImage(tile, source);
             else {
                 if (tile._pendingImage) {
@@ -3629,7 +3652,7 @@ class CharacterGeneratorWidget {
             const delay = Math.max(0, (this._previewRevealAt || 0) - Date.now());
             this._previewRevealAt = Date.now() + delay + 100;
             image.style.opacity = "1";
-            const motion = this._ui?._playMotion(image, [{ opacity: 0, filter: "blur(4px)", transform: "scale(0.985)" }, { opacity: 1, filter: "blur(0px)", transform: "none" }], 420);
+            const motion = this._ui?._playMotion(previous ? image : tile, [{ opacity: 0, filter: "blur(4px)" }, { opacity: 1, filter: "blur(0px)" }], 420);
             motion?.effect?.updateTiming?.({ delay, fill: "backwards" });
             if (previous) {
                 const exit = this._ui?._playMotion(previous, [{ opacity: 1 }, { opacity: 0 }], 280, () => previous.remove());
@@ -3637,6 +3660,7 @@ class CharacterGeneratorWidget {
                 if (!this._ui) previous.remove();
             }
         }
+        if (changed) this.schedulePreviewGridLayout(this.previewGrid);
         if (changed && this.viewer?.open) this.syncViewerImage();
     }
 
@@ -3654,28 +3678,47 @@ class CharacterGeneratorWidget {
         const availableW = Math.max(1, grid.clientWidth);
         const availableH = Math.max(1, grid.clientHeight);
         const count = grid.children.length;
+        const images = [...grid.children].map(tile => tile._previewImage || (tile._pendingImage?._previewReady ? tile._pendingImage : null));
+        const known = images.find(image => image?.naturalWidth > 0 && image?.naturalHeight > 0);
+        const fallback = known ? known.naturalWidth / known.naturalHeight : 1;
+        const aspects = images.map(image => image?.naturalWidth > 0 && image?.naturalHeight > 0 ? image.naturalWidth / image.naturalHeight : fallback);
         let best = null;
         for (let cols = 1; cols <= count; cols++) {
             const rows = Math.ceil(count / cols);
             const cellW = (availableW - gap * (cols - 1)) / cols;
             const cellH = (availableH - gap * (rows - 1)) / rows;
-            const width = Math.min(cellW, cellH * 0.75);
-            const area = width * width / 0.75;
-            if (cellW > 0 && cellH > 0 && (!best || area > best.area)) best = { cols, rows, area };
+            if (cellW <= 0 || cellH <= 0) continue;
+            const sizes = aspects.map(aspect => {
+                const width = Math.min(cellW, cellH * aspect);
+                return { width, height: width / aspect };
+            });
+            const areas = sizes.map(size => size.width * size.height);
+            const score = Math.min(...areas) * 1000000 + areas.reduce((sum, area) => sum + area, 0);
+            if (!best || score > best.score) best = {
+                cols, rows, cellW, cellH, sizes, score,
+                trackW: Math.max(...sizes.map(size => size.width)),
+                trackH: Math.max(...sizes.map(size => size.height)),
+            };
         }
         if (!best) return;
-        const layoutKey = `${availableW}:${availableH}:${count}:${best.cols}`;
-        if (grid._previewLayoutKey === layoutKey) return;
-        grid._previewLayoutKey = layoutKey;
-        grid.style.gridTemplateColumns = `repeat(${best.cols}, minmax(0, 1fr))`;
-        grid.style.gridTemplateRows = `repeat(${best.rows}, minmax(0, 1fr))`;
-        const rects = [...grid.children].map(tile => sakuraRect(this._ui, tile, grid));
+        grid.style.gridTemplateColumns = `repeat(${best.cols}, ${best.trackW}px)`;
+        grid.style.gridTemplateRows = `repeat(${best.rows}, ${best.trackH}px)`;
+        const lastRowCount = count % best.cols || best.cols;
+        const lastRowOffset = lastRowCount < best.cols ? (best.cols - lastRowCount) * (best.trackW + gap) / 2 : 0;
+        [...grid.children].forEach((tile, index) => {
+            const size = tile._previewImage ? best.sizes[index] : { width: 0, height: 0 };
+            tile.style.width = `${size.width}px`;
+            tile.style.height = `${size.height}px`;
+            tile.style.left = `${index >= count - lastRowCount ? lastRowOffset : 0}px`;
+        });
+        // Offsets stay in node coordinates even during reveal motion or canvas zoom.
+        const rects = [...grid.children].map(tile => ({ x: tile.offsetLeft, y: tile.offsetTop, ready: Boolean(tile.dataset.src) }));
         [...grid.children].forEach((tile, index) => {
             const previous = tile._previewRect;
             const next = rects[index];
             tile._previewRect = next;
-            if (previous && ["x", "y", "width", "height"].some(key => Math.abs(previous[key] - next[key]) > 1)) {
-                this._ui?._playMotion(tile, [{ transform: `translate(${previous.x - next.x}px, ${previous.y - next.y}px) scale(${previous.width / next.width}, ${previous.height / next.height})` }, { transform: "none" }], 320);
+            if (previous?.ready && ["x", "y"].some(key => Math.abs(previous[key] - next[key]) > 1)) {
+                this._ui?._playMotion(tile, [{ transform: `translate(${previous.x - next.x}px, ${previous.y - next.y}px)` }, { transform: "none" }], 320);
             }
         });
     }
