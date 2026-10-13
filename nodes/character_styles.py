@@ -19,6 +19,7 @@ USER_CHARACTER_STYLES_PATH = os.path.join(
     "character_template", "character_styles.user.json",
 )
 _STYLE_LOCK = threading.RLock()
+_MAX_LIBRARY_BYTES = 18000000
 _TEXT_LIMITS = {"label": 100, "description": 240, "reference": 500, "prompt": 16000}
 STYLE_PREVIEWS_DIR = os.path.join(os.path.dirname(USER_CHARACTER_STYLES_PATH), "style_previews")
 
@@ -105,7 +106,7 @@ def load_user_styles(path=None):
     with _STYLE_LOCK:
         if not os.path.exists(path):
             return []
-        if os.path.getsize(path) > 18000000:
+        if os.path.getsize(path) > _MAX_LIBRARY_BYTES:
             raise ValueError("User style library is too large")
         with open(path, encoding="utf-8") as source:
             library = json.load(source)
@@ -141,6 +142,8 @@ def save_user_style(value, path=None):
             with open(temporary, "w", encoding="utf-8") as output:
                 json.dump({"version": 1, "styles": styles}, output, ensure_ascii=False, indent=2)
                 output.write("\n")
+            if os.path.getsize(temporary) > _MAX_LIBRARY_BYTES:
+                raise ValueError("User style library is too large; the previous library has been preserved")
     return style
 
 

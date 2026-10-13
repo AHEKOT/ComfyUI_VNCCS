@@ -97,6 +97,15 @@ _FOLDER_MAP = {
 }
 _MODEL_FILE_EXTENSIONS = {".safetensors", ".gguf", ".ckpt", ".pt", ".pth", ".bin"}
 _MIN_MODEL_FILE_SIZE = 1024
+_SAFETENSORS_MAX_INDEX = (1 << 64) - 1
+_SAFETENSORS_DTYPE_BITS = {
+    "F4": 4, "F6_E2M3": 6, "F6_E3M2": 6,
+    "BOOL": 8, "U8": 8, "I8": 8, "F8_E5M2": 8, "F8_E4M3": 8,
+    "F8_E8M0": 8, "F8_E4M3FNUZ": 8, "F8_E5M2FNUZ": 8,
+    "I16": 16, "U16": 16, "F16": 16, "BF16": 16,
+    "I32": 32, "U32": 32, "F32": 32,
+    "I64": 64, "U64": 64, "F64": 64, "C64": 64,
+}
 _DEFAULT_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024 * 1024
 _MANAGER_CONFIG_MAX_BYTES = 1024 * 1024
 _MANAGER_INSTALL_SECURITY_LEVELS = {"weak", "normal", "normal-"}
@@ -547,9 +556,58 @@ def _validate_downloaded_model_file(path, expected_name="model"):
             raise ValueError(f"{expected_name} has an invalid safetensors header")
         with open(path, "rb") as handle:
             handle.seek(8)
-            first_header_byte = handle.read(1)
-        if first_header_byte != b"{":
+            encoded_header = handle.read(header_len)
+        if not encoded_header.startswith(b"{"):
             raise ValueError(f"{expected_name} has an invalid safetensors JSON header")
+
+        def unique_object(pairs):
+            result = dict(pairs)
+            if len(result) != len(pairs):
+                raise ValueError(f"{expected_name} has duplicate safetensors header keys")
+            return result
+
+        def invalid_constant(value):
+            raise ValueError(f"non-finite JSON value '{value}'")
+
+        try:
+            header = json.loads(encoded_header, object_pairs_hook=unique_object, parse_constant=invalid_constant)
+        except (ValueError, UnicodeError) as error:
+            raise ValueError(f"{expected_name} has an invalid safetensors JSON header: {error}") from error
+        if not isinstance(header, dict):
+            raise ValueError(f"{expected_name} has an invalid safetensors header")
+        ranges = []
+        for name, tensor in header.items():
+            if name == "__metadata__":
+                if not isinstance(tensor, dict) or any(not isinstance(value, str) for value in tensor.values()):
+                    raise ValueError(f"{expected_name} has invalid safetensors metadata")
+                continue
+            if not isinstance(tensor, dict):
+                raise ValueError(f"{expected_name} has invalid tensor metadata for '{name}'")
+            dtype, shape, offsets = tensor.get("dtype"), tensor.get("shape"), tensor.get("data_offsets")
+            if (not isinstance(dtype, str) or dtype not in _SAFETENSORS_DTYPE_BITS
+                    or not isinstance(shape, list) or any(type(dimension) is not int
+                        or not 0 <= dimension <= _SAFETENSORS_MAX_INDEX for dimension in shape)
+                    or not isinstance(offsets, list) or len(offsets) != 2
+                    or any(type(offset) is not int or not 0 <= offset <= _SAFETENSORS_MAX_INDEX for offset in offsets)):
+                raise ValueError(f"{expected_name} has invalid tensor metadata for '{name}'")
+            elements = 1
+            for dimension in shape:
+                elements *= dimension
+                if elements > _SAFETENSORS_MAX_INDEX:
+                    raise ValueError(f"{expected_name} has an overflowing tensor shape for '{name}'")
+            bits = elements * _SAFETENSORS_DTYPE_BITS[dtype]
+            start, end = offsets
+            if bits > _SAFETENSORS_MAX_INDEX or bits % 8 or end - start != bits // 8:
+                raise ValueError(f"{expected_name} has an invalid tensor size for '{name}'")
+            ranges.append((start, end))
+        # Every payload byte belongs to one tensor; gaps, overlaps and truncation are invalid.
+        covered = 0
+        for start, end in sorted(ranges):
+            if start != covered:
+                raise ValueError(f"{expected_name} has invalid safetensors tensor offsets")
+            covered = end
+        if covered != size - 8 - header_len:
+            raise ValueError(f"{expected_name} has incomplete or unindexed safetensors tensor data")
         return True
 
     if ext in {".ckpt", ".pt", ".pth", ".bin"}:

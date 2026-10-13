@@ -92,6 +92,119 @@ def test_creator_workflow_generated_cache_retains_input_ownership(monkeypatch, t
     assert result.numpy()[0, 0, 0, 2] == 1.0
 
 
+def test_replaced_checkpoint_invalidates_the_saved_preview(monkeypatch, tmp_path):
+    creator, calls = mock_creator_generation(monkeypatch, tmp_path)
+    checkpoint = tmp_path / "model.safetensors"
+    checkpoint.write_bytes(b"old model")
+    monkeypatch.setattr(creator.folder_paths, "get_folder_paths", lambda category: [str(tmp_path)])
+    state = {"character": "Alice", "character_info": {"name": "Alice", "hair": "red hair"},
+             "gen_settings": {"ckpt_name": checkpoint.name, "seed": 7},
+             "preview_valid": True, "preview_source": "gen"}
+    assert creator._generate_preview_response(dict(state)).status == 200
+    creator.CharacterCreatorV2().process(json.dumps(state))
+    assert calls == ["red hair"]
+    checkpoint.write_bytes(b"replacement model")
+    creator.CharacterCreatorV2().process(json.dumps(state))
+    assert calls == ["red hair", "red hair"]
+
+
+@pytest.mark.parametrize("mode, replaced", [
+    ("illustrious", "model"), ("illustrious", "lora"),
+    ("anima", "model"), ("anima", "clip"), ("anima", "vae"), ("anima", "lora"),
+    ("qi2", "model"), ("qi2", "clip"), ("qi2", "vae"), ("qi2", "lora"),
+])
+def test_creator_cache_follows_replaced_assets_and_adapters(monkeypatch, tmp_path, mode, replaced):
+    creator = load_creator_storage(monkeypatch)
+    monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path / "characters"))
+    categories = {"model": "checkpoints" if mode == "illustrious" else "diffusion_models",
+                  "clip": "text_encoders", "vae": "vae", "lora": "loras"}
+    paths = {}
+    for name, category in categories.items():
+        path = tmp_path / category / (name + ".safetensors")
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(name.encode())
+        paths[name] = path
+    monkeypatch.setattr(creator.folder_paths, "get_folder_paths", lambda category: [str(tmp_path / category)])
+    settings = {"generation_mode": mode, "ckpt_name": paths["model"].name,
+                "diffusion_model_name": paths["model"].name, "clip_name": paths["clip"].name,
+                "vae_name": paths["vae"].name, "qi2_overhaul_strength": 0, "seed": 7,
+                "lora_stack": [{"name": paths["lora"].name, "strength": 1}]}
+
+    class Asset:
+        def __init__(self, contents):
+            self.contents = contents
+
+        def clone(self):
+            return Asset(self.contents)
+
+    loads = []
+    def load_assets(settings):
+        loads.append(True)
+        return None, *(Asset(paths[name].read_bytes()) for name in ("model", "clip", "vae"))
+
+    monkeypatch.setattr(creator, "load_generation_assets", load_assets)
+    monkeypatch.setattr(creator, "load_generation_clip", lambda settings: Asset(paths["clip"].read_bytes()))
+    monkeypatch.setitem(creator.PREVIEW_CACHE, "asset_key", None)
+    monkeypatch.setitem(creator.PREVIEW_CACHE, "asset_obj", None)
+    info = {"name": "Alice", "hair": "red hair"}
+    state = json.dumps({"character": "Alice", "character_info": info, "gen_settings": settings})
+    creator.acquire_preview_assets(settings)
+    previous_key = creator._preview_cache_key(info, settings)
+    previous_signature = creator.CharacterCreatorV2.IS_CHANGED(state)
+    paths[replaced].write_bytes(b"new weights")
+    assets = creator.acquire_preview_assets(settings)
+    assert len(loads) == (1 if replaced == "lora" else 2)
+    if replaced != "lora":
+        assert assets[("model", "clip", "vae").index(replaced)].contents == b"new weights"
+    assert creator._preview_cache_key(info, settings) != previous_key
+    assert creator.CharacterCreatorV2.IS_CHANGED(state) != previous_signature
+
+
+def test_preview_adapter_cache_releases_unused_weights_and_reloads_changed_file(monkeypatch, tmp_path):
+    import gc
+    import weakref
+
+    creator, _calls = mock_creator_generation(monkeypatch, tmp_path)
+    control = creator.control_center
+    control._cached_lora_file.cache_clear()
+    paths = [tmp_path / f"adapter-{index}.safetensors" for index in range(8)]
+    for path in paths:
+        path.write_bytes(b"adapter weights")
+    monkeypatch.setattr(creator, "get_lora_full_path", lambda name: str(tmp_path / name))
+    references, loaded = [], []
+
+    class Weights:
+        pass
+
+    def load(path, **kwargs):
+        assert kwargs == {"safe_load": True, "return_metadata": True}
+        weights = Weights()
+        references.append(weakref.ref(weights))
+        loaded.append(path)
+        return {"weights": weights}, {}
+
+    monkeypatch.setattr(creator.comfy.utils, "load_torch_file", load, raising=False)
+    monkeypatch.setattr(creator.comfy.sd, "load_lora_for_models", lambda model, clip, *args: (model, clip), raising=False)
+    def preview(path):
+        return creator._generate_preview_response({"character": "Alice", "character_info": {"name": "Alice", "hair": "red hair"},
+            "gen_settings": {"ckpt_name": "unused", "dmd_lora_name": "None", "age_lora_name": "None",
+                             "lora_stack": [{"name": path.name, "strength": 1}]}})
+
+    try:
+        for path in paths:
+            assert preview(path).status == 200
+        gc.collect()
+        assert all(reference() is None for reference in references[:4])
+        assert all(reference() is not None for reference in references[4:])
+        assert preview(paths[-1]).status == 200
+        assert len(loaded) == 8
+        paths[-1].write_bytes(b"replacement weights")
+        assert preview(paths[-1]).status == 200
+        assert len(loaded) == 9
+    finally:
+        control._cached_lora_file.cache_clear()
+
+
 def test_creator_ui_seed_reaches_preview_sampler_cache_and_workflow_config_once(monkeypatch, tmp_path):
     creator, calls = mock_creator_generation(monkeypatch, tmp_path)
     sampled = []

@@ -23,8 +23,8 @@ def test_real_preview_path_samples_a_square_at_selected_scale_and_writes_only_we
     monkeypatch.setattr(creator, "save_style_preview", library.save_style_preview)
     monkeypatch.setattr(creator, "acquire_preview_assets", lambda settings: ("model", "clip", "vae"))
     monkeypatch.setattr(creator, "get_lora_full_path", lambda name: "/test/lora.safetensors")
-    monkeypatch.setitem(creator.PREVIEW_CACHE, "loras", {})
-    monkeypatch.setattr(creator.comfy.utils, "load_torch_file", lambda *a, **kw: {"weight": 1}, raising=False)
+    monkeypatch.setattr(creator.comfy.utils, "load_torch_file", lambda *a, **kw:
+        ({"weight": 1}, {}) if kw.get("return_metadata") else {"weight": 1}, raising=False)
     adapters = []
     monkeypatch.setattr(creator.comfy.sd, "load_lora_for_models", lambda m, c, weights, strength, clip_strength: adapters.append((strength, clip_strength)) or (m, c), raising=False)
     monkeypatch.setattr(creator, "apply_creator_overhaul", lambda model, clip, *a: (model, clip))

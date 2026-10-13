@@ -113,6 +113,24 @@ def test_corrupt_library_is_preserved_instead_of_reset(tmp_path):
     assert path.read_text() == "{broken"
 
 
+@pytest.mark.parametrize("edit", [False, True])
+def test_utf8_size_limit_rejects_save_before_replacing_readable_library(tmp_path, monkeypatch, edit):
+    monkeypatch.setattr(library, "_MAX_LIBRARY_BYTES", 2000)
+    path = tmp_path / "character_styles.user.json"
+    kept = library.save_user_style({"label": "Kept", "prompt": "Kept"}, path)
+    original = path.read_bytes()
+    payload = {"label": "Large", "prompt": "界" * 700}
+    if edit:
+        payload["id"] = kept["id"]
+    with pytest.raises(ValueError, match="previous library has been preserved"):
+        library.save_user_style(payload, path)
+    assert path.read_bytes() == original
+    assert library.load_user_styles(path) == [kept]
+    assert not list(tmp_path.glob("*.tmp"))
+    saved = library.save_user_style({"label": "Small", "prompt": "Short prompt"}, path)
+    assert library.load_user_styles(path) == [kept, saved]
+
+
 def test_concurrent_creators_do_not_lose_styles(tmp_path):
     path = tmp_path / "character_styles.user.json"
     with ThreadPoolExecutor(max_workers=4) as pool:

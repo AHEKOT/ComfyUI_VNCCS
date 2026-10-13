@@ -33,7 +33,7 @@ from ..utils import (
     privileged_route, file_fingerprint, config_path,
     character_storage_lock,
 )
-from .qwen_vl import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
+from .qwen_vl import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME
 from .runtime_cleanup import inference_stage
 from .generator_context import serialized_generator
 from .qwen_vl import configure_qwen_text_chat, parse_wizard_json, _validate_gguf_file
@@ -140,7 +140,6 @@ def get_random_pose_preview(character_name):
 PREVIEW_CACHE = {
     "asset_key": None,
     "asset_obj": None, # (model, clip, vae)
-    "loras": {}       # name -> tensor_dict
 }
 
 ILLUSTRIOUS_DEFAULTS = {
@@ -549,10 +548,6 @@ def get_lora_full_path(lora_name):
     return get_full_path_agnostic(folder_paths, "loras", lora_name, require_exists=True)
 
 
-def _find_character_wizard_model():
-    return _find_qwen_vl_model()
-
-
 def _ensure_character_wizard_model():
     model_path, _mmproj_path = _ensure_qwen_vl_assets(allow_download=False, require_mmproj=False)
     return model_path
@@ -783,6 +778,13 @@ def is_creator_overhaul_lora(name):
     return re.fullmatch(r"VNCCS_QI2_AnimeOverhaulV\d+(?:[._]\d+)*\.safetensors", filename, re.IGNORECASE) is not None
 
 
+def _creator_overhaul_lora_path():
+    config = control_center._get_cc_config("MIUProject/VNCCS_v3.0")
+    entry = control_center._find_entry(config.get("lora", []), "VNCCS Overhaul QI2")
+    lora_path, installed = control_center._find_model_on_disk(entry.get("local_path", "")) if entry else (None, False)
+    return lora_path if installed else get_lora_full_path(QI2_OVERHAUL_LORA_NAME)
+
+
 def apply_creator_overhaul(model, clip, gen_settings, apply_lora):
     """Apply the Creator-only diffusion adapter, independently of Viggle Turbo."""
     if str(gen_settings.get("generation_mode", "")).lower() != "qi2":
@@ -790,11 +792,7 @@ def apply_creator_overhaul(model, clip, gen_settings, apply_lora):
     strength = normalize_overhaul_strength(gen_settings.get("qi2_overhaul_strength", 0.5))
     if strength == 0:
         return model, clip
-    config = control_center._get_cc_config("MIUProject/VNCCS_v3.0")
-    entry = control_center._find_entry(config.get("lora", []), "VNCCS Overhaul QI2")
-    lora_path, installed = control_center._find_model_on_disk(entry.get("local_path", "")) if entry else (None, False)
-    if not installed:
-        lora_path = get_lora_full_path(QI2_OVERHAUL_LORA_NAME)
+    lora_path = _creator_overhaul_lora_path()
     if not lora_path:
         raise ValueError(
             "Qwen Image2.1 Character Overhaul is not installed. Download its card "
@@ -862,6 +860,36 @@ def normalize_gen_settings(gen_settings):
     return merged
 
 
+def _generation_asset_signatures(settings):
+    mode = settings.get("generation_mode", "illustrious")
+    if mode in {"anima", "qi2"}:
+        fields = (("diffusion_models", "diffusion_model_name"),
+                  ("text_encoders", "clip_name"), ("vae", "vae_name"))
+    else:
+        fields = (("checkpoints", "ckpt_name"),)
+    return tuple((category, settings.get(field), control_center._model_file_signature(
+        get_full_path_agnostic(folder_paths, category, settings.get(field), require_exists=True) or ""
+    )) for category, field in fields)
+
+
+def _generation_file_signatures(settings):
+    mode = settings.get("generation_mode", "illustrious")
+    lora_names = [settings.get("dmd_lora_name"), settings.get("age_lora_name"),
+                  *(item.get("name") for item in settings.get("lora_stack", []))]
+    paths = [get_lora_full_path(name) for name in lora_names if name and name != "None"]
+    if mode == "qi2":
+        if normalize_overhaul_strength(settings.get("qi2_overhaul_strength", .5)):
+            paths.append(_creator_overhaul_lora_path())
+        if settings.get("turbo_enabled"):
+            config = control_center._get_cc_config("MIUProject/VNCCS_v3.0")
+            paths.extend(control_center._find_model_on_disk(entry.get("local_path", ""))[0]
+                         for entry in config.get("lora", [])
+                         if control_center._entry_kind(entry) == "qi2"
+                         and control_center._entry_type(entry) == "turbolora")
+    return {"assets": _generation_asset_signatures(settings),
+            "loras": tuple(control_center._model_file_signature(path or "") for path in paths)}
+
+
 def _preview_cache_key(info, gen_settings):
     settings = normalize_gen_settings(gen_settings)
     settings["seed"] = gen_settings.get("seed", settings["seed"])
@@ -872,6 +900,7 @@ def _preview_cache_key(info, gen_settings):
         "gen_settings": settings,
         "prompts": CharacterCreatorV2.construct_creator_prompt(info, settings["generation_mode"]),
         "style": _character_style_prompt(info),
+        "files": _generation_file_signatures(settings),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
@@ -1078,15 +1107,8 @@ def load_generation_assets(gen_settings):
 def acquire_preview_assets(gen_settings):
     """Return request-local preview assets while retaining only reusable state."""
     generation_mode = str(gen_settings.get("generation_mode", "illustrious") or "illustrious").lower()
-    if generation_mode in {"anima", "qi2"}:
-        asset_key = (
-            generation_mode,
-            gen_settings.get("diffusion_model_name", ""),
-            gen_settings.get("clip_name", ""),
-            gen_settings.get("vae_name", ""),
-        )
-    else:
-        asset_key = (generation_mode, gen_settings.get("ckpt_name", ""))
+    asset_key = (generation_mode, gen_settings.get("clip_type"),
+                 _generation_asset_signatures({**gen_settings, "generation_mode": generation_mode}))
 
     if PREVIEW_CACHE["asset_key"] == asset_key and PREVIEW_CACHE["asset_obj"]:
         log_stage("loading_models", component="Creator", cache="hit")
@@ -2088,19 +2110,11 @@ Example:
                 except ValueError as exc:
                     return web.Response(status=400, text=str(exc))
 
-                # Helper for Cached LoRA
                 def apply_lora_cached(m, c, l_name, l_strength, clip_strength=None):
                     if not l_name or l_name == "None": return m, c
-                    
-                    lora_dict = PREVIEW_CACHE["loras"].get(l_name)
-                    if not lora_dict:
-                        l_path = get_lora_full_path(l_name)
-                        if l_path:
-                            lora_dict = comfy.utils.load_torch_file(l_path, safe_load=True)
-                            PREVIEW_CACHE["loras"][l_name] = lora_dict
-                            log_event("lora_cache", component="Creator", level="debug", model=l_name)
-                    
-                    if lora_dict:
+                    l_path = get_lora_full_path(l_name)
+                    if l_path:
+                        lora_dict, _metadata = control_center._load_lora_file(l_path)
                         return comfy.sd.load_lora_for_models(m, c, lora_dict, l_strength, l_strength if clip_strength is None else clip_strength)
                     return m, c
 
@@ -2474,7 +2488,8 @@ class CharacterCreatorV2:
         root = character_dir(character)
         paths = [config_path(character), safe_join_under(root, "cache", "preview.png")]
         paths.extend(list_pose_preview_files(character))
-        return json.dumps([file_fingerprint(path) for path in paths])
+        return json.dumps([[file_fingerprint(path) for path in paths],
+                           _generation_file_signatures(normalize_gen_settings(data.get("gen_settings", {})))])
 
     @logged_operation("Creator", "workflow")
     @serialized_generator
@@ -2496,7 +2511,6 @@ class CharacterCreatorV2:
             del PREVIEW_CACHE["asset_obj"]
             PREVIEW_CACHE["asset_obj"] = None
         PREVIEW_CACHE["asset_key"] = None
-        PREVIEW_CACHE["loras"].clear()
 
         # Extract values
         info = data.get("character_info", {})

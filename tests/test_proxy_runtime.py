@@ -380,10 +380,11 @@ def generator_module(monkeypatch):
     def inference_stage():
         yield
     from threading import RLock
+    from nodes.vnccs_control_center import _model_file_signature
     module(prefix + 'runtime_cleanup', inference_stage=inference_stage, inference_lock=RLock())
     module(prefix + 'vnccs_control_center', _apply_lora_standard=lambda *a: None,
            _find_model_on_disk=lambda *a: None, _rel_within_folder=lambda *a: None,
-           _entry_kind=lambda entry: '')
+           _entry_kind=lambda entry: '', _model_file_signature=_model_file_signature)
     module(prefix + 'qi2_viggle', apply_viggle_turbo_lora=lambda *a: None, viggle_turbo_sigmas=lambda *a: None)
     module('cv2')
     spec = importlib.util.spec_from_file_location(prefix + 'vnccs_utils', root / 'nodes/vnccs_utils.py')
@@ -676,6 +677,55 @@ def test_costume_delete_route_reports_cleanup_warning_as_success(creative_module
     )))
     assert response.status == 200
     assert response.data == {'status': 'ok', 'warning': 'Cleanup pending'}
+
+
+def test_costume_delete_waits_for_generation_then_forgets_regeneration(creative_modules):
+    from concurrent.futures import ThreadPoolExecutor
+    from pathlib import Path
+    import sys
+    import threading
+
+    m = creative_modules
+    context = sys.modules[m.clothes.__package__ + '.generator_context']
+    m.utils.save_costume_info('Alice', 'Dress', {'top': 'silk'})
+    m.utils.ensure_costume_structure('Alice', 'Dress')
+    root = Path(m.utils.character_dir('Alice'))
+    scope = 'costume-delete:5'
+    started, release = threading.Event(), threading.Event()
+
+    def generate():
+        with context.generator_execution_lock('5', scope):
+            started.set()
+            assert release.wait(3)
+            with m.utils.staged_image_batch(str(root / 'Sprites' / 'Dress' / 'Neutral'), lock_root=str(root)) as stage:
+                Path(stage, 'sprite_pose_0001.png').write_bytes(b'finished sprite')
+            context._remember_generator_context('5', 'VNCCS_ClothesGenerator', str(root / 'cache'), object(), scope)
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            generation = loop.run_in_executor(worker, generate)
+            deletion = None
+            try:
+                assert started.wait(2)
+                async def body():
+                    return {'character': 'Alice', 'costume': 'Dress'}
+                deletion = asyncio.create_task(m.clothes.vnccs_delete_costume(SimpleNamespace(
+                    json=body, headers={'X-VNCCS-CSRF': '1'})))
+                await asyncio.sleep(.05)
+                assert not deletion.done(), 'Deletion must wait for the running generator'
+                assert 'Dress' in m.utils.load_config('Alice', strict=True)['costumes']
+            finally:
+                release.set()
+                await generation
+            assert deletion is not None
+            result = await deletion
+            assert result.status == 200
+
+    asyncio.run(scenario())
+    assert 'Dress' not in m.utils.list_costumes('Alice')
+    assert all(not (root / group / 'Dress').exists() for group in m.utils.MAIN_DIRS)
+    assert context._get_generator_context('5', scope) is None
 
 
 @pytest.mark.parametrize('failure', ['image', 'metadata'])

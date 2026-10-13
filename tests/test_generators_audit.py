@@ -1,6 +1,7 @@
 """Generator boundary regressions without model downloads or GPU sampling."""
 
 from types import SimpleNamespace
+from pathlib import Path
 import json
 
 import pytest
@@ -222,6 +223,78 @@ def test_emotion_background_regeneration_preserves_the_generated_face_crop(tmp_p
     assert face.read_bytes() != before
     with Image.open(face) as opened:
         assert opened.size == (4, 4)
+
+
+def test_normal_emotion_runs_archive_every_replaced_sprite_and_face(tmp_path, monkeypatch):
+    from PIL import Image
+
+    output = tmp_path / "output"
+    root = output / "VNCCS" / "Characters" / "Alice"
+    monkeypatch.setattr(generator.folder_paths, "get_output_directory", lambda: str(output))
+    node = generator.VNCCS_EmotionsGenerator()
+    monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(node, "_run_emotion_bg_remove", lambda images, *args, **kwargs: images)
+    tasks = [{"character": "Alice", "emotion_prompt": "smile", "sprite_index": index,
+              "sprite_output_path": str(root / "Sprites" / "Coat" / "smile" / "sprite_smile_")}
+             for index in (1, 3)]
+    state = {"character_name": "Alice", "emotion_pairs": [{"costume": "Coat", "emotion": "smile"}]}
+    images = torch.ones(2, 8, 8, 3)
+    snapshots = {}
+    for run, value in enumerate((.2, .7, .9)):
+        monkeypatch.setattr(node, "_run_emotion_generation_one", lambda image, *args, **kwargs:
+                            (torch.full_like(image, value), torch.full((1, 4, 4, 3), value), torch.ones(1, 8, 8)))
+        node.process(images, object(), tasks, widget_data=json.dumps(state), unique_id="versions")
+        current = {path.relative_to(root): path.read_bytes() for group in ("Sprites", "Faces")
+                   for path in (root / group / "Coat" / "smile").glob("*.png")}
+        assert len(current) == 4
+        for relative, contents in current.items():
+            with Image.open(root / relative) as stored:
+                assert stored.getpixel((0, 0))[:3] == (round(value * 255),) * 3
+            for previous in range(run):
+                assert (root / relative.parent / f"V{previous + 1}" / relative.name).read_bytes() == snapshots[previous][relative]
+        snapshots[run] = current
+    state.update(regenerate_from="emotion_0001", regenerate_index=0)
+    node.process(images, object(), tasks, widget_data=json.dumps(state), unique_id="versions")
+    assert not list(root.rglob("V3"))
+
+
+@pytest.mark.parametrize("failure", ["encode", "publish", "archive"])
+def test_failed_emotion_replacement_preserves_current_output(tmp_path, monkeypatch, failure):
+    from PIL import Image
+
+    root = tmp_path / "VNCCS" / "Characters" / "Alice"
+    monkeypatch.setattr(generator.folder_paths, "get_output_directory", lambda: str(tmp_path))
+    node = generator.VNCCS_EmotionsGenerator()
+    prefix = str(root / "Sprites" / "Coat" / "smile" / "sprite_smile_")
+    old = torch.full((1, 8, 8, 3), .2)
+    path = node._save_rgba_image(old, None, prefix, 1, "Alice")
+    original = Path(path).read_bytes()
+    def denied(*args, **kwargs):
+        raise OSError("Disk failure")
+    if failure == "encode":
+        monkeypatch.setattr(Image.Image, "save", denied)
+    elif failure == "publish":
+        monkeypatch.setattr(generator.os, "replace", denied)
+    else:
+        monkeypatch.setattr(generator, "_link_or_copy", denied)
+    with pytest.raises(OSError, match="Disk failure"):
+        node._save_rgba_image(torch.ones_like(old), None, prefix, 1, "Alice", version_dirs={})
+    assert Path(path).read_bytes() == original
+    assert not list(root.rglob("*.tmp"))
+
+
+def test_repeated_emotion_task_keeps_the_original_run_snapshot(tmp_path, monkeypatch):
+    root = tmp_path / "VNCCS" / "Characters" / "Alice"
+    monkeypatch.setattr(generator.folder_paths, "get_output_directory", lambda: str(tmp_path))
+    node = generator.VNCCS_EmotionsGenerator()
+    prefix = str(root / "Sprites" / "Coat" / "smile" / "sprite_smile_")
+    path = Path(node._save_rgba_image(torch.zeros(1, 8, 8, 3), None, prefix, 1, "Alice"))
+    original = path.read_bytes()
+    version_dirs = {}
+    for value in (.2, .7):
+        node._save_rgba_image(torch.full((1, 8, 8, 3), value), None, prefix, 1, "Alice", version_dirs=version_dirs)
+    assert (path.parent / "V1" / path.name).read_bytes() == original
+    assert not (path.parent / "V2").exists()
 
 
 @pytest.mark.parametrize("seed, expected", [

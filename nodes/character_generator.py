@@ -74,6 +74,8 @@ from ..utils import (
     safe_join_under,
     staged_image_batch,
     privileged_route,
+    character_storage_lock,
+    _link_or_copy,
 )
 
 
@@ -3959,7 +3961,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             labels.append((f"emotion_{index:04d}", label[:64]))
         return labels
 
-    def _save_rgba_image(self, image, mask, prefix, index, character_name="", root_name="Sprites"):
+    def _save_rgba_image(self, image, mask, prefix, index, character_name="", root_name="Sprites", *, version_dirs=None):
         prefix = _safe_emotion_output_prefix(prefix, character_name, root_name=root_name)
         if not prefix:
             return ""
@@ -3987,8 +3989,18 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             if alpha.shape != rgb_arr.shape[:2]:
                 alpha = np.array(Image.fromarray(alpha).resize((rgb_arr.shape[1], rgb_arr.shape[0]), Image.Resampling.LANCZOS))
 
-        with atomic_output_path(path) as temporary:
-            Image.fromarray(np.dstack([rgb_arr[..., :3], alpha]), mode="RGBA").save(temporary, format="PNG")
+        with character_storage_lock(_safe_character_root(character_name)):
+            with atomic_output_path(path) as temporary:
+                Image.fromarray(np.dstack([rgb_arr[..., :3], alpha]), mode="RGBA").save(temporary, format="PNG")
+                if version_dirs is not None and os.path.isfile(path):
+                    version_dir = version_dirs.get(directory)
+                    if version_dir is None:
+                        version_dir = self._version_dir(directory)
+                        os.makedirs(version_dir, exist_ok=True)
+                        version_dirs[directory] = version_dir
+                    previous = os.path.join(version_dir, filename)
+                    if not os.path.exists(previous):
+                        _link_or_copy(path, previous)
         return path
 
     def _run_emotion_generation_one(
@@ -4305,7 +4317,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
 
             results = []
             faces = []
-            face_version_dirs = {}
+            output_version_dirs = {} if not regenerate_from else None
             completed_tasks = 0
             for group_index, group in enumerate(groups):
                 stage_key, stage_label = stage_labels[group_index]
@@ -4497,6 +4509,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                                 sprite_paths[record["index"]],
                                 record["save_index"],
                                 character_name,
+                                version_dirs=output_version_dirs,
                             )
                             face_prefix = self._face_prefix_from_sprite_prefix(sprite_paths[record["index"]], character_name)
                             face_prefix = _safe_emotion_output_prefix(
@@ -4505,19 +4518,6 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                                 root_name="Faces",
                             )
                             if face_prefix and record["face_crop"] is not None:
-                                face_dir = os.path.dirname(face_prefix)
-                                face_dir_key = os.path.normcase(os.path.abspath(face_dir))
-                                face_filename = (
-                                    f"{os.path.basename(face_prefix)}{int(record['save_index']):04d}.png"
-                                )
-                                existing_face = os.path.join(face_dir, face_filename)
-                                if not regenerate_from and os.path.isfile(existing_face):
-                                    version_dir = face_version_dirs.get(face_dir_key)
-                                    if not version_dir:
-                                        version_dir = self._version_dir(face_dir)
-                                        os.makedirs(version_dir, exist_ok=True)
-                                        face_version_dirs[face_dir_key] = version_dir
-                                    os.replace(existing_face, os.path.join(version_dir, face_filename))
                                 self._save_rgba_image(
                                     record["face_crop"],
                                     None,
@@ -4525,6 +4525,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                                     record["save_index"],
                                     character_name,
                                     root_name="Faces",
+                                    version_dirs=output_version_dirs,
                                 )
                         preview = self._emotion_preview_tensor(final_result)
                         if preview is not None:

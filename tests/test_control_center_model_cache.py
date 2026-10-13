@@ -188,7 +188,8 @@ def test_simultaneous_loads_reuse_one_asset_and_failures_are_retryable(monkeypat
 def test_lora_weights_reuse_and_file_replacement(monkeypatch, tmp_path):
     cc._cached_lora_file.cache_clear()
     path = tmp_path / "adapter.safetensors"
-    contents = (2).to_bytes(8, "little") + b"{}" + b"\0" * 1024
+    header = json.dumps({"weight": {"dtype": "U8", "shape": [1024], "data_offsets": [0, 1024]}}).encode()
+    contents = len(header).to_bytes(8, "little") + header + b"\0" * 1024
     path.write_bytes(contents)
     calls = []
     monkeypatch.setattr(cc.comfy.utils, "load_torch_file", lambda name, **kwargs:
@@ -207,7 +208,7 @@ def test_lora_weights_reuse_and_file_replacement(monkeypatch, tmp_path):
     first = cc._load_lora_file(str(path))
     assert cc._load_lora_file(str(path)) is first
     assert calls == [{"safe_load": True, "return_metadata": True}]
-    path.write_bytes(contents + b"new adapter weights")
+    path.write_bytes(contents[:-1] + b"\1")
     assert cc._load_lora_file(str(path)) is not first
     assert len(calls) == 2
     cc._cached_lora_file.cache_clear()

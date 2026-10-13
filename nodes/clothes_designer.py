@@ -1,7 +1,7 @@
 from ..operation_logger import log_event, log_stage, logged_operation
 
-from .preview_runtime import run_wizard_job
-from .generator_context import serialized_generator
+from .preview_runtime import run_wizard_job, run_preview_job
+from .generator_context import serialized_generator, forget_character_contexts
 
 import os
 import json
@@ -30,7 +30,7 @@ from .character_generator import (
     NATIVE_BACKGROUND_PROMPT,
 )
 from .vnccs_control_center import _entry_kind, _find_model_on_disk, _apply_lora_standard
-from .qwen_vl import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
+from .qwen_vl import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME
 from .qwen_vl import configure_qwen_text_chat, parse_wizard_json, _validate_gguf_file
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -296,10 +296,6 @@ def _clone_reference_digest(image_path):
         for chunk in iter(lambda: reference_file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _find_clothes_wizard_model():
-    return _find_qwen_vl_model()
 
 
 def _ensure_clothes_wizard_model():
@@ -941,7 +937,12 @@ async def vnccs_delete_costume(request):
             raise ValueError("Costume request must be an object")
         if not isinstance(data.get("character"), str) or not isinstance(data.get("costume"), str):
             raise ValueError("Character and costume must be names.")
-        warning = delete_costume(data["character"], data["costume"])
+        def remove_costume():
+            warning = delete_costume(data["character"], data["costume"])
+            forget_character_contexts(character_dir(data["character"]))
+            return warning
+
+        warning = await run_preview_job(remove_costume)
         result = {"status": "ok"}
         if warning:
             result["warning"] = warning
