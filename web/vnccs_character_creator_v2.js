@@ -3,7 +3,7 @@ import { createSakuraInteractions } from "./sakura_interactions.mjs";
 import { app } from "../../scripts/app.js";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, refreshPreviewImage, watchConnection } from "./vnccs_transport.js";
 import { presetGroups, presetSelection } from "./character_presets.mjs";
-import { createTraitInput, createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, debounce, registerCleanup, injectStyles, showModal as showCommonModal, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard, createControlCenterClient, installResolvedSeedTransport, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
+import { createTraitInput, createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, debounce, registerCleanup, injectStyles, showModal as showCommonModal, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard, createControlCenterClient, installResolvedSeedTransport, animateWizardRows, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
 
 const CHARACTER_MANNEQUIN_URL = new URL("./assets/VNCCS_Character_Mannequin.png", import.meta.url).href;
 const CHARACTER_MANNEQUIN_MALE_URL = new URL("./assets/VNCCS_Character_Mannequin_Male.png", import.meta.url).href;
@@ -2635,12 +2635,15 @@ app.registerExtension({
 
                 // 4. UI Builders
                 const createTraitField = (lbl, key, targetObj = state.character_info) => {
-                    const { element, input } = createTraitInput({
+                    const { element, input, display } = createTraitInput({
                         prefix: "vnccs-creator", label: lbl, key, target: targetObj,
                         save: key === "breast_size" ? saveState : debouncedSave, choose: input => openTagConstructor(key, input),
                         removable: true, motion: (...args) => els._ui?._playMotion(...args),
                     });
                     setHelpText(element, helpFor(key));
+                    (element.dataset ||= {}).vnccsWizardField = key;
+                    (els._wizardRows ||= Object.create(null))[key] = element;
+                    element._vnccsWizardRevealTarget = display;
                     els[key] = input;
                     return element;
                 };
@@ -2651,6 +2654,8 @@ app.registerExtension({
                     }
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-creator-field";
+                    (wrap.dataset ||= {}).vnccsWizardField = key;
+                    (els._wizardRows ||= Object.create(null))[key] = wrap;
                     setHelpText(wrap, helpFor(key));
 
                     if (type === "checkbox") {
@@ -2723,12 +2728,15 @@ app.registerExtension({
                     }
                     els[key] = inp; // Register for updates
                     wrap.appendChild(inp);
+                    wrap._vnccsWizardRevealTarget = inp;
                     return wrap;
                 };
 
                 const createSegmentedField = (lbl, key, options, targetObj = state.character_info) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-creator-field";
+                    (wrap.dataset ||= {}).vnccsWizardField = key;
+                    (els._wizardRows ||= Object.create(null))[key] = wrap;
                     setHelpText(wrap, helpFor(key));
                     wrap.innerHTML = `<div class="vnccs-creator-label">${lbl}</div>`;
                     const segmented = document.createElement("div");
@@ -2812,6 +2820,8 @@ app.registerExtension({
                 const createGraphicToggle = (lbl, key, targetObj = state.character_info) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-creator-field";
+                    (wrap.dataset ||= {}).vnccsWizardField = key;
+                    (els._wizardRows ||= Object.create(null))[key] = wrap;
                     setHelpText(wrap, helpFor(key));
                     const btn = document.createElement("button");
                     btn.type = "button";
@@ -2848,6 +2858,8 @@ app.registerExtension({
                 const createSlider = (lbl, key, min, max, step, targetObj = state.gen_settings) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-creator-field";
+                    (wrap.dataset ||= {}).vnccsWizardField = key;
+                    (els._wizardRows ||= Object.create(null))[key] = wrap;
                     setHelpText(wrap, helpFor(key));
                     wrap.innerHTML = `<div class="vnccs-creator-label">${lbl}</div>`;
 
@@ -2885,7 +2897,6 @@ app.registerExtension({
                     container.appendChild(range);
                     container.appendChild(num);
                     wrap.appendChild(container);
-
                     els[key] = { range, num }; // composite ref
                     return wrap;
                 };
@@ -3641,29 +3652,34 @@ app.registerExtension({
 
                 const applyCharacterWizardData = (data) => {
                     const textKeys = ["race", "skin_color", "body", "face", "hair", "eyes", "additional_details"];
-                    state.character_info.breast_size = data.breast_size || "";
-                    if (data.sex) {
-                        const sex = String(data.sex).toLowerCase().startsWith("m") ? "male" : "female";
-                        state.character_info.sex = sex;
-                        els.sex?.setValue?.(sex);
-                    }
-                    if (data.age !== undefined) {
-                        const age = Math.max(1, Math.min(100, parseInt(data.age, 10) || 18));
-                        state.character_info.age = age;
-                        if (els.age?.range && els.age?.num) {
-                            els.age.range.value = age;
-                            els.age.num.value = age;
+                    const rowKeys = ["race", "skin_color", "body", "breast_size", "face", "hair", "eyes", "additional_details"];
+                    const sex = data.sex
+                        ? (String(data.sex).toLowerCase().startsWith("m") ? "male" : "female")
+                        : state.character_info.sex;
+                    return animateWizardRows(rowKeys.map(key => els._wizardRows?.[key]), () => {
+                        state.character_info.breast_size = data.breast_size || "";
+                        if (data.sex) {
+                            state.character_info.sex = sex;
+                            els.sex?.setValue?.(sex);
                         }
-                    }
-                    textKeys.forEach((key) => {
-                        const value = data[key] || "";
-                        state.character_info[key] = value;
-                        if (els[key]?.setValue) els[key].setValue(value);
-                        else if (els[key]) els[key].value = value;
-                    });
-                    syncCharacterFields();
-                    state.preview_valid = false;
-                    saveState(false);
+                        if (data.age !== undefined) {
+                            const age = Math.max(1, Math.min(100, parseInt(data.age, 10) || 18));
+                            state.character_info.age = age;
+                            if (els.age?.range && els.age?.num) {
+                                els.age.range.value = age;
+                                els.age.num.value = age;
+                            }
+                        }
+                        textKeys.forEach((key) => {
+                            const value = data[key] || "";
+                            state.character_info[key] = value;
+                            if (els[key]?.setValue) els[key].setValue(value);
+                            else if (els[key]) els[key].value = value;
+                        });
+                        syncCharacterFields();
+                        state.preview_valid = false;
+                        saveState(false);
+                    }, { duration: 240, gap: 30, delay: 90, accent: sex === "male" ? "#63c7ff" : "#ff8fa3" });
                 };
 
                 const showCharacterWizardError = (err) => {

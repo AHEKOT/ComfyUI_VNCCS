@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { createSakuraInteractions } from "./sakura_interactions.mjs";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, refreshPreviewImage, watchConnection, workflowScope } from "./vnccs_transport.js";
-import { createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, registerCleanup, injectStyles, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP, normalizeUploadFile, normalizeAgeValue } from "./vnccs_common.js";
+import { createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, registerCleanup, injectStyles, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, animateWizardRows, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP, normalizeUploadFile, normalizeAgeValue } from "./vnccs_common.js";
 
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -1041,6 +1041,7 @@ app.registerExtension({
                                 }
                                 btn.disabled = true;
                                 btn.innerText = "CHECKING MODEL...";
+                                let pendingWizardApply = null;
                                 try {
                                     if (!await ensureQwenVLReady()) return isCurrent();
                                     if (!isCurrent()) return false;
@@ -1060,19 +1061,26 @@ app.registerExtension({
                                     }
                                     const data = await r.json();
                                     if (!isCurrent()) return false;
-                                    ["top", "bottom", "shoes", "head", "face"].forEach((key) => {
-                                        state.costume_info[key] = data[key] || "";
-                                        if (els[key]) {
-                                            els[key].value = state.costume_info[key];
-                                            if (els[key].autoResize) els[key].autoResize();
-                                        }
-                                    });
+                                    const rowKeys = ["top", "bottom", "shoes", "head", "face"];
+                                    const sex = String(state.character_info?.sex || state.character_info?.gender || "").trim().toLowerCase();
+                                    rowKeys.forEach((key) => { state.costume_info[key] = data[key] || ""; });
                                     node._vnccsCostumeDraft = { character: state.character, costume: state.costume };
                                     saveState();
+                                    pendingWizardApply = () => {
+                                        rowKeys.forEach((key) => {
+                                            if (!els[key]) return;
+                                            els[key].value = state.costume_info[key];
+                                            if (els[key].autoResize) els[key].autoResize();
+                                        });
+                                    };
                                     await saveCostumeToBackend();
+                                    animateWizardRows(rowKeys.map(key => els._wizardRows?.[key]), pendingWizardApply,
+                                        { duration: 240, gap: 30, delay: 90, accent: sex === "male" ? "#63c7ff" : "#ff8fa3" });
+                                    pendingWizardApply = null;
                                     return false;
                                 } catch (e) {
                                     if (!isCurrent()) return false;
+                                    pendingWizardApply?.();
                                     showInfo("Clothes Wizard Error", e.toString());
                                     return true;
                                 } finally {
@@ -1396,6 +1404,8 @@ app.registerExtension({
 
                 const createField = (key, placeholder, multiline = true) => {
                     const wrap = document.createElement("div"); wrap.className = "vnccs-clothes-field";
+                    (wrap.dataset ||= {}).vnccsWizardField = key;
+                    (els._wizardRows ||= Object.create(null))[key] = wrap;
                     setHelpText(wrap, helpFor(key));
                     const l = document.createElement("div"); l.className = "vnccs-clothes-label";
                     l.innerText = key.toUpperCase();
@@ -1432,6 +1442,7 @@ app.registerExtension({
                     };
                     els[key] = inp;
                     wrap.appendChild(inp);
+                    wrap._vnccsWizardRevealTarget = inp;
                     return wrap;
                 };
 

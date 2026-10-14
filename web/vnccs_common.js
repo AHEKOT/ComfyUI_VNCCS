@@ -89,6 +89,195 @@ export function normalizeAgeValue(value) {
     return Math.max(1, Math.min(100, parsed));
 }
 
+function copyWizardSnapshotValues(source, clone) {
+    const sourceControls = [];
+    const cloneControls = [];
+    if (source?.matches?.("input, textarea, select")) sourceControls.push(source);
+    if (clone?.matches?.("input, textarea, select")) cloneControls.push(clone);
+    sourceControls.push(...(source?.querySelectorAll?.("input, textarea, select") || []));
+    cloneControls.push(...(clone?.querySelectorAll?.("input, textarea, select") || []));
+    sourceControls.forEach((control, index) => {
+        const snapshot = cloneControls[index];
+        if (!snapshot) return;
+        snapshot.value = control.value;
+        if (snapshot.tagName === "TEXTAREA") snapshot.textContent = control.value;
+        if ("checked" in control) snapshot.checked = control.checked;
+        if (control.tagName === "SELECT") {
+            [...snapshot.options].forEach((option, optionIndex) => {
+                option.selected = optionIndex === control.selectedIndex;
+            });
+        }
+    });
+}
+
+function wizardSnapshotBackground(element) {
+    for (let current = element; current; current = current.parentElement) {
+        const value = globalThis.getComputedStyle?.(current)?.backgroundColor;
+        if (!value || value === "transparent") continue;
+        const rgba = value.match(/^rgba\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)$/i);
+        if (rgba) {
+            const alpha = Number(rgba[4]);
+            if (alpha <= 0) continue;
+            if (alpha >= 0.98) return value;
+            // Wizard columns sit on the shared #0a0a0f canvas. Flatten their
+            // translucent fill so the new value cannot ghost through the old one.
+            const base = [10, 10, 15];
+            const rgb = [1, 2, 3].map((part, index) =>
+                Math.round(Number(rgba[part]) * alpha + base[index] * (1 - alpha)));
+            return `rgb(${rgb.join(", ")})`;
+        }
+        return value;
+    }
+    return "#14101e";
+}
+
+function wizardRevealTarget(field) {
+    const explicit = field?._vnccsWizardRevealTarget;
+    if (explicit && explicit.hidden !== true) return explicit;
+    if (field?.matches?.("textarea, input[type='text'], input:not([type])")) return field;
+    return field?.querySelector?.([
+        "[data-vnccs-wizard-reveal-target]",
+        ".vnccs-creator-trait-values:not([hidden])",
+        ".vnccs-cloner-trait-values:not([hidden])",
+        ".vnccs-clothes-textarea",
+        ".vnccs-clothes-input",
+        "textarea:not([hidden])",
+        "input[type='text']:not([hidden])",
+        "input:not([type]):not([hidden])",
+    ].join(",")) || null;
+}
+
+function positionWizardReveal(entry) {
+    const { field, target, layer } = entry;
+    const fieldRect = field.getBoundingClientRect?.();
+    const targetRect = target.getBoundingClientRect?.();
+    if (!fieldRect || !targetRect) return;
+    const width = Math.max(1, targetRect.width || target.offsetWidth || 1);
+    const height = Math.max(1, targetRect.height || target.offsetHeight || 1);
+    layer.style.left = `${targetRect.left - fieldRect.left - (field.clientLeft || 0)}px`;
+    layer.style.top = `${targetRect.top - fieldRect.top - (field.clientTop || 0)}px`;
+    layer.style.width = `${width}px`;
+    layer.style.height = `${height}px`;
+    layer.style.borderRadius = globalThis.getComputedStyle?.(target)?.borderRadius || "8px";
+}
+
+// Reveals wizard-populated controls behind their previous values, one row at a time.
+// `apply` is deliberately synchronous so persistence tests and widget serialization
+// observe the result immediately; only the visual handoff is deferred.
+export function animateWizardRows(rows, apply, options = {}) {
+    const fields = [...new Set((rows || []).filter(field => field && wizardRevealTarget(field)))];
+    const runToken = {};
+    const reduced = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    const canAnimate = fields.length && !reduced && fields.every(field =>
+        typeof field.cloneNode === "function" && typeof field.appendChild === "function");
+    if (!canAnimate) {
+        apply();
+        return Promise.resolve();
+    }
+
+    const snapshots = fields.map(field => {
+        field.querySelectorAll?.(".vnccs-common-wizard-reveal")?.forEach(layer => layer.remove());
+        const baseStyle = field._vnccsWizardRevealBaseStyle || {
+            position: field.style.position,
+            isolation: field.style.isolation,
+        };
+        field._vnccsWizardRevealBaseStyle = baseStyle;
+        field._vnccsWizardRevealRun = runToken;
+        if (globalThis.getComputedStyle?.(field)?.position === "static") field.style.position = "relative";
+        field.style.isolation = "isolate";
+
+        const target = wizardRevealTarget(field);
+        const clone = target.cloneNode(true);
+        copyWizardSnapshotValues(target, clone);
+        clone.querySelectorAll?.("[id]")?.forEach(element => element.removeAttribute("id"));
+        clone.removeAttribute?.("id");
+        clone.classList?.add("vnccs-common-wizard-reveal-snapshot");
+
+        const layer = document.createElement("div");
+        layer.className = "vnccs-common-wizard-reveal";
+        if (options.accent) layer.style.setProperty("--vnccs-common-ui-accent", options.accent);
+        layer.setAttribute("aria-hidden", "true");
+        const old = document.createElement("div");
+        old.className = "vnccs-common-wizard-reveal-old";
+        old.style.background = wizardSnapshotBackground(target);
+        old.appendChild(clone);
+        const scan = document.createElement("span");
+        scan.className = "vnccs-common-wizard-reveal-scan";
+        layer.append(old, scan);
+        field.appendChild(layer);
+
+        const entry = { field, target, layer, old, scan, baseStyle };
+        positionWizardReveal(entry);
+        return entry;
+    });
+    try {
+        apply();
+        // Updating the value can resize a textarea or rebuild a tag list. Re-measure
+        // before paint so the old snapshot still covers the exact live control.
+        snapshots.forEach(positionWizardReveal);
+    } catch (error) {
+        snapshots.forEach(({ field, layer, baseStyle }) => {
+            layer.remove();
+            field.style.position = baseStyle.position;
+            field.style.isolation = baseStyle.isolation;
+            delete field._vnccsWizardRevealRun;
+            delete field._vnccsWizardRevealBaseStyle;
+        });
+        throw error;
+    }
+
+    const duration = Math.max(120, Number(options.duration) || 240);
+    const gap = Math.max(0, Number(options.gap) || 30);
+    const delay = Math.max(0, Number(options.delay) || 90);
+    const easing = "cubic-bezier(0.4, 0, 0.2, 1)";
+    const schedule = globalThis.setTimeout || (callback => callback());
+
+    return new Promise(resolve => {
+        let remaining = snapshots.length;
+        const finish = () => { if (--remaining === 0) resolve(); };
+        snapshots.forEach((entry, index) => {
+            const { field, layer, old, scan, baseStyle } = entry;
+            const start = delay + index * (duration + gap);
+            schedule(() => {
+                if (field._vnccsWizardRevealRun !== runToken) {
+                    finish();
+                    return;
+                }
+                if (!field.isConnected || typeof field.animate !== "function") {
+                    layer.remove();
+                    field.style.position = baseStyle.position;
+                    field.style.isolation = baseStyle.isolation;
+                    delete field._vnccsWizardRevealRun;
+                    delete field._vnccsWizardRevealBaseStyle;
+                    finish();
+                    return;
+                }
+                positionWizardReveal(entry);
+                layer.classList.add("is-active");
+                const width = Math.max(1, layer.getBoundingClientRect?.().width || layer.offsetWidth || 1);
+                const oldAnimation = old.animate([
+                    { clipPath: "inset(0 0 0 0)" },
+                    { clipPath: "inset(0 0 0 100%)" },
+                ], { duration, easing, fill: "forwards" });
+                const scanAnimation = scan.animate([
+                    { opacity: 1, transform: "translate3d(0, -50%, 0)" },
+                    { opacity: 1, transform: `translate3d(${width}px, -50%, 0)` },
+                ], { duration, easing, fill: "forwards" });
+                Promise.allSettled([oldAnimation.finished, scanAnimation.finished]).finally(() => {
+                    layer.remove();
+                    if (field._vnccsWizardRevealRun === runToken) {
+                        field.style.position = baseStyle.position;
+                        field.style.isolation = baseStyle.isolation;
+                        delete field._vnccsWizardRevealRun;
+                        delete field._vnccsWizardRevealBaseStyle;
+                    }
+                    finish();
+                });
+            }, start);
+        });
+    });
+}
+
 export function installResolvedSeedTransport(app, nodeTypes, inputName = "widget_data") {
     if (typeof app.graphToPrompt !== "function") return;
     if (!app._vnccsResolvedSeedInputs) {
@@ -417,7 +606,7 @@ export function createTraitInput({ prefix, label: lbl, key, target: targetObj, s
     add.onclick = () => choose(inp);
     editor.append(values, inp);
     wrap.append(label, editor, add);
-    return { element: wrap, input: inp };
+    return { element: wrap, input: inp, display: values };
 }
 
 // ── Debounce ──────────────────────────────────────────────────────────────────
@@ -1446,9 +1635,59 @@ export const SAKURA_INTERACTION_CSS = `
     background: rgba(255,143,163,0.12);
     transform-origin: top left;
 }
+.vnccs-common-wizard-reveal {
+    position: absolute;
+    z-index: 40;
+    overflow: hidden;
+    pointer-events: none;
+    contain: paint;
+}
+.vnccs-common-wizard-reveal-old {
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    will-change: clip-path;
+}
+.vnccs-common-wizard-reveal-snapshot {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+    box-sizing: border-box !important;
+    margin: 0 !important;
+    pointer-events: none !important;
+}
+.vnccs-common-wizard-reveal-snapshot,
+.vnccs-common-wizard-reveal-snapshot * {
+    animation: none !important;
+    transition: none !important;
+}
+.vnccs-common-wizard-reveal-scan {
+    position: absolute;
+    z-index: 2;
+    top: 50%;
+    left: 0;
+    width: 3px;
+    height: calc(100% - 8px);
+    margin-left: -1.5px;
+    border-radius: 99px;
+    opacity: 0;
+    background: linear-gradient(180deg, transparent, rgba(255,255,255,0.98) 18%, var(--vnccs-common-ui-accent) 50%, rgba(255,255,255,0.98) 82%, transparent);
+    box-shadow: 0 0 7px var(--vnccs-common-ui-accent), 0 0 16px var(--vnccs-common-ui-accent), 0 0 28px color-mix(in srgb, var(--vnccs-common-ui-accent) 45%, transparent);
+    will-change: transform, opacity;
+}
+.is-male-character .vnccs-common-wizard-reveal-scan,
+.vnccs-common-ui-host.is-male-character .vnccs-common-wizard-reveal-scan {
+    --vnccs-common-ui-accent: #63c7ff;
+    box-shadow: 0 0 8px #63c7ff, 0 0 18px #63c7ff;
+}
 .vnccs-common-ui-host .vnccs-common-ui-select-trigger:focus-visible { outline: 2px solid #ff8fa3; outline-offset: -2px; }
 @media (prefers-reduced-motion: reduce) {
     .vnccs-common-ui-segmented::before { transition: none !important; }
     .vnccs-common-ui-host .vnccs-common-ui-select-trigger, .vnccs-common-ui-host .vnccs-common-ui-select-trigger::after,
     .vnccs-common-ui-dropdown-option, .vnccs-common-ui-dropdown::before { transition: none !important; }
+    .vnccs-common-wizard-reveal { display: none !important; }
 }`;

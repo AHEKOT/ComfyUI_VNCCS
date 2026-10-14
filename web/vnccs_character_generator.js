@@ -1347,6 +1347,7 @@ class CharacterGeneratorWidget {
         this.previewLoadQueue = [];
         this.previewLoadsActive = 0;
         this._clothesRevealIndices = new Set();
+        this._nakedRevealIndices = new Set();
         this.regenerateState = null;
         this.regenerateTimer = null;
         this.restoreBrowserState();
@@ -1492,6 +1493,7 @@ class CharacterGeneratorWidget {
             if (startsNewRun) {
                 this._previewPlaceholderStage = stage;
                 this._clothesRevealIndices?.clear();
+                this._nakedRevealIndices?.clear();
             }
             this.observeProgressRequest(detail.request_id, detail.run_id);
             if (stage === "error") {
@@ -1510,7 +1512,11 @@ class CharacterGeneratorWidget {
                         previousStageState.status === "running"
                         && (Boolean(detail.append_images) || Boolean(detail.replace_images) || !hasImages)
                     );
-                    if (!continuingBatch) this.resetStagesFrom(stage);
+                    if (!continuingBatch) {
+                        this.resetStagesFrom(stage);
+                        if (this.isClothes && stage === "pose_generation") this._clothesRevealIndices?.clear();
+                        if (this.isClone && stage === "naked_pose_generation") this._nakedRevealIndices?.clear();
+                    }
                     if (!continuingBatch && (stage === "pose_generation" || stage === "original_pose_generation" || stage === "source_upscaler")) {
                         this.userSelectedPreview = false;
                         if (!this.data.ui) this.data.ui = {};
@@ -1537,6 +1543,13 @@ class CharacterGeneratorWidget {
                     const previewStart = Math.max(0, Number.parseInt(detail.preview_start, 10) || 0);
                     for (let offset = 0; offset < detail.images.length; offset++) {
                         (this._clothesRevealIndices ||= new Set()).add(previewStart + offset);
+                    }
+                }
+                if (this.isClone && stage === "naked_pose_generation" && detail.replace_images && detail.images?.length
+                    && (!this.userSelectedPreview || this.selectedPreview === stage)) {
+                    const previewStart = Math.max(0, Number.parseInt(detail.preview_start, 10) || 0);
+                    for (let offset = 0; offset < detail.images.length; offset++) {
+                        (this._nakedRevealIndices ||= new Set()).add(previewStart + offset);
                     }
                 }
                 this.stageState[stage] = {
@@ -3656,7 +3669,8 @@ class CharacterGeneratorWidget {
         const changedStage = this._previewStage !== this.selectedPreview;
         if (changedStage) {
             this._previewRevealAt = 0;
-            this._clothesRevealIndices?.clear();
+            if (this.selectedPreview !== "pose_generation") this._clothesRevealIndices?.clear();
+            if (this.selectedPreview !== "naked_pose_generation") this._nakedRevealIndices?.clear();
             this.previewLabel.textContent = name;
             this._ui?._playMotion(this.previewLabel, [{ opacity: 0.25 }, { opacity: 1 }], 180);
         }
@@ -3692,7 +3706,9 @@ class CharacterGeneratorWidget {
         const state = this.stageState[this.selectedPreview] || {};
         const images = state.images || [];
         const stageIndex = this.stages.findIndex(([key]) => key === this.selectedPreview);
-        const upstream = this.stages.slice(0, stageIndex).reverse()
+        const originalPoseImages = this.isClone && this.selectedPreview === "naked_pose_generation"
+            ? this.stageState.original_pose_generation?.images : null;
+        const upstream = originalPoseImages?.length ? originalPoseImages : this.stages.slice(0, stageIndex).reverse()
             .map(([key]) => this.stageState[key]?.images).find(images => images?.length) || [];
         const total = Math.max(0, Math.min(512, Number(state.total) || 0));
         const count = Math.min(512, Math.max(images.length, total, state.status === "done" ? 0 : upstream.length));
@@ -3795,7 +3811,7 @@ class CharacterGeneratorWidget {
                 placeholder.style.visibility = displaysPlaceholder ? "visible" : "hidden";
                 if (displaysPlaceholder) placeholder.style.opacity = "";
             }
-            tile.classList.toggle("is-empty", !tile.dataset.src && !showPlaceholders);
+            tile.classList.toggle("is-empty", !tile.dataset.src && !tile._previewSource && !showPlaceholders);
             const canRegenerate = state.status === "done" && !this.regenerateState && Boolean(images[index]);
             let regen = tile.querySelector(".vnccs-pipe-img-regen");
             if (canRegenerate && !regen) {
@@ -4017,8 +4033,12 @@ class CharacterGeneratorWidget {
             const previous = tile._previewImage;
             const characterReveal = Boolean(!previous && !this.isClone && !this.isClothes && !this.isEmotions
                 && tile.classList.contains("is-placeholder"));
-            const clothesReveal = Boolean(previous && this.isClothes && this.selectedPreview === "pose_generation"
-                && this._clothesRevealIndices?.delete(index));
+            const clothesReveal = Boolean(previous && (
+                (this.isClothes && this.selectedPreview === "pose_generation"
+                    && this._clothesRevealIndices?.delete(index))
+                || (this.isClone && this.selectedPreview === "naked_pose_generation"
+                    && this._nakedRevealIndices?.delete(index))
+            ));
             tile._previewImage = image;
             const stateAspect = Number(this.stageState?.[this.selectedPreview]?.preview_aspect);
             const hasFixedStageAspect = Number.isFinite(stateAspect) && stateAspect > 0;
@@ -4099,7 +4119,8 @@ class CharacterGeneratorWidget {
         const lastRowCount = count % best.cols || best.cols;
         const lastRowOffset = lastRowCount < best.cols ? (best.cols - lastRowCount) * (best.trackW + gap) / 2 : 0;
         [...grid.children].forEach((tile, index) => {
-            const size = images[index] || tile.classList.contains("is-placeholder") ? best.sizes[index] : { width: 0, height: 0 };
+            const size = images[index] || tile._previewSource || tile.classList.contains("is-placeholder")
+                ? best.sizes[index] : { width: 0, height: 0 };
             tile.style.width = `${size.width}px`;
             tile.style.height = `${size.height}px`;
             tile.style.left = `${index >= count - lastRowCount ? lastRowOffset : 0}px`;

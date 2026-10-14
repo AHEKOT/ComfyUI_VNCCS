@@ -138,3 +138,15 @@ test("Clothes Generator keeps source sprites selected and marks finished outfits
     assert.deepEqual(Array.from(widget.stageState.pose_generation.images), ["clothed-1", "base-2"]);
     assert.deepEqual(Array.from(widget._clothesRevealIndices), [0]);
 });
+
+test("Clone Generator marks each finished naked pose for a scan reveal", () => {
+    const { widget, emit } = setup("naked_pose_generation");
+    widget.isClone = true;
+    widget._nakedRevealIndices = new Set();
+
+    emit({ current: 0, total: 3 });
+    emit({ current: 1, total: 3, images: ["naked-1"], preview_start: 0, replace_images: true });
+
+    assert.deepEqual(Array.from(widget.stageState.naked_pose_generation.images), ["naked-1"]);
+    assert.deepEqual(Array.from(widget._nakedRevealIndices), [0]);
+});

@@ -348,6 +348,65 @@ test("Clothes Generator wipes each decoded outfit over its source sprite without
     assert.ok(Math.abs(parseFloat(tiles[0].style.width) / parseFloat(tiles[0].style.height) - 1) < 0.001);
 });
 
+test("Clone Generator fills Naked Pose with Original Pose cards and wipes each naked sprite over its original", async () => {
+    const h = setup();
+    h.context.cancelAnimationFrame = () => {};
+    h.context.app = { registerExtension() {} };
+    vm.runInContext(generator.replace(/^import .*;\n/gm, "") + '\nthis.Generator = CharacterGeneratorWidget;', h.context);
+    const preview = new h.Element("div"); h.root.appendChild(preview);
+    const originals = ["original-1", "original-2", "original-3"];
+    const widget = Object.assign(Object.create(h.context.Generator.prototype), {
+        previewEl: preview, _ui: h.ui, isClone: true, _nakedRevealIndices: new Set(),
+        syncStagesFromData() {}, schedulePreviewGridLayout() {},
+        stages: [
+            ["original_pose_generation", "Original Pose"],
+            ["remove_clothes", "Remove Clothes"],
+            ["naked_pose_generation", "Naked Pose"],
+        ],
+        selectedPreview: "remove_clothes",
+        stageState: {
+            original_pose_generation: { status: "done", current: 3, total: 3, images: originals, preview_aspect: 640 / 1536 },
+            remove_clothes: { status: "done", current: 1, total: 1, images: ["cleaned-source"] },
+            naked_pose_generation: { status: "running", current: 0, total: 3, images: null, preview_aspect: 640 / 1536 },
+        },
+    });
+
+    widget.renderPreview();
+    await widget.previewGrid.children[0]._pendingImage.onload();
+    widget.selectedPreview = "naked_pose_generation";
+    widget.renderPreview();
+    const tiles = [...widget.previewGrid.children];
+    assert.equal(tiles.length, 3);
+    assert.deepEqual(tiles.map(tile => tile._previewSource), originals);
+    assert.ok(tiles.every(tile => !tile.classList.contains("is-empty")), "Original sprites fill every Naked Pose slot");
+    for (const tile of tiles) {
+        tile._pendingImage.naturalWidth = 640;
+        tile._pendingImage.naturalHeight = 1536;
+        await tile._pendingImage.onload();
+    }
+    h.flush();
+
+    const original = tiles[0]._previewImage;
+    widget._nakedRevealIndices.add(0);
+    widget.stageState.naked_pose_generation = {
+        status: "running", current: 1, total: 3, processing_index: 1,
+        images: ["naked-1"], preview_aspect: 640 / 1536,
+    };
+    widget.renderPreview();
+    tiles[0]._pendingImage.naturalWidth = 640;
+    tiles[0]._pendingImage.naturalHeight = 1536;
+    await tiles[0]._pendingImage.onload();
+
+    const wipe = h.document.animations.filter(animation => animation.options.duration === 1350);
+    assert.equal(wipe.length, 3);
+    assert.equal(wipe[0].effect.target, tiles[0]._previewImage);
+    assert.equal(wipe[1].effect.target, original);
+    assert.equal(wipe[2].effect.target.classList.contains("vnccs-pipe-img-placeholder-scan"), true);
+    assert.equal(tiles[0].classList.contains("is-clothes-revealing"), true);
+    wipe.forEach(animation => animation.finish());
+    assert.equal(original.isConnected, false);
+});
+
 test("generator gallery is created once while detached and survives mounting", () => {
     const h = setup(); h.root.remove();
     h.context.app = { registerExtension() {} };

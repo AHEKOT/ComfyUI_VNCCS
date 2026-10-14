@@ -40,10 +40,12 @@ const animate = Element.prototype.animate;
 window.reveals = [];
 window.cardEntrances = [];
 window.characterWipes = [];
+window.stageWipes = [];
 Element.prototype.animate = function(keyframes, options) {
   const animation = animate.apply(this, arguments);
   if (options.duration===380 && this.classList.contains('vnccs-pipe-img')) cardEntrances.push({tile:this,animation});
   if (options.duration===1100 && (this.classList.contains('vnccs-pipe-img-content')||this.classList.contains('vnccs-pipe-img-placeholder')||this.classList.contains('vnccs-pipe-img-placeholder-scan'))) characterWipes.push({element:this,animation});
+  if (options.duration===1350 && (this.classList.contains('vnccs-pipe-img-content')||this.classList.contains('vnccs-pipe-img-placeholder-scan'))) stageWipes.push({element:this,animation});
   if ((options.duration===420||options.duration===1100) && (this.classList.contains('vnccs-pipe-img')||this.classList.contains('vnccs-pipe-img-content'))) {
     const tile=this.classList.contains('vnccs-pipe-img')?this:this.parentNode;
     reveals.push({index:[...tile.parentNode.children].indexOf(tile),animation});
@@ -75,7 +77,7 @@ window.setup = async fixture => {
   window.detachedCounts=['.vnccs-pipe-grid','.vnccs-pipe-preview-head','.vnccs-pipe-empty'].map(selector=>w.previewEl.querySelectorAll(selector).length);
   window.savedGrid=w.previewGrid;window.savedHead=w.previewEl.firstChild;
   host.append(w.root);node.onResize();w.renderPreview();
-  window.reveals=[];window.cardEntrances=[];window.characterWipes=[];window.imageRun=crypto.randomUUID();
+  window.reveals=[];window.cardEntrances=[];window.characterWipes=[];window.stageWipes=[];window.imageRun=crypto.randomUUID();
 };
 window.emit=(stage,detail)=>api.dispatchEvent(new CustomEvent('vnccs.character_generator.stage',{detail:{node_id:String(widget.node.id),stage,status:'running',...detail}}));
 window.geometry=()=>[...widget.previewGrid.children].map(tile=>{const r=tile.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};});
@@ -156,10 +158,11 @@ async function assertPackedRows(zoom){
     }
 }
 const report=[];
+const targetedOnly=process.env.VNCCS_BROWSER_SCENARIO==='clone-naked';
 try {
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.waitForFunction(()=>window.ready);
-    for(const fixture of fixtures){
+    if(!targetedOnly)for(const fixture of fixtures){
         for(const zoom of [fixture.scale,1]){
             await page.setViewportSize({width:Math.ceil(fixture.node.size[0]*zoom)+36,height:Math.ceil(fixture.node.size[1]*zoom)+36});
             await page.evaluate(fixture=>setup(fixture),{...fixture,zoom});
@@ -362,7 +365,7 @@ try {
         }
     }
     const layoutReport=[];
-    for(const fixture of fixtures){
+    if(!targetedOnly)for(const fixture of fixtures){
         const zoom=fixture.scale;
         await page.setViewportSize({width:Math.ceil(fixture.node.size[0]*zoom)+36,height:Math.ceil(fixture.node.size[1]*zoom)+36});
         for(const scenario of layoutScenarios){
@@ -393,15 +396,42 @@ try {
             layoutReport.push({type:fixture.node.type,zoom,...scenario,screenshot});
         }
     }
-    const fixture=fixtures[0],zoom=fixture.scale;
-    await page.emulateMedia({reducedMotion:'reduce'});
-    await page.evaluate(fixture=>setup(fixture),{...fixture,zoom});await page.locator('.vnccs-pipe-preview-head .vnccs-pipe-tab').nth(0).click();
-    await page.evaluate(()=>emit(widget.stages[0][0],{current:0,total:6,images:urls('reduced')}));
-    await page.waitForFunction(()=>[...widget.previewGrid.children].every(tile=>tile.dataset.src));await page.waitForTimeout(50);
-    assert.equal(await page.evaluate(()=>reveals.length),0);await measure(zoom);
-    assert.equal(await page.evaluate(()=>getComputedStyle(widget.previewGrid.children[0],'::after').animationName),'none');
-    const removed=await page.evaluate(()=>{const ui=widget._ui;widget.node.onRemoved();return {disposed:widget._disposed,motions:ui._motionAnimations?.size||0};});
-    assert.equal(removed.disposed,true);assert.equal(removed.motions,0);assert.deepEqual(errors,[]);
+    const cloneFixture=fixtures.find(fixture=>fixture.node.type==='VNCCS_CharacterCloneGenerator');
+    const cloneZoom=cloneFixture.scale;
+    await page.setViewportSize({width:Math.ceil(cloneFixture.node.size[0]*cloneZoom)+36,height:Math.ceil(cloneFixture.node.size[1]*cloneZoom)+36});
+    await page.evaluate(fixture=>setup(fixture),{...cloneFixture,zoom:cloneZoom});
+    await page.evaluate(()=>{widget.data.nsfw_enabled=true;widget.syncStagesFromData();widget.renderPreview();widget.renderChain();});
+    await page.evaluate(()=>emit('original_pose_generation',{status:'done',current:3,total:3,images:urls('clone-original',3,640,1536)}));
+    await page.waitForFunction(()=>widget.previewGrid.children.length===3&&[...widget.previewGrid.children].every(tile=>tile.dataset.src?.includes('v=clone-original')));
+    await page.evaluate(()=>emit('remove_clothes',{status:'running',current:0,total:1,images:urls('clone-cleaned',1,640,1536)}));
+    await page.waitForFunction(()=>widget.selectedPreview==='remove_clothes'&&widget.stageState.remove_clothes.images?.[0]?.includes('v=clone-cleaned'));
+    await page.evaluate(()=>emit('naked_pose_generation',{status:'running',current:0,total:3,preview_aspect:640/1536}));
+    await page.waitForFunction(()=>widget.previewGrid.children.length===3&&[...widget.previewGrid.children].every(tile=>tile.dataset.src?.includes('v=clone-original')));
+    await page.waitForTimeout(600);
+    const nakedBase=await page.evaluate(()=>({
+        cards:cards(),
+        sources:[...widget.previewGrid.children].map(tile=>tile.dataset.src),
+        geometry:geometry(),
+    }));
+    assert.ok(nakedBase.sources.every(source=>source.includes('v=clone-original')),'Naked Pose must fill every slot with Original Pose sprites');
+    assert.deepEqual(nakedBase.cards.flatMap((card,index)=>card.processing?[index]:[]),[0]);
+    assert.deepEqual(nakedBase.cards.flatMap((card,index)=>card.waiting?[index]:[]),[1,2]);
+    await page.evaluate(()=>emit('naked_pose_generation',{status:'running',current:1,total:3,images:[urls('clone-naked',1,640,1536)[0]],preview_start:0,replace_images:true,processing_index:1}));
+    await page.waitForFunction(()=>stageWipes.length===3);
+    stable(nakedBase.geometry,await page.evaluate(()=>geometry()));
+    await page.screenshot({path:join(output,'VNCCS_CharacterCloneGenerator-naked-transition.png')});
+    if(!targetedOnly){
+        const fixture=fixtures[0],zoom=fixture.scale;
+        await page.emulateMedia({reducedMotion:'reduce'});
+        await page.evaluate(fixture=>setup(fixture),{...fixture,zoom});await page.locator('.vnccs-pipe-preview-head .vnccs-pipe-tab').nth(0).click();
+        await page.evaluate(()=>emit(widget.stages[0][0],{current:0,total:6,images:urls('reduced')}));
+        await page.waitForFunction(()=>[...widget.previewGrid.children].every(tile=>tile.dataset.src));await page.waitForTimeout(50);
+        assert.equal(await page.evaluate(()=>reveals.length),0);await measure(zoom);
+        assert.equal(await page.evaluate(()=>getComputedStyle(widget.previewGrid.children[0],'::after').animationName),'none');
+        const removed=await page.evaluate(()=>{const ui=widget._ui;widget.node.onRemoved();return {disposed:widget._disposed,motions:ui._motionAnimations?.size||0};});
+        assert.equal(removed.disposed,true);assert.equal(removed.motions,0);
+    }
+    assert.deepEqual(errors,[]);
     await writeFile(join(output,'report.json'),JSON.stringify({report,layoutReport,deviceScaleFactor:2,reducedMotion:true,errors},null,2));
     console.log(JSON.stringify({scenarios:report.length,workflowSizes:fixtures.map(f=>({type:f.node.type,size:f.node.size,scale:f.scale})),errors,output}));
 } catch(error){

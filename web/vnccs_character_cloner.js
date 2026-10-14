@@ -2,7 +2,7 @@ import { app } from "../../scripts/app.js";
 import { createSakuraInteractions } from "./sakura_interactions.mjs";
 import { vnccsApi as api, mediaURL, checkedJSON } from "./vnccs_transport.js";
 import { presetSelection } from "./character_presets.mjs";
-import { createTraitInput, createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, registerCleanup, normalizeUploadFile, normalizeAgeValue } from "./vnccs_common.js";
+import { createTraitInput, createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, registerCleanup, animateWizardRows, normalizeUploadFile, normalizeAgeValue } from "./vnccs_common.js";
 
 // --- STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -1242,12 +1242,15 @@ app.registerExtension({
 
                 // UI Builders
                 const createTraitField = (lbl, key, targetObj = state.character_info) => {
-                    const { element, input } = createTraitInput({
+                    const { element, input, display } = createTraitInput({
                         prefix: "vnccs-cloner", label: lbl, key, target: targetObj,
                         save: saveState, choose: input => openTagConstructor(key, input, targetObj),
                         removable: true, motion: (...args) => els._ui?._playMotion(...args),
                     });
                     setHelpText(element, helpFor(key));
+                    (element.dataset ||= {}).vnccsWizardField = key;
+                    (els._wizardRows ||= Object.create(null))[key] = element;
+                    element._vnccsWizardRevealTarget = display;
                     els[key] = input;
                     return element;
                 };
@@ -1258,6 +1261,8 @@ app.registerExtension({
                     }
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-cloner-field";
+                    (wrap.dataset ||= {}).vnccsWizardField = key;
+                    (els._wizardRows ||= Object.create(null))[key] = wrap;
                     setHelpText(wrap, helpFor(key));
 
                     if (type === "checkbox") {
@@ -1317,6 +1322,7 @@ app.registerExtension({
                     }
                     els[key] = inp;
                     wrap.appendChild(inp);
+                    wrap._vnccsWizardRevealTarget = inp;
                     return wrap;
                 };
 
@@ -1365,6 +1371,8 @@ app.registerExtension({
                 const createSegmentedField = (lbl, key, options, targetObj = state.character_info) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-cloner-field";
+                    (wrap.dataset ||= {}).vnccsWizardField = key;
+                    (els._wizardRows ||= Object.create(null))[key] = wrap;
                     setHelpText(wrap, helpFor(key));
                     wrap.innerHTML = `<div class="vnccs-cloner-label">${lbl}</div>`;
 
@@ -1430,6 +1438,8 @@ app.registerExtension({
                 const createGraphicToggle = (lbl, key, targetObj = state.character_info) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-cloner-field";
+                    (wrap.dataset ||= {}).vnccsWizardField = key;
+                    (els._wizardRows ||= Object.create(null))[key] = wrap;
                     setHelpText(wrap, helpFor(key));
 
                     const btn = document.createElement("button");
@@ -1469,6 +1479,8 @@ app.registerExtension({
                 const createSlider = (lbl, key, min, max, step, targetObj = state.character_info) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-cloner-field";
+                    (wrap.dataset ||= {}).vnccsWizardField = key;
+                    (els._wizardRows ||= Object.create(null))[key] = wrap;
                     setHelpText(wrap, helpFor(key));
                     wrap.innerHTML = `<div class="vnccs-cloner-label">${lbl}</div>`;
 
@@ -2258,13 +2270,16 @@ app.registerExtension({
                             if (!isCurrent()) return;
                             console.log("[VNCCS] Auto-Gen Success. Data:", data);
 
-                            // Merge into state
-                            Object.assign(state.character_info, data);
-                            console.log("[VNCCS] State Updated:", state.character_info);
-
-                            updateUIFromState();
-                            console.log("[VNCCS] UI Updated.");
-                            saveState();
+                            const rowKeys = ["race", "skin_color", "body", "face", "hair", "eyes", "additional_details", "aesthetics"];
+                            const nextSex = String(data.sex || data.gender || state.character_info.sex || "").trim().toLowerCase();
+                            const wizardRows = typeof els === "undefined" ? [] : rowKeys.map(key => els._wizardRows?.[key]);
+                            animateWizardRows(wizardRows, () => {
+                                Object.assign(state.character_info, data);
+                                console.log("[VNCCS] State Updated:", state.character_info);
+                                updateUIFromState();
+                                console.log("[VNCCS] UI Updated.");
+                                saveState();
+                            }, { duration: 240, gap: 30, delay: 90, accent: nextSex === "male" ? "#63c7ff" : "#ff8fa3" });
                         } else {
                             console.log("[VNCCS] Auto-Gen Failed. Status:", r.status);
                             // Check for structured errors (404 for model, 500 for mmproj/other)
