@@ -570,7 +570,8 @@ ${SAKURA_THEME_CSS}
     position: absolute;
     left: 0;
     right: 0;
-    bottom: 0;
+    --vnccs-scan-edge-offset: clamp(10px, 4%, 23px);
+    bottom: calc(0px - var(--vnccs-scan-edge-offset));
     height: clamp(20px, 8%, 46px);
     background: linear-gradient(180deg, transparent, rgba(255,143,163,0.22) 30%, rgba(255,235,244,0.94) 50%, rgba(255,143,163,0.28) 68%, transparent);
     box-shadow: 0 0 22px rgba(255,143,163,0.22);
@@ -1326,6 +1327,7 @@ class CharacterGeneratorWidget {
         this.nodeDefs = {};
         this.fieldDrafts = new Map();
         this.previewLayoutFrame = null;
+        this.previewCardEntranceFrame = null;
         this.previewLoadQueue = [];
         this.previewLoadsActive = 0;
         this._clothesRevealIndices = new Set();
@@ -1427,6 +1429,8 @@ class CharacterGeneratorWidget {
             }
             cancelAnimationFrame(this.previewLayoutFrame);
             this.previewLayoutFrame = null;
+            cancelAnimationFrame(this.previewCardEntranceFrame);
+            this.previewCardEntranceFrame = null;
         });
         this.bindModelResolutionSync();
         if (this.isClone) {
@@ -3687,6 +3691,9 @@ class CharacterGeneratorWidget {
             : (Number.isInteger(state.processing_index) ? state.processing_index : Math.max(0, Number(state.current) || 0));
         const completed = state.processing_indices?.length
             ? Math.min(...state.processing_indices) : Math.max(0, Number(state.current) || 0);
+        const statePreviewAspect = Number(state.preview_aspect);
+        const fixedPreviewAspect = Number.isFinite(statePreviewAspect) && statePreviewAspect > 0
+            ? statePreviewAspect : null;
         this.previewEmpty.hidden = count > 0;
         this.previewEmpty.textContent = this.formatStageStatus(this.selectedPreview);
         this.previewGrid.style.display = count ? "grid" : "none";
@@ -3710,6 +3717,7 @@ class CharacterGeneratorWidget {
             tile.role = "button";
             tile.dataset.focusKey = `preview-image-${index}`;
             tile.style.setProperty("--wait-phase", `${-index * 180}ms`);
+            tile._previewEntrancePending = true;
             const placeholder = document.createElement("img");
             placeholder.className = "vnccs-pipe-img-placeholder";
             placeholder.src = mannequinURL;
@@ -3729,6 +3737,9 @@ class CharacterGeneratorWidget {
             this.previewGrid.appendChild(tile);
         }
         [...this.previewGrid.children].forEach((tile, index) => {
+            // The backend knows the batch dimensions before individual images decode. Keep
+            // that ratio authoritative so each completed card cannot reflow its neighbours.
+            if (fixedPreviewAspect) tile._previewAspect = fixedPreviewAspect;
             const placeholder = tile.querySelector(".vnccs-pipe-img-placeholder");
             if (placeholder && placeholder.src !== mannequinURL) placeholder.src = mannequinURL;
             const source = (targeted && images.length === 1
@@ -3760,7 +3771,13 @@ class CharacterGeneratorWidget {
             tile.setAttribute("aria-busy", String(Boolean(processing || waiting)));
             tile.ariaLabel = `${name} image ${index + 1}${processing ? ", processing" : waiting ? ", waiting" : busy && index < completed ? ", processed" : ""}`;
             tile.tabIndex = tile.dataset.src ? 0 : -1;
-            tile.classList.toggle("is-placeholder", Boolean(showPlaceholders && !tile.dataset.src));
+            const displaysPlaceholder = Boolean(showPlaceholders && !tile.dataset.src);
+            tile.classList.toggle("is-placeholder", displaysPlaceholder);
+            if (placeholder && !tile.classList.contains("is-character-revealing")) {
+                placeholder.style.display = displaysPlaceholder ? "" : "none";
+                placeholder.style.visibility = displaysPlaceholder ? "visible" : "hidden";
+                if (displaysPlaceholder) placeholder.style.opacity = "";
+            }
             tile.classList.toggle("is-empty", !tile.dataset.src && !showPlaceholders);
             const canRegenerate = state.status === "done" && !this.regenerateState && Boolean(images[index]);
             let regen = tile.querySelector(".vnccs-pipe-img-regen");
@@ -3782,6 +3799,24 @@ class CharacterGeneratorWidget {
         });
         this.flushPreviewImages();
         this.schedulePreviewGridLayout(this.previewGrid);
+        this.schedulePreviewCardEntrances();
+    }
+
+    schedulePreviewCardEntrances() {
+        if (this.previewCardEntranceFrame) return;
+        this.previewCardEntranceFrame = requestAnimationFrame(() => {
+            this.previewCardEntranceFrame = null;
+            if (!this.previewGrid?.isConnected || this._disposed) return;
+            const cards = [...this.previewGrid.children].filter(tile => tile._previewEntrancePending);
+            cards.forEach((tile, index) => {
+                tile._previewEntrancePending = false;
+                const motion = this._ui?._playMotion(tile, [
+                    { opacity: 0, transform: "translateY(10px) scale(0.97)" },
+                    { opacity: 1, transform: "none" },
+                ], 380);
+                motion?.effect?.updateTiming?.({ delay: index * 70, fill: "backwards" });
+            });
+        });
     }
 
     queuePreviewImageLoad(tile, image, src) {
@@ -3853,28 +3888,44 @@ class CharacterGeneratorWidget {
 
     finishCharacterPreviewTransition(tile) {
         if (!tile?._characterRevealAnimations?.length && !tile?.classList?.contains("is-character-revealing")) return;
+        const placeholder = tile.querySelector?.(".vnccs-pipe-img-placeholder");
+        if (tile._previewImage) tile._previewImage.style.clipPath = "";
+        if (placeholder) {
+            placeholder.style.display = "none";
+            placeholder.style.opacity = "0";
+            placeholder.style.visibility = "hidden";
+            placeholder.style.clipPath = "inset(100% 0 0 0)";
+        }
+        tile.classList.toggle("is-character-revealing", false);
         for (const animation of tile._characterRevealAnimations || []) {
             animation.onfinish = null;
             animation.cancel?.();
         }
         tile._characterRevealAnimations = null;
-        tile.classList.toggle("is-character-revealing", false);
-        if (tile._previewImage) tile._previewImage.style.clipPath = "";
+        if (placeholder) placeholder.style.clipPath = "";
     }
 
     startCharacterPreviewTransition(tile, image, delay = 0) {
         tile.classList.toggle("is-character-revealing", true);
         image.style.opacity = "1";
         image.style.clipPath = "inset(0 0 100% 0)";
+        const placeholder = tile.querySelector(".vnccs-pipe-img-placeholder");
+        if (placeholder) {
+            placeholder.style.display = "";
+            placeholder.style.opacity = "";
+            placeholder.style.visibility = "visible";
+            placeholder.style.clipPath = "inset(0% 0 0 0)";
+        }
         const scan = tile.querySelector(".vnccs-pipe-img-placeholder-scan");
         const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-        if (reducedMotion || !image.animate || !scan?.animate) {
+        if (reducedMotion || !image.animate || !placeholder?.animate || !scan?.animate) {
             this.finishCharacterPreviewTransition(tile);
             return;
         }
-        const options = { duration: 1100, delay, easing: "cubic-bezier(0.22, 1, 0.36, 1)", fill: "backwards" };
+        const options = { duration: 1100, delay, easing: "cubic-bezier(0.22, 1, 0.36, 1)", fill: "both" };
         const animations = [
             image.animate([{ clipPath: "inset(0 0 100% 0)" }, { clipPath: "inset(0 0 0% 0)" }], options),
+            placeholder.animate([{ clipPath: "inset(0% 0 0 0)" }, { clipPath: "inset(100% 0 0 0)" }], options),
             scan.animate([
                 { transform: "translateY(-100%)", opacity: 0.72 },
                 { transform: "translateY(0)", opacity: 1 },
@@ -3952,7 +4003,9 @@ class CharacterGeneratorWidget {
             const clothesReveal = Boolean(previous && this.isClothes && this.selectedPreview === "pose_generation"
                 && this._clothesRevealIndices?.delete(index));
             tile._previewImage = image;
-            if (!clothesReveal) tile._previewAspect = image.naturalWidth / image.naturalHeight;
+            const stateAspect = Number(this.stageState?.[this.selectedPreview]?.preview_aspect);
+            const hasFixedStageAspect = Number.isFinite(stateAspect) && stateAspect > 0;
+            if (!clothesReveal && !hasFixedStageAspect) tile._previewAspect = image.naturalWidth / image.naturalHeight;
             for (const sibling of this.previewGrid?.children || []) {
                 if (!sibling.dataset.src) sibling._previewAspect = tile._previewAspect;
             }
@@ -3999,9 +4052,12 @@ class CharacterGeneratorWidget {
         const images = [...grid.children].map(tile => tile._clothesRevealBase || tile._previewImage || (tile._pendingImage?._previewReady ? tile._pendingImage : null));
         const known = images.find(image => image?.naturalWidth > 0 && image?.naturalHeight > 0);
         const fallback = known ? known.naturalWidth / known.naturalHeight : 1;
-        const aspects = images.map((image, index) => image?.naturalWidth > 0 && image?.naturalHeight > 0
-            ? image.naturalWidth / image.naturalHeight
-            : (Number(grid.children[index]._previewAspect) || fallback));
+        const aspects = images.map((image, index) => {
+            const fixed = Number(grid.children[index]._previewAspect);
+            if (Number.isFinite(fixed) && fixed > 0) return fixed;
+            return image?.naturalWidth > 0 && image?.naturalHeight > 0
+                ? image.naturalWidth / image.naturalHeight : fallback;
+        });
         let best = null;
         for (let cols = 1; cols <= count; cols++) {
             const rows = Math.ceil(count / cols);

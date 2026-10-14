@@ -235,6 +235,7 @@ test("generator keeps waiting cards static and limits concurrent full-resolution
     assert.match(generator, /\.vnccs-pipe-img-content\s*\{[^}]*transition:\s*filter 520ms/);
     assert.doesNotMatch(generator, /@property --vnccs-process-angle|conic-gradient\(from var\(--vnccs-process-angle/);
     assert.match(generator, /@keyframes vnccs-pipe-mannequin-scan\s*\{[^}]*translateY\(-100%\)/);
+    assert.match(generator, /--vnccs-scan-edge-offset:\s*clamp\(10px, 4%, 23px\);\s*bottom:\s*calc\(0px - var\(--vnccs-scan-edge-offset\)\)/);
 
     const h = setup();
     h.context.cancelAnimationFrame = () => {};
@@ -262,28 +263,45 @@ test("Character Generator wipes a decoded sprite over its mannequin without a la
     const widget = Object.assign(Object.create(h.context.Generator.prototype), {
         previewEl: preview, _ui: h.ui, syncStagesFromData() {}, schedulePreviewGridLayout() {},
         stages: [["pose_generation", "Poses"]], selectedPreview: "pose_generation",
-        stageState: { pose_generation: { status: "running", current: 0, total: 2, images: [] } },
+        stageState: { pose_generation: { status: "running", current: 0, total: 2, images: [], preview_aspect: 640 / 1536 } },
     });
     widget.renderPreview();
     const tile = widget.previewGrid.children[0];
     assert.equal(tile.classList.contains("is-placeholder"), true);
 
-    widget.stageState.pose_generation = { status: "running", current: 1, total: 2, images: ["sprite.png"] };
+    widget.stageState.pose_generation = { status: "running", current: 1, total: 2, images: ["sprite.png"], preview_aspect: 640 / 1536 };
     widget.renderPreview();
     const image = tile._pendingImage;
+    image.naturalWidth = 644;
+    image.naturalHeight = 1536;
     await image.onload();
 
+    assert.equal(tile._previewAspect, 640 / 1536, "Decoded sprites must not alter the reserved batch geometry");
+
     const wipe = h.document.animations.filter(animation => animation.options.duration === 1100);
-    assert.equal(wipe.length, 2);
+    assert.equal(wipe.length, 3);
     assert.equal(wipe[0].effect.target, image);
-    assert.equal(wipe[1].effect.target.classList.contains("vnccs-pipe-img-placeholder-scan"), true);
+    assert.equal(wipe[1].effect.target.classList.contains("vnccs-pipe-img-placeholder"), true);
+    assert.equal(wipe[2].effect.target.classList.contains("vnccs-pipe-img-placeholder-scan"), true);
     assert.deepEqual(Array.from(wipe[0].keyframes, frame => frame.clipPath), ["inset(0 0 100% 0)", "inset(0 0 0% 0)"]);
-    assert.deepEqual(Array.from(wipe[1].keyframes, frame => frame.transform), ["translateY(-100%)", "translateY(0)"]);
-    assert.equal(wipe[0].options.fill, "backwards");
+    assert.deepEqual(Array.from(wipe[1].keyframes, frame => frame.clipPath), ["inset(0% 0 0 0)", "inset(100% 0 0 0)"]);
+    assert.deepEqual(Array.from(wipe[2].keyframes, frame => frame.transform), ["translateY(-100%)", "translateY(0)"]);
+    assert.equal(wipe[0].options.fill, "both");
     assert.equal(tile.classList.contains("is-character-revealing"), true);
     wipe.forEach(animation => animation.finish());
     assert.equal(tile.classList.contains("is-character-revealing"), false);
     assert.equal(image.style.clipPath, "");
+    const placeholder = tile.querySelector(".vnccs-pipe-img-placeholder");
+    assert.equal(placeholder.style.clipPath, "");
+    assert.equal(placeholder.style.visibility, "hidden");
+    assert.equal(placeholder.style.display, "none");
+    assert.equal(placeholder.style.opacity, "0");
+
+    widget.stageState.pose_generation = { status: "running", current: 0, total: 2, images: [], preview_aspect: 640 / 1536 };
+    widget.renderPreview();
+    assert.equal(placeholder.style.visibility, "visible", "A later generation can show the mannequin again");
+    assert.equal(placeholder.style.display, "");
+    assert.equal(placeholder.style.opacity, "");
 });
 
 test("Clothes Generator wipes each decoded outfit over its source sprite without resizing mid-transition", async () => {
@@ -346,6 +364,46 @@ test("generator gallery is created once while detached and survives mounting", (
     assert.equal(widget.previewLabel.textContent, "Poses");
     assert.equal(tabs.children.length, 1);
 });
+
+for (const [name, flags] of [["Character", {}], ["Clone", { isClone: true }], ["Clothes", { isClothes: true }], ["Emotions", { isEmotions: true }]]) {
+    test(`${name} Generator animates only newly created gallery cards`, () => {
+        const h = setup();
+        h.context.app = { registerExtension() {} };
+        vm.runInContext(generator.replace(/^import .*;\n/gm, "") + '\nthis.Generator = CharacterGeneratorWidget;', h.context);
+        const preview = new h.Element("div"); h.root.appendChild(preview);
+        const widget = Object.assign(Object.create(h.context.Generator.prototype), {
+            ...flags, previewEl: preview, _ui: h.ui, data: { gender: "female" },
+            syncStagesFromData() {}, schedulePreviewGridLayout() {},
+            stages: [["first_pose_generation", "First"], ["same_pose_generation", "Same"], ["many_pose_generation", "Many"]],
+            selectedPreview: "first_pose_generation",
+            stageState: {
+                first_pose_generation: { status: "running", current: 0, total: 1, images: [] },
+                same_pose_generation: { status: "running", current: 0, total: 1, images: [] },
+                many_pose_generation: { status: "running", current: 0, total: 4, images: [] },
+            },
+        });
+        const entrances = () => h.document.animations.filter(animation => animation.options.duration === 380);
+
+        widget.renderPreview(); h.flush();
+        assert.equal(entrances().length, 1);
+        const first = widget.previewGrid.children[0];
+        assert.equal(entrances()[0].effect.target, first);
+        assert.equal(entrances()[0].options.delay, 0);
+        assert.equal(entrances()[0].options.fill, "backwards");
+
+        widget.selectedPreview = "same_pose_generation";
+        widget.renderPreview(); h.flush();
+        assert.equal(widget.previewGrid.children[0], first);
+        assert.equal(entrances().length, 1, "Changing stages must not replay an existing card entrance");
+
+        widget.selectedPreview = "many_pose_generation";
+        widget.renderPreview(); h.flush();
+        assert.equal(widget.previewGrid.children[0], first);
+        assert.equal(entrances().length, 4);
+        assert.deepEqual(entrances().slice(1).map(animation => animation.effect.target), [...widget.previewGrid.children].slice(1));
+        assert.deepEqual(entrances().slice(1).map(animation => animation.options.delay), [0, 70, 140]);
+    });
+}
 
 test("decoded generator cards preserve image aspect ratios and maximize workflow-sized galleries", async () => {
     const h = setup();
