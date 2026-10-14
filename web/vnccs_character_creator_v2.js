@@ -388,13 +388,22 @@ ${SAKURA_THEME_CSS}
     top: 0;
     left: 0;
     right: 0;
-    height: clamp(18px, 6%, 42px);
-    transform: translateY(-50%);
+    height: 100%;
+    transform: translateY(-100%);
     opacity: 0.78;
+    mix-blend-mode: screen;
+    will-change: transform, opacity;
+    animation: vnccs-creator-generation-ready 1500ms ease-in-out infinite;
+}
+.vnccs-creator-generation-scan::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: clamp(18px, 6%, 42px);
     background: linear-gradient(180deg, transparent, rgba(255,143,163,0.24) 30%, rgba(255,238,246,0.98) 50%, rgba(255,143,163,0.34) 68%, transparent);
     box-shadow: 0 0 24px rgba(255,143,163,0.3);
-    mix-blend-mode: screen;
-    animation: vnccs-creator-generation-ready 1500ms ease-in-out infinite;
 }
 .vnccs-creator-generation-layer.is-revealing .vnccs-creator-generation-scan { animation: none; }
 .vnccs-creator-preview-loading {
@@ -472,7 +481,7 @@ ${SAKURA_THEME_CSS}
 @keyframes vnccs-creator-fadein { from { opacity: 0; } to { opacity: 1; } }
 @keyframes vnccs-creator-spin { to { transform: rotate(360deg); } }
 @keyframes vnccs-creator-generation-wait { 0%, 100% { opacity: 0.48; } 50% { opacity: 0.72; } }
-@keyframes vnccs-creator-generation-ready { 0%, 100% { opacity: 0.45; } 50% { opacity: 0.9; } }
+@keyframes vnccs-creator-generation-ready { from { opacity: 0.52; transform: translateY(-100%); } to { opacity: 0.9; transform: translateY(0); } }
 .vnccs-creator-placeholder { color: var(--text-muted); text-align: center; font-size: 11px; }
 
 /* LoRA stack */
@@ -4509,7 +4518,12 @@ app.registerExtension({
                         console.log(`[VNCCS] Preview Update Event received for '${charName}' (Node ${node.id})`);
                         if (charName === state.character) {
                             console.log("[VNCCS] Character matches. Refreshing local preview...");
-                            tryCachePreview(charName);
+                            const transition = node._vnccsRevealWorkflowPreview?.(charName);
+                            if (transition) transition.catch(error => {
+                                console.warn("[VNCCS] Workflow preview transition failed", error);
+                                if (state.character === charName) tryCachePreview(charName);
+                            });
+                            else tryCachePreview(charName);
                         }
                     }
                 };
@@ -4769,8 +4783,10 @@ app.registerExtension({
                 };
 
                 let previewGenerationRevision = 0;
+                let workflowPreviewGeneration = null;
                 const stopPreviewGeneration = (revision, restorePlaceholder = false) => {
                     if (revision !== undefined && revision !== previewGenerationRevision) return;
+                    if (revision === undefined || workflowPreviewGeneration?.revision === revision) workflowPreviewGeneration = null;
                     previewGenerationRevision += 1;
                     for (const animation of els.generationLayer?._animations || []) animation.cancel();
                     if (els.generationLayer) {
@@ -4798,7 +4814,7 @@ app.registerExtension({
                     els.generationBase.style.clipPath = "inset(0% 0 0 0)";
                     els.generationNew.removeAttribute("src");
                     els.generationNew.style.clipPath = "inset(0 0 100% 0)";
-                    els.generationScan.style.top = "0%";
+                    els.generationScan.style.transform = "translateY(-100%)";
                     els.generationLayer.classList.toggle("uses-mannequin", !existing);
                     els.generationLayer.classList.remove("is-revealing");
                     els.generationLayer.hidden = false;
@@ -4831,9 +4847,9 @@ app.registerExtension({
                             { clipPath: "inset(100% 0 0 0)" },
                         ], options);
                         const scan = els.generationScan.animate([
-                            { top: "0%", opacity: 0.65 },
-                            { top: "50%", opacity: 1, offset: 0.5 },
-                            { top: "100%", opacity: 0.65 },
+                            { transform: "translateY(-100%)", opacity: 0.65 },
+                            { transform: "translateY(-50%)", opacity: 1, offset: 0.5 },
+                            { transform: "translateY(0)", opacity: 0.65 },
                         ], options);
                         els.generationLayer._animations = [reveal, conceal, scan];
                         await Promise.all([reveal.finished.catch(() => {}), conceal.finished.catch(() => {}), scan.finished.catch(() => {})]);
@@ -4855,6 +4871,64 @@ app.registerExtension({
                     stopPreviewGeneration(revision);
                     return true;
                 };
+                node._vnccsStartWorkflowPreview = () => {
+                    if (!state.character) return null;
+                    workflowPreviewGeneration = {
+                        revision: startPreviewGeneration(),
+                        character: state.character,
+                    };
+                    return workflowPreviewGeneration.revision;
+                };
+                node._vnccsRevealWorkflowPreview = character => {
+                    const workflow = workflowPreviewGeneration;
+                    if (!workflow || workflow.character !== character || state.character !== character) return null;
+                    if (workflow.promise) return workflow.promise;
+                    const currentRequest = beginPreviewRequest();
+                    const cacheUrl = mediaURL(`/vnccs/get_cached_preview?character=${encodeURIComponent(character)}&t=${Date.now()}`);
+                    clearPreviewHandlers();
+                    hideSpriteNav();
+                    setPreviewLoading(false);
+                    workflow.promise = (async () => {
+                        const presented = await revealGeneratedPreview(cacheUrl, character, workflow.revision);
+                        if (!presented || !currentRequest() || state.character !== character) return false;
+                        state.preview_valid = true;
+                        state.preview_source = "gen";
+                        saveState(true);
+                        return true;
+                    })();
+                    return workflow.promise;
+                };
+                const workflowPreviewStartHandler = event => {
+                    const executingNode = event.detail?.node ?? event.detail;
+                    if (String(executingNode) === String(node.id)) node._vnccsStartWorkflowPreview();
+                };
+                const workflowPreviewFailureHandler = event => {
+                    const failedNode = event.detail?.node_id ?? event.detail?.node;
+                    if (workflowPreviewGeneration && (failedNode == null || String(failedNode) === String(node.id))) {
+                        stopPreviewGeneration(workflowPreviewGeneration.revision, true);
+                    }
+                };
+                const workflowPreviewCompleteHandler = event => {
+                    const executedNode = event.detail?.node ?? event.detail;
+                    if (String(executedNode) !== String(node.id) || !workflowPreviewGeneration) return;
+                    const character = workflowPreviewGeneration.character;
+                    node._vnccsRevealWorkflowPreview(character)?.catch(error => {
+                        console.warn("[VNCCS] Workflow preview transition failed", error);
+                        if (state.character === character) tryCachePreview(character);
+                    });
+                };
+                api.addEventListener("executing", workflowPreviewStartHandler);
+                api.addEventListener("executed", workflowPreviewCompleteHandler);
+                api.addEventListener("execution_error", workflowPreviewFailureHandler);
+                api.addEventListener("execution_interrupted", workflowPreviewFailureHandler);
+                registerCleanup(node, () => {
+                    api.removeEventListener("executing", workflowPreviewStartHandler);
+                    api.removeEventListener("executed", workflowPreviewCompleteHandler);
+                    api.removeEventListener("execution_error", workflowPreviewFailureHandler);
+                    api.removeEventListener("execution_interrupted", workflowPreviewFailureHandler);
+                    delete node._vnccsStartWorkflowPreview;
+                    delete node._vnccsRevealWorkflowPreview;
+                });
                 els.cancelPreviewGeneration = restore => stopPreviewGeneration(undefined, restore);
                 registerCleanup(node, () => els.cancelPreviewGeneration?.());
 
@@ -4913,7 +4987,8 @@ app.registerExtension({
                             lora_stack: state.gen_settings.lora_stack.filter(x => x.name && x.name !== "None") }
                     });
                     const inputs = previewInputs();
-                    const isCurrent = () => currentPreview() && state.character === character && previewInputs() === inputs;
+                    const ownsRequest = () => currentPreview() && state.character === character;
+                    const inputsStillCurrent = () => previewInputs() === inputs;
                     try {
 
                         const r = await api.fetchApi("/vnccs/preview_generate", { method: "POST", body: inputs });
@@ -4924,18 +4999,18 @@ app.registerExtension({
                         }
 
                         const d = await r.json();
-                        if (!isCurrent()) return;
+                        if (!ownsRequest()) return;
                         if (d.image) {
                             clearPreviewHandlers();
                             setPreviewLoading(false);
                             previewPresented = await revealGeneratedPreview("data:image/png;base64," + d.image, character, generationRevision);
-                            if (!previewPresented || !isCurrent()) return;
-                            // Successful generation -> Cache is Valid AND source is 'gen'
+                            if (!previewPresented || !ownsRequest()) return;
+                            // Show the completed request; keep cache validity tied to the inputs that produced it.
                             state.preview_source = "gen";
                             hideSpriteNav();
-                            saveState(true);
+                            saveState(inputsStillCurrent());
                         }
-                    } catch (e) { if (isCurrent()) showMessage(container, "Error: " + e, true); }
+                    } catch (e) { if (ownsRequest()) showMessage(container, "Error: " + e, true); }
                     finally {
                         if (!previewPresented) stopPreviewGeneration(generationRevision, true);
                         previewRunning = false;

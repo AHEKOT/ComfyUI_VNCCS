@@ -16,7 +16,7 @@ const guards = between(common, "export function registerCleanup", "// ── DOM
 const response = (data, ok = true) => ({ ok, status: ok ? 200 : 500, json: async () => data, text: async () => "sampler failed" });
 
 function setup() {
-    const listeners = new Map(), requests = [], messages = [];
+    const listeners = new Map(), requests = [], messages = [], saves = [], reveals = [];
     const api = {
         addEventListener(name, callback) {
             if (!listeners.has(name)) listeners.set(name, new Set());
@@ -31,14 +31,16 @@ function setup() {
         },
     };
     const node = { _randomizeSeedIfNeeded() {} };
+    const state = { character: "Alice", character_info: {}, gen_settings: {
+        generation_mode: "qi2", diffusion_model_name: "model", clip_name: "clip", vae_name: "vae", lora_stack: [],
+    } };
     const context = createWidgetContext({
         api, node, els: { btnGen: {} }, container: {},
-        state: { character: "Alice", character_info: {}, gen_settings: {
-            generation_mode: "qi2", diffusion_model_name: "model", clip_name: "clip", vae_name: "vae", lora_stack: [],
-        } },
+        state,
         console: { warn() {} }, isSelectedCcAssetInstalled: () => true,
-        saveCurrentGenerationModeValues() {}, saveState() {}, refreshPreviewImage() {}, setPreviewLoading() {},
-        startPreviewGeneration: () => 1, stopPreviewGeneration() {}, revealGeneratedPreview: async () => true,
+        saveCurrentGenerationModeValues() {}, saveState(valid = false) { state.preview_valid = valid; saves.push(valid); }, refreshPreviewImage() {},
+        clearPreviewHandlers() {}, hideSpriteNav() {}, setPreviewLoading() {},
+        startPreviewGeneration: () => 1, stopPreviewGeneration() {}, revealGeneratedPreview: async (...args) => { reveals.push(args); return true; },
         showAlertModal() { assert.fail("Disabled generation must not show dialogs"); },
         showMessage: (_container, message) => messages.push(message),
     });
@@ -50,7 +52,7 @@ function setup() {
     const emit = (name, detail) => {
         for (const callback of listeners.get(name) || []) callback({ detail });
     };
-    return { context, node, requests, listeners, messages, button: context.els.btnGen,
+    return { context, node, state, requests, listeners, messages, saves, reveals, button: context.els.btnGen,
         emit, status: count => emit("status", { exec_info: { queue_remaining: count } }) };
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -79,6 +81,21 @@ test("late idle queue snapshot cannot override a workflow start event", async ()
     h.requests[0].resolve(response({ queue_running: [], queue_pending: [] }));
     await tick();
     assert.equal(h.button.disabled, true);
+});
+
+test("preview button presents its completed image when LoRA settings change during generation", async () => {
+    const h = setup();
+    h.status(0);
+    const work = h.context.generate();
+    h.state.gen_settings.qi2_overhaul_strength = 0.75;
+    h.requests[1].resolve(response({ image: "fresh-preview" }));
+    await work;
+
+    assert.equal(h.reveals.length, 1);
+    assert.equal(h.reveals[0][0], "data:image/png;base64,fresh-preview");
+    assert.equal(h.state.preview_source, "gen");
+    assert.equal(h.state.preview_valid, false, "Changed inputs keep the displayed result but invalidate it for the next workflow run");
+    assert.equal(h.saves.at(-1), false);
 });
 
 for (const ok of [true, false]) {

@@ -275,16 +275,16 @@ test('Creator preview submits a temporary resolved-seed marker without saving it
 });
 
 for (const field of ['hair', 'seed']) {
-    test(`creator ignores pending preview success after ${field} changes on the same character`, async () => {
+    test(`creator presents pending preview after ${field} changes but keeps it invalid for the edited inputs`, async () => {
         const h = creatorImageHarness();
         const generation = h.doGenerate();
         if (field === 'hair') h.state.character_info.hair = 'new authored hair';
         else h.state.gen_settings.seed = 42;
         h.requests[0].resolve(response({ image: 'old-generated-image' }));
         await generation;
-        assert.equal(h.els.previewImg.src, undefined);
+        assert.equal(h.els.previewImg.src, 'data:image/png;base64,old-generated-image');
         assert.equal(h.saved.filter(item => item.valid).length, 0);
-        assert.equal(h.state.preview_valid, undefined);
+        assert.equal(h.state.preview_valid, false);
         assert.equal(h.els.btnGen.disabled, false);
     });
 }

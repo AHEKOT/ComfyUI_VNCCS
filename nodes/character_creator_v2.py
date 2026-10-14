@@ -1155,7 +1155,7 @@ def _character_is_nsfw(info):
 
 def _character_clothing_prompt(info):
     if _character_is_nsfw(info):
-        return "naked, nude, penis" if info.get("sex", "female") == "male" else "naked, nude, vagina, nipples"
+        return "penis, naked, nude" if info.get("sex", "female") == "male" else "naked, nude, vagina, nipples"
     return "bare chest, wear white boxers" if info.get("sex", "female") == "male" else "wear white bra and panties"
 
 
@@ -1265,7 +1265,7 @@ def _structured_character_prompt(fields, style_reference=""):
         prompt.append(f"Breast size: {fields.get('breast_size', '')}")
     prompt.append(f"Build: {fields.get('body', '')}")
     if "nsfw" in fields:
-        prompt.append(f"NSFW: {fields['nsfw']}")
+        prompt.append(f"Body details: {fields['nsfw']}")
     else:
         prompt.append(f"Clothes: {fields.get('clothing', '')}")
     prompt.extend([

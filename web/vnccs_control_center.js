@@ -1974,7 +1974,7 @@ class VNCCSControlCenterWidget {
     _startPolling() {
         if (this.pollingInterval) clearInterval(this.pollingInterval);
         this.pollingInterval = setInterval(async () => {
-            if (this._removed || this._downloadStatusPolling) return;
+            if (this._removed || this._downloadStatusPolling || document.visibilityState === "hidden") return;
             this._downloadStatusPolling = true;
             const isCurrent = this._beginDownloadStatusRequest();
             const repoId = this._getRepoId();

@@ -2528,6 +2528,8 @@ app.registerExtension({
                         }
 
                         const img = document.createElement("img");
+                        img.loading = "lazy";
+                        img.decoding = "async";
                         const params = new URLSearchParams();
                         params.append("filename", name);
                         params.append("type", type);

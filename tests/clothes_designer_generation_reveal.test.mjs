@@ -21,6 +21,11 @@ const classes = () => {
 
 test("Clothes Designer keeps the source preview and wipes the generated outfit behind a synchronized scan", async () => {
     const animations = [], finish = [];
+    const listeners = new Map();
+    const api = {
+        addEventListener(name, callback) { listeners.set(name, callback); },
+        removeEventListener(name, callback) { if (listeners.get(name) === callback) listeners.delete(name); },
+    };
     const animatedImage = () => ({
         style: {}, src: "", alt: "", decode: async () => {},
         removeAttribute(name) { if (name === "src") this.src = ""; },
@@ -51,8 +56,15 @@ test("Clothes Designer keeps the source preview and wipes the generated outfit b
         generationLayer: layer, generationBase: previous, generationNew: next, generationScan: scan,
         previewFrame: frame, previewImg: preview, placeholder, _ui: {},
     };
+    const node = { id: 8 };
     const context = vm.createContext({
-        els, spritePrevBtn, spriteNextBtn, node: {},
+        api, els, spritePrevBtn, spriteNextBtn, node,
+        state: { character: "Alice", costume: "Fantasy" },
+        hasSelectedEditableCostume: () => true,
+        beginPreviewRequest: () => () => true,
+        spritePreviewNavigator: null,
+        previewLoading: { classList: { remove() {} } },
+        URLSearchParams, mediaURL: value => value,
         registerCleanup() {},
         window: { matchMedia: () => ({ matches: false }), requestAnimationFrame: callback => callback() },
     });
@@ -68,7 +80,7 @@ test("Clothes Designer keeps the source preview and wipes the generated outfit b
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(Array.from(animations[0].frames, frame => frame.clipPath), ["inset(0 0 100% 0)", "inset(0 0 0% 0)"]);
     assert.deepEqual(Array.from(animations[1].frames, frame => frame.clipPath), ["inset(0% 0 0 0)", "inset(100% 0 0 0)"]);
-    assert.deepEqual(Array.from(animations[2].frames, frame => frame.top), ["0%", "100%"]);
+    assert.deepEqual(Array.from(animations[2].frames, frame => frame.transform), ["translateY(-100%)", "translateY(0)"]);
     for (const animation of animations.slice(1)) assert.deepEqual(animation.options, animations[0].options);
     finish.splice(0).forEach(resolve => resolve());
 
@@ -77,6 +89,16 @@ test("Clothes Designer keeps the source preview and wipes the generated outfit b
     assert.equal(layer.hidden, true);
     assert.equal(frame["aria-busy"], undefined);
     assert.equal(spritePrevBtn.disabled, false);
+
+    listeners.get("executing")({ detail: { node: 8 } });
+    assert.equal(layer.hidden, false, "A normal workflow run must start the same clothes preview animation");
+    listeners.get("executed")({ detail: { node: 8 } });
+    const workflowReveal = node._vnccsRevealWorkflowPreview("Alice");
+    await new Promise(resolve => setImmediate(resolve));
+    finish.splice(0).forEach(resolve => resolve());
+    assert.equal(await workflowReveal, true);
+    assert.equal(preview.src.includes("/vnccs/get_preview?"), true);
+    assert.equal(layer.hidden, true);
 });
 
 test("Clothes Designer fills the preview by height without resizing the node", () => {

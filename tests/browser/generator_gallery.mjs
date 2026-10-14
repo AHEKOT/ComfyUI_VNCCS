@@ -40,7 +40,7 @@ const animate = Element.prototype.animate;
 window.reveals = [];
 Element.prototype.animate = function(keyframes, options) {
   const animation = animate.apply(this, arguments);
-  if (options.duration===420 && (this.classList.contains('vnccs-pipe-img')||this.classList.contains('vnccs-pipe-img-content'))) {
+  if ((options.duration===420||options.duration===1100) && (this.classList.contains('vnccs-pipe-img')||this.classList.contains('vnccs-pipe-img-content'))) {
     const tile=this.classList.contains('vnccs-pipe-img')?this:this.parentNode;
     reveals.push({index:[...tile.parentNode.children].indexOf(tile),animation});
   }
@@ -168,9 +168,16 @@ try {
             assert.deepEqual(actual.size,fixture.node.size);assert.equal(actual.width,fixture.node.size[0]);assert.equal(actual.height,fixture.node.size[1]);
             await page.locator('.vnccs-pipe-preview-head .vnccs-pipe-tab').nth(0).click();
             const stage=await page.evaluate(()=>widget.stages[0][0]);
+            const poseStage=stage.endsWith('pose_generation');
             await page.evaluate(stage=>emit(stage,{current:0,total:6}),stage);
             await page.waitForFunction(()=>widget.previewGrid.children.length===6&&widget.previewGrid.style.gridTemplateColumns);
-            assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>getComputedStyle(tile).visibility==='hidden')),true,'Empty reserved slots must not draw squares');
+            const reserved=await page.evaluate(()=>({
+                visible:[...widget.previewGrid.children].every(tile=>getComputedStyle(tile).visibility!=='hidden'),
+                processing:cards().flatMap((card,index)=>card.processing?[index]:[]),
+                waiting:cards().flatMap((card,index)=>card.waiting?[index]:[]),
+            }));
+            assert.equal(reserved.visible,poseStage,'Pose slots show mannequins while stages without a visual source stay hidden');
+            if(poseStage){assert.deepEqual(reserved.processing,[0]);assert.deepEqual(reserved.waiting,[1,2,3,4,5]);}
             await page.evaluate(stage=>emit(stage,{current:0,total:6,images:urls('original')}),stage);
             await page.waitForTimeout(100);assert.equal(await page.evaluate(()=>reveals.length),0);
             await page.waitForFunction(()=>reveals.length===6);
@@ -188,23 +195,26 @@ try {
             assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.processing?[index]:[]),[0]);
             assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.waiting?[index]:[]),[1,2,3,4,5]);
             stable(before,await measure(zoom));
-            await page.evaluate(stage=>emit(stage,{status:'done',current:6,total:6,images:urls('original'),run_id:'previous-character'}),stage);
-            await page.evaluate(()=>{widget.data.gender='male';});
-            await page.evaluate(stage=>emit(stage,{status:'running',current:0,total:6,images:[],run_id:'new-character',preview_aspect:640/1536}),stage);
-            assert.equal(await page.evaluate(()=>cards().every(card=>!card.src)),true,'A new character run must remove the previous character');
-            assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>getComputedStyle(tile).visibility==='visible')),true,'A new character run must retain the card frames');
-            assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>tile.classList.contains('is-placeholder')&&tile.querySelector('.vnccs-pipe-img-placeholder')?.complete)),true,'New character slots must show the mannequin');
-            assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>tile.querySelector('.vnccs-pipe-img-placeholder')?.src.includes('VNCCS_Character_Mannequin_Male.png'))),true,'Male character data must select the male mannequin');
-            assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.processing?[index]:[]),[0]);
-            assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.waiting?[index]:[]),[1,2,3,4,5]);
-            stable(before,await measure(zoom));
-            await page.evaluate(stage=>emit(stage,{status:'running',current:1,total:6,images:[urls('incremental')[0]],replace_images:true,preview_start:0,processing_index:1,run_id:'new-character',preview_aspect:640/1536}),stage);
-            await page.waitForFunction(()=>widget.previewGrid.children[0].dataset.src?.includes('v=incremental'));
-            assert.deepEqual(await page.evaluate(()=>cards().map(card=>Boolean(card.src))),[true,false,false,false,false,false]);
-            assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].slice(1).every(tile=>tile.classList.contains('is-placeholder'))),true,'Unfinished sprites must retain mannequin previews');
-            await page.evaluate(()=>{widget._previewPlaceholderStage=null;widget.renderPreview();});
-            assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].slice(1).every(tile=>tile.classList.contains('is-placeholder'))),true,'Reloaded progress must reconstruct unfinished mannequin previews from stage state');
-            stable(before,await measure(zoom));
+            if(poseStage){
+                await page.evaluate(stage=>emit(stage,{status:'done',current:6,total:6,images:urls('original'),run_id:'previous-character'}),stage);
+                await page.evaluate(()=>{widget.data.gender='male';});
+                await page.evaluate(stage=>emit(stage,{status:'running',current:0,total:6,images:[],run_id:'new-character',preview_aspect:640/1536}),stage);
+                assert.equal(await page.evaluate(()=>cards().every(card=>!card.src)),true,'A new character run must remove the previous character');
+                assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>getComputedStyle(tile).visibility==='visible')),true,'A new character run must retain the card frames');
+                await page.waitForFunction(()=>[...widget.previewGrid.children].every(tile=>tile.querySelector('.vnccs-pipe-img-placeholder')?.complete));
+                assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>tile.classList.contains('is-placeholder')&&tile.querySelector('.vnccs-pipe-img-placeholder')?.complete)),true,'New character slots must show the mannequin');
+                assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>tile.querySelector('.vnccs-pipe-img-placeholder')?.src.includes('VNCCS_Character_Mannequin_Male.png'))),true,'Male character data must select the male mannequin');
+                assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.processing?[index]:[]),[0]);
+                assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.waiting?[index]:[]),[1,2,3,4,5]);
+                stable(before,await measure(zoom));
+                await page.evaluate(stage=>emit(stage,{status:'running',current:1,total:6,images:[urls('incremental')[0]],replace_images:true,preview_start:0,processing_index:1,run_id:'new-character',preview_aspect:640/1536}),stage);
+                await page.waitForFunction(()=>widget.previewGrid.children[0].dataset.src?.includes('v=incremental'));
+                assert.deepEqual(await page.evaluate(()=>cards().map(card=>Boolean(card.src))),[true,false,false,false,false,false]);
+                assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].slice(1).every(tile=>tile.classList.contains('is-placeholder'))),true,'Unfinished sprites must retain mannequin previews');
+                await page.evaluate(()=>{widget._previewPlaceholderStage=null;widget.renderPreview();});
+                assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].slice(1).every(tile=>tile.classList.contains('is-placeholder'))),true,'Reloaded progress must reconstruct unfinished mannequin previews from stage state');
+                stable(before,await measure(zoom));
+            }
             await page.evaluate(stage=>emit(stage,{status:'running',current:1,total:6,images:urls('original'),run_id:'new-character'}),stage);
             await page.waitForFunction(()=>[...widget.previewGrid.children].every(tile=>tile.dataset.src));
             stable(before,await measure(zoom));
@@ -226,6 +236,7 @@ try {
             await page.evaluate(stage=>emit(stage,{current:0,total:6}),next);
             await page.locator('.vnccs-pipe-preview-head .vnccs-pipe-tab').nth(1).click();
             stable(before,await measure(zoom));
+            await page.waitForFunction(()=>[...widget.previewGrid.children].every((tile,index)=>tile===savedTiles[index]&&tile.dataset.src));
             assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every((tile,index)=>tile===savedTiles[index]&&tile.dataset.src)),true);
             for(let current=0;current<6;current++){
                 await page.evaluate(({stage,current})=>emit(stage,{current,total:6}),{stage:next,current});
@@ -238,11 +249,12 @@ try {
             assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.processing?[index]:[]),[1]);
             await page.evaluate(stage=>emit(stage,{current:0,total:2,processing_indices:[2,3]}),next);
             assert.deepEqual((await page.evaluate(()=>cards())).flatMap((card,index)=>card.processing?[index]:[]),[2,3]);
+            if(zoom===fixture.scale)await page.screenshot({path:join(output,fixture.node.type+'-processing.png')});
             await page.evaluate(stage=>emit(stage,{current:1,total:6,images:urls('new')}),next);
             await page.waitForFunction(()=>[...widget.previewGrid.children].every(tile=>tile.dataset.src?.includes('v=new')));
             for(let frame=0;frame<8;frame++){await page.waitForTimeout(40);stable(before,await measure(zoom));}
-            const ring=await page.evaluate(()=>({mask:getComputedStyle(widget.previewGrid.children[1],'::after').maskComposite,text:widget.previewGrid.children[1].textContent,fit:getComputedStyle(widget.previewGrid.children[1]._previewImage).objectFit}));
-            assert.ok(ring.mask.split(',').every(value=>value.trim()==='exclude'));assert.equal(ring.text,'');assert.equal(ring.fit,'contain');
+            const ring=await page.evaluate(()=>({style:getComputedStyle(widget.previewGrid.children[1],'::after').borderTopStyle,animation:getComputedStyle(widget.previewGrid.children[1],'::after').animationName,text:widget.previewGrid.children[1].textContent,fit:getComputedStyle(widget.previewGrid.children[1]._previewImage).objectFit}));
+            assert.equal(ring.style,'solid');assert.equal(ring.animation,'vnccs-pipe-card-process');assert.equal(ring.text,'');assert.equal(ring.fit,'contain');
             await page.evaluate(()=>widget.openViewer(3));await page.waitForFunction(()=>widget.viewer?.img?.classList.contains('is-ready'));
             await page.evaluate(stage=>{widget.regenerateState={activeStage:stage,imageIndex:3,targetStages:[stage]};emit(stage,{current:0,total:1,images:[urls('target',4)[3]]});},next);
             await page.waitForFunction(()=>widget.viewer.img.src.includes('v=target')&&widget.viewer.img.classList.contains('is-ready'));
@@ -254,7 +266,8 @@ try {
                 await toggles.filter({hasText:'SeedVR'}).click();await page.waitForTimeout(360);stable(before,await measure(zoom));
             }
             await page.evaluate(()=>{widget.regenerateState=null;widget.stageState[widget.selectedPreview].status='done';widget.renderPreview();widget.renderChain();});
-            await page.waitForTimeout(700);stable(before,await measure(zoom));
+            await page.waitForFunction(()=>[...widget.previewGrid.children].every(tile=>tile.querySelectorAll('.vnccs-pipe-img-content').length===1));
+            stable(before,await measure(zoom));
             assert.equal(await page.evaluate(()=>widget.previewGrid.querySelectorAll('.is-processing,.is-waiting').length),0);
             assert.ok(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>tile.querySelectorAll('.vnccs-pipe-img-content').length===1&&tile.querySelectorAll('.vnccs-pipe-img-placeholder').length===1)));
             const label=fixture.node.type+'-'+(zoom===1?'100pct':'workflow');
@@ -276,7 +289,19 @@ try {
             await page.waitForFunction(()=>widget.seedvrAssets&&widget.nativeSeedvrAvailable);
             await page.locator('.vnccs-pipe-preview-head .vnccs-pipe-tab').nth(0).click();
             await page.evaluate(({count})=>emit(widget.stages[0][0],{current:0,total:count}),scenario);
-            assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>getComputedStyle(tile).visibility==='hidden')),true);
+            const initial=await page.evaluate(()=>({
+                poseStage:widget.stages[0][0].endsWith('pose_generation'),
+                visible:[...widget.previewGrid.children].every(tile=>getComputedStyle(tile).visibility!=='hidden'),
+                waiting:[...widget.previewGrid.children].slice(1).map(tile=>({
+                    filter:getComputedStyle(tile.querySelector('.vnccs-pipe-img-placeholder')).filter,
+                    animation:getComputedStyle(tile.querySelector('.vnccs-pipe-img-placeholder')).animationName,
+                })),
+            }));
+            assert.equal(initial.visible,initial.poseStage);
+            if(initial.poseStage){
+                assert.ok(initial.waiting.every(card=>card.filter.includes('grayscale(1)')),'Waiting cards must be grayscale');
+                assert.ok(initial.waiting.every(card=>card.animation==='none'),'Waiting cards must stay static');
+            }
             await page.evaluate(({count,width,height})=>emit(widget.stages[0][0],{status:'done',current:count,total:count,images:urls('layout',count,width,height)}),scenario);
             await page.waitForFunction(count=>widget.previewGrid.children.length===count&&[...widget.previewGrid.children].every(tile=>tile.dataset.src),scenario.count);
             await page.waitForTimeout(460+(scenario.count-1)*100);

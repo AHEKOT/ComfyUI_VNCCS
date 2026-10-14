@@ -91,7 +91,6 @@ ${SAKURA_THEME_CSS}
     visibility: visible;
     transform: translate(0, -50%) scale(1);
     transition-delay: 100ms;
-    animation: cd-costume-empty-breathe 3800ms ease-in-out 520ms infinite;
 }
 .vnccs-clothes-costume-empty-icon {
     display: inline-flex;
@@ -138,10 +137,6 @@ ${SAKURA_THEME_CSS}
     stroke-width: 2;
     stroke-linecap: round;
     stroke-linejoin: round;
-}
-@keyframes cd-costume-empty-breathe {
-    0%, 100% { border-color: rgba(255,143,163,0.34); box-shadow: 0 16px 40px rgba(0,0,0,0.34), 0 0 0 rgba(255,143,163,0); }
-    50% { border-color: rgba(255,143,163,0.52); box-shadow: 0 16px 40px rgba(0,0,0,0.34), 0 0 24px rgba(255,143,163,0.09); }
 }
 @keyframes cd-costume-empty-arrow {
     0%, 100% { transform: translate(0, -50%); opacity: 0.7; }
@@ -513,18 +508,27 @@ ${SAKURA_THEME_CSS}
     top: 0;
     left: 0;
     right: 0;
-    height: clamp(18px, 6%, 42px);
-    transform: translateY(-50%);
+    height: 100%;
+    transform: translateY(-100%);
     opacity: 0.82;
+    mix-blend-mode: screen;
+    will-change: transform, opacity;
+    animation: cd-preview-process-scan 2200ms cubic-bezier(0.4,0,0.2,1) infinite;
+}
+.vnccs-clothes-generation-scan::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: clamp(18px, 6%, 42px);
     background: linear-gradient(180deg, transparent, rgba(255,143,163,0.24) 30%, rgba(255,238,246,0.98) 50%, rgba(255,143,163,0.34) 68%, transparent);
     box-shadow: 0 0 24px rgba(255,143,163,0.3);
-    mix-blend-mode: screen;
-    animation: cd-preview-process-scan 2200ms cubic-bezier(0.4,0,0.2,1) infinite;
 }
 .vnccs-clothes-generation-layer.is-revealing .vnccs-clothes-generation-base { animation: none; }
 .vnccs-clothes-generation-layer.is-revealing .vnccs-clothes-generation-scan { animation: none; }
 @keyframes cd-preview-wait { 0%, 100% { opacity: 0.78; } 50% { opacity: 1; } }
-@keyframes cd-preview-process-scan { from { top: 0%; opacity: 0.5; } to { top: 100%; opacity: 0.9; } }
+@keyframes cd-preview-process-scan { from { transform: translateY(-100%); opacity: 0.5; } to { transform: translateY(0); opacity: 0.9; } }
 .cd-sprite-nav {
     display: none;
     align-items: center;
@@ -2087,8 +2091,10 @@ app.registerExtension({
                 spriteNav.append(spritePrevBtn, spriteCount, spriteNextBtn);
                 colLeft.appendChild(spriteNav);
                 let previewGenerationRevision = 0;
+                let workflowPreviewGeneration = null;
                 const stopClothesPreviewGeneration = (revision, restorePlaceholder = false) => {
                     if (revision !== undefined && revision !== previewGenerationRevision) return;
+                    if (revision === undefined || workflowPreviewGeneration?.revision === revision) workflowPreviewGeneration = null;
                     previewGenerationRevision += 1;
                     for (const animation of els.generationLayer?._animations || []) animation.cancel();
                     if (els.generationLayer) {
@@ -2119,7 +2125,7 @@ app.registerExtension({
                     els.generationBase.style.clipPath = "inset(0% 0 0 0)";
                     els.generationNew.removeAttribute("src");
                     els.generationNew.style.clipPath = "inset(0 0 100% 0)";
-                    els.generationScan.style.top = "0%";
+                    els.generationScan.style.transform = "translateY(-100%)";
                     els.generationLayer.classList.remove("is-revealing");
                     els.generationLayer.hidden = false;
                     els.previewFrame.setAttribute("aria-busy", "true");
@@ -2146,8 +2152,8 @@ app.registerExtension({
                             { clipPath: "inset(100% 0 0 0)" },
                         ], options);
                         const scan = els.generationScan.animate([
-                            { top: "0%", opacity: 1 },
-                            { top: "100%", opacity: 1 },
+                            { transform: "translateY(-100%)", opacity: 1 },
+                            { transform: "translateY(0)", opacity: 1 },
                         ], options);
                         els.generationLayer._animations = [reveal, conceal, scan];
                         await Promise.all([reveal.finished.catch(() => {}), conceal.finished.catch(() => {}), scan.finished.catch(() => {})]);
@@ -2165,6 +2171,68 @@ app.registerExtension({
                     stopClothesPreviewGeneration(revision);
                     return true;
                 };
+                node._vnccsStartWorkflowPreview = () => {
+                    if (!state.character) return null;
+                    workflowPreviewGeneration = {
+                        revision: startClothesPreviewGeneration(),
+                        character: state.character,
+                        costume: hasSelectedEditableCostume() ? state.costume : "Naked",
+                    };
+                    return workflowPreviewGeneration.revision;
+                };
+                node._vnccsRevealWorkflowPreview = character => {
+                    const workflow = workflowPreviewGeneration;
+                    const currentCostume = hasSelectedEditableCostume() ? state.costume : "Naked";
+                    if (!workflow || workflow.character !== character || state.character !== character
+                        || workflow.costume !== currentCostume) return null;
+                    if (workflow.promise) return workflow.promise;
+                    const currentRequest = beginPreviewRequest();
+                    spritePreviewNavigator?.invalidate?.();
+                    spritePreviewNavigator?.hideNav?.();
+                    previewLoading?.classList.remove("is-visible");
+                    const params = new URLSearchParams({
+                        character,
+                        costume: workflow.costume,
+                        ts: String(Date.now()),
+                        force_cache: "true",
+                    });
+                    const url = mediaURL(`/vnccs/get_preview?${params.toString()}`);
+                    workflow.promise = (async () => {
+                        const presented = await revealClothesPreview(url, character, workflow.revision);
+                        return Boolean(presented && currentRequest() && state.character === character
+                            && (hasSelectedEditableCostume() ? state.costume : "Naked") === workflow.costume);
+                    })();
+                    return workflow.promise;
+                };
+                const workflowPreviewStartHandler = event => {
+                    const executingNode = event.detail?.node ?? event.detail;
+                    if (String(executingNode) === String(node.id)) node._vnccsStartWorkflowPreview();
+                };
+                const workflowPreviewFailureHandler = event => {
+                    const failedNode = event.detail?.node_id ?? event.detail?.node;
+                    if (workflowPreviewGeneration && (failedNode == null || String(failedNode) === String(node.id))) {
+                        stopClothesPreviewGeneration(workflowPreviewGeneration.revision, true);
+                    }
+                };
+                const workflowPreviewCompleteHandler = event => {
+                    const executedNode = event.detail?.node ?? event.detail;
+                    if (String(executedNode) !== String(node.id) || !workflowPreviewGeneration) return;
+                    node._vnccsRevealWorkflowPreview(workflowPreviewGeneration.character)?.catch(error => {
+                        console.warn("[VNCCS] Workflow clothes preview transition failed", error);
+                    });
+                };
+                api.addEventListener("executing", workflowPreviewStartHandler);
+                api.addEventListener("executed", workflowPreviewCompleteHandler);
+                api.addEventListener("execution_error", workflowPreviewFailureHandler);
+                api.addEventListener("execution_interrupted", workflowPreviewFailureHandler);
+                registerCleanup(node, () => {
+                    api.removeEventListener("executing", workflowPreviewStartHandler);
+                    api.removeEventListener("executed", workflowPreviewCompleteHandler);
+                    api.removeEventListener("execution_error", workflowPreviewFailureHandler);
+                    api.removeEventListener("execution_interrupted", workflowPreviewFailureHandler);
+                    delete node._vnccsStartWorkflowPreview;
+                    delete node._vnccsRevealWorkflowPreview;
+                });
                 els.cancelPreviewGeneration = restore => stopClothesPreviewGeneration(undefined, restore);
                 registerCleanup(node, () => els.cancelPreviewGeneration?.());
                 spritePreviewNavigator = createSpritePreviewNavigator({
@@ -2579,7 +2647,12 @@ app.registerExtension({
                     const myId = String(node.id);
                     if (targetId === myId) {
                         console.log("VNCCS Preview Update Received for Node:", myId);
-                        updatePreviewImage(true);
+                        const transition = node._vnccsRevealWorkflowPreview?.(event.detail?.character);
+                        if (transition) transition.catch(error => {
+                            console.warn("[VNCCS] Workflow clothes preview transition failed", error);
+                            updatePreviewImage(true);
+                        });
+                        else updatePreviewImage(true);
                     }
                 };
                 api.addEventListener("vnccs.preview.updated", onPreviewUpdated);

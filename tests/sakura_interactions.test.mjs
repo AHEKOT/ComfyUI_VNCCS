@@ -148,7 +148,9 @@ for (const [name, flags] of [["Character", {}], ["Clone", { isClone: true }], ["
         assert.equal(empty.querySelector(".vnccs-common-ui-select-trigger").disabled, true);
         widget.renderPreview(); widget.renderChain(); h.flush();
         await widget.previewGrid.children[0]._pendingImage.onload();
-        const reveals = () => h.document.animations.filter(animation => animation.options.duration === 420).length;
+        const revealDuration = flags.isClone || flags.isClothes || flags.isEmotions ? 420 : 1100;
+        const reveals = () => h.document.animations.filter(animation => animation.options.duration === revealDuration
+            && animation.effect.target.classList.contains("vnccs-pipe-img-content")).length;
         assert.equal(reveals(), 1);
         widget.renderPreview(); h.flush(); assert.equal(reveals(), 1, "The same images do not replay their reveal on each progress event");
         widget.stageState.pose_generation.current = 6; widget.renderChain(); h.flush();
@@ -174,14 +176,18 @@ test("generator gallery reserves aligned slots and reveals decoded cards in orde
     });
     widget.renderPreview();
     const grid = widget.previewGrid, tiles = [...grid.children], head = preview.children[0];
+    const pendingImages = tiles.map(tile => tile._pendingImage);
     assert.equal(tiles.length, 4);
     assert.equal(tiles[0].classList.contains("is-processing"), true);
     assert.equal(tiles[1].classList.contains("is-waiting"), true);
-    await tiles[3]._pendingImage.onload(); await tiles[1]._pendingImage.onload();
+    await tiles[1]._pendingImage.onload();
     assert.equal(h.document.animations.filter(a => a.options.duration === 420).length, 0, "Out-of-order downloads cannot overtake the first card");
-    await tiles[0]._pendingImage.onload(); await tiles[2]._pendingImage.onload();
+    await tiles[0]._pendingImage.onload();
+    await tiles[3]._pendingImage.onload();
+    assert.equal(tiles[3].dataset.src || "", "", "A queued later image cannot overtake the next card");
+    await tiles[2]._pendingImage.onload();
     const reveal = h.document.animations.filter(a => a.options.duration === 420);
-    assert.deepEqual(reveal.map(a => a.effect.target), tiles);
+    assert.deepEqual(reveal.map(a => a.effect.target), pendingImages);
     assert.ok(reveal.every((a, index) => index === 0 || a.options.delay > reveal[index - 1].options.delay));
     assert.equal(reveal[0].options.fill, "backwards", "Delayed cards stay hidden until their turn");
     widget.stageState.pose_generation.current = 1; widget.renderPreview();
@@ -221,6 +227,65 @@ test("generator gallery reserves aligned slots and reveals decoded cards in orde
     assert.ok(tiles.every(tile => Math.abs(parseFloat(tile.style.width) / parseFloat(tile.style.height) - 2 / 3) < 0.001));
 });
 
+test("generator keeps waiting cards static and limits concurrent full-resolution preview decodes", async () => {
+    const waitingRule = generator.match(/\.vnccs-pipe-img\.is-placeholder\.is-waiting \.vnccs-pipe-img-placeholder\s*\{[^}]+\}/)?.[0] || "";
+    assert.match(waitingRule, /grayscale\(1\)/);
+    assert.doesNotMatch(waitingRule, /animation:/);
+    assert.match(generator, /\.vnccs-pipe-img\.is-waiting \.vnccs-pipe-img-content\s*\{[^}]*grayscale\(1\)/);
+    assert.match(generator, /\.vnccs-pipe-img-content\s*\{[^}]*transition:\s*filter 520ms/);
+    assert.doesNotMatch(generator, /@property --vnccs-process-angle|conic-gradient\(from var\(--vnccs-process-angle/);
+    assert.match(generator, /@keyframes vnccs-pipe-mannequin-scan\s*\{[^}]*translateY\(-100%\)/);
+
+    const h = setup();
+    h.context.cancelAnimationFrame = () => {};
+    h.context.app = { registerExtension() {} };
+    vm.runInContext(generator.replace(/^import .*;\n/gm, "") + '\nthis.Generator = CharacterGeneratorWidget;', h.context);
+    const preview = new h.Element("div"); h.root.appendChild(preview);
+    const widget = Object.assign(Object.create(h.context.Generator.prototype), {
+        previewEl: preview, _ui: h.ui, syncStagesFromData() {}, schedulePreviewGridLayout() {},
+        stages: [["pose_generation", "Poses"]], selectedPreview: "pose_generation",
+        stageState: { pose_generation: { status: "done", current: 6, total: 6,
+            images: Array.from({ length: 6 }, (_, index) => `sprite-${index}.png`) } },
+    });
+    widget.renderPreview();
+    const images = [...widget.previewGrid.children].map(tile => tile._pendingImage);
+    assert.equal(images.filter(image => image.src).length, 2);
+    await images[0].onload();
+    assert.equal(images.filter(image => image.src).length, 3);
+});
+
+test("Character Generator wipes a decoded sprite over its mannequin without a layout animation cancelling it", async () => {
+    const h = setup();
+    h.context.app = { registerExtension() {} };
+    vm.runInContext(generator.replace(/^import .*;\n/gm, "") + '\nthis.Generator = CharacterGeneratorWidget;', h.context);
+    const preview = new h.Element("div"); h.root.appendChild(preview);
+    const widget = Object.assign(Object.create(h.context.Generator.prototype), {
+        previewEl: preview, _ui: h.ui, syncStagesFromData() {}, schedulePreviewGridLayout() {},
+        stages: [["pose_generation", "Poses"]], selectedPreview: "pose_generation",
+        stageState: { pose_generation: { status: "running", current: 0, total: 2, images: [] } },
+    });
+    widget.renderPreview();
+    const tile = widget.previewGrid.children[0];
+    assert.equal(tile.classList.contains("is-placeholder"), true);
+
+    widget.stageState.pose_generation = { status: "running", current: 1, total: 2, images: ["sprite.png"] };
+    widget.renderPreview();
+    const image = tile._pendingImage;
+    await image.onload();
+
+    const wipe = h.document.animations.filter(animation => animation.options.duration === 1100);
+    assert.equal(wipe.length, 2);
+    assert.equal(wipe[0].effect.target, image);
+    assert.equal(wipe[1].effect.target.classList.contains("vnccs-pipe-img-placeholder-scan"), true);
+    assert.deepEqual(Array.from(wipe[0].keyframes, frame => frame.clipPath), ["inset(0 0 100% 0)", "inset(0 0 0% 0)"]);
+    assert.deepEqual(Array.from(wipe[1].keyframes, frame => frame.transform), ["translateY(-100%)", "translateY(0)"]);
+    assert.equal(wipe[0].options.fill, "backwards");
+    assert.equal(tile.classList.contains("is-character-revealing"), true);
+    wipe.forEach(animation => animation.finish());
+    assert.equal(tile.classList.contains("is-character-revealing"), false);
+    assert.equal(image.style.clipPath, "");
+});
+
 test("Clothes Generator wipes each decoded outfit over its source sprite without resizing mid-transition", async () => {
     const h = setup();
     h.context.cancelAnimationFrame = () => {};
@@ -251,7 +316,7 @@ test("Clothes Generator wipes each decoded outfit over its source sprite without
 
     const wipe = h.document.animations.filter(animation => animation.options.duration === 1350);
     assert.equal(wipe.length, 3);
-    assert.equal(wipe[2].keyframes.map(frame => frame.top).join(","), "-10%,90%");
+    assert.equal(wipe[2].keyframes.map(frame => frame.transform).join(","), "translateY(-100%),translateY(0)");
     assert.equal(tiles[0].classList.contains("is-clothes-revealing"), true);
     assert.ok(Math.abs(parseFloat(tiles[0].style.width) / parseFloat(tiles[0].style.height) - 640 / 1536) < 0.001);
     wipe.forEach(animation => animation.finish()); h.flush();

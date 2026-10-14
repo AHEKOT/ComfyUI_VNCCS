@@ -18,6 +18,11 @@ const classes = () => {
 
 test("Creator generation uses the gender mannequin, then reveals the new preview behind the synchronized scan", async () => {
     const animations = [], completions = [];
+    const listeners = new Map();
+    const api = {
+        addEventListener(name, callback) { listeners.set(name, callback); },
+        removeEventListener(name, callback) { if (listeners.get(name) === callback) listeners.delete(name); },
+    };
     const animated = () => ({
         style: {}, src: "", removeAttribute(name) { if (name === "src") this.src = ""; }, decode: async () => {},
         animate(frames, options) {
@@ -41,9 +46,12 @@ test("Creator generation uses the gender mannequin, then reveals the new preview
         generationLayer: layer, generationBase: animated(), generationNew: animated(), generationScan: animated(),
         previewFrame: frame, previewImg: preview, placeholder, _ui: {},
     };
+    const node = { id: 7 };
     const context = vm.createContext({
-        els, state: { character: "Kai", character_info: { sex: "male" } }, node: {},
+        api, els, state: { character: "Kai", character_info: { sex: "male" } }, node,
         registerCleanup() {}, CHARACTER_MANNEQUIN_URL: "female.png", CHARACTER_MANNEQUIN_MALE_URL: "male.png",
+        beginPreviewRequest: () => () => true, mediaURL: value => value,
+        clearPreviewHandlers() {}, hideSpriteNav() {}, setPreviewLoading() {}, saveState() {},
         window: { matchMedia: () => ({ matches: false }), requestAnimationFrame: callback => callback() },
     });
     vm.runInContext(`${code}\nglobalThis.start = startPreviewGeneration; globalThis.reveal = revealGeneratedPreview;`, context);
@@ -62,7 +70,7 @@ test("Creator generation uses the gender mannequin, then reveals the new preview
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(Array.from(animations[0].frames, frame => frame.clipPath), ["inset(0 0 100% 0)", "inset(0 0 0% 0)"]);
     assert.deepEqual(Array.from(animations[1].frames, frame => frame.clipPath), ["inset(0% 0 0 0)", "inset(100% 0 0 0)"]);
-    assert.deepEqual(Array.from(animations[2].frames, frame => frame.top), ["0%", "50%", "100%"]);
+    assert.deepEqual(Array.from(animations[2].frames, frame => frame.transform), ["translateY(-100%)", "translateY(-50%)", "translateY(0)"]);
     for (const animation of animations.slice(1)) {
         for (const key of ["duration", "easing", "fill"]) assert.equal(animations[0].options[key], animation.options[key]);
     }
@@ -76,4 +84,16 @@ test("Creator generation uses the gender mannequin, then reveals the new preview
     assert.equal(layer.hidden, true);
     assert.equal(frame["aria-busy"], undefined);
     assert.notEqual(first, second);
+
+    listeners.get("executing")({ detail: { node: 7 } });
+    assert.equal(layer.hidden, false, "A normal workflow run must start the same preview animation");
+    listeners.get("executed")({ detail: { node: 7 } });
+    const workflowReveal = node._vnccsRevealWorkflowPreview("Kai");
+    await new Promise(resolve => setImmediate(resolve));
+    completions.splice(0).forEach(resolve => resolve());
+    await new Promise(resolve => setImmediate(resolve));
+    finishPreviewDecode();
+    assert.equal(await workflowReveal, true);
+    assert.equal(preview.src.includes("/vnccs/get_cached_preview?character=Kai"), true);
+    assert.equal(layer.hidden, true);
 });

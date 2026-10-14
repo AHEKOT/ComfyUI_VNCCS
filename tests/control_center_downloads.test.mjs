@@ -78,6 +78,20 @@ test("polling updates real progress while preserving the focused input and scrol
     assert.equal(state.widget.scrollArea.scrollLeft, 8);
 });
 
+test("hidden Control Center pauses status polling until the page is visible", async () => {
+    let requests = 0;
+    const state = setup(async () => {
+        requests++;
+        return { ok: true, json: async () => ({}) };
+    });
+    state.document.visibilityState = "hidden";
+    await state.pollOnce();
+    assert.equal(requests, 0);
+    state.document.visibilityState = "visible";
+    await state.pollOnce();
+    assert.equal(requests, 1);
+});
+
 test("idle download progress updates retain the layer without rebuilding the cards", async () => {
     const state = setup();
     state.document.activeElement = null;

@@ -6,6 +6,7 @@ import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, showModal as showCommonModal,
 const CHARACTER_MANNEQUIN_URL = new URL("./assets/VNCCS_Character_Mannequin.png", import.meta.url).href;
 const CHARACTER_MANNEQUIN_MALE_URL = new URL("./assets/VNCCS_Character_Mannequin_Male.png", import.meta.url).href;
 const CHARACTER_MANNEQUIN_ASPECT = 2 / 3;
+const PREVIEW_LOAD_CONCURRENCY = 2;
 const GENERATOR_QWEN_INSTRUCTION = "Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.";
 const QI2_EMOTION_PROMPT_TEMPLATE = "Upscale face image.\nMake character's face emotion {emotion}\nChange only face. Keep original neck colour, clothes and hairs\nkeep character's clothes";
 const QI2_EMOTION_BBOX_DEFAULTS = Object.freeze({
@@ -531,7 +532,9 @@ ${SAKURA_THEME_CSS}
     transform-origin: top left;
     transition: border-color 240ms ease, box-shadow 240ms ease;
 }
-.vnccs-pipe-img-content { position: absolute; z-index: 1; inset: 4px; width: calc(100% - 8px); height: calc(100% - 8px); object-fit: contain; pointer-events: none; }
+.vnccs-pipe-img-content { position: absolute; z-index: 1; inset: 4px; width: calc(100% - 8px); height: calc(100% - 8px); object-fit: contain; pointer-events: none; transition: filter 520ms ease, opacity 420ms ease, transform 520ms cubic-bezier(0.22,1,0.36,1); }
+.vnccs-pipe-img.is-waiting .vnccs-pipe-img-content { filter: grayscale(1) saturate(0.15) brightness(0.62); opacity: 0.64; transform: scale(0.992); }
+.vnccs-pipe-img.is-processing .vnccs-pipe-img-content { filter: none; opacity: 1; transform: scale(1); }
 .vnccs-pipe-img-placeholder {
     position: absolute;
     z-index: 1;
@@ -553,15 +556,24 @@ ${SAKURA_THEME_CSS}
 .vnccs-pipe-img-placeholder-scan {
     position: absolute;
     z-index: 3;
+    top: 0;
     left: 0;
     right: 0;
-    top: -22%;
-    height: 20%;
+    height: 100%;
     pointer-events: none;
     opacity: 0;
+    transform: translateY(-100%);
+    mix-blend-mode: screen;
+}
+.vnccs-pipe-img-placeholder-scan::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: clamp(20px, 8%, 46px);
     background: linear-gradient(180deg, transparent, rgba(255,143,163,0.22) 30%, rgba(255,235,244,0.94) 50%, rgba(255,143,163,0.28) 68%, transparent);
     box-shadow: 0 0 22px rgba(255,143,163,0.22);
-    mix-blend-mode: screen;
 }
 .vnccs-pipe-img.is-placeholder.is-processing .vnccs-pipe-img-placeholder {
     opacity: 0.82;
@@ -574,30 +586,38 @@ ${SAKURA_THEME_CSS}
         repeating-linear-gradient(180deg, transparent 0 8px, rgba(255,143,163,0.035) 9px 10px),
         radial-gradient(circle at 50% 40%, rgba(119,57,104,0.34), #11111a 72%);
 }
-.vnccs-pipe-img.is-placeholder.is-processing .vnccs-pipe-img-placeholder-scan {
+.vnccs-pipe-img.is-processing .vnccs-pipe-img-placeholder-scan {
     opacity: 1;
+    will-change: transform, opacity;
     animation: vnccs-pipe-mannequin-scan 2200ms cubic-bezier(0.4,0,0.2,1) infinite;
 }
 .vnccs-pipe-img.is-clothes-revealing .vnccs-pipe-img-placeholder-scan {
     opacity: 1;
+    will-change: transform, opacity;
+    animation: none;
+}
+.vnccs-pipe-img.is-character-revealing .vnccs-pipe-img-placeholder {
+    opacity: 0.82;
+    filter: saturate(1.05) brightness(0.96) drop-shadow(0 0 10px rgba(255,143,163,0.32));
+}
+.vnccs-pipe-img.is-character-revealing .vnccs-pipe-img-placeholder-scan {
+    opacity: 1;
+    will-change: transform, opacity;
     animation: none;
 }
 .vnccs-pipe-img.is-placeholder.is-waiting .vnccs-pipe-img-placeholder {
-    animation: vnccs-pipe-mannequin-wait 2600ms ease-in-out infinite;
-    animation-delay: var(--wait-phase, 0ms);
+    opacity: 0.2;
+    filter: grayscale(1) saturate(0.15) brightness(0.62);
 }
-.vnccs-pipe-img::before, .vnccs-pipe-img::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 2; opacity: 0; transition: opacity 240ms ease; }
+.vnccs-pipe-img::before, .vnccs-pipe-img::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 2; opacity: 0; transition: opacity 320ms ease, transform 320ms ease; }
 .vnccs-pipe-img::before { border: 2px solid var(--accent-lavender); }
-.vnccs-pipe-img.is-waiting::before { animation: vnccs-pipe-card-wait 2400ms ease-in-out infinite; animation-delay: var(--wait-phase, 0ms); }
-.vnccs-pipe-img::after { padding: 2px; background: conic-gradient(from var(--vnccs-process-angle, 0deg), transparent 20%, var(--accent) 40%, transparent 65%); mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); mask-composite: exclude; }
+.vnccs-pipe-img.is-waiting::before { opacity: 0.16; }
+.vnccs-pipe-img::after { border: 2px solid var(--accent); box-shadow: inset 0 0 18px rgba(255,143,163,0.12), 0 0 14px rgba(255,143,163,0.2); }
 .vnccs-pipe-img.is-processing { border-color: var(--accent); box-shadow: 0 0 12px rgba(255,143,163,0.16); }
-.vnccs-pipe-img.is-processing::after { opacity: 1; animation: vnccs-pipe-card-process 1800ms linear infinite; }
-@property --vnccs-process-angle { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
-@keyframes vnccs-pipe-card-wait { 0%, 100% { opacity: 0.16; } 50% { opacity: 0.6; } }
-@keyframes vnccs-pipe-card-process { to { --vnccs-process-angle: 360deg; } }
-@keyframes vnccs-pipe-mannequin-develop { 0%, 100% { opacity: 0.58; filter: saturate(0.9) brightness(0.86) drop-shadow(0 0 5px rgba(255,143,163,0.24)); } 50% { opacity: 0.9; filter: saturate(1.2) brightness(1.08) drop-shadow(0 0 16px rgba(255,143,163,0.5)); } }
-@keyframes vnccs-pipe-mannequin-wait { 0%, 100% { opacity: 0.16; } 50% { opacity: 0.34; } }
-@keyframes vnccs-pipe-mannequin-scan { 0% { top: -22%; } 72%, 100% { top: 104%; } }
+.vnccs-pipe-img.is-processing::after { opacity: 1; animation: vnccs-pipe-card-process 1800ms ease-in-out infinite; }
+@keyframes vnccs-pipe-card-process { 0%, 100% { transform: scale(0.996); } 50% { transform: scale(1); } }
+@keyframes vnccs-pipe-mannequin-develop { 0%, 100% { transform: translateX(-50%) scale(1); } 50% { transform: translateX(-50%) scale(1.025); } }
+@keyframes vnccs-pipe-mannequin-scan { 0% { transform: translateY(-100%); } 72%, 100% { transform: translateY(0); } }
 .vnccs-pipe-img.is-empty { visibility: hidden; pointer-events: none; }
 .vnccs-pipe-img.is-empty:focus-visible { outline-offset: -3px; }
 .vnccs-pipe-img:hover {
@@ -1306,6 +1326,8 @@ class CharacterGeneratorWidget {
         this.nodeDefs = {};
         this.fieldDrafts = new Map();
         this.previewLayoutFrame = null;
+        this.previewLoadQueue = [];
+        this.previewLoadsActive = 0;
         this._clothesRevealIndices = new Set();
         this.regenerateState = null;
         this.regenerateTimer = null;
@@ -1397,7 +1419,12 @@ class CharacterGeneratorWidget {
             this.closeViewer();
             this.viewer = null;
             clearTimeout(this._saveBrowserStateTimer);
-            for (const tile of this.previewGrid?.children || []) this.finishClothesPreviewTransition(tile);
+            this.previewLoadQueue = [];
+            this.previewLoadsActive = 0;
+            for (const tile of this.previewGrid?.children || []) {
+                this.finishCharacterPreviewTransition(tile);
+                this.finishClothesPreviewTransition(tile);
+            }
             cancelAnimationFrame(this.previewLayoutFrame);
             this.previewLayoutFrame = null;
         });
@@ -1585,10 +1612,11 @@ class CharacterGeneratorWidget {
         clearInterval(this.regenerateTimer);
         this.regenerateTimer = setInterval(() => {
             if (!this.regenerateState) return;
-            this.regenerateState.elapsed = Math.floor((Date.now() - this.regenerateState.startedAt) / 1000);
-            this.renderPreview();
+            const elapsed = Math.floor((Date.now() - this.regenerateState.startedAt) / 1000);
+            if (elapsed === this.regenerateState.elapsed) return;
+            this.regenerateState.elapsed = elapsed;
             this.renderChain();
-        }, 500);
+        }, 1000);
     }
 
     finishRegenerate({ render = true } = {}) {
@@ -3651,7 +3679,8 @@ class CharacterGeneratorWidget {
         const busy = state.status === "running" || this.regenerateState?.activeStage === this.selectedPreview;
         const missingPosePreviews = this.selectedPreview.endsWith("pose_generation")
             && images.filter(Boolean).length < count;
-        const showPlaceholders = busy && (missingPosePreviews || this._previewPlaceholderStage === this.selectedPreview);
+        const showPlaceholders = busy && !upstream.some(Boolean)
+            && (missingPosePreviews || this._previewPlaceholderStage === this.selectedPreview);
         const mannequinURL = this.mannequinURL();
         const targeted = Number.isInteger(this.regenerateState?.imageIndex) && this.regenerateState?.targetStages?.includes(this.selectedPreview);
         const activeIndex = targeted ? this.regenerateState.imageIndex
@@ -3663,7 +3692,14 @@ class CharacterGeneratorWidget {
         this.previewGrid.style.display = count ? "grid" : "none";
         while (this.previewGrid.children.length > count) {
             const tile = this.previewGrid.children[this.previewGrid.children.length - 1];
-            if (tile._pendingImage) tile._pendingImage.onload = tile._pendingImage.onerror = null;
+            if (tile._pendingImage) {
+                const pending = tile._pendingImage;
+                tile._pendingImage = null;
+                pending.onload = pending.onerror = null;
+                this.finishPreviewImageLoad(pending);
+                pending.removeAttribute("src");
+            }
+            this.finishCharacterPreviewTransition(tile);
             this.finishClothesPreviewTransition(tile);
             tile.remove();
         }
@@ -3700,10 +3736,15 @@ class CharacterGeneratorWidget {
                 : images[index] || (!showPlaceholders ? upstream[index] || (busy ? tile._previewSource : null) : null));
             if (source) this.updatePreviewImage(tile, source);
             else {
+                this.finishCharacterPreviewTransition(tile);
                 this.finishClothesPreviewTransition(tile);
                 if (tile._pendingImage) {
-                    tile._pendingImage.onload = tile._pendingImage.onerror = null;
-                    tile._pendingImage.remove();
+                    const pending = tile._pendingImage;
+                    tile._pendingImage = null;
+                    pending.onload = pending.onerror = null;
+                    this.finishPreviewImageLoad(pending);
+                    pending.removeAttribute("src");
+                    pending.remove();
                 }
                 tile._previewImage?.remove();
                 tile._pendingImage = tile._previewImage = tile._previewSource = null;
@@ -3743,14 +3784,43 @@ class CharacterGeneratorWidget {
         this.schedulePreviewGridLayout(this.previewGrid);
     }
 
+    queuePreviewImageLoad(tile, image, src) {
+        this.previewLoadQueue ||= [];
+        this.previewLoadsActive ||= 0;
+        this.previewLoadQueue.push({ tile, image, src });
+        this.pumpPreviewImageLoads();
+    }
+
+    pumpPreviewImageLoads() {
+        while (!this._disposed && this.previewLoadsActive < PREVIEW_LOAD_CONCURRENCY && this.previewLoadQueue?.length) {
+            const { tile, image, src } = this.previewLoadQueue.shift();
+            if (tile._pendingImage !== image || image._previewReady) continue;
+            image._previewLoadStarted = true;
+            this.previewLoadsActive += 1;
+            image.src = src;
+        }
+    }
+
+    finishPreviewImageLoad(image) {
+        if (!image?._previewLoadStarted || image._previewLoadFinished) return;
+        image._previewLoadFinished = true;
+        this.previewLoadsActive = Math.max(0, (this.previewLoadsActive || 0) - 1);
+        this.pumpPreviewImageLoads();
+    }
+
     updatePreviewImage(tile, source) {
         const src = mediaURL(source);
         if (tile._previewSource === src) return;
+        this.finishCharacterPreviewTransition(tile);
         this.finishClothesPreviewTransition(tile);
         tile._previewSource = src;
         if (tile._pendingImage) {
-            tile._pendingImage.onload = tile._pendingImage.onerror = null;
-            tile._pendingImage.remove();
+            const previousPending = tile._pendingImage;
+            tile._pendingImage = null;
+            previousPending.onload = previousPending.onerror = null;
+            this.finishPreviewImageLoad(previousPending);
+            previousPending.removeAttribute("src");
+            previousPending.remove();
         }
         const image = document.createElement("img");
         image.className = "vnccs-pipe-img-content";
@@ -3762,19 +3832,60 @@ class CharacterGeneratorWidget {
         const ready = async () => {
             image.onload = image.onerror = null;
             try { await image.decode?.(); } catch { /* Keep the last successful preview on a failed load. */ }
-            if (this._disposed || tile._pendingImage !== image || !tile.isConnected) return;
-            image._previewReady = true;
-            this.flushPreviewImages();
+            if (!this._disposed && tile._pendingImage === image && tile.isConnected) {
+                image._previewReady = true;
+                this.flushPreviewImages();
+            }
+            this.finishPreviewImageLoad(image);
         };
         image.onload = ready;
         image.onerror = () => {
-            if (tile._pendingImage !== image) return;
-            tile._pendingImage = null;
-            tile._previewSource = tile.dataset.src || null;
-            image.remove();
-            this.flushPreviewImages();
+            if (tile._pendingImage === image) {
+                tile._pendingImage = null;
+                tile._previewSource = tile.dataset.src || null;
+                image.remove();
+                this.flushPreviewImages();
+            }
+            this.finishPreviewImageLoad(image);
         };
-        image.src = src;
+        this.queuePreviewImageLoad(tile, image, src);
+    }
+
+    finishCharacterPreviewTransition(tile) {
+        if (!tile?._characterRevealAnimations?.length && !tile?.classList?.contains("is-character-revealing")) return;
+        for (const animation of tile._characterRevealAnimations || []) {
+            animation.onfinish = null;
+            animation.cancel?.();
+        }
+        tile._characterRevealAnimations = null;
+        tile.classList.toggle("is-character-revealing", false);
+        if (tile._previewImage) tile._previewImage.style.clipPath = "";
+    }
+
+    startCharacterPreviewTransition(tile, image, delay = 0) {
+        tile.classList.toggle("is-character-revealing", true);
+        image.style.opacity = "1";
+        image.style.clipPath = "inset(0 0 100% 0)";
+        const scan = tile.querySelector(".vnccs-pipe-img-placeholder-scan");
+        const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+        if (reducedMotion || !image.animate || !scan?.animate) {
+            this.finishCharacterPreviewTransition(tile);
+            return;
+        }
+        const options = { duration: 1100, delay, easing: "cubic-bezier(0.22, 1, 0.36, 1)", fill: "backwards" };
+        const animations = [
+            image.animate([{ clipPath: "inset(0 0 100% 0)" }, { clipPath: "inset(0 0 0% 0)" }], options),
+            scan.animate([
+                { transform: "translateY(-100%)", opacity: 0.72 },
+                { transform: "translateY(0)", opacity: 1 },
+            ], options),
+        ];
+        tile._characterRevealAnimations = animations;
+        let remaining = animations.length;
+        for (const animation of animations) animation.onfinish = () => {
+            remaining -= 1;
+            if (!remaining && tile._previewImage === image) this.finishCharacterPreviewTransition(tile);
+        };
     }
 
     finishClothesPreviewTransition(tile) {
@@ -3814,8 +3925,8 @@ class CharacterGeneratorWidget {
             image.animate([{ clipPath: "inset(0 0 100% 0)" }, { clipPath: "inset(0 0 0% 0)" }], options),
             previous.animate([{ clipPath: "inset(0% 0 0 0)" }, { clipPath: "inset(100% 0 0 0)" }], options),
             scan.animate([
-                { top: "-10%", opacity: 1 },
-                { top: "90%", opacity: 1 },
+                { transform: "translateY(-100%)", opacity: 1 },
+                { transform: "translateY(0)", opacity: 1 },
             ], options),
         ];
         tile._clothesRevealAnimations = animations;
@@ -3836,6 +3947,8 @@ class CharacterGeneratorWidget {
             tile._pendingImage = null;
             changed = true;
             const previous = tile._previewImage;
+            const characterReveal = Boolean(!previous && !this.isClone && !this.isClothes && !this.isEmotions
+                && tile.classList.contains("is-placeholder"));
             const clothesReveal = Boolean(previous && this.isClothes && this.selectedPreview === "pose_generation"
                 && this._clothesRevealIndices?.delete(index));
             tile._previewImage = image;
@@ -3852,8 +3965,10 @@ class CharacterGeneratorWidget {
             image.style.opacity = "1";
             if (clothesReveal) {
                 this.startClothesPreviewTransition(tile, image, previous);
+            } else if (characterReveal) {
+                this.startCharacterPreviewTransition(tile, image, delay);
             } else {
-                const motion = this._ui?._playMotion(previous ? image : tile, [{ opacity: 0, filter: "blur(4px)" }, { opacity: 1, filter: "blur(0px)" }], 420);
+                const motion = this._ui?._playMotion(image, [{ opacity: 0, filter: "blur(4px)" }, { opacity: 1, filter: "blur(0px)" }], 420);
                 motion?.effect?.updateTiming?.({ delay, fill: "backwards" });
             }
             if (previous && !clothesReveal) {

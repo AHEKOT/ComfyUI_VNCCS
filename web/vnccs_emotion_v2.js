@@ -3112,6 +3112,8 @@ app.registerExtension({
                     const img = document.createElement("img");
                     img.className = "ems-emotion-img";
                     img.alt = "";
+                    img.loading = "lazy";
+                    img.decoding = "async";
                     img.src = mediaURL(`/vnccs/get_emotion_image?name=${encodeURIComponent(e.safe_name)}&v=webp`);
                     img.onerror = () => {
                         const placeholder = document.createElement("div");
