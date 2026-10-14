@@ -776,6 +776,19 @@ def load_costume_info(character_name: str, costume_name: str) -> Dict[str, Any]:
     return validate_costume_info(costumes.get(costume_name, {}))
 
 
+def require_existing_costume(character_name: str, costume_name: str) -> None:
+    """Reject deleted selections while retaining legacy sprite-only costumes."""
+    character_name = ensure_safe_name(character_name, "character")
+    costume_name = ensure_safe_name(costume_name, "costume")
+    root = character_dir(character_name)
+    with character_storage_lock(root):
+        config = load_config(character_name, strict=True) or {}
+        if costume_name in config.get("costumes", {}):
+            return
+        if not os.path.isdir(safe_join_under(root, "Sprites", costume_name)):
+            raise ValueError(f"Costume '{costume_name}' no longer exists. Reload the costume selection before generating.")
+
+
 def json_revision(info, identity=""):
     value = [identity, info] if identity else info
     content = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")

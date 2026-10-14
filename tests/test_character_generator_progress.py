@@ -70,8 +70,12 @@ def test_pose_progress_tracks_each_phase_and_item(generator, monkeypatch, kind, 
         if class_name in {"VNCCS_Flux_Klein_Encoder", "ProbeEncode"}:
             return "positive", "negative", "latent"
         if class_name == "MiniMaxH3ReferenceToVideo":
-            return "positive", "latent"
+            return "positive", {"samples": torch.zeros(1, 24, 2, 4, 4)}
+        if class_name == "SamplerCustomAdvanced":
+            return ({"samples": torch.zeros(1, 24, 2, 4, 4)},)
         if class_name in {"VAEDecodeTiled", "VAEDecode", "ProbeDecode"}:
+            if kind == "minimaxh3":
+                assert kwargs["samples"]["samples"].shape == (1, 24, 1, 4, 4)
             return (image,)
         return ("result",)
 
@@ -176,6 +180,37 @@ def test_initial_pose_batch_publishes_each_sprite_when_it_finishes(generator, mo
     assert all(0 <= event.get("processing_index", 0) < 3 for event in phase_events)
 
 
+@pytest.mark.parametrize("stage_prefix", ["original", "naked"])
+def test_clone_pose_branch_does_not_replace_incremental_previews_on_done(monkeypatch, stage_prefix):
+    node = cg.VNCCS_CharacterCloneGenerator()
+    images = torch.zeros(3, 8, 8, 3)
+    events = []
+
+    monkeypatch.setattr(node, "_should_regenerate_stage", lambda *args: True)
+    monkeypatch.setattr(node, "_run_pose_generation", lambda *args, **kwargs: images)
+    monkeypatch.setattr(node, "_run_upscaler", lambda batch, *args, **kwargs: batch)
+    monkeypatch.setattr(node, "_run_bg_remove", lambda batch, *args, **kwargs: batch)
+    monkeypatch.setattr(node, "_save_stage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(node, "_extract_pipe", lambda *args: {"seed": 1})
+    monkeypatch.setattr(node, "_bg_remove_disabled", lambda *args: True)
+    monkeypatch.setattr(
+        node,
+        "_emit",
+        lambda unique_id, stage, status, images=None, *args, **kwargs: events.append({
+            "stage": stage, "status": status, "images": images,
+        }),
+    )
+
+    node._run_sprite_branch(
+        images, images[:1], object(), "prompt", "Green", node._settings("{}"),
+        "17", "", stage_prefix, {},
+    )
+
+    pose_stage = f"{stage_prefix}_pose_generation"
+    done = next(event for event in events if event["stage"] == pose_stage and event["status"] == "done")
+    assert done["images"] is None
+
+
 def test_remove_clothes_reports_encoding_sampling_and_decoding(generator, monkeypatch):
     node, values, events = generator
     values["model_kind"] = "klein9b"
@@ -201,27 +236,9 @@ def test_remove_clothes_reports_encoding_sampling_and_decoding(generator, monkey
     assert all(e["stage"] == "remove_clothes" and e["node_id"] == "node-17" for e in events)
 
 
-def test_clothes_generator_forwards_progress_context(monkeypatch):
-    node = cg.VNCCS_ClothesGenerator()
-    seen = {}
-    image = torch.zeros(1, 8, 8, 3)
-
-    def poses(*args, **kwargs):
-        seen.update(kwargs)
-        return image
-
-    monkeypatch.setattr(node, "_run_pose_generation", poses)
-    result = node._run_clothes_pose_generation(
-        image, image, object(), "prompt", "Green", {}, unique_id="clothes-node",
-    )
-    assert result is image
-    assert seen["unique_id"] == "clothes-node"
-    assert seen["stage"] == "pose_generation"
-
-
 @pytest.mark.parametrize("mode", ["character", "clothes", "original", "naked"])
 @pytest.mark.parametrize("regenerate_index", [None, 2])
-def test_entry_points_forward_node_stage_and_actual_pose_count(monkeypatch, mode, regenerate_index):
+def test_entry_points_forward_node_stage_and_actual_pose_count(monkeypatch, tmp_path, mode, regenerate_index):
     node_type = {
         "character": cg.VNCCS_CharacterGenerator,
         "clothes": cg.VNCCS_ClothesGenerator,
@@ -243,6 +260,9 @@ def test_entry_points_forward_node_stage_and_actual_pose_count(monkeypatch, mode
     monkeypatch.setattr(node, "_find_pose_lora", lambda *args: {})
     monkeypatch.setattr(cg.server.PromptServer.instance, "send_sync", lambda name, payload: events.append(payload), raising=False)
     if mode == "clothes":
+        import utils
+        monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path))
+        utils.save_costume_info("Alice", "Coat", {})
         monkeypatch.setattr(node, "_run_source_upscaler", lambda image, *args, **kwargs: image)
 
     class ReachedPoseGeneration(Exception):
@@ -255,6 +275,7 @@ def test_entry_points_forward_node_stage_and_actual_pose_count(monkeypatch, mode
         assert events[-1]["node_id"] == "17"
         assert events[-1]["total"] == poses.shape[0] == (1 if regenerate_index is not None else 4)
         if mode == "clothes":
+            assert kwargs["background"] == "Green"
             if regenerate_index is None:
                 assert events[-1]["images"] == []
                 base_preview = next(event for event in events if event["stage"] == stage and event["status"] == "waiting")
@@ -274,5 +295,6 @@ def test_entry_points_forward_node_stage_and_actual_pose_count(monkeypatch, mode
         else:
             payload = {} if regenerate_index is None else {"regenerate_from": stage, "regenerate_index": regenerate_index}
             if mode == "clothes":
+                payload["character_name"] = "Alice"
                 payload["costume"] = "Coat"
             node.process(poses, poses[:1], object(), "prompt", widget_data=json.dumps(payload), unique_id=["17"])

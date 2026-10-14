@@ -21,7 +21,8 @@ from ..utils import (
     load_costume_info, list_costumes, ensure_costume_structure,
     sheets_dir,
     ensure_safe_name, safe_join_under, safe_relative_path, atomic_output_path,
-    validate_costume_info, privileged_route, character_storage_lock, load_costume_snapshot
+    validate_costume_info, privileged_route, character_storage_lock, load_costume_snapshot,
+    require_existing_costume,
 )
 from .character_generator import (
     _call_comfy_node,
@@ -32,6 +33,7 @@ from .character_generator import (
     NATIVE_BACKGROUND_PROMPT,
 )
 from .vnccs_control_center import _entry_kind, _find_model_on_disk, _apply_lora_standard
+from .h3_still import require_h3_still_support
 from .qwen_vl import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME
 from .qwen_vl import configure_qwen_text_chat, parse_wizard_json, _validate_gguf_file
 
@@ -560,6 +562,7 @@ class ClothesDesigner:
         if pipe is None:
             raise ValueError("Clothes Designer requires an incoming VNCCS pipe from Control Center.")
 
+        require_existing_costume(character_name, costume_name)
         model = getattr(pipe, "model", None)
         clip = getattr(pipe, "clip", None)
         vae = getattr(pipe, "vae", None)
@@ -578,6 +581,8 @@ class ClothesDesigner:
 
         model_kind = _entry_kind(getattr(pipe, "model_entry", None))
         is_h3 = model_kind == "minimaxh3"
+        if is_h3:
+            require_h3_still_support()
         is_qi2 = model_kind == "qi2"
         background_color = self._effective_background_color(
             gen_settings.get("background_color"), model_kind,
@@ -649,6 +654,8 @@ class ClothesDesigner:
                     item.get("name", "") for item in (getattr(pipe, "lora_states", []) or [])
                     if item.get("auto_apply") and "viggle" in str(item.get("name", "")).lower()
                 )
+            if is_h3:
+                cache_payload["h3_still_decode"] = 16881
             canonical_str = json.dumps(cache_payload, sort_keys=True, separators=(',', ':'))
             input_hash = hashlib.sha256(canonical_str.encode('utf-8')).hexdigest()
             # Custom or externally modified pipes cannot provide a stable asset identity.
@@ -805,7 +812,10 @@ class ClothesDesigner:
 
         # 5. Decode
         log_stage("decoding", component="ClothesDesigner")
-        if is_qi2 or is_h3:
+        if is_h3:
+            with torch.inference_mode():
+                image = VNCCS_CharacterGenerator()._h3_decode(latent_for_decode, vae)
+        elif is_qi2:
             with torch.inference_mode():
                 image, = _call_comfy_node("VAEDecode", vae=vae, samples=latent_for_decode)
         else:
@@ -821,9 +831,6 @@ class ClothesDesigner:
                 log_event('fallback', component='ClothesDesigner', level='warning', message=f'VAEDecodeTiled failed ({e}), falling back to VAEDecode...', error=str(e))
                 with torch.inference_mode():
                     image, = _call_comfy_node("VAEDecode", vae=vae, samples=latent_for_decode)
-
-        if is_h3:
-            image = VNCCS_CharacterGenerator()._h3_first_frame_to_cpu(image)
 
         # Publish the preview before reporting success to the widget.
         i_pil = Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))

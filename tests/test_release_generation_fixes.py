@@ -40,7 +40,10 @@ def test_h3_body_preparation_uses_clothes_lora_and_returns_one_frame(monkeypatch
         if name == "MiniMaxH3ReferenceToVideo":
             return "conditioning", "latent"
         if name == "VAEDecode":
+            assert kwargs["samples"]["samples"].shape == (1, 24, 1, 4, 4)
             return (decoded,)
+        if name == "SamplerCustomAdvanced":
+            return ({"samples": torch.rand(1, 24, 2, 4, 4)},)
         assert name != "KSampler"
         return (name,)
 
@@ -75,6 +78,9 @@ def test_klein_preparation_passes_selected_resolution(monkeypatch, size):
 
 @pytest.fixture
 def designer_run(tmp_path, monkeypatch):
+    import utils
+    monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path / "characters"))
+    utils.save_costume_info("Alice", "Coat", {})
     source = tmp_path / "source.png"
     Image.new("RGB", (32, 32)).save(source)
     monkeypatch.setattr(cd, "get_latest_sprite_path", lambda *args: str(source))

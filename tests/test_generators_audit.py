@@ -9,6 +9,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from nodes import character_generator as generator
+import utils
 
 
 @pytest.mark.parametrize("costume", ["", "Naked", "naked", "Original", "ORIGINAL"])
@@ -67,6 +68,8 @@ def test_single_image_regeneration_preserves_published_sprites(tmp_path, monkeyp
     sheets = root / "Sheets" / ("Coat" if mode == "clothes" else "Naked") / "neutral"
     sheets.mkdir(parents=True)
     monkeypatch.setattr(generator.folder_paths, "get_output_directory", lambda: str(output))
+    if mode == "clothes":
+        utils.save_costume_info("Alice", "Coat", {})
     monkeypatch.setattr(node, "_find_pose_lora", lambda *args: {})
     monkeypatch.setattr(node, "_extract_pipe", lambda *args: {"seed": 0})
     monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
@@ -159,6 +162,8 @@ def test_single_image_resolution_change_never_resizes_other_published_poses(tmp_
     sheets = root / "Sheets" / "Coat" / "neutral"
     sheets.mkdir(parents=True)
     monkeypatch.setattr(generator.folder_paths, "get_output_directory", lambda: str(output))
+    if mode == "clothes":
+        utils.save_costume_info("Alice", "Coat", {})
     monkeypatch.setattr(node, "_find_pose_lora", lambda *args: {})
     monkeypatch.setattr(node, "_extract_pipe", lambda *args: {"seed": 0})
     monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)

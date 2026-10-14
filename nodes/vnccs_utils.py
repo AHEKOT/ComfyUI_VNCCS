@@ -745,10 +745,16 @@ class VNCCSChromaKey:
         if shrunk.max() <= 0:
             return rgba, alpha, debug
 
-        original_rgb = _ensure_float01(original)[..., :3]
+        original = _ensure_float01(original)
+        original_rgb = original[..., :3]
         restored_alpha = torch.maximum(alpha, shrunk).clamp(0.0, 1.0)
+        if original.shape[-1] >= 4:
+            restored_alpha = torch.minimum(restored_alpha, original[..., 3])
+        current_rgb = rgba[..., :3]
+        if output_mode == "premultiplied_rgba":
+            current_rgb = current_rgb / torch.where(alpha > 0, alpha, 1).unsqueeze(-1)
         restored_rgb = torch.lerp(
-            rgba[..., :3],
+            current_rgb,
             original_rgb,
             shrunk.unsqueeze(-1),
         ).clamp(0.0, 1.0)
@@ -783,7 +789,9 @@ class VNCCSChromaKey:
                 edge_decontaminate=edge_decontaminate, edge_choke=edge_choke,
                 output_mode=output_mode,
             )
-        image = _ensure_float01(image)[..., :3]
+        image = _ensure_float01(image)
+        source_alpha = image[..., 3] if image.shape[-1] >= 4 else None
+        image = image[..., :3]
         height, width, _ = image.shape
         key_color = self._detect_key_color(image)
         dominant_idx = self._dominant_channel(key_color, screen_mode)
@@ -870,6 +878,9 @@ class VNCCSChromaKey:
             radius=max(2, int(edge_width) + 2),
             amount=despill_strength,
         )
+        if source_alpha is not None:
+            alpha = alpha * source_alpha
+            edge = self._edge_band(alpha, int(edge_width))
         if output_mode == "premultiplied_rgba":
             rgb_out = despilled * alpha.unsqueeze(-1)
         else:

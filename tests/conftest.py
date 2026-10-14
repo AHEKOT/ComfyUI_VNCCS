@@ -22,6 +22,23 @@ comfy.sd = comfy_sd
 comfy.utils = comfy_utils
 comfy.samplers = comfy_samplers
 
+# Native ComfyUI API surface only; tensor/model execution stays optional.
+comfy_ldm = _make_stub("comfy.ldm")
+comfy_minimax = _make_stub("comfy.ldm.minimax")
+comfy_h3_vae = _make_stub("comfy.ldm.minimax.vae")
+comfy.ldm = comfy_ldm
+comfy_ldm.minimax = comfy_minimax
+comfy_minimax.vae = comfy_h3_vae
+
+class _H3VideoVAEStub:
+    def __init__(self, still_frame=None):
+        raise NotImplementedError("Model execution requires the real ComfyUI runtime")
+
+    def _adaptive_decode(self, z, frames=slice(None)):
+        raise NotImplementedError("Model execution requires the real ComfyUI runtime")
+
+comfy_h3_vae.MiniMaxH3VideoVAE = _H3VideoVAEStub
+
 class _KSamplerStub:
     SAMPLERS = ["euler", "euler_a", "heun", "dpm_2", "dpm_2_ancestral"]
     SCHEDULERS = ["normal", "karras", "exponential", "sgm_uniform"]

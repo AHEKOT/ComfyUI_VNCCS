@@ -2,6 +2,7 @@ from ..operation_logger import log_event, log_stage, logged_operation
 
 from .preview_runtime import run_preview_job
 from .runtime_cleanup import inference_stage
+from .h3_still import h3_runtime_status, require_h3_still_support
 from .progress_state import _valid_scope
 import json
 import math
@@ -1969,6 +1970,8 @@ def _build_control_center_pipe(
         raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
 
     model_kind = _entry_kind(model_entry) or _normalize_model_kind(active_kind)
+    if model_kind == "minimaxh3":
+        require_h3_still_support()
     if model_kind == "qie2511":
         raise RuntimeError("[VNCCS Control Center] QIE2511 is no longer supported. Select a QI2 model.")
     selected_audio_vae_name = ""
@@ -2556,6 +2559,7 @@ async def vnccs_module_status(request):
         key: dependency_status(spec)
         for key, spec in dependency_modules.items()
     }
+    result["comfyui"] = h3_runtime_status()
 
     return web.json_response(result)
 

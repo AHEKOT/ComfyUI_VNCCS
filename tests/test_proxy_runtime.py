@@ -534,7 +534,11 @@ def test_required_tensor_loss_invalidates_the_entire_input_bundle(tensor_cache):
 @pytest.mark.parametrize('node_type', ['VNCCS_CharacterGenerator', 'VNCCS_CharacterCloneGenerator', 'VNCCS_ClothesGenerator'])
 def test_cache_failure_drops_live_regeneration_context_and_records_error(tensor_cache, monkeypatch, node_type):
     import json
+    import utils
+    from pathlib import Path
     generator, Tensor, cache = tensor_cache
+    monkeypatch.setattr(utils, 'base_output_dir', lambda: str(Path(cache) / 'characters'))
+    utils.save_costume_info('Alice', 'Coat', {})
     node = getattr(generator, node_type)()
     monkeypatch.setattr(generator, '_character_cache_dir_from_sheets_path', lambda *args: cache)
     monkeypatch.setattr(generator, '_rotate_preview_cache', lambda *args: None)
@@ -545,7 +549,7 @@ def test_cache_failure_drops_live_regeneration_context_and_records_error(tensor_
     scope = 'cache-failure:5'
     with pytest.raises(OSError, match='Disk full'):
         node.process(Tensor('pose'), Tensor('character'), object(), 'prompt', unique_id=['5'],
-                     widget_data=[json.dumps({'costume': 'Coat', 'ui': {'progress_scope': scope}})])
+                     widget_data=[json.dumps({'character_name': 'Alice', 'costume': 'Coat', 'ui': {'progress_scope': scope}})])
     assert generator._get_generator_context('5', scope) is None
     assert 'Disk full' in generator.progress_snapshot(scope)['error']['message']
     monkeypatch.setattr(generator.web, 'json_response', lambda data, status=200: SimpleNamespace(data=data, status=status), raising=False)

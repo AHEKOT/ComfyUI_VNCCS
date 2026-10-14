@@ -91,12 +91,13 @@ def _remove_plate_speckles(alpha, initial, scale, strength):
     anchor = _erode(allowed, radius)
     if not bool(anchor.any()):
         return alpha
-    anchor = _grow(anchor, allowed, sum(allowed.shape[-2:]))
     # Repeat exact pooling cells; resizing a ceil-pooled grid shifts boundaries.
     anchor = anchor.repeat_interleave(component_scale, 2).repeat_interleave(component_scale, 3)
     anchor = anchor[:, :, :height, :width]
-    # Coarse density selects seeds only. Full-resolution reconstruction must be
-    # allowed to reach long, thin strands beyond the coarse support envelope.
+    # The eroded cores are seeds only. Sparse full-resolution reconstruction
+    # reaches their complete components, including long one-pixel strands.
+    # Growing the dense coarse mask first produced the same seeds but launched
+    # hundreds of full-frame pooling kernels.
     return alpha * _reconstruct_detail(anchor > 0.5, alpha > 0.02)
 
 
@@ -135,6 +136,11 @@ def screen_matte(image, tolerance=0.15, softness=0.12, despill_strength=0.65,
     border = torch.cat((small[:, :, :3, :].flatten(2), small[:, :, -3:, :].flatten(2),
                         small[:, :, :, :3].flatten(2), small[:, :, :, -3:].flatten(2)), dim=2)
     key = border.median(dim=2).values[:, :, None, None]
+    border_delta = border - key.flatten(2)
+    border_spread = _dot_rgb(border_delta, border_delta).sqrt().median()
+    plate_distance = (0.035 * tolerance_scale + border_spread * 3).clamp(
+        min=0.02, max=0.12 * tolerance_scale
+    )
     key_delta = x - key
     rgb_distance = _dot_rgb(key_delta, key_delta).sqrt()
 
@@ -156,7 +162,10 @@ def screen_matte(image, tolerance=0.15, softness=0.12, despill_strength=0.65,
     # With a muted plate, same-hue clothing is only removed if it connects to
     # the outer screen. Enclosed holes still use the stricter RGB key distance.
     scale = max(1, (max(height, width) + 255) // 256)
-    coarse = F.avg_pool2d((hue_score < 1.5).float(), scale, scale, ceil_mode=True) > 0.85
+    coarse = F.avg_pool2d(
+        ((hue_score < 1.5) & (rgb_distance < plate_distance * 2)).float(),
+        scale, scale, ceil_mode=True,
+    ) > 0.85
     exterior = torch.zeros_like(coarse, dtype=torch.float32)
     exterior[:, :, 0, :] = coarse[:, :, 0, :].float()
     exterior[:, :, -1, :] = coarse[:, :, -1, :].float()
@@ -168,9 +177,19 @@ def screen_matte(image, tolerance=0.15, softness=0.12, despill_strength=0.65,
     # dark painted detail happens to be close to the key in RGB distance.
     muted_score = torch.maximum(rgb_distance / (0.14 * tolerance_scale),
                                 torch.where(saturated, hue_score, 0.0))
-    score = torch.where(pure, torch.minimum(rgb_distance / (0.16 * tolerance_scale), hue_score),
-                        muted_score)
-    score = torch.where((exterior > 0.5) & (hue_score < 0.65), 0.0, score)
+    # A pure plate and same-hue foreground can differ only in brightness. Hue
+    # alone therefore cannot classify blue clothing or green hair: it turns
+    # opaque interiors into holes. RGB distance keeps those colors foreground;
+    # the edge unmixing and ink coverage passes below still recover blended
+    # same-hue silhouette pixels.
+    score = torch.where(pure, rgb_distance / (0.16 * tolerance_scale), muted_score)
+    connected_plate = (exterior > 0.5) & (hue_score < 0.65) & (rgb_distance < plate_distance * 2)
+    definite_plate = rgb_distance < plate_distance
+    # Away from the connected plate, a same-hue color is foreground evidence,
+    # not a reason to punch a hole. Exact plate-colored enclosed gaps remain
+    # background through definite_plate.
+    foreground_floor = torch.full_like(score, 0.65 + transition)
+    score = torch.where(definite_plate | connected_plate, 0.0, torch.maximum(score, foreground_floor))
     initial = ((score - 0.65) / transition).clamp(0, 1)
 
     trusted = _erode((initial > 0.98).float(), 3 if max(height, width) > 2048 else 2)
@@ -204,8 +223,8 @@ def screen_matte(image, tolerance=0.15, softness=0.12, despill_strength=0.65,
     # Black ink mixed with a pure screen has the screen's hue, but its darkness
     # gives an exact coverage estimate. Preserve these outline samples near the
     # silhouette even when nearby light hair gives a poor foreground estimate.
-    near_subject = F.max_pool2d((initial > 0.98).float(), radius * 2 + 1, 1, radius) > 0
-    ink_edge = pure & near_subject & (hue_score < 0.65) & (brightness < channels[-1] * 0.7)
+    near_screen = F.max_pool2d((initial < 0.02).float(), radius * 2 + 1, 1, radius) > 0
+    ink_edge = pure & near_screen & (hue_score < 0.65) & (brightness < channels[-1] * 0.7)
     ink_alpha = (1 - _dot_rgb(x, key) / _dot_rgb(key, key).clamp_min(0.001)).clamp(0, 1)
     alpha = torch.where(ink_edge, ink_alpha, alpha)
     alpha_floor = max(0.001, min(0.25, float(edge_choke) * 0.25))

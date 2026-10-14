@@ -150,3 +150,15 @@ test("Clone Generator marks each finished naked pose for a scan reveal", () => {
     assert.deepEqual(Array.from(widget.stageState.naked_pose_generation.images), ["naked-1"]);
     assert.deepEqual(Array.from(widget._nakedRevealIndices), [0]);
 });
+
+test("Clone Generator marks each finished original pose for a scan reveal", () => {
+    const { widget, emit } = setup("original_pose_generation");
+    widget.isClone = true;
+    widget._originalRevealIndices = new Set();
+
+    emit({ current: 0, total: 3 });
+    emit({ current: 1, total: 3, images: ["original-1"], preview_start: 0, replace_images: true });
+
+    assert.deepEqual(Array.from(widget.stageState.original_pose_generation.images), ["original-1"]);
+    assert.deepEqual(Array.from(widget._originalRevealIndices), [0]);
+});

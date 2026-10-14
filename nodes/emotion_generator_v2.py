@@ -467,8 +467,7 @@ if server:
             return web.json_response({"error": str(error)}, status=400)
         return web.json_response(costumes)
 
-    @server.PromptServer.instance.routes.get("/vnccs/get_character_sheet_preview")
-    async def get_character_sheet_preview(request):
+    def _character_sheet_preview_response(request):
         character = request.rel_url.query.get("character", "")
         if not character:
              return web.Response(status=404)
@@ -492,6 +491,10 @@ if server:
         except Exception as e:
             log_event('warning', component='EmotionStudio', level='warning', message=f'Failed to serve sprite preview: {e}', error=str(e))
             return web.Response(status=500)
+
+    @server.PromptServer.instance.routes.get("/vnccs/get_character_sheet_preview")
+    async def get_character_sheet_preview(request):
+        return await asyncio.to_thread(_character_sheet_preview_response, request)
 
     @server.PromptServer.instance.routes.get("/vnccs/get_emotion_image")
     async def get_emotion_image(request):

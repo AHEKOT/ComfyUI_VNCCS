@@ -149,13 +149,15 @@ function setup(kind) {
     const text = source(kind === 'creator' ? 'vnccs_character_creator_v2' : 'vnccs_character_cloner');
     const state = { character: 'Alice', character_info: { name: 'Alice', hair: 'authored hair' },
         gen_settings: { generation_mode: 'illustrious' }, source_images: [] };
-    const dataWidget = { name: 'widget_data', value: '{}' }, node = { widgets: [dataWidget] };
+    const dataWidget = { name: 'widget_data', value: '{}' };
     const alerts = [], pendingTimers = new Map();
-    let configured = 0, initialized = 0, serialized = 0, galleryClosed = 0;
+    let configured = 0, initialized = 0, serialized = 0, galleryClosed = 0, dirtied = 0;
+    const graph = { setDirtyCanvas() { dirtied++; } };
+    const node = { widgets: [dataWidget], graph };
     node.onConfigure = function () { assert.equal(this, node); configured++; };
     node.onSerialize = function () { assert.equal(this, node); serialized++; };
     const context = createWidgetContext({
-        node, state, dataWidget, els: { style: { close(focus) { assert.equal(focus, false); galleryClosed++; } } }, app: { graph: { setDirtyCanvas() {} } },
+        node, state, dataWidget, els: { style: { close(focus) { assert.equal(focus, false); galleryClosed++; } } }, app: { graph },
         defaultGenerationSettings: { generation_mode: 'illustrious', steps: 20 },
         defaultCharacterInfo: { hair: '', eyes: '' },
         beginCharacterRequest() {}, beginCharacterWizardRequest() {}, beginCaptionRequest() {}, beginPreviewRequest() {},
@@ -185,7 +187,7 @@ function setup(kind) {
         vm.runInContext(between(text, 'let initialized = false;', '\n            };\n\n            const onResize'), context);
     }
     return { state, node, dataWidget, alerts, context, pendingTimers,
-        counts: () => ({ configured, initialized, serialized, galleryClosed }), load: context.load, save: context.save };
+        counts: () => ({ configured, initialized, serialized, galleryClosed, dirtied }), load: context.load, save: context.save };
 }
 
 test('Creator restores legacy breast tags and serializes the separate field for immediate reload', () => {
@@ -248,7 +250,9 @@ for (const kind of ['creator', 'cloner']) {
             const workflow = { widgets_values: ['old snapshot'] };
             h.node.onSerialize(workflow);
             assert.equal(JSON.parse(workflow.widgets_values[0]).character_info.nsfw, value);
+            const dirtyBeforeEdit = h.counts().dirtied;
             toggle.children[0].onclick();
+            assert.ok(h.counts().dirtied > dirtyBeforeEdit, 'Changing NSFW must dirty the graph so reload keeps it');
             h.node.onSerialize(workflow);
             assert.equal(JSON.parse(workflow.widgets_values[0]).character_info.nsfw, !enabled);
         });

@@ -23,6 +23,7 @@ import shutil
 import threading
 import uuid
 import time
+from copy import deepcopy
 from types import SimpleNamespace
 from urllib.parse import urlencode
 
@@ -53,6 +54,7 @@ except Exception:  # pragma: no cover
     model_management = None
 
 from .runtime_cleanup import inference_stage
+from .h3_still import h3_still_samples, require_h3_still_support
 from .vnccs_pipe import VNCCS_Pipe
 from .vnccs_flux_klein_encoder import VNCCS_Flux_Klein_Encoder
 from .vnccs_control_center import (
@@ -73,6 +75,7 @@ from ..utils import (
     ensure_safe_name,
     is_path_under,
     load_character_info,
+    require_existing_costume,
     normalize_filesystem_path,
     safe_join_under,
     staged_image_batch,
@@ -1951,6 +1954,10 @@ class VNCCS_CharacterGenerator:
         # Clone on CPU so only the required first frame survives this list item.
         return decoded_items[0].detach().to(device="cpu").clone()
 
+    def _h3_decode(self, samples, vae):
+        decoded = _call_comfy_node("VAEDecode", samples=h3_still_samples(samples), vae=vae)[0]
+        return self._h3_first_frame_to_cpu(decoded)
+
     def _run_h3_pose_generation(
         self,
         pose_parts,
@@ -1967,6 +1974,7 @@ class VNCCS_CharacterGenerator:
         progress_start=0,
         progress_total=None,
     ):
+        require_h3_still_support()
         audio_vae = pipe_values.get("audio_vae")
         if audio_vae is None:
             raise RuntimeError("MiniMax H3 generation requires the audio VAE from VNCCS Control Center.")
@@ -2073,14 +2081,9 @@ class VNCCS_CharacterGenerator:
 
             decoding_progress(0, total)
             for index, sampled in enumerate(sampled_items):
-                decoded = _call_comfy_node(
-                    "VAEDecode",
-                    samples=sampled,
-                    vae=pipe_values["vae"],
-                )[0]
-                decoded_first_frames.append(self._h3_first_frame_to_cpu(decoded))
+                decoded_first_frames.append(self._h3_decode(sampled, pipe_values["vae"]))
                 sampled_items[index] = None
-                del sampled, decoded
+                del sampled
                 decoding_progress(index + 1, total)
         finally:
             encoded_items.clear()
@@ -2289,6 +2292,7 @@ class VNCCS_CharacterGenerator:
         prompt = settings.get("prompt", DEFAULT_WIDGET_DATA["remove_clothes"]["prompt"])
         is_h3 = self._is_h3_pipe(pipe_values)
         if is_h3:
+            require_h3_still_support()
             if pipe_values.get("audio_vae") is None:
                 raise RuntimeError("MiniMax H3 generation requires the audio VAE from VNCCS Control Center.")
             width, height = self._resolution_scale_dimensions(character_rgb, qwen_settings["target_size"])
@@ -2340,7 +2344,7 @@ class VNCCS_CharacterGenerator:
 
             decoding_progress(0, 1)
             if is_h3:
-                decoded = _call_comfy_node("VAEDecode", samples=sampled, vae=pipe_values["vae"])[0]
+                decoded = self._h3_decode(sampled, pipe_values["vae"])
             elif self._is_qi2_pipe(pipe_values):
                 decoded = self._qi2_decode(sampled, pipe_values["vae"])
             else:
@@ -2351,7 +2355,7 @@ class VNCCS_CharacterGenerator:
                     **vae_decode,
                 )[0]
             decoding_progress(1, 1)
-            return self._h3_first_frame_to_cpu(decoded) if is_h3 else decoded
+            return decoded
         finally:
             if sampler_model is not pipe_values["model"]:
                 sampler_model.detach()
@@ -2910,6 +2914,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
             "naked_bg_remove",
         )
 
+        published_each = False
         if not self._should_regenerate_stage(order, regenerate_from, pose_stage):
             pose_images = self._load_cached_stage(cache_dir, pose_stage, unique_id, f"Using cached {pose_stage}")
         else:
@@ -2943,11 +2948,25 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 publish_each=regenerate_index is None,
                 preview_cache_dir=cache_dir,
             )
+            published_each = regenerate_index is None
             if regenerate_index is not None:
                 pose_images = self._replace_batch_item(_load_cached_tensor(cache_dir, pose_stage), regenerate_index, pose_images)
             self._save_stage(cache_dir, pose_stage, pose_images)
         pose_total = pose_images.shape[0] if torch.is_tensor(pose_images) and pose_images.ndim == 4 else 0
-        self._emit(unique_id, pose_stage, "done", pose_images, f"Generated {pose_total} pose images", pose_total, pose_total, cache_dir=cache_dir, lora_info=pose_lora_info)
+        # Incremental pose events already published the complete batch. Re-emitting the
+        # same files here changes their cache-busting URLs and cancels the in-flight
+        # scan reveal on the last card, replacing it with the generic image fade.
+        self._emit(
+            unique_id,
+            pose_stage,
+            "done",
+            None if published_each else pose_images,
+            f"Generated {pose_total} pose images",
+            pose_total,
+            pose_total,
+            cache_dir=cache_dir,
+            lora_info=pose_lora_info,
+        )
 
         if not self._should_regenerate_stage(order, regenerate_from, up_stage):
             upscaled = self._load_cached_stage(cache_dir, up_stage, unique_id, f"Using cached {up_stage}")
@@ -3150,40 +3169,6 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
     CATEGORY = "VNCCS"
     DESCRIPTION = "Clothes sprite generator with source upscale followed by pose generation, upscale, and BG remove."
 
-    def _run_clothes_pose_generation(
-        self,
-        poses,
-        character,
-        pipe,
-        prompt,
-        background,
-        settings,
-        lora_info=None,
-        sampler_settings=None,
-        vae_decode_settings=None,
-        bg_remove_settings=None,
-        unique_id=None,
-        stage="pose_generation",
-        publish_each=False,
-        preview_cache_dir=None,
-    ):
-        return self._run_pose_generation(
-            poses,
-            character,
-            pipe,
-            prompt,
-            settings,
-            lora_info=lora_info,
-            background=background,
-            sampler_settings=sampler_settings,
-            vae_decode_settings=vae_decode_settings,
-            bg_remove_settings=bg_remove_settings,
-            unique_id=unique_id,
-            stage=stage,
-            publish_each=publish_each,
-            preview_cache_dir=preview_cache_dir,
-        )
-
     @logged_operation("ClothesGenerator", "generate")
     @serialized_generator
     def process(self, poses, character, pipe, prompt, background="Green", widget_data="{}", sheets_path="", unique_id=None):
@@ -3205,6 +3190,8 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
             )
             if costume_name.casefold() in {"naked", "original"}:
                 raise ValueError("Clothes Generator requires an editable costume. Select a costume in Clothes Designer before generating.")
+            character_root = _character_root_from_sheets_path(sheets_path, character_name)
+            require_existing_costume(os.path.basename(character_root or ""), costume_name)
             cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""), unique_id, self._progress_scope)
             _remember_generator_context(unique_id, "VNCCS_ClothesGenerator", cache_dir, pipe, self._progress_scope)
             if regenerate_from:
@@ -3286,14 +3273,14 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                     lora_info=pose_lora_info,
                     preview_aspect=self._image_aspect(pose_input),
                 )
-                pose_images = self._run_clothes_pose_generation(
+                pose_images = self._run_pose_generation(
                     pose_input,
                     source_upscaled,
                     pipe,
                     self._slice_pose_prompt(prompt, regenerate_index),
-                    background,
                     settings["pose_generation"],
                     lora_info=pose_lora_info,
+                    background=background,
                     sampler_settings=settings["pose_sampler"],
                     vae_decode_settings=settings["vae_decode"],
                     bg_remove_settings=settings["bg_remove"],
@@ -4855,7 +4842,7 @@ if server is not None:
                     "error": "Stage input cache is empty. Run this generator once normally before using Regenerate.",
                 }, status=409)
 
-            widget_payload = data.get("widget_data") if isinstance(data.get("widget_data"), dict) else {}
+            widget_payload = deepcopy(data.get("widget_data")) if isinstance(data.get("widget_data"), dict) else {}
             cached_payload = cached_inputs.get("widget_payload")
             identity_keys = ("character_name", "emotion_pairs") if generator_type == "VNCCS_EmotionsGenerator" else ("character_name",)
             identity_changed = isinstance(cached_payload, dict) and any(
@@ -4876,7 +4863,6 @@ if server is not None:
             widget_payload["regenerate_from"] = stage
             if "image_index" in data:
                 widget_payload["regenerate_index"] = data.get("image_index")
-            widget_data = json.dumps(widget_payload, ensure_ascii=False)
             pipe = ctx["pipe"]
 
             generator_cls = {
@@ -4889,6 +4875,13 @@ if server is not None:
                 return web.json_response({"error": f"Unsupported generator type: {generator_type}"}, status=400)
 
             seed_shift = random.randint(1, REGENERATE_SEED_SHIFT_MAX)
+            for section, inherit_key in (("pose_sampler", "inherit_pipe"),
+                                         ("remove_clothes_sampler", "inherit_pipe"),
+                                         ("upscaler", "inherit_pipe_seed")):
+                local = widget_payload.get(section)
+                if isinstance(local, dict) and not _as_bool(local.get(inherit_key, True), True):
+                    local["seed"] = _shift_seed_value(int(local.get("seed", DEFAULT_WIDGET_DATA[section]["seed"])), seed_shift)
+            widget_data = json.dumps(widget_payload, ensure_ascii=False)
             restore_pipe_seed = _temporarily_shift_pipe_seed(pipe, seed_shift)
             try:
                 with torch.inference_mode():

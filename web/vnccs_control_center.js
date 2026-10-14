@@ -1800,6 +1800,7 @@ class VNCCSControlCenterWidget {
         this._saveState();
         this._renderAll({ preserveDraft: false });
         this.scrollArea?.querySelector(`.vnccs-cc-family-tab[data-kind="${kind}"]`)?.focus({ preventScroll: true });
+        this._checkH3Compatibility();
     }
 
     _isTurboLora(entry) {
@@ -1957,6 +1958,7 @@ class VNCCSControlCenterWidget {
         this.state.output_slot_names = [];
         this._syncOutputSlots();
         this._syncCustomModelInput();
+        this._checkH3Compatibility();
         const repo = this._getRepoId();
         if (repo) this.fetchConfig(repo);
     }
@@ -2537,6 +2539,47 @@ class VNCCSControlCenterWidget {
         }
     }
 
+    _checkH3Compatibility() {
+        if (this._removed || !this._h3Runtime) return;
+        if (this._activeKind() !== "MiniMaxH3" || this._h3Runtime?.h3_still_supported === true) {
+            this._h3UpdateOverlay?.remove();
+            this._h3WarningShown = false;
+            return;
+        }
+        if (this._h3Runtime.h3_still_supported !== false || this._h3WarningShown) return;
+        this._h3WarningShown = true;
+        this._showH3UpdateModal();
+    }
+
+    _showH3UpdateModal() {
+        const ov = document.createElement("div");
+        ov.className = "vnccs-cc-settings-overlay";
+        this._h3UpdateOverlay = ov;
+        const panel = document.createElement("div");
+        panel.className = "vnccs-cc-settings-panel";
+        panel.style.maxWidth = "460px";
+        const title = document.createElement("div");
+        title.className = "vnccs-cc-deps-modal-title";
+        title.textContent = "ComfyUI update required for MiniMax H3";
+        const text = document.createElement("div");
+        text.className = "vnccs-cc-deps-modal-text";
+        text.textContent = `${this._h3Runtime.h3_update_message} Detected ComfyUI version: ${this._h3Runtime.version || "unknown"}.`;
+        const buttons = document.createElement("div");
+        buttons.className = "vnccs-cc-settings-btns";
+        const details = document.createElement("a");
+        details.className = "vnccs-cc-btn";
+        details.textContent = "View required ComfyUI fix";
+        details.href = "https://github.com/Comfy-Org/ComfyUI/pull/16881";
+        details.target = "_blank";
+        details.rel = "noopener noreferrer";
+        const close = this._btn("Close", () => ov.remove());
+        buttons.append(details, close);
+        panel.append(title, text, buttons);
+        ov.appendChild(panel);
+        ov.onclick = event => { if (event.target === ov) ov.remove(); };
+        this._mountOverlay(ov, panel, title.textContent);
+    }
+
     _showRestartRequiredModal() {
         if (this._restartRequiredOverlay?.isConnected) return;
         const ov = document.createElement("div");
@@ -2760,6 +2803,8 @@ class VNCCSControlCenterWidget {
             if (r.ok) local = await r.json();
         } catch { /* server may not be ready yet */ }
         if (!isCurrent()) return;
+        this._h3Runtime = local.comfyui;
+        this._checkH3Compatibility();
 
         const latestVersions = Object.fromEntries(await Promise.all(
             Object.entries({ main: "vnccs", utils: "vnccs-utils" }).map(async ([key, managerId]) => [
@@ -4677,7 +4722,7 @@ class VNCCSControlCenterWidget {
         panel.ariaModal = "true";
         panel.ariaLabel = title;
         panel.tabIndex = -1;
-        const fields = () => [...panel.querySelectorAll("button, input, select, summary, [tabindex]")]
+        const fields = () => [...panel.querySelectorAll("button, input, select, summary, a[href], [tabindex]")]
             .filter(element => !element.disabled && !element.closest?.(".vnccs-cc-disclosure")?.inert && element.getClientRects().length);
         const remove = overlay.remove;
         overlay.remove = () => {

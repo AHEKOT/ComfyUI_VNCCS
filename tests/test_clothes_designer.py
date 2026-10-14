@@ -383,6 +383,10 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
     from _vnccs.nodes import character_generator as cg
     from PIL import Image
     import json
+    import utils
+
+    monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path / "characters"))
+    utils.save_costume_info("Alice", "Dress", {})
 
     reference_channels = 4 if kind == "QI2" else 3
     reference = torch.zeros((1, 96, 64, reference_channels))
@@ -435,9 +439,9 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
         if name == "MiniMaxH3ReferenceToVideo":
             return "positive", {"samples": torch.zeros(1)}
         if name in ("KSampler", "SamplerCustomAdvanced"):
-            return ({"samples": torch.zeros(1)},)
+            return ({"samples": torch.zeros(1, 24, 2, 4, 4) if kind == "MiniMaxH3" else torch.zeros(1)},)
         if name in ("VAEDecodeTiled", "VAEDecode"):
-            return (torch.zeros((5 if kind == "MiniMaxH3" else 1, 96, 64, 3)),)
+            return (torch.zeros((1, 96, 64, 3)),)
         return (object(),)
     monkeypatch.setattr(cd, "_call_comfy_node", call)
     monkeypatch.setattr(cg, "_call_comfy_node", call)
@@ -469,6 +473,7 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
         assert "VAEDecode" in calls
         assert "VAEDecodeTiled" not in calls
         assert set(calls["VAEDecode"]) == {"samples", "vae"}
+        assert calls["VAEDecode"]["samples"]["samples"].shape == (1, 24, 1, 4, 4)
     elif kind == "Klein9b":
         assert calls["VNCCS_Flux_Klein_Encoder"]["megapixels"] == expected / 1024
     else:

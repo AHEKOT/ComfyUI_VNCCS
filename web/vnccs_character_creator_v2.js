@@ -2144,6 +2144,7 @@ app.registerExtension({
 
                     const w = node.widgets.find(x => x.name === "widget_data");
                     if (w) w.value = JSON.stringify(state);
+                    node.graph?.setDirtyCanvas?.(true, true);
                 };
 
                 const clearPreviewHandlers = () => {

@@ -99,6 +99,7 @@ def test_creator_errors_include_stage_and_optional_traceback(runtime, monkeypatc
 
 
 def test_clothes_cache_and_comfy_signature_follow_primary_reference(runtime, tmp_path, monkeypatch):
+    runtime.utils.save_costume_info('Alice', 'Dress', {})
     cd = runtime.clothes
     source = runtime.inputs / 'ref.png'
     monkeypatch.setattr(cd, 'get_latest_sprite_path', lambda *a: str(source))
@@ -153,6 +154,8 @@ def test_pose_prompt_lists_survive_caching_and_single_pose_regeneration(runtime,
     stage = 'original_pose_generation' if node_name == 'VNCCS_CharacterCloneGenerator' else 'pose_generation'
     state = {'regenerate_from': stage, 'regenerate_index': 1} if regenerate else {}
     if node_name == 'VNCCS_ClothesGenerator':
+        runtime.utils.save_costume_info('Alice', 'Coat', {})
+        state['character_name'] = 'Alice'
         state['costume'] = 'Coat'
     with pytest.raises(ReachedEncoder):
         node.process(poses, character, SimpleNamespace(), prompts, widget_data=json.dumps(state))

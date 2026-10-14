@@ -240,7 +240,7 @@ try {
                 stable(before,await measure(zoom));
                 await page.evaluate(stage=>emit(stage,{status:'running',current:1,total:6,images:[urls('incremental',1,644,1536)[0]],replace_images:true,preview_start:0,processing_index:1,run_id:'new-character',preview_aspect:640/1536}),stage);
                 await page.waitForFunction(()=>widget.previewGrid.children[0].dataset.src?.includes('v=incremental'));
-                if(fixture.node.type==='VNCCS_CharacterGenerator'){
+                if(['VNCCS_CharacterGenerator','VNCCS_CharacterCloneGenerator'].includes(fixture.node.type)){
                     await page.waitForFunction(()=>characterWipes.length>=3);
                     const wipeLayers=await page.evaluate(()=>{
                         const layers=characterWipes.slice(-3);
@@ -418,8 +418,12 @@ try {
     assert.deepEqual(nakedBase.cards.flatMap((card,index)=>card.waiting?[index]:[]),[1,2]);
     await page.evaluate(()=>emit('naked_pose_generation',{status:'running',current:1,total:3,images:[urls('clone-naked',1,640,1536)[0]],preview_start:0,replace_images:true,processing_index:1}));
     await page.waitForFunction(()=>stageWipes.length===3);
+    await page.evaluate(()=>emit('naked_upscaler',{status:'running',current:0,total:3,images:urls('clone-naked-upscale-input',3,640,1536)}));
+    assert.equal(await page.evaluate(()=>widget.selectedPreview),'naked_pose_generation','The next stage must wait until the naked-pose wipe finishes');
+    assert.equal(await page.evaluate(()=>widget.previewGrid.children[0].classList.contains('is-clothes-revealing')),true);
     stable(nakedBase.geometry,await page.evaluate(()=>geometry()));
     await page.screenshot({path:join(output,'VNCCS_CharacterCloneGenerator-naked-transition.png')});
+    await page.waitForFunction(()=>widget.selectedPreview==='naked_upscaler');
     if(!targetedOnly){
         const fixture=fixtures[0],zoom=fixture.scale;
         await page.emulateMedia({reducedMotion:'reduce'});

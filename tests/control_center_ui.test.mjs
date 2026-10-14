@@ -115,6 +115,7 @@ function setup(state = {}, { loaded = true, repoId = "" } = {}) {
                 if (text === "[tabindex]") return element.tabIndex !== undefined;
                 if (text === "[id]") return element.id !== undefined;
                 if (text.startsWith("#")) return element.id === text.slice(1);
+                if (text === "a[href]") return element.tagName === "A" && Boolean(element.href);
                 return !!cls || element.tagName === text.toUpperCase();
             });
             const descendants = this.children.flatMap(child => [child, ...child.querySelectorAll("*")]);
@@ -175,6 +176,70 @@ function respond(request, data) {
 function key(key, extra = {}) {
     return { key, preventDefault() { this.prevented = true; }, stopPropagation() { this.stopped = true; }, ...extra };
 }
+
+test("unsupported H3 shows an accessible update modal once per selection", () => {
+    const { widget, document, serialized, flush } = setup();
+    widget._h3Runtime = { version: "0.38.0", h3_still_supported: false,
+        h3_update_message: "Update ComfyUI to include PR #16881, then restart the ComfyUI server." };
+    widget.scrollArea.scrollTop = 145;
+    widget._setActiveKind("MiniMaxH3");
+    flush();
+    const overlay = widget._h3UpdateOverlay;
+    const panel = overlay.firstChild;
+    assert.equal(panel.role, "dialog");
+    assert.equal(panel.ariaModal, "true");
+    assert.match(panel.textContent, /Update ComfyUI.*PR #16881.*restart.*0\.38\.0/);
+    assert.equal(JSON.parse(serialized.value).active_kind, "MiniMaxH3");
+    assert.equal(widget.scrollArea.scrollTop, 145);
+    const link = panel.querySelector("a[href]");
+    const close = panel.querySelector("button");
+    assert.equal(link.href, "https://github.com/Comfy-Org/ComfyUI/pull/16881");
+    assert.equal(link.rel, "noopener noreferrer");
+    assert.equal(document.activeElement, link);
+    close.focus();
+    overlay.onkeydown(key("Tab"));
+    assert.equal(document.activeElement, link);
+    overlay.onkeydown(key("Tab", { shiftKey: true }));
+    assert.equal(document.activeElement, close);
+    overlay.onkeydown(key("Escape"));
+    assert.equal(overlay.isConnected, false);
+    assert.equal(widget.scrollArea.scrollTop, 145);
+    widget._checkH3Compatibility();
+    assert.equal(widget._h3UpdateOverlay, overlay);
+    widget._setActiveKind("QI2");
+    widget._setActiveKind("MiniMaxH3");
+    assert.notEqual(widget._h3UpdateOverlay, overlay);
+});
+
+test("restored H3 warns without changing saved workflow data", () => {
+    const { widget, serialized, flush } = setup({ active_kind: "MiniMaxH3", selected_type: "custom" });
+    const saved = serialized.value;
+    widget._h3Runtime = { version: null, h3_still_supported: false, h3_update_message: "Update ComfyUI and restart." };
+    widget.restoreState();
+    flush();
+    assert.equal(widget._h3UpdateOverlay.isConnected, true);
+    assert.match(widget._h3UpdateOverlay.textContent, /version: unknown/);
+    assert.equal(serialized.value, saved);
+    widget._removed = true;
+    widget._h3WarningShown = false;
+    widget._checkH3Compatibility();
+    assert.equal(widget._overlays.length, 1);
+});
+
+test("supported H3 closes an obsolete warning and other families never show it", () => {
+    const { widget } = setup();
+    widget._h3Runtime = { h3_still_supported: false, h3_update_message: "Update ComfyUI." };
+    widget._checkH3Compatibility();
+    assert.equal(widget._h3UpdateOverlay, undefined);
+    widget._setActiveKind("MiniMaxH3");
+    const overlay = widget._h3UpdateOverlay;
+    widget._h3Runtime = { h3_still_supported: true };
+    widget._checkH3Compatibility();
+    assert.equal(overlay.isConnected, false);
+    widget._setActiveKind("QI2");
+    widget._setActiveKind("MiniMaxH3");
+    assert.equal(widget._overlays.length, 0);
+});
 
 function motionLayout({ widget, document }) {
     widget.container.clientWidth = 300;

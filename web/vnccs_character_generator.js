@@ -1347,7 +1347,9 @@ class CharacterGeneratorWidget {
         this.previewLoadQueue = [];
         this.previewLoadsActive = 0;
         this._clothesRevealIndices = new Set();
+        this._originalRevealIndices = new Set();
         this._nakedRevealIndices = new Set();
+        this._pendingAutoPreviewStage = null;
         this.regenerateState = null;
         this.regenerateTimer = null;
         this.restoreBrowserState();
@@ -1492,7 +1494,9 @@ class CharacterGeneratorWidget {
                 && Math.max(0, Number(detail.current) || 0) === 0;
             if (startsNewRun) {
                 this._previewPlaceholderStage = stage;
+                this._pendingAutoPreviewStage = null;
                 this._clothesRevealIndices?.clear();
+                this._originalRevealIndices?.clear();
                 this._nakedRevealIndices?.clear();
             }
             this.observeProgressRequest(detail.request_id, detail.run_id);
@@ -1515,6 +1519,7 @@ class CharacterGeneratorWidget {
                     if (!continuingBatch) {
                         this.resetStagesFrom(stage);
                         if (this.isClothes && stage === "pose_generation") this._clothesRevealIndices?.clear();
+                        if (this.isClone && stage === "original_pose_generation") this._originalRevealIndices?.clear();
                         if (this.isClone && stage === "naked_pose_generation") this._nakedRevealIndices?.clear();
                     }
                     if (!continuingBatch && (stage === "pose_generation" || stage === "original_pose_generation" || stage === "source_upscaler")) {
@@ -1545,6 +1550,13 @@ class CharacterGeneratorWidget {
                         (this._clothesRevealIndices ||= new Set()).add(previewStart + offset);
                     }
                 }
+                if (this.isClone && stage === "original_pose_generation" && detail.replace_images && detail.images?.length
+                    && (!this.userSelectedPreview || this.selectedPreview === stage)) {
+                    const previewStart = Math.max(0, Number.parseInt(detail.preview_start, 10) || 0);
+                    for (let offset = 0; offset < detail.images.length; offset++) {
+                        (this._originalRevealIndices ||= new Set()).add(previewStart + offset);
+                    }
+                }
                 if (this.isClone && stage === "naked_pose_generation" && detail.replace_images && detail.images?.length
                     && (!this.userSelectedPreview || this.selectedPreview === stage)) {
                     const previewStart = Math.max(0, Number.parseInt(detail.preview_start, 10) || 0);
@@ -1564,8 +1576,15 @@ class CharacterGeneratorWidget {
                 };
                 if (!this.userSelectedPreview && (!this.isClothes || stage !== "source_upscaler")
                     && (status === "running" || status === "done" || detail.images)) {
-                    this.selectedPreview = stage;
-                    this.persistUI();
+                    if (stage !== this.selectedPreview && this.hasPendingPreviewReveal()) {
+                        // The backend can start the next stage before the browser has decoded
+                        // the last preview. Keep this stage visible until its wipe completes.
+                        this._pendingAutoPreviewStage = stage;
+                    } else {
+                        this._pendingAutoPreviewStage = null;
+                        this.selectedPreview = stage;
+                        this.persistUI();
+                    }
                 }
                 this.updateRegenerateProgress(stage, status);
             }
@@ -3670,6 +3689,7 @@ class CharacterGeneratorWidget {
         if (changedStage) {
             this._previewRevealAt = 0;
             if (this.selectedPreview !== "pose_generation") this._clothesRevealIndices?.clear();
+            if (this.selectedPreview !== "original_pose_generation") this._originalRevealIndices?.clear();
             if (this.selectedPreview !== "naked_pose_generation") this._nakedRevealIndices?.clear();
             this.previewLabel.textContent = name;
             this._ui?._playMotion(this.previewLabel, [{ opacity: 0.25 }, { opacity: 1 }], 180);
@@ -3685,6 +3705,7 @@ class CharacterGeneratorWidget {
                 tab.textContent = title;
                 tab.dataset.focusKey = `preview-${key}`;
                 tab.onclick = () => {
+                    this._pendingAutoPreviewStage = null;
                     this.selectedPreview = key;
                     this.userSelectedPreview = true;
                     this.persistUI();
@@ -3912,7 +3933,14 @@ class CharacterGeneratorWidget {
                 tile._pendingImage = null;
                 tile._previewSource = tile.dataset.src || null;
                 image.remove();
+                const index = [...(this.previewGrid?.children || [])].indexOf(tile);
+                if (index >= 0) {
+                    this._clothesRevealIndices?.delete(index);
+                    this._originalRevealIndices?.delete(index);
+                    this._nakedRevealIndices?.delete(index);
+                }
                 this.flushPreviewImages();
+                this.flushPendingAutoPreviewStage();
             }
             this.finishPreviewImageLoad(image);
         };
@@ -3936,6 +3964,7 @@ class CharacterGeneratorWidget {
         }
         tile._characterRevealAnimations = null;
         if (placeholder) placeholder.style.clipPath = "";
+        this.flushPendingAutoPreviewStage();
     }
 
     startCharacterPreviewTransition(tile, image, delay = 0) {
@@ -3990,6 +4019,30 @@ class CharacterGeneratorWidget {
         }
         tile.classList.toggle("is-clothes-revealing", false);
         if (tile.isConnected) this.schedulePreviewGridLayout(this.previewGrid);
+        this.flushPendingAutoPreviewStage();
+    }
+
+    hasPendingPreviewReveal() {
+        const tiles = [...(this.previewGrid?.children || [])];
+        if (tiles.some(tile => tile.classList.contains("is-character-revealing")
+            || tile.classList.contains("is-clothes-revealing"))) return true;
+        if (this.isClone && this.selectedPreview === "original_pose_generation"
+            && this._originalRevealIndices?.size) return true;
+        if (this.isClone && this.selectedPreview === "naked_pose_generation"
+            && this._nakedRevealIndices?.size) return true;
+        if (this.isClothes && this.selectedPreview === "pose_generation"
+            && this._clothesRevealIndices?.size) return true;
+        return tiles.some(tile => tile._pendingImage && tile.classList.contains("is-placeholder"));
+    }
+
+    flushPendingAutoPreviewStage() {
+        const stage = this._pendingAutoPreviewStage;
+        if (!stage || this.userSelectedPreview || this.hasPendingPreviewReveal()) return;
+        this._pendingAutoPreviewStage = null;
+        if (!this.stages.some(([key]) => key === stage)) return;
+        this.selectedPreview = stage;
+        this.persistUI();
+        this.renderPreview();
     }
 
     startClothesPreviewTransition(tile, image, previous) {
@@ -4031,11 +4084,16 @@ class CharacterGeneratorWidget {
             tile._pendingImage = null;
             changed = true;
             const previous = tile._previewImage;
-            const characterReveal = Boolean(!previous && !this.isClone && !this.isClothes && !this.isEmotions
-                && tile.classList.contains("is-placeholder"));
+            const originalReveal = Boolean(this.isClone && this.selectedPreview === "original_pose_generation"
+                && this._originalRevealIndices?.delete(index));
+            const characterReveal = Boolean(!previous && tile.classList.contains("is-placeholder") && (
+                (!this.isClone && !this.isClothes && !this.isEmotions)
+                || (this.isClone && this.selectedPreview === "original_pose_generation")
+            ));
             const clothesReveal = Boolean(previous && (
                 (this.isClothes && this.selectedPreview === "pose_generation"
                     && this._clothesRevealIndices?.delete(index))
+                || originalReveal
                 || (this.isClone && this.selectedPreview === "naked_pose_generation"
                     && this._nakedRevealIndices?.delete(index))
             ));

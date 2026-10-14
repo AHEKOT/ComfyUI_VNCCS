@@ -11,6 +11,111 @@ import os
 
 import pytest
 from test_proxy_runtime import generator_module
+from test_clothes_audit_paths import clothes_paths
+
+
+@pytest.mark.parametrize("storage", ["metadata", "sprites"])
+def test_costume_existence_check_keeps_legacy_slots_and_rejects_deleted_ones(monkeypatch, tmp_path, storage):
+    import utils
+    monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path))
+    if storage == "metadata":
+        utils.save_costume_info("Alice", "Coat", {"top": "authored coat"})
+    else:
+        directory = Path(utils.character_dir("Alice")) / "Sprites" / "Coat"
+        directory.mkdir(parents=True)
+        (directory / "pose.png").write_bytes(b"legacy sprite")
+    utils.require_existing_costume("Alice", "Coat")
+    utils.delete_costume("Alice", "Coat")
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="no longer exists"):
+        utils.require_existing_costume("Alice", "Coat")
+
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert "Coat" not in utils.list_costumes("Alice")
+
+
+def test_deleted_costume_stops_designer_before_loading_the_pipe(clothes_paths):
+    import utils
+    utils.save_costume_info("Alice", "Coat", {"top": "authored coat"})
+    utils.delete_costume("Alice", "Coat")
+
+    class UnloadedPipe:
+        @property
+        def model(self):
+            pytest.fail("Deleted costumes must fail before loading models")
+
+    with pytest.raises(ValueError, match="no longer exists"):
+        clothes_paths.ClothesDesigner().process(UnloadedPipe(), json.dumps({
+            "character": "Alice", "costume": "Coat", "costume_info": {"top": "old draft"},
+        }))
+    assert not (Path(utils.character_dir("Alice")) / "cache").exists()
+
+
+@pytest.mark.parametrize("regenerate", [False, True])
+def test_deleted_costume_stops_generator_before_cache_or_model_work(generator_module, monkeypatch, tmp_path, regenerate):
+    import utils
+    monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(generator_module, "base_output_dir", lambda: str(tmp_path))
+    utils.save_costume_info("Alice", "Coat", {"top": "authored coat"})
+    sheets = utils.sheets_dir("Alice", "Coat")
+    utils.delete_costume("Alice", "Coat")
+    before = Path(utils.config_path("Alice")).read_bytes()
+    node = generator_module.VNCCS_ClothesGenerator()
+    monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(generator_module, "_remember_generator_context", lambda *args:
+                        pytest.fail("Deleted costumes must fail before cache or model work"))
+    state = {"character_name": "Alice", "costume": "Coat"}
+    if regenerate:
+        state["regenerate_from"] = "pose_generation"
+
+    with pytest.raises(ValueError, match="no longer exists"):
+        node.process(None, None, object(), "old draft", widget_data=json.dumps(state), sheets_path=sheets)
+
+    assert "Coat" not in utils.list_costumes("Alice")
+    assert Path(utils.config_path("Alice")).read_bytes() == before
+    assert not (Path(utils.character_dir("Alice")) / "cache").exists()
+
+
+@pytest.mark.parametrize("generator_type", ["VNCCS_CharacterGenerator", "VNCCS_CharacterCloneGenerator", "VNCCS_ClothesGenerator"])
+@pytest.mark.parametrize("inherit", [False, True])
+@pytest.mark.parametrize("fail", [False, True])
+def test_regenerate_shifts_local_seeds_without_changing_authored_settings_or_pipe(
+    generator_module, monkeypatch, generator_type, inherit, fail,
+):
+    from contextlib import nullcontext
+    generator = generator_module
+    pipe = SimpleNamespace(seed_int=100, seed=101)
+    state = {"character_name": "Alice", "pose_sampler": {"inherit_pipe": inherit, "seed": 42},
+             "remove_clothes_sampler": {"inherit_pipe": inherit, "seed": 43},
+             "upscaler": {"inherit_pipe_seed": inherit, "seed": 44}}
+    original = json.dumps(state, sort_keys=True)
+    monkeypatch.setattr(generator.web, "json_response", lambda data, status=200: SimpleNamespace(data=data, status=status), raising=False)
+    monkeypatch.setattr(generator, "_get_generator_context", lambda *args:
+                        {"pipe": pipe, "cache_dir": "cache", "generator_type": generator_type})
+    monkeypatch.setattr(generator, "_load_run_inputs", lambda *args, **kwargs:
+                        {"widget_payload": json.loads(original), "sheets_path": "cached"})
+    monkeypatch.setattr(generator.random, "randint", lambda *args: 7)
+    monkeypatch.setattr(generator.torch, "inference_mode", nullcontext, raising=False)
+    observed = []
+
+    def process(self, *args, **kwargs):
+        settings = json.loads(kwargs["widget_data"])
+        values = {"seed": pipe.seed_int, "steps": 4, "cfg": 1,
+                  "sampler": "euler", "scheduler": "normal"}
+        observed.extend([self._sampler_settings(values, settings["pose_sampler"])["seed"],
+                         self._sampler_settings(values, settings["remove_clothes_sampler"])["seed"],
+                         self._upscaler_seed(settings["upscaler"], pipe.seed_int)])
+        if fail:
+            raise RuntimeError("sampling failed")
+
+    monkeypatch.setattr(getattr(generator, generator_type), "process", process)
+    response = generator._regenerate_response({"unique_id": "audit", "stage": "pose_generation", "widget_data": state})
+
+    assert response.status == (500 if fail else 200)
+    assert observed == ([107, 107, 107] if inherit else [49, 50, 51])
+    assert json.dumps(state, sort_keys=True) == original
+    assert (pipe.seed_int, pipe.seed) == (100, 101)
 
 
 @pytest.fixture
@@ -31,6 +136,41 @@ def emotion_module(generator_module, monkeypatch):
     monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
     return module
+
+
+def test_emotion_sprite_preview_keeps_http_loop_responsive(emotion_module, monkeypatch):
+    import threading
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def load(character, costume, **kwargs):
+        calls.append((character, costume, kwargs))
+        started.set()
+        assert release.wait(2), "Image loading must not block the HTTP loop"
+        return []
+
+    monkeypatch.setattr(emotion_module, "load_costume_sprite_images", load)
+    monkeypatch.setattr(emotion_module.web, "Response", lambda **kwargs: SimpleNamespace(**kwargs), raising=False)
+
+    async def run():
+        request = SimpleNamespace(rel_url=SimpleNamespace(query={"character": "Alice", "costume": "Coat"}))
+        job = asyncio.create_task(emotion_module.get_character_sheet_preview(request))
+        try:
+            for _ in range(100):
+                if started.is_set():
+                    break
+                await asyncio.sleep(.002)
+            assert started.is_set()
+            assert not job.done()
+            release.set()
+            assert (await asyncio.wait_for(job, 2)).status == 404
+        finally:
+            release.set()
+            await job
+
+    asyncio.run(run())
+    assert calls == [("Alice", "Coat", {"first_only": True}),
+                     ("Alice", "Original", {"first_only": True})]
 
 
 @pytest.mark.parametrize("settings", ['[]', 'null', '{broken',

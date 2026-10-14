@@ -57,11 +57,12 @@ def test_long_pose_list_does_not_accumulate_executor_resources(dynamic_runtime, 
             guiders.append(weakref.ref(guider))
             return (guider,)
         if name == "SamplerCustomAdvanced":
-            return ({"samples": torch.ones(1)}, None)
+            return ({"samples": torch.ones(1, 24, 2, 4, 4)}, None)
         if name == "VAEDecode":
             assert set(kwargs) == {"samples", "vae"}
+            assert kwargs["samples"]["samples"].shape == (1, 24, 1, 4, 4)
             assert all(ref() is None for ref in videos)
-            decoded = torch.ones(5, 8, 8, 3)
+            decoded = torch.ones(1, 8, 8, 3)
             videos.append(weakref.ref(decoded))
             return (decoded,)
         return (object(),)

@@ -1002,7 +1002,7 @@ def test_h3_pose_generation_follows_reference_workflow_and_returns_first_frame(m
             "MiniMaxH3ReferenceToVideo": ("positive", "latent"),
             "BasicGuider": ("guider",),
             "RandomNoise": ("noise",),
-            "SamplerCustomAdvanced": ("sampled", "denoised"),
+            "SamplerCustomAdvanced": ({"samples": torch.rand(1, 24, 2, 4, 4)}, "denoised"),
             "VAEDecode": (decoded,),
         }
         return outputs[class_name]
@@ -1039,6 +1039,9 @@ def test_h3_pose_generation_follows_reference_workflow_and_returns_first_frame(m
     scheduler_call = next(kwargs for name, kwargs in calls if name == "BasicScheduler")
     assert scheduler_call["model"] == "pose_model"
     h3_calls = [kwargs for name, kwargs in calls if name == "MiniMaxH3ReferenceToVideo"]
+    for name, kwargs in calls:
+        if name == "VAEDecode":
+            assert kwargs["samples"]["samples"].shape == (1, 24, 1, 4, 4)
     assert len(h3_calls) == 2
     for index, h3_kwargs in enumerate(h3_calls):
         assert h3_kwargs["prompt"] == "Draw character from image2\n<lighting>"
