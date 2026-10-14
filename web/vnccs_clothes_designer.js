@@ -21,7 +21,7 @@ ${SAKURA_THEME_CSS}
     padding: 12px; gap: 12px; pointer-events: none; zoom: 0.67;
 }
 .vnccs-clothes-top-row {
-    display: grid; grid-template-columns: 32% minmax(0, 68%); gap: 12px;
+    display: grid; grid-template-columns: 400px minmax(0, 1fr); gap: 12px;
     flex: 1; min-height: 0; width: 100%;
 }
 .vnccs-clothes-col {
@@ -41,6 +41,112 @@ ${SAKURA_THEME_CSS}
 }
 .vnccs-clothes-col::-webkit-scrollbar { width: 4px; }
 .vnccs-clothes-col::-webkit-scrollbar-thumb { background: var(--accent-border); border-radius: 2px; }
+.vnccs-clothes-design-panel { overflow: visible; }
+.vnccs-clothes-design-content {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+    gap: 10px;
+    overflow-y: auto;
+    opacity: 1;
+    transform: none;
+    filter: none;
+    visibility: visible;
+    transition: opacity 280ms ease, transform 360ms cubic-bezier(0.22,1,0.36,1), filter 280ms ease, visibility 0s;
+}
+.vnccs-clothes-design-panel.is-costume-empty .vnccs-clothes-design-content {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+    filter: blur(6px);
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 200ms ease, transform 260ms ease, filter 200ms ease, visibility 0s 260ms;
+}
+.vnccs-clothes-costume-empty {
+    --vnccs-costume-empty-y: 210px;
+    position: absolute;
+    z-index: 3;
+    top: var(--vnccs-costume-empty-y);
+    left: 34px;
+    right: 28px;
+    padding: 18px 20px;
+    border: 1px solid rgba(255,143,163,0.38);
+    border-radius: 16px;
+    background:
+        radial-gradient(circle at 12% 18%, rgba(255,143,163,0.18), transparent 42%),
+        linear-gradient(135deg, rgba(38,25,43,0.96), rgba(20,18,31,0.96));
+    box-shadow: 0 16px 40px rgba(0,0,0,0.34), inset 0 1px rgba(255,255,255,0.05);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translate(14px, -50%) scale(0.97);
+    transform-origin: left center;
+    transition: opacity 220ms ease, transform 420ms cubic-bezier(0.22,1,0.36,1), visibility 0s 420ms;
+}
+.vnccs-clothes-design-panel.is-costume-empty .vnccs-clothes-costume-empty {
+    opacity: 1;
+    visibility: visible;
+    transform: translate(0, -50%) scale(1);
+    transition-delay: 100ms;
+    animation: cd-costume-empty-breathe 3800ms ease-in-out 520ms infinite;
+}
+.vnccs-clothes-costume-empty-icon {
+    display: inline-flex;
+    width: 32px;
+    height: 32px;
+    margin-bottom: 10px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(255,143,163,0.34);
+    border-radius: 10px;
+    color: var(--accent);
+    background: rgba(255,143,163,0.1);
+    box-shadow: 0 0 20px rgba(255,143,163,0.12);
+}
+.vnccs-clothes-costume-empty-icon svg { width: 18px; height: 18px; }
+.vnccs-clothes-costume-empty-title {
+    color: var(--text-primary);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+}
+.vnccs-clothes-costume-empty-text {
+    max-width: 430px;
+    margin-top: 7px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.55;
+}
+.vnccs-clothes-costume-empty-arrow {
+    position: absolute;
+    top: 50%;
+    left: -58px;
+    width: 62px;
+    height: 42px;
+    overflow: visible;
+    color: var(--accent);
+    filter: drop-shadow(0 0 8px rgba(255,143,163,0.35));
+    transform: translateY(-50%);
+    animation: cd-costume-empty-arrow 2200ms ease-in-out infinite;
+}
+.vnccs-clothes-costume-empty-arrow path {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+@keyframes cd-costume-empty-breathe {
+    0%, 100% { border-color: rgba(255,143,163,0.34); box-shadow: 0 16px 40px rgba(0,0,0,0.34), 0 0 0 rgba(255,143,163,0); }
+    50% { border-color: rgba(255,143,163,0.52); box-shadow: 0 16px 40px rgba(0,0,0,0.34), 0 0 24px rgba(255,143,163,0.09); }
+}
+@keyframes cd-costume-empty-arrow {
+    0%, 100% { transform: translate(0, -50%); opacity: 0.7; }
+    50% { transform: translate(-4px, -50%); opacity: 1; }
+}
 
 .vnccs-clothes-section-title {
     font-size: 10px; font-weight: 700; color: var(--accent);
@@ -346,8 +452,14 @@ ${SAKURA_THEME_CSS}
     overflow: hidden; position: relative; min-height: 0;
 }
 .vnccs-clothes-preview-img {
-    position: absolute; inset: 0;
-    width: 100%; height: 100%; object-fit: contain;
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: auto;
+    max-width: none;
+    height: 100%;
+    object-fit: contain;
+    transform: translateX(-50%);
 }
 .vnccs-clothes-preview-loading {
     position: absolute;
@@ -370,6 +482,49 @@ ${SAKURA_THEME_CSS}
     box-shadow: 0 0 18px rgba(255,143,163,0.25);
     animation: cd-spin 0.75s linear infinite;
 }
+.vnccs-clothes-generation-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    overflow: hidden;
+    pointer-events: none;
+    background: radial-gradient(circle, rgba(255,143,163,0.04) 1px, transparent 1px), #0f0f16;
+    background-size: 20px 20px, 100% 100%;
+}
+.vnccs-clothes-generation-layer[hidden] { display: none; }
+.vnccs-clothes-generation-img {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: auto;
+    max-width: none;
+    height: 100%;
+    object-fit: contain;
+    transform: translateX(-50%);
+}
+.vnccs-clothes-generation-base { animation: cd-preview-wait 1800ms ease-in-out infinite; }
+.vnccs-clothes-generation-new {
+    z-index: 1;
+    clip-path: inset(0 0 100% 0);
+}
+.vnccs-clothes-generation-scan {
+    position: absolute;
+    z-index: 2;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: clamp(18px, 6%, 42px);
+    transform: translateY(-50%);
+    opacity: 0.82;
+    background: linear-gradient(180deg, transparent, rgba(255,143,163,0.24) 30%, rgba(255,238,246,0.98) 50%, rgba(255,143,163,0.34) 68%, transparent);
+    box-shadow: 0 0 24px rgba(255,143,163,0.3);
+    mix-blend-mode: screen;
+    animation: cd-preview-process-scan 2200ms cubic-bezier(0.4,0,0.2,1) infinite;
+}
+.vnccs-clothes-generation-layer.is-revealing .vnccs-clothes-generation-base { animation: none; }
+.vnccs-clothes-generation-layer.is-revealing .vnccs-clothes-generation-scan { animation: none; }
+@keyframes cd-preview-wait { 0%, 100% { opacity: 0.78; } 50% { opacity: 1; } }
+@keyframes cd-preview-process-scan { from { top: 0%; opacity: 0.5; } to { top: 100%; opacity: 0.9; } }
 .cd-sprite-nav {
     display: none;
     align-items: center;
@@ -425,8 +580,9 @@ ${SAKURA_THEME_CSS}
 /* Tab bar */
 .cd-tab-bar {
     display: flex; border-bottom: 1px solid var(--border);
-    margin: 0 -16px 12px; background: transparent;
+    margin: 0 0 12px; background: transparent;
 }
+.vnccs-clothes-container .cd-tab-bar.vnccs-common-ui-segmented::before { border-radius: 0; }
 .cd-tab {
     flex: 1; text-align: center; padding: 10px 8px; cursor: pointer;
     font-size: 10px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase;
@@ -524,37 +680,7 @@ ${SAKURA_THEME_CSS}
     font-size: 12px;
 }
 
-/* Loading overlay */
-.vnccs-clothes-loading-overlay {
-    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(10,10,15,0.92); backdrop-filter: blur(8px);
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    z-index: 1000; pointer-events: auto; gap: 16px; border-radius: var(--radius-lg);
-}
-.vnccs-clothes-spinner {
-    width: 44px; height: 44px; position: relative;
-}
-.vnccs-clothes-spinner::before, .vnccs-clothes-spinner::after {
-    content: ''; position: absolute; inset: 0; border-radius: 50%; border: 3px solid transparent;
-}
-.vnccs-clothes-spinner::before {
-    border-top-color: var(--accent); border-right-color: rgba(255,143,163,0.3);
-    animation: cd-spin 1s linear infinite;
-    box-shadow: 0 0 18px rgba(255,143,163,0.2);
-}
-.vnccs-clothes-spinner::after {
-    inset: 7px;
-    border-bottom-color: rgba(184,169,232,0.6); border-left-color: rgba(184,169,232,0.2);
-    animation: cd-spin 1.4s linear infinite reverse;
-}
 @keyframes cd-spin { to { transform: rotate(360deg); } }
-.vnccs-clothes-loading-text { color: var(--text-primary); font-size: 13px; font-weight: 600; }
-.vnccs-clothes-loading-dots::after {
-    content: ''; animation: cd-dots 1.5s steps(4,end) infinite;
-}
-@keyframes cd-dots {
-    0%,20% { content: ''; } 40% { content: '.'; } 60% { content: '..'; } 80%,100% { content: '...'; }
-}
 
 .vnccs-clothes-container :is(button, [role="button"]):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .vnccs-clothes-container :is(input, select, .vnccs-common-ui-select-trigger) { box-sizing: border-box; }
@@ -770,6 +896,7 @@ app.registerExtension({
 
                 const syncCostumeEditControls = () => {
                     const canEdit = !node._vnccsClothesSelectionPending && hasSelectedEditableCostume();
+                    const needsCostume = !!state.character && !hasSelectedEditableCostume();
                     if (els.btnNew) els.btnNew.disabled = !!node._vnccsClothesSelectionPending || !state.character;
                     if (els.btnGen) els.btnGen.disabled = !canEdit;
                     if (els.btnDel) els.btnDel.disabled = !canEdit;
@@ -778,6 +905,13 @@ app.registerExtension({
                     ["top", "bottom", "head", "face", "shoes"].forEach(k => {
                         if (els[k]) els[k].disabled = !canEdit;
                     });
+                    els.designPanel?.classList.toggle("is-costume-empty", needsCostume);
+                    if (els.designContent) {
+                        els.designContent.inert = needsCostume;
+                        els.designContent.setAttribute("aria-hidden", String(needsCostume));
+                    }
+                    els.costumeEmptyState?.setAttribute("aria-hidden", String(!needsCostume));
+                    els.alignCostumeEmptyState?.();
                 };
 
                 const onValidationError = (event) => {
@@ -1652,6 +1786,7 @@ app.registerExtension({
                 charRow.innerHTML = '<div class="vnccs-clothes-label">CHARACTER</div>';
                 const charSel = document.createElement("select"); charSel.className = "vnccs-clothes-select";
                 charSel.onchange = async (e) => {
+                    els.cancelPreviewGeneration?.(true);
                     beginClothesUploadRequest();
                     const character = e.target.value;
                     els.charSelect.value = character;
@@ -1684,6 +1819,7 @@ app.registerExtension({
                 costRow.innerHTML = '<div class="vnccs-clothes-label">COSTUME (Select to Edit)</div>';
                 const costSel = document.createElement("select"); costSel.className = "vnccs-clothes-select";
                 costSel.onchange = async (e) => {
+                    els.cancelPreviewGeneration?.(true);
                     beginClothesUploadRequest();
                     const costume = e.target.value;
                     beginClothesWizardRequest();
@@ -1856,15 +1992,6 @@ app.registerExtension({
                         return;
                     }
 
-                    // Show loading overlay
-                    const loadingOverlay = document.createElement('div');
-                    loadingOverlay.className = 'vnccs-clothes-loading-overlay';
-                    loadingOverlay.innerHTML = `
-                        <div class="vnccs-clothes-spinner"></div>
-                        <div class="vnccs-clothes-loading-text">Generating preview<span class="vnccs-clothes-loading-dots"></span></div>
-                    `;
-                    container.appendChild(loadingOverlay);
-
                     const character = state.character;
                     const costume = state.costume;
                     const currentRequest = beginPreviewRequest();
@@ -1872,6 +1999,7 @@ app.registerExtension({
                     const isCurrent = () => currentRequest() && !node._vnccsStateRestoreError
                         && state.character === character && state.costume === costume && JSON.stringify({ ...state, costume_revision: null }) === draft;
                     spritePreviewNavigator?.invalidate?.();
+                    const generationRevision = startClothesPreviewGeneration();
                     btnGen.innerText = "GENERATING..."; btnGen.disabled = true;
                     try {
                         await saveCostumeToBackend();
@@ -1889,7 +2017,7 @@ app.registerExtension({
                             const d = await r.json();
                             if (!isCurrent()) return;
                             if (d.image) {
-                                els._ui.presentPreview(els.previewImg, els.placeholder, "data:image/png;base64," + d.image, state.character);
+                                await revealClothesPreview("data:image/png;base64," + d.image, state.character, generationRevision);
                             }
                         } else {
                             const message = await r.text();
@@ -1897,7 +2025,7 @@ app.registerExtension({
                         }
                     } catch (e) { if (isCurrent()) showInfo("Error", e.toString()); }
                     finally {
-                        loadingOverlay.remove();
+                        stopClothesPreviewGeneration(generationRevision);
                         btnGen.innerText = "GENERATE PREVIEW / SAVE";
                         btnGen.disabled = !!node._vnccsClothesSelectionPending || !hasSelectedEditableCostume();
                     }
@@ -1922,10 +2050,25 @@ app.registerExtension({
                 frame.appendChild(previewAura);
                 pImg.onclick = () => window.open(pImg.src, "_blank");
                 frame.appendChild(pImg);
+                const generationLayer = document.createElement("div");
+                generationLayer.className = "vnccs-clothes-generation-layer";
+                generationLayer.hidden = true;
+                generationLayer.ariaHidden = "true";
+                generationLayer.innerHTML = `
+                    <img class="vnccs-clothes-generation-img vnccs-clothes-generation-base" alt="">
+                    <img class="vnccs-clothes-generation-img vnccs-clothes-generation-new" alt="">
+                    <span class="vnccs-clothes-generation-scan"></span>`;
+                frame.appendChild(generationLayer);
                 const previewLoading = document.createElement("div");
                 previewLoading.className = "vnccs-clothes-preview-loading";
                 frame.appendChild(previewLoading);
-                els.previewImg = pImg; els.placeholder = frame.querySelector(".vnccs-clothes-placeholder");
+                els.previewFrame = frame;
+                els.previewImg = pImg;
+                els.placeholder = frame.querySelector(".vnccs-clothes-placeholder");
+                els.generationLayer = generationLayer;
+                els.generationBase = generationLayer.querySelector(".vnccs-clothes-generation-base");
+                els.generationNew = generationLayer.querySelector(".vnccs-clothes-generation-new");
+                els.generationScan = generationLayer.querySelector(".vnccs-clothes-generation-scan");
                 colLeft.appendChild(frame);
                 const spriteNav = document.createElement("div");
                 spriteNav.className = "cd-sprite-nav";
@@ -1943,6 +2086,87 @@ app.registerExtension({
                 spriteNextBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
                 spriteNav.append(spritePrevBtn, spriteCount, spriteNextBtn);
                 colLeft.appendChild(spriteNav);
+                let previewGenerationRevision = 0;
+                const stopClothesPreviewGeneration = (revision, restorePlaceholder = false) => {
+                    if (revision !== undefined && revision !== previewGenerationRevision) return;
+                    previewGenerationRevision += 1;
+                    for (const animation of els.generationLayer?._animations || []) animation.cancel();
+                    if (els.generationLayer) {
+                        els.generationLayer._animations = [];
+                        els.generationLayer.classList.remove("is-revealing");
+                        els.generationLayer.hidden = true;
+                    }
+                    els.generationBase?.removeAttribute("src");
+                    els.generationNew?.removeAttribute("src");
+                    els.previewFrame?.removeAttribute("aria-busy");
+                    spritePrevBtn.disabled = false;
+                    spriteNextBtn.disabled = false;
+                    const visiblePreview = els.previewImg?.style?.display !== "none" && els.previewImg?.getAttribute?.("src");
+                    if (restorePlaceholder && !visiblePreview && els.placeholder) els.placeholder.style.display = "flex";
+                };
+                const startClothesPreviewGeneration = () => {
+                    const revision = ++previewGenerationRevision;
+                    for (const animation of els.generationLayer?._animations || []) animation.cancel();
+                    const existing = els.previewImg?.style?.display !== "none"
+                        ? els.previewImg?.getAttribute?.("src") || els.previewImg?.src : "";
+                    if (existing) {
+                        els.generationBase.src = existing;
+                        els.generationBase.style.display = "block";
+                    } else {
+                        els.generationBase.removeAttribute("src");
+                        els.generationBase.style.display = "none";
+                    }
+                    els.generationBase.style.clipPath = "inset(0% 0 0 0)";
+                    els.generationNew.removeAttribute("src");
+                    els.generationNew.style.clipPath = "inset(0 0 100% 0)";
+                    els.generationScan.style.top = "0%";
+                    els.generationLayer.classList.remove("is-revealing");
+                    els.generationLayer.hidden = false;
+                    els.previewFrame.setAttribute("aria-busy", "true");
+                    spritePrevBtn.disabled = true;
+                    spriteNextBtn.disabled = true;
+                    if (els.placeholder) els.placeholder.style.display = "none";
+                    return revision;
+                };
+                const revealClothesPreview = async (src, name, revision) => {
+                    if (revision !== previewGenerationRevision) return false;
+                    els.generationNew.src = src;
+                    try { await els.generationNew.decode?.(); } catch { /* decoded data remains available to the transition */ }
+                    if (revision !== previewGenerationRevision) return false;
+                    els.generationLayer.classList.add("is-revealing");
+                    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+                    if (!reducedMotion && els.generationNew.animate && els.generationBase.animate && els.generationScan.animate) {
+                        const options = { duration: 1350, easing: "cubic-bezier(0.4, 0, 0.2, 1)", fill: "forwards" };
+                        const reveal = els.generationNew.animate([
+                            { clipPath: "inset(0 0 100% 0)" },
+                            { clipPath: "inset(0 0 0% 0)" },
+                        ], options);
+                        const conceal = els.generationBase.animate([
+                            { clipPath: "inset(0% 0 0 0)" },
+                            { clipPath: "inset(100% 0 0 0)" },
+                        ], options);
+                        const scan = els.generationScan.animate([
+                            { top: "0%", opacity: 1 },
+                            { top: "100%", opacity: 1 },
+                        ], options);
+                        els.generationLayer._animations = [reveal, conceal, scan];
+                        await Promise.all([reveal.finished.catch(() => {}), conceal.finished.catch(() => {}), scan.finished.catch(() => {})]);
+                    }
+                    if (revision !== previewGenerationRevision) return false;
+                    els.previewImg.src = src;
+                    els.previewImg.alt = `Preview of ${name}`;
+                    els.previewImg.style.display = "block";
+                    els.previewImg.style.opacity = "";
+                    try { await els.previewImg.decode?.(); } catch { /* keep the completed transition visible */ }
+                    await new Promise(resolve => window.requestAnimationFrame ? window.requestAnimationFrame(resolve) : resolve());
+                    if (revision !== previewGenerationRevision) return false;
+                    els.placeholder.style.display = "none";
+                    if (els._ui) els._ui._previewSource = src;
+                    stopClothesPreviewGeneration(revision);
+                    return true;
+                };
+                els.cancelPreviewGeneration = restore => stopClothesPreviewGeneration(undefined, restore);
+                registerCleanup(node, () => els.cancelPreviewGeneration?.());
                 spritePreviewNavigator = createSpritePreviewNavigator({
                     node,
                     isSelectionCurrent: preview => preview.character === state.character
@@ -1982,14 +2206,49 @@ app.registerExtension({
                 topRow.appendChild(colLeft);
 
                 // --- COL 2: MIDDLE PANEL (Tabs) ---
-                const colMid = document.createElement("div"); colMid.className = "vnccs-clothes-col";
+                const colMid = document.createElement("div"); colMid.className = "vnccs-clothes-col vnccs-clothes-design-panel";
                 colMid.dataset.sakuraScroll = "design";
                 colMid.style.paddingTop = "0"; // Reset padding for tabs
 
+                const designContent = document.createElement("div");
+                designContent.className = "vnccs-clothes-design-content";
+                colMid.appendChild(designContent);
+
+                const costumeEmptyState = document.createElement("div");
+                costumeEmptyState.className = "vnccs-clothes-costume-empty";
+                costumeEmptyState.setAttribute("role", "status");
+                costumeEmptyState.setAttribute("aria-live", "polite");
+                costumeEmptyState.setAttribute("aria-hidden", "true");
+                costumeEmptyState.innerHTML = `
+                    <svg class="vnccs-clothes-costume-empty-arrow" viewBox="0 0 62 42" aria-hidden="true">
+                        <path d="M60 21H10"></path><path d="m18 12-9 9 9 9"></path>
+                    </svg>
+                    <span class="vnccs-clothes-costume-empty-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M8 4h8l1 3 3 2-2 4-2-1v8H8v-8l-2 1-2-4 3-2 1-3Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+                    </span>
+                    <div class="vnccs-clothes-costume-empty-title">Create a costume first</div>
+                    <div class="vnccs-clothes-costume-empty-text">Click NEW to create a costume. The design controls will appear here as soon as it is ready.</div>`;
+                colMid.appendChild(costumeEmptyState);
+                els.designPanel = colMid;
+                els.designContent = designContent;
+                els.costumeEmptyState = costumeEmptyState;
+
+                const alignCostumeEmptyState = () => requestAnimationFrame(() => {
+                    if (!actionRow.isConnected || !colMid.isConnected) return;
+                    const actionRect = actionRow.getBoundingClientRect();
+                    const panelRect = colMid.getBoundingClientRect();
+                    const scaleY = panelRect.height / Math.max(colMid.offsetHeight, 1);
+                    const center = (actionRect.top - panelRect.top + actionRect.height / 2) / Math.max(scaleY, 0.01);
+                    if (Number.isFinite(center)) costumeEmptyState.style.setProperty("--vnccs-costume-empty-y", `${center}px`);
+                });
+                els.alignCostumeEmptyState = alignCostumeEmptyState;
+                node._vnccsAlignCostumeEmptyState = alignCostumeEmptyState;
+                registerCleanup(node, () => { delete node._vnccsAlignCostumeEmptyState; });
+
                 const controlsWrap = createGenerationControls();
                 controlsWrap.style.paddingTop = "16px";
-                colMid.appendChild(controlsWrap);
-                colMid.appendChild(createResolutionControl());
+                designContent.appendChild(controlsWrap);
+                designContent.appendChild(createResolutionControl());
 
                 // Tab Header
                 const tabBar = document.createElement("div");
@@ -2004,6 +2263,7 @@ app.registerExtension({
                     t.className = "cd-tab" + (state.activeTab === id ? " active" : "");
                     t.innerText = label;
                     t.onclick = () => {
+                        els.cancelPreviewGeneration?.(true);
                         beginClothesUploadRequest();
                         state.activeTab = id;
                         saveState();
@@ -2031,11 +2291,13 @@ app.registerExtension({
 
                 refreshTabs(); // Initial Render
 
-                colMid.appendChild(tabBar);
-                colMid.appendChild(contentArea);
+                designContent.appendChild(tabBar);
+                designContent.appendChild(contentArea);
                 topRow.appendChild(colMid);
+                syncCostumeEditControls();
 
                 node._vnccsRestoreClothesState = () => {
+                    els.cancelPreviewGeneration?.(true);
                     beginClothesUploadRequest();
                     beginClothesWizardRequest();
                     beginDeleteRequest();
@@ -2132,6 +2394,7 @@ app.registerExtension({
                 // Functions
                 const beginCostumesRequest = createRequestGuard(node);
                 const resetCostumeSelection = () => {
+                    els.cancelPreviewGeneration?.(true);
                     state.costume = "";
                     state.costume_revision = null;
                     state.costume_info = { ...defaultState.costume_info };
@@ -2267,6 +2530,7 @@ app.registerExtension({
                 };
 
                 const updatePreviewImage = async (forceCache = false) => {
+                    els.cancelPreviewGeneration?.(true);
                     const currentRequest = beginPreviewRequest();
                     const character = state.character;
                     const costume = state.costume;
@@ -2336,7 +2600,10 @@ app.registerExtension({
             nodeType.prototype.onResize = function (size) {
                 onResize?.apply(this, arguments);
                 syncDOMWidgetWidth(this, "clothes_designer_ui");
-                requestAnimationFrame(() => syncDOMWidgetWidth(this, "clothes_designer_ui"));
+                requestAnimationFrame(() => {
+                    syncDOMWidgetWidth(this, "clothes_designer_ui");
+                    this._vnccsAlignCostumeEmptyState?.();
+                });
             };
 
             const onConfigure = nodeType.prototype.onConfigure;

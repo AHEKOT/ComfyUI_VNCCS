@@ -254,6 +254,14 @@ def test_entry_points_forward_node_stage_and_actual_pose_count(monkeypatch, mode
         assert events[-1]["stage"] == stage
         assert events[-1]["node_id"] == "17"
         assert events[-1]["total"] == poses.shape[0] == (1 if regenerate_index is not None else 4)
+        if mode == "clothes":
+            if regenerate_index is None:
+                assert events[-1]["images"] == []
+                base_preview = next(event for event in events if event["stage"] == stage and event["status"] == "waiting")
+                assert base_preview["images"] == []
+                assert base_preview["total"] == 4
+            else:
+                assert "images" not in events[-1]
         raise ReachedPoseGeneration
 
     monkeypatch.setattr(node, "_run_pose_generation", run)

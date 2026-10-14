@@ -239,10 +239,13 @@ for (const change of ['restoration', 'edit', 'current']) {
         const h = setup();
         h.configure({ character: 'Alice', costume: 'Dress', costume_info: { top: 'Alice silk' } });
         await h.context.initialLoad;
-        const pending = deferred(), loading = { remove() {} };
+        const pending = deferred();
         Object.assign(h.context, {
             btnGen: h.els.btnGen, container: { appendChild() {} },
-            document: { createElement: () => loading }, getConnectedControlCenterState: () => ({}),
+            getConnectedControlCenterState: () => ({}),
+            startClothesPreviewGeneration: () => 1,
+            revealClothesPreview: async src => { h.els.previewImg.src = src; h.els.previewImg.style.display = 'block'; },
+            stopClothesPreviewGeneration() {},
         });
         h.context.node._randomizeSeedIfNeeded = () => {};
         h.context.api.fetchApi = async route => {

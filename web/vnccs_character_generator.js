@@ -578,6 +578,10 @@ ${SAKURA_THEME_CSS}
     opacity: 1;
     animation: vnccs-pipe-mannequin-scan 2200ms cubic-bezier(0.4,0,0.2,1) infinite;
 }
+.vnccs-pipe-img.is-clothes-revealing .vnccs-pipe-img-placeholder-scan {
+    opacity: 1;
+    animation: none;
+}
 .vnccs-pipe-img.is-placeholder.is-waiting .vnccs-pipe-img-placeholder {
     animation: vnccs-pipe-mannequin-wait 2600ms ease-in-out infinite;
     animation-delay: var(--wait-phase, 0ms);
@@ -1302,6 +1306,7 @@ class CharacterGeneratorWidget {
         this.nodeDefs = {};
         this.fieldDrafts = new Map();
         this.previewLayoutFrame = null;
+        this._clothesRevealIndices = new Set();
         this.regenerateState = null;
         this.regenerateTimer = null;
         this.restoreBrowserState();
@@ -1392,7 +1397,9 @@ class CharacterGeneratorWidget {
             this.closeViewer();
             this.viewer = null;
             clearTimeout(this._saveBrowserStateTimer);
+            for (const tile of this.previewGrid?.children || []) this.finishClothesPreviewTransition(tile);
             cancelAnimationFrame(this.previewLayoutFrame);
+            this.previewLayoutFrame = null;
         });
         this.bindModelResolutionSync();
         if (this.isClone) {
@@ -1437,6 +1444,7 @@ class CharacterGeneratorWidget {
                 && Math.max(0, Number(detail.current) || 0) === 0;
             if (startsNewRun) {
                 this._previewPlaceholderStage = stage;
+                this._clothesRevealIndices?.clear();
             }
             this.observeProgressRequest(detail.request_id, detail.run_id);
             if (stage === "error") {
@@ -1477,6 +1485,13 @@ class CharacterGeneratorWidget {
                 } else if (hasImages && !(status === "running" && !startsNewRun && !detail.images?.length && previousStageState.images?.length)) {
                     nextImages = detail.images;
                 }
+                if (this.isClothes && stage === "pose_generation" && detail.replace_images && detail.images?.length
+                    && (!this.userSelectedPreview || this.selectedPreview === stage)) {
+                    const previewStart = Math.max(0, Number.parseInt(detail.preview_start, 10) || 0);
+                    for (let offset = 0; offset < detail.images.length; offset++) {
+                        (this._clothesRevealIndices ||= new Set()).add(previewStart + offset);
+                    }
+                }
                 this.stageState[stage] = {
                     status,
                     images: nextImages,
@@ -1487,7 +1502,8 @@ class CharacterGeneratorWidget {
                     processing_indices: detail.processing_indices,
                     preview_aspect: detail.preview_aspect ?? previousStageState.preview_aspect,
                 };
-                if (!this.userSelectedPreview && (status === "running" || status === "done" || detail.images)) {
+                if (!this.userSelectedPreview && (!this.isClothes || stage !== "source_upscaler")
+                    && (status === "running" || status === "done" || detail.images)) {
                     this.selectedPreview = stage;
                     this.persistUI();
                 }
@@ -2650,7 +2666,8 @@ class CharacterGeneratorWidget {
                     : incoming;
                 if (snapshot.run_id && incoming.status === "running" && key.endsWith("pose_generation")
                     && !incoming.images?.length && !previousImages?.length) this._previewPlaceholderStage = key;
-                if (["running", "done"].includes(this.stageState[key].status)) followedStage = key;
+                if (["running", "done"].includes(this.stageState[key].status)
+                    && (!this.isClothes || key !== "source_upscaler")) followedStage = key;
                 this.updateRegenerateProgress(key, this.stageState[key].status, { render: false });
             }
             if (!snapshot.error && !this.userSelectedPreview && followedStage && this.selectedPreview !== followedStage) {
@@ -3591,6 +3608,7 @@ class CharacterGeneratorWidget {
         const changedStage = this._previewStage !== this.selectedPreview;
         if (changedStage) {
             this._previewRevealAt = 0;
+            this._clothesRevealIndices?.clear();
             this.previewLabel.textContent = name;
             this._ui?._playMotion(this.previewLabel, [{ opacity: 0.25 }, { opacity: 1 }], 180);
         }
@@ -3646,6 +3664,7 @@ class CharacterGeneratorWidget {
         while (this.previewGrid.children.length > count) {
             const tile = this.previewGrid.children[this.previewGrid.children.length - 1];
             if (tile._pendingImage) tile._pendingImage.onload = tile._pendingImage.onerror = null;
+            this.finishClothesPreviewTransition(tile);
             tile.remove();
         }
         while (this.previewGrid.children.length < count) {
@@ -3681,6 +3700,7 @@ class CharacterGeneratorWidget {
                 : images[index] || (!showPlaceholders ? upstream[index] || (busy ? tile._previewSource : null) : null));
             if (source) this.updatePreviewImage(tile, source);
             else {
+                this.finishClothesPreviewTransition(tile);
                 if (tile._pendingImage) {
                     tile._pendingImage.onload = tile._pendingImage.onerror = null;
                     tile._pendingImage.remove();
@@ -3726,6 +3746,7 @@ class CharacterGeneratorWidget {
     updatePreviewImage(tile, source) {
         const src = mediaURL(source);
         if (tile._previewSource === src) return;
+        this.finishClothesPreviewTransition(tile);
         tile._previewSource = src;
         if (tile._pendingImage) {
             tile._pendingImage.onload = tile._pendingImage.onerror = null;
@@ -3756,9 +3777,58 @@ class CharacterGeneratorWidget {
         image.src = src;
     }
 
+    finishClothesPreviewTransition(tile) {
+        if (!tile?._clothesRevealBase && !tile?._clothesRevealAnimations?.length) return;
+        for (const animation of tile._clothesRevealAnimations || []) {
+            animation.onfinish = null;
+            animation.cancel?.();
+        }
+        tile._clothesRevealAnimations = null;
+        const previous = tile._clothesRevealBase;
+        tile._clothesRevealBase = null;
+        if (previous && previous !== tile._previewImage) previous.remove();
+        if (tile._previewImage) {
+            tile._previewImage.style.clipPath = "";
+            if (tile._previewImage.naturalWidth > 0 && tile._previewImage.naturalHeight > 0) {
+                tile._previewAspect = tile._previewImage.naturalWidth / tile._previewImage.naturalHeight;
+            }
+        }
+        tile.classList.toggle("is-clothes-revealing", false);
+        if (tile.isConnected) this.schedulePreviewGridLayout(this.previewGrid);
+    }
+
+    startClothesPreviewTransition(tile, image, previous) {
+        tile._clothesRevealBase = previous;
+        tile.classList.toggle("is-clothes-revealing", true);
+        image.style.opacity = "1";
+        image.style.clipPath = "inset(0 0 100% 0)";
+        previous.style.clipPath = "inset(0% 0 0 0)";
+        const scan = tile.querySelector(".vnccs-pipe-img-placeholder-scan");
+        const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+        if (reducedMotion || !image.animate || !previous.animate || !scan?.animate) {
+            this.finishClothesPreviewTransition(tile);
+            return;
+        }
+        const options = { duration: 1350, easing: "cubic-bezier(0.4, 0, 0.2, 1)", fill: "forwards" };
+        const animations = [
+            image.animate([{ clipPath: "inset(0 0 100% 0)" }, { clipPath: "inset(0 0 0% 0)" }], options),
+            previous.animate([{ clipPath: "inset(0% 0 0 0)" }, { clipPath: "inset(100% 0 0 0)" }], options),
+            scan.animate([
+                { top: "-10%", opacity: 1 },
+                { top: "90%", opacity: 1 },
+            ], options),
+        ];
+        tile._clothesRevealAnimations = animations;
+        let remaining = animations.length;
+        for (const animation of animations) animation.onfinish = () => {
+            remaining -= 1;
+            if (!remaining && tile._previewImage === image) this.finishClothesPreviewTransition(tile);
+        };
+    }
+
     flushPreviewImages() {
         let changed = false;
-        for (const tile of this.previewGrid?.children || []) {
+        for (const [index, tile] of [...(this.previewGrid?.children || [])].entries()) {
             const image = tile._pendingImage;
             if (!image) continue;
             // A later network response must not overtake an earlier card's reveal.
@@ -3766,8 +3836,10 @@ class CharacterGeneratorWidget {
             tile._pendingImage = null;
             changed = true;
             const previous = tile._previewImage;
+            const clothesReveal = Boolean(previous && this.isClothes && this.selectedPreview === "pose_generation"
+                && this._clothesRevealIndices?.delete(index));
             tile._previewImage = image;
-            tile._previewAspect = image.naturalWidth / image.naturalHeight;
+            if (!clothesReveal) tile._previewAspect = image.naturalWidth / image.naturalHeight;
             for (const sibling of this.previewGrid?.children || []) {
                 if (!sibling.dataset.src) sibling._previewAspect = tile._previewAspect;
             }
@@ -3778,9 +3850,13 @@ class CharacterGeneratorWidget {
             const delay = Math.max(0, (this._previewRevealAt || 0) - Date.now());
             this._previewRevealAt = Date.now() + delay + 100;
             image.style.opacity = "1";
-            const motion = this._ui?._playMotion(previous ? image : tile, [{ opacity: 0, filter: "blur(4px)" }, { opacity: 1, filter: "blur(0px)" }], 420);
-            motion?.effect?.updateTiming?.({ delay, fill: "backwards" });
-            if (previous) {
+            if (clothesReveal) {
+                this.startClothesPreviewTransition(tile, image, previous);
+            } else {
+                const motion = this._ui?._playMotion(previous ? image : tile, [{ opacity: 0, filter: "blur(4px)" }, { opacity: 1, filter: "blur(0px)" }], 420);
+                motion?.effect?.updateTiming?.({ delay, fill: "backwards" });
+            }
+            if (previous && !clothesReveal) {
                 const exit = this._ui?._playMotion(previous, [{ opacity: 1 }, { opacity: 0 }], 280, () => previous.remove());
                 exit?.effect?.updateTiming?.({ delay, fill: "backwards" });
                 if (!this._ui) previous.remove();
@@ -3805,7 +3881,7 @@ class CharacterGeneratorWidget {
         const availableW = Math.max(1, grid.clientWidth);
         const availableH = Math.max(1, grid.clientHeight);
         const count = grid.children.length;
-        const images = [...grid.children].map(tile => tile._previewImage || (tile._pendingImage?._previewReady ? tile._pendingImage : null));
+        const images = [...grid.children].map(tile => tile._clothesRevealBase || tile._previewImage || (tile._pendingImage?._previewReady ? tile._pendingImage : null));
         const known = images.find(image => image?.naturalWidth > 0 && image?.naturalHeight > 0);
         const fallback = known ? known.naturalWidth / known.naturalHeight : 1;
         const aspects = images.map((image, index) => image?.naturalWidth > 0 && image?.naturalHeight > 0
@@ -3835,7 +3911,7 @@ class CharacterGeneratorWidget {
         const lastRowCount = count % best.cols || best.cols;
         const lastRowOffset = lastRowCount < best.cols ? (best.cols - lastRowCount) * (best.trackW + gap) / 2 : 0;
         [...grid.children].forEach((tile, index) => {
-            const size = tile._previewImage || tile.classList.contains("is-placeholder") ? best.sizes[index] : { width: 0, height: 0 };
+            const size = images[index] || tile.classList.contains("is-placeholder") ? best.sizes[index] : { width: 0, height: 0 };
             tile.style.width = `${size.width}px`;
             tile.style.height = `${size.height}px`;
             tile.style.left = `${index >= count - lastRowCount ? lastRowOffset : 0}px`;

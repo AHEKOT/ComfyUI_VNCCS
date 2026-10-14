@@ -221,6 +221,45 @@ test("generator gallery reserves aligned slots and reveals decoded cards in orde
     assert.ok(tiles.every(tile => Math.abs(parseFloat(tile.style.width) / parseFloat(tile.style.height) - 2 / 3) < 0.001));
 });
 
+test("Clothes Generator wipes each decoded outfit over its source sprite without resizing mid-transition", async () => {
+    const h = setup();
+    h.context.cancelAnimationFrame = () => {};
+    h.context.app = { registerExtension() {} };
+    vm.runInContext(generator.replace(/^import .*;\n/gm, "") + '\nthis.Generator = CharacterGeneratorWidget;', h.context);
+    const preview = new h.Element("div"); h.root.appendChild(preview);
+    const widget = Object.assign(Object.create(h.context.Generator.prototype), {
+        previewEl: preview, _ui: h.ui, isClothes: true, _clothesRevealIndices: new Set(),
+        syncStagesFromData() {}, stages: [["pose_generation", "Poses"]], selectedPreview: "pose_generation",
+        stageState: { pose_generation: { status: "running", current: 0, total: 3, images: ["base-1", "base-2", "base-3"] } },
+    });
+    widget.renderPreview();
+    const tiles = [...widget.previewGrid.children];
+    for (const tile of tiles) {
+        tile._pendingImage.naturalWidth = 640; tile._pendingImage.naturalHeight = 1536;
+        await tile._pendingImage.onload();
+    }
+    h.flush();
+    assert.equal(tiles[0].classList.contains("is-processing"), true);
+    assert.ok(tiles.slice(1).every(tile => tile.classList.contains("is-waiting")));
+    const base = tiles[0]._previewImage;
+
+    widget._clothesRevealIndices.add(0);
+    widget.stageState.pose_generation = { status: "running", current: 1, total: 3, processing_index: 1, images: ["clothed-1", "base-2", "base-3"] };
+    widget.renderPreview();
+    tiles[0]._pendingImage.naturalWidth = 1024; tiles[0]._pendingImage.naturalHeight = 1024;
+    await tiles[0]._pendingImage.onload(); h.flush();
+
+    const wipe = h.document.animations.filter(animation => animation.options.duration === 1350);
+    assert.equal(wipe.length, 3);
+    assert.equal(wipe[2].keyframes.map(frame => frame.top).join(","), "-10%,90%");
+    assert.equal(tiles[0].classList.contains("is-clothes-revealing"), true);
+    assert.ok(Math.abs(parseFloat(tiles[0].style.width) / parseFloat(tiles[0].style.height) - 640 / 1536) < 0.001);
+    wipe.forEach(animation => animation.finish()); h.flush();
+    assert.equal(base.isConnected, false);
+    assert.equal(tiles[0].classList.contains("is-clothes-revealing"), false);
+    assert.ok(Math.abs(parseFloat(tiles[0].style.width) / parseFloat(tiles[0].style.height) - 1) < 0.001);
+});
+
 test("generator gallery is created once while detached and survives mounting", () => {
     const h = setup(); h.root.remove();
     h.context.app = { registerExtension() {} };

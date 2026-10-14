@@ -3228,6 +3228,8 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
             order = ("source_upscaler", "pose_generation", "upscaler", "bg_remove")
 
             source_total = len(self._image_list(character)) or 1
+            pose_input = self._slice_batch_item(poses, regenerate_index) if regenerate_index is not None else poses
+            pose_total = len(self._image_list(pose_input))
             if not self._should_regenerate_stage(order, regenerate_from, "source_upscaler"):
                 source_upscaled = self._load_cached_stage(cache_dir, "source_upscaler", unique_id, "Using cached source upscaler")
             else:
@@ -3243,6 +3245,19 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                     source_total,
                     cache_dir=cache_dir,
                 )
+            if regenerate_index is None:
+                self._emit(
+                    unique_id,
+                    "pose_generation",
+                    "waiting",
+                    pose_input,
+                    "Waiting for clothes generation",
+                    0,
+                    pose_total,
+                    cache_dir=cache_dir,
+                    preview_aspect=self._image_aspect(pose_input),
+                )
+            if source_upscaled is None:
                 source_upscaled = self._run_source_upscaler(
                     character,
                     settings["upscaler"],
@@ -3258,14 +3273,14 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
             else:
                 pose_images = None
             if pose_images is None:
-                pose_input = self._slice_batch_item(poses, regenerate_index) if regenerate_index is not None else poses
                 self._emit(
                     unique_id,
                     "pose_generation",
                     "running",
+                    images=pose_input if regenerate_index is None else None,
                     message="Preparing pose generation",
                     current=0,
-                    total=len(self._image_list(pose_input)),
+                    total=pose_total,
                     cache_dir=cache_dir,
                     lora_info=pose_lora_info,
                     preview_aspect=self._image_aspect(pose_input),

@@ -51,7 +51,7 @@ test("loading other widgets cannot replace Creator's three columns with Clothes 
     const creator = sheets.find(sheet => sheet.name === "vnccs_character_creator_v2.js");
     const clothes = sheets.find(sheet => sheet.name === "vnccs_clothes_designer.js");
     assert.ok(/\.vnccs-creator-top-row\s*\{[^}]*grid-template-columns:\s*30% 35% 35%;/.test(creator.css));
-    assert.ok(/\.vnccs-clothes-top-row\s*\{[^}]*grid-template-columns:\s*32% minmax\(0, 68%\);/.test(clothes.css));
+    assert.ok(/\.vnccs-clothes-top-row\s*\{[^}]*grid-template-columns:\s*400px minmax\(0, 1fr\);/.test(clothes.css));
     for (const sheet of sheets.filter(item => item !== creator)) {
         assert.ok(sheet.selectors.every(selector => !selector.includes(".vnccs-creator-")), sheet.name);
     }
