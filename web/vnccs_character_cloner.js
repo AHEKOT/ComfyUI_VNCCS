@@ -39,7 +39,7 @@ ${SAKURA_THEME_CSS}
 /* ── Rows ── */
 .vnccs-cloner-top-row {
     display: grid;
-    grid-template-columns: 40% 60%;
+    grid-template-columns: 400px minmax(0, 1fr);
     gap: 12px;
     flex: 1;
     min-height: 0;
@@ -48,7 +48,7 @@ ${SAKURA_THEME_CSS}
 
 .vnccs-cloner-bottom-row {
     display: grid;
-    grid-template-columns: 40% 60%;
+    grid-template-columns: 400px minmax(0, 1fr);
     gap: 12px;
     height: 80px;
     min-height: 80px;
@@ -63,7 +63,7 @@ ${SAKURA_THEME_CSS}
     background: rgba(20, 16, 30, 0.88);
     border: 1px solid var(--accent-border);
     border-radius: var(--radius-lg);
-    padding: 14px 16px;
+    padding: 16px;
     gap: 10px;
     overflow-y: auto;
     height: 100%;
@@ -77,7 +77,7 @@ ${SAKURA_THEME_CSS}
     position: absolute;
     top: 0; left: 18%; right: 18%;
     height: 1px;
-    background: linear-gradient(90deg, transparent, rgba(255, 143, 163, 0.6), transparent);
+    background: linear-gradient(90deg, transparent, rgba(255, 143, 163, 0.5), transparent);
     border-radius: 1px;
 }
 .vnccs-cloner-col::-webkit-scrollbar { width: 4px; }
@@ -146,7 +146,6 @@ ${SAKURA_THEME_CSS}
     font-size: 12px;
     width: 100%;
     box-sizing: border-box;
-    zoom: 1.5;
     transition: all var(--transition);
     color-scheme: dark;
 }
@@ -310,64 +309,6 @@ ${SAKURA_THEME_CSS}
     background: rgba(255, 143, 163, 0.15);
     border-color: var(--accent);
     box-shadow: 0 0 16px var(--accent-subtle);
-}
-
-/* ── Image Grid ── */
-.vnccs-cloner-img-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    min-height: 66px;
-    flex-shrink: 0;
-}
-.vnccs-cloner-thumb-wrap {
-    position: relative;
-    display: inline-block;
-    margin: 2px;
-    border: 2px solid transparent;
-    border-radius: var(--radius-sm);
-    transition: all var(--transition);
-}
-.vnccs-cloner-thumb-wrap.is-selected {
-    border-color: var(--accent);
-    box-shadow: 0 0 10px rgba(255, 143, 163, 0.3);
-}
-.vnccs-cloner-thumb {
-    width: 60px;
-    height: 60px;
-    object-fit: cover;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: all var(--transition);
-}
-:where(.vnccs-cloner-thumb-wrap:not(.is-selected)) .vnccs-cloner-thumb:hover { border-color: var(--accent); box-shadow: 0 0 8px var(--accent-subtle); }
-.vnccs-cloner-thumb.generating {
-    border: 2px solid var(--accent);
-    animation: clonerPulse 1s infinite alternate;
-    box-shadow: 0 0 12px var(--accent-glow);
-}
-@keyframes clonerPulse { from { opacity: 0.6; } to { opacity: 1; } }
-.vnccs-cloner-thumb-remove {
-    position: absolute;
-    top: -1px;
-    right: -1px;
-    min-width: 20px;
-    height: 20px;
-    border-radius: 0 var(--radius-sm) 0 var(--radius-sm);
-    background: rgba(10, 10, 15, 0.82);
-    border: 1px solid rgba(255, 71, 87, 0.28);
-    color: var(--error);
-    cursor: pointer;
-    font-size: 14px;
-    line-height: 18px;
-    text-align: center;
-    font-weight: 700;
-    transition: all var(--transition);
-}
-.vnccs-cloner-thumb-remove:hover {
-    background: rgba(255, 71, 87, 0.2);
-    border-color: var(--error);
 }
 
 /* ── Toggle Switch ── */
@@ -538,8 +479,10 @@ ${SAKURA_THEME_CSS}
 
 /* ── Preview Container ── */
 .vnccs-cloner-preview-container {
+    --vnccs-preview-accent: #ff8fa3;
+    --vnccs-preview-accent-rgb: 255, 143, 163;
     flex: 1;
-    background: radial-gradient(circle, rgba(255, 143, 163, 0.04) 1px, transparent 1px), rgba(10, 10, 15, 0.7);
+    background: radial-gradient(circle, rgba(var(--vnccs-preview-accent-rgb), 0.04) 1px, transparent 1px), rgba(10, 10, 15, 0.7);
     background-size: 20px 20px, 100% 100%;
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
@@ -550,14 +493,45 @@ ${SAKURA_THEME_CSS}
     position: relative;
     min-height: 0;
 }
+.vnccs-cloner-preview-container.is-male-character {
+    --vnccs-preview-accent: #63c7ff;
+    --vnccs-preview-accent-rgb: 99, 199, 255;
+}
 .vnccs-cloner-preview-img {
     position: absolute;
-    inset: 0;
-    width: 100%;
+    top: 0;
+    left: 50%;
+    width: auto;
+    max-width: none;
     height: 100%;
     object-fit: contain;
+    transform: translateX(-50%);
     display: none;
 }
+.vnccs-cloner-preview-remove {
+    position: absolute;
+    z-index: 15;
+    top: 10px;
+    right: 10px;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid rgba(255, 71, 87, 0.42);
+    border-radius: 9px;
+    background: rgba(10, 10, 15, 0.78);
+    color: var(--error);
+    font: 700 18px/26px var(--font);
+    cursor: pointer;
+    opacity: 0.72;
+    transition: opacity var(--transition), background var(--transition), border-color var(--transition), transform var(--transition);
+}
+.vnccs-cloner-preview-remove:hover {
+    opacity: 1;
+    background: rgba(255, 71, 87, 0.18);
+    border-color: var(--error);
+    transform: scale(1.04);
+}
+.vnccs-cloner-preview-remove[hidden] { display: none; }
 .vnccs-cloner-preview-placeholder {
     display: flex;
     flex-direction: column;
@@ -590,10 +564,10 @@ ${SAKURA_THEME_CSS}
     content: '';
     width: 34px;
     height: 34px;
-    border: 2px solid rgba(255, 143, 163, 0.24);
-    border-top-color: var(--accent);
+    border: 2px solid rgba(var(--vnccs-preview-accent-rgb), 0.24);
+    border-top-color: var(--vnccs-preview-accent);
     border-radius: 50%;
-    box-shadow: 0 0 18px rgba(255,143,163,0.25);
+    box-shadow: 0 0 18px rgba(var(--vnccs-preview-accent-rgb), 0.25);
     animation: clonerSpin 0.75s linear infinite;
 }
 .vnccs-cloner-sprite-nav {
@@ -700,8 +674,7 @@ ${SAKURA_THEME_CSS}
 .vnccs-cloner-preview-container,
 .vnccs-cloner-input,
 .vnccs-cloner-select,
-.vnccs-cloner-textarea,
-.vnccs-cloner-img-list {
+.vnccs-cloner-textarea {
     pointer-events: auto;
 }
 
@@ -1564,6 +1537,8 @@ app.registerExtension({
                 };
 
                 const updateUIFromState = () => {
+                    const sex = String(state.character_info?.sex || state.character_info?.gender || "").trim().toLowerCase();
+                    els.previewContainer?.classList.toggle("is-male-character", sex === "male");
                     // Fields
                     for (let k in state.character_info) {
                         if (els[k]) {
@@ -2012,16 +1987,14 @@ app.registerExtension({
                 srcHeader.style.marginTop = "15px";
                 colSrc.appendChild(srcHeader);
 
-                const imgList = document.createElement("div");
-                imgList.className = "vnccs-cloner-img-list";
-                imgList.dataset.sakuraScroll = "source-images";
-                colSrc.appendChild(imgList);
-
                 // --- IMAGE PREVIEW/UPLOAD AREA ---
                 // Container for the Large Preview
                 const previewContainer = document.createElement("div");
                 previewContainer.className = "vnccs-cloner-preview-container";
                 previewContainer.classList.add("vnccs-common-ui-preview-host");
+                previewContainer.classList.toggle("is-male-character", String(state.character_info?.sex || state.character_info?.gender || "").trim().toLowerCase() === "male");
+                previewContainer.style.marginTop = "5px";
+                els.previewContainer = previewContainer;
                 const previewAura = document.createElement("div");
                 previewAura.className = "vnccs-common-ui-preview-aura";
                 previewContainer.appendChild(previewAura);
@@ -2046,6 +2019,45 @@ app.registerExtension({
                 const previewLoading = document.createElement("div");
                 previewLoading.className = "vnccs-cloner-preview-loading";
                 previewContainer.appendChild(previewLoading);
+
+                // Delete X
+                const delBtn = document.createElement("button");
+                delBtn.type = "button";
+                delBtn.className = "vnccs-cloner-preview-remove";
+                delBtn.innerText = "×";
+                delBtn.title = "Remove source image";
+                delBtn.hidden = true;
+                els.sourceRemove = delBtn;
+                delBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    const images = state.source_images;
+                    const imgObj = images[0];
+                    const currentRequest = beginCaptionRequest();
+                    const character = state.character;
+                    showModal("Remove Image", () => {
+                        const d = document.createElement("div");
+                        d.innerText = "Are you sure you want to remove this image?";
+                        return d;
+                    }, [
+                        { text: "Cancel" },
+                        {
+                            text: "Remove",
+                            class: "vnccs-btn-danger",
+                            action: overlay => {
+                                if (!currentRequest() || !overlay.isConnected || state.character !== character
+                                    || state.source_images !== images || state.source_images[0] !== imgObj) return false;
+                                beginCaptionRequest();
+                                state.source_images.splice(0, 1);
+                                state.selected_idx = 0;
+                                saveState();
+                                renderThumbs();
+                                return false;
+                            }
+                        }
+                    ]);
+                };
+                // Preview controls
+                previewContainer.appendChild(delBtn);
 
                 // Overlay Controls (Upload Button) - Always visible or overlay?
                 // User wants standard behaviour: Empty -> Upload Button. Filled -> Image + Mini Overlay?
@@ -2230,14 +2242,6 @@ app.registerExtension({
                     autoGenBtn.innerText = "ANALYZING...";
                     autoGenBtn.disabled = true;
 
-                    // Visual feedback highlighting selected thumb
-                    const thumbs = imgList.querySelectorAll("img");
-                    let thumb = null;
-                    if (thumbs[selIdx]) {
-                        thumb = thumbs[selIdx];
-                        thumb.classList.add("generating");
-                    }
-
                     try {
                         autoGenBtn.innerText = "CHECKING MODEL...";
                         if (!await ensureQwenVLReady()) return true;
@@ -2356,7 +2360,6 @@ app.registerExtension({
                         loading.remove();
                         autoGenBtn.innerText = "Analyze Captions";
                         autoGenBtn.disabled = false;
-                        if (thumb) thumb.classList.remove("generating");
                     }
                 };
 
@@ -2464,11 +2467,11 @@ app.registerExtension({
                 node.addDOMWidget("ui", "ui", container, { serialize: false, hideOnZoom: false });
                 syncDOMWidgetWidthSoon(node, "ui");
 
-                // Define Render Thumbs Logic
+                // Keep the single source image in the large preview; a duplicate thumbnail adds no value.
                 renderThumbs = () => {
                     const view = els._ui.captureView();
-                    imgList.innerHTML = "";
                     const images = state.source_images;
+                    if (els.sourceRemove) els.sourceRemove.hidden = images.length === 0;
 
                     // Default Selection
                     if (typeof state.selected_idx !== 'number' || state.selected_idx < 0 || state.selected_idx >= images.length) {
@@ -2514,71 +2517,6 @@ app.registerExtension({
                         }
                     }
 
-                    // Thumbnails Loop
-                    images.forEach((imgObj, idx) => {
-                        let name = "", type = "input", sub = "";
-                        if (typeof imgObj === 'string') { name = imgObj; }
-                        else if (imgObj && imgObj.name) { name = imgObj.name; type = imgObj.type || "input"; sub = imgObj.subfolder || ""; }
-                        if (!name) return;
-
-                        const wrap = document.createElement("div");
-                        wrap.className = "vnccs-cloner-thumb-wrap";
-                        if (idx === state.selected_idx) {
-                            wrap.classList.add("is-selected");
-                        }
-
-                        const img = document.createElement("img");
-                        img.loading = "lazy";
-                        img.decoding = "async";
-                        const params = new URLSearchParams();
-                        params.append("filename", name);
-                        params.append("type", type);
-                        if (sub) params.append("subfolder", sub);
-                        img.src = api.apiURL("/view?" + params.toString());
-                        img.className = "vnccs-cloner-thumb";
-
-                        img.onclick = () => {
-                            beginCaptionRequest();
-                            state.selected_idx = idx;
-                            saveState();
-                            renderThumbs();
-                        };
-
-                        // Delete X
-                        const delBtn = document.createElement("div");
-                        delBtn.innerText = "×";
-                        delBtn.className = "vnccs-cloner-thumb-remove";
-                        delBtn.onclick = (e) => {
-                            e.stopPropagation();
-                            const currentRequest = beginCaptionRequest();
-                            const character = state.character;
-                            showModal("Remove Image", () => {
-                                const d = document.createElement("div");
-                                d.innerText = "Are you sure you want to remove this image?";
-                                return d;
-                            }, [
-                                { text: "Cancel" },
-                                {
-                                    text: "Remove",
-                                    class: "vnccs-btn-danger",
-                                    action: overlay => {
-                                        if (!currentRequest() || !overlay.isConnected || state.character !== character
-                                            || state.source_images !== images || state.source_images[idx] !== imgObj) return false;
-                                        beginCaptionRequest();
-                                        state.source_images.splice(idx, 1);
-                                        if (state.selected_idx >= state.source_images.length) state.selected_idx = Math.max(0, state.source_images.length - 1);
-                                        saveState();
-                                        renderThumbs();
-                                        return false;
-                                    }
-                                }
-                            ]);
-                        };
-
-                        wrap.appendChild(img);
-                        wrap.appendChild(delBtn);
-                        imgList.appendChild(wrap);
-                    });
                     els._ui.syncSelects();
                     els._ui.restoreView(view);
                 };

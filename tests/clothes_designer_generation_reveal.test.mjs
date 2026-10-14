@@ -40,6 +40,7 @@ test("Clothes Designer keeps the source preview and wipes the generated outfit b
     });
     const layer = { hidden: true, classList: classes(), _animations: [] };
     const frame = {
+        classList: classes(),
         setAttribute(name, value) { this[name] = value; },
         removeAttribute(name) { delete this[name]; },
     };
@@ -59,7 +60,7 @@ test("Clothes Designer keeps the source preview and wipes the generated outfit b
     const node = { id: 8 };
     const context = vm.createContext({
         api, els, spritePrevBtn, spriteNextBtn, node,
-        state: { character: "Alice", costume: "Fantasy" },
+        state: { character: "Alice", costume: "Fantasy", character_info: { sex: "male" } },
         hasSelectedEditableCostume: () => true,
         beginPreviewRequest: () => () => true,
         spritePreviewNavigator: null,
@@ -71,6 +72,7 @@ test("Clothes Designer keeps the source preview and wipes the generated outfit b
     vm.runInContext(`${code}\nglobalThis.start = startClothesPreviewGeneration; globalThis.reveal = revealClothesPreview;`, context);
 
     const revision = context.start();
+    assert.equal(frame.classList.contains("is-male-character"), true);
     assert.equal(previous.src, "source-sprite.png");
     assert.equal(layer.hidden, false);
     assert.equal(frame["aria-busy"], "true");

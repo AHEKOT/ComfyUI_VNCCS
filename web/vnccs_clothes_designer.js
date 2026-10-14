@@ -439,12 +439,24 @@ ${SAKURA_THEME_CSS}
 
 /* Preview */
 .vnccs-clothes-preview-container {
+    --vnccs-preview-accent: #ff8fa3;
+    --vnccs-preview-accent-rgb: 255, 143, 163;
+    --vnccs-preview-highlight-rgb: 255, 238, 246;
     flex: 1;
-    background: radial-gradient(circle, rgba(255,143,163,0.04) 1px, transparent 1px), rgba(10,10,15,0.7);
+    background: radial-gradient(circle, rgba(var(--vnccs-preview-accent-rgb), 0.04) 1px, transparent 1px), rgba(10,10,15,0.7);
     background-size: 20px 20px, 100% 100%;
     border: 1px solid var(--border); border-radius: var(--radius-md);
     display: flex; align-items: center; justify-content: center;
     overflow: hidden; position: relative; min-height: 0;
+}
+.vnccs-clothes-preview-container.is-male-character {
+    --vnccs-preview-accent: #63c7ff;
+    --vnccs-preview-accent-rgb: 99, 199, 255;
+    --vnccs-preview-highlight-rgb: 232, 248, 255;
+}
+.vnccs-clothes-preview-container.is-male-character[aria-busy="true"] {
+    border-color: rgba(var(--vnccs-preview-accent-rgb), 0.62);
+    box-shadow: 0 0 18px rgba(var(--vnccs-preview-accent-rgb), 0.14);
 }
 .vnccs-clothes-preview-img {
     position: absolute;
@@ -471,10 +483,10 @@ ${SAKURA_THEME_CSS}
     content: '';
     width: 34px;
     height: 34px;
-    border: 2px solid rgba(255, 143, 163, 0.24);
-    border-top-color: var(--accent);
+    border: 2px solid rgba(var(--vnccs-preview-accent-rgb), 0.24);
+    border-top-color: var(--vnccs-preview-accent);
     border-radius: 50%;
-    box-shadow: 0 0 18px rgba(255,143,163,0.25);
+    box-shadow: 0 0 18px rgba(var(--vnccs-preview-accent-rgb), 0.25);
     animation: cd-spin 0.75s linear infinite;
 }
 .vnccs-clothes-generation-layer {
@@ -483,7 +495,7 @@ ${SAKURA_THEME_CSS}
     z-index: 5;
     overflow: hidden;
     pointer-events: none;
-    background: radial-gradient(circle, rgba(255,143,163,0.04) 1px, transparent 1px), #0f0f16;
+    background: radial-gradient(circle, rgba(var(--vnccs-preview-accent-rgb), 0.04) 1px, transparent 1px), #0f0f16;
     background-size: 20px 20px, 100% 100%;
 }
 .vnccs-clothes-generation-layer[hidden] { display: none; }
@@ -522,8 +534,8 @@ ${SAKURA_THEME_CSS}
     right: 0;
     bottom: 0;
     height: clamp(18px, 6%, 42px);
-    background: linear-gradient(180deg, transparent, rgba(255,143,163,0.24) 30%, rgba(255,238,246,0.98) 50%, rgba(255,143,163,0.34) 68%, transparent);
-    box-shadow: 0 0 24px rgba(255,143,163,0.3);
+    background: linear-gradient(180deg, transparent, rgba(var(--vnccs-preview-accent-rgb), 0.24) 30%, rgba(var(--vnccs-preview-highlight-rgb), 0.98) 50%, rgba(var(--vnccs-preview-accent-rgb), 0.34) 68%, transparent);
+    box-shadow: 0 0 24px rgba(var(--vnccs-preview-accent-rgb), 0.3);
 }
 .vnccs-clothes-generation-layer.is-revealing .vnccs-clothes-generation-base { animation: none; }
 .vnccs-clothes-generation-layer.is-revealing .vnccs-clothes-generation-scan { animation: none; }
@@ -1351,6 +1363,7 @@ app.registerExtension({
                             age: normalizeAgeValue(info.age ?? (changed ? defaultState.character_info.age : state.character_info.age)),
                             sex: String(info.sex || info.gender || (changed ? defaultState.character_info.sex : state.character_info.sex) || "female").toLowerCase()
                         };
+                        els.previewFrame?.classList.toggle("is-male-character", state.character_info.sex === "male");
                         state.character = character;
                         if (changed) resetCostumeSelection();
                         saveState();
@@ -2040,6 +2053,7 @@ app.registerExtension({
                 // Preview
                 const frame = document.createElement("div"); frame.className = "vnccs-clothes-preview-container";
                 frame.classList.add("vnccs-common-ui-preview-host");
+                frame.classList.toggle("is-male-character", String(state.character_info?.sex || state.character_info?.gender || "").trim().toLowerCase() === "male");
                 frame.style.marginTop = "5px";
                 frame.innerHTML = `<div class="vnccs-clothes-placeholder">
                     <svg class="vnccs-clothes-placeholder-icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -2112,6 +2126,8 @@ app.registerExtension({
                 };
                 const startClothesPreviewGeneration = () => {
                     const revision = ++previewGenerationRevision;
+                    const sex = String(state.character_info?.sex || state.character_info?.gender || "").trim().toLowerCase();
+                    els.previewFrame?.classList.toggle("is-male-character", sex === "male");
                     for (const animation of els.generationLayer?._animations || []) animation.cancel();
                     const existing = els.previewImg?.style?.display !== "none"
                         ? els.previewImg?.getAttribute?.("src") || els.previewImg?.src : "";

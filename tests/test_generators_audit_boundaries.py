@@ -199,6 +199,118 @@ def test_damaged_emotion_catalog_blocks_tasks_and_recovers_without_losing_data(
     assert path.read_bytes() == original
 
 
+def test_long_custom_emotion_names_save_with_valid_unique_generation_identifiers(
+    emotion_module, monkeypatch, tmp_path,
+):
+    defaults = tmp_path / "emotions.json"
+    defaults.write_text("{}")
+    monkeypatch.setattr(emotion_module, "emotions_config_path", lambda: str(defaults))
+    monkeypatch.setattr(emotion_module.web, "json_response", lambda data, status=200:
+                        SimpleNamespace(data=data, status=status), raising=False)
+    async def body():
+        return {"name": "a" * 121, "description": "soft smile"}
+    request = SimpleNamespace(json=body, headers={"X-VNCCS-CSRF": "1"})
+    names = []
+    for _ in range(2):
+        response = asyncio.run(emotion_module.add_custom_emotion(request))
+        assert response.status == 200
+        name = response.data["emotion"]["safe_name"]
+        assert emotion_module.ensure_safe_name(name, "emotion") == name
+        assert len(name) == 120
+        assert response.data["emotion"]["key"] == "a" * 121
+        names.append(name)
+    assert names[0] != names[1] and names[1].endswith("-2")
+    assert set(emotion_module.EmotionGeneratorV2().SAFE_NAME_MAP) == set(names)
+    assert defaults.read_text() == "{}"
+
+
+def test_custom_emotion_write_and_catalog_read_leave_http_loop_responsive(
+    emotion_module, monkeypatch, tmp_path,
+):
+    import threading
+    defaults = tmp_path / "emotions.json"
+    defaults.write_text("{}")
+    monkeypatch.setattr(emotion_module, "emotions_config_path", lambda: str(defaults))
+    monkeypatch.setattr(emotion_module.web, "json_response", lambda data, status=200:
+                        SimpleNamespace(data=data, status=status), raising=False)
+    started, release = threading.Event(), threading.Event()
+    def encode(*args):
+        started.set()
+        assert release.wait(2)
+    monkeypatch.setattr(emotion_module, "save_custom_emotion_image", encode)
+    async def body():
+        return {"name": "Happy"}
+    async def run():
+        save = asyncio.create_task(emotion_module.add_custom_emotion(
+            SimpleNamespace(json=body, headers={"X-VNCCS-CSRF": "1"})))
+        try:
+            for _ in range(100):
+                await asyncio.sleep(.002)
+                if started.is_set():
+                    break
+            assert started.is_set() and not save.done()
+            read = asyncio.create_task(emotion_module.get_emotions_config(None))
+            await asyncio.sleep(.01)
+            assert not read.done(), "Catalog read must wait for publication without blocking HTTP"
+        finally:
+            release.set()
+        assert (await save).status == 200
+        assert (await read).data["Custom"][0]["safe_name"] == "happy"
+    asyncio.run(run())
+
+
+def test_custom_emotion_pixel_limit_preserves_library_and_rejects_before_conversion(
+    emotion_module, monkeypatch, tmp_path,
+):
+    import base64
+    import io
+    from PIL import Image
+    defaults = tmp_path / "emotions.json"
+    defaults.write_text("{}")
+    users = tmp_path / "user" / "emotions.json"
+    users.parent.mkdir()
+    users.write_text('{"Custom": []}')
+    original = users.read_bytes()
+    monkeypatch.setattr(emotion_module, "emotions_config_path", lambda: str(defaults))
+    monkeypatch.setattr(emotion_module, "MAX_CUSTOM_EMOTION_PIXELS", 256)
+    monkeypatch.setattr(emotion_module.ImageOps, "exif_transpose", lambda *args:
+                        pytest.fail("Oversized images must fail before decoding or converting pixels"))
+    monkeypatch.setattr(emotion_module.web, "json_response", lambda data, status=200:
+                        SimpleNamespace(data=data, status=status), raising=False)
+    encoded = io.BytesIO()
+    Image.new("RGB", (17, 16), "red").save(encoded, format="PNG")
+    async def body():
+        return {"name": "Large", "image_data": "data:image/png;base64," + base64.b64encode(encoded.getvalue()).decode()}
+    response = asyncio.run(emotion_module.add_custom_emotion(
+        SimpleNamespace(json=body, headers={"X-VNCCS-CSRF": "1"})))
+    assert response.status == 400 and "pixels" in response.data["error"]
+    assert users.read_bytes() == original
+    assert not list(tmp_path.rglob("*.webp"))
+
+
+def test_emotion_cache_pruning_preserves_active_inputs_unrelated_files_and_links(
+    generator_module, monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(generator_module.folder_paths, "get_output_directory", lambda: str(tmp_path))
+    cache = tmp_path / "VNCCS" / "Characters" / "Alice" / "cache" / "poses" / "audit"
+    stage = cache / "_stage_cache"
+    stage.mkdir(parents=True)
+    kept = ["emotion_0001__item_0001.pt", "emotion_0001_detailer_mask__item_0001.pt",
+            "input_images_latest.pt", "inputs.json", "manual.pt"]
+    removed = ["emotion_0001__item_0002.pt", "emotion_0001_detailer_mask__item_0002.pt",
+               "emotion_0002__item_0001.pt", "emotion_0002_detailer_mask__item_0001.pt"]
+    for name in kept + removed:
+        (stage / name).write_bytes(name.encode())
+    outside = tmp_path / "kept.pt"
+    outside.write_bytes(b"outside cache")
+    link = stage / "emotion_9999__item_0001.pt"
+    link.symlink_to(outside)
+    generator_module.VNCCS_EmotionsGenerator()._prune_emotion_cache(str(cache), {"emotion_0001": 1})
+    assert all((stage / name).read_bytes() == name.encode() for name in kept)
+    assert all(not (stage / name).exists() for name in removed)
+    assert link.is_symlink() and outside.read_bytes() == b"outside cache"
+
+
 def test_custom_emotion_added_during_catalog_read_is_available_on_the_next_request(
     emotion_module, monkeypatch, tmp_path,
 ):

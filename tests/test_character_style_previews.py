@@ -80,6 +80,45 @@ def test_real_preview_path_samples_a_square_at_selected_scale_and_writes_only_we
     assert response.data["saved"] is True and response.data["path"] == str(path)
 
 
+@pytest.mark.parametrize("mode", ["illustrious", "anima", "qi2"])
+def test_render_uses_one_style_revision_and_rejects_edit_during_loading(monkeypatch, tmp_path, mode):
+    monkeypatch.setattr(library, "USER_CHARACTER_STYLES_PATH", str(tmp_path / "styles.json"))
+    monkeypatch.setattr(library, "STYLE_PREVIEWS_DIR", str(tmp_path / "previews"))
+    style = library.save_user_style({"label": "Mine", "prompt": "Red ink"})
+    previous = library.save_user_style_preview(style["id"], Image.new("RGB", (32, 32), "pink"), style["revision"])
+    preview = Path(previous["path"])
+    original = preview.read_bytes()
+    monkeypatch.setattr(creator, "load_user_styles", library.load_user_styles)
+    monkeypatch.setattr(creator.web, "json_response", lambda data, status=200: SimpleNamespace(data=data, status=status), raising=False)
+    monkeypatch.setattr(creator.web, "Response", lambda **data: pytest.fail(str(data)), raising=False)
+
+    def load(settings):
+        library.save_user_style({**style, "prompt": "Blue paint"})
+        return "model", "clip", "vae"
+
+    monkeypatch.setattr(creator, "acquire_preview_assets", load)
+    monkeypatch.setattr(creator, "apply_generation_lora", lambda model, clip, *args: (model, clip))
+    monkeypatch.setattr(creator, "apply_creator_overhaul", lambda model, clip, *args: (model, clip))
+    monkeypatch.setattr(creator, "prepare_qi2_model", lambda model, *args: (model, False))
+    encoded = []
+    monkeypatch.setattr(creator, "encode_generation_conditioning", lambda *args, **kwargs:
+                        encoded.append((args, kwargs)) or ("positive", "negative", "prompt"))
+    monkeypatch.setattr(creator, "validate_anima_conditioning", lambda *args: None)
+    monkeypatch.setattr(creator, "create_generation_latent", lambda *args: "latent")
+    monkeypatch.setattr(creator, "sample_generation_latent", lambda **kwargs: "sampled")
+    monkeypatch.setattr(creator, "decode_generation_samples", lambda *args: torch.zeros(1, 32, 32, 3))
+    info = {"style": style["id"], "age": 30, "sex": "female"}
+    response = creator._generate_preview_response({"character_info": info,
+        "gen_settings": {"generation_mode": mode}}, style_preview=style["id"])
+    assert response.status == 409
+    assert encoded[0][1]["style_reference"] == "Red ink"
+    if mode != "qi2":
+        assert "Red ink" in encoded[0][0][2] and "Blue paint" not in encoded[0][0][2]
+    assert preview.read_bytes() == original
+    assert library.load_user_styles()[0]["prompt"] == "Blue paint"
+    assert info == {"style": style["id"], "age": 30, "sex": "female"}
+
+
 def test_generation_route_validates_style_and_keeps_tags_settings_and_scoped_events(monkeypatch):
     monkeypatch.setattr(creator.web, "json_response", lambda data, status=200: SimpleNamespace(data=data, status=status), raising=False)
     monkeypatch.setattr(creator, "load_user_styles", lambda: [])

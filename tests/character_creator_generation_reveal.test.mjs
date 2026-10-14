@@ -34,7 +34,7 @@ test("Creator generation uses the gender mannequin, then reveals the new preview
         },
     });
     const layer = { hidden: true, classList: classes(), _animations: [] };
-    const frame = { setAttribute(name, value) { this[name] = value; }, removeAttribute(name) { delete this[name]; } };
+    const frame = { classList: classes(), setAttribute(name, value) { this[name] = value; }, removeAttribute(name) { delete this[name]; } };
     let finishPreviewDecode;
     const preview = {
         style: { display: "none" }, src: "",
@@ -58,6 +58,7 @@ test("Creator generation uses the gender mannequin, then reveals the new preview
 
     const first = context.start();
     assert.equal(els.generationBase.src, "male.png");
+    assert.equal(frame.classList.contains("is-male-character"), true);
     assert.equal(layer.classList.contains("uses-mannequin"), true);
     context.els.cancelPreviewGeneration();
 

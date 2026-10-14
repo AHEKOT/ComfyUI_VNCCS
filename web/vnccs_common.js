@@ -1367,6 +1367,9 @@ export const SAKURA_INTERACTION_CSS = `
     position: absolute; inset: 0; opacity: 0; pointer-events: none;
     background: radial-gradient(ellipse at center, rgba(255,143,163,0.35), rgba(184,169,232,0.15) 45%, transparent 75%);
 }
+.vnccs-common-ui-preview-host.is-male-character .vnccs-common-ui-preview-aura {
+    background: radial-gradient(ellipse at center, rgba(99,199,255,0.38), rgba(91,159,224,0.16) 45%, transparent 75%);
+}
 .vnccs-common-ui-select-trigger {
     display: flex;
     align-items: center;

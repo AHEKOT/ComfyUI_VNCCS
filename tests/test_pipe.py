@@ -40,6 +40,21 @@ def _make_pipe(**kwargs):
 
 # ── _inherit ──────────────────────────────────────────────────────────────────
 
+@pytest.mark.parametrize("strength", [0, 1])
+def test_selected_missing_lora_requires_weights_unless_disabled(monkeypatch, strength):
+    from nodes import vnccs_pipe
+    monkeypatch.setattr(vnccs_pipe, "get_full_path_agnostic",
+                        lambda *args, **kwargs: pytest.fail("Disabled adapter must not resolve weights")
+                        if strength == 0 else None)
+    model, clip = object(), object()
+    if strength:
+        with pytest.raises(FileNotFoundError, match="Selected LoRA 'missing.safetensors'"):
+            VNCCS_Pipe().process_pipe(model=model, clip=clip, lora_name="missing.safetensors", lora_strength=strength)
+    else:
+        result = VNCCS_Pipe().process_pipe(model=model, clip=clip, lora_name="missing.safetensors", lora_strength=0)
+        assert result[:2] == (model, clip)
+
+
 class TestInherit:
     def test_none_inherits_from_pipe(self):
         pipe = _make_pipe(cfg=7.5)

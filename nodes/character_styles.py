@@ -184,9 +184,12 @@ def delete_user_style(style_id, path=None):
         return True
 
 
-def save_user_style_preview(style_id, image):
-    # A render finishing after deletion must not recreate an orphan preview.
+def save_user_style_preview(style_id, image, revision):
+    # A late render must not publish over a deleted or edited style.
     with _STYLE_LOCK:
-        if not any(style["id"] == style_id for style in load_user_styles()):
+        style = next((style for style in load_user_styles() if style["id"] == style_id), None)
+        if style is None:
             raise ValueError("User style no longer exists")
+        if revision != style["revision"]:
+            raise StorageConflictError("This style changed during rendering. Generate its preview again.")
         return save_style_preview(style_id, image)

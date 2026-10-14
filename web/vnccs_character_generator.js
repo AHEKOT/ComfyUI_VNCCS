@@ -476,13 +476,29 @@ ${SAKURA_THEME_CSS}
     cursor: pointer;
 }
 .vnccs-pipe-preview {
+    --vnccs-preview-accent: #ff8fa3;
+    --vnccs-preview-accent-rgb: 255, 143, 163;
+    --vnccs-preview-highlight-rgb: 255, 235, 244;
+    --vnccs-preview-label: #ffb6c8;
+    --vnccs-preview-idle-border: var(--accent-lavender);
+    --vnccs-preview-idle-rgb: 107, 74, 139;
+    --vnccs-preview-active-bg-rgb: 119, 57, 104;
     min-height: 0;
     padding: 12px;
     overflow: hidden;
-    background: radial-gradient(circle, rgba(255,143,163,0.04) 1px, transparent 1px), #09090e;
+    background: radial-gradient(circle, rgba(var(--vnccs-preview-accent-rgb), 0.04) 1px, transparent 1px), #09090e;
     background-size: 20px 20px, 100% 100%;
     display: flex;
     flex-direction: column;
+}
+.vnccs-pipe-preview.is-male-character {
+    --vnccs-preview-accent: #63c7ff;
+    --vnccs-preview-accent-rgb: 99, 199, 255;
+    --vnccs-preview-highlight-rgb: 232, 248, 255;
+    --vnccs-preview-label: #b9e8ff;
+    --vnccs-preview-idle-border: #8bcfff;
+    --vnccs-preview-idle-rgb: 49, 126, 181;
+    --vnccs-preview-active-bg-rgb: 31, 116, 174;
 }
 .vnccs-pipe-preview-head {
     display: flex;
@@ -551,7 +567,7 @@ ${SAKURA_THEME_CSS}
     filter: saturate(0.8) brightness(0.75);
     transition: opacity 320ms ease, filter 320ms ease, transform 320ms ease;
 }
-.vnccs-pipe-img.is-placeholder { background: radial-gradient(circle at 50% 40%, rgba(107,74,139,0.18), #11111a 72%); }
+.vnccs-pipe-img.is-placeholder { background: radial-gradient(circle at 50% 40%, rgba(var(--vnccs-preview-idle-rgb), 0.18), #11111a 72%); }
 .vnccs-pipe-img.is-placeholder .vnccs-pipe-img-placeholder { opacity: 0.26; }
 .vnccs-pipe-img-placeholder-scan {
     position: absolute;
@@ -573,19 +589,19 @@ ${SAKURA_THEME_CSS}
     --vnccs-scan-edge-offset: clamp(10px, 4%, 23px);
     bottom: calc(0px - var(--vnccs-scan-edge-offset));
     height: clamp(20px, 8%, 46px);
-    background: linear-gradient(180deg, transparent, rgba(255,143,163,0.22) 30%, rgba(255,235,244,0.94) 50%, rgba(255,143,163,0.28) 68%, transparent);
-    box-shadow: 0 0 22px rgba(255,143,163,0.22);
+    background: linear-gradient(180deg, transparent, rgba(var(--vnccs-preview-accent-rgb), 0.22) 30%, rgba(var(--vnccs-preview-highlight-rgb), 0.94) 50%, rgba(var(--vnccs-preview-accent-rgb), 0.28) 68%, transparent);
+    box-shadow: 0 0 22px rgba(var(--vnccs-preview-accent-rgb), 0.22);
 }
 .vnccs-pipe-img.is-placeholder.is-processing .vnccs-pipe-img-placeholder {
     opacity: 0.82;
     transform: translateX(-50%) scale(1.02);
-    filter: saturate(1.15) brightness(1.04) drop-shadow(0 0 12px rgba(255,143,163,0.42));
+    filter: saturate(1.15) brightness(1.04) drop-shadow(0 0 12px rgba(var(--vnccs-preview-accent-rgb), 0.42));
     animation: vnccs-pipe-mannequin-develop 1800ms ease-in-out infinite;
 }
 .vnccs-pipe-img.is-placeholder.is-processing {
     background:
-        repeating-linear-gradient(180deg, transparent 0 8px, rgba(255,143,163,0.035) 9px 10px),
-        radial-gradient(circle at 50% 40%, rgba(119,57,104,0.34), #11111a 72%);
+        repeating-linear-gradient(180deg, transparent 0 8px, rgba(var(--vnccs-preview-accent-rgb), 0.035) 9px 10px),
+        radial-gradient(circle at 50% 40%, rgba(var(--vnccs-preview-active-bg-rgb), 0.34), #11111a 72%);
 }
 .vnccs-pipe-img.is-processing .vnccs-pipe-img-placeholder-scan {
     opacity: 1;
@@ -599,7 +615,7 @@ ${SAKURA_THEME_CSS}
 }
 .vnccs-pipe-img.is-character-revealing .vnccs-pipe-img-placeholder {
     opacity: 0.82;
-    filter: saturate(1.05) brightness(0.96) drop-shadow(0 0 10px rgba(255,143,163,0.32));
+    filter: saturate(1.05) brightness(0.96) drop-shadow(0 0 10px rgba(var(--vnccs-preview-accent-rgb), 0.32));
 }
 .vnccs-pipe-img.is-character-revealing .vnccs-pipe-img-placeholder-scan {
     opacity: 1;
@@ -611,10 +627,10 @@ ${SAKURA_THEME_CSS}
     filter: grayscale(1) saturate(0.15) brightness(0.62);
 }
 .vnccs-pipe-img::before, .vnccs-pipe-img::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 2; opacity: 0; transition: opacity 320ms ease, transform 320ms ease; }
-.vnccs-pipe-img::before { border: 2px solid var(--accent-lavender); }
+.vnccs-pipe-img::before { border: 2px solid var(--vnccs-preview-idle-border); }
 .vnccs-pipe-img.is-waiting::before { opacity: 0.16; }
-.vnccs-pipe-img::after { border: 2px solid var(--accent); box-shadow: inset 0 0 18px rgba(255,143,163,0.12), 0 0 14px rgba(255,143,163,0.2); }
-.vnccs-pipe-img.is-processing { border-color: var(--accent); box-shadow: 0 0 12px rgba(255,143,163,0.16); }
+.vnccs-pipe-img::after { border: 2px solid var(--vnccs-preview-accent); box-shadow: inset 0 0 18px rgba(var(--vnccs-preview-accent-rgb), 0.12), 0 0 14px rgba(var(--vnccs-preview-accent-rgb), 0.2); }
+.vnccs-pipe-img.is-processing { border-color: var(--vnccs-preview-accent); box-shadow: 0 0 12px rgba(var(--vnccs-preview-accent-rgb), 0.16); }
 .vnccs-pipe-img.is-processing::after { opacity: 1; animation: vnccs-pipe-card-process 1800ms ease-in-out infinite; }
 @keyframes vnccs-pipe-card-process { 0%, 100% { transform: scale(0.996); } 50% { transform: scale(1); } }
 @keyframes vnccs-pipe-mannequin-develop { 0%, 100% { transform: translateX(-50%) scale(1); } 50% { transform: translateX(-50%) scale(1.025); } }
@@ -622,16 +638,16 @@ ${SAKURA_THEME_CSS}
 .vnccs-pipe-img.is-empty { visibility: hidden; pointer-events: none; }
 .vnccs-pipe-img.is-empty:focus-visible { outline-offset: -3px; }
 .vnccs-pipe-img:hover {
-    border-color: rgba(255,143,163,0.45);
+    border-color: rgba(var(--vnccs-preview-accent-rgb), 0.45);
 }
 .vnccs-pipe-img-regen {
     position: absolute;
     z-index: 3;
     right: 7px;
     bottom: 7px;
-    border: 1px solid rgba(255,143,163,0.48);
+    border: 1px solid rgba(var(--vnccs-preview-accent-rgb), 0.48);
     background: rgba(14,14,22,0.78);
-    color: #ffb6c8;
+    color: var(--vnccs-preview-label);
     border-radius: 7px;
     font-size: 10px;
     font-weight: 900;
@@ -645,8 +661,8 @@ ${SAKURA_THEME_CSS}
     opacity: 1;
 }
 .vnccs-pipe-img-regen:hover {
-    border-color: rgba(255,143,163,0.82);
-    background: rgba(255,143,163,0.16);
+    border-color: rgba(var(--vnccs-preview-accent-rgb), 0.82);
+    background: rgba(var(--vnccs-preview-accent-rgb), 0.16);
 }
 .vnccs-pipe-empty {
     flex: 1;
@@ -3686,6 +3702,7 @@ class CharacterGeneratorWidget {
         const showPlaceholders = busy && !upstream.some(Boolean)
             && (missingPosePreviews || this._previewPlaceholderStage === this.selectedPreview);
         const mannequinURL = this.mannequinURL();
+        this.previewEl.classList.toggle("is-male-character", mannequinURL === CHARACTER_MANNEQUIN_MALE_URL);
         const targeted = Number.isInteger(this.regenerateState?.imageIndex) && this.regenerateState?.targetStages?.includes(this.selectedPreview);
         const activeIndex = targeted ? this.regenerateState.imageIndex
             : (Number.isInteger(state.processing_index) ? state.processing_index : Math.max(0, Number(state.current) || 0));

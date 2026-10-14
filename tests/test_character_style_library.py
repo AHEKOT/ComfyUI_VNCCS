@@ -333,14 +333,32 @@ def test_deleted_style_cannot_publish_a_late_render(monkeypatch, tmp_path):
     monkeypatch.setattr(library, "STYLE_PREVIEWS_DIR", str(tmp_path / "previews"))
     style = library.save_user_style({"label": "Mine", "prompt": "Ink"})
     image = Image.new("RGB", (32, 32), "pink")
-    saved = library.save_user_style_preview(style["id"], image)
+    saved = library.save_user_style_preview(style["id"], image, style["revision"])
     assert Path(saved["path"]).exists()
     assert library.delete_user_style(style["id"]) is True
     with pytest.raises(ValueError, match="no longer exists"):
-        library.save_user_style_preview(style["id"], image)
+        library.save_user_style_preview(style["id"], image, style["revision"])
     assert not Path(saved["path"]).exists()
     with pytest.raises(ValueError, match="no longer exists"):
         library.save_user_style({**style, "prompt": "Recreated"})
+
+
+def test_edited_style_rejects_late_render_and_preserves_current_preview(monkeypatch, tmp_path):
+    monkeypatch.setattr(library, "USER_CHARACTER_STYLES_PATH", str(tmp_path / "styles.json"))
+    monkeypatch.setattr(library, "STYLE_PREVIEWS_DIR", str(tmp_path / "previews"))
+    old = library.save_user_style({"label": "Mine", "prompt": "Red ink"})
+    saved = library.save_user_style_preview(old["id"], Image.new("RGB", (32, 32), "red"), old["revision"])
+    preview = Path(saved["path"])
+    original = preview.read_bytes()
+    current = library.save_user_style({**old, "prompt": "Blue paint"})
+    library_bytes = Path(library.USER_CHARACTER_STYLES_PATH).read_bytes()
+    with pytest.raises(library.StorageConflictError, match="changed during rendering"):
+        library.save_user_style_preview(old["id"], Image.new("RGB", (32, 32), "red"), old["revision"])
+    assert preview.read_bytes() == original
+    assert Path(library.USER_CHARACTER_STYLES_PATH).read_bytes() == library_bytes
+    library.save_user_style_preview(current["id"], Image.new("RGB", (32, 32), "blue"), current["revision"])
+    with Image.open(preview) as image:
+        assert image.getpixel((0, 0))[2] > 250
 
 
 def test_deletion_preserves_a_corrupt_library_and_linked_preview(monkeypatch, tmp_path):

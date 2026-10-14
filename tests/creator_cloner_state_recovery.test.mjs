@@ -117,13 +117,13 @@ for (const obsolete of ['current', 'configure', 'replacement', 'removal', 'close
         const overlay = { isConnected: true };
         let actions, saved = 0;
         const context = createWidgetContext({
-            node, state, images, imgObj: image, idx: 0, console,
+            node, state, images, imgObj: image, idx: 0, console, els: {},
             document: { createElement: () => ({}) },
             showModal(title, content, buttons) { content(); actions = buttons; },
             saveState() { saved++; }, renderThumbs() {},
         });
         const guards = between(source('vnccs_common'), 'export function registerCleanup', '// ── DOM Widget Width Sync').replaceAll('export ', '');
-        const removal = between(source('vnccs_character_cloner'), '// Delete X', 'wrap.appendChild(img);');
+        const removal = between(source('vnccs_character_cloner'), '// Delete X', '// Preview controls');
         vm.runInContext(`${guards}
             const beginCaptionRequest = createRequestGuard(node);
             ${removal}

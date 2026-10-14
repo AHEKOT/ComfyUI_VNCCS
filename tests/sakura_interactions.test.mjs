@@ -268,6 +268,11 @@ test("Character Generator wipes a decoded sprite over its mannequin without a la
     widget.renderPreview();
     const tile = widget.previewGrid.children[0];
     assert.equal(tile.classList.contains("is-placeholder"), true);
+    assert.equal(preview.classList.contains("is-male-character"), false, "Female keeps the existing pink gallery theme");
+
+    widget.data = { gender: "male" };
+    widget.renderPreview();
+    assert.equal(preview.classList.contains("is-male-character"), true, "Male switches the gallery animation palette");
 
     widget.stageState.pose_generation = { status: "running", current: 1, total: 2, images: ["sprite.png"], preview_aspect: 640 / 1536 };
     widget.renderPreview();

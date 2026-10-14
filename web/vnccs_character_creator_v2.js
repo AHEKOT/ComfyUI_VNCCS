@@ -303,8 +303,12 @@ ${SAKURA_THEME_CSS}
 
 /* Preview */
 .vnccs-creator-preview-container {
+    --vnccs-preview-accent: #ff8fa3;
+    --vnccs-preview-accent-rgb: 255, 143, 163;
+    --vnccs-preview-highlight-rgb: 255, 238, 246;
+    --vnccs-preview-aura-rgb: 184, 169, 232;
     flex: 1;
-    background: radial-gradient(circle, rgba(255,143,163,0.04) 1px, transparent 1px), rgba(10,10,15,0.7);
+    background: radial-gradient(circle, rgba(var(--vnccs-preview-accent-rgb), 0.04) 1px, transparent 1px), rgba(10,10,15,0.7);
     background-size: 20px 20px, 100% 100%;
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
@@ -314,6 +318,16 @@ ${SAKURA_THEME_CSS}
     overflow: hidden;
     position: relative;
     min-height: 0;
+}
+.vnccs-creator-preview-container.is-male-character {
+    --vnccs-preview-accent: #63c7ff;
+    --vnccs-preview-accent-rgb: 99, 199, 255;
+    --vnccs-preview-highlight-rgb: 232, 248, 255;
+    --vnccs-preview-aura-rgb: 91, 159, 224;
+}
+.vnccs-creator-preview-container.is-male-character[aria-busy="true"] {
+    border-color: rgba(var(--vnccs-preview-accent-rgb), 0.62);
+    box-shadow: 0 0 18px rgba(var(--vnccs-preview-accent-rgb), 0.14);
 }
 .vnccs-creator-preview-img {
     position: absolute;
@@ -330,7 +344,7 @@ ${SAKURA_THEME_CSS}
     inset: 0;
     opacity: 0;
     pointer-events: none;
-    background: radial-gradient(ellipse at center, rgba(255,143,163,0.35), rgba(184,169,232,0.15) 45%, transparent 75%);
+    background: radial-gradient(ellipse at center, rgba(var(--vnccs-preview-accent-rgb), 0.35), rgba(var(--vnccs-preview-aura-rgb), 0.15) 45%, transparent 75%);
 }
 .vnccs-creator-placeholder { position: relative; z-index: 1; padding: 18px; text-align: center; }
 .vnccs-creator-placeholder-title { color: var(--text-primary); font-size: 15px; font-weight: 600; }
@@ -359,7 +373,7 @@ ${SAKURA_THEME_CSS}
     z-index: 5;
     overflow: hidden;
     pointer-events: none;
-    background: radial-gradient(circle, rgba(255,143,163,0.04) 1px, transparent 1px), #0f0f16;
+    background: radial-gradient(circle, rgba(var(--vnccs-preview-accent-rgb), 0.04) 1px, transparent 1px), #0f0f16;
     background-size: 20px 20px, 100% 100%;
 }
 .vnccs-creator-generation-layer[hidden] { display: none; }
@@ -375,7 +389,7 @@ ${SAKURA_THEME_CSS}
 }
 .vnccs-creator-generation-layer.uses-mannequin .vnccs-creator-generation-base {
     opacity: 0.64;
-    filter: saturate(0.9) brightness(0.88) drop-shadow(0 0 10px rgba(255,143,163,0.3));
+    filter: saturate(0.9) brightness(0.88) drop-shadow(0 0 10px rgba(var(--vnccs-preview-accent-rgb), 0.3));
     animation: vnccs-creator-generation-wait 1800ms ease-in-out infinite;
 }
 .vnccs-creator-generation-new {
@@ -402,8 +416,8 @@ ${SAKURA_THEME_CSS}
     right: 0;
     bottom: 0;
     height: clamp(18px, 6%, 42px);
-    background: linear-gradient(180deg, transparent, rgba(255,143,163,0.24) 30%, rgba(255,238,246,0.98) 50%, rgba(255,143,163,0.34) 68%, transparent);
-    box-shadow: 0 0 24px rgba(255,143,163,0.3);
+    background: linear-gradient(180deg, transparent, rgba(var(--vnccs-preview-accent-rgb), 0.24) 30%, rgba(var(--vnccs-preview-highlight-rgb), 0.98) 50%, rgba(var(--vnccs-preview-accent-rgb), 0.34) 68%, transparent);
+    box-shadow: 0 0 24px rgba(var(--vnccs-preview-accent-rgb), 0.3);
 }
 .vnccs-creator-generation-layer.is-revealing .vnccs-creator-generation-scan { animation: none; }
 .vnccs-creator-preview-loading {
@@ -422,10 +436,10 @@ ${SAKURA_THEME_CSS}
 .vnccs-creator-preview-spinner {
     width: 34px;
     height: 34px;
-    border: 2px solid rgba(255, 143, 163, 0.24);
-    border-top-color: var(--accent);
+    border: 2px solid rgba(var(--vnccs-preview-accent-rgb), 0.24);
+    border-top-color: var(--vnccs-preview-accent);
     border-radius: 50%;
-    box-shadow: 0 0 18px rgba(255,143,163,0.25);
+    box-shadow: 0 0 18px rgba(var(--vnccs-preview-accent-rgb), 0.25);
     animation: vnccs-creator-spin 0.75s linear infinite;
 }
 .vnccs-creator-sprite-nav {
@@ -2169,6 +2183,8 @@ app.registerExtension({
                 });
 
                 const syncCharacterFields = () => {
+                    const sex = String(state.character_info?.sex || state.character_info?.gender || "").trim().toLowerCase();
+                    els.previewFrame?.classList.toggle("is-male-character", sex === "male");
                     const body = [], breasts = [];
                     for (const token of String(state.character_info.body || "").split(",").map(value => value.trim()).filter(Boolean)) {
                         const key = token.replaceAll("_", " ").toLowerCase().replace(/\s+/g, " ");
@@ -3979,6 +3995,7 @@ app.registerExtension({
                 const frame = document.createElement("div");
                 frame.className = "vnccs-creator-preview-container";
                 frame.classList.add("vnccs-common-ui-preview-host");
+                frame.classList.toggle("is-male-character", String(state.character_info?.sex || state.character_info?.gender || "").trim().toLowerCase() === "male");
                 frame.innerHTML = `<div class="vnccs-creator-placeholder" role="status" aria-live="polite">
                     <svg class="vnccs-creator-placeholder-icon" aria-hidden="true" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <circle cx="24" cy="18" r="8" stroke="currentColor" stroke-width="2"/>
@@ -4810,6 +4827,7 @@ app.registerExtension({
                     const existing = els.previewImg?.style?.display !== "none"
                         ? els.previewImg?.getAttribute?.("src") || els.previewImg?.src : "";
                     const sex = String(state.character_info?.sex || state.character_info?.gender || "").trim().toLowerCase();
+                    els.previewFrame?.classList.toggle("is-male-character", sex === "male");
                     els.generationBase.src = existing || (sex === "male" ? CHARACTER_MANNEQUIN_MALE_URL : CHARACTER_MANNEQUIN_URL);
                     els.generationBase.style.clipPath = "inset(0% 0 0 0)";
                     els.generationNew.removeAttribute("src");

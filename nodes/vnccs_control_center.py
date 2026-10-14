@@ -1510,8 +1510,9 @@ def _apply_loras(model, clip, lora_states, config, model_type, type_settings=Non
 
         full_path, exists = _find_model_on_disk(entry["local_path"])
         if not exists:
-            log_event("fallback", component="ControlCenter", level="warning", message=f"LoRA not on disk: '{name}', skipping.")
-            continue
+            raise FileNotFoundError(
+                f"Enabled LoRA '{name}' is not installed. Restore it or disable it before generating."
+            )
 
         log_event("lora_applied", component="ControlCenter", model=name, strength=strength)
         model, clip = _apply_lora_standard(model, clip, full_path, strength)

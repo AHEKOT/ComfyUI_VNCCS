@@ -236,6 +236,42 @@ def test_emotion_background_regeneration_preserves_the_generated_face_crop(tmp_p
         assert opened.size == (4, 4)
 
 
+def test_normal_emotion_run_prunes_excluded_tasks_only_after_success(tmp_path, monkeypatch):
+    root = tmp_path / "VNCCS" / "Characters" / "Alice"
+    monkeypatch.setattr(generator.folder_paths, "get_output_directory", lambda: str(tmp_path))
+    node = generator.VNCCS_EmotionsGenerator()
+    monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(node, "_run_emotion_bg_remove", lambda images, *args, **kwargs: images)
+    def generate(image, *args, **kwargs):
+        return image, image[:, :4, :4], torch.ones(1, 8, 8)
+    monkeypatch.setattr(node, "_run_emotion_generation_one", generate)
+    tasks = [{"character": "Alice", "emotion_prompt": emotion, "sprite_index": index,
+              "sprite_output_path": str(root / "Sprites" / "Coat" / emotion / f"sprite_{emotion}_")}
+             for emotion, index in (("smile", 1), ("smile", 2), ("angry", 1))]
+    state = {"character_name": "Alice", "emotion_pairs": [
+        {"costume": "Coat", "emotion": "smile"}, {"costume": "Coat", "emotion": "angry"}]}
+    images = torch.ones(3, 8, 8, 3)
+    node.process(images, object(), tasks, widget_data=json.dumps(state), unique_id="prune")
+    cache = root / "cache" / "poses" / "prune" / "_stage_cache"
+    old = {path.name: path.read_bytes() for path in cache.glob("emotion*.pt")}
+    assert len(old) == 6
+    published = {path: path.read_bytes() for group in ("Sprites", "Faces")
+                 for path in (root / group).rglob("*.png")}
+    state["emotion_pairs"] = state["emotion_pairs"][:1]
+    def fail(*args, **kwargs):
+        raise RuntimeError("generation failed")
+    monkeypatch.setattr(node, "_run_emotion_generation_one", fail)
+    with pytest.raises(RuntimeError, match="generation failed"):
+        node.process(images[:1], object(), tasks[:1], widget_data=json.dumps(state), unique_id="prune")
+    assert {path.name: path.read_bytes() for path in cache.glob("emotion*.pt")} == old
+    assert all(path.read_bytes() == contents for path, contents in published.items())
+    monkeypatch.setattr(node, "_run_emotion_generation_one", generate)
+    node.process(images[:1], object(), tasks[:1], widget_data=json.dumps(state), unique_id="prune")
+    assert {path.name for path in cache.glob("emotion*.pt")} == {
+        "emotion_0001__item_0001.pt", "emotion_0001_detailer_mask__item_0001.pt"}
+    assert all(path.exists() for path in published)
+
+
 def test_normal_emotion_runs_archive_every_replaced_sprite_and_face(tmp_path, monkeypatch):
     from PIL import Image
 

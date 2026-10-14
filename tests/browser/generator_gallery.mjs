@@ -222,6 +222,11 @@ try {
                 await page.evaluate(stage=>emit(stage,{status:'done',current:6,total:6,images:urls('original'),run_id:'previous-character'}),stage);
                 await page.evaluate(()=>{widget.data.gender='male';});
                 await page.evaluate(stage=>emit(stage,{status:'running',current:0,total:6,images:[],run_id:'new-character',preview_aspect:640/1536}),stage);
+                assert.deepEqual(await page.evaluate(()=>({
+                    themed:widget.previewEl.classList.contains('is-male-character'),
+                    accent:getComputedStyle(widget.previewEl).getPropertyValue('--vnccs-preview-accent').trim(),
+                    rgb:getComputedStyle(widget.previewEl).getPropertyValue('--vnccs-preview-accent-rgb').trim(),
+                })),{themed:true,accent:'#63c7ff',rgb:'99, 199, 255'});
                 assert.equal(await page.evaluate(()=>cards().every(card=>!card.src)),true,'A new character run must remove the previous character');
                 assert.equal(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>getComputedStyle(tile).visibility==='visible')),true,'A new character run must retain the card frames');
                 await page.waitForFunction(()=>[...widget.previewGrid.children].every(tile=>tile.querySelector('.vnccs-pipe-img-placeholder')?.complete));

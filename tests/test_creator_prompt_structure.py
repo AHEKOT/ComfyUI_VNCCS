@@ -40,9 +40,12 @@ def test_prompt_uses_ordered_fields_and_exclusive_clothing(creator, mode, sex, n
         "Framing", "Background", "Gender", "Age", "Race", "Facial features",
         "Hair", "Eyes", "Skin color",
         *(["Breast size"] if sex == "female" else []),
-        "Build", "NSFW" if adult else "Clothes", "Additional details", "LoRA triggers",
+        "Build", "Body details" if adult else "Clothes", "Additional details", "LoRA triggers",
     ]
     assert [line.split(":", 1)[0] for line in lines] == labels
+    assert ("naked, nude" in positive) == adult
+    assert ("wear white" in positive) != adult
+    assert "\nNSFW:" not in positive
     assert "Age: 30 years-old" in lines
     assert f"Gender: {sex}" in lines
     assert "Additional style parameters: quality_marker" in lines
@@ -87,8 +90,10 @@ def test_qi2_official_t2i_template_receives_ordered_character_brief(creator, mon
         requests.append(values)
         prompt = values["prompt"]
         assert ("\nBreast size:" in prompt) == (sex == "female")
-        assert ("\nNSFW:" in prompt) == nsfw
+        assert ("\nBody details:" in prompt) == nsfw
         assert ("\nClothes:" in prompt) != nsfw
+        assert ("naked, nude" in prompt) == nsfw
+        assert "\nNSFW:" not in prompt
         assert "Age: 30 years-old" in prompt and "quality_marker" in prompt
         assert "exact_trigger" not in prompt
         assert values["system_prompt"].startswith("# Image Prompt Rewriting Expert")
@@ -196,36 +201,6 @@ def test_qi2_enhancement_disabled_in_creator_settings_does_not_change_shared_dis
     assert result[2] == "legacy prompt"
 
 
-def test_custom_creator_field_expansion_remains_available_for_restoring(creator, caplog):
-    info = character(face="round face", breast_size="medium breasts", hair="black hair, ear-length hair, straight hair")
-    expansions = {
-        "age": "30 years-old; a fully grown adult with mature facial definition and restrained skin texture.",
-        "race": "A human with ordinary human anatomy and naturally rounded ears.",
-        "face": "Broad, softly curved cheeks flow into a gently rounded jaw and chin, avoiding sharp angular planes.",
-        "breast_size": "Moderate chest volume projects outward in balanced, rounded contours relative to the ribcage. The selected bra follows this volume without flattening it or adding exaggerated lift.",
-        "body": "Toned torso and limbs form an athletic silhouette with readable muscle contours, without bodybuilding bulk.",
-        "hair": "Uniform black pigmentation is retained across smooth, straight strands. The hair ends around the ears rather than extending to the shoulders.",
-        "eyes": "Clearly blue irises remain distinct from the pupils and sclera.",
-        "skin_color": "An even tan complexion is maintained across the visible skin.",
-        "additional_details": "Silver earrings remain attached to the ears as small persistent metallic accessories.",
-        "aesthetics": "Keep the character contours readable and reproduce the specified physical details consistently.",
-    }
-    assert "Do NOT wrap the original tag" in creator.CREATOR_QI2_PROMPT_ENHANCER
-    final = creator._creator_expanded_field_prompt(json.dumps({"fields": expansions}),
-        creator._character_prompt_fields(info, "qi2"), creator._character_style_prompt(info))
-    for key, label in {"age": "Age", "race": "Race", "face": "Facial features", "breast_size": "Breast size",
-                       "body": "Build", "hair": "Hair", "eyes": "Eyes", "skin_color": "Skin color",
-                       "additional_details": "Additional details", "aesthetics": "Additional style parameters"}.items():
-        assert f"{label}: {expansions[key]}" in final
-    assert "medium breasts (" not in final and "round face (" not in final
-    assert "Typical species features" not in final
-    assert "LoRA triggers: exact_trigger" in final
-    event = next(record.vnccs for record in caplog.records if getattr(record, "vnccs", {}).get("event") == "prompt_enhancement_result")
-    assert event["applied"] is True
-    assert set(event["changed_fields"]) == set(expansions)
-    assert event["missing_fields"] == []
-
-
 @pytest.mark.parametrize("response", ["", "{malformed", '{"fields":{"hair":"unused"}}'])
 def test_official_creator_enhancer_reports_invalid_output_and_keeps_input(creator, monkeypatch, caplog, response):
     requests = []
@@ -241,26 +216,6 @@ def test_official_creator_enhancer_reports_invalid_output_and_keeps_input(creato
     assert creator.QI2_ALPHA_BACKGROUND_PROMPT in final
     event = next(record.vnccs for record in caplog.records if getattr(record, "vnccs", {}).get("event") == "prompt_enhancement_result")
     assert event["applied"] is False
-
-
-@pytest.mark.parametrize("response", ['{"fields":{}}', 'not JSON'])
-def test_creator_enhancer_reports_no_expansion_instead_of_claiming_success(creator, caplog, response):
-    info = character()
-    fields = creator._character_prompt_fields(info, "qi2")
-    reference = creator._character_style_prompt(info)
-    final = creator._creator_expanded_field_prompt(response, fields, reference)
-    assert final == creator.CharacterCreatorV2.construct_creator_prompt(info, "qi2")[0]
-    event = next(record.vnccs for record in caplog.records if getattr(record, "vnccs", {}).get("event") == "prompt_enhancement_result")
-    assert event["applied"] is False and event["changed_fields"] == []
-    assert "age" in event["missing_fields"] and "breast_size" in event["missing_fields"]
-
-
-def test_creator_enhancer_preserves_numeric_age_if_model_changes_it(creator):
-    info = character(age=30)
-    final = creator._creator_expanded_field_prompt('{"fields":{"age":"35 years-old; mature facial contours."}}',
-        creator._character_prompt_fields(info, "qi2"))
-    assert "Age: 30 years-old\n" in final
-    assert "35 years-old" not in final
 
 
 def test_creator_logs_readable_prompts_and_only_relevant_settings(creator, caplog):
@@ -296,7 +251,7 @@ def test_creator_human_race_does_not_append_generic_species_notes(creator, race)
     assert "ordinary human anatomy" not in positive
     fields = creator._character_prompt_fields(info, "qi2")
     assert fields["race_features"] == ""
-    fallback = creator._creator_expanded_field_prompt('{"fields":{}}', fields)
+    fallback = creator.generate_creator_qi2_prompt("clip", "", character_info=info, enhance=False)
     assert f"Race: {race}\n" in fallback
 
 

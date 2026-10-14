@@ -262,6 +262,22 @@ def test_legacy_empty_sampler_settings_keep_backend_defaults(monkeypatch, kind, 
     assert json.dumps(state) == original
 
 
+@pytest.mark.parametrize("enabled,strength", [(True, 1), (True, -1), (False, 1), (True, 0)])
+def test_missing_lora_stops_only_enabled_nonzero_adapters(monkeypatch, enabled, strength):
+    entry = {"name": "Selected style", "kind": "QI2", "custom": True,
+             "local_path": "models/loras/selected.safetensors"}
+    monkeypatch.setattr(cc, "_find_model_on_disk", lambda path: (path, False))
+    monkeypatch.setattr(cc, "_apply_lora_standard", lambda *args: pytest.fail("Missing weights must not load"))
+    model, clip = object(), object()
+    states = [{"name": entry["name"], "auto_apply": enabled, "strength": strength}]
+    if enabled and strength:
+        with pytest.raises(FileNotFoundError, match="Selected style"):
+            cc._apply_loras(model, clip, states, {"lora": [entry]}, "unet", model_entry={"kind": "QI2"})
+    else:
+        assert cc._apply_loras(model, clip, states, {"lora": [entry]}, "unet",
+                               model_entry={"kind": "QI2"}) == (model, clip)
+
+
 def test_legacy_lora_enabled_state_is_normalized_without_mutating_workflow(monkeypatch):
     entry = {"name": "native", "kind": "QI2", "type": "unet"}
     monkeypatch.setattr(cc, "_get_cc_config", lambda repo: {"models": [entry], "lora": []})

@@ -18,6 +18,7 @@ import json
 import math
 import os
 import random
+import re
 import shutil
 import threading
 import uuid
@@ -3556,6 +3557,24 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 tensor.detach().cpu().to(dtype=torch.float16),
             )
 
+    def _prune_emotion_cache(self, cache_dir, group_sizes):
+        cache_dir = _safe_cache_dir(cache_dir)
+        if not cache_dir:
+            return
+        try:
+            directory = safe_join_under(cache_dir, "_stage_cache")
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    match = re.fullmatch(r"(emotion_[0-9]{4,})(?:_detailer_mask)?__item_([0-9]{4,})\.pt", entry.name)
+                    if (match and entry.is_file(follow_symlinks=False)
+                            and int(match[2]) > group_sizes.get(match[1], 0)):
+                        os.unlink(entry.path)
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError) as error:
+            log_event("cleanup_warning", component="GeneratorCache", level="warning",
+                      message="Emotion outputs saved; could not prune obsolete task cache", error=str(error))
+
     def _load_saved_emotion_output(self, meta, save_index, root_name="Sprites"):
         if not isinstance(meta, dict):
             return None
@@ -4663,6 +4682,10 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
 
             if completed_tasks <= 0:
                 raise RuntimeError("No emotion images to generate. Select at least one costume and one emotion.")
+            if not regenerate_from:
+                self._prune_emotion_cache(cache_dir, {
+                    key: len(group["indices"]) for (key, _label), group in zip(stage_labels, groups)
+                })
             # Full-resolution sprites are always saved during each task. Only
             # retain IMAGE tensors when a downstream node actually consumes the
             # corresponding output; the stock Step 3 workflow leaves both ports

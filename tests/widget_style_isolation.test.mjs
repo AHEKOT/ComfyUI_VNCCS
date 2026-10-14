@@ -138,17 +138,8 @@ for (const [name, controls] of [
     });
 }
 
-test("Cloner's selected image cannot acquire a second hover border or glow", () => {
-    const cloner = sheets.find(item => item.name === "vnccs_character_cloner.js");
-    const hover = cloner.selectors.filter(selector => selector.includes(".vnccs-cloner-thumb:hover"));
-    assert.ok(hover.length);
-    for (const selector of hover) assert.ok(selector.includes(":where(.vnccs-cloner-thumb-wrap:not(.is-selected)) "), selector);
-});
-
-test("active-state exclusions retain the priority of Save and generating-thumbnail styles", () => {
+test("active-state exclusions retain the priority of Save styles", () => {
     const controlCenter = sheets.find(item => item.name === "vnccs_control_center.js");
     assert.ok(controlCenter.selectors.some(selector => selector.startsWith(".vnccs-cc-btn:hover:where(")));
     assert.ok(controlCenter.selectors.includes(".vnccs-cc-btn--save:hover"));
-    const cloner = sheets.find(item => item.name === "vnccs_character_cloner.js");
-    assert.ok(cloner.selectors.includes(".vnccs-cloner-thumb.generating"));
 });

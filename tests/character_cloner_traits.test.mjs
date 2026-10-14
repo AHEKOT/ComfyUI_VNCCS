@@ -252,3 +252,14 @@ for (const stale of ["character", "reference", "removed"]) {
         assert.equal(h.context.els.face.hidden, true);
     });
 }
+
+test("Cloner left panel and preview match the Clothes Designer proportions", () => {
+    assert.match(source, /\.vnccs-cloner-top-row\s*\{[^}]*grid-template-columns:\s*400px\s+minmax\(0,\s*1fr\)/s);
+    assert.match(source, /\.vnccs-cloner-bottom-row\s*\{[^}]*grid-template-columns:\s*400px\s+minmax\(0,\s*1fr\)/s);
+    assert.doesNotMatch(source.match(/\.vnccs-cloner-select\s*\{[^}]*\}/s)?.[0] || "", /zoom\s*:/);
+    assert.doesNotMatch(source, /className\s*=\s*["']vnccs-cloner-img-list["']/);
+    assert.doesNotMatch(source, /className\s*=\s*["']vnccs-cloner-thumb["']/);
+    assert.match(source, /\.vnccs-cloner-preview-img\s*\{[^}]*top:\s*0[^}]*left:\s*50%[^}]*width:\s*auto[^}]*max-width:\s*none[^}]*height:\s*100%[^}]*translateX\(-50%\)/s);
+    const workflow = JSON.parse(readFileSync(new URL("../workflows/VNCCS_3.2_Step1_CharacterCloner.json", import.meta.url), "utf8"));
+    assert.deepEqual(workflow.nodes.find(node => node.type === "CharacterCloner").size, [690, 950]);
+});
