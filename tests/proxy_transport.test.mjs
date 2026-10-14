@@ -4,7 +4,8 @@ import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { createWidgetContext } from './widget_context.mjs';
 
-const read = name => readFileSync(new URL(`../web/${name}.js`, import.meta.url), 'utf8');
+const read = name => readFileSync(new URL(`../web/${name}.js`, import.meta.url), 'utf8')
+    .replace(/new URL\(([^,]+), import\.meta\.url\)\.href/g, '$1');
 const run = (context, code) => vm.runInContext(code, context);
 const response = (status, data) => ({ status, ok: status >= 200 && status < 300, json: async () => data });
 

@@ -4,7 +4,8 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 
-const source = readFileSync(new URL('../web/vnccs_character_generator.js', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../web/vnccs_character_generator.js', import.meta.url), 'utf8')
+    .replace(/new URL\(([^,]+), import\.meta\.url\)\.href/g, '$1');
 const models = ['seedvr2_3b_fp8_e4m3fn.safetensors', 'seedvr2_7b_fp16.safetensors'].map(name => ({
     name, local_path: `models/diffusion_models/${name}`, status: 'installed',
 }));

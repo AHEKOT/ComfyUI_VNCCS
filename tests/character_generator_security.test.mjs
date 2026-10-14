@@ -4,7 +4,8 @@ import test from 'node:test';
 import vm from 'node:vm';
 import { createWidgetContext } from './widget_context.mjs';
 
-const source = readFileSync(new URL('../web/vnccs_character_generator.js', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../web/vnccs_character_generator.js', import.meta.url), 'utf8')
+    .replace(/new URL\(([^,]+), import\.meta\.url\)\.href/g, '$1');
 
 class Element {
     constructor() { this.children = []; }
