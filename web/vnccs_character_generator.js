@@ -156,7 +156,7 @@ const DEFAULT_DATA = {
         foreground_recover: 0.35,
         edge_decontaminate: 0.75,
         edge_choke: 0.08,
-        matte_method: "guided_edge",
+        matte_method: "screen_matte",
         screen_mode: "from_background",
         output_mode: "straight_rgba",
         sam3_model: "",

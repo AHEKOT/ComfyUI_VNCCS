@@ -46,7 +46,7 @@ def test_chroma_key_presets_use_edge_safe_tolerance_scale():
         "foreground_recover": 0.35,
         "edge_decontaminate": 0.75,
         "edge_choke": 0.08,
-        "matte_method": "guided_edge",
+        "matte_method": "screen_matte",
         "output_mode": "straight_rgba",
     }
 

@@ -396,7 +396,7 @@ class VNCCSChromaKey:
                 "foreground_recover": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "edge_decontaminate": ("FLOAT", {"default": 0.75, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "edge_choke": ("FLOAT", {"default": 0.08, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "matte_method": (["chroma_soft", "guided_edge", "pymatting_if_available", "screen_matte"], {"default": "guided_edge"}),
+                "matte_method": (["chroma_soft", "guided_edge", "pymatting_if_available", "screen_matte"], {"default": "screen_matte"}),
                 "screen_mode": (["auto", "green", "blue", "red"], {"default": "auto"}),
                 "output_mode": (["straight_rgba", "premultiplied_rgba"], {"default": "straight_rgba"}),
                 "use_sam3_recovery_mask": (
@@ -414,7 +414,7 @@ class VNCCSChromaKey:
     VNCCS Chroma Key - automatically detects background color from image borders.
     Uses soft chroma keying, edge-guided matte cleanup, foreground recovery, and
     edge-only decontamination for cleaner hair and outlines.
-    The opt-in screen_matte method runs on the selected GPU, estimates the actual
+    The default screen_matte method runs on the selected GPU, estimates the actual
     plate color automatically, and removes isolated screen artifacts. Its color
     unmixing is controlled jointly by despill, foreground recovery and edge
     decontamination; screen_mode is used only by the legacy methods.
@@ -460,6 +460,17 @@ class VNCCSChromaKey:
                     )
                 except Exception as exc:
                     log_event('fallback', component='ImageProcessing', level='warning', message=f'SAM3 recovery failed; using chroma key without recovery: {type(exc).__name__}: {exc}', error=str(exc))
+
+        if len(image.shape) == 4 and matte_method == "screen_matte":
+            from .chroma_screen_matte import screen_matte_batch
+
+            return screen_matte_batch(
+                image, tolerance=tolerance, softness=softness,
+                despill_strength=despill_strength, edge_width=edge_width,
+                matte_cleanup=matte_cleanup, foreground_recover=foreground_recover,
+                edge_decontaminate=edge_decontaminate, edge_choke=edge_choke,
+                output_mode=output_mode,
+            )
 
         if len(image.shape) == 4:
             rgba_list = []

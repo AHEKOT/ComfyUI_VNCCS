@@ -781,7 +781,7 @@ DEFAULT_WIDGET_DATA = {
         "foreground_recover": 0.35,
         "edge_decontaminate": 0.75,
         "edge_choke": 0.08,
-        "matte_method": "guided_edge",
+        "matte_method": "screen_matte",
         "screen_mode": "from_background",
         "output_mode": "straight_rgba",
         "sam3_model": "",
@@ -939,7 +939,7 @@ CHROMA_KEY_PRESETS = {
         "foreground_recover": 0.35,
         "edge_decontaminate": 0.75,
         "edge_choke": 0.08,
-        "matte_method": "guided_edge",
+        "matte_method": "screen_matte",
         "output_mode": "straight_rgba",
     },
     "strong": {
@@ -951,7 +951,7 @@ CHROMA_KEY_PRESETS = {
         "foreground_recover": 0.45,
         "edge_decontaminate": 0.85,
         "edge_choke": 0.12,
-        "matte_method": "guided_edge",
+        "matte_method": "screen_matte",
         "output_mode": "straight_rgba",
     },
     "aggressive": {
@@ -963,7 +963,7 @@ CHROMA_KEY_PRESETS = {
         "foreground_recover": 0.55,
         "edge_decontaminate": 0.95,
         "edge_choke": 0.18,
-        "matte_method": "guided_edge",
+        "matte_method": "screen_matte",
         "output_mode": "straight_rgba",
     },
 }

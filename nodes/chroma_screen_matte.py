@@ -87,7 +87,7 @@ def _remove_plate_speckles(alpha, initial, scale, strength):
 
     component_scale = max(1, (max(height, width) + 1023) // 1024)
     allowed = -F.max_pool2d(-(supported > 0.02).float(), component_scale, component_scale, ceil_mode=True)
-    radius = max(1, round(24 * strength) // component_scale)
+    radius = max(1, round(8 * strength) // component_scale)
     anchor = _erode(allowed, radius)
     if not bool(anchor.any()):
         return alpha
@@ -189,7 +189,14 @@ def screen_matte(image, tolerance=0.15, softness=0.12, despill_strength=0.65,
     # not a reason to punch a hole. Exact plate-colored enclosed gaps remain
     # background through definite_plate.
     foreground_floor = torch.full_like(score, 0.65 + transition)
-    score = torch.where(definite_plate | connected_plate, 0.0, torch.maximum(score, foreground_floor))
+    boundary_radius = max(1, int(edge_width))
+    near_plate = F.max_pool2d(definite_plate.float(), boundary_radius * 2 + 1, 1, boundary_radius) > 0
+    protected_foreground = ~near_plate & ~connected_plate
+    score = torch.where(
+        definite_plate | connected_plate,
+        0.0,
+        torch.where(protected_foreground, torch.maximum(score, foreground_floor), score),
+    )
     initial = ((score - 0.65) / transition).clamp(0, 1)
 
     trusted = _erode((initial > 0.98).float(), 3 if max(height, width) > 2048 else 2)
@@ -247,3 +254,33 @@ def screen_matte(image, tolerance=0.15, softness=0.12, despill_strength=0.65,
     matte = alpha[0, 0]
     debug = torch.cat((edge.float(), alpha, 1 - alpha), 1)[0].permute(1, 2, 0)
     return rgba.to(output_device), matte.to(output_device), debug.to(output_device)
+
+
+@torch.inference_mode()
+def screen_matte_batch(images, tolerance=0.15, softness=0.12, despill_strength=0.65,
+                       edge_width=3, matte_cleanup=0.1, foreground_recover=0.35,
+                       edge_decontaminate=0.75, edge_choke=0.08,
+                       output_mode="straight_rgba", processing_device=None):
+    """Process one BHWC batch with a single host/device transfer each way."""
+    if images.ndim != 4:
+        raise ValueError("screen_matte_batch expects a BHWC image tensor")
+    output_device = images.device
+    device = processing_device if processing_device is not None else _processing_device(images)
+    working = images.to(device=device, dtype=torch.float32).clamp(0, 1)
+    results = [
+        screen_matte(
+            frame,
+            tolerance=tolerance,
+            softness=softness,
+            despill_strength=despill_strength,
+            edge_width=edge_width,
+            matte_cleanup=matte_cleanup,
+            foreground_recover=foreground_recover,
+            edge_decontaminate=edge_decontaminate,
+            edge_choke=edge_choke,
+            output_mode=output_mode,
+            processing_device=device,
+        )
+        for frame in working
+    ]
+    return tuple(torch.stack(items).to(output_device) for items in zip(*results))
