@@ -349,7 +349,7 @@ test('Cloner preserves workflow bytes when reference ownership differs from the 
 
 for (const kind of ['creator', 'cloner']) {
     for (const available of [[], ['Bob']]) {
-        test(`${kind} inventory ${JSON.stringify(available)} preserves the restored missing character and draft`, async () => {
+        test(`${kind} inventory ${JSON.stringify(available)} resolves the restored character safely`, async () => {
             const h = setup(kind);
             const selected = { value: '', options: [], add(option) { this.options.push(option); },
                 set innerHTML(value) { this.options = []; } };
@@ -391,11 +391,15 @@ for (const kind of ['creator', 'cloner']) {
             const workflow = { widgets_values: ['old snapshot'] };
             h.node.onSerialize(workflow);
             const saved = JSON.parse(workflow.widgets_values[0]);
-            assert.equal(saved.character, 'Alice');
-            assert.equal(saved.character_info.hair, 'authored Alice hair');
-            if (kind === 'cloner') assert.equal(saved.source_images[0].name, 'alice.png');
-            assert.equal(selected.value, 'Alice');
-            assert.ok(selected.options.some(option => option.value === 'Alice'));
+            const fallsBack = kind === 'cloner' && available.length > 0;
+            assert.equal(saved.character, fallsBack ? 'Bob' : 'Alice');
+            assert.equal(saved.character_info.hair, fallsBack ? 'disk Bob hair' : 'authored Alice hair');
+            if (kind === 'cloner') {
+                if (fallsBack) assert.deepEqual(saved.source_images, []);
+                else assert.equal(saved.source_images[0].name, 'alice.png');
+            }
+            assert.equal(selected.value, fallsBack ? 'Bob' : 'Alice');
+            assert.ok(selected.options.some(option => option.value === (fallsBack ? 'Bob' : 'Alice')));
         });
     }
 }

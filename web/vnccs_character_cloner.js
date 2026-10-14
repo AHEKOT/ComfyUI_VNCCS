@@ -1858,7 +1858,9 @@ app.registerExtension({
                         }
 
                         const available = Array.from(els.charSelect.options).map(option => option.value);
-                        const selected = state.character || available[0] || "";
+                        const firstActive = available.find(Boolean) || "";
+                        const selected = state.character && available.includes(state.character)
+                            ? state.character : firstActive || state.character || "";
                         if (selected && !available.includes(selected)) els.charSelect.add(new Option(`${selected} (missing)`, selected));
                         const hasWidgetData = restoredInfoCharacter === selected && Boolean(selected);
                         await setCharacter(selected, { clearSources: true, skipInfoLoad: hasWidgetData });

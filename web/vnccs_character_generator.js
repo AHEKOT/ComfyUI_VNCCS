@@ -310,9 +310,11 @@ ${SAKURA_THEME_CSS}
     grid-template-rows: minmax(0, 1fr) 108px;
     overflow: hidden;
 }
-.vnccs-pipe-root.is-clone .vnccs-pipe-main,
-.vnccs-pipe-root.is-clone-sfw .vnccs-pipe-main {
+.vnccs-pipe-root.is-clone .vnccs-pipe-main {
     grid-template-rows: minmax(0, 1fr) 172px;
+}
+.vnccs-pipe-root.is-clone-sfw .vnccs-pipe-main {
+    grid-template-rows: minmax(0, 1fr) 96px;
 }
 .vnccs-pipe-title {
     font-size: 10px;
@@ -847,6 +849,13 @@ ${SAKURA_THEME_CSS}
     grid-row: 1;
     align-self: center;
     margin-top: 0;
+}
+.vnccs-pipe-chain.is-clone-sfw .vnccs-pipe-stage-name {
+    padding-right: 82px;
+}
+.vnccs-pipe-chain.is-clone-sfw .vnccs-pipe-stage-actions {
+    top: 6px;
+    bottom: auto;
 }
 .vnccs-pipe-chain.is-clothes {
     grid-template-columns: repeat(4, minmax(0, 1fr));
