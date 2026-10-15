@@ -16,6 +16,9 @@ DEFAULT_MAX_FRAMES = 160
 DEFAULT_MAX_SIDE = 2048
 DEFAULT_MATCH_WINDOW = 20
 DEFAULT_MATTE_TOLERANCE = 0.15
+DEFAULT_RANSAC_MAX_ERROR = 3.0
+DEFAULT_MIN_NUM_INLIERS = 20
+DEFAULT_SIFT_MAX_RATIO = 0.75
 GAUSSIAN_SCENE_TYPE = "VNCCS_GAUSSIAN_SCENE"
 
 
@@ -136,9 +139,10 @@ def _save_frames(
         Image.fromarray(mask).save(mask_dir / f"{name}.png")
         training_alpha = _erode_training_alpha(alpha)
         training_rgba = torch.cat((rgba[..., :3], training_alpha[..., None]), dim=-1)
-        training_frames[name] = (
-            (training_rgba * 255).round().to(torch.uint8).cpu().numpy()
-        )
+        training_frames[name] = {
+            "rgba": (training_rgba * 255).round().to(torch.uint8).cpu().numpy(),
+            "source_png": (image_dir / name).read_bytes(),
+        }
         progress.update_absolute(position + 1)
     if float(np.mean(foreground_coverage)) < 0.01:
         raise ValueError("The input batch contains no detectable foreground subject")
@@ -155,6 +159,9 @@ def _solve_cameras(
     use_cuda,
     progress,
     interrupt,
+    ransac_max_error=DEFAULT_RANSAC_MAX_ERROR,
+    min_num_inliers=DEFAULT_MIN_NUM_INLIERS,
+    sift_max_ratio=DEFAULT_SIFT_MAX_RATIO,
 ):
     database_path = work_dir / "database.db"
     pairs_path = work_dir / "pairs.txt"
@@ -185,9 +192,20 @@ def _solve_cameras(
     progress.update_absolute(len(names) + 1)
     interrupt()
 
+    matching = pycolmap.FeatureMatchingOptions()
+    matching.sift.max_ratio = sift_max_ratio
+    verification = pycolmap.TwoViewGeometryOptions()
+    verification.ransac.max_error = ransac_max_error
+    verification.min_num_inliers = min_num_inliers
+    print(
+        f"[VNCCS Gaussian] Match thresholds: ransac_error={ransac_max_error:g}px, "
+        f"min_inliers={min_num_inliers}, sift_ratio={sift_max_ratio:g}"
+    )
     pycolmap.match_image_pairs(
         database_path,
+        matching_options=matching,
         pairing_options=pycolmap.ImportedPairingOptions(match_list_path=pairs_path),
+        verification_options=verification,
         device=pycolmap.Device.cuda if use_cuda else pycolmap.Device.cpu,
     )
     progress.update_absolute(len(names) + 2)
@@ -263,12 +281,14 @@ def _scene_data(reconstruction, training_frames):
         view = np.eye(4, dtype=np.float64)
         view[:3, :4] = np.asarray(pose.matrix(), dtype=np.float64)
         camera = cameras[int(image.camera_id)]
+        cached = training_frames[image.name]
         registered.append(
             (
                 image.name,
                 view,
                 np.asarray(camera.calibration_matrix(), dtype=np.float64),
-                training_frames[image.name],
+                cached["rgba"] if isinstance(cached, dict) else cached,
+                cached.get("source_rgb") if isinstance(cached, dict) else None,
             )
         )
     registered.sort(key=lambda item: item[0])
@@ -294,13 +314,57 @@ def _scene_data(reconstruction, training_frames):
 
     frames = [
         {
+            "name": item[0],
             "view": views[index],
             "K": item[2].astype(np.float32),
             "rgba": item[3],
+            "source_rgb": item[4],
         }
         for index, item in enumerate(registered)
     ]
     return points.astype(np.float32), colors.astype(np.float32), frames
+
+
+def _top_view_cameras(frames):
+    """Return four fixed 45-degree views paired with the nearest source azimuths."""
+    poses = np.linalg.inv(np.stack([frame["view"] for frame in frames]).astype(np.float64))
+    centers = poses[:, :3, 3]
+    forwards = poses[:, :3, 2]
+    projectors = np.eye(3)[None] - forwards[:, :, None] * forwards[:, None, :]
+    target = np.linalg.lstsq(
+        projectors.sum(axis=0),
+        np.einsum("nij,nj->i", projectors, centers),
+        rcond=None,
+    )[0]
+    up = -poses[:, :3, 1].mean(axis=0)
+    up_length = np.linalg.norm(up)
+    if not np.isfinite(target).all() or up_length < 1e-6:
+        raise ValueError("Orbit cameras do not define a stable upright preview frame")
+    up /= up_length
+    offsets = centers - target
+    horizontal = offsets - (offsets @ up)[:, None] * up
+    lengths = np.linalg.norm(horizontal, axis=1)
+    if not np.isfinite(lengths).all() or lengths.min() < 1e-6:
+        raise ValueError("Orbit cameras do not define usable preview azimuths")
+    directions = horizontal / lengths[:, None]
+    front = directions[0]
+    side = np.cross(up, front)
+    radius = np.median(np.linalg.norm(offsets, axis=1))
+    previews = []
+    for angle in np.arange(4) * (np.pi / 2):
+        direction = np.cos(angle) * front + np.sin(angle) * side
+        frame = frames[int(np.argmax(directions @ direction))]
+        position = target + radius * (direction + up) / np.sqrt(2.0)
+        forward = target - position
+        forward /= np.linalg.norm(forward)
+        right = np.cross(forward, up)
+        right /= np.linalg.norm(right)
+        rotation = np.stack((right, np.cross(forward, right), forward))
+        view = np.eye(4, dtype=np.float32)
+        view[:3, :3] = rotation
+        view[:3, 3] = -rotation @ position
+        previews.append((frame, view))
+    return previews
 
 
 class _NullProgress:
@@ -365,6 +429,34 @@ class VNCCSGaussianCameraReconstruction:
                         "tooltip": "Solid-background removal tolerance. Higher values remove a wider color range.",
                     },
                 ),
+                "ransac_max_error": (
+                    "FLOAT",
+                    {
+                        "default": DEFAULT_RANSAC_MAX_ERROR,
+                        "min": 0.01,
+                        "step": 0.1,
+                        "tooltip": "Maximum geometric verification error in pixels. Lower values are stricter.",
+                    },
+                ),
+                "min_num_inliers": (
+                    "INT",
+                    {
+                        "default": DEFAULT_MIN_NUM_INLIERS,
+                        "min": 1,
+                        "step": 1,
+                        "tooltip": "Minimum geometrically verified feature matches per image pair. Higher values are stricter.",
+                    },
+                ),
+                "sift_max_ratio": (
+                    "FLOAT",
+                    {
+                        "default": DEFAULT_SIFT_MAX_RATIO,
+                        "min": 0.01,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "Maximum descriptor distance ratio. Lower values reject more ambiguous feature matches.",
+                    },
+                ),
             }
         }
 
@@ -380,6 +472,9 @@ class VNCCSGaussianCameraReconstruction:
         max_resolution=DEFAULT_MAX_SIDE,
         match_window=DEFAULT_MATCH_WINDOW,
         matte_tolerance=DEFAULT_MATTE_TOLERANCE,
+        ransac_max_error=DEFAULT_RANSAC_MAX_ERROR,
+        min_num_inliers=DEFAULT_MIN_NUM_INLIERS,
+        sift_max_ratio=DEFAULT_SIFT_MAX_RATIO,
     ):
         if images.ndim != 4 or images.shape[-1] not in (3, 4):
             raise ValueError("images must be a BHWC RGB or RGBA tensor")
@@ -387,6 +482,12 @@ class VNCCSGaussianCameraReconstruction:
             raise ValueError("At least 20 ordered orbit frames are required")
         if images.shape[1] < 16 or images.shape[2] < 16:
             raise ValueError("Orbit frames are too small for camera reconstruction")
+        if not math.isfinite(ransac_max_error) or ransac_max_error <= 0:
+            raise ValueError("ransac_max_error must be finite and positive")
+        if min_num_inliers < 1:
+            raise ValueError("min_num_inliers must be positive")
+        if not 0 < sift_max_ratio <= 1:
+            raise ValueError("sift_max_ratio must be greater than zero and at most one")
         try:
             import pycolmap
         except ModuleNotFoundError as error:
@@ -424,7 +525,17 @@ class VNCCSGaussianCameraReconstruction:
                 use_cuda,
                 progress,
                 interrupt,
+                ransac_max_error,
+                min_num_inliers,
+                sift_max_ratio,
             )
+            _, _, frames = _scene_data(reconstruction, training_frames)
+            for frame, _ in _top_view_cameras(frames):
+                interrupt()
+                with Image.open(image_dir / frame["name"]) as source:
+                    training_frames[frame["name"]]["source_rgb"] = np.array(
+                        source.convert("RGB"), dtype=np.uint8
+                    )
         print(
             f"[VNCCS Gaussian] Camera stage ready: {len(training_frames)} frames; "
             "ComfyUI will cache this output"

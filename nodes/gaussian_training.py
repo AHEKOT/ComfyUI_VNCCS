@@ -13,10 +13,16 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from .gaussian_depth import DEPTH_LOSS_WEIGHT, depth_loss, prepare_depth_targets
 from .gaussian_reconstruction import (
     GAUSSIAN_SCENE_TYPE,
     _runtime_helpers,
     _scene_data,
+    _top_view_cameras,
+)
+from .gaussian_2dgs import (
+    DISTORTION_WEIGHT, NORMAL_WEIGHT, compatibility_scales, geometry_losses,
+    geometry_maps, geometry_schedule, render_2dgs, split_2dgs,
 )
 from ..utils import atomic_output_path, safe_join_under
 
@@ -60,7 +66,7 @@ def _comfy_splat(splats):
 
     return Types.SPLAT(
         splats["means"].detach().cpu()[None],
-        torch.exp(splats["scales"].detach().expand(-1, 3)).cpu()[None],
+        compatibility_scales(splats["scales"].detach()).exp().cpu()[None],
         F.normalize(splats["quats"].detach(), dim=-1).cpu()[None],
         torch.sigmoid(splats["opacities"].detach()).cpu()[None, :, None],
         torch.cat((splats["sh0"], splats["shN"]), dim=1).detach().cpu()[None],
@@ -75,6 +81,43 @@ def _output_path():
     root = safe_join_under(folder_paths.get_output_directory(), "VNCCS", "Gaussians")
     filename = f"gaussian_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}.ply"
     return safe_join_under(root, filename)
+
+
+@torch.no_grad()
+def _export_gaussians(splats, optimizers, state, output_path):
+    from gsplat import export_splats
+    from gsplat.strategy.ops import remove
+
+    finite = torch.ones(len(splats["means"]), dtype=torch.bool, device=splats["means"].device)
+    for value in splats.values():
+        valid = torch.isfinite(value)
+        if value.ndim > 1:
+            valid = valid.flatten(start_dim=1).all(dim=-1)
+        finite &= valid
+    finite &= torch.isfinite(torch.exp(splats["scales"])).all(dim=-1)
+    if not finite.any():
+        raise RuntimeError("Gaussian training produced no finite Gaussian parameters")
+    if not finite.all():
+        remove(params=splats, optimizers=optimizers, state=state, mask=~finite)
+    splats["quats"].copy_(F.normalize(splats["quats"], dim=-1))
+    if splats["scales"].shape[-1] == 2:
+        from gsplat.exporter import splat2ply_bytes
+
+        native_path = str(Path(output_path).with_name(Path(output_path).stem + "_2dgs.ply"))
+        data = splat2ply_bytes(
+            splats["means"], splats["scales"], splats["quats"], splats["opacities"],
+            splats["sh0"].squeeze(1), splats["shN"].transpose(1, 2).flatten(start_dim=1),
+        )
+        with atomic_output_path(native_path) as temporary:
+            Path(temporary).write_bytes(data)
+        del data
+        print(f"[VNCCS Gaussian] Native two-scale 2DGS saved to {native_path}")
+    with atomic_output_path(output_path) as temporary:
+        export_splats(
+            means=splats["means"], scales=compatibility_scales(splats["scales"]), quats=splats["quats"],
+            opacities=splats["opacities"], sh0=splats["sh0"], shN=splats["shN"],
+            format="ply", save_to=temporary,
+        )
 
 
 def _scene_scale(frames):
@@ -99,7 +142,7 @@ def _initial_scales(points):
 
 def _strategy(
     training_steps, refine_start_iter, refine_stop_iter, refine_every,
-    reset_every, grow_grad2d, prune_opacity,
+    reset_every, grow_grad2d, prune_opacity, use_2dgs=False,
 ):
     from gsplat.strategy import DefaultStrategy
     from gsplat.strategy.ops import duplicate, split
@@ -119,6 +162,8 @@ def _strategy(
             split_mask = high_gradient & ~small
             if step < self.refine_scale2d_stop_iter:
                 split_mask |= state["radii"] > self.grow_scale2d
+            if use_2dgs:
+                clone_mask &= ~split_mask
 
             available = max(0, state["max_gaussians"] - len(params["means"]))
             clone_ids = torch.where(clone_mask)[0]
@@ -142,14 +187,42 @@ def _strategy(
                     split_mask,
                     torch.zeros(cloned, dtype=torch.bool, device=grads.device),
                 ))
-                split(
-                    params=params, optimizers=optimizers, state=state,
-                    mask=split_mask, revised_opacity=self.revised_opacity,
-                )
+                if use_2dgs:
+                    split_2dgs(params, optimizers, state, split_mask)
+                else:
+                    split(
+                        params=params, optimizers=optimizers, state=state,
+                        mask=split_mask, revised_opacity=self.revised_opacity,
+                    )
             return cloned, divided
 
+        def step_post_backward(self, params, optimizers, state, step, info, packed=False):
+            if not use_2dgs:
+                return super().step_post_backward(params, optimizers, state, step, info, packed)
+            # gsplat 1.5.3's reset condition has an operator-precedence bug.
+            # Keep its 3D path unchanged and own the 2DGS schedule explicitly.
+            if step >= self.refine_stop_iter:
+                return
+            self._update_state(params, state, info, packed=packed)
+            if (step > self.refine_start_iter and step % self.refine_every == 0
+                    and step % self.reset_every >= self.pause_refine_after_reset):
+                cloned, divided = self._grow_gs(params, optimizers, state, step)
+                pruned = self._prune_gs(params, optimizers, state, step)
+                if not len(params["means"]):
+                    raise RuntimeError("2DGS refinement removed all surfels; lower prune_opacity")
+                state["grad2d"].zero_()
+                state["count"].zero_()
+                state["radii"].zero_()
+                print(f"[VNCCS Gaussian] 2DGS refine {step}: cloned={cloned}, "
+                      f"split={divided}, pruned={pruned}, surfels={len(params['means'])}")
+            if step > 0 and step % self.reset_every == 0:
+                from gsplat.strategy.ops import reset_opa
+
+                reset_opa(params=params, optimizers=optimizers, state=state, value=0.01)
+                print(f"[VNCCS Gaussian] 2DGS opacity reset at step {step}")
+
     stop = min(refine_stop_iter, training_steps)
-    return BudgetedDefaultStrategy(
+    options = dict(
         refine_start_iter=refine_start_iter,
         refine_stop_iter=stop,
         refine_every=refine_every,
@@ -160,6 +233,9 @@ def _strategy(
         prune_scale3d=0.1,
         verbose=True,
     )
+    if use_2dgs:
+        options["key_for_gradient"] = "gradient_2dgs"
+    return BudgetedDefaultStrategy(**options)
 
 
 def _training_loss(rendered, target, alpha, target_alpha, kernel, alpha_weight,
@@ -175,6 +251,49 @@ def _training_loss(rendered, target, alpha, target_alpha, kernel, alpha_weight,
     return l1, ssim, alpha_loss * alpha_weight, scale_loss
 
 
+@torch.no_grad()
+def _render_view_pairs(splats, previews, sh_degree, antialiased, interrupt):
+    from gsplat.rendering import rasterization
+
+    device = splats["means"].device
+    scales = torch.exp(splats["scales"])
+    opacities = torch.sigmoid(splats["opacities"])
+    colors = torch.cat((splats["sh0"], splats["shN"]), dim=1)
+    images = []
+    for index, (frame, view) in enumerate(previews):
+        interrupt()
+        source = frame["source_rgb"]
+        height, width = source.shape[:2]
+        corners = source[[0, 0, -1, -1], [0, -1, 0, -1]]
+        background = torch.as_tensor(
+            np.median(corners, axis=0) / 255.0, device=device, dtype=torch.float32
+        )
+        if splats["scales"].shape[-1] == 2:
+            rendered, alpha, _ = render_2dgs(
+                splats, torch.as_tensor(view, device=device)[None],
+                torch.as_tensor(frame["K"], device=device)[None], width, height, sh_degree,
+            )
+        else:
+            rendered, alpha, _ = rasterization(
+                means=splats["means"], quats=splats["quats"],
+                scales=scales, opacities=opacities, colors=colors,
+                viewmats=torch.as_tensor(view, device=device)[None],
+                Ks=torch.as_tensor(frame["K"], device=device)[None],
+                width=width, height=height, packed=False, sh_degree=sh_degree,
+                near_plane=0.01, far_plane=1e10,
+                rasterize_mode="antialiased" if antialiased else "classic",
+            )
+        images.extend((
+            (rendered + background * (1 - alpha)).clamp(0, 1).float().cpu(),
+            torch.from_numpy(source).float()[None] / 255.0,
+        ))
+        print(
+            f"[VNCCS Gaussian] Preview {index + 1}/4: azimuth={index * 90}, "
+            f"elevation=45; source={frame['name']}"
+        )
+    return tuple(images)
+
+
 @torch.inference_mode(False)
 @torch.enable_grad()
 def _train_gaussians(
@@ -182,6 +301,8 @@ def _train_gaussians(
     sh_degree, ssim_weight, alpha_weight, use_scale_regularization, antialiased,
     optimizer_mode, refine_start_iter, refine_stop_iter, refine_every,
     reset_every, grow_grad2d, prune_opacity, seed, progress, interrupt,
+    use_depth_loss=False,
+    use_2dgs=False, distortion_weight=DISTORTION_WEIGHT, normal_weight=NORMAL_WEIGHT,
 ):
     if not torch.cuda.is_available() or torch.version.hip is not None:
         raise RuntimeError("Gaussian training requires an NVIDIA CUDA build of PyTorch")
@@ -195,8 +316,21 @@ def _train_gaussians(
         raise RuntimeError("gsplat 1.5.3 is required for Gaussian training") from error
 
     device = torch.device("cuda", torch.cuda.current_device())
+    if use_2dgs and (use_depth_loss or distortion_weight > 0 or normal_weight > 0):
+        from .gaussian_2dgs_cuda import prepare_surface_cuda
+
+        print(f"[VNCCS Gaussian] Initializing fused surface kernels for PyTorch CUDA {torch.version.cuda}")
+        prepare_surface_cuda(device)
     points, rgb, frames = _scene_data(reconstruction, training_frames)
+    previews = _top_view_cameras(frames)
+    if any(frame["source_rgb"] is None for frame, _ in previews):
+        raise ValueError(
+            "The cached scene has no original RGB references; rerun "
+            "VNCCS Gaussian Camera Reconstruction before training"
+        )
     scene_scale = _scene_scale(frames)
+    if use_depth_loss:
+        prepare_depth_targets(reconstruction, training_frames, points, frames, interrupt)
     torch.manual_seed(seed)
     initial_scales = _initial_scales(points)
     if len(points) > max_splats:
@@ -209,7 +343,7 @@ def _train_gaussians(
     splats = torch.nn.ParameterDict({
         "means": torch.nn.Parameter(torch.from_numpy(points)),
         "scales": torch.nn.Parameter(
-            torch.from_numpy(initial_scales)[:, None].repeat(1, 3)
+            torch.from_numpy(initial_scales)[:, None].repeat(1, 2 if use_2dgs else 3)
         ),
         "quats": torch.nn.Parameter(torch.rand((count, 4))),
         "opacities": torch.nn.Parameter(torch.logit(torch.full((count,), 0.1))),
@@ -241,7 +375,7 @@ def _train_gaussians(
     )
     strategy = _strategy(
         training_steps, refine_start_iter, refine_stop_iter, refine_every,
-        reset_every, grow_grad2d, prune_opacity,
+        reset_every, grow_grad2d, prune_opacity, use_2dgs,
     )
     strategy.check_sanity(splats, optimizers)
     state = strategy.initialize_state(scene_scale=scene_scale)
@@ -251,6 +385,10 @@ def _train_gaussians(
             "rgba": torch.from_numpy(frame["rgba"]).contiguous().pin_memory(),
             "view": torch.from_numpy(frame["view"]).to(device)[None],
             "K": torch.from_numpy(frame["K"]).to(device)[None],
+            "depth": (
+                torch.from_numpy(frame["depth"]).pin_memory()
+                if use_depth_loss else None
+            ),
         }
         for frame in frames
     ]
@@ -277,10 +415,16 @@ def _train_gaussians(
             rgba = frames[index]["rgba"].to(
                 device=device, dtype=torch.float32, non_blocking=True
             ).div_(255.0)
-        return index, rgba
+            depth = (
+                frames[index]["depth"].to(device=device, non_blocking=True)[None, ..., None]
+                if use_depth_loss else None
+            )
+        return index, rgba, depth
 
     prefetched = prefetch_frame()
     started = time.perf_counter()
+    last_log = started
+    last_log_step = 0
     print(
         f"[VNCCS Gaussian] Training: frames={len(frames)}, initial_splats={count}, "
         f"steps={training_steps}, cap={max_splats}, scene_scale={scene_scale:.6g}, "
@@ -292,14 +436,30 @@ def _train_gaussians(
         f"grow_grad2d={strategy.grow_grad2d:g}, reset_every={strategy.reset_every}; "
         f"SSIM={ssim_weight:g}, alpha={alpha_weight:g}, "
         f"scale_regularization={use_scale_regularization}, antialiased={antialiased}, "
-        f"SH={sh_degree} from step 1; full-resolution shuffled frames"
+        f"depth_supervision={use_depth_loss}, depth_weight={DEPTH_LOSS_WEIGHT:g}; "
+        f"SH={sh_degree} ({'progressive' if use_2dgs else 'from step 1'}); full-resolution shuffled frames"
     )
     print(f"[VNCCS Gaussian] Output: {output_path}")
+    if use_2dgs:
+        print(
+            f"[VNCCS Gaussian] 2DGS: two tangential scales; planar splitting; "
+            f"gsplat projection/tiles with built-in low-pass filter; "
+            f"fused CUDA RGB/geometry forward and backward; no feature images or hit lists; "
+            f"ray-plane median depth (no stock center-depth interpolation); "
+            f"distortion_l2_ndc={distortion_weight:g} after {int(training_steps * 0.1)} steps, "
+            f"normal={normal_weight:g} after {int(training_steps * 7 / 30)} steps; "
+            "SH increases every 1000 steps; geometry uses all pixels and contributors every step. "
+            "Optional MoGe supervision uses bounded-scene median depth. "
+            "PLY/SPLAT outputs are thin-3DGS compatibility approximations; "
+            "native two-scale PLY is saved alongside; IMAGE outputs use native 2DGS."
+        )
     for step in range(training_steps):
         interrupt()
         training_stream.wait_stream(transfer_stream)
-        frame_index, rgba = prefetched
+        frame_index, rgba, target_depth = prefetched
         rgba.record_stream(training_stream)
+        if target_depth is not None:
+            target_depth.record_stream(training_stream)
         frame = frames[frame_index]
         if step + 1 < training_steps:
             prefetched = prefetch_frame()
@@ -307,17 +467,41 @@ def _train_gaussians(
         target_alpha = rgba[None, ..., 3:4]
         target = rgba[None, ..., :3] * target_alpha + background * (1 - target_alpha)
         height, width = rgba.shape[:2]
-        rendered, alpha, info = rasterization(
-            means=splats["means"],
-            quats=splats["quats"],
-            scales=torch.exp(splats["scales"]),
-            opacities=torch.sigmoid(splats["opacities"]),
-            colors=torch.cat((splats["sh0"], splats["shN"]), dim=1),
-            viewmats=frame["view"], Ks=frame["K"], width=width, height=height,
-            packed=False, absgrad=strategy.absgrad, sh_degree=sh_degree,
-            near_plane=0.01, far_plane=1e10,
-            rasterize_mode="antialiased" if antialiased else "classic",
-        )
+        distortion_term = normal_term = rgba.new_zeros(())
+        if use_2dgs:
+            distortion_scale, normal_scale = geometry_schedule(
+                step, training_steps, distortion_weight, normal_weight,
+            )
+            need_geometry = use_depth_loss or distortion_scale > 0 or normal_scale > 0
+            rendered, alpha, info = render_2dgs(
+                splats, frame["view"], frame["K"], width, height,
+                min(step // 1_000, sh_degree), strategy.absgrad,
+                with_geometry=need_geometry,
+            )
+            rendered_depth = None
+            if need_geometry:
+                maps = geometry_maps(info, frame["K"])
+                distortion, normal, rendered_depth = geometry_losses(
+                    maps, frame["view"], frame["K"], use_normal=normal_scale > 0,
+                )
+                del maps
+                distortion_term = distortion_scale * distortion
+                normal_term = normal_scale * normal
+        else:
+            rendered, alpha, info = rasterization(
+                means=splats["means"],
+                quats=splats["quats"],
+                scales=torch.exp(splats["scales"]),
+                opacities=torch.sigmoid(splats["opacities"]),
+                colors=torch.cat((splats["sh0"], splats["shN"]), dim=1),
+                viewmats=frame["view"], Ks=frame["K"], width=width, height=height,
+                packed=False, absgrad=strategy.absgrad, sh_degree=sh_degree,
+                near_plane=0.01, far_plane=1e10,
+                rasterize_mode="antialiased" if antialiased else "classic",
+                render_mode="RGB+ED" if use_depth_loss else "RGB",
+            )
+            rendered_depth = rendered[..., 3:4] if use_depth_loss else None
+        rendered = rendered[..., :3]
         rendered = rendered + background * (1 - alpha)
         strategy.step_pre_backward(splats, optimizers, state, step, info)
         l1, ssim, alpha_loss, scale_loss = _training_loss(
@@ -325,6 +509,13 @@ def _train_gaussians(
             splats["scales"], use_scale_regularization and step % 10 == 0,
         )
         loss = (1 - ssim_weight) * l1 + ssim_weight * ssim + alpha_loss + scale_loss
+        depth_term = (
+            DEPTH_LOSS_WEIGHT * depth_loss(rendered_depth, target_depth, alpha)
+            if use_depth_loss else l1.new_zeros(())
+        )
+        loss = loss + depth_term + distortion_term + normal_term
+        if use_2dgs and not torch.isfinite(loss.detach()).item():
+            raise RuntimeError(f"2DGS produced a non-finite loss at step {step + 1}; training stopped before the optimizer update")
         loss.backward()
         visibility = (info["radii"] > 0).all(dim=-1).any(dim=0)
         for optimizer in optimizers.values():
@@ -336,41 +527,36 @@ def _train_gaussians(
         scheduler.step()
         strategy.step_post_backward(splats, optimizers, state, step, info, packed=False)
         completed = step + 1
-        if completed == 1 or completed % 25 == 0 or completed == training_steps:
+        if (completed == 1 or completed % 25 == 0 or completed == training_steps
+                or (use_2dgs and time.perf_counter() - last_log >= 5.0)):
             phase = "densify" if step < strategy.refine_stop_iter else "finetune"
+            now = time.perf_counter()
+            speed = (
+                f", ms_per_step={(now - last_log) * 1000 / (completed - last_log_step):.2f}"
+                if use_2dgs else ""
+            )
             print(
                 f"[VNCCS Gaussian] {completed}/{training_steps} ({phase}): "
                 f"loss={loss.detach().item():.6f}, l1={l1.detach().item():.6f}, "
                 f"ssim={ssim.detach().item():.6f}, alpha={alpha_loss.detach().item():.6f}, "
                 f"scale={scale_loss.detach().item():.6f}, splats={len(splats['means'])}, "
-                f"elapsed={time.perf_counter() - started:.1f}s"
+                f"depth={depth_term.detach().item():.6f}, "
+                f"distortion={distortion_term.detach().item():.6f}, "
+                f"normal={normal_term.detach().item():.6f}, "
+                f"elapsed={now - started:.1f}s{speed}"
             )
             progress.update_absolute(completed)
+            last_log = time.perf_counter()
+            last_log_step = completed
 
     interrupt()
-    with torch.no_grad():
-        finite = torch.ones(len(splats["means"]), dtype=torch.bool, device=device)
-        for value in splats.values():
-            valid = torch.isfinite(value)
-            if value.ndim > 1:
-                valid = valid.flatten(start_dim=1).all(dim=-1)
-            finite &= valid
-        finite &= torch.isfinite(torch.exp(splats["scales"])).all(dim=-1)
-        if not finite.any():
-            raise RuntimeError("Gaussian training produced no finite Gaussian parameters")
-        if not finite.all():
-            remove(params=splats, optimizers=optimizers, state=state, mask=~finite)
-        splats["quats"].copy_(F.normalize(splats["quats"], dim=-1))
-        with atomic_output_path(output_path) as temporary:
-            export_splats(
-                means=splats["means"], scales=splats["scales"], quats=splats["quats"],
-                opacities=splats["opacities"], sh0=splats["sh0"], shN=splats["shN"],
-                format="ply", save_to=temporary,
-            )
-        result = _comfy_splat(splats)
+    _export_gaussians(splats, optimizers, state, output_path)
+    result = _comfy_splat(splats)
     print(f"[VNCCS Gaussian] Saved {len(splats['means'])} splats to {output_path}")
+    preview_degree = min((training_steps - 1) // 1_000, sh_degree) if use_2dgs else sh_degree
+    preview_images = _render_view_pairs(splats, previews, preview_degree, antialiased, interrupt)
     progress.update_absolute(training_steps)
-    return result
+    return (result, *preview_images)
 
 
 class VNCCSGaussianTrainer:
@@ -396,11 +582,41 @@ class VNCCSGaussianTrainer:
                 "grow_grad2d": ("FLOAT", {"default": 0.0001, "min": 0.0, "max": 1.0, "step": 0.00001}),
                 "prune_opacity": ("FLOAT", {"default": 0.005, "min": 0.0, "max": 1.0, "step": 0.001}),
                 "seed": ("INT", {"default": 42, "min": 0, "max": 0xFFFFFFFF, "step": 1}),
+                "use_depth_loss": (
+                    "BOOLEAN", {
+                        "default": False,
+                        "tooltip": "Compute and cache native ComfyUI MoGe-2 depth, align it to COLMAP and supervise foreground geometry.",
+                    },
+                ),
+                "use_2dgs": (
+                    "BOOLEAN", {
+                        "default": False,
+                        "tooltip": "Train planar 2D Gaussians with exact ray-plane median depth, squared NDC depth distortion and normal consistency. Fused rendering uses the current PyTorch CUDA release; install.py supplies matching NVRTC only if missing. No MoGe required. PLY/SPLAT outputs approximate surfels as thin 3D Gaussians; native 2DGS PLY is saved alongside.",
+                    },
+                ),
+                "distortion_weight": (
+                    "FLOAT", {
+                        "default": DISTORTION_WEIGHT, "min": 0.0, "step": 10.0,
+                        "tooltip": "2DGS squared NDC-depth distortion weight, enabled after 10% of training. Zero disables this loss.",
+                    },
+                ),
+                "normal_weight": (
+                    "FLOAT", {
+                        "default": NORMAL_WEIGHT, "min": 0.0, "step": 0.01,
+                        "tooltip": "2DGS normal-consistency weight, enabled after 7/30 of training. Zero disables this loss.",
+                    },
+                ),
             }
         }
 
-    RETURN_TYPES = ("STRING", "SPLAT")
-    RETURN_NAMES = ("gaussian_file", "splat")
+    RETURN_TYPES = ("STRING", "SPLAT") + ("IMAGE",) * 8
+    RETURN_NAMES = (
+        "gaussian_file", "splat",
+        "top_0", "source_0",
+        "top_90", "source_90",
+        "top_180", "source_180",
+        "top_270", "source_270",
+    )
     FUNCTION = "train"
     CATEGORY = "VNCCS/3D"
     OUTPUT_NODE = True
@@ -410,7 +626,8 @@ class VNCCSGaussianTrainer:
         ssim_weight=0.2, alpha_weight=0.1, use_scale_regularization=True,
         antialiased=True, optimizer_mode="visible_adam", refine_start_iter=150,
         refine_stop_iter=3_500, refine_every=100, reset_every=99_990,
-        grow_grad2d=0.0001, prune_opacity=0.005, seed=42,
+        grow_grad2d=0.0001, prune_opacity=0.005, seed=42, use_depth_loss=False,
+        use_2dgs=False, distortion_weight=DISTORTION_WEIGHT, normal_weight=NORMAL_WEIGHT,
     ):
         if not isinstance(scene, (tuple, list)) or len(scene) != 2:
             raise ValueError("scene must come from VNCCS Gaussian Camera Reconstruction")
@@ -430,6 +647,10 @@ class VNCCSGaussianTrainer:
             raise ValueError("Refinement and reset intervals must be positive")
         if refine_start_iter < 0 or refine_stop_iter < 0:
             raise ValueError("Refinement steps must be non-negative")
+        if use_2dgs and (not np.isfinite(distortion_weight) or distortion_weight < 0):
+            raise ValueError("distortion_weight must be finite and non-negative")
+        if use_2dgs and (not np.isfinite(normal_weight) or normal_weight < 0):
+            raise ValueError("normal_weight must be finite and non-negative")
         reconstruction, training_frames = scene
         output_path = _output_path()
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -439,9 +660,10 @@ class VNCCSGaussianTrainer:
             max_splats, sh_degree, ssim_weight, alpha_weight,
             use_scale_regularization, antialiased, optimizer_mode,
             refine_start_iter, refine_stop_iter, refine_every, reset_every,
-            grow_grad2d, prune_opacity, seed, progress, interrupt,
+            grow_grad2d, prune_opacity, seed, progress, interrupt, use_depth_loss,
+            use_2dgs, distortion_weight, normal_weight,
         )
-        return output_path, result
+        return (output_path, *result)
 
 
 NODE_CLASS_MAPPINGS = {
