@@ -2,12 +2,6 @@
 
 This patch release fixes Qwen Image 2.1 adapter selection in Character Creator V2 and restores module update notifications in Control Center. The changes below are relative to `main` (`3.2.3`).
 
-## Native Gaussian Reconstruction
-
-- Added `VNCCS Gaussian Camera Reconstruction` and `VNCCS Gaussian Training`. The camera stage selects ordered orbit frames, removes the solid screen background, and reconstructs a closed-loop camera path with PyCOLMAP; the training stage builds Gaussian splats with gsplat and returns the saved PLY path.
-- ComfyUI caches the camera-stage output, so changing training steps, splat limit, or SH degree does not repeat background removal or camera reconstruction while the images and camera settings remain unchanged. Training defaults to 7,000 steps with no artificial upper limit.
-- PyCOLMAP feature extraction, matching, and mapping use CUDA automatically when its installed build reports an NVIDIA device. The packaged CUDA 12 wheel is selected on Linux; Windows uses the official CPU PyCOLMAP wheel while gsplat training remains CUDA-only.
-
 ## Character Creator V2
 
 - QI2 Character Overhaul now resolves its installed file from the Control Center model catalog, fixing false “not installed” errors after downloading a version with a different filename. The original adapter remains supported as a compatibility fallback.

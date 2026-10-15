@@ -23,6 +23,9 @@ DEFAULT_MAX_SPLATS = 2_000_000
 DEFAULT_SH_DEGREE = 1
 DEFAULT_MATTE_TOLERANCE = 0.15
 SH_C0 = 0.28209479177387814
+INITIAL_OPACITY = 0.5
+GROWTH_SELECT_FRACTION = 0.25
+FINAL_PRUNE_OPACITY = 0.01
 GAUSSIAN_SCENE_TYPE = "VNCCS_GAUSSIAN_SCENE"
 
 
@@ -105,11 +108,16 @@ def _resize_frame(frame, max_side=DEFAULT_MAX_SIDE):
     resized = F.interpolate(
         frame.permute(2, 0, 1)[None].float(),
         size=(round(height * scale), round(width * scale)),
-        mode="bilinear",
+        mode="bicubic",
         align_corners=False,
         antialias=True,
     )
     return resized[0].permute(1, 2, 0).clamp(0, 1)
+
+
+def _erode_training_alpha(alpha):
+    """Match Gausify's one-pixel training-mask erosion."""
+    return -F.max_pool2d(-alpha[None, None], kernel_size=3, stride=1, padding=1)[0, 0]
 
 
 def _save_frames(
@@ -136,7 +144,11 @@ def _save_frames(
         foreground_coverage.append(float(alpha.float().mean().cpu()))
         mask = (alpha * 255).round().to(torch.uint8).cpu().numpy()
         Image.fromarray(mask).save(mask_dir / f"{name}.png")
-        training_frames[name] = (rgba * 255).round().to(torch.uint8).cpu().numpy()
+        training_alpha = _erode_training_alpha(alpha)
+        training_rgba = torch.cat((rgba[..., :3], training_alpha[..., None]), dim=-1)
+        training_frames[name] = (
+            (training_rgba * 255).round().to(torch.uint8).cpu().numpy()
+        )
         progress.update_absolute(position + 1)
     if float(np.mean(foreground_coverage)) < 0.01:
         raise ValueError("The input batch contains no detectable foreground subject")
@@ -301,14 +313,191 @@ def _scene_data(reconstruction, training_frames):
     return points.astype(np.float32), colors.astype(np.float32), frames
 
 
+def _point_scene_scale(points):
+    sorted_points = np.sort(points, axis=0)
+    count = len(sorted_points)
+    lower = sorted_points[int(0.125 * count)]
+    upper = sorted_points[min(count - 1, int(0.875 * count))]
+    return max(float(np.median(upper - lower)), 0.01)
+
+
 def _initial_scales(points):
     import cv2
 
     index = cv2.flann_Index(np.ascontiguousarray(points), {"algorithm": 1, "trees": 4})
-    neighbors, _ = index.knnSearch(points, 4, params={"checks": 32})
+    neighbors, _ = index.knnSearch(points, 3, params={"checks": 32})
     offsets = points[neighbors[:, 1:]] - points[:, None]
-    distances = np.sqrt(np.square(offsets).sum(axis=2).mean(axis=1))
-    return np.log(np.maximum(distances, 1e-6)).astype(np.float32)
+    distances = np.linalg.norm(offsets, axis=2).sum(axis=1) / 4.0
+    distances = np.clip(distances, 1e-3, _point_scene_scale(points) * 0.1)
+    return np.log(distances).astype(np.float32)
+
+
+def _training_learning_rates(scene_scale):
+    return {
+        "means": 2e-5 * scene_scale,
+        "scales": 5e-3,
+        "quats": 2e-3,
+        "opacities": 1.2e-2,
+        "sh0": 2e-3,
+        "shN": 2e-4,
+    }
+
+
+def _growth_mask(grads, candidates, available, fraction):
+    """Select strongest refinement candidates within the splat budget."""
+    if available <= 0:
+        return torch.zeros_like(candidates)
+    candidate_ids = torch.where(candidates)[0]
+    if not len(candidate_ids):
+        return candidates
+
+    selected_count = min(
+        available,
+        max(1, int(len(candidate_ids) * fraction + 0.5)),
+    )
+    if selected_count == len(candidate_ids):
+        return candidates
+
+    selected = torch.topk(grads[candidate_ids], k=selected_count, sorted=False).indices
+    limited = torch.zeros_like(candidates)
+    limited[candidate_ids[selected]] = True
+    return limited
+
+
+def _strategy_options(training_steps, stable_refinement):
+    options = {
+        "grow_grad2d": 0.0002,
+        "grow_scale2d": 0.05,
+        "refine_every": 100,
+        "refine_start_iter": 0,
+        "refine_stop_iter": min(training_steps, 15_000),
+        "refine_scale2d_stop_iter": min(training_steps, 15_000),
+    }
+    if stable_refinement:
+        refine_stop = max(1, training_steps // 2)
+        options.update(
+            grow_grad2d=0.0001,
+            refine_stop_iter=refine_stop,
+            refine_scale2d_stop_iter=refine_stop,
+        )
+    return options
+
+
+def _ssim_loss(rendered, target, kernel):
+    rendered = rendered.permute(0, 3, 1, 2)
+    target = target.permute(0, 3, 1, 2)
+    channels = rendered.shape[1]
+    moments = torch.cat(
+        (rendered, target, rendered.square(), target.square(), rendered * target), dim=0
+    )
+    horizontal = kernel[None, None, None].expand(channels, 1, 1, -1)
+    vertical = kernel[None, None, :, None].expand(channels, 1, -1, 1)
+    moments = F.conv2d(moments, horizontal, groups=channels)
+    moments = F.conv2d(moments, vertical, groups=channels)
+    mu_rendered, mu_target, square_rendered, square_target, product = moments.chunk(
+        5, dim=0
+    )
+    mu_rendered_sq = mu_rendered.square()
+    mu_target_sq = mu_target.square()
+    mu_product = mu_rendered * mu_target
+    variance_rendered = square_rendered - mu_rendered_sq
+    variance_target = square_target - mu_target_sq
+    covariance = product - mu_product
+    c1, c2 = 0.01**2, 0.03**2
+    score = ((2 * mu_product + c1) * (2 * covariance + c2)) / (
+        (mu_rendered_sq + mu_target_sq + c1)
+        * (variance_rendered + variance_target + c2)
+    )
+    return (1.0 - score.mean()).clamp(0.0, 2.0)
+
+
+def _training_loss(rendered, target, alpha, target_alpha, ssim_kernel=None):
+    color_loss = F.l1_loss(rendered, target)
+    if ssim_kernel is not None:
+        color_loss = 0.8 * color_loss + 0.2 * _ssim_loss(
+            rendered, target, ssim_kernel
+        )
+    return color_loss + 0.1 * F.l1_loss(alpha, target_alpha)
+
+
+def _decayed_opacity_logits(opacity_logits, step, training_steps):
+    progress = min(max(step / max(training_steps, 1), 0.0), 1.0)
+    opacity = torch.sigmoid(opacity_logits) - 0.004 * (1.0 - progress)
+    epsilon = torch.finfo(opacity.dtype).eps
+    return torch.logit(opacity.clamp(epsilon, 1.0 - epsilon))
+
+
+def _brush_split_parameters(
+    means, log_scales, quats, opacity_logits, screen_sizes=None
+):
+    scales = torch.exp(log_scales)
+    ratio = scales.square() / scales.square().amax(dim=-1, keepdim=True).clamp_min(1e-30)
+    shrink_limit = torch.full_like(ratio[:, :1], 1.0 / math.sqrt(2.0))
+    if screen_sizes is not None:
+        shrink_limit = torch.minimum(
+            shrink_limit,
+            0.5 / screen_sizes[:, None].clamp_min(1e-6),
+        )
+    shrink = 1.0 - ratio * (1.0 - shrink_limit)
+    offset = torch.sqrt((1.0 - shrink.square()).clamp_min(0.0)) * scales
+
+    rotation = F.normalize(quats, dim=-1)
+    vector, scalar = rotation[:, 1:], rotation[:, :1]
+    twice_cross = 2.0 * torch.cross(vector, offset, dim=-1)
+    offset = offset + scalar * twice_cross + torch.cross(vector, twice_cross, dim=-1)
+
+    child_means = torch.cat((means - offset, means + offset))
+    child_log_scales = (log_scales + torch.log(shrink)).repeat(2, 1)
+    opacity = 1.0 - (1.0 - torch.sigmoid(opacity_logits)).pow(1.0 / math.sqrt(2.0))
+    child_opacity_logits = torch.logit(
+        opacity.clamp(1.0 / 255.0, 254.0 / 255.0)
+    ).repeat(2)
+    return child_means, child_log_scales, child_opacity_logits
+
+
+def _splat_prune_masks(splats, scene_scale, opacity_threshold, scale_ratio=None):
+    count = len(splats["means"])
+    device = splats["means"].device
+    scales = torch.exp(splats["scales"])
+    finite = torch.ones(count, dtype=torch.bool, device=device)
+    for name in ("means", "quats", "opacities", "sh0", "shN"):
+        finite &= torch.isfinite(splats[name]).reshape(count, -1).all(dim=-1)
+    finite &= torch.isfinite(scales).all(dim=-1)
+
+    nonfinite = ~finite
+    opacity = finite & (torch.sigmoid(splats["opacities"]) < opacity_threshold)
+    scale = torch.zeros_like(nonfinite)
+    if scale_ratio is not None:
+        scale = finite & ~opacity & (scales.amax(dim=-1) > scene_scale * scale_ratio)
+    return {"nonfinite": nonfinite, "opacity": opacity, "scale3d": scale}
+
+
+def _splat_ranges(splats):
+    opacity = torch.sigmoid(splats["opacities"])
+    scale = torch.exp(splats["scales"]).amax(dim=-1)
+
+    def finite_range(values):
+        values = values[torch.isfinite(values)]
+        if not len(values):
+            return float("nan"), float("nan")
+        return float(values.min().item()), float(values.max().item())
+
+    return finite_range(opacity), finite_range(scale)
+
+
+def _comfy_splat(splats):
+    try:
+        from comfy_api.latest import Types
+    except ImportError as error:
+        raise RuntimeError("ComfyUI SPLAT support is unavailable; update ComfyUI") from error
+
+    return Types.SPLAT(
+        splats["means"].detach().cpu()[None],
+        torch.exp(splats["scales"].detach()).cpu()[None],
+        F.normalize(splats["quats"].detach(), dim=-1).cpu()[None],
+        torch.sigmoid(splats["opacities"].detach()).cpu()[None, :, None],
+        torch.cat((splats["sh0"], splats["shN"]), dim=1).detach().cpu()[None],
+    )
 
 
 @torch.inference_mode(False)
@@ -320,6 +509,10 @@ def _train_gaussians(
     training_steps,
     max_splats,
     sh_degree,
+    budgeted_densification,
+    stable_refinement,
+    antialiased_rasterization,
+    ssim_alpha_loss,
     progress,
     interrupt,
 ):
@@ -329,63 +522,291 @@ def _train_gaussians(
         from gsplat import export_splats
         from gsplat.rendering import rasterization
         from gsplat.strategy import DefaultStrategy
+        from gsplat.strategy.ops import remove, split
     except ModuleNotFoundError as error:
         raise RuntimeError("gsplat 1.5.x is required for Gaussian training") from error
 
+    class BrushDefaultStrategy(DefaultStrategy):
+        @torch.no_grad()
+        def _update_state(self, params, state, info, packed=False):
+            grads = info[self.key_for_gradient].grad.clone()
+            grads[..., 0] *= info["width"] / 2.0 * info["n_cameras"]
+            grads[..., 1] *= info["height"] / 2.0 * info["n_cameras"]
+            count = len(params["means"])
+            if state["grad2d"] is None:
+                state["grad2d"] = torch.zeros(count, device=grads.device)
+                state["count"] = torch.zeros(count, device=grads.device)
+                state["radii"] = torch.zeros(count, device=grads.device)
+
+            if packed:
+                gaussian_ids = info["gaussian_ids"]
+                radii = info["radii"].max(dim=-1).values
+            else:
+                visible = (info["radii"] > 0.0).all(dim=-1)
+                gaussian_ids = torch.where(visible)[1]
+                grads = grads[visible]
+                radii = info["radii"][visible].max(dim=-1).values
+            state["grad2d"].scatter_reduce_(
+                0,
+                gaussian_ids,
+                torch.nan_to_num(
+                    grads.norm(dim=-1), nan=0.0, posinf=1e32, neginf=0.0
+                ),
+                reduce="amax",
+                include_self=True,
+            )
+            state["count"].index_add_(
+                0,
+                gaussian_ids,
+                torch.ones_like(gaussian_ids, dtype=torch.float32),
+            )
+            state["radii"].scatter_reduce_(
+                0,
+                gaussian_ids,
+                radii / float(max(info["width"], info["height"])),
+                reduce="amax",
+                include_self=True,
+            )
+
+        @torch.no_grad()
+        def _split_gs(self, params, optimizers, state, mask):
+            selected = torch.where(mask)[0]
+            selected_count = len(selected)
+            if not selected_count:
+                return 0
+            children = _brush_split_parameters(
+                params["means"][selected],
+                params["scales"][selected],
+                params["quats"][selected],
+                params["opacities"][selected],
+                state["radii"][selected],
+            )
+            rest_count = len(params["means"]) - selected_count
+            split(
+                params=params,
+                optimizers=optimizers,
+                state=state,
+                mask=mask,
+                revised_opacity=False,
+            )
+            params["means"][rest_count:].copy_(children[0])
+            params["scales"][rest_count:].copy_(children[1])
+            params["opacities"][rest_count:].copy_(children[2])
+            return selected_count
+
+        @torch.no_grad()
+        def _replacement_mask(self, params, state, count):
+            available = min(count, max_splats - len(params["means"]))
+            if available <= 0:
+                return torch.zeros_like(params["opacities"], dtype=torch.bool)
+            weights = torch.sigmoid(params["opacities"]) * (state["count"] > 0)
+            weights = torch.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0)
+            available = min(available, int((weights > 0).sum().item()))
+            if available <= 0:
+                return torch.zeros_like(params["opacities"], dtype=torch.bool)
+            selected = torch.multinomial(weights, available, replacement=False)
+            mask = torch.zeros_like(weights, dtype=torch.bool)
+            mask[selected] = True
+            return mask
+
+        @torch.no_grad()
+        def _growth_mask(self, params, state, step, reserved):
+            grads = state["grad2d"]
+            available = max_splats - len(params["means"]) - int(reserved.sum().item())
+            oversized = torch.zeros_like(reserved)
+            if step < self.refine_scale2d_stop_iter:
+                candidates = (state["radii"] > self.grow_scale2d) & ~reserved
+                oversized = _growth_mask(
+                    state["radii"], candidates, available, fraction=1.0
+                )
+                available -= int(oversized.sum().item())
+            candidates = (grads > self.grow_grad2d) & ~reserved & ~oversized
+            fraction = GROWTH_SELECT_FRACTION if budgeted_densification else 1.0
+            growth = _growth_mask(grads, candidates, available, fraction)
+            return growth, oversized
+
+        @torch.no_grad()
+        def step_post_backward(
+            self, params, optimizers, state, step, info, packed=False
+        ):
+            self._update_state(params, state, info, packed=packed)
+            if step <= self.refine_start_iter or step % self.refine_every:
+                return
+
+            opacity_range, scale_range = _splat_ranges(params)
+            prune_reasons = _splat_prune_masks(
+                params,
+                scene_scale,
+                self.prune_opa,
+                self.prune_scale3d if step >= self.reset_every else None,
+            )
+            prune_reasons["scale2d"] = (
+                (state["radii"] > self.prune_scale2d)
+                & ~prune_reasons["nonfinite"]
+                & ~prune_reasons["opacity"]
+                & ~prune_reasons["scale3d"]
+                if self.reset_every <= step < self.refine_scale2d_stop_iter
+                else torch.zeros_like(prune_reasons["nonfinite"])
+            )
+            prune_mask = torch.stack(tuple(prune_reasons.values())).any(dim=0)
+            prune_count = int(prune_mask.sum().item())
+            if prune_count == len(params["opacities"]):
+                finite = ~prune_reasons["nonfinite"]
+                if not finite.any():
+                    raise RuntimeError("All Gaussian parameters became non-finite")
+                protected = torch.argmax(
+                    params["opacities"].masked_fill(~finite, -torch.inf)
+                )
+                for reason in prune_reasons.values():
+                    reason[protected] = False
+                prune_mask[protected] = False
+                prune_count = len(params["opacities"]) - 1
+            prune_counts = {
+                reason: int(mask.sum().item())
+                for reason, mask in prune_reasons.items()
+            }
+            if prune_count:
+                remove(
+                    params=params,
+                    optimizers=optimizers,
+                    state=state,
+                    mask=prune_mask,
+                )
+
+            replacements = self._replacement_mask(params, state, prune_count)
+            high_grad_count = int((state["grad2d"] > self.grow_grad2d).sum().item())
+            max_grad = float(state["grad2d"].max().item())
+            growth, oversized = (
+                self._growth_mask(params, state, step, replacements)
+                if step < self.refine_stop_iter
+                else (torch.zeros_like(replacements), torch.zeros_like(replacements))
+            )
+            replacement_count = int(replacements.sum().item())
+            growth_count = int(growth.sum().item())
+            oversized_count = int(oversized.sum().item())
+            self._split_gs(
+                params, optimizers, state, replacements | oversized | growth
+            )
+
+            params["opacities"].copy_(
+                _decayed_opacity_logits(params["opacities"], step, training_steps)
+            )
+            state["grad2d"].zero_()
+            state["count"].zero_()
+            if self.refine_scale2d_stop_iter > 0:
+                state["radii"].zero_()
+            print(
+                f"[VNCCS Gaussian] Refine {step}/{training_steps}: "
+                f"eligible={high_grad_count}, max_grad={max_grad:.6g}, "
+                f"growth={growth_count}, oversized={oversized_count}, "
+                f"replaced={replacement_count}, pruned={prune_count} "
+                f"(opacity={prune_counts['opacity']}, "
+                f"nonfinite={prune_counts['nonfinite']}, "
+                f"scale3d={prune_counts['scale3d']}, "
+                f"scale2d={prune_counts['scale2d']}), "
+                f"input_opacity_range=[{opacity_range[0]:.6g}, {opacity_range[1]:.6g}], "
+                f"input_scale_range=[{scale_range[0]:.6g}, {scale_range[1]:.6g}], "
+                f"splats={len(params['means'])}"
+            )
+
     device = torch.device("cuda", torch.cuda.current_device())
     points, rgb, frames = _scene_data(reconstruction, training_frames)
+    frames = [
+        {
+            "rgba": torch.from_numpy(frame["rgba"]).contiguous().pin_memory(),
+            "view": torch.from_numpy(frame["view"]).to(device=device)[None],
+            "K": torch.from_numpy(frame["K"]).to(device=device)[None],
+        }
+        for frame in frames
+    ]
     torch.manual_seed(42)
     count = len(points)
+    scene_scale = _point_scene_scale(points)
     colors = torch.zeros((count, (sh_degree + 1) ** 2, 3), dtype=torch.float32)
     colors[:, 0] = (torch.from_numpy(rgb) - 0.5) / SH_C0
+    quats = torch.zeros((count, 4), dtype=torch.float32)
+    quats[:, 0] = 1.0
     splats = torch.nn.ParameterDict(
         {
             "means": torch.nn.Parameter(torch.from_numpy(points)),
             "scales": torch.nn.Parameter(
                 torch.from_numpy(_initial_scales(points))[:, None].repeat(1, 3)
             ),
-            "quats": torch.nn.Parameter(torch.rand((count, 4))),
-            "opacities": torch.nn.Parameter(torch.logit(torch.full((count,), 0.1))),
+            "quats": torch.nn.Parameter(quats),
+            "opacities": torch.nn.Parameter(
+                torch.logit(torch.full((count,), INITIAL_OPACITY))
+            ),
             "sh0": torch.nn.Parameter(colors[:, :1]),
             "shN": torch.nn.Parameter(colors[:, 1:]),
         }
     ).to(device)
-    learning_rates = {
-        "means": 1.6e-4,
-        "scales": 5e-3,
-        "quats": 1e-3,
-        "opacities": 5e-2,
-        "sh0": 2.5e-3,
-        "shN": 2.5e-3 / 20,
-    }
+    learning_rates = _training_learning_rates(scene_scale)
     optimizers = {
-        name: torch.optim.Adam([{"params": splats[name], "lr": rate, "name": name}], eps=1e-15)
+        name: torch.optim.Adam(
+            [{"params": splats[name], "lr": rate, "name": name}],
+            eps=1e-15,
+            fused=True,
+        )
         for name, rate in learning_rates.items()
     }
     scheduler = torch.optim.lr_scheduler.ExponentialLR(
         optimizers["means"], gamma=0.01 ** (1.0 / training_steps)
     )
-    strategy = DefaultStrategy(refine_stop_iter=training_steps)
+    strategy = BrushDefaultStrategy(
+        **_strategy_options(training_steps, stable_refinement)
+    )
     strategy.check_sanity(splats, optimizers)
-    state = strategy.initialize_state(scene_scale=1.1)
+    state = strategy.initialize_state(scene_scale=scene_scale)
     generator = torch.Generator().manual_seed(42)
+    training_stream = torch.cuda.current_stream(device)
+    transfer_stream = torch.cuda.Stream(device=device)
+
+    def prefetch_rgba(index):
+        with torch.cuda.stream(transfer_stream):
+            return frames[index]["rgba"].to(
+                device=device, dtype=torch.float32, non_blocking=True
+            ).div_(255.0)
+
+    frame_index = int(torch.randint(len(frames), (1,), generator=generator))
+    prefetched_rgba = prefetch_rgba(frame_index)
     log_every = max(1, training_steps // 20)
+    ssim_kernel = None
+    if ssim_alpha_loss:
+        coordinates = torch.arange(11, device=device, dtype=torch.float32) - 5
+        gaussian = torch.exp(-(coordinates.square()) / (2 * 1.5**2))
+        gaussian /= gaussian.sum()
+        ssim_kernel = gaussian
     print(
         f"[VNCCS Gaussian] Training {count} initial splats from "
         f"{len(frames)} frames for {training_steps} steps"
+    )
+    print(
+        "[VNCCS Gaussian] Options: "
+        f"budgeted densification={'on' if budgeted_densification else 'off'}, "
+        f"stable refinement={'on' if stable_refinement else 'off'}, "
+        f"antialiasing={'on' if antialiased_rasterization else 'off'}, "
+        f"SSIM={'on' if ssim_alpha_loss else 'off'}, alpha loss=on, "
+        f"Brush max-gradient refinement=on ({strategy.grow_grad2d:g}, "
+        f"stop={strategy.refine_stop_iter}), Brush opacity lifecycle=on, "
+        "dense rasterization=on, fused Adam=on, frame prefetch=on"
     )
 
     for step in range(training_steps):
         if step % 10 == 0:
             interrupt()
             progress.update_absolute(step)
-        frame = frames[int(torch.randint(len(frames), (1,), generator=generator))]
-        rgba = torch.from_numpy(frame["rgba"]).to(device=device, dtype=torch.float32) / 255.0
+        training_stream.wait_stream(transfer_stream)
+        frame = frames[frame_index]
+        rgba = prefetched_rgba
+        rgba.record_stream(training_stream)
+        if step + 1 < training_steps:
+            next_frame_index = int(torch.randint(len(frames), (1,), generator=generator))
+            next_rgba = prefetch_rgba(next_frame_index)
         target_alpha = rgba[..., 3:4]
         background = torch.rand((1, 1, 1, 3), device=device)
         target = rgba[None, ..., :3] * target_alpha[None] + background * (1.0 - target_alpha[None])
-        view = torch.from_numpy(frame["view"]).to(device)[None]
-        intrinsics = torch.from_numpy(frame["K"]).to(device)[None]
+        view = frame["view"]
+        intrinsics = frame["K"]
         height, width = rgba.shape[:2]
         rendered, alpha, info = rasterization(
             means=splats["means"],
@@ -397,22 +818,28 @@ def _train_gaussians(
             Ks=intrinsics,
             width=width,
             height=height,
-            packed=True,
+            packed=False,
             sh_degree=min(step // 1000, sh_degree),
+            rasterize_mode="antialiased" if antialiased_rasterization else "classic",
         )
         rendered = rendered + background * (1.0 - alpha)
         strategy.step_pre_backward(splats, optimizers, state, step, info)
-        loss = F.l1_loss(rendered, target)
+        loss = _training_loss(
+            rendered,
+            target,
+            alpha,
+            target_alpha[None],
+            ssim_kernel if ssim_alpha_loss else None,
+        )
         loss.backward()
         for optimizer in optimizers.values():
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
         scheduler.step()
 
-        strategy.grow_grad2d = (
-            0.0002 if len(splats["means"]) < max_splats // 2 else math.inf
-        )
-        strategy.step_post_backward(splats, optimizers, state, step, info, packed=True)
+        strategy.step_post_backward(splats, optimizers, state, step, info, packed=False)
+        if step + 1 < training_steps:
+            frame_index, prefetched_rgba = next_frame_index, next_rgba
         completed = step + 1
         if completed == 1 or completed % log_every == 0 or completed == training_steps:
             print(
@@ -422,6 +849,43 @@ def _train_gaussians(
             )
 
     progress.update_absolute(training_steps)
+    opacity_range, scale_range = _splat_ranges(splats)
+    final_reasons = _splat_prune_masks(
+        splats,
+        scene_scale,
+        FINAL_PRUNE_OPACITY,
+        strategy.prune_scale3d,
+    )
+    final_mask = torch.stack(tuple(final_reasons.values())).any(dim=0)
+    final_count = int(final_mask.sum().item())
+    if final_count == len(splats["means"]):
+        finite = ~final_reasons["nonfinite"]
+        if not finite.any():
+            raise RuntimeError("All Gaussian parameters became non-finite")
+        protected = torch.argmax(splats["opacities"].masked_fill(~finite, -torch.inf))
+        for reason in final_reasons.values():
+            reason[protected] = False
+        final_mask[protected] = False
+        final_count = len(splats["means"]) - 1
+    final_counts = {
+        reason: int(mask.sum().item()) for reason, mask in final_reasons.items()
+    }
+    if final_count:
+        remove(
+            params=splats,
+            optimizers=optimizers,
+            state=state,
+            mask=final_mask,
+        )
+    print(
+        f"[VNCCS Gaussian] Final cleanup: removed={final_count} "
+        f"(opacity={final_counts['opacity']}, "
+        f"nonfinite={final_counts['nonfinite']}, "
+        f"scale3d={final_counts['scale3d']}), "
+        f"input_opacity_range=[{opacity_range[0]:.6g}, {opacity_range[1]:.6g}], "
+        f"input_scale_range=[{scale_range[0]:.6g}, {scale_range[1]:.6g}], "
+        f"kept={len(splats['means'])}"
+    )
     with atomic_output_path(output_path) as temporary:
         export_splats(
             means=splats["means"],
@@ -434,6 +898,7 @@ def _train_gaussians(
             save_to=temporary,
         )
     print(f"[VNCCS Gaussian] Saved {len(splats['means'])} splats to {output_path}")
+    return _comfy_splat(splats)
 
 
 class _NullProgress:
@@ -614,11 +1079,39 @@ class VNCCSGaussianTraining:
                         "tooltip": "Spherical harmonics degree. Higher values model more view-dependent color.",
                     },
                 ),
+                "budgeted_densification": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Grow the strongest candidates gradually without exceeding max_splats.",
+                    },
+                ),
+                "stable_refinement": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Use a lower refinement threshold and stop densification halfway through training.",
+                    },
+                ),
+                "antialiased_rasterization": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Use gsplat antialiased rasterization for smoother edges and small details.",
+                    },
+                ),
+                "ssim_alpha_loss": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Add composited PyTorch SSIM. Direct alpha supervision stays enabled.",
+                    },
+                ),
             }
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("gaussian_file",)
+    RETURN_TYPES = ("STRING", "SPLAT")
+    RETURN_NAMES = ("gaussian_file", "splat")
     FUNCTION = "train"
     CATEGORY = "VNCCS/3D"
     OUTPUT_NODE = True
@@ -629,6 +1122,10 @@ class VNCCSGaussianTraining:
         training_steps=DEFAULT_TRAINING_STEPS,
         max_splats=DEFAULT_MAX_SPLATS,
         sh_degree=DEFAULT_SH_DEGREE,
+        budgeted_densification=True,
+        stable_refinement=True,
+        antialiased_rasterization=True,
+        ssim_alpha_loss=True,
     ):
         if not isinstance(scene, (tuple, list)) or len(scene) != 2:
             raise ValueError("scene must come from VNCCS Gaussian Camera Reconstruction")
@@ -636,17 +1133,21 @@ class VNCCSGaussianTraining:
         output_path = _output_path()
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         progress, interrupt = _runtime_helpers(training_steps)
-        _train_gaussians(
+        splat = _train_gaussians(
             reconstruction,
             training_frames,
             output_path,
             training_steps,
             max_splats,
             sh_degree,
+            budgeted_densification,
+            stable_refinement,
+            antialiased_rasterization,
+            ssim_alpha_loss,
             progress,
             interrupt,
         )
-        return (output_path,)
+        return output_path, splat
 
 
 NODE_CLASS_MAPPINGS = {
