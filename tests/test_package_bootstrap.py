@@ -20,6 +20,7 @@ def test_actual_node_loader_registers_workflow_nodes_and_preserved_tools():
         "VNCCS_ClothesGenerator", "VNCCS_EmotionsGenerator", "VNCCSStylePreviewTest",
         "VNCCS_QWEN_Encoder", "VNCCSChromaKey", "VNCCS_MaskExtractor",
         "VNCCS_Flux_Klein_Encoder", "VNCCS_Pipe", "VNCCSSamplerSchedulerPicker",
+        "VNCCS_GaussianCameraReconstruction", "VNCCS_GaussianTraining",
     }
     assert module.NODE_DISPLAY_NAME_MAPPINGS["VNCCSChromaKey"] == "VNCCS Chroma Key"
 
@@ -46,6 +47,7 @@ def test_registered_nodes_match_workflows_and_preserved_tools():
     assert registered == (used - {"VNCCS_PoseStudio", "PreviewImage"}) | {
         "VNCCSStylePreviewTest", "VNCCS_QWEN_Encoder", "VNCCSChromaKey", "VNCCS_MaskExtractor",
         "VNCCS_Flux_Klein_Encoder", "VNCCS_Pipe", "VNCCSSamplerSchedulerPicker",
+        "VNCCS_GaussianCameraReconstruction", "VNCCS_GaussianTraining",
     }
 
 

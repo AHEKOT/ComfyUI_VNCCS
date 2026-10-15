@@ -15,6 +15,9 @@ dependencies = [
     "json_repair",
     "aiohttp",
     "pymatting",
+    "gsplat==1.5.3; sys_platform == 'linux' or sys_platform == 'win32'",
+    "pycolmap-cuda12==4.2.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "pycolmap==4.2.1; sys_platform == 'win32'",
 ]
 
 [project.urls]

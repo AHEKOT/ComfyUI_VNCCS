@@ -42,6 +42,14 @@ Post install steps:
 Launch ComfyUI and open Comfy Manager
 Click "Install missing custom nodes"
 
+## Gaussian Reconstruction
+
+Connect `VNCCS Gaussian Camera Reconstruction` to `VNCCS Gaussian Training`. The camera node accepts an ordered `IMAGE` batch from a solid-color 360-degree character orbit. The training node returns the absolute path to a standard Gaussian PLY file under `ComfyUI/output/VNCCS/Gaussians/`.
+
+The split lets ComfyUI cache background removal and camera reconstruction. Changing training steps, splat limit, or SH degree reruns only Gaussian training while the `IMAGE` input and camera settings stay unchanged. The default is 7,000 steps; 15,000 remains useful for a slower final-quality pass but is not required for a clean generated orbit.
+
+The node requires an NVIDIA CUDA build of PyTorch. PyCOLMAP feature extraction, matching, and mapping use CUDA automatically when the installed PyCOLMAP build supports it; otherwise those stages use the CPU. Linux installs the official CUDA 12 PyCOLMAP wheel, while Windows uses the official CPU wheel.
+
 ## VNCCS 3.2 Workflow
 
 Hi! My name is V-chan, and I am going to show you how to use the new VNCCS!
