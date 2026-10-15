@@ -6,7 +6,7 @@ from pathlib import Path
 
 def main():
     # Import only the stdlib helper, without running node registration during installation.
-    sys.path.insert(0, str(Path(__file__).resolve().parent / "nodes"))
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "nodes" / "helpers"))
     try:
         from gaussian_cuda_runtime import install_nvrtc
     finally:

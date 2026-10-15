@@ -2,8 +2,8 @@
 
 from contextlib import nullcontext
 import ctypes as C
+import inspect
 import math
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -11,7 +11,7 @@ import pytest
 torch = pytest.importorskip("torch")
 import torch.nn.functional as F
 
-import nodes.gaussian_2dgs_cuda as backend
+import nodes.vnccs_gaussians as backend
 
 
 def _inputs(device, width=5, height=3, count=3):
@@ -123,7 +123,11 @@ def test_surface_backward_preserves_tuple_arguments_without_loading_cuda(monkeyp
 
 
 def test_fused_backend_does_not_materialize_feature_images_or_host_hit_lists():
-    source = Path(backend.__file__).read_text()
+    source = backend._SOURCE + "\n".join(inspect.getsource(function) for function in (
+        backend._kernels, backend.prepare_surface_cuda, backend._launch,
+        backend._SurfaceRasterization, backend.rasterize_surface,
+        backend._NormalConsistency, backend.normal_consistency,
+    ))
     for forbidden in ("rasterize_to_indices_in_range", "torch.utils.checkpoint", ".cpu()", ".tolist()", "torch.cuda.synchronize"):
         assert forbidden not in source
     assert "surface_forward" in source and "surface_backward" in source

@@ -1,4 +1,4 @@
-"""Use the NVRTC release belonging to ComfyUI's existing PyTorch CUDA build."""
+"""Stdlib-only NVRTC loader shared by Gaussian nodes and the installation hook."""
 
 import ast
 import ctypes as C

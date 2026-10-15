@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from nodes import gaussian_cuda_runtime as runtime
+from nodes.helpers import gaussian_cuda_runtime as runtime
 
 
 @pytest.mark.parametrize("platform", ["win32", "linux"])
@@ -81,7 +81,7 @@ def test_install_hook_loads_node_helper_without_registering_nodes_or_importing_t
     try:
         assert installer.main() == 0
         helper = sys.modules["gaussian_cuda_runtime"]
-        assert Path(helper.__file__).resolve() == root / "nodes" / "gaussian_cuda_runtime.py"
+        assert Path(helper.__file__).resolve() == root / "nodes" / "helpers" / "gaussian_cuda_runtime.py"
         assert sys.path == original_path
     finally:
         sys.modules.pop("gaussian_cuda_runtime", None)

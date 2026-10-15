@@ -10,7 +10,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import nodes.gaussian_depth as depth
+import nodes.vnccs_gaussians as depth
 
 
 def test_depth_scale_uses_observed_foreground_points_and_ignores_invalid_pixels():

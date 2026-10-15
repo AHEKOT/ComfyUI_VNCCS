@@ -1,7 +1,7 @@
 """Contracts for fused 2DGS rendering; model execution is never required."""
 
 import math
-from pathlib import Path
+import inspect
 import sys
 from types import SimpleNamespace
 
@@ -10,7 +10,7 @@ import pytest
 torch = pytest.importorskip("torch")
 import torch.nn.functional as F
 
-import nodes.gaussian_2dgs as surface
+import nodes.vnccs_gaussians as surface
 
 
 def _splats(dtype=torch.float64):
@@ -62,8 +62,6 @@ def test_camera_plane_singularity_has_finite_zero_geometry():
 
 
 def test_geometry_dispatch_reuses_gsplat_projection_and_tiles_without_feature_images(monkeypatch):
-    import nodes.gaussian_2dgs_cuda as backend
-
     params = _splats(torch.float32)
     calls = []
     maps = torch.randn((1, 8, 6, 6), requires_grad=True)
@@ -93,7 +91,7 @@ def test_geometry_dispatch_reuses_gsplat_projection_and_tiles_without_feature_im
     monkeypatch.setitem(sys.modules, "gsplat.cuda._wrapper", SimpleNamespace(
         fully_fused_projection_2dgs=projection, isect_tiles=tiles,
         isect_offset_encode=lambda *_args: torch.zeros((1, 1, 1), dtype=torch.int32)))
-    monkeypatch.setattr(backend, "rasterize_surface", render)
+    monkeypatch.setattr(surface, "rasterize_surface", render)
     image, alpha, info = surface.render_2dgs(params, view, K, 6, 8, 1, with_geometry=True)
     assert calls == ["projection", "tiles", "render"]
     assert image.shape == (1, 8, 6, 3) and alpha.shape == (1, 8, 6, 1)
@@ -147,7 +145,11 @@ def test_normal_consistency_and_moge_use_exact_median_depth_in_world_coordinates
 
 
 def test_geometry_path_has_no_contributor_enumeration_checkpoint_or_host_transfers():
-    source = Path(surface.__file__).read_text()
+    source = "\n".join(inspect.getsource(function) for function in (
+        surface.compatibility_scales, surface._inverse_depth_planes,
+        surface.render_2dgs, surface._render_surface, surface.geometry_maps,
+        surface.geometry_losses, surface.geometry_schedule, surface.split_2dgs,
+    ))
     for forbidden in ("rasterize_to_indices_in_range", "torch.utils.checkpoint", "_geometry_stripe",
                       "torch.cumsum", "torch.cummax", ".cpu()", ".tolist()"):
         assert forbidden not in source

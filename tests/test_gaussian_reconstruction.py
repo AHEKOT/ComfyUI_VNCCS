@@ -10,8 +10,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import nodes.gaussian_reconstruction as reconstruction
-from nodes.gaussian_reconstruction import (
+import nodes.vnccs_gaussians as reconstruction
+from nodes.vnccs_gaussians import (
     DEFAULT_MAX_SIDE,
     GAUSSIAN_SCENE_TYPE,
     VNCCSGaussianCameraReconstruction,

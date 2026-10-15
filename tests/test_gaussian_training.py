@@ -10,7 +10,7 @@ import pytest
 torch = pytest.importorskip("torch")
 import torch.nn.functional as F
 
-import nodes.gaussian_training as training
+import nodes.vnccs_gaussians as training
 
 
 def test_scene_scale_uses_camera_extent_instead_of_subject_thickness():
@@ -247,9 +247,11 @@ def test_training_stage_keeps_scene_input_and_file_and_splat_outputs():
         "top_180", "source_180", "top_270", "source_270",
     )
     assert training.NODE_CLASS_MAPPINGS == {
+        "VNCCS_GaussianCameraReconstruction": training.VNCCSGaussianCameraReconstruction,
         "VNCCS_GaussianTrainer": training.VNCCSGaussianTrainer,
     }
     assert training.NODE_DISPLAY_NAME_MAPPINGS == {
+        "VNCCS_GaussianCameraReconstruction": "VNCCS Gaussian Camera Reconstruction",
         "VNCCS_GaussianTrainer": "VNCCS Gaussian Trainer",
     }
 
