@@ -1,6 +1,8 @@
+import { mountSakuraDialogMotion } from "./sakura_interactions.mjs";
+
 // Style selection stays in widget_data; the user library lives on the server.
 export function createStylePicker({ host, catalog, getInfo, save, fetchApi, cleanup,
-    getPreviewPayload, imageURL = value => value, listenPreview, showModal }) {
+    getPreviewPayload, imageURL = value => value, listenPreview, showModal, allowNone = () => false }) {
     const make = (tag, className, text) => {
         const element = document.createElement(tag);
         element.className = className;
@@ -10,6 +12,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
     };
     const allStyles = () => catalog.groups.flatMap(group => group.styles.map(style => ({ ...style, group: group.label })));
     const custom = { id: "custom", label: "Custom style", description: "Describe your own visual style", reference: "Your prompt", image: catalog.custom_preview || "" };
+    const noStyle = { id: "none", label: "None", description: "Use the model's native style", reference: "", prompt: "" };
     const root = make("div", "vnccs-creator-field");
     root.append(make("div", "vnccs-creator-label", "Style"));
     const trigger = make("button", "vnccs-style-summary");
@@ -33,6 +36,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
     root.append(trigger, customInput);
     let overlay = null;
     let disposed = false;
+    const motion = { get _removed() { return disposed; } };
     let requestId = 0;
     let contextRevision = 0;
     let inertChildren = [];
@@ -72,11 +76,11 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
     const setValue = (value, persist = false) => {
         const info = getInfo();
         info.style = catalog.aliases?.[value] || value || catalog.default_style || "custom";
-        const style = info.style === "custom" ? custom : selectedStyle();
+        const style = info.style === "none" ? noStyle : info.style === "custom" ? custom : selectedStyle();
         paintPreview(thumbnail, style);
         name.textContent = style?.label || info.style_label || "Unavailable style";
         description.textContent = style?.description || info.style_description || "Saved style; restore its library to edit it";
-        reference.textContent = `Reference: ${style?.reference || info.style_reference || "Not specified"}`;
+        reference.textContent = info.style === "none" ? "No style selected" : `Reference: ${style?.reference || info.style_reference || "Not specified"}`;
         description.title = description.textContent;
         reference.title = reference.textContent;
         customInput.value = info.custom_style || "";
@@ -105,9 +109,12 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         for (const [element, previous] of inertChildren) element.inert = previous;
         inertChildren = [];
         trigger.setAttribute("aria-expanded", "false");
-        if (restoreFocus && !disposed) trigger.focus();
+        if (restoreFocus && !disposed) trigger.focus({ preventScroll: true });
     };
-    cleanup(() => { disposed = true; close(false); });
+    cleanup(() => {
+        disposed = true; close(false);
+        for (const animation of [...(motion._motionAnimations || [])]) animation.cancel();
+    });
     const open = async () => {
         if (overlay || disposed) return;
         if (!batch) progressMessage = "";
@@ -168,8 +175,9 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         inertChildren = [...host.children].map(element => [element, element.inert]);
         for (const [element] of inertChildren) element.inert = true;
         host.append(overlay);
+        mountSakuraDialogMotion(motion, overlay, overlay);
         trigger.setAttribute("aria-expanded", "true");
-        search.focus();
+        search.focus({ preventScroll: true });
         let loadingCatalog = true;
         const previewSlots = new Map();
         updateGallery = (styleId) => {
@@ -188,7 +196,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
             grid.replaceChildren();
             previewSlots.clear();
             const query = search.value.trim().toLowerCase();
-            const styles = [custom, ...allStyles()].filter(style =>
+            const styles = [...(allowNone() ? [noStyle] : []), custom, ...allStyles()].filter(style =>
                 (!filter.value || style.group === filter.value) &&
                 [style.label, style.description, style.reference].join(" ").toLowerCase().includes(query));
             status.textContent = styles.length ? `${styles.length} styles` : "No matching styles";
@@ -323,6 +331,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
                 const token = ++requestId;
                 const payload = Object.fromEntries(Object.entries(fields).map(([key, input]) => [key, input.value]));
                 if (draft.id) payload.id = draft.id;
+                if (draft.revision) payload.revision = draft.revision;
                 const response = await fetchApi("/vnccs/character_styles", {
                     method: "POST", headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" }, body: JSON.stringify(payload),
                 });

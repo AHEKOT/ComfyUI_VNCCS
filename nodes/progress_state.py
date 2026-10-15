@@ -104,6 +104,9 @@ def record_progress(scope, event, run_id=None):
                 "message": str(event.get("message", ""))[:4000],
                 "current": event.get("current"), "total": event.get("total"),
             }
+            for key in ("processing_index", "processing_indices"):
+                if key in event:
+                    state["stages"][stage][key] = deepcopy(event[key])
             # The byte budget covers the whole node, not each stage separately.
             remaining = MAX_IMAGE_CHARS
             for value in reversed(list(state["stages"].values())):

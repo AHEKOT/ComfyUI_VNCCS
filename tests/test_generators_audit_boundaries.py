@@ -11,6 +11,111 @@ import os
 
 import pytest
 from test_proxy_runtime import generator_module
+from test_clothes_audit_paths import clothes_paths
+
+
+@pytest.mark.parametrize("storage", ["metadata", "sprites"])
+def test_costume_existence_check_keeps_legacy_slots_and_rejects_deleted_ones(monkeypatch, tmp_path, storage):
+    import utils
+    monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path))
+    if storage == "metadata":
+        utils.save_costume_info("Alice", "Coat", {"top": "authored coat"})
+    else:
+        directory = Path(utils.character_dir("Alice")) / "Sprites" / "Coat"
+        directory.mkdir(parents=True)
+        (directory / "pose.png").write_bytes(b"legacy sprite")
+    utils.require_existing_costume("Alice", "Coat")
+    utils.delete_costume("Alice", "Coat")
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="no longer exists"):
+        utils.require_existing_costume("Alice", "Coat")
+
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert "Coat" not in utils.list_costumes("Alice")
+
+
+def test_deleted_costume_stops_designer_before_loading_the_pipe(clothes_paths):
+    import utils
+    utils.save_costume_info("Alice", "Coat", {"top": "authored coat"})
+    utils.delete_costume("Alice", "Coat")
+
+    class UnloadedPipe:
+        @property
+        def model(self):
+            pytest.fail("Deleted costumes must fail before loading models")
+
+    with pytest.raises(ValueError, match="no longer exists"):
+        clothes_paths.ClothesDesigner().process(UnloadedPipe(), json.dumps({
+            "character": "Alice", "costume": "Coat", "costume_info": {"top": "old draft"},
+        }))
+    assert not (Path(utils.character_dir("Alice")) / "cache").exists()
+
+
+@pytest.mark.parametrize("regenerate", [False, True])
+def test_deleted_costume_stops_generator_before_cache_or_model_work(generator_module, monkeypatch, tmp_path, regenerate):
+    import utils
+    monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(generator_module, "base_output_dir", lambda: str(tmp_path))
+    utils.save_costume_info("Alice", "Coat", {"top": "authored coat"})
+    sheets = utils.sheets_dir("Alice", "Coat")
+    utils.delete_costume("Alice", "Coat")
+    before = Path(utils.config_path("Alice")).read_bytes()
+    node = generator_module.VNCCS_ClothesGenerator()
+    monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(generator_module, "_remember_generator_context", lambda *args:
+                        pytest.fail("Deleted costumes must fail before cache or model work"))
+    state = {"character_name": "Alice", "costume": "Coat"}
+    if regenerate:
+        state["regenerate_from"] = "pose_generation"
+
+    with pytest.raises(ValueError, match="no longer exists"):
+        node.process(None, None, object(), "old draft", widget_data=json.dumps(state), sheets_path=sheets)
+
+    assert "Coat" not in utils.list_costumes("Alice")
+    assert Path(utils.config_path("Alice")).read_bytes() == before
+    assert not (Path(utils.character_dir("Alice")) / "cache").exists()
+
+
+@pytest.mark.parametrize("generator_type", ["VNCCS_CharacterGenerator", "VNCCS_CharacterCloneGenerator", "VNCCS_ClothesGenerator"])
+@pytest.mark.parametrize("inherit", [False, True])
+@pytest.mark.parametrize("fail", [False, True])
+def test_regenerate_shifts_local_seeds_without_changing_authored_settings_or_pipe(
+    generator_module, monkeypatch, generator_type, inherit, fail,
+):
+    from contextlib import nullcontext
+    generator = generator_module
+    pipe = SimpleNamespace(seed_int=100, seed=101)
+    state = {"character_name": "Alice", "pose_sampler": {"inherit_pipe": inherit, "seed": 42},
+             "remove_clothes_sampler": {"inherit_pipe": inherit, "seed": 43},
+             "upscaler": {"inherit_pipe_seed": inherit, "seed": 44}}
+    original = json.dumps(state, sort_keys=True)
+    monkeypatch.setattr(generator.web, "json_response", lambda data, status=200: SimpleNamespace(data=data, status=status), raising=False)
+    monkeypatch.setattr(generator, "_get_generator_context", lambda *args:
+                        {"pipe": pipe, "cache_dir": "cache", "generator_type": generator_type})
+    monkeypatch.setattr(generator, "_load_run_inputs", lambda *args, **kwargs:
+                        {"widget_payload": json.loads(original), "sheets_path": "cached"})
+    monkeypatch.setattr(generator.random, "randint", lambda *args: 7)
+    monkeypatch.setattr(generator.torch, "inference_mode", nullcontext, raising=False)
+    observed = []
+
+    def process(self, *args, **kwargs):
+        settings = json.loads(kwargs["widget_data"])
+        values = {"seed": pipe.seed_int, "steps": 4, "cfg": 1,
+                  "sampler": "euler", "scheduler": "normal"}
+        observed.extend([self._sampler_settings(values, settings["pose_sampler"])["seed"],
+                         self._sampler_settings(values, settings["remove_clothes_sampler"])["seed"],
+                         self._upscaler_seed(settings["upscaler"], pipe.seed_int)])
+        if fail:
+            raise RuntimeError("sampling failed")
+
+    monkeypatch.setattr(getattr(generator, generator_type), "process", process)
+    response = generator._regenerate_response({"unique_id": "audit", "stage": "pose_generation", "widget_data": state})
+
+    assert response.status == (500 if fail else 200)
+    assert observed == ([107, 107, 107] if inherit else [49, 50, 51])
+    assert json.dumps(state, sort_keys=True) == original
+    assert (pipe.seed_int, pipe.seed) == (100, 101)
 
 
 @pytest.fixture
@@ -19,8 +124,10 @@ def emotion_module(generator_module, monkeypatch):
     creator = types.ModuleType(package + ".character_creator_v2")
     creator.ANIMA_DEFAULTS = {}
     creator.ILLUSTRIOUS_DEFAULTS = {}
-    for name in ("load_generation_assets", "load_anima_assets", "normalize_gen_settings", "get_lora_full_path"):
+    for name in ("load_generation_assets", "load_anima_assets", "get_lora_full_path", "apply_generation_lora"):
         setattr(creator, name, lambda *args: pytest.fail("No model preparation may begin"))
+    creator.normalize_gen_settings = lambda settings: settings
+    creator._generation_file_signatures = lambda settings: {}
     monkeypatch.setitem(sys.modules, creator.__name__, creator)
     monkeypatch.setattr(sys.modules[package + ".vnccs_control_center"], "is_qi2_turbo_model", lambda *args: False, raising=False)
     path = Path(__file__).parents[1] / "nodes" / "emotion_generator_v2.py"
@@ -29,6 +136,41 @@ def emotion_module(generator_module, monkeypatch):
     monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
     return module
+
+
+def test_emotion_sprite_preview_keeps_http_loop_responsive(emotion_module, monkeypatch):
+    import threading
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def load(character, costume, **kwargs):
+        calls.append((character, costume, kwargs))
+        started.set()
+        assert release.wait(2), "Image loading must not block the HTTP loop"
+        return []
+
+    monkeypatch.setattr(emotion_module, "load_costume_sprite_images", load)
+    monkeypatch.setattr(emotion_module.web, "Response", lambda **kwargs: SimpleNamespace(**kwargs), raising=False)
+
+    async def run():
+        request = SimpleNamespace(rel_url=SimpleNamespace(query={"character": "Alice", "costume": "Coat"}))
+        job = asyncio.create_task(emotion_module.get_character_sheet_preview(request))
+        try:
+            for _ in range(100):
+                if started.is_set():
+                    break
+                await asyncio.sleep(.002)
+            assert started.is_set()
+            assert not job.done()
+            release.set()
+            assert (await asyncio.wait_for(job, 2)).status == 404
+        finally:
+            release.set()
+            await job
+
+    asyncio.run(run())
+    assert calls == [("Alice", "Coat", {"first_only": True}),
+                     ("Alice", "Original", {"first_only": True})]
 
 
 @pytest.mark.parametrize("settings", ['[]', 'null', '{broken',
@@ -197,6 +339,118 @@ def test_damaged_emotion_catalog_blocks_tasks_and_recovers_without_losing_data(
     assert path.read_bytes() == original
 
 
+def test_long_custom_emotion_names_save_with_valid_unique_generation_identifiers(
+    emotion_module, monkeypatch, tmp_path,
+):
+    defaults = tmp_path / "emotions.json"
+    defaults.write_text("{}")
+    monkeypatch.setattr(emotion_module, "emotions_config_path", lambda: str(defaults))
+    monkeypatch.setattr(emotion_module.web, "json_response", lambda data, status=200:
+                        SimpleNamespace(data=data, status=status), raising=False)
+    async def body():
+        return {"name": "a" * 121, "description": "soft smile"}
+    request = SimpleNamespace(json=body, headers={"X-VNCCS-CSRF": "1"})
+    names = []
+    for _ in range(2):
+        response = asyncio.run(emotion_module.add_custom_emotion(request))
+        assert response.status == 200
+        name = response.data["emotion"]["safe_name"]
+        assert emotion_module.ensure_safe_name(name, "emotion") == name
+        assert len(name) == 120
+        assert response.data["emotion"]["key"] == "a" * 121
+        names.append(name)
+    assert names[0] != names[1] and names[1].endswith("-2")
+    assert set(emotion_module.EmotionGeneratorV2().SAFE_NAME_MAP) == set(names)
+    assert defaults.read_text() == "{}"
+
+
+def test_custom_emotion_write_and_catalog_read_leave_http_loop_responsive(
+    emotion_module, monkeypatch, tmp_path,
+):
+    import threading
+    defaults = tmp_path / "emotions.json"
+    defaults.write_text("{}")
+    monkeypatch.setattr(emotion_module, "emotions_config_path", lambda: str(defaults))
+    monkeypatch.setattr(emotion_module.web, "json_response", lambda data, status=200:
+                        SimpleNamespace(data=data, status=status), raising=False)
+    started, release = threading.Event(), threading.Event()
+    def encode(*args):
+        started.set()
+        assert release.wait(2)
+    monkeypatch.setattr(emotion_module, "save_custom_emotion_image", encode)
+    async def body():
+        return {"name": "Happy"}
+    async def run():
+        save = asyncio.create_task(emotion_module.add_custom_emotion(
+            SimpleNamespace(json=body, headers={"X-VNCCS-CSRF": "1"})))
+        try:
+            for _ in range(100):
+                await asyncio.sleep(.002)
+                if started.is_set():
+                    break
+            assert started.is_set() and not save.done()
+            read = asyncio.create_task(emotion_module.get_emotions_config(None))
+            await asyncio.sleep(.01)
+            assert not read.done(), "Catalog read must wait for publication without blocking HTTP"
+        finally:
+            release.set()
+        assert (await save).status == 200
+        assert (await read).data["Custom"][0]["safe_name"] == "happy"
+    asyncio.run(run())
+
+
+def test_custom_emotion_pixel_limit_preserves_library_and_rejects_before_conversion(
+    emotion_module, monkeypatch, tmp_path,
+):
+    import base64
+    import io
+    from PIL import Image
+    defaults = tmp_path / "emotions.json"
+    defaults.write_text("{}")
+    users = tmp_path / "user" / "emotions.json"
+    users.parent.mkdir()
+    users.write_text('{"Custom": []}')
+    original = users.read_bytes()
+    monkeypatch.setattr(emotion_module, "emotions_config_path", lambda: str(defaults))
+    monkeypatch.setattr(emotion_module, "MAX_CUSTOM_EMOTION_PIXELS", 256)
+    monkeypatch.setattr(emotion_module.ImageOps, "exif_transpose", lambda *args:
+                        pytest.fail("Oversized images must fail before decoding or converting pixels"))
+    monkeypatch.setattr(emotion_module.web, "json_response", lambda data, status=200:
+                        SimpleNamespace(data=data, status=status), raising=False)
+    encoded = io.BytesIO()
+    Image.new("RGB", (17, 16), "red").save(encoded, format="PNG")
+    async def body():
+        return {"name": "Large", "image_data": "data:image/png;base64," + base64.b64encode(encoded.getvalue()).decode()}
+    response = asyncio.run(emotion_module.add_custom_emotion(
+        SimpleNamespace(json=body, headers={"X-VNCCS-CSRF": "1"})))
+    assert response.status == 400 and "pixels" in response.data["error"]
+    assert users.read_bytes() == original
+    assert not list(tmp_path.rglob("*.webp"))
+
+
+def test_emotion_cache_pruning_preserves_active_inputs_unrelated_files_and_links(
+    generator_module, monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(generator_module.folder_paths, "get_output_directory", lambda: str(tmp_path))
+    cache = tmp_path / "VNCCS" / "Characters" / "Alice" / "cache" / "poses" / "audit"
+    stage = cache / "_stage_cache"
+    stage.mkdir(parents=True)
+    kept = ["emotion_0001__item_0001.pt", "emotion_0001_detailer_mask__item_0001.pt",
+            "input_images_latest.pt", "inputs.json", "manual.pt"]
+    removed = ["emotion_0001__item_0002.pt", "emotion_0001_detailer_mask__item_0002.pt",
+               "emotion_0002__item_0001.pt", "emotion_0002_detailer_mask__item_0001.pt"]
+    for name in kept + removed:
+        (stage / name).write_bytes(name.encode())
+    outside = tmp_path / "kept.pt"
+    outside.write_bytes(b"outside cache")
+    link = stage / "emotion_9999__item_0001.pt"
+    link.symlink_to(outside)
+    generator_module.VNCCS_EmotionsGenerator()._prune_emotion_cache(str(cache), {"emotion_0001": 1})
+    assert all((stage / name).read_bytes() == name.encode() for name in kept)
+    assert all(not (stage / name).exists() for name in removed)
+    assert link.is_symlink() and outside.read_bytes() == b"outside cache"
+
+
 def test_custom_emotion_added_during_catalog_read_is_available_on_the_next_request(
     emotion_module, monkeypatch, tmp_path,
 ):
@@ -314,6 +568,116 @@ def test_legacy_nested_random_emotion_profiles_are_not_reused_by_node_cache(emot
     first = emotion_module.EmotionGeneratorV2.IS_CHANGED(**arguments)
     second = emotion_module.EmotionGeneratorV2.IS_CHANGED(**arguments)
     assert first != second
+
+
+def test_seedvr_uses_installed_models_from_extra_paths(generator_module, monkeypatch, tmp_path):
+    import folder_paths
+    from nodes import vnccs_control_center as cc
+    external = tmp_path / "external"
+    for folder, name in (("diffusion_models", generator_module.SEEDVR_MODEL_FILES[0]),
+                         ("vae", generator_module.SEEDVR_VAE_FILES[0])):
+        path = external / folder / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"installed weights")
+    monkeypatch.setattr(folder_paths, "models_dir", str(tmp_path / "default"))
+    monkeypatch.setattr(folder_paths, "get_folder_paths", lambda category: [str(external / category)])
+    monkeypatch.setattr(folder_paths, "get_full_path", lambda *args: None)
+    monkeypatch.setattr(generator_module, "_find_model_on_disk", cc._find_model_on_disk)
+    monkeypatch.setattr(generator_module, "_download_seedvr_file", lambda *args: pytest.fail("Installed VAE must not download"))
+    catalog = generator_module._seedvr_catalog()
+    assert catalog["models"][0]["status"] == catalog["vae"][0]["status"] == "installed"
+    name = generator_module.SEEDVR_VAE_FILES[0]
+    assert generator_module._ensure_seedvr_vae_model(name) == str(external / "vae" / name)
+
+
+def test_emotion_shape_lookup_decodes_each_source_only_once(generator_module, monkeypatch, tmp_path):
+    from PIL import Image, PngImagePlugin
+    path = tmp_path / "pose.png"
+    Image.new("RGBA", (10, 20)).save(path)
+    monkeypatch.setattr(generator_module, "_safe_existing_character_image_path", lambda *args: str(path))
+    node = generator_module.VNCCS_EmotionsGenerator()
+    decoded = []
+    load = PngImagePlugin.PngImageFile.load
+    def observed_load(image, *args, **kwargs):
+        if image.tile:
+            decoded.append(image.filename)
+        return load(image, *args, **kwargs)
+    monkeypatch.setattr(PngImagePlugin.PngImageFile, "load", observed_load)
+    monkeypatch.setattr(node, "_emotion_batch_plan", lambda *args: (_ for _ in ()).throw(RuntimeError("shape lookup complete")))
+    tasks = [{"character": "Alice", "source_path": str(path), "emotion_prompt": str(index)} for index in range(20)]
+    with pytest.raises(RuntimeError, match="shape lookup complete"):
+        node.process(None, SimpleNamespace(model_kind="qi2"), tasks,
+                     widget_data='{"character_name":"Alice"}', unique_id="shape-audit")
+    assert decoded == [str(path)]
+
+
+@pytest.mark.parametrize("mode", ["Illustrious", "Anima", "QI2"])
+def test_emotion_workflow_cache_tracks_selected_asset_files(emotion_module, monkeypatch, tmp_path, mode):
+    weights = tmp_path / "selected-model"
+    weights.write_bytes(b"first weights")
+    observed = []
+    def signatures(settings):
+        observed.append(settings)
+        return {"file": [weights.stat().st_size, weights.stat().st_mtime_ns]}
+    monkeypatch.setattr(emotion_module, "_generation_file_signatures", signatures)
+    arguments = {"character": "Alice", "generation_model": mode,
+                 "generation_settings": '{"seed_mode":"fixed"}'}
+    before = emotion_module.EmotionGeneratorV2.IS_CHANGED(**arguments)
+    assert emotion_module.EmotionGeneratorV2.IS_CHANGED(**arguments) == before
+    weights.write_bytes(b"replacement weights")
+    assert emotion_module.EmotionGeneratorV2.IS_CHANGED(**arguments) != before
+    assert all(settings["generation_mode"] == mode.lower() for settings in observed)
+
+
+def test_emotion_model_preparation_waits_for_preview_inference(emotion_module, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from nodes.runtime_cleanup import inference_lock
+    entered = threading.Event()
+    def model_boundary(*args):
+        entered.set()
+        raise RuntimeError("model boundary reached")
+    monkeypatch.setattr(emotion_module, "load_generation_assets", model_boundary)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with inference_lock:
+            future = executor.submit(emotion_module.build_emotion_pipe, "Anima", "{}")
+            assert not entered.wait(0.1)
+        with pytest.raises(RuntimeError, match="model boundary reached"):
+            future.result(timeout=2)
+    assert entered.is_set()
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_seedvr_download_publishes_valid_weights_to_the_configured_folder(
+    generator_module, monkeypatch, tmp_path, valid,
+):
+    import folder_paths
+    import huggingface_hub
+    installed = tmp_path / "external" / "diffusion_models"
+    monkeypatch.setattr(folder_paths, "get_folder_paths", lambda category: [str(installed)])
+    name = generator_module.SEEDVR_MODEL_FILES[0]
+    target = installed / name
+    target.parent.mkdir(parents=True)
+    original = b"original installed model"
+    target.write_bytes(original)
+    cache = tmp_path / "download.safetensors"
+    header = json.dumps({"weight": {"dtype": "U8", "shape": [1024], "data_offsets": [0, 1024]}}).encode()
+    contents = len(header).to_bytes(8, "little") + header + b"\0" * 1024
+    cache.write_bytes(contents if valid else b"invalid downloaded model")
+    def download(**options):
+        assert options["token"] is False
+        assert options["revision"] == generator_module.SEEDVR_HF_REVISION
+        assert options["filename"] == f"diffusion_models/{name}"
+        return str(cache)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+    if valid:
+        assert generator_module._download_seedvr_file("models", name) == str(target)
+        assert target.read_bytes() == contents
+    else:
+        with pytest.raises(ValueError):
+            generator_module._download_seedvr_file("models", name)
+        assert target.read_bytes() == original
+    assert list(installed.iterdir()) == [target]
 
 
 @pytest.mark.parametrize("route", ["vnccs_character_generator_seedvr_download", "vnccs_character_generator_regenerate"])

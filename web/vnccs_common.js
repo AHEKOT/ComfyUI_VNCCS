@@ -4,6 +4,7 @@
  */
 import { vnccsApi as api, mediaURL, storage, serverRegistry } from "./vnccs_transport.js";
 import { app } from "../../scripts/app.js";
+import { mountSakuraDialogMotion } from "./sakura_interactions.mjs";
 
 // ── Shared Input Normalization ───────────────────────────────────────────────
 export const SAKURA_THEME_CSS = `
@@ -86,6 +87,195 @@ export function normalizeAgeValue(value) {
     const parsed = parseFloat(value);
     if (!Number.isFinite(parsed)) return 18;
     return Math.max(1, Math.min(100, parsed));
+}
+
+function copyWizardSnapshotValues(source, clone) {
+    const sourceControls = [];
+    const cloneControls = [];
+    if (source?.matches?.("input, textarea, select")) sourceControls.push(source);
+    if (clone?.matches?.("input, textarea, select")) cloneControls.push(clone);
+    sourceControls.push(...(source?.querySelectorAll?.("input, textarea, select") || []));
+    cloneControls.push(...(clone?.querySelectorAll?.("input, textarea, select") || []));
+    sourceControls.forEach((control, index) => {
+        const snapshot = cloneControls[index];
+        if (!snapshot) return;
+        snapshot.value = control.value;
+        if (snapshot.tagName === "TEXTAREA") snapshot.textContent = control.value;
+        if ("checked" in control) snapshot.checked = control.checked;
+        if (control.tagName === "SELECT") {
+            [...snapshot.options].forEach((option, optionIndex) => {
+                option.selected = optionIndex === control.selectedIndex;
+            });
+        }
+    });
+}
+
+function wizardSnapshotBackground(element) {
+    for (let current = element; current; current = current.parentElement) {
+        const value = globalThis.getComputedStyle?.(current)?.backgroundColor;
+        if (!value || value === "transparent") continue;
+        const rgba = value.match(/^rgba\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)$/i);
+        if (rgba) {
+            const alpha = Number(rgba[4]);
+            if (alpha <= 0) continue;
+            if (alpha >= 0.98) return value;
+            // Wizard columns sit on the shared #0a0a0f canvas. Flatten their
+            // translucent fill so the new value cannot ghost through the old one.
+            const base = [10, 10, 15];
+            const rgb = [1, 2, 3].map((part, index) =>
+                Math.round(Number(rgba[part]) * alpha + base[index] * (1 - alpha)));
+            return `rgb(${rgb.join(", ")})`;
+        }
+        return value;
+    }
+    return "#14101e";
+}
+
+function wizardRevealTarget(field) {
+    const explicit = field?._vnccsWizardRevealTarget;
+    if (explicit && explicit.hidden !== true) return explicit;
+    if (field?.matches?.("textarea, input[type='text'], input:not([type])")) return field;
+    return field?.querySelector?.([
+        "[data-vnccs-wizard-reveal-target]",
+        ".vnccs-creator-trait-values:not([hidden])",
+        ".vnccs-cloner-trait-values:not([hidden])",
+        ".vnccs-clothes-textarea",
+        ".vnccs-clothes-input",
+        "textarea:not([hidden])",
+        "input[type='text']:not([hidden])",
+        "input:not([type]):not([hidden])",
+    ].join(",")) || null;
+}
+
+function positionWizardReveal(entry) {
+    const { field, target, layer } = entry;
+    const fieldRect = field.getBoundingClientRect?.();
+    const targetRect = target.getBoundingClientRect?.();
+    if (!fieldRect || !targetRect) return;
+    const width = Math.max(1, targetRect.width || target.offsetWidth || 1);
+    const height = Math.max(1, targetRect.height || target.offsetHeight || 1);
+    layer.style.left = `${targetRect.left - fieldRect.left - (field.clientLeft || 0)}px`;
+    layer.style.top = `${targetRect.top - fieldRect.top - (field.clientTop || 0)}px`;
+    layer.style.width = `${width}px`;
+    layer.style.height = `${height}px`;
+    layer.style.borderRadius = globalThis.getComputedStyle?.(target)?.borderRadius || "8px";
+}
+
+// Reveals wizard-populated controls behind their previous values, one row at a time.
+// `apply` is deliberately synchronous so persistence tests and widget serialization
+// observe the result immediately; only the visual handoff is deferred.
+export function animateWizardRows(rows, apply, options = {}) {
+    const fields = [...new Set((rows || []).filter(field => field && wizardRevealTarget(field)))];
+    const runToken = {};
+    const reduced = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    const canAnimate = fields.length && !reduced && fields.every(field =>
+        typeof field.cloneNode === "function" && typeof field.appendChild === "function");
+    if (!canAnimate) {
+        apply();
+        return Promise.resolve();
+    }
+
+    const snapshots = fields.map(field => {
+        field.querySelectorAll?.(".vnccs-common-wizard-reveal")?.forEach(layer => layer.remove());
+        const baseStyle = field._vnccsWizardRevealBaseStyle || {
+            position: field.style.position,
+            isolation: field.style.isolation,
+        };
+        field._vnccsWizardRevealBaseStyle = baseStyle;
+        field._vnccsWizardRevealRun = runToken;
+        if (globalThis.getComputedStyle?.(field)?.position === "static") field.style.position = "relative";
+        field.style.isolation = "isolate";
+
+        const target = wizardRevealTarget(field);
+        const clone = target.cloneNode(true);
+        copyWizardSnapshotValues(target, clone);
+        clone.querySelectorAll?.("[id]")?.forEach(element => element.removeAttribute("id"));
+        clone.removeAttribute?.("id");
+        clone.classList?.add("vnccs-common-wizard-reveal-snapshot");
+
+        const layer = document.createElement("div");
+        layer.className = "vnccs-common-wizard-reveal";
+        if (options.accent) layer.style.setProperty("--vnccs-common-ui-accent", options.accent);
+        layer.setAttribute("aria-hidden", "true");
+        const old = document.createElement("div");
+        old.className = "vnccs-common-wizard-reveal-old";
+        old.style.background = wizardSnapshotBackground(target);
+        old.appendChild(clone);
+        const scan = document.createElement("span");
+        scan.className = "vnccs-common-wizard-reveal-scan";
+        layer.append(old, scan);
+        field.appendChild(layer);
+
+        const entry = { field, target, layer, old, scan, baseStyle };
+        positionWizardReveal(entry);
+        return entry;
+    });
+    try {
+        apply();
+        // Updating the value can resize a textarea or rebuild a tag list. Re-measure
+        // before paint so the old snapshot still covers the exact live control.
+        snapshots.forEach(positionWizardReveal);
+    } catch (error) {
+        snapshots.forEach(({ field, layer, baseStyle }) => {
+            layer.remove();
+            field.style.position = baseStyle.position;
+            field.style.isolation = baseStyle.isolation;
+            delete field._vnccsWizardRevealRun;
+            delete field._vnccsWizardRevealBaseStyle;
+        });
+        throw error;
+    }
+
+    const duration = Math.max(120, Number(options.duration) || 240);
+    const gap = Math.max(0, Number(options.gap) || 30);
+    const delay = Math.max(0, Number(options.delay) || 90);
+    const easing = "cubic-bezier(0.4, 0, 0.2, 1)";
+    const schedule = globalThis.setTimeout || (callback => callback());
+
+    return new Promise(resolve => {
+        let remaining = snapshots.length;
+        const finish = () => { if (--remaining === 0) resolve(); };
+        snapshots.forEach((entry, index) => {
+            const { field, layer, old, scan, baseStyle } = entry;
+            const start = delay + index * (duration + gap);
+            schedule(() => {
+                if (field._vnccsWizardRevealRun !== runToken) {
+                    finish();
+                    return;
+                }
+                if (!field.isConnected || typeof field.animate !== "function") {
+                    layer.remove();
+                    field.style.position = baseStyle.position;
+                    field.style.isolation = baseStyle.isolation;
+                    delete field._vnccsWizardRevealRun;
+                    delete field._vnccsWizardRevealBaseStyle;
+                    finish();
+                    return;
+                }
+                positionWizardReveal(entry);
+                layer.classList.add("is-active");
+                const width = Math.max(1, layer.getBoundingClientRect?.().width || layer.offsetWidth || 1);
+                const oldAnimation = old.animate([
+                    { clipPath: "inset(0 0 0 0)" },
+                    { clipPath: "inset(0 0 0 100%)" },
+                ], { duration, easing, fill: "forwards" });
+                const scanAnimation = scan.animate([
+                    { opacity: 1, transform: "translate3d(0, -50%, 0)" },
+                    { opacity: 1, transform: `translate3d(${width}px, -50%, 0)` },
+                ], { duration, easing, fill: "forwards" });
+                Promise.allSettled([oldAnimation.finished, scanAnimation.finished]).finally(() => {
+                    layer.remove();
+                    if (field._vnccsWizardRevealRun === runToken) {
+                        field.style.position = baseStyle.position;
+                        field.style.isolation = baseStyle.isolation;
+                        delete field._vnccsWizardRevealRun;
+                        delete field._vnccsWizardRevealBaseStyle;
+                    }
+                    finish();
+                });
+            }, start);
+        });
+    });
 }
 
 export function installResolvedSeedTransport(app, nodeTypes, inputName = "widget_data") {
@@ -307,7 +497,7 @@ export function createQwenVLModelLoader(node, showModal, createProgressModal, vi
     };
 }
 
-export function createTraitInput({ prefix, label: lbl, key, target: targetObj, save, choose }) {
+export function createTraitInput({ prefix, label: lbl, key, target: targetObj, save, choose, removable = false, motion }) {
     const wrap = document.createElement("div");
     wrap.className = `${prefix}-trait-row`;
     const label = document.createElement("span");
@@ -315,8 +505,9 @@ export function createTraitInput({ prefix, label: lbl, key, target: targetObj, s
     label.textContent = lbl;
     const editor = document.createElement("div");
     editor.className = `${prefix}-trait-editor`;
-    const values = document.createElement("button");
-    values.type = "button";
+    const values = document.createElement(removable ? "div" : "button");
+    if (removable) { values.setAttribute("role", "group"); values.tabIndex = -1; }
+    else values.type = "button";
     values.className = `${prefix}-trait-values`;
     const inp = document.createElement("input");
     inp.type = "text";
@@ -324,14 +515,58 @@ export function createTraitInput({ prefix, label: lbl, key, target: targetObj, s
     inp.setAttribute("aria-label", lbl);
     inp.placeholder = "Add tags";
     inp.hidden = true;
-    const renderTags = () => {
-        values.replaceChildren();
-        const tokens = inp.value.split(",").map(token => token.trim()).filter(Boolean);
-        for (const token of tokens.length ? tokens : ["Add tags"]) {
-            const chip = document.createElement("span");
-            chip.className = tokens.length ? `${prefix}-trait-token` : `${prefix}-trait-empty`;
-            chip.textContent = token;
-            values.appendChild(chip);
+    let chips = [];
+    const renderTags = (animate = false) => {
+        const previous = [...chips];
+        const entering = [];
+        const tokens = inp.value.split(",").map((text, index) => ({ text: text.trim(), index })).filter(token => token.text);
+        chips = tokens.map(({ text, index }, position) => {
+            const existing = previous.findIndex(chip => chip.tag === text);
+            const chip = existing >= 0 ? previous.splice(existing, 1)[0] : document.createElement("span");
+            if (existing < 0) entering.push(chip);
+            chip.tag = text;
+            chip.className = `${prefix}-trait-token`;
+            if (!removable) chip.textContent = text;
+            else {
+                chip.setAttribute("data-tag", text);
+                if (!chip.children.length) {
+                    const textLabel = document.createElement("span");
+                    textLabel.className = `${prefix}-trait-text`; textLabel.textContent = text;
+                    textLabel.setAttribute("aria-hidden", "true");
+                    const edit = document.createElement("button");
+                    edit.type = "button"; edit.className = `${prefix}-trait-edit`;
+                    edit.setAttribute("aria-label", `Edit ${lbl.toLowerCase()} tag: ${text}`);
+                    edit.onclick = event => { event.stopPropagation(); inp.startEditing(); };
+                    const remove = document.createElement("button");
+                    remove.type = "button"; remove.className = `${prefix}-trait-remove`;
+                    remove.innerHTML = '<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="m3 3 6 6m0-6-6 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+                    remove.setAttribute("aria-label", `Remove ${lbl.toLowerCase()} tag: ${text}`);
+                    remove.title = `Remove ${text}`;
+                    chip.append(edit, remove, textLabel);
+                }
+                chip.children[1].onclick = event => {
+                    event.stopPropagation();
+                    const parts = inp.value.split(",");
+                    parts.splice(index, 1);
+                    inp.value = parts.some(part => part.trim()) ? parts.join(",") : "";
+                    targetObj[key] = inp.value;
+                    save();
+                    renderTags();
+                    (chips[Math.min(position, chips.length - 1)]?.children[1] || add).focus({ preventScroll: true });
+                };
+            }
+            return chip;
+        });
+        values.replaceChildren(...chips);
+        if (!tokens.length) {
+            const empty = document.createElement(removable ? "button" : "span");
+            empty.className = `${prefix}-trait-empty`;
+            empty.textContent = "Add tags";
+            if (removable) { empty.type = "button"; empty.onclick = () => inp.startEditing(); }
+            values.appendChild(empty);
+        }
+        if (animate && !values.hidden) for (const chip of entering) {
+            motion?.(chip, [{ opacity: 0, transform: "translateY(6px) scale(0.96)" }, { opacity: 1, transform: "none" }], 240);
         }
         values.setAttribute("aria-label", `Edit ${lbl.toLowerCase()} tags: ${inp.value || "Add tags"}`);
     };
@@ -342,7 +577,7 @@ export function createTraitInput({ prefix, label: lbl, key, target: targetObj, s
     inp.setValue(targetObj[key]);
     inp.oninput = (e) => {
         targetObj[key] = e.target.value;
-        renderTags();
+        renderTags(true);
         save();
     };
     inp.startEditing = () => {
@@ -371,7 +606,7 @@ export function createTraitInput({ prefix, label: lbl, key, target: targetObj, s
     add.onclick = () => choose(inp);
     editor.append(values, inp);
     wrap.append(label, editor, add);
-    return { element: wrap, input: inp };
+    return { element: wrap, input: inp, display: values };
 }
 
 // ── Debounce ──────────────────────────────────────────────────────────────────
@@ -460,6 +695,7 @@ export function createSpritePreviewNavigator({
     onLoaded,
     onMissing,
     onError,
+    interactions,
 } = {}) {
     const state = {
         character: "",
@@ -503,17 +739,22 @@ export function createSpritePreviewNavigator({
     };
 
     const applyImage = (url) => {
-        if (image) {
+        if (image && interactions) {
+            interactions.presentPreview(image, placeholder, url, state.character);
+        } else if (image) {
             image.src = url;
             image.style.display = "block";
         }
-        if (placeholder) placeholder.style.display = "none";
+        if (placeholder && !interactions) placeholder.style.display = "none";
         onLoaded?.(url, { ...state });
     };
 
     const applyMissing = () => {
-        if (image) image.style.display = "none";
-        if (placeholder) placeholder.style.display = "flex";
+        if (image && interactions) interactions.emptyPreview(image, placeholder, state.character, "No preview available");
+        else {
+            if (image) image.style.display = "none";
+            if (placeholder) placeholder.style.display = "flex";
+        }
         hideNav();
         onMissing?.({ ...state });
     };
@@ -583,6 +824,9 @@ export function createSpritePreviewNavigator({
 
     const load = async (character, { costume = "", random = true, index = 0, fallbackUrl = "" } = {}) => {
         if (disposed) return;
+        if (interactions && (character !== state.character || costume !== state.costume)) {
+            interactions.prepareCharacter(image, placeholder, character);
+        }
         state.character = character || "";
         state.costume = costume || "";
         state.fallbackUrl = mediaURL(fallbackUrl || "");
@@ -1097,6 +1341,7 @@ export function showModal(container, title, contentFunc, buttons) {
     injectStyles(COMMON_CSS, "vnccs-common");
     const parentModal = _modalStack.at(-1);
     const openers = [document.activeElement, ...(_modalOpeners.get(parentModal) || [])];
+    const motion = {};
 
     const overlay = document.createElement("div");
     overlay.className = "vnccs-common-modal-overlay";
@@ -1170,6 +1415,7 @@ export function showModal(container, title, contentFunc, buttons) {
         if (index >= 0) _modalStack.splice(index, 1);
         document.removeEventListener("focusin", containFocus, true);
         observer?.disconnect();
+        for (const animation of [...(motion._motionAnimations || [])]) animation.cancel();
         if (wasTop) openers.find(element => element?.isConnected)?.focus({ preventScroll: true });
     };
     overlay.remove = function () {
@@ -1208,6 +1454,7 @@ export function showModal(container, title, contentFunc, buttons) {
 
     overlay.appendChild(m);
     container.appendChild(overlay);
+    mountSakuraDialogMotion(motion, overlay, m);
     _modalStack.push(m);
     document.addEventListener("focusin", containFocus, true);
     if (typeof MutationObserver !== "undefined") {
@@ -1254,6 +1501,7 @@ export function showMessage(container, text, isError = false) {
 
     overlay.appendChild(box);
     container.appendChild(overlay);
+    mountSakuraDialogMotion({}, overlay, box);
     return overlay;
 }
 
@@ -1279,3 +1527,167 @@ export function createLoadingOverlay(container, message = "Generating preview") 
 export function generateRandomSeed() {
     return Math.floor(Math.random() * 10000000000000);
 }
+
+
+export const SAKURA_INTERACTION_CSS = `
+.vnccs-common-ui-host { --vnccs-common-ui-accent: var(--accent, #ff8fa3); }
+.vnccs-common-ui-host select[hidden] { display: none !important; }
+.vnccs-common-ui-host .vnccs-common-ui-select-trigger { min-width: 0; }
+.vnccs-common-ui-host .vnccs-common-ui-segmented {
+    position: relative; display: grid; grid-template-columns: repeat(var(--segments, 2), minmax(0, 1fr));
+    gap: 4px; padding: 4px; min-height: var(--setup-control-height, 48px); box-sizing: border-box;
+    border: 1px solid var(--border); border-radius: var(--radius-md, 12px);
+    background: rgba(0,0,0,0.18);
+}
+.vnccs-common-ui-segmented::before {
+    content: ""; position: absolute; top: 4px; bottom: 4px; left: 4px;
+    width: calc((100% - 8px - (var(--segments, 2) - 1) * 4px) / var(--segments, 2)); border-radius: var(--radius-md, 12px);
+    background: linear-gradient(180deg, #ff9bad 0%, #ff87a0 100%); box-shadow: 0 10px 22px rgba(255,143,163,0.22);
+    transform: translateX(calc(var(--segment-index, 0) * (100% + 4px))); pointer-events: none;
+    transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.vnccs-common-ui-host .vnccs-common-ui-segmented > .vnccs-common-ui-segment {
+    position: relative; z-index: 1; min-width: 0; min-height: 0; height: 100%;
+    border: 0; background: transparent; box-shadow: none;
+    transition: color 180ms ease; transform: none;
+}
+.vnccs-common-ui-host .vnccs-common-ui-segmented > .vnccs-common-ui-segment[aria-pressed="true"] { color: #20141a; }
+.vnccs-common-ui-preview-aura {
+    position: absolute; inset: 0; opacity: 0; pointer-events: none;
+    background: radial-gradient(ellipse at center, rgba(255,143,163,0.35), rgba(184,169,232,0.15) 45%, transparent 75%);
+}
+.vnccs-common-ui-preview-host.is-male-character .vnccs-common-ui-preview-aura {
+    background: radial-gradient(ellipse at center, rgba(99,199,255,0.38), rgba(91,159,224,0.16) 45%, transparent 75%);
+}
+.vnccs-common-ui-select-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    cursor: pointer;
+    text-align: left;
+    text-transform: none;
+    letter-spacing: normal;
+    background-image: none !important;
+}
+.vnccs-common-ui-select-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vnccs-common-ui-select-trigger::after {
+    content: "";
+    flex-shrink: 0;
+    width: 5px;
+    height: 5px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg);
+    transition: transform 180ms ease;
+}
+.vnccs-common-ui-select-trigger[aria-expanded="true"] { border-color: var(--vnccs-common-ui-accent); box-shadow: 0 0 0 2px rgba(255,143,163,0.08); }
+.vnccs-common-ui-select-trigger[aria-expanded="true"]::after { transform: rotate(225deg); }
+.vnccs-common-ui-dropdown {
+    pointer-events: auto;
+    position: absolute;
+    z-index: 2000;
+    box-sizing: border-box;
+    overflow: auto;
+    padding: 4px;
+    border: 1px solid rgba(255,143,163,0.28);
+    border-radius: 9px;
+    background: #17121d;
+    box-shadow: 0 12px 28px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,143,163,0.04);
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,143,163,0.3) transparent;
+}
+.vnccs-common-ui-dropdown-option {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 28px;
+    padding: 4px 8px;
+    box-sizing: border-box;
+    border-radius: 5px;
+    color: #e8e8f0;
+    font-size: 11px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+    transform: none !important;
+    translate: none !important;
+    scale: none !important;
+    background: transparent;
+    transition: color 120ms ease;
+}
+.vnccs-common-ui-dropdown::before {
+    content: ""; position: absolute; top: 0; left: 4px; right: 4px;
+    height: var(--highlight-height, 28px); border-radius: 5px; background: rgba(255,143,163,0.14);
+    transform: translateY(var(--highlight-y, 4px)); pointer-events: none;
+    transition: transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.vnccs-common-ui-dropdown-option::before { content: ""; width: 10px; flex-shrink: 0; }
+.vnccs-common-ui-dropdown-option[aria-selected="true"]::before { content: "✓"; color: var(--vnccs-common-ui-accent); }
+.vnccs-common-ui-dropdown-option--active { color: #ffe8ef; }
+.vnccs-common-ui-host > .vnccs-common-ui-motion-ghost,
+.vnccs-common-ui-preview-host > .vnccs-common-ui-motion-ghost { position: absolute; pointer-events: none; z-index: 3; margin: 0 !important; }
+.vnccs-common-ui-tab-glide {
+    border: 1px solid rgba(255,143,163,0.55);
+    border-radius: 8px;
+    background: rgba(255,143,163,0.12);
+    transform-origin: top left;
+}
+.vnccs-common-wizard-reveal {
+    position: absolute;
+    z-index: 40;
+    overflow: hidden;
+    pointer-events: none;
+    contain: paint;
+}
+.vnccs-common-wizard-reveal-old {
+    position: absolute;
+    z-index: 1;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    will-change: clip-path;
+}
+.vnccs-common-wizard-reveal-snapshot {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: none !important;
+    box-sizing: border-box !important;
+    margin: 0 !important;
+    pointer-events: none !important;
+}
+.vnccs-common-wizard-reveal-snapshot,
+.vnccs-common-wizard-reveal-snapshot * {
+    animation: none !important;
+    transition: none !important;
+}
+.vnccs-common-wizard-reveal-scan {
+    position: absolute;
+    z-index: 2;
+    top: 50%;
+    left: 0;
+    width: 3px;
+    height: calc(100% - 8px);
+    margin-left: -1.5px;
+    border-radius: 99px;
+    opacity: 0;
+    background: linear-gradient(180deg, transparent, rgba(255,255,255,0.98) 18%, var(--vnccs-common-ui-accent) 50%, rgba(255,255,255,0.98) 82%, transparent);
+    box-shadow: 0 0 7px var(--vnccs-common-ui-accent), 0 0 16px var(--vnccs-common-ui-accent), 0 0 28px color-mix(in srgb, var(--vnccs-common-ui-accent) 45%, transparent);
+    will-change: transform, opacity;
+}
+.is-male-character .vnccs-common-wizard-reveal-scan,
+.vnccs-common-ui-host.is-male-character .vnccs-common-wizard-reveal-scan {
+    --vnccs-common-ui-accent: #63c7ff;
+    box-shadow: 0 0 8px #63c7ff, 0 0 18px #63c7ff;
+}
+.vnccs-common-ui-host .vnccs-common-ui-select-trigger:focus-visible { outline: 2px solid #ff8fa3; outline-offset: -2px; }
+@media (prefers-reduced-motion: reduce) {
+    .vnccs-common-ui-segmented::before { transition: none !important; }
+    .vnccs-common-ui-host .vnccs-common-ui-select-trigger, .vnccs-common-ui-host .vnccs-common-ui-select-trigger::after,
+    .vnccs-common-ui-dropdown-option, .vnccs-common-ui-dropdown::before { transition: none !important; }
+    .vnccs-common-wizard-reveal { display: none !important; }
+}`;

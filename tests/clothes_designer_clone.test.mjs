@@ -31,7 +31,7 @@ function setup(selectedType = "unet") {
         fileInp: {}, btn: {}, btnGen: { disabled: false },
         els: { previewImg: { style: {} }, placeholder: { style: {} } },
         container: { appendChild() {} },
-        document: { createElement: () => ({ remove() {} }) },
+        document: { createElement: () => ({ dataset: {}, remove() {} }) },
         FormData: class { values = []; append(...args) { this.values.push(args); } },
         normalizeUploadFile: file => file,
         renderClonePanel() {},
@@ -39,6 +39,9 @@ function setup(selectedType = "unet") {
         hasSelectedEditableCostume: () => true,
         showCreateCostumeRequired() { throw new Error("Unexpected costume validation"); },
         setClothesCoreLora() {},
+        startClothesPreviewGeneration: () => 1,
+        revealClothesPreview: async () => true,
+        stopClothesPreviewGeneration() {},
         saveCostumeToBackend: async () => {},
         getConnectedControlCenterState: () => ({ repo_id: "VNCCS", node_state: "{}", selected_type: selectedType }),
         queueConnectedPreview: async () => { queued.push(JSON.parse(dataWidget.value)); return { cached: false }; },
@@ -202,7 +205,7 @@ for (const selection of ['character', 'costume', 'tab']) {
             loadCostumes: async () => true,
             loadCostumeInfo: async (preserveDraft, costume) => { h.state.costume = costume; return true; },
             syncCostumeEditControls() {}, updatePreviewImage() {}, refreshTabs() {},
-            document: { createElement: () => ({ style: {} }) },
+            document: { createElement: () => ({ style: {}, dataset: {} }) },
         });
         h.context.els.charSelect = {};
         h.context.els.costSel = {};

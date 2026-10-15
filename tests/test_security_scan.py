@@ -18,7 +18,7 @@ from scripts.security_scan import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCANNER = PROJECT_ROOT / "scripts" / "security_scan.py"
-EXPECTED_SCANNER_SHA256 = "166e20b06e126b6c5dcf0923f2de2a00137e4c97bdd108bd2525cab75a182b20"
+EXPECTED_SCANNER_SHA256 = "cf8dfcc8e25521aa2af3c117d52437e7746cbe3013cc42bbbc41a2a483954151"
 EXPECTED_RULE_IDS = {
     "BLACKLISTED_URL",
     "CREDENTIAL_URL",
@@ -157,6 +157,32 @@ def test_security_scanner_scans_repository_tests(tmp_path):
         and finding["path"] == "tests/unsafe_test.py"
         for finding in findings
     )
+
+
+def test_security_scanner_skips_git_and_comfy_ignored_sources(tmp_path):
+    (tmp_path / ".gitignore").write_text(
+        "git-only/\ngenerated/*\n!generated/keep.py\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".comfyignore").write_text("package-only/\n", encoding="utf-8")
+    for directory in ("git-only", "package-only", "generated"):
+        (tmp_path / directory).mkdir()
+    for relative in (
+        "git-only/unsafe.py",
+        "package-only/unsafe.py",
+        "generated/unsafe.py",
+        "generated/keep.py",
+        "visible.py",
+    ):
+        (tmp_path / relative).write_text('eval("test code")\n', encoding="utf-8")
+
+    result = _run_scanner(tmp_path, "--json")
+    assert result.returncode == 1
+    findings = json.loads(result.stdout)
+    assert {finding["path"] for finding in findings} == {
+        "generated/keep.py",
+        "visible.py",
+    }
 
 
 def test_security_scanner_has_no_allowlist_interface(tmp_path):

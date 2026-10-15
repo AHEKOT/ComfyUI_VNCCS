@@ -223,7 +223,7 @@ def test_costume_save_rejects_redirected_storage_before_any_write(tmp_path, monk
     before = set(root.rglob("*"))
     monkeypatch.setattr(utils, "base_output_dir", lambda: str(root))
     async def body():
-        return {"character": "Alice", "costume": "Coat", "info": {"top": "silk"}}
+        return {"character": "Alice", "costume": "Coat", "info": {"top": "silk"}, "create_only": True}
     result = asyncio.run(clothes.vnccs_save_costume(SimpleNamespace(
         headers={"Host": "localhost", "X-VNCCS-CSRF": "1"}, json=body)))
     assert result.status == 400

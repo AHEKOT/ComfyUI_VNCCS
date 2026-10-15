@@ -449,6 +449,41 @@ class TestModuleStatusHelpers:
 
 
 class TestDownloadedModelValidation:
+    @pytest.mark.parametrize("dtype,shape,length", [("F32", [256], 1024), ("F8_E4M3", [1024], 1024),
+        ("F4", [2048], 1024), ("F6_E2M3", [1368], 1026), ("F6_E3M2", [1368], 1026)])
+    def test_safetensors_accepts_indexed_payload_and_empty_tensor(self, tmp_path, dtype, shape, length):
+        header = json.dumps({"weight": {"dtype": dtype, "shape": shape, "data_offsets": [0, length]},
+            "empty": {"dtype": "F16", "shape": [0, 1], "data_offsets": [0, 0]},
+            "scale": {"dtype": "F32", "shape": [], "data_offsets": [length, length + 4]},
+            "__metadata__": {"format": "pt"}}).encode()
+        path = tmp_path / "model.safetensors"
+        path.write_bytes(len(header).to_bytes(8, "little") + header + b"\0" * (length + 4))
+        assert _validate_downloaded_model_file(str(path), path.name) is True
+
+    @pytest.mark.parametrize("header", [
+        '{"weight":{"dtype":"F32","shape":[1024],"data_offsets":[0,4096]}}',
+        '{"weight":{"dtype":"F32","shape":[1024],"data_offsets":[0,1024]}}',
+        '{"weight":{"dtype":"U8","shape":[1024],"data_offsets":[1,1025]}}',
+        '{"weight":{"dtype":"U8","shape":[512],"data_offsets":[0,512]}}',
+        '{"a":{"dtype":"U8","shape":[1024],"data_offsets":[0,1024]},"b":{"dtype":"U8","shape":[1024],"data_offsets":[0,1024]}}',
+        '{"weight":{},"weight":{"dtype":"U8","shape":[1024],"data_offsets":[0,1024]}}',
+        '{"weight":{"dtype":"U8","shape":[1024],"data_offsets":[false,1024]}}',
+        '{"weight":{"dtype":"U8","shape":[-1024],"data_offsets":[0,1024]}}',
+        '{"weight":{"dtype":"U8","shape":[true],"data_offsets":[0,1024]}}',
+        '{"weight":{"dtype":"F6_E2M3","shape":[1367],"data_offsets":[0,1024]}}',
+        '{"weight":{"dtype":"unknown","shape":[1024],"data_offsets":[0,1024]}}',
+        '{"weight":{"dtype":"U8","shape":[1024],"data_offsets":[0,1024],"unused":NaN}}',
+        '{"weight":{"dtype":"U8","shape":[1024],"data_offsets":[0,1024]},"empty":{"dtype":"U8","shape":[0,18446744073709551616],"data_offsets":[0,0]}}',
+        '{"weight":{"dtype":"U8","shape":[1024],"data_offsets":[0,1024]},"empty":{"dtype":"U8","shape":[9223372036854775808,9223372036854775808,0],"data_offsets":[0,0]}}',
+        '{"__metadata__":{"format":[]}}', '{}', '{broken', '{"weight":null}',
+    ])
+    def test_safetensors_rejects_corrupt_manifest_and_payload(self, tmp_path, header):
+        encoded = header.encode()
+        path = tmp_path / "model.safetensors"
+        path.write_bytes(len(encoded).to_bytes(8, "little") + encoded + b"\0" * 1024)
+        with pytest.raises(ValueError, match="safetensors|tensor"):
+            _validate_downloaded_model_file(str(path), path.name)
+
     def test_validate_downloaded_model_rejects_html(self, tmp_path):
         f = tmp_path / "fake.safetensors"
         f.write_bytes(b"<html>" + b"x" * 2048)

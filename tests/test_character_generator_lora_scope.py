@@ -91,6 +91,9 @@ def test_remove_clothes_uses_only_selected_lora_and_releases_it(generator, monke
         physical["patches"] = model.patches.copy()
         if failure == "sample":
             raise RuntimeError("sample failed")
+        if kind == "MiniMaxH3":
+            torch = pytest.importorskip("torch")
+            return {"samples": torch.zeros(1, 24, 2, 4, 4)}
         return "samples"
 
     def decode():

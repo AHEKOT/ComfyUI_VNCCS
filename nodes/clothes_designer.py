@@ -1,9 +1,10 @@
 from ..operation_logger import log_event, log_stage, logged_operation
 
-from .preview_runtime import run_wizard_job
-from .generator_context import serialized_generator
+from .preview_runtime import run_wizard_job, run_preview_job
+from .generator_context import serialized_generator, forget_character_contexts
 
 import os
+import asyncio
 import json
 import hashlib
 import torch
@@ -16,10 +17,12 @@ import re
 
 from ..utils import (
     character_dir, save_costume_info, delete_costume,
+    list_pose_preview_files as list_preview_sprite_files,
     load_costume_info, list_costumes, ensure_costume_structure,
     sheets_dir,
     ensure_safe_name, safe_join_under, safe_relative_path, atomic_output_path,
-    validate_costume_info, privileged_route, character_storage_lock
+    validate_costume_info, privileged_route, character_storage_lock, load_costume_snapshot,
+    require_existing_costume,
 )
 from .character_generator import (
     _call_comfy_node,
@@ -30,7 +33,8 @@ from .character_generator import (
     NATIVE_BACKGROUND_PROMPT,
 )
 from .vnccs_control_center import _entry_kind, _find_model_on_disk, _apply_lora_standard
-from .qwen_vl import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
+from .h3_still import require_h3_still_support
+from .qwen_vl import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME
 from .qwen_vl import configure_qwen_text_chat, parse_wizard_json, _validate_gguf_file
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -199,6 +203,7 @@ def get_latest_sprite_path(character, costume="Naked"):
         if neutral_dir and os.path.isdir(neutral_dir):
             neutral_files = []
             for root, _dirs, filenames in os.walk(neutral_dir):
+                _dirs[:] = [name for name in _dirs if not re.fullmatch(r"V[0-9]+", name, re.IGNORECASE)]
                 for filename in filenames:
                     neutral_files.append(os.path.join(root, filename))
             best = _latest_image_file(neutral_files, character_root)
@@ -216,53 +221,12 @@ def get_latest_sprite_path(character, costume="Naked"):
 
         nested_files = []
         for root, _dirs, filenames in os.walk(base):
+            _dirs[:] = [name for name in _dirs if not re.fullmatch(r"V[0-9]+", name, re.IGNORECASE)]
             for filename in filenames:
                 nested_files.append(os.path.join(root, filename))
         return _latest_image_file(nested_files, character_root)
     except Exception:
         return None
-
-
-def list_preview_sprite_files(character, costume=None):
-    try:
-        base_char_path = character_dir(character)
-        if costume:
-            costume = ensure_safe_name(costume, "costume")
-        sprite_roots = []
-        if costume:
-            sprite_roots.extend([
-                os.path.join(base_char_path, "Sprites", costume, "Neutral"),
-                os.path.join(base_char_path, "Sprites", costume),
-            ])
-        sprite_roots.extend([
-            os.path.join(base_char_path, "Sprites", "Naked", "Neutral"),
-            os.path.join(base_char_path, "Sprites", "Original", "Neutral"),
-            os.path.join(base_char_path, "Sprites", "Naked"),
-            os.path.join(base_char_path, "Sprites", "Original"),
-        ])
-        for root in sprite_roots:
-            try:
-                root = safe_join_under(base_char_path, os.path.relpath(root, base_char_path))
-            except ValueError:
-                continue
-            if not os.path.isdir(root):
-                continue
-            files = []
-            for filename in os.listdir(root):
-                if os.path.splitext(filename)[1].lower() not in IMAGE_EXTS:
-                    continue
-                try:
-                    path = safe_join_under(base_char_path, os.path.relpath(os.path.join(root, filename), base_char_path))
-                except ValueError:
-                    continue
-                if os.path.isfile(path):
-                    files.append(path)
-            if files:
-                return sorted(files)
-        return []
-    except Exception as exc:
-        log_event('warning', component='ClothesDesigner', level='warning', message=f'Failed to list preview sprites for {character}/{costume}: {exc}', error=str(exc))
-        return []
 
 
 def resolve_comfy_image_path(image_info):
@@ -296,10 +260,6 @@ def _clone_reference_digest(image_path):
         for chunk in iter(lambda: reference_file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _find_clothes_wizard_model():
-    return _find_qwen_vl_model()
 
 
 def _ensure_clothes_wizard_model():
@@ -459,7 +419,7 @@ class ClothesDesigner:
     @staticmethod
     def _is_editable_costume(value):
         costume = str(value or "").strip()
-        return bool(costume) and costume not in {"Naked", "Original"}
+        return bool(costume) and costume.casefold() not in {"naked", "original"}
 
     @staticmethod
     def _emit_validation_error(unique_id, message):
@@ -602,6 +562,7 @@ class ClothesDesigner:
         if pipe is None:
             raise ValueError("Clothes Designer requires an incoming VNCCS pipe from Control Center.")
 
+        require_existing_costume(character_name, costume_name)
         model = getattr(pipe, "model", None)
         clip = getattr(pipe, "clip", None)
         vae = getattr(pipe, "vae", None)
@@ -620,6 +581,8 @@ class ClothesDesigner:
 
         model_kind = _entry_kind(getattr(pipe, "model_entry", None))
         is_h3 = model_kind == "minimaxh3"
+        if is_h3:
+            require_h3_still_support()
         is_qi2 = model_kind == "qi2"
         background_color = self._effective_background_color(
             gen_settings.get("background_color"), model_kind,
@@ -691,6 +654,8 @@ class ClothesDesigner:
                     item.get("name", "") for item in (getattr(pipe, "lora_states", []) or [])
                     if item.get("auto_apply") and "viggle" in str(item.get("name", "")).lower()
                 )
+            if is_h3:
+                cache_payload["h3_still_decode"] = 16881
             canonical_str = json.dumps(cache_payload, sort_keys=True, separators=(',', ':'))
             input_hash = hashlib.sha256(canonical_str.encode('utf-8')).hexdigest()
             # Custom or externally modified pipes cannot provide a stable asset identity.
@@ -847,7 +812,10 @@ class ClothesDesigner:
 
         # 5. Decode
         log_stage("decoding", component="ClothesDesigner")
-        if is_qi2 or is_h3:
+        if is_h3:
+            with torch.inference_mode():
+                image = VNCCS_CharacterGenerator()._h3_decode(latent_for_decode, vae)
+        elif is_qi2:
             with torch.inference_mode():
                 image, = _call_comfy_node("VAEDecode", vae=vae, samples=latent_for_decode)
         else:
@@ -863,9 +831,6 @@ class ClothesDesigner:
                 log_event('fallback', component='ClothesDesigner', level='warning', message=f'VAEDecodeTiled failed ({e}), falling back to VAEDecode...', error=str(e))
                 with torch.inference_mode():
                     image, = _call_comfy_node("VAEDecode", vae=vae, samples=latent_for_decode)
-
-        if is_h3:
-            image = VNCCS_CharacterGenerator()._h3_first_frame_to_cpu(image)
 
         # Publish the preview before reporting success to the widget.
         i_pil = Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
@@ -900,8 +865,8 @@ async def vnccs_get_costume(request):
     try:
         character = ensure_safe_name(character, "character")
         costume = ensure_safe_name(costume, "costume")
-        data = load_costume_info(character, costume)
-        return web.json_response(data)
+        data, revision = await asyncio.to_thread(load_costume_snapshot, character, costume)
+        return web.json_response(data, headers={"ETag": revision})
     except Exception as e:
         return web.Response(status=500, text=str(e))
 
@@ -918,14 +883,23 @@ async def vnccs_save_costume(request):
         if not character or not costume: return web.Response(status=400)
         character = ensure_safe_name(character, "character")
         costume = ensure_safe_name(costume, "costume")
-        with character_storage_lock(character_dir(character)):
-            if data.get("create_only") is True and (costume.casefold() in {"naked", "original"}
-                    or any(existing.casefold() == costume.casefold() for existing in list_costumes(character))):
-                return web.json_response({"error": f"Costume '{costume}' already exists. Choose a new name or edit the existing costume."}, status=409)
-            ensure_costume_structure(character, costume)
-            if not save_costume_info(character, costume, info):
-                return web.json_response({"error": f"Could not save costume '{costume}'. Check storage permissions and free space."}, status=500)
-        return web.json_response({"status": "ok"})
+        def save():
+            with character_storage_lock(character_dir(character)):
+                existing = list_costumes(character)
+                if data.get("create_only") is True:
+                    if costume.casefold() in {"naked", "original"} or any(name.casefold() == costume.casefold() for name in existing):
+                        return web.json_response({"error": f"Costume '{costume}' already exists. Choose a new name or edit the existing costume."}, status=409)
+                else:
+                    revision = data.get("revision")
+                    if not isinstance(revision, str) or not revision:
+                        return web.json_response({"error": "Reload the costume before saving. Your local draft has been preserved."}, status=428)
+                    if costume not in existing or revision != load_costume_snapshot(character, costume)[1]:
+                        return web.json_response({"error": "This costume changed or was deleted in another editor. Your local draft has been preserved; reload the costume before saving."}, status=409)
+                ensure_costume_structure(character, costume)
+                if not save_costume_info(character, costume, info):
+                    return web.json_response({"error": f"Could not save costume '{costume}'. Check storage permissions and free space."}, status=500)
+                return web.json_response({"status": "ok", "revision": load_costume_snapshot(character, costume)[1]})
+        return await asyncio.to_thread(save)
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)
     except Exception as e:
@@ -941,7 +915,12 @@ async def vnccs_delete_costume(request):
             raise ValueError("Costume request must be an object")
         if not isinstance(data.get("character"), str) or not isinstance(data.get("costume"), str):
             raise ValueError("Character and costume must be names.")
-        warning = delete_costume(data["character"], data["costume"])
+        def remove_costume():
+            warning = delete_costume(data["character"], data["costume"])
+            forget_character_contexts(character_dir(data["character"]))
+            return warning
+
+        warning = await run_preview_job(remove_costume)
         result = {"status": "ok"}
         if warning:
             result["warning"] = warning
@@ -1077,8 +1056,7 @@ async def vnccs_clothes_wizard(request):
     return await run_wizard_job(_clothes_wizard_response, post, "clothes")
 
 
-@server.PromptServer.instance.routes.get("/vnccs/get_preview")
-async def vnccs_get_preview(request):
+def _get_preview_response(request):
     character = request.rel_url.query.get("character", "")
     costume = request.rel_url.query.get("costume", "Naked")
     if not character: return web.Response(status=404)
@@ -1144,6 +1122,11 @@ async def vnccs_get_preview(request):
              return web.Response(body=f.read(), content_type="image/png")
              
     return web.Response(status=404)
+
+
+@server.PromptServer.instance.routes.get("/vnccs/get_preview")
+async def vnccs_get_preview(request):
+    return await asyncio.to_thread(_get_preview_response, request)
 
 
 NODE_CLASS_MAPPINGS = {

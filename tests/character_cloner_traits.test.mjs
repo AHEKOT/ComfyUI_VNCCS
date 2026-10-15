@@ -29,6 +29,8 @@ class Element {
         this.classList = { toggle() {}, add() {}, remove() {} };
     }
     append(...children) { this.children.push(...children); }
+    get textContent() { return (this._text || "") + this.children.map(child => child.textContent || "").join(""); }
+    set textContent(value) { this._text = String(value); this.children = []; }
     appendChild(child) { this.append(child); }
     replaceChildren(...children) { this.children = children; }
     setAttribute(name, value) { this.attrs[name] = value; }
@@ -119,7 +121,7 @@ test("presets preserve custom text and the Skin plus button opens existing skin 
     chip.onclick();
     modal.buttons.find(button => button.text === "APPLY").action(modal.overlay);
     assert.equal(state.character_info.skin_color, "golden tan skin");
-    assert.equal(skin.children[1].children[0].children[0].textContent, "golden tan skin");
+    assert.equal(skin.children[1].children[0].textContent, "golden tan skin");
     assert.equal(requests.filter(request => request.path.includes("catalog=creator_v2")).length, 1);
 });
 
@@ -250,3 +252,14 @@ for (const stale of ["character", "reference", "removed"]) {
         assert.equal(h.context.els.face.hidden, true);
     });
 }
+
+test("Cloner left panel and preview match the Clothes Designer proportions", () => {
+    assert.match(source, /\.vnccs-cloner-top-row\s*\{[^}]*grid-template-columns:\s*400px\s+minmax\(0,\s*1fr\)/s);
+    assert.match(source, /\.vnccs-cloner-bottom-row\s*\{[^}]*grid-template-columns:\s*400px\s+minmax\(0,\s*1fr\)/s);
+    assert.doesNotMatch(source.match(/\.vnccs-cloner-select\s*\{[^}]*\}/s)?.[0] || "", /zoom\s*:/);
+    assert.doesNotMatch(source, /className\s*=\s*["']vnccs-cloner-img-list["']/);
+    assert.doesNotMatch(source, /className\s*=\s*["']vnccs-cloner-thumb["']/);
+    assert.match(source, /\.vnccs-cloner-preview-img\s*\{[^}]*top:\s*0[^}]*left:\s*50%[^}]*width:\s*auto[^}]*max-width:\s*none[^}]*height:\s*100%[^}]*translateX\(-50%\)/s);
+    const workflow = JSON.parse(readFileSync(new URL("../workflows/VNCCS_3.2_Step1_CharacterCloner.json", import.meta.url), "utf8"));
+    assert.deepEqual(workflow.nodes.find(node => node.type === "CharacterCloner").size, [690, 950]);
+});

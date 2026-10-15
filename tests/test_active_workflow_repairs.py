@@ -99,6 +99,7 @@ def test_creator_errors_include_stage_and_optional_traceback(runtime, monkeypatc
 
 
 def test_clothes_cache_and_comfy_signature_follow_primary_reference(runtime, tmp_path, monkeypatch):
+    runtime.utils.save_costume_info('Alice', 'Dress', {})
     cd = runtime.clothes
     source = runtime.inputs / 'ref.png'
     monkeypatch.setattr(cd, 'get_latest_sprite_path', lambda *a: str(source))
@@ -152,6 +153,10 @@ def test_pose_prompt_lists_survive_caching_and_single_pose_regeneration(runtime,
     monkeypatch.setattr(node, '_run_source_upscaler', lambda image, *a, **k: image)
     stage = 'original_pose_generation' if node_name == 'VNCCS_CharacterCloneGenerator' else 'pose_generation'
     state = {'regenerate_from': stage, 'regenerate_index': 1} if regenerate else {}
+    if node_name == 'VNCCS_ClothesGenerator':
+        runtime.utils.save_costume_info('Alice', 'Coat', {})
+        state['character_name'] = 'Alice'
+        state['costume'] = 'Coat'
     with pytest.raises(ReachedEncoder):
         node.process(poses, character, SimpleNamespace(), prompts, widget_data=json.dumps(state))
     assert cached[0]['prompt'] == prompts
@@ -211,7 +216,7 @@ def test_each_pose_encoder_receives_its_own_prompt(runtime, monkeypatch, kind):
 
 def test_custom_preview_reuses_available_pipe_and_never_builds_missing_inputs(runtime, monkeypatch):
     cc = sys.modules['_vnccs.nodes.vnccs_control_center']
-    state = {'selected_type': 'custom', 'active_kind': 'Klein9b'}
+    state = {'selected_type': 'custom', 'active_kind': 'Klein9b', 'preview_scope': 'workflow-a'}
     pipe = cc.VNCCSPipeProxy(object(), object(), object())
     monkeypatch.setattr(cc, '_build_control_center_pipe', lambda *a, **k: pipe)
     cc.VNCCS_ControlCenter().execute('catalog', state, model=object(), clip=object(), vae=object(), unique_id='test-preview')
@@ -226,7 +231,7 @@ def test_custom_preview_reuses_available_pipe_and_never_builds_missing_inputs(ru
         assert torch.is_inference_mode_enabled()
         return (torch.ones(1, 8, 8, 3),)
     monkeypatch.setattr(runtime.clothes.ClothesDesigner, 'process', preview)
-    payload = {'repo_id': 'catalog', 'node_state': state, 'control_center_id': 'test-preview'}
+    payload = {'repo_id': 'catalog', 'node_state': state, 'control_center_id': 'test-preview', 'control_center_scope': 'workflow-a'}
     assert 'image' in cc._clothes_preview_response(payload)
     assert used == [pipe]
     payload['node_state'] = {**state, 'seed': 99}
@@ -234,3 +239,21 @@ def test_custom_preview_reuses_available_pipe_and_never_builds_missing_inputs(ru
     payload['control_center_id'] = 'missing'
     assert cc._clothes_preview_response(payload)['status'] == 409
     assert used == [pipe]
+    other = cc.VNCCSPipeProxy(object(), object(), object())
+    other_state = {**state, 'preview_scope': 'workflow-b'}
+    monkeypatch.setattr(cc, '_build_control_center_pipe', lambda *a, **k: other)
+    cc.VNCCS_ControlCenter().execute('catalog', other_state, model=object(), clip=object(), vae=object(), unique_id='test-preview')
+    monkeypatch.setattr(cc, '_build_control_center_pipe', forbidden)
+    payload.update(node_state=state, control_center_id='test-preview')
+    assert 'image' in cc._clothes_preview_response(payload)
+    assert used[-1] is pipe
+    payload['control_center_scope'] = 'workflow-b'
+    assert 'image' in cc._clothes_preview_response(payload)
+    assert used[-1] is other
+    payload.pop('control_center_scope')
+    assert cc._clothes_preview_response(payload)['status'] == 409
+
+
+def test_unknown_character_root_is_available_to_emotion_generation(runtime):
+    runtime.creator.CharacterCreatorV2.create_character("Unknown")
+    assert runtime.generator._safe_character_root("Unknown") == runtime.utils.character_dir("Unknown")

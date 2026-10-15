@@ -105,6 +105,8 @@ test("single-image regeneration replaces its preview without dropping siblings",
 
     emit({ status: "running", message: "Regenerating image 2" });
     assert.deepEqual(Array.from(widget.stageState[stage].images), ["first", "second", "third"]);
+    emit({ status: "running", images: ["second-in-progress"], current: 0, total: 1 });
+    assert.deepEqual(Array.from(widget.stageState[stage].images), ["first", "second-in-progress", "third"]);
 
     emit({
         status: "running",
@@ -113,4 +115,50 @@ test("single-image regeneration replaces its preview without dropping siblings",
         replace_images: true,
     });
     assert.deepEqual(Array.from(widget.stageState[stage].images), ["first", "second-new", "third"]);
+});
+
+test("Clothes Generator keeps source sprites selected and marks finished outfits for a scan reveal", () => {
+    const { widget, listeners } = setup("source_upscaler");
+    widget.isClothes = true;
+    widget._clothesRevealIndices = new Set();
+    widget.stages = [["source_upscaler", "Source"], ["pose_generation", "Poses"], ["upscaler", "Upscaler"]];
+    widget.stageState.pose_generation = { status: "waiting", images: null };
+    widget.selectedPreview = "pose_generation";
+    widget.userSelectedPreview = false;
+    const emit = detail => listeners.get("vnccs.character_generator.stage")({ detail: {
+        node_id: "17", status: "running", ...detail,
+    } });
+
+    emit({ stage: "source_upscaler", current: 0, total: 1, images: ["source"] });
+    assert.equal(widget.selectedPreview, "pose_generation");
+    emit({ stage: "pose_generation", status: "waiting", current: 0, total: 2, images: ["base-1", "base-2"] });
+    emit({ stage: "pose_generation", current: 0, total: 2, images: ["base-1", "base-2"] });
+    emit({ stage: "pose_generation", current: 1, total: 2, images: ["clothed-1"], preview_start: 0, replace_images: true });
+
+    assert.deepEqual(Array.from(widget.stageState.pose_generation.images), ["clothed-1", "base-2"]);
+    assert.deepEqual(Array.from(widget._clothesRevealIndices), [0]);
+});
+
+test("Clone Generator marks each finished naked pose for a scan reveal", () => {
+    const { widget, emit } = setup("naked_pose_generation");
+    widget.isClone = true;
+    widget._nakedRevealIndices = new Set();
+
+    emit({ current: 0, total: 3 });
+    emit({ current: 1, total: 3, images: ["naked-1"], preview_start: 0, replace_images: true });
+
+    assert.deepEqual(Array.from(widget.stageState.naked_pose_generation.images), ["naked-1"]);
+    assert.deepEqual(Array.from(widget._nakedRevealIndices), [0]);
+});
+
+test("Clone Generator marks each finished original pose for a scan reveal", () => {
+    const { widget, emit } = setup("original_pose_generation");
+    widget.isClone = true;
+    widget._originalRevealIndices = new Set();
+
+    emit({ current: 0, total: 3 });
+    emit({ current: 1, total: 3, images: ["original-1"], preview_start: 0, replace_images: true });
+
+    assert.deepEqual(Array.from(widget.stageState.original_pose_generation.images), ["original-1"]);
+    assert.deepEqual(Array.from(widget._originalRevealIndices), [0]);
 });

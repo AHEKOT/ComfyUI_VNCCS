@@ -3,6 +3,7 @@ from ..operation_logger import log_event, log_stage, logged_operation
 from .preview_runtime import run_preview_job, run_wizard_job
 
 import os
+import asyncio
 import json
 import hashlib
 import torch
@@ -31,12 +32,13 @@ from ..utils import (
     sheets_dir, faces_dir, normalize_hair_tags, ensure_safe_name,
     get_full_path_agnostic, atomic_output_path, safe_join_under,
     privileged_route, file_fingerprint, config_path,
-    character_storage_lock,
+    character_storage_lock, list_pose_preview_files,
+    StorageConflictError,
 )
-from .qwen_vl import _ensure_qwen_vl_assets, _find_qwen_vl_model, QWEN_VL_MODEL_FILENAME
+from .qwen_vl import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME
 from .runtime_cleanup import inference_stage
 from .generator_context import serialized_generator
-from .qwen_vl import configure_qwen_text_chat, parse_wizard_json, _validate_gguf_file
+from .qwen_vl import configure_qwen_text_chat, parse_wizard_json, normalize_character_wizard_traits, _validate_gguf_file
 from .character_presets import CHARACTER_PRESETS, RACE_PRESETS, preset_key, race_features, race_prompt
 from .character_styles import (
     load_user_styles, save_user_style, delete_user_style, style_preview_path, style_preview_url,
@@ -53,53 +55,6 @@ def pil2tensor(image):
 
 def tensor2pil(image):
     return Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
-
-def list_pose_preview_files(character_name, costume=None):
-    try:
-        base_char_path = character_dir(character_name)
-        sprite_roots = []
-        if costume:
-            costume = ensure_safe_name(costume, "costume")
-            sprite_roots.extend([
-                os.path.join(base_char_path, "Sprites", costume, "Neutral"),
-                os.path.join(base_char_path, "Sprites", costume),
-            ])
-        sprite_roots.extend([
-            os.path.join(base_char_path, "Sprites", "Naked", "Neutral"),
-            os.path.join(base_char_path, "Sprites", "Original", "Neutral"),
-            os.path.join(base_char_path, "Sprites", "Naked"),
-            os.path.join(base_char_path, "Sprites", "Original"),
-        ])
-        log_event("pose_preview_scan", component="Creator", level="debug", character=character_name, costume=costume)
-
-        image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
-        files = []
-        for poses_dir in sprite_roots:
-            try:
-                poses_dir = safe_join_under(base_char_path, os.path.relpath(poses_dir, base_char_path))
-            except ValueError:
-                continue
-            if not os.path.isdir(poses_dir):
-                continue
-            root_files = []
-            for filename in os.listdir(poses_dir):
-                if os.path.splitext(filename)[1].lower() not in image_exts:
-                    continue
-                try:
-                    path = safe_join_under(base_char_path, os.path.relpath(os.path.join(poses_dir, filename), base_char_path))
-                except ValueError:
-                    continue
-                if os.path.isfile(path):
-                    root_files.append(path)
-            if root_files:
-                files = sorted(root_files)
-                break
-        log_event("pose_preview_list", component="Creator", level="debug", character=character_name, count=len(files))
-        return files
-    except Exception as e:
-        log_event('warning', component='Creator', level='warning', message=f'Pose Preview List Failed: {e}', error=str(e))
-        return []
-
 
 def get_pose_preview(character_name, index=None, costume=None):
     """
@@ -140,7 +95,6 @@ def get_random_pose_preview(character_name):
 PREVIEW_CACHE = {
     "asset_key": None,
     "asset_obj": None, # (model, clip, vae)
-    "loras": {}       # name -> tensor_dict
 }
 
 ILLUSTRIOUS_DEFAULTS = {
@@ -151,6 +105,17 @@ ILLUSTRIOUS_DEFAULTS = {
     "scheduler": "normal",
     "steps": 20,
     "cfg": 8.0,
+}
+
+CREATOR_TAG_PROMPT_DEFAULTS = {
+    "illustrious": {
+        "aesthetics": "masterpiece, best quality",
+        "negative_prompt": "bad quality, worst quality",
+    },
+    "anima": {
+        "aesthetics": "masterpiece, best quality, score_7, anime",
+        "negative_prompt": "bad quality, worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia",
+    },
 }
 
 ANIMA_DEFAULTS = {
@@ -182,11 +147,12 @@ QI2_DEFAULTS = {
     "sampler": "euler",
     "scheduler": "simple",
     "steps": 25,
-    "cfg": 3.0,
+    "cfg": 1.0,
     "turbo_enabled": False,
     "dmd_lora_name": QI2_TURBO_LORA_NAME,
     "dmd_lora_strength": 1.0,
     "qi2_overhaul_strength": 0.5,
+    "qi2_prompt_enhancement": True,
     "lora_stack": [],
     "qi2_cache": {"device": "gpu", "dtype": "int8"},
 }
@@ -404,8 +370,16 @@ def get_lora_full_path(lora_name):
     return get_full_path_agnostic(folder_paths, "loras", lora_name, require_exists=True)
 
 
-def _find_character_wizard_model():
-    return _find_qwen_vl_model()
+def apply_generation_lora(model, clip, name, strength, clip_strength=None):
+    strength = float(strength or 0)
+    if not name or name == "None" or strength == 0:
+        return model, clip
+    path = get_lora_full_path(name)
+    if not path:
+        raise FileNotFoundError(f"Selected LoRA is not installed: {name}. Install it or disable it before generating.")
+    state, _metadata = control_center._load_lora_file(path)
+    return comfy.sd.load_lora_for_models(model, clip, state, strength,
+                                       strength if clip_strength is None else float(clip_strength))
 
 
 def _ensure_character_wizard_model():
@@ -442,9 +416,7 @@ def _extract_character_tag_options(tags_data):
 SKIN_COLOR_OPTIONS = [item["tag"] for item in CHARACTER_PRESETS["tags"]["skin_color"]]
 
 SKIN_COLOR_HINT_RE = re.compile(
-    r"\b(skin|complexion|pale|fair|light[- ]skinned|tan|tanned|dark[- ]skinned|"
-    r"brown[- ]skinned|black|black[- ]skinned|afro|african|african[- ]american|"
-    r"olive|blue[- ]skinned|green[- ]skinned|grey[- ]skinned|gray[- ]skinned)\b",
+    r"\b(skin|complexion|[a-z]+[- ]skinned)\b",
     re.IGNORECASE,
 )
 
@@ -475,26 +447,7 @@ ATHLETIC_BODY_HINT_RE = re.compile(
 
 def _parse_character_wizard_json(content):
     data = parse_wizard_json(content)
-    if data is None:
-        return None
-
-    result = {}
-    for key in ["race", "skin_color", "hair", "eyes", "face", "body", "additional_details"]:
-        value = data.get(key, "")
-        if isinstance(value, list):
-            value = ", ".join(str(item).strip() for item in value if str(item).strip())
-        elif not isinstance(value, str):
-            value = str(value) if value is not None else ""
-        result[key] = value.strip()
-
-    sex = str(data.get("sex", "female")).strip().lower()
-    result["sex"] = "male" if sex.startswith("m") else "female"
-    try:
-        age = int(float(data.get("age", 18)))
-    except Exception:
-        age = 18
-    result["age"] = max(1, min(100, age))
-    return result
+    return normalize_character_wizard_traits(data) if data is not None else None
 
 
 def _split_prompt_tokens(value):
@@ -528,6 +481,8 @@ def _effective_character_background(value, generation_mode="illustrious"):
 
 def _character_style_prompt(info):
     style_key = str(info.get("style", DEFAULT_CHARACTER_STYLE) or DEFAULT_CHARACTER_STYLE).strip().lower()
+    if style_key == "none":
+        return ""
     if style_key == "custom":
         return str(info.get("custom_style", "") or "").strip()
     style_key = CHARACTER_STYLE_ALIASES.get(style_key, style_key)
@@ -543,17 +498,17 @@ def _character_style_prompt(info):
 
 def _infer_skin_color_from_description(description):
     text = str(description or "").lower()
-    if re.search(r"\b(afro|african|african[- ]american|black|black[- ]skinned)\b", text):
+    if re.search(r"\b(black[- ]skinned|black (?:skin|complexion)|(?:afro|african(?:[- ]american)?|black)[- _]+(?:student|man|woman|boy|girl|person|character))\b", text):
         return "dark skin"
     if re.search(r"\b(brown[- ]skinned|brown skin)\b", text):
         return "brown skin"
-    if re.search(r"\b(tan|tanned)\b", text):
+    if re.search(r"\b(tan[- ]skinned|(?:tan|tanned) (?:skin|complexion))\b", text):
         return "tan skin"
-    if re.search(r"\bolive\b", text):
+    if re.search(r"\bolive (?:skin|complexion)\b", text):
         return "olive skin"
-    if re.search(r"\bpale\b", text):
+    if re.search(r"\bpale (?:skin|complexion)\b", text):
         return "pale skin"
-    if re.search(r"\b(fair|light[- ]skinned|light skin)\b", text):
+    if re.search(r"\b(light[- ]skinned|(?:fair|light) (?:skin|complexion))\b", text):
         return "fair skin"
     return ""
 
@@ -636,6 +591,13 @@ def is_creator_overhaul_lora(name):
     return re.fullmatch(r"VNCCS_QI2_AnimeOverhaulV\d+(?:[._]\d+)*\.safetensors", filename, re.IGNORECASE) is not None
 
 
+def _creator_overhaul_lora_path():
+    config = control_center._get_cc_config("MIUProject/VNCCS_v3.0")
+    entry = control_center._find_entry(config.get("lora", []), "VNCCS Overhaul QI2")
+    lora_path, installed = control_center._find_model_on_disk(entry.get("local_path", "")) if entry else (None, False)
+    return lora_path if installed else get_lora_full_path(QI2_OVERHAUL_LORA_NAME)
+
+
 def apply_creator_overhaul(model, clip, gen_settings, apply_lora):
     """Apply the Creator-only diffusion adapter, independently of Viggle Turbo."""
     if str(gen_settings.get("generation_mode", "")).lower() != "qi2":
@@ -643,11 +605,7 @@ def apply_creator_overhaul(model, clip, gen_settings, apply_lora):
     strength = normalize_overhaul_strength(gen_settings.get("qi2_overhaul_strength", 0.5))
     if strength == 0:
         return model, clip
-    config = control_center._get_cc_config("MIUProject/VNCCS_v3.0")
-    entry = control_center._find_entry(config.get("lora", []), "VNCCS Overhaul QI2")
-    lora_path, installed = control_center._find_model_on_disk(entry.get("local_path", "")) if entry else (None, False)
-    if not installed:
-        lora_path = get_lora_full_path(QI2_OVERHAUL_LORA_NAME)
+    lora_path = _creator_overhaul_lora_path()
     if not lora_path:
         raise ValueError(
             "Qwen Image2.1 Character Overhaul is not installed. Download its card "
@@ -715,6 +673,36 @@ def normalize_gen_settings(gen_settings):
     return merged
 
 
+def _generation_asset_signatures(settings):
+    mode = settings.get("generation_mode", "illustrious")
+    if mode in {"anima", "qi2"}:
+        fields = (("diffusion_models", "diffusion_model_name"),
+                  ("text_encoders", "clip_name"), ("vae", "vae_name"))
+    else:
+        fields = (("checkpoints", "ckpt_name"),)
+    return tuple((category, settings.get(field), control_center._model_file_signature(
+        get_full_path_agnostic(folder_paths, category, settings.get(field), require_exists=True) or ""
+    )) for category, field in fields)
+
+
+def _generation_file_signatures(settings):
+    mode = settings.get("generation_mode", "illustrious")
+    lora_names = [settings.get("dmd_lora_name"), settings.get("age_lora_name"),
+                  *(item.get("name") for item in settings.get("lora_stack", []))]
+    paths = [get_lora_full_path(name) for name in lora_names if name and name != "None"]
+    if mode == "qi2":
+        if normalize_overhaul_strength(settings.get("qi2_overhaul_strength", .5)):
+            paths.append(_creator_overhaul_lora_path())
+        if settings.get("turbo_enabled"):
+            config = control_center._get_cc_config("MIUProject/VNCCS_v3.0")
+            paths.extend(control_center._find_model_on_disk(entry.get("local_path", ""))[0]
+                         for entry in config.get("lora", [])
+                         if control_center._entry_kind(entry) == "qi2"
+                         and control_center._entry_type(entry) == "turbolora")
+    return {"assets": _generation_asset_signatures(settings),
+            "loras": tuple(control_center._model_file_signature(path or "") for path in paths)}
+
+
 def _preview_cache_key(info, gen_settings):
     settings = normalize_gen_settings(gen_settings)
     settings["seed"] = gen_settings.get("seed", settings["seed"])
@@ -723,10 +711,52 @@ def _preview_cache_key(info, gen_settings):
     payload = {
         "character_info": {key: value for key, value in info.items() if key not in {"name", "seed"}},
         "gen_settings": settings,
-        "prompts": CharacterCreatorV2.construct_prompt(info, settings["generation_mode"]),
+        "prompts": CharacterCreatorV2.construct_creator_prompt(info, settings["generation_mode"]),
         "style": _character_style_prompt(info),
+        "files": _generation_file_signatures(settings),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _log_creator_generation_settings(character, info, settings, width=None, height=None):
+    mode = settings.get("generation_mode", "illustrious")
+    lines = [
+        f"Character: {character}",
+        f"Generation mode: {mode}",
+        f"Model: {settings.get('ckpt_name' if mode == 'illustrious' else 'diffusion_model_name', '')}",
+    ]
+    if mode != "illustrious":
+        lines.extend([f"Text encoder: {settings.get('clip_name', '')}", f"VAE: {settings.get('vae_name', '')}"])
+    if width is not None and height is not None:
+        lines.append(f"Resolution: {width} x {height}")
+    lines.extend([
+        f"Resolution scale: {settings.get('target_size', 1024) / 1024:.1f} MP",
+        f"Seed: {settings.get('seed', 0)} ({settings.get('seed_mode', 'fixed')})",
+        f"Sampler: {settings.get('sampler', '')}",
+        f"Scheduler: {settings.get('scheduler', '')}",
+        f"Steps: {settings.get('steps', '')}",
+        f"CFG: {settings.get('cfg', '')}",
+        f"Style: {info.get('style_label') or info.get('style', DEFAULT_CHARACTER_STYLE if mode == 'qi2' else 'None')}",
+        f"Background: {_effective_character_background(info.get('background_color', ''), mode)}",
+    ])
+    if mode == "qi2":
+        lines.extend([
+            f"Prompt enhancement: {'Enabled' if settings.get('qi2_prompt_enhancement', True) is not False else 'Disabled'}",
+            f"Character Overhaul strength: {settings.get('qi2_overhaul_strength', 0.5)}",
+            f"Cache device: {settings.get('qi2_cache', {}).get('device', 'gpu')}",
+            f"Cache dtype: {settings.get('qi2_cache', {}).get('dtype', 'int8')}",
+        ])
+    turbo = settings.get("turbo_enabled", False)
+    lines.append(f"Turbo LoRA: {'Enabled' if turbo else 'Disabled'}")
+    if turbo:
+        lines.extend([f"Turbo LoRA model: {settings.get('dmd_lora_name', '')}", f"Turbo LoRA strength: {settings.get('dmd_lora_strength', 1.0)}"])
+    for item in settings.get("lora_stack", []):
+        if item.get("name") and item["name"] != "None":
+            lines.append(f"LoRA: {item['name']} | Strength: {item.get('strength', 1.0)}")
+    if settings.get("age_lora_name"):
+        lines.append(f"Age LoRA: {settings['age_lora_name']} | Strength: {age_strength(int(info.get('age', 18)))}")
+    log_event("generation_settings", component="Creator", character=character, width=width, height=height,
+              settings=settings, truncate=False, display_text="\n".join(lines))
 
 
 def _invoke_node_method(class_names, method_names, **kwargs):
@@ -890,15 +920,8 @@ def load_generation_assets(gen_settings):
 def acquire_preview_assets(gen_settings):
     """Return request-local preview assets while retaining only reusable state."""
     generation_mode = str(gen_settings.get("generation_mode", "illustrious") or "illustrious").lower()
-    if generation_mode in {"anima", "qi2"}:
-        asset_key = (
-            generation_mode,
-            gen_settings.get("diffusion_model_name", ""),
-            gen_settings.get("clip_name", ""),
-            gen_settings.get("vae_name", ""),
-        )
-    else:
-        asset_key = (generation_mode, gen_settings.get("ckpt_name", ""))
+    asset_key = (generation_mode, gen_settings.get("clip_type"),
+                 _generation_asset_signatures({**gen_settings, "generation_mode": generation_mode}))
 
     if PREVIEW_CACHE["asset_key"] == asset_key and PREVIEW_CACHE["asset_obj"]:
         log_stage("loading_models", component="Creator", cache="hit")
@@ -992,11 +1015,14 @@ def _qi2_rewritten_prompt(generated_text, original_prompt):
     return text
 
 
-def _character_clothing_prompt(info):
+def _character_is_nsfw(info):
     nsfw = info.get("nsfw", False)
-    is_nsfw = nsfw if isinstance(nsfw, bool) else str(nsfw).lower() in ("true", "1", "yes")
-    if is_nsfw:
-        return "naked, nude, penis" if info.get("sex", "female") == "male" else "naked, nude, vagina, nipples"
+    return nsfw if isinstance(nsfw, bool) else str(nsfw).lower() in ("true", "1", "yes")
+
+
+def _character_clothing_prompt(info):
+    if _character_is_nsfw(info):
+        return "penis, naked, nude" if info.get("sex", "female") == "male" else "naked, nude, vagina, nipples"
     return "bare chest, wear white boxers" if info.get("sex", "female") == "male" else "wear white bra and panties"
 
 
@@ -1004,6 +1030,44 @@ def _character_framing_key(info):
     if str(info.get("image_type", "")).strip().lower() == "portrait":
         return "portrait"
     return "full_body" if str(info.get("framing", "") or "").strip().lower() == "full_body" else "cowboy_shot"
+
+
+def _character_body_traits(info):
+    body, breasts = [], []
+    for token in _split_prompt_tokens(info.get("body", "")):
+        key = preset_key(token)
+        if re.fullmatch(r"(?:flat chest|(?:small|medium|large|huge|big) breasts|breasts|alternate breast size \(larger\))", key):
+            breasts.append(token)
+        else:
+            body.append(token)
+    build = _join_prompt_tokens(body) if breasts else str(info.get("body") or "").strip()
+    return build, str(info.get("breast_size") or _join_prompt_tokens(breasts)).strip()
+
+
+def _character_prompt_fields(info, generation_mode="illustrious"):
+    framing_key = _character_framing_key(info)
+    background = _effective_character_background(info.get("background_color", ""), generation_mode)
+    body, breasts = _character_body_traits(info)
+    fields = {
+        "gender": info.get("sex", "female"),
+        "age": f"{int(info.get('age', 18))} years-old",
+        **{key: info.get(key, "") for key in (
+            "race", "skin_color", "face", "hair", "eyes", "additional_details",
+        )},
+        "body": body,
+        "race_features": race_features(info.get("race", ""), plain=True),
+        "nsfw" if _character_is_nsfw(info) else "clothing": _character_clothing_prompt(info),
+        "expression": "expressionless",
+        "framing": QI2_NATURAL_FRAMING[framing_key],
+        "background": QI2_ALPHA_BACKGROUND_PROMPT if background == "Transparent" else (
+            f"solid {background} background" if background else "simple background"
+        ),
+        "aesthetics": info.get("aesthetics", "masterpiece"),
+        "lora_prompt": info.get("lora_prompt", ""),
+    }
+    if fields["gender"] == "female":
+        fields["breast_size"] = breasts
+    return {key: str(value or "").strip() for key, value in fields.items()}
 
 
 def _qi2_character_fields(info):
@@ -1027,6 +1091,55 @@ def _qi2_character_fields(info):
         "lora_prompt": info.get("lora_prompt", ""),
     }
     return {key: str(value or "").strip() for key, value in fields.items()}
+
+
+def _structured_character_prompt(fields, style_reference=""):
+    style, reference, description = "", "", str(style_reference or "").strip()
+    reference = next((
+        item.get("reference", "")
+        for group in CHARACTER_STYLE_CATALOG["groups"] for item in group["styles"]
+        if item["prompt"] == description
+    ), "")
+    lines = description.splitlines()
+    if len(lines) == 3 and lines[0].startswith("Style: ") and lines[1].startswith("Reference: ") and lines[2].startswith("Visual description: "):
+        style = lines[0].removeprefix("Style: ")
+        reference = lines[1].removeprefix("Reference: ")
+        description = lines[2].removeprefix("Visual description: ")
+    elif len(lines) > 1 and lines[0].startswith("Style: "):
+        style = lines[0].removeprefix("Style: ")
+        description = " ".join(lines[1:])
+        visual, marker, influences = description.partition(" Influenced by: ")
+        if marker:
+            reference, preservation, suffix = influences.partition(" Apply this visual treatment only;")
+            description = visual + preservation + suffix
+    prompt = [
+        f"Draw an image of a character in the following style: {style}",
+        f"Style reference: {reference}",
+        f"Style description: {description}",
+        f"Additional style parameters: {fields.get('aesthetics', '')}",
+        "The image contains one character.",
+        f"Framing: {QI2_COMPOSITION_PROMPT} {fields.get('framing', '')}",
+        f"Background: {fields.get('background', '')}",
+        f"Gender: {fields.get('gender', '')}",
+        f"Age: {fields.get('age', '')}",
+        f"Race: {', '.join(value for value in (fields.get('race', ''), fields.get('race_features', '')) if value)}",
+        f"Facial features: {', '.join(value for value in (fields.get('face', ''), fields.get('expression', '')) if value)}",
+        f"Hair: {fields.get('hair', '')}",
+        f"Eyes: {fields.get('eyes', '')}",
+        f"Skin color: {fields.get('skin_color', '')}",
+    ]
+    if fields.get("gender") == "female":
+        prompt.append(f"Breast size: {fields.get('breast_size', '')}")
+    prompt.append(f"Build: {fields.get('body', '')}")
+    if "nsfw" in fields:
+        prompt.append(f"Body details: {fields['nsfw']}")
+    else:
+        prompt.append(f"Clothes: {fields.get('clothing', '')}")
+    prompt.extend([
+        f"Additional details: {fields.get('additional_details', '')}",
+        f"LoRA triggers: {fields.get('lora_prompt', '')}",
+    ])
+    return "\n".join(prompt)
 
 
 def _qi2_visual_phrase(source, description):
@@ -1127,17 +1240,73 @@ def generate_qi2_prompt(clip, character_prompt, style_reference="", character_in
     return rewritten_prompt
 
 
+def generate_creator_qi2_prompt(clip, character_prompt, style_reference="", character_info=None, enhance=True):
+    """Temporarily use Qwen's official text-to-image master prompt."""
+    _ensure_prompt_server_progress_context()
+    log_event("prompt_enhancement", component="Creator", enabled=enhance)
+    fields = _character_prompt_fields(character_info, "qi2") if character_info is not None else None
+    if fields is not None:
+        fields = {key: _strip_unit_prompt_weights(value) for key, value in fields.items()}
+        original_prompt = _structured_character_prompt(fields, style_reference)
+    else:
+        original_prompt = str(character_prompt or "").strip()
+    if not enhance:
+        return original_prompt
+    from .character_generator import _call_comfy_node
+
+    if fields is not None:
+        request = original_prompt.rsplit("\nLoRA triggers:", 1)[0]
+    else:
+        request = original_prompt
+    prompt_path = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+                               "character_template", "qwen_image_21_t2i_system_prompt.txt")
+    with open(prompt_path, "r", encoding="utf-8") as prompt_file:
+        system_prompt = prompt_file.read().strip()
+    generated_text = _call_comfy_node(
+        "TextGenerate",
+        clip=clip,
+        prompt=request,
+        system_prompt=system_prompt,
+        **QI2_TEXT_GENERATION_DEFAULTS,
+    )[0]
+    log_event("prompt_enhancement_output", component="Creator", level="debug", output=generated_text, truncate=False)
+    rewritten_prompt = _strip_unit_prompt_weights(_qi2_rewritten_prompt(generated_text, request))
+    applied = rewritten_prompt != request
+    log_event("prompt_enhancement_result", component="Creator", applied=applied,
+              template="Qwen Image 2.1 T2I")
+    if not applied:
+        log_event("warning", component="Creator", level="warning",
+                  message="Prompt enhancement returned no rewritten prompt; the original character prompt is retained.")
+    if (
+        QI2_ALPHA_BACKGROUND_PROMPT in request.lower()
+        and QI2_ALPHA_BACKGROUND_PROMPT not in rewritten_prompt.lower()
+    ):
+        rewritten_prompt = f"{rewritten_prompt.rstrip()}\n{QI2_ALPHA_BACKGROUND_PROMPT}"
+    if style_reference:
+        # Append only after PE and weight cleanup, preserving references verbatim.
+        rewritten_prompt = f"{rewritten_prompt}\n\n{QI2_STYLE_REFERENCE_HEADING}\n{style_reference}"
+    if fields is not None and fields.get("lora_prompt"):
+        rewritten_prompt = f"{rewritten_prompt}\n\nLoRA triggers: {fields['lora_prompt']}"
+    return rewritten_prompt
+
+
 def encode_generation_conditioning(
-    clip, vae, positive_text, negative_text, gen_settings, style_reference="", character_info=None,
+    clip, vae, positive_text, negative_text, gen_settings, style_reference="", character_info=None, creator_prompt=False,
 ):
     """QI2 callers supply a style-free body and the selected reference separately."""
     log_stage("encoding the character prompt")
     if str(gen_settings.get("generation_mode", "illustrious")).lower() == "qi2":
         from .character_generator import _call_comfy_node
 
-        rewritten_prompt = generate_qi2_prompt(
-            clip, positive_text, style_reference=style_reference, character_info=character_info,
-        )
+        if creator_prompt:
+            rewritten_prompt = generate_creator_qi2_prompt(
+                clip, positive_text, style_reference=style_reference, character_info=character_info,
+                enhance=gen_settings.get("qi2_prompt_enhancement", True) is not False,
+            )
+        else:
+            rewritten_prompt = generate_qi2_prompt(
+                clip, positive_text, style_reference=style_reference, character_info=character_info,
+            )
         positive, negative, _encoder_latent = _call_comfy_node(
             "TextEncodeQwenImage21",
             clip=clip,
@@ -1335,7 +1504,7 @@ if server:
     @server.PromptServer.instance.routes.get("/vnccs/character_styles")
     async def get_character_styles(request):
         try:
-            styles = load_user_styles()
+            styles = await asyncio.to_thread(load_user_styles)
             groups = [
                 {**group, "styles": [{**style, "image": style_preview_url(style["id"])} for style in group["styles"]]}
                 for group in CHARACTER_STYLE_CATALOG["groups"] + ([{"label": "My styles", "styles": styles}] if styles else [])
@@ -1355,8 +1524,10 @@ if server:
                 body.extend(chunk)
                 if len(body) > 70000:
                     return web.json_response({"error": "Style payload is too large"}, status=413)
-            style = save_user_style(json.loads(body))
+            style = await asyncio.to_thread(save_user_style, json.loads(body))
             return web.json_response({"style": {**style, "image": style_preview_url(style["id"])}})
+        except StorageConflictError as error:
+            return web.json_response({"error": str(error)}, status=409)
         except (ValueError, UnicodeError) as error:
             return web.json_response({"error": str(error)}, status=400)
         except OSError:
@@ -1367,7 +1538,7 @@ if server:
     async def delete_character_style(request):
         try:
             style_id = request.rel_url.query.get("style", "")
-            if not delete_user_style(style_id):
+            if not await asyncio.to_thread(delete_user_style, style_id):
                 return web.json_response({"error": "User style no longer exists"}, status=404)
             return web.json_response({"deleted": True, "style_id": style_id})
         except ValueError as error:
@@ -1428,15 +1599,19 @@ if server:
                 return web.json_response({})
             name = ensure_safe_name(name, "character")
                 
-            config = load_config(name, strict=True)
-            if config is None:
+            def read_profile():
+                with character_storage_lock(character_dir(name)):
+                    config = load_config(name, strict=True)
+                    if config is None:
+                        return None
+                    return config.get("character_info", {})
+            snapshot = await asyncio.to_thread(read_profile)
+            if snapshot is None:
                 return web.json_response({"error": "Character not found"}, status=404)
-            if config and "character_info" in config:
-                return web.json_response(config["character_info"])
-            return web.json_response({})
+            return web.json_response(snapshot)
             
         except Exception as e:
-            log_event('exception', component='Creator', level='error', exc_info=True, message='Operation failed', error=str(e))
+            log_event('exception', component='Creator', level='error', exc_info=True, truncate=False, message='Operation failed', error=str(e))
             return web.Response(status=500, text="Failed to load character info")
 
     @server.PromptServer.instance.routes.get("/vnccs/get_cached_preview")
@@ -1641,7 +1816,7 @@ Example:
 
             log_stage("parsing_description")
             content = response["choices"][0]["message"]["content"]
-            log_event("wizard_output", component="Creator", level="debug", output=content)
+            log_event("wizard_output", component="Creator", output=content, truncate=False)
             parsed = _parse_character_wizard_json(content or "")
             if parsed is None:
                 return web.json_response({
@@ -1653,7 +1828,7 @@ Example:
 
             return web.json_response(parsed)
         except Exception as e:
-            log_event('exception', component='Creator', level='debug', exc_info=True, message='Operation failed', error=str(e))
+            log_event('exception', component='Creator', level='error', exc_info=True, truncate=False, message='Operation failed', error=str(e))
             return web.json_response({
                 "error": "INFERENCE_ERROR",
                 "message": f"Engine Error: {e}",
@@ -1680,21 +1855,26 @@ Example:
             if style_preview is not None:
                 char_info = {**char_info, "image_type": "Portrait"}
                 char_info.pop("framing", None)
+            style_revision = None
+            if style_preview is not None and style_preview.startswith("user_"):
+                style = next((style for style in load_user_styles() if style["id"] == style_preview), None)
+                if style is None:
+                    raise ValueError("User style no longer exists")
+                style_revision = style["revision"]
+                # Pin the prompt used by every generation stage to this revision.
+                char_info = {**char_info, "style": "custom", "custom_style": style["prompt"]}
             character_name = data.get("character", "Unknown")
             info_owner = str(char_info.get("name", "") or "").strip()
             if style_preview is None and info_owner and info_owner != str(character_name):
                 return web.Response(status=400, text=f"Character metadata belongs to '{info_owner}', but '{character_name}' is selected. Reload the selected character before generating.")
-            log_event("generation_settings", character=character_name,
-                      mode=gen_settings.get("generation_mode"), steps=gen_settings.get("steps"), cfg=gen_settings.get("cfg"))
-
             # Generate Prompt
-            positive_text, negative_text = CharacterCreatorV2.construct_prompt(
+            positive_text, negative_text = CharacterCreatorV2.construct_creator_prompt(
                 char_info,
                 gen_settings.get("generation_mode", "illustrious"),
                 include_style=gen_settings.get("generation_mode") != "qi2",
             )
             CharacterCreatorV2.log_generation_prompts(
-                "Preview",
+                "Preview input before enhancement",
                 positive_text,
                 negative_text,
                 framing=char_info.get("image_type") or char_info.get("framing"),
@@ -1713,6 +1893,7 @@ Example:
                 square_style_resolution(gen_settings["target_size"])
                 if style_preview is not None else get_generation_resolution(gen_settings)
             )
+            _log_creator_generation_settings(character_name, char_info, gen_settings, width, height)
 
             # Load Models (With Cache)
             global PREVIEW_CACHE
@@ -1723,21 +1904,7 @@ Example:
                 except ValueError as exc:
                     return web.Response(status=400, text=str(exc))
 
-                # Helper for Cached LoRA
-                def apply_lora_cached(m, c, l_name, l_strength, clip_strength=None):
-                    if not l_name or l_name == "None": return m, c
-                    
-                    lora_dict = PREVIEW_CACHE["loras"].get(l_name)
-                    if not lora_dict:
-                        l_path = get_lora_full_path(l_name)
-                        if l_path:
-                            lora_dict = comfy.utils.load_torch_file(l_path, safe_load=True)
-                            PREVIEW_CACHE["loras"][l_name] = lora_dict
-                            log_event("lora_cache", component="Creator", level="debug", model=l_name)
-                    
-                    if lora_dict:
-                        return comfy.sd.load_lora_for_models(m, c, lora_dict, l_strength, l_strength if clip_strength is None else clip_strength)
-                    return m, c
+                apply_lora_cached = apply_generation_lora
 
                 if generation_mode == "anima":
                     if gen_settings.get("turbo_enabled"):
@@ -1782,11 +1949,11 @@ Example:
                     negative_text,
                     gen_settings,
                     style_reference=_character_style_prompt(char_info),
-                    character_info=char_info,
+                    character_info=char_info, creator_prompt=True,
                 )
                 if generation_mode == "qi2":
                     CharacterCreatorV2.log_generation_prompts(
-                        "QI2 rewritten preview",
+                        "QI2 encoded preview",
                         encoded_positive_text,
                         negative_text,
                         framing=char_info.get("image_type") or char_info.get("framing"),
@@ -1816,8 +1983,9 @@ Example:
                 img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8)[0])
 
             if style_preview is not None:
-                save_preview = save_user_style_preview if style_preview.startswith("user_") else save_style_preview
-                return web.json_response(save_preview(style_preview, img))
+                saved = (save_user_style_preview(style_preview, img, style_revision)
+                         if style_revision is not None else save_style_preview(style_preview, img))
+                return web.json_response(saved)
 
             # Save Smart Cache
             c_path = safe_join_under(character_dir(character_name), "cache", "preview.png")
@@ -1832,8 +2000,10 @@ Example:
 
             return web.json_response({"image": img_b64})
 
+        except StorageConflictError as error:
+            return web.json_response({"error": str(error)}, status=409)
         except Exception as e:
-            log_event('exception', component='Creator', level='debug', exc_info=True, message='Operation failed', error=str(e))
+            log_event('exception', component='Creator', level='error', exc_info=True, truncate=False, message='Operation failed', error=str(e))
             return web.Response(status=500, text=str(e))
 
 
@@ -1845,7 +2015,7 @@ Example:
             data = await request.json()
             return await run_preview_job(_generate_preview_response, data)
         except Exception as exc:
-            log_event('exception', component='Creator', level='error', exc_info=True, message='Operation failed', error=str(exc))
+            log_event('exception', component='Creator', level='error', exc_info=True, truncate=False, message='Operation failed', error=str(exc))
             return web.json_response({"error": str(exc)}, status=500)
 
     @server.PromptServer.instance.routes.post("/vnccs/character_styles/preview")
@@ -1864,7 +2034,8 @@ Example:
                 raise ValueError("Character info and generation settings must be objects")
             if len(json.dumps(data)) > 150000:
                 raise ValueError("Style preview payload is too large")
-            styles = {**CHARACTER_STYLE_PROMPTS, **{style["id"]: style["prompt"] for style in load_user_styles()}}
+            users = await asyncio.to_thread(load_user_styles)
+            styles = {**CHARACTER_STYLE_PROMPTS, **{style["id"]: style["prompt"] for style in users}}
             if style_id == "custom":
                 prompt = info.get("custom_style", "")
                 if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
@@ -1939,7 +2110,9 @@ class CharacterCreatorV2:
                 "additional_details": "", "seed": 0, "lora_prompt": "",
                 "negative_prompt": "bad quality,worst quality,worst detail,sketch,censor, missing arm, missing leg, distorted body",
             }
-            positive, negative = cls.construct_prompt(info)
+            if catalog == "creator_v2":
+                info["body"], info["breast_size"] = _character_body_traits(info)
+            positive, negative = (cls.construct_creator_prompt if catalog == "creator_v2" else cls.construct_prompt)(info)
             face_details = _strip_unit_prompt_weights(build_face_details(info)) + ", (expressionless)"
             ensure_character_structure(name)
             config = {
@@ -2025,13 +2198,77 @@ class CharacterCreatorV2:
 
         return positive_prompt, negative_prompt
 
+
+    @staticmethod
+    def construct_tag_prompt(info, generation_mode="illustrious", include_style=True):
+        """Use the pre-3.2 tag format for Anima and Illustrious."""
+        defaults = CREATOR_TAG_PROMPT_DEFAULTS[generation_mode]
+        sex = info.get("sex", "female")
+        style = _character_style_prompt({**info, "style": info.get("style") or "none"}) if include_style else ""
+        framing = {
+            "portrait": "portrait, close-up, head and shoulders",
+            "full_body": "standing, full body",
+            "cowboy_shot": "cowboy_shot",
+        }[_character_framing_key(info)]
+        positive = ", ".join(part for part in (
+            style, info.get("aesthetics", defaults["aesthetics"]),
+            "simple background", "expressionless", "solo", framing,
+        ) if part)
+        positive, gender_negative = apply_sex(sex, positive, "")
+        positive += f", ({_character_clothing_prompt(info)})"
+        positive = append_age(positive, int(info.get("age", 18)), sex)
+        background = _effective_character_background(info.get("background_color", ""), generation_mode)
+        if background:
+            positive += f", {background} background"
+        body, breasts = _character_body_traits(info)
+        body = ", ".join(value for value in (body, breasts if sex == "female" else "") if value)
+        for key in ("race", "hair", "eyes", "face", "body", "skin_color", "additional_details"):
+            value = body if key == "body" else info.get(key, "")
+            if key == "hair":
+                value = normalize_hair_tags(value)
+            if value:
+                positive += f", ({value}:1.0)"
+        if info.get("lora_prompt"):
+            positive += f", {info['lora_prompt']}"
+        negative = dedupe_tokens(f"{info.get('negative_prompt', defaults['negative_prompt'])},{gender_negative}")
+        return positive, negative
+
+    @staticmethod
+    def construct_creator_prompt(info, generation_mode="illustrious", include_style=True):
+        """
+        Centralized logic for constructing positive/negative prompts from character info.
+
+        QI2 generation omits the style here and passes it separately to conditioning
+        so the prompt rewriter cannot alter artist names or work references.
+        """
+        sex = info.get("sex", "female")
+        generation_mode = str(generation_mode or "illustrious").lower()
+        if generation_mode in CREATOR_TAG_PROMPT_DEFAULTS:
+            return CharacterCreatorV2.construct_tag_prompt(info, generation_mode, include_style)
+        fields = _character_prompt_fields(info, generation_mode)
+        fields["hair"] = normalize_hair_tags(fields["hair"])
+        fields = {key: _strip_unit_prompt_weights(value) for key, value in fields.items()}
+        positive_prompt = _structured_character_prompt(
+            fields, _character_style_prompt(info) if include_style else "",
+        )
+        _, gender_negative = apply_sex(sex, "", "")
+
+        # Negative Prompt
+        neg = info.get("negative_prompt", "")
+        negative_prompt = _strip_unit_prompt_weights(
+            dedupe_tokens(f"{neg},{gender_negative}")
+        )
+
+        return positive_prompt, negative_prompt
+
     @staticmethod
     def log_generation_prompts(context, positive_prompt, negative_prompt, framing=None):
         label = str(context or "Generation").strip() or "Generation"
         log_event("prompt_ready", component="Creator", context=label, framing=framing,
                   positive_chars=len(positive_prompt), negative_chars=len(negative_prompt))
-        log_event("prompts", component="Creator", level="debug",
-                  positive=positive_prompt, negative=negative_prompt)
+        log_event("prompts", component="Creator", context=label, framing=framing,
+                  positive=positive_prompt, negative=negative_prompt, truncate=False,
+                  display_text=f"Positive prompt:\n{positive_prompt}\n\nNegative prompt:\n{negative_prompt}")
 
     @classmethod
     def IS_CHANGED(cls, widget_data="{}", **kwargs):
@@ -2043,7 +2280,8 @@ class CharacterCreatorV2:
         root = character_dir(character)
         paths = [config_path(character), safe_join_under(root, "cache", "preview.png")]
         paths.extend(list_pose_preview_files(character))
-        return json.dumps([file_fingerprint(path) for path in paths])
+        return json.dumps([_character_style_prompt(data.get("character_info", {})), [file_fingerprint(path) for path in paths],
+                           _generation_file_signatures(normalize_gen_settings(data.get("gen_settings", {})))])
 
     @logged_operation("Creator", "workflow")
     @serialized_generator
@@ -2065,15 +2303,13 @@ class CharacterCreatorV2:
             del PREVIEW_CACHE["asset_obj"]
             PREVIEW_CACHE["asset_obj"] = None
         PREVIEW_CACHE["asset_key"] = None
-        PREVIEW_CACHE["loras"].clear()
 
         # Extract values
         info = data.get("character_info", {})
         gen_settings = normalize_gen_settings(data.get("gen_settings", {}))
         seed = resolve_generation_seed(gen_settings, seed_resolved=data.pop("_vnccs_seed_resolved", False) is True)
         gen_settings["seed"] = seed
-        log_event("generation_settings", character=character_name,
-                  mode=gen_settings.get("generation_mode"), steps=gen_settings.get("steps"), cfg=gen_settings.get("cfg"))
+        _log_creator_generation_settings(character_name, info, gen_settings)
         info_owner = str(info.get("name", "") or "").strip()
         if info_owner and info_owner != str(character_name):
             raise ValueError(
@@ -2082,13 +2318,13 @@ class CharacterCreatorV2:
             )
         
         # 1. Generate Prompts
-        positive_prompt, negative_prompt = self.construct_prompt(
+        positive_prompt, negative_prompt = self.construct_creator_prompt(
             info,
             gen_settings.get("generation_mode", "illustrious"),
             include_style=gen_settings.get("generation_mode") != "qi2",
         )
         self.log_generation_prompts(
-            "Workflow",
+            "Workflow input before enhancement",
             positive_prompt,
             negative_prompt,
             framing=info.get("framing"),
@@ -2103,10 +2339,10 @@ class CharacterCreatorV2:
         sheets_path = sheets_dir(character_name) # Uses default "Naked", "neutral", "sheet_neutral"
         faces_path = faces_dir(character_name)   # Uses default "Naked", "neutral", "face_neutral"
 
-        ensure_character_structure(character_name)
-
         with character_storage_lock(character_path):
-            config = load_config(character_name, strict=True) or {
+            config = load_config(character_name, strict=True)
+            ensure_character_structure(character_name)
+            config = config or {
                 "character_info": {},
                 "folder_structure": {
                     "main_directories": MAIN_DIRS,
@@ -2118,7 +2354,7 @@ class CharacterCreatorV2:
 
             info["name"] = character_name
             info["seed"] = gen_settings.get("seed", 0)
-            config["character_info"] = info
+            config["character_info"] = {**config.get("character_info", {}), **info}
             config["character_path"] = character_path
             if "costumes" not in config:
                 config["costumes"] = {}
@@ -2223,13 +2459,7 @@ class CharacterCreatorV2:
                 _, model, clip, vae = load_generation_assets(gen_settings)
 
                 # Helper to apply LoRA
-                def apply_lora_safe(m, c, l_name, l_strength, clip_strength=None):
-                    if not l_name or l_name == "None": return m, c
-                    l_path = get_lora_full_path(l_name)
-                    if l_path:
-                        lora = comfy.utils.load_torch_file(l_path, safe_load=True)
-                        return comfy.sd.load_lora_for_models(m, c, lora, l_strength, l_strength if clip_strength is None else clip_strength)
-                    return m, c
+                apply_lora_safe = apply_generation_lora
 
                 stage = "applying generation adapters"
                 log_stage(stage)
@@ -2282,11 +2512,11 @@ class CharacterCreatorV2:
                     negative_prompt,
                     gen_settings,
                     style_reference=_character_style_prompt(info),
-                    character_info=info,
+                    character_info=info, creator_prompt=True,
                 )
                 if generation_mode == "qi2":
                     self.log_generation_prompts(
-                        "QI2 rewritten workflow",
+                        "QI2 encoded workflow",
                         encoded_positive_prompt,
                         negative_prompt,
                         framing=info.get("framing"),
@@ -2297,6 +2527,7 @@ class CharacterCreatorV2:
                 stage = "creating the generation latent"
                 log_stage(stage)
                 width, height = get_generation_resolution(gen_settings)
+                log_event("generation_resolution", component="Creator", width=width, height=height)
                 latent = create_generation_latent(model, width, height, gen_settings)
                 stage = "sampling the character image"
                 log_stage(stage)

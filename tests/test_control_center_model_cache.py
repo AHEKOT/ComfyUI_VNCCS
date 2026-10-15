@@ -153,6 +153,37 @@ def test_supported_loaders_and_both_h3_vaes_are_reused(monkeypatch, tmp_path, ki
         assert calls.count(model_type) == 1
 
 
+@pytest.mark.parametrize("asset", ["model", "clip", "vae", "adapter"])
+def test_workflow_cache_changes_when_catalog_weights_are_replaced(monkeypatch, tmp_path, asset):
+    config, paths, state, _calls = setup(monkeypatch, tmp_path)
+    adapter = tmp_path / "adapter"
+    adapter.write_bytes(b"adapter weights")
+    config["lora"] = [{"name": "adapter", "kind": "QI2", "local_path": "models/loras/adapter.safetensors"}]
+    paths[config["lora"][0]["local_path"]] = str(adapter)
+    arguments = {"repo_id": "test/repo", "node_state": json.dumps(state)}
+    first = cc.VNCCS_ControlCenter.IS_CHANGED(**arguments)
+    assert cc.VNCCS_ControlCenter.IS_CHANGED(**arguments) == first
+    (tmp_path / asset).write_bytes(b"replacement weights with a different size")
+    assert cc.VNCCS_ControlCenter.IS_CHANGED(**arguments) != first
+
+
+def test_model_builder_waits_for_preview_inference(monkeypatch, tmp_path):
+    from nodes.runtime_cleanup import inference_lock
+    _config, _paths, state, _calls = setup(monkeypatch, tmp_path)
+    entered = threading.Event()
+    load = cc.comfy.sd.load_diffusion_model
+    def observed_load(*args, **kwargs):
+        entered.set()
+        return load(*args, **kwargs)
+    monkeypatch.setattr(cc.comfy.sd, "load_diffusion_model", observed_load)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with inference_lock:
+            future = executor.submit(cc.VNCCS_ControlCenter().execute, "test/repo", json.dumps(state))
+            assert not entered.wait(0.1)
+        assert future.result(timeout=2)[0].model is not None
+    assert entered.is_set()
+
+
 def test_simultaneous_loads_reuse_one_asset_and_failures_are_retryable(monkeypatch, tmp_path):
     monkeypatch.setattr(cc, "_MODEL_ASSET_CACHE", {})
     path = tmp_path / "model"
@@ -188,7 +219,8 @@ def test_simultaneous_loads_reuse_one_asset_and_failures_are_retryable(monkeypat
 def test_lora_weights_reuse_and_file_replacement(monkeypatch, tmp_path):
     cc._cached_lora_file.cache_clear()
     path = tmp_path / "adapter.safetensors"
-    contents = (2).to_bytes(8, "little") + b"{}" + b"\0" * 1024
+    header = json.dumps({"weight": {"dtype": "U8", "shape": [1024], "data_offsets": [0, 1024]}}).encode()
+    contents = len(header).to_bytes(8, "little") + header + b"\0" * 1024
     path.write_bytes(contents)
     calls = []
     monkeypatch.setattr(cc.comfy.utils, "load_torch_file", lambda name, **kwargs:
@@ -207,7 +239,7 @@ def test_lora_weights_reuse_and_file_replacement(monkeypatch, tmp_path):
     first = cc._load_lora_file(str(path))
     assert cc._load_lora_file(str(path)) is first
     assert calls == [{"safe_load": True, "return_metadata": True}]
-    path.write_bytes(contents + b"new adapter weights")
+    path.write_bytes(contents[:-1] + b"\1")
     assert cc._load_lora_file(str(path)) is not first
     assert len(calls) == 2
     cc._cached_lora_file.cache_clear()

@@ -27,6 +27,60 @@ def test_registered_node_result_unwraps_comfy_node_output():
     assert _unwrap_node_result(output) is output.result[0]
 
 
+@pytest.mark.parametrize("method", ["chroma_soft", "guided_edge", "pymatting_if_available"])
+@pytest.mark.parametrize("output_mode", ["straight_rgba", "premultiplied_rgba"])
+def test_chroma_key_preserves_existing_transparent_and_partial_alpha(monkeypatch, method, output_mode):
+    node = VNCCSChromaKey()
+    monkeypatch.setattr(node, "_pymatting_refine_if_available", lambda image, alpha, *args: alpha)
+    image = torch.zeros(1, 64, 64, 4)
+    image[..., 1] = 1
+    image[..., 3] = 1
+    image[:, 16:48, 16:48, :3] = torch.tensor([1.0, 0.0, 0.0])
+    image[:, 20:28, 20:28, 3] = 0
+    image[:, 28:40, 28:40, 3] = .5
+
+    rgba, alpha, _ = node.chroma_key(
+        image, .15, .12, .65, 3, .1, .35, .75, .08,
+        method, "green", output_mode,
+    )
+
+    assert torch.all(alpha <= image[..., 3])
+    assert alpha[0, 24, 24] == 0
+    assert alpha[0, 32, 32] == .5
+    assert alpha[0, 44, 44] == 1
+    torch.testing.assert_close(rgba[..., 3], alpha)
+    expected_red = .5 if output_mode == "premultiplied_rgba" else 1
+    assert rgba[0, 32, 32, 0] == expected_red
+
+
+@pytest.mark.parametrize("output_mode", ["straight_rgba", "premultiplied_rgba"])
+def test_sam3_recovery_preserves_alpha_and_does_not_double_premultiply(output_mode):
+    original_rgb = torch.tensor([.2, .4, .6]).expand(12, 12, 3)
+    current_rgb = torch.tensor([.8, .6, .4]).expand(12, 12, 3)
+    original_alpha = torch.full((12, 12), .5)
+    original_alpha[5:7, 5:7] = 0
+    original = torch.cat([original_rgb, original_alpha[..., None]], dim=-1)
+    alpha = original_alpha * .5
+    stored_rgb = current_rgb * alpha[..., None] if output_mode == "premultiplied_rgba" else current_rgb
+    rgba = torch.cat([stored_rgb, alpha[..., None]], dim=-1)
+    recovery = torch.zeros_like(alpha)
+    recovery[2:10, 2:10] = .25
+    recovery[4:8, 4:8] = 1
+
+    result, restored_alpha, _ = VNCCSChromaKey()._restore_recovery_details(
+        original, rgba, alpha, torch.zeros(12, 12, 3), recovery,
+        output_mode, erode_radius=0,
+    )
+
+    expected_alpha = torch.minimum(torch.maximum(alpha, recovery), original_alpha)
+    expected_rgb = torch.lerp(current_rgb, original_rgb, recovery[..., None])
+    if output_mode == "premultiplied_rgba":
+        expected_rgb = expected_rgb * expected_alpha[..., None]
+    torch.testing.assert_close(restored_alpha, expected_alpha)
+    torch.testing.assert_close(result[..., :3], expected_rgb)
+    torch.testing.assert_close(result[0, 0], rgba[0, 0])
+
+
 def test_standalone_chroma_key_executes_saved_widget_values():
     node = vnccs_utils.NODE_CLASS_MAPPINGS["VNCCSChromaKey"]()
     widget_values = [0.2, 0.1, 0.7, 3, 0.1, 0.3, 0.8, 0.1, "guided_edge", "auto", "straight_rgba", False]

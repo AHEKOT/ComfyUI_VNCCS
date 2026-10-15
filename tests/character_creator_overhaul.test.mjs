@@ -11,6 +11,7 @@ class Element {
         this.tagName = tag;
         this.children = [];
         this.style = {};
+        this.dataset = {};
         this.attrs = {};
         this.classes = new Set();
         this.classList = { toggle: (key, enabled) => enabled ? this.classes.add(key) : this.classes.delete(key) };

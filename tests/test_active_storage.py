@@ -20,6 +20,26 @@ def test_paths_reject_symlink_escape_and_portable_traversal(tmp_path):
             utils.safe_join_under(str(root), path)
 
 
+@pytest.mark.parametrize("operation", ["read", "write"])
+def test_character_config_rejects_external_file_symlinks(tmp_path, monkeypatch, operation):
+    root = tmp_path / "characters"
+    character = root / "Alice"
+    character.mkdir(parents=True)
+    outside = tmp_path / "outside.json"
+    original = b'{"private": "must stay outside the character library"}'
+    outside.write_bytes(original)
+    config = character / "Alice_config.json"
+    config.symlink_to(outside)
+    monkeypatch.setattr(utils, "base_output_dir", lambda: str(root))
+    with pytest.raises(ValueError, match="outside allowed directory"):
+        if operation == "read":
+            utils.load_config("Alice", strict=True)
+        else:
+            utils.save_config("Alice", {"character_info": {}})
+    assert outside.read_bytes() == original
+    assert config.is_symlink()
+
+
 @pytest.mark.parametrize("group", utils.MAIN_DIRS)
 @pytest.mark.parametrize("kind", ["character", "costume"])
 @pytest.mark.parametrize("redirect_group", [True, False])

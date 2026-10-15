@@ -59,6 +59,23 @@ def request(query=None, data=None, headers=None):
                            headers=headers if headers is not None else {"X-VNCCS-CSRF": "1"})
 
 
+def test_custom_preview_pipes_are_isolated_by_workflow_scope(monkeypatch):
+    from weakref import WeakValueDictionary
+    monkeypatch.setattr(control, "_CUSTOM_PREVIEW_PIPES", WeakValueDictionary())
+    first = control.VNCCSPipeProxy(object(), object(), object())
+    second = control.VNCCSPipeProxy(object(), object(), object())
+    for scope, pipe in (("workflow-a", first), ("workflow-b", second)):
+        monkeypatch.setattr(control, "_build_control_center_pipe", lambda *args, _pipe=pipe, **kwargs: _pipe)
+        control.VNCCS_ControlCenter().execute("catalog", {"preview_scope": scope},
+            model=pipe.model, clip=pipe.clip, vae=pipe.vae, unique_id="7")
+    assert control._CUSTOM_PREVIEW_PIPES[("workflow-a", "7")] is first
+    assert control._CUSTOM_PREVIEW_PIPES[("workflow-b", "7")] is second
+    control.VNCCS_ControlCenter().execute("catalog", {"preview_scope": "workflow-b"}, unique_id="7")
+    assert control._CUSTOM_PREVIEW_PIPES[("workflow-a", "7")] is first
+    assert ("workflow-b", "7") not in control._CUSTOM_PREVIEW_PIPES
+    assert control._preview_state_key("catalog", {"preview_scope": "workflow-a"}) == control._preview_state_key("catalog", {})
+
+
 def test_legacy_create_costume_requires_privileged_request(routes):
     handler = routes["/vnccs/create_costume"]
     query = {"character": "Alice", "costume": "Coat"}

@@ -117,7 +117,7 @@ def test_qi2_preview_cache_never_reuses_text_encoder(monkeypatch):
 def test_qi2_settings_normalize_cache_and_turbo_defaults():
     normal = creator.normalize_gen_settings({"generation_mode": "qi2"})
     assert normal["steps"] == 25
-    assert normal["cfg"] == 3.0
+    assert normal["cfg"] == 1.0
     assert normal["clip_type"] == "qwen_image"
     assert normal["qi2_cache"] == {"device": "gpu", "dtype": "int8"}
 

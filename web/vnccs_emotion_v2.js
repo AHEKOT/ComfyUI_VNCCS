@@ -1,10 +1,12 @@
 import { app } from "../../scripts/app.js";
+import { createSakuraInteractions } from "./sakura_interactions.mjs";
 import { vnccsApi as api, mediaURL, storage } from "./vnccs_transport.js";
-import { showModal as showCommonModal, SAKURA_THEME_CSS, registerCleanup, createRequestGuard, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createControlCenterClient, installResolvedSeedTransport } from "./vnccs_common.js";
+import { showModal as showCommonModal, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, registerCleanup, createRequestGuard, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createControlCenterClient, installResolvedSeedTransport } from "./vnccs_common.js";
 
 // --- CSS STYLES: Sakura Archive Design System ---
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+${SAKURA_INTERACTION_CSS}
 
 /* ── Variables ── */
 .ems-container {
@@ -13,6 +15,7 @@ ${SAKURA_THEME_CSS}
 
 /* ── Container ── */
 .ems-container {
+    position: relative;
     display: flex;
     flex-direction: row;
     gap: 10px;
@@ -1091,6 +1094,18 @@ ${SAKURA_THEME_CSS}
     font-size: 12px;
     font-weight: 700;
 }
+
+.ems-container :is(button, [role="button"]):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ems-container :is(input, select, .vnccs-common-ui-select-trigger) { box-sizing: border-box; }
+@media (prefers-reduced-motion: reduce) {
+    .ems-container *, .ems-container *::before, .ems-container *::after {
+        animation: none !important; transition: none !important;
+    }
+}
+.ems-char-preview { position: absolute; inset: 0; }
+.ems-container :is(.ems-input, .em-select) { min-height: 34px; }
+.ems-container :is(.ems-toggle-thumb, .em-toggle-thumb) { transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1), background-color 180ms ease; }
+.ems-container :is(.ems-model-card, .ems-emotion-item, .ems-tab) { transition: border-color 180ms ease, background-color 180ms ease, color 180ms ease, box-shadow 180ms ease; }
 `;
 
 // Inject Styles
@@ -1734,7 +1749,22 @@ app.registerExtension({
                     card.classList.toggle("is-installed", installed);
                     card.classList.toggle("is-selected", selected || toggled);
                     card.classList.toggle("is-missing", !installed);
-                    if (installed || pickerHead) card.onclick = () => onSelect?.(rel, entry);
+                    if (pickerHead) {
+                        card.dataset.sakuraPickerHead = "";
+                        card.dataset.sakuraFocusDefault = "";
+                    }
+                    card.dataset.focusKey = `asset-${cat}-${rel}-${pickerHead ? "head" : "option"}`;
+                    if (installed || pickerHead) {
+                        card.setAttribute("role", "button");
+                        card.tabIndex = 0;
+                        card.setAttribute("aria-pressed", String(!!selected));
+                        card.onclick = () => onSelect?.(rel, entry);
+                        card.onkeydown = event => {
+                            if (event.target === card && ["Enter", " "].includes(event.key)) {
+                                event.preventDefault(); card.click();
+                            }
+                        };
+                    }
 
                     const top = document.createElement("div");
                     top.className = "ems-model-card-top";
@@ -1756,15 +1786,18 @@ app.registerExtension({
                         const input = document.createElement("input");
                         input.type = "checkbox";
                         input.checked = !!toggled;
+                        input.dataset.focusKey = `${card.dataset.focusKey}-toggle`;
+                        input.ariaLabel = `Enable ${entry.name || rel}`;
+                        card.dataset.toggleState = String(!!toggled);
                         input.onchange = (event) => {
                             event.stopPropagation();
                             onToggle(event.target.checked, rel, entry);
                         };
                         input.onclick = (event) => event.stopPropagation();
                         const track = document.createElement("span");
-                        track.className = "ems-toggle-track";
+                        track.className = "ems-toggle-track vnccs-common-ui-toggle-track";
                         const thumb = document.createElement("span");
-                        thumb.className = "ems-toggle-thumb";
+                        thumb.className = "ems-toggle-thumb vnccs-common-ui-toggle-thumb";
                         toggle.append(input, track, thumb);
                         top.appendChild(toggle);
                     }
@@ -1818,6 +1851,7 @@ app.registerExtension({
                 function createNumberInput(key, min, max, step, onChange = null) {
                     const input = document.createElement("input");
                     input.className = "ems-input";
+                    input.dataset.focusKey = `generation-${key}`;
                     input.type = "number";
                     if (min !== undefined) input.min = min;
                     if (max !== undefined) input.max = max;
@@ -1837,6 +1871,7 @@ app.registerExtension({
                 function createSelectInput(key, values) {
                     const select = document.createElement("select");
                     select.className = "ems-input";
+                    select.ariaLabel = key.replaceAll("_", " ");
                     values.forEach(value => {
                         const opt = document.createElement("option");
                         opt.value = value;
@@ -1848,12 +1883,16 @@ app.registerExtension({
                 }
 
                 const generationEls = {};
+                let ui = null;
 
                 const renderModelPicker = ({ containerEl, entries, cat, key, mode, emptyText, onSelect, onDownload = null }) => {
                     if (!containerEl) return;
                     containerEl.innerHTML = "";
                     const picker = document.createElement("div");
                     picker.className = "ems-model-picker";
+                    picker.dataset.sakuraPicker = mode;
+                    picker.dataset.mode = mode;
+                    picker.dataset.sakuraFocusGroup = `model-picker-${mode}`;
                     picker.classList.toggle("is-open", !!modelPickerOpen[mode]);
                     containerEl.appendChild(picker);
 
@@ -1881,6 +1920,7 @@ app.registerExtension({
 
                     const menu = document.createElement("div");
                     menu.className = "ems-model-picker-menu";
+                    menu.dataset.sakuraScroll = `model-picker-${mode}`;
                     picker.appendChild(menu);
 
                     const appendGroup = (title, groupEntries) => {
@@ -1970,14 +2010,18 @@ app.registerExtension({
                             const input = document.createElement("input");
                             input.type = "checkbox";
                             input.checked = enabled;
+                            input.ariaLabel = `Enable ${entry.name || rel}`;
+                            card.dataset.toggleState = String(enabled);
+                            card.dataset.focusKey = `turbo-${mode}-${rel}`;
+                            input.dataset.focusKey = `${card.dataset.focusKey}-toggle`;
                             input.onchange = (event) => {
                                 event.stopPropagation();
                                 setCcTurboMode(event.target.checked, rel);
                             };
                             const track = document.createElement("span");
-                            track.className = "ems-toggle-track";
+                            track.className = "ems-toggle-track vnccs-common-ui-toggle-track";
                             const thumb = document.createElement("span");
-                            thumb.className = "ems-toggle-thumb";
+                            thumb.className = "ems-toggle-thumb vnccs-common-ui-toggle-thumb";
                             toggle.append(input, track, thumb);
                             card.appendChild(toggle);
                         } else {
@@ -1999,6 +2043,7 @@ app.registerExtension({
 
                 const renderControlCenterCards = () => {
                     if (!generationEls.animaModelCards || !generationEls.illustriousModelCards || !generationEls.qi2ModelCards) return;
+                    const view = ui?.captureView();
                     const currentMode = (state.gen.generation_mode || "anima").toLowerCase();
                     const isAnimaMode = currentMode === "anima";
                     const isQi2Mode = currentMode === "qi2";
@@ -2072,6 +2117,8 @@ app.registerExtension({
                     generationEls.qi2ModelCards.style.display = isQi2Mode ? "flex" : "none";
                     generationEls.illustriousModelCards.style.display = currentMode === "illustrious" ? "flex" : "none";
                     if (generationEls.animaLoraCards) renderModeLoraCards(generationEls.animaLoraCards, currentMode);
+                    ui?.syncSelects();
+                    if (view) ui.restoreView(view);
                 };
 
                 function populateSelect(select, values, includeNone = false) {
@@ -2136,10 +2183,12 @@ app.registerExtension({
                 }
 
                 function syncGenerationControls() {
+                    const view = ui?.captureView();
                     const mode = (state.gen.generation_mode || "anima").toLowerCase();
                     generationEls.tabIllustrious?.classList.toggle("active", mode === "illustrious");
                     generationEls.tabAnima?.classList.toggle("active", mode === "anima");
                     generationEls.tabQi2?.classList.toggle("active", mode === "qi2");
+                    ui?.syncSelection(generationEls.tabQi2?.parentElement);
                     if (generationEls.animaModelCards) generationEls.animaModelCards.style.display = mode === "anima" ? "flex" : "none";
                     if (generationEls.qi2ModelCards) generationEls.qi2ModelCards.style.display = mode === "qi2" ? "flex" : "none";
                     if (generationEls.illustriousModelCards) generationEls.illustriousModelCards.style.display = mode === "illustrious" ? "flex" : "none";
@@ -2175,11 +2224,16 @@ app.registerExtension({
                         });
                     }
                     if (ccState.config) renderControlCenterCards();
+                    ui?.syncSelects();
+                    if (view) ui.restoreView(view);
                 }
 
                 // Create UI Container
                 const container = document.createElement("div");
                 container.className = "ems-container";
+                container.classList.add("vnccs-common-ui-host");
+                ui = createSakuraInteractions(container, node);
+                registerCleanup(node, () => ui.dispose());
 
                 // --- LEFT COL ---
                 const leftCol = document.createElement("div");
@@ -2196,6 +2250,10 @@ app.registerExtension({
 
                 const previewContainer = document.createElement("div");
                 previewContainer.className = "ems-char-preview-container";
+                previewContainer.classList.add("vnccs-common-ui-preview-host");
+                const previewAura = document.createElement("div");
+                previewAura.className = "vnccs-common-ui-preview-aura";
+                previewContainer.appendChild(previewAura);
 
                 const charImg = document.createElement("img");
                 charImg.className = "ems-char-preview";
@@ -2280,6 +2338,7 @@ app.registerExtension({
                     node,
                     isSelectionCurrent: preview => !disposed && preview.character === state.character,
                     image: charImg,
+                    interactions: ui,
                     placeholder: charPlaceholder,
                     loading: charPreviewLoading,
                     nav: spriteNav,
@@ -2330,6 +2389,7 @@ app.registerExtension({
 
                 const costumesList = document.createElement("div");
                 costumesList.className = "ems-costumes-list";
+                costumesList.dataset.sakuraScroll = "costumes";
                 costumesSection.appendChild(costumesList);
 
                 selectionCol.appendChild(costumesSection);
@@ -2346,12 +2406,14 @@ app.registerExtension({
                 selectedEmotionsHeader.innerText = "Selected emotions";
                 const selectedEmotionsList = document.createElement("div");
                 selectedEmotionsList.className = "ems-selected-emotions-list";
+                selectedEmotionsList.dataset.sakuraScroll = "selected-emotions";
                 selectedEmotionsWrap.appendChild(selectedEmotionsHeader);
                 selectedEmotionsWrap.appendChild(selectedEmotionsList);
                 emotionsSection.appendChild(selectedEmotionsWrap);
 
                 const emotionsGrid = document.createElement("div");
                 emotionsGrid.className = "ems-emotions-container";
+                emotionsGrid.dataset.sakuraScroll = "emotions";
                 emotionsSection.appendChild(emotionsGrid);
 
                 // Search Input
@@ -2378,6 +2440,7 @@ app.registerExtension({
 
                 const generationSection = document.createElement("div");
                 generationSection.className = "ems-section ems-generation-section";
+                generationSection.dataset.sakuraScroll = "generation";
 
                 const generationHeader = document.createElement("div");
                 generationHeader.className = "ems-costumes-header";
@@ -2386,6 +2449,8 @@ app.registerExtension({
 
                 const tabRow = document.createElement("div");
                 tabRow.className = "ems-tab-row";
+                tabRow.setAttribute("role", "group");
+                tabRow.setAttribute("aria-label", "Generation mode");
                 const tabIllustrious = document.createElement("button");
                 tabIllustrious.type = "button";
                 tabIllustrious.className = "ems-tab";
@@ -2536,6 +2601,7 @@ app.registerExtension({
                 // Custom Select in Header
                 const charSelect = document.createElement("select");
                 charSelect.className = "em-select";
+                charSelect.ariaLabel = "Character";
 
                 charHeader.appendChild(charSelect);
 
@@ -3034,9 +3100,20 @@ app.registerExtension({
                     const selected = state.selectedEmotions.has(e.safe_name);
                     div.className = "ems-emotion-item" + (selected ? " selected" : "") + (compact ? " compact" : "");
                     div.title = e.description || "";
+                    div.dataset.focusKey = `emotion-${compact ? "selected" : "library"}-${e.safe_name}`;
+                    div.setAttribute("role", "button");
+                    div.setAttribute("aria-label", e.safe_name);
+                    div.setAttribute("aria-pressed", String(selected));
+                    div.tabIndex = 0;
+                    div.onkeydown = event => {
+                        if (["Enter", " "].includes(event.key)) { event.preventDefault(); div.click(); }
+                    };
 
                     const img = document.createElement("img");
                     img.className = "ems-emotion-img";
+                    img.alt = "";
+                    img.loading = "lazy";
+                    img.decoding = "async";
                     img.src = mediaURL(`/vnccs/get_emotion_image?name=${encodeURIComponent(e.safe_name)}&v=webp`);
                     img.onerror = () => {
                         const placeholder = document.createElement("div");
@@ -3084,28 +3161,33 @@ app.registerExtension({
                 }
 
                 function renderCostumes() {
+                    const view = ui.captureView();
                     costumesList.innerHTML = "";
                     new Set([...state.costumes, ...state.selectedCostumes]).forEach(c => {
                         if (c === "Original" && !state.costumes.includes(c)) return;
                         const lbl = document.createElement("label");
                         lbl.className = "ems-checkbox-item";
+                        lbl.dataset.focusKey = `costume-toggle-${c}`;
+                        lbl.dataset.toggleState = String(state.selectedCostumes.has(c));
 
                         const toggle = document.createElement("div");
                         toggle.className = "em-toggle";
 
                         const chk = document.createElement("input");
                         chk.type = "checkbox";
+                        chk.dataset.focusKey = `costume-${c}`;
                         chk.checked = state.selectedCostumes.has(c);
                         chk.onchange = () => {
                             if (chk.checked) state.selectedCostumes.add(c);
                             else state.selectedCostumes.delete(c);
+                            lbl.dataset.toggleState = String(chk.checked);
                             updateCostumesData();
                         };
 
                         const track = document.createElement("div");
-                        track.className = "em-toggle-track";
+                        track.className = "em-toggle-track vnccs-common-ui-toggle-track";
                         const thumb = document.createElement("div");
-                        thumb.className = "em-toggle-thumb";
+                        thumb.className = "em-toggle-thumb vnccs-common-ui-toggle-thumb";
 
                         toggle.appendChild(chk);
                         toggle.appendChild(track);
@@ -3118,9 +3200,11 @@ app.registerExtension({
                         lbl.appendChild(span);
                         costumesList.appendChild(lbl);
                     });
+                    ui.restoreView(view);
                 }
 
                 function renderEmotions() {
+                    const view = ui.captureView();
                     selectedEmotionsList.innerHTML = "";
                     const selectedNames = Array.from(state.selectedEmotions);
                     selectedEmotionsHeader.innerText = `Selected emotions (${selectedNames.length})`;
@@ -3144,6 +3228,7 @@ app.registerExtension({
                         emotionsGrid.appendChild(createEmotionCard(e));
                     });
                     updateButtonState();
+                    ui.restoreView(view);
                 }
 
                 async function fetchCharacterData(charName) {

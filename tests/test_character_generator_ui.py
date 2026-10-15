@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 SOURCE = (
@@ -66,14 +67,27 @@ def test_emotion_result_tabs_stay_single_row_and_only_show_final_stage():
 
 def test_clone_stage_chain_fits_two_compact_rows_without_clipping():
     def rule(selector):
-        return SOURCE.split(selector + " {", 1)[1].split("}", 1)[0]
+        return next(body for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", SOURCE)
+                    if selector in [part.strip() for part in selectors.split(",")])
 
     main = rule(".vnccs-pipe-root.is-clone .vnccs-pipe-main")
-    assert "grid-template-rows: minmax(0, 1fr) auto;" in main
     chain = rule(".vnccs-pipe-chain.is-clone")
     stage = rule(".vnccs-pipe-chain.is-clone .vnccs-pipe-stage")
     actions = rule(".vnccs-pipe-chain.is-clone .vnccs-pipe-stage-actions")
-    assert "grid-auto-rows: minmax(58px, 1fr);" in chain
+    main_rows = re.search(r"grid-template-rows: minmax\(0, 1fr\) (\d+)px;", main)
+    assert main_rows, "Clone stage chain needs a reserved row in the preview layout"
+    track_heights = re.search(r"grid-template-rows: ([\dpx ]+);", stage).group(1)
+    tracks = list(map(int, re.findall(r"(\d+)px", track_heights)))
+    stage_gap = int(re.search(r"gap: (\d+)px", stage).group(1))
+    stage_padding = int(re.search(r"padding: (\d+)px", stage).group(1))
+    stage_border = int(re.search(r"border: (\d+)px", rule(".vnccs-pipe-stage")).group(1))
+    chain_gap = int(re.search(r"gap: (\d+)px", chain).group(1))
+    chain_padding = int(re.search(r"padding: (\d+)px", chain).group(1))
+    chain_border = int(re.search(r"border-top: (\d+)px", rule(".vnccs-pipe-chain")).group(1))
+    card_height = sum(tracks) + (len(tracks) - 1) * stage_gap + 2 * stage_padding + 2 * stage_border
+    assert int(main_rows.group(1)) >= 2 * card_height + chain_gap + 2 * chain_padding + chain_border
+    assert "grid-template-columns: repeat(4, minmax(0, 1fr));" in chain
+    assert "grid-auto-rows: minmax(0, 1fr);" in chain
     assert "box-sizing: border-box;" in chain
     assert "min-height: 0;" in chain
     assert "overflow-y: auto;" in chain

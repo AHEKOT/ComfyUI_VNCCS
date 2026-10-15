@@ -4,7 +4,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-const source = readFileSync(new URL("../web/vnccs_character_generator.js", import.meta.url), "utf8");
+const source = readFileSync(new URL("../web/vnccs_character_generator.js", import.meta.url), "utf8")
+    .replace(/new URL\(([^,]+), import\.meta\.url\)\.href/g, "$1");
 
 function setup({ kind = "QI2", saved = {}, clone = false, clothes = false, emotions = false } = {}) {
     const listeners = new Map();

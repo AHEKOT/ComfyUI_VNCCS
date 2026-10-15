@@ -1,6 +1,7 @@
 """Generator boundary regressions without model downloads or GPU sampling."""
 
 from types import SimpleNamespace
+from pathlib import Path
 import json
 
 import pytest
@@ -8,6 +9,18 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from nodes import character_generator as generator
+import utils
+
+
+@pytest.mark.parametrize("costume", ["", "Naked", "naked", "Original", "ORIGINAL"])
+def test_clothes_generator_rejects_protected_output_before_cache_or_sampling(monkeypatch, tmp_path, costume):
+    node = generator.VNCCS_ClothesGenerator()
+    monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(generator, "_save_run_inputs", lambda *args, **kwargs: pytest.fail("Protected output must fail before cache writes"))
+    state = {"character_name": "Alice", "costume": costume}
+    with pytest.raises(ValueError, match="editable costume"):
+        node.process(None, None, None, "", widget_data=json.dumps(state))
+    assert not list(tmp_path.iterdir())
 
 
 def test_generator_preserves_zero_guidance():
@@ -52,9 +65,11 @@ def test_single_image_regeneration_preserves_published_sprites(tmp_path, monkeyp
             "clothes": generator.VNCCS_ClothesGenerator}[mode]()
     output = tmp_path / "output"
     root = output / "VNCCS" / "Characters" / "Alice"
-    sheets = root / "Sheets" / "Naked" / "neutral"
+    sheets = root / "Sheets" / ("Coat" if mode == "clothes" else "Naked") / "neutral"
     sheets.mkdir(parents=True)
     monkeypatch.setattr(generator.folder_paths, "get_output_directory", lambda: str(output))
+    if mode == "clothes":
+        utils.save_costume_info("Alice", "Coat", {})
     monkeypatch.setattr(node, "_find_pose_lora", lambda *args: {})
     monkeypatch.setattr(node, "_extract_pipe", lambda *args: {"seed": 0})
     monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
@@ -64,7 +79,7 @@ def test_single_image_regeneration_preserves_published_sprites(tmp_path, monkeyp
     state = {"character_name": "Alice", "nsfw_enabled": False, "bg_remove": {"preset": "Native"}}
     arguments = (images, images[:1], object(), "Pose")
     node.process(*arguments, widget_data=json.dumps(state), sheets_path=str(sheets), unique_id="audit")
-    sprite_set = "Original" if mode == "clone" else "Naked"
+    sprite_set = "Original" if mode == "clone" else "Coat" if mode == "clothes" else "Naked"
     target = root / "Sprites" / sprite_set / "Neutral"
     before = {path.name: path.read_bytes() for path in target.glob("*.png")}
     assert len(before) == 3
@@ -147,6 +162,8 @@ def test_single_image_resolution_change_never_resizes_other_published_poses(tmp_
     sheets = root / "Sheets" / "Coat" / "neutral"
     sheets.mkdir(parents=True)
     monkeypatch.setattr(generator.folder_paths, "get_output_directory", lambda: str(output))
+    if mode == "clothes":
+        utils.save_costume_info("Alice", "Coat", {})
     monkeypatch.setattr(node, "_find_pose_lora", lambda *args: {})
     monkeypatch.setattr(node, "_extract_pipe", lambda *args: {"seed": 0})
     monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
@@ -222,6 +239,114 @@ def test_emotion_background_regeneration_preserves_the_generated_face_crop(tmp_p
     assert face.read_bytes() != before
     with Image.open(face) as opened:
         assert opened.size == (4, 4)
+
+
+def test_normal_emotion_run_prunes_excluded_tasks_only_after_success(tmp_path, monkeypatch):
+    root = tmp_path / "VNCCS" / "Characters" / "Alice"
+    monkeypatch.setattr(generator.folder_paths, "get_output_directory", lambda: str(tmp_path))
+    node = generator.VNCCS_EmotionsGenerator()
+    monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(node, "_run_emotion_bg_remove", lambda images, *args, **kwargs: images)
+    def generate(image, *args, **kwargs):
+        return image, image[:, :4, :4], torch.ones(1, 8, 8)
+    monkeypatch.setattr(node, "_run_emotion_generation_one", generate)
+    tasks = [{"character": "Alice", "emotion_prompt": emotion, "sprite_index": index,
+              "sprite_output_path": str(root / "Sprites" / "Coat" / emotion / f"sprite_{emotion}_")}
+             for emotion, index in (("smile", 1), ("smile", 2), ("angry", 1))]
+    state = {"character_name": "Alice", "emotion_pairs": [
+        {"costume": "Coat", "emotion": "smile"}, {"costume": "Coat", "emotion": "angry"}]}
+    images = torch.ones(3, 8, 8, 3)
+    node.process(images, object(), tasks, widget_data=json.dumps(state), unique_id="prune")
+    cache = root / "cache" / "poses" / "prune" / "_stage_cache"
+    old = {path.name: path.read_bytes() for path in cache.glob("emotion*.pt")}
+    assert len(old) == 6
+    published = {path: path.read_bytes() for group in ("Sprites", "Faces")
+                 for path in (root / group).rglob("*.png")}
+    state["emotion_pairs"] = state["emotion_pairs"][:1]
+    def fail(*args, **kwargs):
+        raise RuntimeError("generation failed")
+    monkeypatch.setattr(node, "_run_emotion_generation_one", fail)
+    with pytest.raises(RuntimeError, match="generation failed"):
+        node.process(images[:1], object(), tasks[:1], widget_data=json.dumps(state), unique_id="prune")
+    assert {path.name: path.read_bytes() for path in cache.glob("emotion*.pt")} == old
+    assert all(path.read_bytes() == contents for path, contents in published.items())
+    monkeypatch.setattr(node, "_run_emotion_generation_one", generate)
+    node.process(images[:1], object(), tasks[:1], widget_data=json.dumps(state), unique_id="prune")
+    assert {path.name for path in cache.glob("emotion*.pt")} == {
+        "emotion_0001__item_0001.pt", "emotion_0001_detailer_mask__item_0001.pt"}
+    assert all(path.exists() for path in published)
+
+
+def test_normal_emotion_runs_archive_every_replaced_sprite_and_face(tmp_path, monkeypatch):
+    from PIL import Image
+
+    output = tmp_path / "output"
+    root = output / "VNCCS" / "Characters" / "Alice"
+    monkeypatch.setattr(generator.folder_paths, "get_output_directory", lambda: str(output))
+    node = generator.VNCCS_EmotionsGenerator()
+    monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(node, "_run_emotion_bg_remove", lambda images, *args, **kwargs: images)
+    tasks = [{"character": "Alice", "emotion_prompt": "smile", "sprite_index": index,
+              "sprite_output_path": str(root / "Sprites" / "Coat" / "smile" / "sprite_smile_")}
+             for index in (1, 3)]
+    state = {"character_name": "Alice", "emotion_pairs": [{"costume": "Coat", "emotion": "smile"}]}
+    images = torch.ones(2, 8, 8, 3)
+    snapshots = {}
+    for run, value in enumerate((.2, .7, .9)):
+        monkeypatch.setattr(node, "_run_emotion_generation_one", lambda image, *args, **kwargs:
+                            (torch.full_like(image, value), torch.full((1, 4, 4, 3), value), torch.ones(1, 8, 8)))
+        node.process(images, object(), tasks, widget_data=json.dumps(state), unique_id="versions")
+        current = {path.relative_to(root): path.read_bytes() for group in ("Sprites", "Faces")
+                   for path in (root / group / "Coat" / "smile").glob("*.png")}
+        assert len(current) == 4
+        for relative, contents in current.items():
+            with Image.open(root / relative) as stored:
+                assert stored.getpixel((0, 0))[:3] == (round(value * 255),) * 3
+            for previous in range(run):
+                assert (root / relative.parent / f"V{previous + 1}" / relative.name).read_bytes() == snapshots[previous][relative]
+        snapshots[run] = current
+    state.update(regenerate_from="emotion_0001", regenerate_index=0)
+    node.process(images, object(), tasks, widget_data=json.dumps(state), unique_id="versions")
+    assert not list(root.rglob("V3"))
+
+
+@pytest.mark.parametrize("failure", ["encode", "publish", "archive"])
+def test_failed_emotion_replacement_preserves_current_output(tmp_path, monkeypatch, failure):
+    from PIL import Image
+
+    root = tmp_path / "VNCCS" / "Characters" / "Alice"
+    monkeypatch.setattr(generator.folder_paths, "get_output_directory", lambda: str(tmp_path))
+    node = generator.VNCCS_EmotionsGenerator()
+    prefix = str(root / "Sprites" / "Coat" / "smile" / "sprite_smile_")
+    old = torch.full((1, 8, 8, 3), .2)
+    path = node._save_rgba_image(old, None, prefix, 1, "Alice")
+    original = Path(path).read_bytes()
+    def denied(*args, **kwargs):
+        raise OSError("Disk failure")
+    if failure == "encode":
+        monkeypatch.setattr(Image.Image, "save", denied)
+    elif failure == "publish":
+        monkeypatch.setattr(generator.os, "replace", denied)
+    else:
+        monkeypatch.setattr(generator, "_link_or_copy", denied)
+    with pytest.raises(OSError, match="Disk failure"):
+        node._save_rgba_image(torch.ones_like(old), None, prefix, 1, "Alice", version_dirs={})
+    assert Path(path).read_bytes() == original
+    assert not list(root.rglob("*.tmp"))
+
+
+def test_repeated_emotion_task_keeps_the_original_run_snapshot(tmp_path, monkeypatch):
+    root = tmp_path / "VNCCS" / "Characters" / "Alice"
+    monkeypatch.setattr(generator.folder_paths, "get_output_directory", lambda: str(tmp_path))
+    node = generator.VNCCS_EmotionsGenerator()
+    prefix = str(root / "Sprites" / "Coat" / "smile" / "sprite_smile_")
+    path = Path(node._save_rgba_image(torch.zeros(1, 8, 8, 3), None, prefix, 1, "Alice"))
+    original = path.read_bytes()
+    version_dirs = {}
+    for value in (.2, .7):
+        node._save_rgba_image(torch.full((1, 8, 8, 3), value), None, prefix, 1, "Alice", version_dirs=version_dirs)
+    assert (path.parent / "V1" / path.name).read_bytes() == original
+    assert not (path.parent / "V2").exists()
 
 
 @pytest.mark.parametrize("seed, expected", [

@@ -13,6 +13,7 @@ import tempfile
 import hashlib
 import shutil
 import threading
+import uuid
 from contextlib import contextmanager
 from functools import wraps
 from urllib.parse import urlparse
@@ -26,6 +27,11 @@ PRIVILEGED_REQUEST_HEADER = "X-VNCCS-CSRF"
 PRIVILEGED_REQUEST_VALUE = "1"
 _STORAGE_LOCKS = tuple(threading.RLock() for _ in range(64))
 COSTUME_TEXT_FIELDS = {"top", "bottom", "shoes", "head", "face", "negative_prompt"}
+
+
+class StorageConflictError(ValueError):
+    """An older editor cannot replace the current disk document."""
+
 AGE_CONTROL_POINTS = [
     (0, -5.0),
     (3, -4.0),
@@ -613,7 +619,8 @@ def append_age(positive_prompt: str, age: int, sex: str) -> str:
 
 def config_path(character_name: str) -> str:
     """Get character config file path."""
-    return os.path.join(character_dir(character_name), f"{character_name}_config.json")
+    character_name = ensure_safe_name(character_name, "character")
+    return safe_join_under(character_dir(character_name), f"{character_name}_config.json")
 
 
 def load_config(character_name: str, *, strict=False) -> Optional[Dict[str, Any]]:
@@ -626,6 +633,9 @@ def load_config(character_name: str, *, strict=False) -> Optional[Dict[str, Any]
             key in data and not isinstance(data[key], dict) for key in ("character_info", "costumes")
         )):
             raise ValueError("Invalid character configuration structure")
+        if strict and "costume_ids" in data and (not isinstance(data["costume_ids"], dict)
+                or any(not isinstance(value, str) for value in data["costume_ids"].values())):
+            raise ValueError("Invalid costume storage identities")
         return data
     except FileNotFoundError:
         return None
@@ -731,7 +741,8 @@ def build_face_details(char_info: Dict[str, Any]) -> str:
         details_parts.append(f"{char_info['skin_color']} skin")
     
     if char_info.get("additional_details"):
-        details_parts.append(char_info['additional_details'])
+        details = char_info["additional_details"]
+        details_parts.append(", ".join(str(item) for item in details) if isinstance(details, list) else str(details))
     
     
     return ",".join([p for p in details_parts if p])
@@ -765,6 +776,35 @@ def load_costume_info(character_name: str, costume_name: str) -> Dict[str, Any]:
     return validate_costume_info(costumes.get(costume_name, {}))
 
 
+def require_existing_costume(character_name: str, costume_name: str) -> None:
+    """Reject deleted selections while retaining legacy sprite-only costumes."""
+    character_name = ensure_safe_name(character_name, "character")
+    costume_name = ensure_safe_name(costume_name, "costume")
+    root = character_dir(character_name)
+    with character_storage_lock(root):
+        config = load_config(character_name, strict=True) or {}
+        if costume_name in config.get("costumes", {}):
+            return
+        if not os.path.isdir(safe_join_under(root, "Sprites", costume_name)):
+            raise ValueError(f"Costume '{costume_name}' no longer exists. Reload the costume selection before generating.")
+
+
+def json_revision(info, identity=""):
+    value = [identity, info] if identity else info
+    content = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return f'"{hashlib.sha256(content).hexdigest()}"'
+
+
+costume_revision = json_revision
+
+
+def load_costume_snapshot(character_name, costume_name):
+    with character_storage_lock(character_dir(character_name)):
+        config = load_config(character_name, strict=True) or {}
+        info = validate_costume_info(config.get("costumes", {}).get(costume_name, {}))
+        return info, json_revision(info, config.get("costume_ids", {}).get(costume_name, ""))
+
+
 def save_costume_info(character_name: str, costume_name: str, costume_data: Dict[str, Any]) -> bool:
     """Save character costume info."""
     costume_data = validate_costume_info(costume_data)
@@ -774,6 +814,9 @@ def save_costume_info(character_name: str, costume_name: str, costume_data: Dict
             config = {"character_info": {}, "costumes": {}}
         if "costumes" not in config:
             config["costumes"] = {}
+        identities = config.setdefault("costume_ids", {})
+        if costume_name not in config["costumes"] or costume_name not in identities:
+            identities[costume_name] = uuid.uuid4().hex
         config["costumes"][costume_name] = costume_data
         return save_config(character_name, config) != ""
 
@@ -818,6 +861,7 @@ def delete_costume(character_name: str, costume_name: str) -> Optional[str]:
                 moved.append((path, backup))
             if costume_name in costumes:
                 del costumes[costume_name]
+                config.get("costume_ids", {}).pop(costume_name, None)
                 if not save_config(character_name, config):
                     raise OSError(f"Could not save configuration after deleting '{costume_name}'.")
         except BaseException:
@@ -863,3 +907,50 @@ def list_costumes(character_name: str) -> List[str]:
 
 
 create_costume_folders = ensure_costume_structure
+
+
+def list_pose_preview_files(character_name, costume=None):
+    try:
+        base_char_path = character_dir(character_name)
+        sprite_roots = []
+        if costume:
+            costume = ensure_safe_name(costume, "costume")
+            sprite_roots.extend([
+                os.path.join(base_char_path, "Sprites", costume, "Neutral"),
+                os.path.join(base_char_path, "Sprites", costume),
+            ])
+        sprite_roots.extend([
+            os.path.join(base_char_path, "Sprites", "Naked", "Neutral"),
+            os.path.join(base_char_path, "Sprites", "Original", "Neutral"),
+            os.path.join(base_char_path, "Sprites", "Naked"),
+            os.path.join(base_char_path, "Sprites", "Original"),
+        ])
+        log_event("pose_preview_scan", component="Creator", level="debug", character=character_name, costume=costume)
+
+        image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+        files = []
+        for poses_dir in sprite_roots:
+            try:
+                poses_dir = safe_join_under(base_char_path, os.path.relpath(poses_dir, base_char_path))
+            except ValueError:
+                continue
+            if not os.path.isdir(poses_dir):
+                continue
+            root_files = []
+            for filename in os.listdir(poses_dir):
+                if os.path.splitext(filename)[1].lower() not in image_exts:
+                    continue
+                try:
+                    path = safe_join_under(base_char_path, os.path.relpath(os.path.join(poses_dir, filename), base_char_path))
+                except ValueError:
+                    continue
+                if os.path.isfile(path):
+                    root_files.append(path)
+            if root_files:
+                files = sorted(root_files)
+                break
+        log_event("pose_preview_list", component="Creator", level="debug", character=character_name, count=len(files))
+        return files
+    except Exception as e:
+        log_event('warning', component='Creator', level='warning', message=f'Pose Preview List Failed: {e}', error=str(e))
+        return []

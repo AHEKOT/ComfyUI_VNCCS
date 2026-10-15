@@ -117,6 +117,26 @@ def parse_wizard_json(content):
     return data
 
 
+def normalize_character_wizard_traits(data):
+    result = {}
+    for key in ["race", "skin_color", "hair", "eyes", "face", "body", "additional_details"]:
+        value = data.get(key, "")
+        if isinstance(value, list):
+            value = ", ".join(str(item).strip() for item in value if str(item).strip())
+        elif not isinstance(value, str):
+            value = str(value) if value is not None else ""
+        result[key] = value.strip()
+
+    sex = str(data.get("sex", "female")).strip().lower()
+    result["sex"] = "male" if sex.startswith("m") else "female"
+    try:
+        age = int(float(data.get("age", 18)))
+    except Exception:
+        age = 18
+    result["age"] = max(1, min(100, age))
+    return result
+
+
 def _validate_gguf_file(path, file_label="File"):
     if not os.path.exists(path):
         raise FileNotFoundError(f"{file_label} was not written: {path}")

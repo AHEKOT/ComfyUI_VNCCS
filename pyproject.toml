@@ -9,7 +9,7 @@ dependencies = [
     "numpy",
     "Pillow",
     "opencv-python",
-    "llama-cpp-python>=0.3.16",
+    "llama-cpp-python>=0.3.46",
     "safetensors",
     "huggingface-hub[torch]>=0.22",
     "json_repair",

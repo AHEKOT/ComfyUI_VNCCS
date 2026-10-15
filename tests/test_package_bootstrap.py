@@ -65,7 +65,7 @@ def test_chroma_key_preserves_saved_workflow_schema_without_torch():
     assert required["image"] == ("IMAGE",)
     assert required["matte_method"] == (
         ["chroma_soft", "guided_edge", "pymatting_if_available", "screen_matte"],
-        {"default": "guided_edge"},
+        {"default": "screen_matte"},
     )
     assert required["screen_mode"] == (["auto", "green", "blue", "red"], {"default": "auto"})
     assert required["output_mode"] == (["straight_rgba", "premultiplied_rgba"], {"default": "straight_rgba"})

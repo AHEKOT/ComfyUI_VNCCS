@@ -65,7 +65,10 @@ for (const phase of ['restored_reference', 'pending_metadata', 'pending_image', 
             previewLoading: loading, previewPlaceholder: element(), previewContainer: element(),
             uploadOverlay: element(), uploadBtn: element(), spriteNav: element(),
             spritePrevBtn: element(), spriteNextBtn: element(), spriteCount: element(),
-            els: {}, defaultCharacterInfo: {}, restoredInfoCharacter: null,
+            els: { _ui: { captureView() { return {}; }, restoreView() {}, syncSelects() {}, prepareCharacter() {},
+                presentPreview(image, placeholder, url) { image.src = url; image.style.display = 'block'; placeholder.style.display = 'none'; },
+                emptyPreview(image, placeholder) { image.style.display = 'none'; placeholder.style.display = 'flex'; },
+            } }, defaultCharacterInfo: {}, restoredInfoCharacter: null,
             saveState() {}, updateUIFromState() { context.render(); }, clearSourceImages() {},
             showModal() { assert.fail('No error modal expected'); }, mediaURL: value => value,
             api: { fetchApi() { requests++; return metadata; } },
@@ -75,7 +78,7 @@ for (const phase of ['restored_reference', 'pending_metadata', 'pending_image', 
             let spritePreviewNavigator, renderThumbs;
             const beginCharacterRequest = createRequestGuard(node), beginCaptionRequest = createRequestGuard(node);
             ${between(text, 'spritePreviewNavigator = createSpritePreviewNavigator(', 'colSrc.appendChild(fileInput);')}
-            ${between(text, 'renderThumbs = () => {\n                    imgList.innerHTML', 'const syncBackgroundControl =')}
+            ${between(text, 'renderThumbs = () => {\n                    const view', 'const syncBackgroundControl =')}
             ${between(text, 'const loadChar = async', 'const loadCharList =')}
             globalThis.load = loadChar; globalThis.render = renderThumbs;`, context);
         const operation = context.load('Alice', true);
@@ -114,13 +117,13 @@ for (const obsolete of ['current', 'configure', 'replacement', 'removal', 'close
         const overlay = { isConnected: true };
         let actions, saved = 0;
         const context = createWidgetContext({
-            node, state, images, imgObj: image, idx: 0, console,
+            node, state, images, imgObj: image, idx: 0, console, els: {},
             document: { createElement: () => ({}) },
             showModal(title, content, buttons) { content(); actions = buttons; },
             saveState() { saved++; }, renderThumbs() {},
         });
         const guards = between(source('vnccs_common'), 'export function registerCleanup', '// ── DOM Widget Width Sync').replaceAll('export ', '');
-        const removal = between(source('vnccs_character_cloner'), '// Delete X', 'wrap.appendChild(img);');
+        const removal = between(source('vnccs_character_cloner'), '// Delete X', '// Preview controls');
         vm.runInContext(`${guards}
             const beginCaptionRequest = createRequestGuard(node);
             ${removal}
@@ -146,13 +149,15 @@ function setup(kind) {
     const text = source(kind === 'creator' ? 'vnccs_character_creator_v2' : 'vnccs_character_cloner');
     const state = { character: 'Alice', character_info: { name: 'Alice', hair: 'authored hair' },
         gen_settings: { generation_mode: 'illustrious' }, source_images: [] };
-    const dataWidget = { name: 'widget_data', value: '{}' }, node = { widgets: [dataWidget] };
+    const dataWidget = { name: 'widget_data', value: '{}' };
     const alerts = [], pendingTimers = new Map();
-    let configured = 0, initialized = 0, serialized = 0, galleryClosed = 0;
+    let configured = 0, initialized = 0, serialized = 0, galleryClosed = 0, dirtied = 0;
+    const graph = { setDirtyCanvas() { dirtied++; } };
+    const node = { widgets: [dataWidget], graph };
     node.onConfigure = function () { assert.equal(this, node); configured++; };
     node.onSerialize = function () { assert.equal(this, node); serialized++; };
     const context = createWidgetContext({
-        node, state, dataWidget, els: { style: { close(focus) { assert.equal(focus, false); galleryClosed++; } } }, app: { graph: { setDirtyCanvas() {} } },
+        node, state, dataWidget, els: { style: { close(focus) { assert.equal(focus, false); galleryClosed++; } } }, app: { graph },
         defaultGenerationSettings: { generation_mode: 'illustrious', steps: 20 },
         defaultCharacterInfo: { hair: '', eyes: '' },
         beginCharacterRequest() {}, beginCharacterWizardRequest() {}, beginCaptionRequest() {}, beginPreviewRequest() {},
@@ -182,8 +187,35 @@ function setup(kind) {
         vm.runInContext(between(text, 'let initialized = false;', '\n            };\n\n            const onResize'), context);
     }
     return { state, node, dataWidget, alerts, context, pendingTimers,
-        counts: () => ({ configured, initialized, serialized, galleryClosed }), load: context.load, save: context.save };
+        counts: () => ({ configured, initialized, serialized, galleryClosed, dirtied }), load: context.load, save: context.save };
 }
+
+test('Creator restores legacy breast tags and serializes the separate field for immediate reload', () => {
+    const h = setup('creator');
+    h.dataWidget.value = JSON.stringify({ character: 'Alice', character_info: {
+        name: 'Alice', sex: 'female', body: 'small_breasts, custom build',
+    } });
+    const original = h.dataWidget.value;
+    h.node.onConfigure();
+    assert.equal(h.dataWidget.value, original, 'Configuration preserves original saved bytes');
+    h.context.els.breastSection = {};
+    h.context.els.breast_size = { setValue(value) { this.value = value; } };
+    h.context.els.body = { setValue(value) { this.value = value; } };
+    vm.runInContext(between(source('vnccs_character_creator_v2'), 'const syncCharacterFields =', 'const syncBackgroundForGenerationMode =')
+        + 'globalThis.syncTraits = syncCharacterFields;', h.context);
+    h.context.syncTraits();
+    assert.equal(h.context.els.breast_size.value, 'small_breasts');
+    assert.equal(h.context.els.body.value, 'custom build');
+    h.state.character_info.breast_size = 'medium breasts';
+    h.save();
+    const payload = { widgets_values: ['stale bytes'] };
+    h.node.onSerialize(payload);
+    const restored = setup('creator');
+    restored.dataWidget.value = payload.widgets_values[0];
+    restored.node.onConfigure();
+    assert.equal(restored.state.character_info.breast_size, 'medium breasts');
+    assert.equal(restored.state.character_info.body, 'custom build');
+});
 
 for (const kind of ['creator', 'cloner']) {
     for (const [value, enabled] of [
@@ -218,7 +250,9 @@ for (const kind of ['creator', 'cloner']) {
             const workflow = { widgets_values: ['old snapshot'] };
             h.node.onSerialize(workflow);
             assert.equal(JSON.parse(workflow.widgets_values[0]).character_info.nsfw, value);
+            const dirtyBeforeEdit = h.counts().dirtied;
             toggle.children[0].onclick();
+            assert.ok(h.counts().dirtied > dirtyBeforeEdit, 'Changing NSFW must dirty the graph so reload keeps it');
             h.node.onSerialize(workflow);
             assert.equal(JSON.parse(workflow.widgets_values[0]).character_info.nsfw, !enabled);
         });
@@ -269,7 +303,7 @@ test('Creator repeats configure, preserves the original callback, and cancels co
 test('Creator restores the selected preview source and pose index without inheriting previous selection', () => {
     const h = setup('creator');
     h.dataWidget.value = JSON.stringify({ character: 'Alice', character_info: { name: 'Alice' },
-        preview_valid: true, preview_source: 'pose', sprite_preview_index: 3 });
+        character_revision: 'alice-revision', preview_valid: true, preview_source: 'pose', sprite_preview_index: 3 });
     assert.equal(h.load(), true);
     assert.equal(h.state.preview_valid, true);
     assert.equal(h.state.preview_source, 'pose');
@@ -284,7 +318,7 @@ test('Creator restores the selected preview source and pose index without inheri
 test('Cloner repeated configuration never copies traits from the previous character', () => {
     const h = setup('cloner');
     h.state.character_info.eyes = 'Alice green eyes';
-    h.dataWidget.value = JSON.stringify({ character: 'Bob', character_info: { name: 'Bob', hair: 'Bob hair' } });
+    h.dataWidget.value = JSON.stringify({ character: 'Bob', character_revision: 'bob-revision', character_info: { name: 'Bob', hair: 'Bob hair' } });
     h.node.onConfigure();
     assert.equal(h.state.character_info.eyes, '');
     assert.equal(h.state.character_info.hair, 'Bob hair');
@@ -319,7 +353,7 @@ test('Cloner preserves workflow bytes when reference ownership differs from the 
 
 for (const kind of ['creator', 'cloner']) {
     for (const available of [[], ['Bob']]) {
-        test(`${kind} inventory ${JSON.stringify(available)} preserves the restored missing character and draft`, async () => {
+        test(`${kind} inventory ${JSON.stringify(available)} resolves the restored character safely`, async () => {
             const h = setup(kind);
             const selected = { value: '', options: [], add(option) { this.options.push(option); },
                 set innerHTML(value) { this.options = []; } };
@@ -337,6 +371,7 @@ for (const kind of ['creator', 'cloner']) {
                 saveCurrentGenerationModeValues() {}, getModeProfile: () => ({}),
                 fetchCcConfig: async () => ({}), applyPromptModeToFields() {}, syncCharacterFields() {},
                 MODE_PROMPT_DEFAULTS: { illustrious: {}, anima: {}, qi2: {} }, PROMPT_DEFAULTS_VERSION: 1,
+                STYLE_PROMPT_KEYS: JSON.parse(source('vnccs_character_creator_v2').match(/const STYLE_PROMPT_KEYS = (\[[^\n]+\]);/)[1]),
                 ANIMA_CLIP_NAME: 'clip', ANIMA_VAE_NAME: 'vae', QI2_MODEL_NAME: 'model', QI2_CLIP_NAME: 'clip', QI2_VAE_NAME: 'vae',
                 isCreatorOverhaulLora: () => false, clearSourceImages() { h.state.source_images = []; },
                 spritePreviewNavigator: { invalidate() {}, load: async () => {}, hideNav() {} },
@@ -360,11 +395,15 @@ for (const kind of ['creator', 'cloner']) {
             const workflow = { widgets_values: ['old snapshot'] };
             h.node.onSerialize(workflow);
             const saved = JSON.parse(workflow.widgets_values[0]);
-            assert.equal(saved.character, 'Alice');
-            assert.equal(saved.character_info.hair, 'authored Alice hair');
-            if (kind === 'cloner') assert.equal(saved.source_images[0].name, 'alice.png');
-            assert.equal(selected.value, 'Alice');
-            assert.ok(selected.options.some(option => option.value === 'Alice'));
+            const fallsBack = kind === 'cloner' && available.length > 0;
+            assert.equal(saved.character, fallsBack ? 'Bob' : 'Alice');
+            assert.equal(saved.character_info.hair, fallsBack ? 'disk Bob hair' : 'authored Alice hair');
+            if (kind === 'cloner') {
+                if (fallsBack) assert.deepEqual(saved.source_images, []);
+                else assert.equal(saved.source_images[0].name, 'alice.png');
+            }
+            assert.equal(selected.value, fallsBack ? 'Bob' : 'Alice');
+            assert.ok(selected.options.some(option => option.value === (fallsBack ? 'Bob' : 'Alice')));
         });
     }
 }
@@ -392,6 +431,7 @@ for (const kind of ['creator', 'cloner']) {
             syncGenerationControls() {}, refreshGenerationModeUI() {}, applyGenerationProfile() {},
             saveCurrentGenerationModeValues() {}, getModeProfile: () => ({}), fetchCcConfig: async () => ({}),
             MODE_PROMPT_DEFAULTS: { illustrious: {}, anima: {}, qi2: {} }, PROMPT_DEFAULTS_VERSION: 1,
+            STYLE_PROMPT_KEYS: JSON.parse(source('vnccs_character_creator_v2').match(/const STYLE_PROMPT_KEYS = (\[[^\n]+\]);/)[1]),
             ANIMA_CLIP_NAME: 'clip', ANIMA_VAE_NAME: 'vae', QI2_MODEL_NAME: 'model', QI2_CLIP_NAME: 'clip', QI2_VAE_NAME: 'vae',
             isCreatorOverhaulLora: () => false, hideSpriteNav() {}, tryCachePreview() {}, clearCharacterSelection() {},
             spritePreviewNavigator: { invalidate() {}, load: async () => {}, hideNav() {} }, mediaURL: value => value,

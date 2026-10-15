@@ -40,6 +40,21 @@ def _make_pipe(**kwargs):
 
 # ── _inherit ──────────────────────────────────────────────────────────────────
 
+@pytest.mark.parametrize("strength", [0, 1])
+def test_selected_missing_lora_requires_weights_unless_disabled(monkeypatch, strength):
+    from nodes import vnccs_pipe
+    monkeypatch.setattr(vnccs_pipe, "get_full_path_agnostic",
+                        lambda *args, **kwargs: pytest.fail("Disabled adapter must not resolve weights")
+                        if strength == 0 else None)
+    model, clip = object(), object()
+    if strength:
+        with pytest.raises(FileNotFoundError, match="Selected LoRA 'missing.safetensors'"):
+            VNCCS_Pipe().process_pipe(model=model, clip=clip, lora_name="missing.safetensors", lora_strength=strength)
+    else:
+        result = VNCCS_Pipe().process_pipe(model=model, clip=clip, lora_name="missing.safetensors", lora_strength=0)
+        assert result[:2] == (model, clip)
+
+
 class TestInherit:
     def test_none_inherits_from_pipe(self):
         pipe = _make_pipe(cfg=7.5)
@@ -132,7 +147,7 @@ class TestProcessPipeInheritance:
         result = self._run(pipe=pipe, sampler_name="euler")
         assert result[10] == "euler"
 
-    def test_returns_self_as_pipe_output(self):
+    def test_returns_an_independent_pipe_snapshot(self):
         node = VNCCS_Pipe()
         pipe = _make_pipe()
         defaults = dict(
@@ -143,7 +158,10 @@ class TestProcessPipeInheritance:
             lora_name="none", lora_strength=1.0, lora_options_json='["none"]',
         )
         result = node.process_pipe(**defaults)
-        assert result[9] is node
+        assert result[9] is not node
+        original = result[9].seed_int, result[9].model
+        node.process_pipe(model="next model", seed_int=123)
+        assert (result[9].seed_int, result[9].model) == original
 
 
 # ── process_pipe — sampler/scheduler fallback ─────────────────────────────────
@@ -246,7 +264,8 @@ class TestProcessPipeReturnShape:
             lora_name="none", lora_strength=1.0, lora_options_json='["none"]',
         )
         assert result[0] == "model"
-        assert result[9] is node
+        assert result[9] is not node
+        assert result[9].model == "model"
 
     def test_returns_12_values(self):
         node = VNCCS_Pipe()

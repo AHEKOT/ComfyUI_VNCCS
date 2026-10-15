@@ -1,6 +1,7 @@
 from ..operation_logger import log_event, logged_operation
 
 import os
+import asyncio
 import json
 import re
 import io
@@ -19,6 +20,7 @@ from ..utils import (
     privileged_route, file_fingerprint, config_path, atomic_output_path, character_storage_lock
 )
 from .emotion_library import load_emotion_library, save_emotion_library
+from .runtime_cleanup import inference_stage
 from .character_creator_v2 import (
     ANIMA_DEFAULTS,
     ILLUSTRIOUS_DEFAULTS,
@@ -26,6 +28,8 @@ from .character_creator_v2 import (
     load_generation_assets,
     normalize_gen_settings,
     get_lora_full_path,
+    _generation_file_signatures,
+    apply_generation_lora,
 )
 from .vnccs_control_center import is_qi2_turbo_model
 from .vnccs_pipe import VNCCS_Pipe
@@ -91,7 +95,7 @@ def user_emotion_images_dir():
 
 
 def make_unique_emotion_safe_name(title, existing_names):
-    base = re.sub(r"[^a-z0-9]+", "-", str(title or "").lower()).strip("-")
+    base = re.sub(r"[^a-z0-9]+", "-", str(title or "").lower()).strip("-")[:120].rstrip("-")
     if not base:
         base = "custom-emotion"
 
@@ -100,9 +104,13 @@ def make_unique_emotion_safe_name(title, existing_names):
     # Neutral directories contain source poses, never generated emotions.
     existing = set(existing_names or []) | {"neutral"}
     while safe_name in existing:
-        safe_name = f"{base}-{counter}"
+        suffix = f"-{counter}"
+        safe_name = base[:120 - len(suffix)].rstrip("-") + suffix
         counter += 1
-    return safe_name
+    return ensure_safe_name(safe_name, "emotion")
+
+
+MAX_CUSTOM_EMOTION_PIXELS = 16 * 1024 * 1024
 
 
 def save_custom_emotion_image(image_data, safe_name):
@@ -122,10 +130,38 @@ def save_custom_emotion_image(image_data, safe_name):
         raise ValueError("Image is too large.")
 
     with Image.open(io.BytesIO(raw)) as img:
+        if img.width * img.height > MAX_CUSTOM_EMOTION_PIXELS:
+            raise ValueError(f"Emotion image exceeds {MAX_CUSTOM_EMOTION_PIXELS:,} pixels. Use a smaller image.")
         img = ImageOps.exif_transpose(img).convert("RGBA")
         path = safe_join_under(user_emotion_images_dir(), f"{ensure_safe_name(safe_name, 'emotion')}.webp")
         with atomic_output_path(path) as temporary:
             img.save(temporary, format="WEBP", quality=92, method=6)
+
+
+def _save_custom_emotion(payload):
+    title = str(payload.get("name", "") or "").strip()
+    if not title:
+        raise ValueError("Emotion name is required.")
+    description = str(payload.get("description", "") or "").strip()
+    natural_prompt = str(payload.get("natural_prompt", "") or "").strip() or f"The character expresses {title}."
+
+    config_path = user_emotions_config_path()
+    with character_storage_lock(config_path):
+        data = load_emotions_data()
+        existing_names = {emotion["safe_name"] for entries in data.values() for emotion in entries}
+        safe_name = make_unique_emotion_safe_name(title, existing_names)
+        save_custom_emotion_image(payload.get("image_data"), safe_name)
+        emotion = {"key": title, "description": description, "safe_name": safe_name,
+                   "natural_prompt": natural_prompt}
+        data.setdefault("Custom", []).append(emotion)
+        try:
+            with open(config_path, "r", encoding="utf-8") as handle:
+                users = json.load(handle)
+        except FileNotFoundError:
+            users = {}
+        users["Custom"] = data["Custom"]
+        save_emotion_library(config_path, users)
+    return {**emotion, "category": "Custom"}
 
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -151,6 +187,7 @@ def resolve_generation_seed(gen_settings, seed_resolved=False):
     return seed
 
 
+@inference_stage()
 def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
     parsed = json.loads(generation_settings) if generation_settings else {}
     if not isinstance(parsed, dict):
@@ -200,21 +237,7 @@ def build_emotion_pipe(generation_model="Anima", generation_settings="{}"):
         gen_settings = normalize_gen_settings({**parsed, "generation_mode": mode})
         _, model, clip, vae = load_generation_assets(gen_settings)
 
-    def apply_lora_safe(m, c, lora_name, strength, clip_strength=None):
-        if not lora_name or lora_name == "None" or float(strength or 0) == 0:
-            return m, c
-        lora_path = get_lora_full_path(lora_name)
-        if not lora_path:
-            log_event("warning", component="EmotionStudio", level="warning", message=f'LoRA not found: {lora_name}')
-            return m, c
-        lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
-        return comfy.sd.load_lora_for_models(
-            m,
-            c,
-            lora,
-            float(strength),
-            float(strength) if clip_strength is None else float(clip_strength),
-        )
+    apply_lora_safe = apply_generation_lora
 
     if mode == "anima":
         if gen_settings.get("turbo_enabled"):
@@ -402,7 +425,7 @@ if server:
     @server.PromptServer.instance.routes.get("/vnccs/get_emotions")
     async def get_emotions_config(request):
         try:
-            data = load_emotions_data()
+            data = await asyncio.to_thread(load_emotions_data)
             return web.json_response(data)
         except Exception as e:
             return web.Response(status=500, text=f"Error loading emotions.json: {e}")
@@ -414,43 +437,7 @@ if server:
             payload = await request.json()
             if not isinstance(payload, dict):
                 raise ValueError("Emotion request must be an object")
-            title = str(payload.get("name", "") or "").strip()
-            if not title:
-                return web.json_response({"error": "Emotion name is required."}, status=400)
-
-            description = str(payload.get("description", "") or "").strip()
-            natural_prompt = str(payload.get("natural_prompt", "") or "").strip()
-            if not natural_prompt:
-                natural_prompt = f"The character expresses {title}."
-
-            with character_storage_lock(user_emotions_config_path()):
-                config_path = user_emotions_config_path()
-                data = load_emotions_data()
-                existing_names = {
-                    str(emotion.get("safe_name", "")).strip()
-                    for emotion_list in data.values()
-                    for emotion in emotion_list
-                    if isinstance(emotion, dict)
-                }
-                safe_name = make_unique_emotion_safe_name(title, existing_names)
-                save_custom_emotion_image(payload.get("image_data"), safe_name)
-
-                emotion = {
-                    "key": title,
-                    "description": description,
-                    "safe_name": safe_name,
-                    "natural_prompt": natural_prompt,
-                }
-                category = "Custom"
-                data.setdefault(category, []).append(emotion)
-
-                try:
-                    with open(config_path, "r", encoding="utf-8") as handle:
-                        users = json.load(handle)
-                except FileNotFoundError:
-                    users = {}
-                users[category] = data[category]
-                save_emotion_library(config_path, users)
+            emotion = await asyncio.to_thread(_save_custom_emotion, payload)
 
             try:
                 EmotionGeneratorV2.SAFE_NAME_MAP = None
@@ -458,7 +445,7 @@ if server:
             except NameError:
                 pass
 
-            return web.json_response({"emotion": {**emotion, "category": category}})
+            return web.json_response({"emotion": emotion})
         except ValueError as e:
             return web.json_response({"error": str(e)}, status=400)
         except Exception as e:
@@ -480,8 +467,7 @@ if server:
             return web.json_response({"error": str(error)}, status=400)
         return web.json_response(costumes)
 
-    @server.PromptServer.instance.routes.get("/vnccs/get_character_sheet_preview")
-    async def get_character_sheet_preview(request):
+    def _character_sheet_preview_response(request):
         character = request.rel_url.query.get("character", "")
         if not character:
              return web.Response(status=404)
@@ -505,6 +491,10 @@ if server:
         except Exception as e:
             log_event('warning', component='EmotionStudio', level='warning', message=f'Failed to serve sprite preview: {e}', error=str(e))
             return web.Response(status=500)
+
+    @server.PromptServer.instance.routes.get("/vnccs/get_character_sheet_preview")
+    async def get_character_sheet_preview(request):
+        return await asyncio.to_thread(_character_sheet_preview_response, request)
 
     @server.PromptServer.instance.routes.get("/vnccs/get_emotion_image")
     async def get_emotion_image(request):
@@ -597,7 +587,8 @@ class EmotionGeneratorV2:
         paths = [config_path(character), emotions_config_path(), user_emotions_config_path()]
         for costume in json.loads(costumes_data):
             paths.extend(list_costume_sprite_paths(character, costume))
-        return json.dumps([file_fingerprint(path) for path in paths])
+        assets = _generation_file_signatures(normalize_gen_settings({**settings, "generation_mode": mode}))
+        return json.dumps([[file_fingerprint(path) for path in paths], assets])
 
     @logged_operation("EmotionStudio", "prepare_tasks")
     def generate_emotions_v2(self, generation_model="Anima", generation_settings="{}", prompt_style="Anima", character="Character Name", costumes_data="[]", emotions_data="[]"):
@@ -652,35 +643,24 @@ class EmotionGeneratorV2:
 
         # --- SETUP ---
         character_path = character_dir(character)
-        images = []
         emotion_data = []
-        
-        # Helper to get info
-        if info:
-            aesthetics = info.get("aesthetics", "")
-            background_color = info.get("background_color", "blue")
-            sex = info.get("sex", "")
-            age = info.get("age", 18)
-            race = info.get("race", "")
-            eyes = info.get("eyes", "")
-            hair = info.get("hair", "")
-            face_features = info.get("face", "")
-            body = info.get("body", "")
-            skin_color = info.get("skin_color", "")
-            additional_details = info.get("additional_details", "")
-            lora_prompt = info.get("lora_prompt", "")
-            
-            negative_prompt = info.get("negative_prompt", "") 
-            negative_prompt = negative_prompt + ", (facial droplet), (water drop), (water), (water droplets), (water drops)"
-            
-            seed = pipe_seed
-            base_negative_prompt = negative_prompt
-            positive_prompt = aesthetics
-        else:
-             seed = pipe_seed
-             base_negative_prompt = ""
-             positive_prompt = ""
-             log_event("warning", component="EmotionStudio", level="warning", message=f'Character info not found for {character}')
+
+        aesthetics = info.get("aesthetics", "")
+        background_color = info.get("background_color", "blue")
+        sex = info.get("sex", "")
+        age = info.get("age", 18)
+        race = info.get("race", "")
+        eyes = info.get("eyes", "")
+        hair = info.get("hair", "")
+        body = info.get("body", "")
+        skin_color = info.get("skin_color", "")
+        additional_details = info.get("additional_details", "")
+        lora_prompt = info.get("lora_prompt", "")
+
+        negative_prompt = info.get("negative_prompt", "")
+        negative_prompt += ", (facial droplet), (water drop), (water), (water droplets), (water drops)"
+        seed = pipe_seed
+        base_negative_prompt = negative_prompt
 
         # --- GENERATION LOOP ---
         for costume in selected_costumes:
@@ -713,7 +693,7 @@ class EmotionGeneratorV2:
                 sheet_output_path = os.path.join(sprite_dir, f"sprite_{emotion_key}_")
                 
                 # Prompt Building (Same as V1)
-                positive_prompt = f"{aesthetics}"
+                positive_prompt = aesthetics
                 if background_color: positive_prompt += f", {background_color} background"
                 if race: positive_prompt += f", {race} race"
                 if hair: positive_prompt += f", {hair} hair"

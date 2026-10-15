@@ -104,6 +104,26 @@ test("custom and unavailable workflows keep their text and style identity", asyn
     assert.equal(restored.picker.customInput.value, "Graphite");
 });
 
+test("None clears the serialized style and is offered only when the caller allows it", async () => {
+    const ctx = setup({ style: "legacy", style_prompt: "Legacy prompt", custom_style: "Saved custom draft" },
+        undefined, { allowNone: () => true });
+    await find(ctx.picker.root, "vnccs-style-summary").onclick();
+    const card = walk(find(ctx.host, "vnccs-style-gallery")).find(el => el.className === "vnccs-style-card"
+        && el.children.some(child => child.textContent === "None"));
+    assert.ok(card);
+    card.onclick();
+    assert.equal(ctx.info.style, "none");
+    assert.equal(ctx.snapshots.at(-1).style_prompt, "");
+    assert.equal(ctx.info.custom_style, "Saved custom draft");
+    assert.equal(find(ctx.picker.root, "vnccs-style-name").textContent, "None");
+    assert.equal(find(ctx.picker.root, "vnccs-style-reference").textContent, "No style selected");
+    const restored = setup(ctx.snapshots.at(-1), undefined, { allowNone: () => true });
+    assert.equal(find(restored.picker.root, "vnccs-style-name").textContent, "None");
+    const qi2 = setup();
+    await find(qi2.picker.root, "vnccs-style-summary").onclick();
+    assert.equal(walk(qi2.host).some(el => el.textContent === "None"), false);
+});
+
 test("keyboard focus stays in the gallery; Escape and removal discard pending requests", async () => {
     let resolve;
     const ctx = setup(undefined, () => new Promise(done => { resolve = done; }));
@@ -127,7 +147,7 @@ test("keyboard focus stays in the gallery; Escape and removal discard pending re
 });
 
 test("user styles save on the server, show inline errors, and edits keep their ID", async () => {
-    const saved = { id: "user_" + "a".repeat(32), label: "Mine", description: "Sketch", reference: "Me", prompt: "Ink", user: true };
+    const saved = { id: "user_" + "a".repeat(32), label: "Mine", description: "Sketch", reference: "Me", prompt: "Ink", user: true, revision: "read-revision" };
     const calls = []; let fail = true;
     const data = catalog(); data.groups.push({ label: "My styles", styles: [saved] });
     const ctx = setup({ style: saved.id }, async (url, options) => {
@@ -147,6 +167,7 @@ test("user styles save on the server, show inline errors, and edits keep their I
     fail = false;
     await editor.onsubmit({ preventDefault() {} });
     assert.equal(JSON.parse(calls.at(-1).body).id, saved.id);
+    assert.equal(JSON.parse(calls.at(-1).body).revision, saved.revision);
     assert.equal(calls.at(-1).headers["X-VNCCS-CSRF"], "1");
     assert.equal(ctx.snapshots.at(-1).style_prompt, "Graphite");
     assert.equal(ctx.info.style, saved.id);

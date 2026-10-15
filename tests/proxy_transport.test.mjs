@@ -4,7 +4,8 @@ import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { createWidgetContext } from './widget_context.mjs';
 
-const read = name => readFileSync(new URL(`../web/${name}.js`, import.meta.url), 'utf8');
+const read = name => readFileSync(new URL(`../web/${name}.js`, import.meta.url), 'utf8')
+    .replace(/new URL\(([^,]+), import\.meta\.url\)\.href/g, '$1');
 const run = (context, code) => vm.runInContext(code, context);
 const response = (status, data) => ({ status, ok: status >= 200 && status < 300, json: async () => data });
 
@@ -166,6 +167,29 @@ test('workflow cache identity also works outside secure browser contexts', () =>
     assert.equal(run(context, 'workflowScope(node)'), first);
     context.node.graph = { extra: {} };
     assert.notEqual(run(context, 'workflowScope(node)'), first);
+});
+
+test('independent tabs isolate saved workflows while reconnect and reload retain their scope', () => {
+    const values = new Map();
+    const sessionStorage = { getItem: key => values.get(key) || null,
+        setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
+    const create = (type, store = sessionStorage) => {
+        const h = transport({ sessionStorage: store,
+            performance: { getEntriesByType: () => [{ type }] } });
+        h.context.node = { id: 42, type: 'VNCCS_CharacterGenerator',
+            graph: { extra: { vnccs_workflow_id: 'saved-workflow' } } };
+        return h;
+    };
+    const first = create('navigate');
+    const firstScope = run(first.context, 'workflowScope(node)');
+    const copiedValues = new Map(values);
+    const copiedStorage = { getItem: key => copiedValues.get(key) || null,
+        setItem: (key, value) => copiedValues.set(key, value), removeItem: key => copiedValues.delete(key) };
+    const duplicate = create('navigate', copiedStorage);
+    assert.notEqual(run(duplicate.context, 'workflowScope(node)'), firstScope);
+    assert.equal(run(first.context, 'workflowScope(node)'), firstScope);
+    assert.equal(run(create('reload').context, 'workflowScope(node)'), firstScope);
+    assert.equal(first.context.node.graph.extra.vnccs_workflow_id, 'saved-workflow');
 });
 
 test('a restarted server can restore snapshots with a lower revision from a new epoch', async () => {
@@ -374,6 +398,31 @@ test('snapshot recovery follows the latest stage while preserving explicit previ
         await h.widget.refreshProgress();
         assert.equal(h.widget.selectedPreview, userSelectedPreview ? 'pose_generation' : 'bg_remove');
     }
+});
+
+test('Clothes snapshot keeps source sprites visible while the source upscaler runs', async () => {
+    const h = generator();
+    Object.assign(h.widget, {
+        isClothes: true,
+        stages: [['source_upscaler'], ['pose_generation'], ['upscaler']],
+        stageState: {
+            source_upscaler: { status: 'waiting' },
+            pose_generation: { status: 'waiting' },
+            upscaler: { status: 'waiting' },
+        },
+        selectedPreview: 'pose_generation',
+        userSelectedPreview: false,
+    });
+    h.api.fetchApi = async () => response(200, { snapshot: {
+        scope: h.widget.progressScope(), node_id: '5', revision: 1, epoch: 'server',
+        stages: {
+            source_upscaler: { status: 'running', images: ['source'] },
+            pose_generation: { status: 'waiting', images: ['base-1', 'base-2'], current: 0, total: 2 },
+        },
+    } });
+    await h.widget.refreshProgress();
+    assert.equal(h.widget.selectedPreview, 'pose_generation');
+    assert.deepEqual(Array.from(h.widget.stageState.pose_generation.images), ['base-1', 'base-2']);
 });
 
 test('unchanged or absent idle snapshots do not rebuild interactive preview DOM', async () => {

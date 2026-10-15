@@ -44,7 +44,7 @@ def test_qi2_background_defaults_to_transparent_without_wrapping_controls():
 
 
 def test_clone_preview_requires_reference_before_queue_or_api_execution():
-    handler = SOURCE.split("btnGen.onclick = async () => {", 1)[1].split("// Show loading overlay", 1)[0]
+    handler = SOURCE.split("btnGen.onclick = async () => {", 1)[1].split("const character = state.character;", 1)[0]
     assert 'state.activeTab === "clone" && !state.clone_image' in handler
     assert 'showInfo("Reference Required"' in handler
 

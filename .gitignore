@@ -8,6 +8,7 @@ emotions-config/user/
 character_template/character_styles.user.json
 character_template/style_previews/user_*.webp
 character_template/style_previews/custom.webp
+ChromaKeyTests/*
 *.rsuser
 *.suo
 *.user

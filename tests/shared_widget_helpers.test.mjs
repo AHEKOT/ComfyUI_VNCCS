@@ -241,6 +241,7 @@ for (const initiator of ['creator client', 'Control Center widget']) {
             Object.assign(widget, { node: widgetNode, state: {}, config: null, statusText: {},
                 _beginConfigRequest: context.createRequestGuard(widgetNode),
                 _syncCustomModelInput() {}, _renderAll() {}, _dispatchLoraOptions() {}, _syncCnetSlots() {},
+                _setConfigLoading() {},
             });
             const first = initiator === 'creator client' ? client : widget;
             const second = initiator === 'creator client' ? widget : client;

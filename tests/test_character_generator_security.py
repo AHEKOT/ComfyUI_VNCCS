@@ -46,7 +46,7 @@ def test_chroma_key_presets_use_edge_safe_tolerance_scale():
         "foreground_recover": 0.35,
         "edge_decontaminate": 0.75,
         "edge_choke": 0.08,
-        "matte_method": "guided_edge",
+        "matte_method": "screen_matte",
         "output_mode": "straight_rgba",
     }
 
@@ -574,7 +574,6 @@ def test_emotions_generator_bg_remove_uses_character_background_color(tmp_path, 
     monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(node, "_save_stage", lambda *args, **kwargs: None)
     monkeypatch.setattr(node, "_load_source_sprite_from_path", lambda *args, **kwargs: (None, None))
-    monkeypatch.setattr(node, "_pad_alpha_sources_to_uniform_canvas", lambda data, items: (items, (4, 4)))
     monkeypatch.setattr(
         node,
         "_run_emotion_generation_one",
@@ -662,7 +661,6 @@ def test_emotions_generator_single_bg_regenerate_slices_cached_raw_batch(tmp_pat
     monkeypatch.setattr(node, "_save_stage", lambda *args, **kwargs: None)
     monkeypatch.setattr(cg, "_save_cached_tensor", lambda *args, **kwargs: None)
     monkeypatch.setattr(node, "_load_source_sprite_from_path", lambda *args, **kwargs: (None, None))
-    monkeypatch.setattr(node, "_pad_alpha_sources_to_uniform_canvas", lambda data, items: (items, (4, 4)))
     monkeypatch.setattr(
         node,
         "_run_emotion_generation_one",
@@ -1004,7 +1002,7 @@ def test_h3_pose_generation_follows_reference_workflow_and_returns_first_frame(m
             "MiniMaxH3ReferenceToVideo": ("positive", "latent"),
             "BasicGuider": ("guider",),
             "RandomNoise": ("noise",),
-            "SamplerCustomAdvanced": ("sampled", "denoised"),
+            "SamplerCustomAdvanced": ({"samples": torch.rand(1, 24, 2, 4, 4)}, "denoised"),
             "VAEDecode": (decoded,),
         }
         return outputs[class_name]
@@ -1041,6 +1039,9 @@ def test_h3_pose_generation_follows_reference_workflow_and_returns_first_frame(m
     scheduler_call = next(kwargs for name, kwargs in calls if name == "BasicScheduler")
     assert scheduler_call["model"] == "pose_model"
     h3_calls = [kwargs for name, kwargs in calls if name == "MiniMaxH3ReferenceToVideo"]
+    for name, kwargs in calls:
+        if name == "VAEDecode":
+            assert kwargs["samples"]["samples"].shape == (1, 24, 1, 4, 4)
     assert len(h3_calls) == 2
     for index, h3_kwargs in enumerate(h3_calls):
         assert h3_kwargs["prompt"] == "Draw character from image2\n<lighting>"

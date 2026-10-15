@@ -396,7 +396,7 @@ class VNCCSChromaKey:
                 "foreground_recover": ("FLOAT", {"default": 0.35, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "edge_decontaminate": ("FLOAT", {"default": 0.75, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "edge_choke": ("FLOAT", {"default": 0.08, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "matte_method": (["chroma_soft", "guided_edge", "pymatting_if_available", "screen_matte"], {"default": "guided_edge"}),
+                "matte_method": (["chroma_soft", "guided_edge", "pymatting_if_available", "screen_matte"], {"default": "screen_matte"}),
                 "screen_mode": (["auto", "green", "blue", "red"], {"default": "auto"}),
                 "output_mode": (["straight_rgba", "premultiplied_rgba"], {"default": "straight_rgba"}),
                 "use_sam3_recovery_mask": (
@@ -414,7 +414,7 @@ class VNCCSChromaKey:
     VNCCS Chroma Key - automatically detects background color from image borders.
     Uses soft chroma keying, edge-guided matte cleanup, foreground recovery, and
     edge-only decontamination for cleaner hair and outlines.
-    The opt-in screen_matte method runs on the selected GPU, estimates the actual
+    The default screen_matte method runs on the selected GPU, estimates the actual
     plate color automatically, and removes isolated screen artifacts. Its color
     unmixing is controlled jointly by despill, foreground recovery and edge
     decontamination; screen_mode is used only by the legacy methods.
@@ -460,6 +460,17 @@ class VNCCSChromaKey:
                     )
                 except Exception as exc:
                     log_event('fallback', component='ImageProcessing', level='warning', message=f'SAM3 recovery failed; using chroma key without recovery: {type(exc).__name__}: {exc}', error=str(exc))
+
+        if len(image.shape) == 4 and matte_method == "screen_matte":
+            from .chroma_screen_matte import screen_matte_batch
+
+            return screen_matte_batch(
+                image, tolerance=tolerance, softness=softness,
+                despill_strength=despill_strength, edge_width=edge_width,
+                matte_cleanup=matte_cleanup, foreground_recover=foreground_recover,
+                edge_decontaminate=edge_decontaminate, edge_choke=edge_choke,
+                output_mode=output_mode,
+            )
 
         if len(image.shape) == 4:
             rgba_list = []
@@ -745,10 +756,16 @@ class VNCCSChromaKey:
         if shrunk.max() <= 0:
             return rgba, alpha, debug
 
-        original_rgb = _ensure_float01(original)[..., :3]
+        original = _ensure_float01(original)
+        original_rgb = original[..., :3]
         restored_alpha = torch.maximum(alpha, shrunk).clamp(0.0, 1.0)
+        if original.shape[-1] >= 4:
+            restored_alpha = torch.minimum(restored_alpha, original[..., 3])
+        current_rgb = rgba[..., :3]
+        if output_mode == "premultiplied_rgba":
+            current_rgb = current_rgb / torch.where(alpha > 0, alpha, 1).unsqueeze(-1)
         restored_rgb = torch.lerp(
-            rgba[..., :3],
+            current_rgb,
             original_rgb,
             shrunk.unsqueeze(-1),
         ).clamp(0.0, 1.0)
@@ -783,7 +800,9 @@ class VNCCSChromaKey:
                 edge_decontaminate=edge_decontaminate, edge_choke=edge_choke,
                 output_mode=output_mode,
             )
-        image = _ensure_float01(image)[..., :3]
+        image = _ensure_float01(image)
+        source_alpha = image[..., 3] if image.shape[-1] >= 4 else None
+        image = image[..., :3]
         height, width, _ = image.shape
         key_color = self._detect_key_color(image)
         dominant_idx = self._dominant_channel(key_color, screen_mode)
@@ -870,6 +889,9 @@ class VNCCSChromaKey:
             radius=max(2, int(edge_width) + 2),
             amount=despill_strength,
         )
+        if source_alpha is not None:
+            alpha = alpha * source_alpha
+            edge = self._edge_band(alpha, int(edge_width))
         if output_mode == "premultiplied_rgba":
             rgb_out = despilled * alpha.unsqueeze(-1)
         else:

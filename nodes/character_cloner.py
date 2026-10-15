@@ -37,10 +37,10 @@ def _source_image_path(image):
     return safe_join_under(directory, *parts)
 
 try:
-    from .qwen_vl import get_qwen_vl_chat_handler, parse_wizard_json
+    from .qwen_vl import get_qwen_vl_chat_handler, parse_wizard_json, normalize_character_wizard_traits
     from .qwen_vl import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME, _start_qwen_vl_download, qwen_vl_download_status
 except Exception:
-    from nodes.qwen_vl import get_qwen_vl_chat_handler, parse_wizard_json
+    from nodes.qwen_vl import get_qwen_vl_chat_handler, parse_wizard_json, normalize_character_wizard_traits
     from nodes.qwen_vl import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME, _start_qwen_vl_download, qwen_vl_download_status
 
 # VNCCS Installer (REMOVED: User requested Qwen2)
@@ -119,7 +119,7 @@ class CharacterCloner:
             data = {}
 
         # 1. Parse Data
-        character_name = data.get("character", "Unknown")
+        character_name = data.get("character", "")
         info = data.get("character_info", {})
         info_owner = str(info.get("name", "") or "").strip()
         if info_owner and info_owner != str(character_name):
@@ -182,15 +182,15 @@ class CharacterCloner:
         sheets_path = sheets_dir(character_name)
 
         # 6. Save Config (if character name is valid)
-        if character_name and character_name != "Unknown":
+        if character_name:
             # Just ensure folder exists
             with character_storage_lock(character_path):
-                os.makedirs(character_path, exist_ok=True)
                 config = load_config(character_name)
                 if not isinstance(config, dict):
                     if os.path.exists(config_path(character_name)):
                         raise ValueError(f"Cannot read the existing configuration for '{character_name}'; refusing to overwrite it.")
                     config = {}
+                os.makedirs(character_path, exist_ok=True)
                 config.setdefault("folder_structure", {"main_directories": MAIN_DIRS, "emotions": EMOTIONS})
                 config.setdefault("config_version", "2.0")
                 config.update({
@@ -375,6 +375,14 @@ Return all keys in a raw JSON object. Do not output the word 'tag' as a value.""
                 if isinstance(data, dict):
                     trait_keys = {"sex", "age", "race", "skin_color", "hair", "eyes", "face", "body", "additional_details", "aesthetics", "nsfw"}
                     data = {key: value for key, value in data.items() if key in trait_keys}
+                    normalized = normalize_character_wizard_traits(data)
+                    for key in data.keys() & normalized.keys():
+                        data[key] = normalized[key]
+                    if "aesthetics" in data:
+                        value = data["aesthetics"]
+                        data["aesthetics"] = ", ".join(str(item) for item in value) if isinstance(value, list) else str(value or "")
+                    if "nsfw" in data:
+                        data["nsfw"] = data["nsfw"] is True or str(data["nsfw"]).lower() == "true"
                     # Ensure keys exist? Frontend handles missing keys.
                     log_event("traits_ready", component="Cloner", fields=len(data))
                     return web.json_response(data)

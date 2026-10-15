@@ -76,6 +76,31 @@ def test_debug_failure_preserves_traceback(caplog):
     assert caplog.records[-1].exc_info[0] is ValueError
 
 
+def test_full_info_diagnostics_preserve_prompts_and_error_tracebacks(caplog):
+    prompt = "Framing: full body\n" + "character detail " * 300
+    with caplog.at_level(logging.INFO, logger="VNCCS"):
+        log_event("prompts", component="Creator", positive=prompt, truncate=False)
+        try:
+            raise ValueError("generation failed")
+        except ValueError:
+            log_event("exception", component="Creator", level="error", exc_info=True, truncate=False)
+    assert summaries(caplog)[0]["positive"] == prompt
+    assert json.dumps(prompt, ensure_ascii=False) in caplog.records[0].getMessage()
+    assert caplog.records[-1].exc_info[0] is ValueError
+
+
+def test_readable_blocks_keep_real_line_breaks_and_complete_text(caplog):
+    prompt = "Draw an image of a character in the following style: Ink\nStyle reference: Example\n" + "Detailed description " * 300
+    with caplog.at_level(logging.INFO, logger="VNCCS"):
+        log_event("prompts", component="Creator", context="QI2 encoded preview", positive=prompt,
+                  truncate=False, display_text=f"Positive prompt:\n{prompt}")
+    message = caplog.records[-1].getMessage()
+    assert message.startswith("[VNCCS] Creator | QI2 encoded preview\n\nPositive prompt:\n")
+    assert prompt in message
+    assert "\\n" not in message and "positive=" not in message and "truncate=" not in message
+    assert summaries(caplog)[0]["positive"] == prompt
+
+
 def test_concurrent_and_nested_jobs_keep_separate_contexts(caplog):
     barrier = Barrier(2)
 

@@ -1,0 +1,6 @@
+qwen_image_21_t2i_system_prompt.txt is an unmodified copy of the official
+Qwen Image 2.1 text-to-image prompt rewrite template, retrieved October 12, 2026.
+Source: https://github.com/QwenLM/Qwen-Image-2.1/blob/main/prompt_rewrite/prompts/system_prompt_t2i.txt
+License: qwen_image_21_LICENSE.txt (research and evaluation use only).
+
+Qwen is licensed under the Qwen RESEARCH LICENSE AGREEMENT, Copyright (c) 2026 Hangzhou Tongyi Laboratory Technology Co., Ltd. All Rights Reserved.

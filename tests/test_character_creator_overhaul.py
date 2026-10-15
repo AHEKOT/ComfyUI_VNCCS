@@ -107,7 +107,8 @@ def test_both_generation_paths_apply_overhaul_before_turbo_and_sampling(monkeypa
     monkeypatch.setattr(creator, "load_generation_assets", lambda settings: ("key", "model", "clip", "vae"))
     monkeypatch.setattr(creator, "acquire_preview_assets", lambda settings: ("model", "clip", "vae"))
     monkeypatch.setattr(creator, "get_lora_full_path", lambda name: "/test/overhaul.safetensors")
-    monkeypatch.setattr(creator.comfy.utils, "load_torch_file", lambda *a, **kw: {"weights": True}, raising=False)
+    monkeypatch.setattr(creator.comfy.utils, "load_torch_file", lambda *a, **kw:
+        ({"weights": True}, {}) if kw.get("return_metadata") else {"weights": True}, raising=False)
     def load_lora(model, clip, weights, strength_model, strength_clip):
         calls.append(("overhaul", strength_model, strength_clip))
         return "overhauled-model", clip
@@ -128,7 +129,6 @@ def test_both_generation_paths_apply_overhaul_before_turbo_and_sampling(monkeypa
     monkeypatch.setattr(creator, "decode_generation_samples", lambda *a: creator.torch.zeros((1, 8, 8, 3)))
     monkeypatch.setattr(creator.web, "json_response", lambda data: data, raising=False)
     monkeypatch.setattr(creator.server.PromptServer.instance, "send_sync", lambda *a: None, raising=False)
-    monkeypatch.setitem(creator.PREVIEW_CACHE, "loras", {})
     data = {"character": "OverhaulTest", "character_info": {"sex": "female", "age": 25},
             "gen_settings": {"generation_mode": "qi2", "qi2_overhaul_strength": .75,
                              "turbo_enabled": turbo}, "preview_valid": False}

@@ -95,6 +95,7 @@ for (const widget of ['clothes', 'cloner', 'creator']) {
             spritePreviewNavigator: { load: async name => previews.push(name) },
             getDefaultCharacterInfo: () => ({}), syncBackgroundForGenerationMode() {},
             MODE_PROMPT_DEFAULTS: { illustrious: {}, anima: {}, qi2: {} }, PROMPT_DEFAULTS_VERSION: 1,
+            STYLE_PROMPT_KEYS: JSON.parse(source('vnccs_character_creator_v2').match(/const STYLE_PROMPT_KEYS = (\[[^\n]+\]);/)[1]),
             applyPromptModeToFields() {}, syncCharacterFields() {}, hideSpriteNav() {},
             tryCachePreview: name => previews.push(name), showSpritePreview: name => previews.push(name),
         });
@@ -274,16 +275,16 @@ test('Creator preview submits a temporary resolved-seed marker without saving it
 });
 
 for (const field of ['hair', 'seed']) {
-    test(`creator ignores pending preview success after ${field} changes on the same character`, async () => {
+    test(`creator presents pending preview after ${field} changes but keeps it invalid for the edited inputs`, async () => {
         const h = creatorImageHarness();
         const generation = h.doGenerate();
         if (field === 'hair') h.state.character_info.hair = 'new authored hair';
         else h.state.gen_settings.seed = 42;
         h.requests[0].resolve(response({ image: 'old-generated-image' }));
         await generation;
-        assert.equal(h.els.previewImg.src, undefined);
+        assert.equal(h.els.previewImg.src, 'data:image/png;base64,old-generated-image');
         assert.equal(h.saved.filter(item => item.valid).length, 0);
-        assert.equal(h.state.preview_valid, undefined);
+        assert.equal(h.state.preview_valid, false);
         assert.equal(h.els.btnGen.disabled, false);
     });
 }
@@ -515,6 +516,7 @@ for (const widget of ['creator', 'cloner']) {
             spritePreviewNavigator: { invalidate() {}, load: async () => {} },
             getDefaultCharacterInfo: () => ({}), syncBackgroundForGenerationMode() {},
             MODE_PROMPT_DEFAULTS: { illustrious: {}, anima: {}, qi2: {} }, PROMPT_DEFAULTS_VERSION: 1,
+            STYLE_PROMPT_KEYS: JSON.parse(source('vnccs_character_creator_v2').match(/const STYLE_PROMPT_KEYS = (\[[^\n]+\]);/)[1]),
             applyPromptModeToFields() {}, syncCharacterFields() {}, hideSpriteNav() {}, tryCachePreview() {},
             showModal() { assert.fail('Unexpected error'); }, showAlertModal() { assert.fail('Unexpected error'); },
             api: { fetchApi: route => route.includes('preview_meta') ? Promise.resolve(response({ count: 0 })) : pending.promise },

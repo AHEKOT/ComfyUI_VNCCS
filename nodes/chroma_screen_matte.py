@@ -87,16 +87,17 @@ def _remove_plate_speckles(alpha, initial, scale, strength):
 
     component_scale = max(1, (max(height, width) + 1023) // 1024)
     allowed = -F.max_pool2d(-(supported > 0.02).float(), component_scale, component_scale, ceil_mode=True)
-    radius = max(1, round(24 * strength) // component_scale)
+    radius = max(1, round(8 * strength) // component_scale)
     anchor = _erode(allowed, radius)
     if not bool(anchor.any()):
         return alpha
-    anchor = _grow(anchor, allowed, sum(allowed.shape[-2:]))
     # Repeat exact pooling cells; resizing a ceil-pooled grid shifts boundaries.
     anchor = anchor.repeat_interleave(component_scale, 2).repeat_interleave(component_scale, 3)
     anchor = anchor[:, :, :height, :width]
-    # Coarse density selects seeds only. Full-resolution reconstruction must be
-    # allowed to reach long, thin strands beyond the coarse support envelope.
+    # The eroded cores are seeds only. Sparse full-resolution reconstruction
+    # reaches their complete components, including long one-pixel strands.
+    # Growing the dense coarse mask first produced the same seeds but launched
+    # hundreds of full-frame pooling kernels.
     return alpha * _reconstruct_detail(anchor > 0.5, alpha > 0.02)
 
 
@@ -117,105 +118,188 @@ def _processing_device(image):
     return image.device
 
 
+def _sample_color_lines(x, background, trusted, unknown, initial, screen_cosine, remnant_band,
+                        key_brightness, radius, residual_limit):
+    """Select real foreground samples by color-line fit and spatial distance.
+
+    Known-background specialization of sampling-based matting (He et al.,
+    CVPR 2011). Samples are never averaged across different materials. Search
+    runs only on uncertain pixels, in bounded device-resident chunks.
+    """
+    height, width = x.shape[-2:]
+    points = torch.nonzero(unknown.flatten(), as_tuple=False).flatten()
+    rgb = x[0].permute(1, 2, 0).reshape(-1, 3)
+    backgrounds = background[0].permute(1, 2, 0).reshape(-1, 3)
+    alpha = initial.flatten().clone()
+    uncertainty = torch.zeros_like(alpha)
+    chosen = rgb.clone()
+    distances = sorted({max(1, round(step * max(1, radius) / 3))
+                        for step in (1, 2, 3, 4, 6, 8, 12)})
+    offsets = torch.tensor(
+        [(dy * step, dx * step) for step in distances
+         for dy, dx in ((-1, -1), (-1, 0), (-1, 1), (0, -1),
+                        (0, 1), (1, -1), (1, 0), (1, 1))],
+        device=x.device,
+    )
+    penalty = offsets.float().square().sum(1).sqrt() * 0.0015
+    for chunk in points.split(16384):
+        if chunk.numel() == 0:
+            continue
+        y, xpos = chunk // width, chunk % width
+        sy = y[:, None] + offsets[None, :, 0]
+        sx = xpos[:, None] + offsets[None, :, 1]
+        valid = (sy >= 0) & (sy < height) & (sx >= 0) & (sx < width)
+        indices = sy.clamp(0, height - 1) * width + sx.clamp(0, width - 1)
+        valid = valid & trusted.flatten()[indices]
+        candidates, colors, bg = rgb[indices], rgb[chunk], backgrounds[chunk]
+        direction, delta = candidates - bg[:, None], colors - bg
+        coverage = ((delta[:, None] * direction).sum(2)
+                    / direction.square().sum(2).clamp_min(0.001)).clamp(0, 1)
+        error = (delta[:, None] - coverage[:, :, None] * direction).square().sum(2).sqrt()
+        cost = torch.where(valid, error + penalty, 1e6)
+        best, which = cost.min(1)
+        row = torch.arange(chunk.numel(), device=x.device)
+        foreground, fitted = candidates[row, which], coverage[row, which]
+        # A thin black outline may have no opaque sample at any search radius.
+        # Prefer observed samples; accept this fallback only when it fits RGB.
+        black = (1 - (colors * bg).sum(1) / bg.square().sum(1).clamp_min(0.001)).clamp(0, 1)
+        black_error = (colors - (1 - black[:, None]) * bg).square().sum(1).sqrt()
+        use_black = ((black_error + 0.025 < best) & (black_error < 0.04)
+                     & (colors.amax(1) < key_brightness * 0.7))
+        foreground = torch.where(use_black[:, None], 0.0, foreground)
+        fitted = torch.where(use_black, black, fitted)
+        residual = torch.where(use_black, black_error, error[row, which])
+        # Generated plates contain color noise that is not a valid alpha mix.
+        # Suppress weak, poorly explained screen remnants, not opaque outlines.
+        confidence = (1 - residual / residual_limit).clamp(0, 1)
+        fitted = torch.where(fitted < 0.5, fitted * confidence, fitted)
+        near_screen = ((screen_cosine.flatten()[chunk] > 0.5)
+                       & (delta.square().sum(1) < (key_brightness * 0.45) ** 2))
+        accepted = (((best < 1e6) | use_black)
+                    & ((residual < 0.08) | near_screen | remnant_band.flatten()[chunk]))
+        alpha[chunk] = torch.where(accepted, fitted, alpha[chunk])
+        chosen[chunk] = torch.where(accepted[:, None], foreground, colors)
+        uncertainty[chunk] = ((residual / residual_limit).clamp(0, 1)
+                              * accepted * (fitted > 0) * (fitted < 1))
+    return (alpha.reshape(1, 1, height, width),
+            chosen.reshape(height, width, 3).permute(2, 0, 1)[None],
+            uncertainty.reshape(1, 1, height, width))
+
+
+def _guided_alpha(alpha, guide, uncertainty, epsilon):
+    """Smooth noisy fits, preserving exact color lines and rejected models."""
+    mean_g, mean_a = _box_filter(guide, 1), _box_filter(alpha, 1)
+    covariance = _box_filter(guide * alpha, 1) - mean_g * mean_a
+    variance = (_box_filter(guide * guide, 1) - mean_g * mean_g).clamp_min(0)
+    slope = covariance / (variance + epsilon)
+    intercept = mean_a - slope * mean_g
+    filtered = (_box_filter(slope, 1) * guide + _box_filter(intercept, 1)).clamp(0, 1)
+    return torch.lerp(alpha, filtered, uncertainty)
+
+
 @torch.inference_mode()
 def screen_matte(image, tolerance=0.15, softness=0.12, despill_strength=0.65,
                  edge_width=3, matte_cleanup=0.1, foreground_recover=0.35,
                  edge_decontaminate=0.75, edge_choke=0.08,
                  output_mode="straight_rgba", processing_device=None):
-    """Process one HWC image and preserve its size and original output device."""
+    """Key one HWC image; retain the caller's shape, device and alpha convention.
+
+    Screen-colored foreground is inherently ambiguous and may be lost. Do not
+    fill screen-colored gaps to protect it: clean holes and accurate non-screen
+    foreground take precedence. No semantic masks or model downloads are used.
+    """
     output_device = image.device
     device = processing_device if processing_device is not None else _processing_device(image)
     source = image.to(device=device, dtype=torch.float32).clamp(0, 1)
     x = source[..., :3].permute(2, 0, 1)[None].contiguous()
     height, width = image.shape[:2]
     tolerance_scale = max(0.05, min(4.0, float(tolerance) / 0.15))
-    transition = max(0.001, float(softness) * (0.8 / 0.12))
+    softness_scale = max(0.05, min(4.0, float(softness) / 0.12))
+    radius = max(0, int(edge_width))
 
     small = F.interpolate(x, size=(64, 64), mode="nearest")
     border = torch.cat((small[:, :, :3, :].flatten(2), small[:, :, -3:, :].flatten(2),
                         small[:, :, :, :3].flatten(2), small[:, :, :, -3:].flatten(2)), dim=2)
     key = border.median(dim=2).values[:, :, None, None]
-    key_delta = x - key
-    rgb_distance = _dot_rgb(key_delta, key_delta).sqrt()
+    key_axis = torch.arange(3, device=x.device).view(1, 3, 1, 1) == key.flatten().argmax()
+    primary = (x * key_axis).sum(1, keepdim=True)
+    other = torch.where(key_axis, -1.0, x).amax(1, keepdim=True)
+    key_other = torch.where(key_axis, -1.0, key).amax(1, keepdim=True)
+    ratio = (primary - other).clamp_min(0) / (key.max() - key_other).clamp_min(0.02)
+    delta = x - key
+    distance = _dot_rgb(delta, delta).sqrt()
+    chroma, key_chroma = x - x.mean(1, keepdim=True), key - key.mean(1, keepdim=True)
+    chroma_norm, key_norm = _dot_rgb(chroma, chroma).sqrt(), _dot_rgb(key_chroma, key_chroma).sqrt()
+    cosine = _dot_rgb(chroma, key_chroma) / (chroma_norm * key_norm).clamp_min(0.00001)
+    plate = (((ratio > 0.8) | (cosine > 0.9)) & (distance < 0.15 * tolerance_scale))
+    plate = plate | (distance < 0.035 * tolerance_scale)
+    near_plate = F.max_pool2d(plate.float(), radius * 2 + 1, 1, radius) > 0.5
+    near_foreground = F.max_pool2d((~plate).float(), radius * 2 + 1, 1, radius) > 0.5
+    unknown = near_plate & near_foreground & (distance > 0.025 * tolerance_scale)
+    # A narrow enclosed hair gap can contain a lighter/shifted screen color
+    # with no exact plate pixel nearby. Include its chromatic boundary without
+    # treating every similarly colored opaque interior as an unknown region.
+    screen_like = (primary > other + 0.015) & (cosine > 0.5)
+    thin_remnant = (screen_like & (_erode(screen_like.float(), 1) < 0.5)
+                    & (distance < key.max() * 0.45) & ~plate)
+    remnant_band = F.max_pool2d(thin_remnant.float(), 3, 1, 1) > 0.5
+    unknown = unknown | remnant_band
+    initial = (~plate).float()
+    initial = torch.where(unknown & (distance < key.max() * 0.45),
+                          (1 - ratio).clamp(0, 1), initial)
+    trusted = ((_erode((~plate).float(), 1) > 0.5)
+               & ((cosine < 0.5) | (chroma_norm < 0.025)))
+    # Interior samples need not oppose the screen hue: dark blue-gray hair on
+    # a blue plate still supplies valid foreground colors for its own boundary.
+    trusted = trusted | ((_erode((~plate).float(), radius + 1) > 0.5)
+                         & (distance > 0.25 * tolerance_scale))
+    # Do not erode away the very outline whose color the edge solver needs.
+    trusted = trusted | ((x.amax(1, keepdim=True) < key.max() * 0.35)
+                         & ((cosine < 0.5) | (chroma_norm < 0.025)))
+    # A shifted gap must not supply its own pale green pixels as foreground
+    # samples. Include adjacent antialias pixels in this sampling exclusion.
+    trusted = trusted & ~remnant_band
+    # The trimap's opaque anchors are constraints, not pixels to re-estimate.
+    # Otherwise a valid dark hair sample can itself be made translucent by a
+    # different material nearby, despite already being trusted as foreground.
+    unknown = unknown & ~trusted
+    initial = torch.where(trusted, 1.0, initial)
 
-    # Opponent-plane angle separates hue from screen brightness and saturation.
-    u, v = x[:, :1] - (x[:, 1:2] + x[:, 2:3]) * 0.5, (x[:, 1:2] - x[:, 2:3]) * 0.8660254
-    ku, kv = key[:, :1] - (key[:, 1:2] + key[:, 2:3]) * 0.5, (key[:, 1:2] - key[:, 2:3]) * 0.8660254
-    chroma_norm, key_norm = (u * u + v * v).sqrt(), (ku * ku + kv * kv).sqrt()
-    cosine = (u * ku + v * kv) / (chroma_norm * key_norm).clamp_min(0.0001)
-    hue_score = (1 - cosine) / (0.06 * tolerance_scale ** 2)
-    brightness = torch.maximum(torch.maximum(x[:, :1], x[:, 1:2]), x[:, 2:3])
-    # Relative saturation recognizes a dark screen/black-outline mixture while
-    # excluding pale highlights. An absolute fraction of key saturation misses
-    # dark green remnants and leaves an opaque green fringe around black ink.
-    saturated = (chroma_norm > torch.maximum(brightness * 0.25, torch.full_like(key_norm, 0.03))) & (key_norm > 0.10)
-    hue_score = torch.where(saturated, hue_score, torch.full_like(hue_score, 10.0))
-    channels = key.flatten().sort().values
-    pure = (channels[-2] / channels[-1].clamp_min(0.01)) < 0.15
-
-    # With a muted plate, same-hue clothing is only removed if it connects to
-    # the outer screen. Enclosed holes still use the stricter RGB key distance.
-    scale = max(1, (max(height, width) + 255) // 256)
-    coarse = F.avg_pool2d((hue_score < 1.5).float(), scale, scale, ceil_mode=True) > 0.85
-    exterior = torch.zeros_like(coarse, dtype=torch.float32)
-    exterior[:, :, 0, :] = coarse[:, :, 0, :].float()
-    exterior[:, :, -1, :] = coarse[:, :, -1, :].float()
-    exterior[:, :, :, 0] = coarse[:, :, :, 0].float()
-    exterior[:, :, :, -1] = coarse[:, :, :, -1].float()
-    exterior = _grow(exterior, coarse, sum(coarse.shape[-2:]))
-    exterior = F.interpolate(exterior, size=(height, width), mode="nearest")
-    # Distinct hue is positive foreground evidence on a muted plate, even if a
-    # dark painted detail happens to be close to the key in RGB distance.
-    muted_score = torch.maximum(rgb_distance / (0.14 * tolerance_scale),
-                                torch.where(saturated, hue_score, 0.0))
-    score = torch.where(pure, torch.minimum(rgb_distance / (0.16 * tolerance_scale), hue_score),
-                        muted_score)
-    score = torch.where((exterior > 0.5) & (hue_score < 0.65), 0.0, score)
-    initial = ((score - 0.65) / transition).clamp(0, 1)
-
-    trusted = _erode((initial > 0.98).float(), 3 if max(height, width) > 2048 else 2)
-    color_scale = 2 if max(height, width) > 2048 else 1
-    packed = torch.cat((x * trusted, trusted), 1)
-    if color_scale > 1:
-        packed = F.avg_pool2d(packed, color_scale, color_scale, ceil_mode=True)
-    radius = max(1, int(edge_width) - 1)
-    estimate = _box_filter(packed, radius)
-    for multiplier in (2, 4):
-        estimate = torch.where(estimate[:, 3:4] < 0.005, _box_filter(packed, radius * multiplier), estimate)
-    if color_scale > 1:
-        estimate = F.interpolate(estimate, size=(height, width), mode="bilinear", align_corners=False)
-    numerator, denominator = estimate[:, :3], estimate[:, 3:4]
-    foreground = numerator / denominator.clamp_min(1e-6)
-    direction = foreground - key
-    norm = _dot_rgb(direction, direction).clamp_min(0.001)
-    alpha = (_dot_rgb(key_delta, direction) / norm).clamp(0, 1)
-    residual_color = x - (key + alpha * direction)
-    residual = _dot_rgb(residual_color, residual_color).sqrt()
-    radius = max(0, int(edge_width))
-    # Refine around confirmed screen, not around every uncertain painted pixel:
-    # otherwise a dark internal hair line can make opaque neighbors transparent.
-    edge = (F.max_pool2d((initial < 0.02).float(), radius * 2 + 1, 1, radius) > 0) & (denominator > 0.005) & (residual < 0.16)
-    alpha = torch.where(edge, alpha, initial)
-    # A black anti-aliased strand has the screen's hue. Allow color unmixing
-    # immediately next to opaque foreground, while keeping flat screen clear.
-    near_opaque = F.max_pool2d((initial > 0.98).float(), 3, 1, 1) > 0
-    clear_screen = (score < 0.65) & (~edge | ~near_opaque | (rgb_distance < 0.025))
-    alpha = torch.where(clear_screen, 0.0, alpha)
-    # Black ink mixed with a pure screen has the screen's hue, but its darkness
-    # gives an exact coverage estimate. Preserve these outline samples near the
-    # silhouette even when nearby light hair gives a poor foreground estimate.
-    near_subject = F.max_pool2d((initial > 0.98).float(), radius * 2 + 1, 1, radius) > 0
-    ink_edge = pure & near_subject & (hue_score < 0.65) & (brightness < channels[-1] * 0.7)
-    ink_alpha = (1 - _dot_rgb(x, key) / _dot_rgb(key, key).clamp_min(0.001)).clamp(0, 1)
-    alpha = torch.where(ink_edge, ink_alpha, alpha)
+    # Only background colors are averaged. A local plate estimate accommodates
+    # small shading/codec shifts without borrowing colors across foreground.
+    # The silhouette band already has local plate samples. Enclosed remnants
+    # without such samples use the global key; wide full-frame passes are wasted.
+    packed = torch.cat((x * plate, plate.float()), 1)
+    estimate = _box_filter(packed, max(1, radius + 1))
+    background = torch.where(estimate[:, 3:4] > 0.00001,
+                             estimate[:, :3] / estimate[:, 3:4].clamp_min(0.0001), key)
+    alpha, foreground, uncertainty = _sample_color_lines(
+        x, background, trusted, unknown, initial, cosine, remnant_band, key.max(), radius,
+        max(0.005, 0.06 * softness_scale),
+    )
+    alpha = _guided_alpha(alpha, distance, uncertainty, (0.01 * softness_scale) ** 2)
     alpha_floor = max(0.001, min(0.25, float(edge_choke) * 0.25))
     alpha = torch.where(alpha < alpha_floor, 0.0, alpha)
     alpha = torch.where(alpha > 0.98, 1.0, alpha)
     if matte_cleanup > 0:
+        scale = max(1, (max(height, width) + 255) // 256)
         alpha = _remove_plate_speckles(alpha, initial, scale, min(4.0, matte_cleanup / 0.1))
 
-    # Solve C = alpha * F + (1-alpha) * B only for partial coverage.
-    corrected = ((x - (1 - alpha) * key) / alpha.clamp_min(0.05)).clamp(0, 1)
+    # Unpremultiply against the estimated plate, then regularize unstable low
+    # coverage toward the selected sample. Confident opaque pixels retain RGB.
+    corrected = ((x - (1 - alpha) * background) / alpha.clamp_min(0.02)).clamp(0, 1)
+    corrected = torch.lerp(corrected, foreground, ((1 - alpha) * 4).clamp(0, 1))
+    # Generated spill can be opaque and shift hue away from the sampled plate.
+    # Desaturate its chroma, not just G/B: clamping one channel leaves cyan on
+    # teal plates. Relative saturation protects nearly neutral blue-gray ink.
+    corrected_chroma = corrected - corrected.mean(1, keepdim=True)
+    corrected_norm = _dot_rgb(corrected_chroma, corrected_chroma).sqrt()
+    corrected_cosine = (_dot_rgb(corrected_chroma, key_chroma)
+                        / (corrected_norm * key_norm).clamp_min(0.00001))
+    spill = ((near_plate | remnant_band) & (corrected_cosine > 0.5)
+             & (corrected_norm > corrected.amax(1, keepdim=True) * 0.1))
+    luma = corrected[:, :1] * 0.2126 + corrected[:, 1:2] * 0.7152 + corrected[:, 2:3] * 0.0722
+    corrected = torch.where(spill, luma, corrected)
     amount = min(1.0, max(0.0, despill_strength / 0.65) * max(0.0, foreground_recover / 0.35)
                  * max(0.0, edge_decontaminate / 0.75))
     rgb = torch.lerp(x, corrected, amount)
@@ -226,5 +310,35 @@ def screen_matte(image, tolerance=0.15, softness=0.12, despill_strength=0.65,
         rgb = rgb * alpha
     rgba = torch.cat((rgb, alpha), 1)[0].permute(1, 2, 0)
     matte = alpha[0, 0]
-    debug = torch.cat((edge.float(), alpha, 1 - alpha), 1)[0].permute(1, 2, 0)
+    debug = torch.cat((unknown.float(), alpha, 1 - alpha), 1)[0].permute(1, 2, 0)
     return rgba.to(output_device), matte.to(output_device), debug.to(output_device)
+
+
+@torch.inference_mode()
+def screen_matte_batch(images, tolerance=0.15, softness=0.12, despill_strength=0.65,
+                       edge_width=3, matte_cleanup=0.1, foreground_recover=0.35,
+                       edge_decontaminate=0.75, edge_choke=0.08,
+                       output_mode="straight_rgba", processing_device=None):
+    """Process one BHWC batch with a single host/device transfer each way."""
+    if images.ndim != 4:
+        raise ValueError("screen_matte_batch expects a BHWC image tensor")
+    output_device = images.device
+    device = processing_device if processing_device is not None else _processing_device(images)
+    working = images.to(device=device, dtype=torch.float32).clamp(0, 1)
+    results = [
+        screen_matte(
+            frame,
+            tolerance=tolerance,
+            softness=softness,
+            despill_strength=despill_strength,
+            edge_width=edge_width,
+            matte_cleanup=matte_cleanup,
+            foreground_recover=foreground_recover,
+            edge_decontaminate=edge_decontaminate,
+            edge_choke=edge_choke,
+            output_mode=output_mode,
+            processing_device=device,
+        )
+        for frame in working
+    ]
+    return tuple(torch.stack(items).to(output_device) for items in zip(*results))

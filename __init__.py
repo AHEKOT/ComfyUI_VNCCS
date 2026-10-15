@@ -1,6 +1,7 @@
 """VNCCS - Visual Novel Character Creator Suite for ComfyUI."""
 
 import importlib.util
+import asyncio
 import os, json
 import sys
 import traceback
@@ -67,9 +68,13 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             return web.json_response({"error": "not found"}, status=404)
 
         try:
-            with open(cfg_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            return web.json_response(data)
+            from .utils import character_storage_lock, character_dir
+            def read_config():
+                with character_storage_lock(character_dir(name)):
+                    with open(cfg_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    return web.json_response(data)
+            return await asyncio.to_thread(read_config)
         except Exception as e:
             return web.json_response({"error": "read failed", "detail": str(e)}, status=500)
 
@@ -144,7 +149,7 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         try:
             from .nodes.character_creator_v2 import CharacterCreatorV2
             catalog = data.get("catalog", "") if getattr(request, "method", "GET") == "POST" else ""
-            return web.json_response(CharacterCreatorV2.create_character(name, catalog))
+            return web.json_response(await asyncio.to_thread(CharacterCreatorV2.create_character, name, catalog))
         except Exception as e:
             traceback.print_exc()
             return web.json_response({
@@ -171,19 +176,21 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
         except ValueError as e:
             return web.json_response({"error": str(e)}, status=400)
         try:
-            from .utils import load_config, save_config, ensure_costume_structure, character_dir, character_storage_lock
-            with character_storage_lock(character_dir(character_name)):
-                config = load_config(character_name, strict=True)
-                if config is None:
-                    config = {"character_info": {}, "costumes": {}}
-                costumes = config.setdefault("costumes", {})
-                if costume_name in costumes:
-                    return web.json_response({"error": "Costume already exists"})
-                costumes[costume_name] = dict.fromkeys(("face", "head", "top", "bottom", "shoes", "negative_prompt"), "")
-                ensure_costume_structure(character_name, costume_name)
-                if not save_config(character_name, config):
-                    return web.json_response({"error": "Failed to save"}, status=500)
-                return web.json_response({"ok": True, "costume": costume_name})
+            from .utils import load_config, save_costume_info, ensure_costume_structure, character_dir, character_storage_lock
+            def create_costume():
+                with character_storage_lock(character_dir(character_name)):
+                    config = load_config(character_name, strict=True)
+                    if config is None:
+                        config = {"character_info": {}, "costumes": {}}
+                    costumes = config.setdefault("costumes", {})
+                    if costume_name.casefold() in {"naked", "original"} or any(c.casefold() == costume_name.casefold() for c in costumes):
+                        return web.json_response({"error": "Costume already exists"})
+                    info = dict.fromkeys(("face", "head", "top", "bottom", "shoes", "negative_prompt"), "")
+                    ensure_costume_structure(character_name, costume_name)
+                    if not save_costume_info(character_name, costume_name, info):
+                        return web.json_response({"error": "Failed to save"}, status=500)
+                    return web.json_response({"ok": True, "costume": costume_name})
+            return await asyncio.to_thread(create_costume)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 

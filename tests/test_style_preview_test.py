@@ -144,7 +144,7 @@ def test_single_image_and_returned_prompt_only_changes_observed_size(runtime, mo
     assert sample["gen_settings"]["turbo_enabled"] is turbo
     assert sample["qi2_turbo"] is (turbo and model == "QI2")
     assert sample["steps"] == ((12 if model == "Anima" else 6) if turbo else (30 if model == "Anima" else 25))
-    assert sample["cfg"] == (1.0 if turbo else (4.0 if model == "Anima" else 3.0))
+    assert sample["cfg"] == (4.0 if model == "Anima" and not turbo else 1.0)
     if model == "Anima":
         assert calls["rewrite"][0]["clip"] is rewrite_clip
         assert calls["clip_load"][0]["clip_name"] == preview.QI2_DEFAULTS["clip_name"]

@@ -16,7 +16,8 @@ const deferred = () => {
     const promise = new Promise(done => { resolve = done; });
     return { promise, resolve };
 };
-const response = data => ({ ok: true, json: async () => data });
+const response = (data, revision = 'revision-0') => ({ ok: true, json: async () => data,
+    headers: { get: name => name === 'ETag' ? revision : null } });
 const guards = between(common, 'export function registerCleanup', '// ── DOM Widget Width Sync').replaceAll('export ', '');
 
 function setup({ contexts, metadata, save, nativeCharacterSelect = false, disk = { top: 'disk cotton', negative_prompt: 'blur', extension: { id: 7 } } } = {}) {
@@ -27,6 +28,10 @@ function setup({ contexts, metadata, save, nativeCharacterSelect = false, disk =
     const controls = { charSelect: selection(), costSel: selection(),
         ...Object.fromEntries(['btnGen', 'btnDel', 'wizardBtn', 'top', 'bottom', 'head', 'face', 'shoes', 'placeholder', 'previewImg']
             .map(key => [key, { value: '', style: {} }])) };
+    controls._ui = {
+        presentPreview(image, placeholder, src) { image.src = src; image.style.display = 'block'; placeholder.style.display = 'none'; },
+        emptyPreview(image, placeholder) { image.style.display = 'none'; placeholder.style.display = 'flex'; },
+    };
     if (nativeCharacterSelect) {
         let selected = '';
         controls.charSelect = {
@@ -58,7 +63,7 @@ function setup({ contexts, metadata, save, nativeCharacterSelect = false, disk =
             if (route.startsWith('/vnccs/get_costume?')) return metadata ? metadata.promise : response(disk);
             if (route === '/vnccs/save_costume') {
                 disk = JSON.parse(options.body).info;
-                return save ? save.promise : response({ status: 'ok' });
+                return save ? save.promise : response({ status: 'ok', revision: 'revision-1' });
             }
             throw new Error(route);
         } },
@@ -234,10 +239,13 @@ for (const change of ['restoration', 'edit', 'current']) {
         const h = setup();
         h.configure({ character: 'Alice', costume: 'Dress', costume_info: { top: 'Alice silk' } });
         await h.context.initialLoad;
-        const pending = deferred(), loading = { remove() {} };
+        const pending = deferred();
         Object.assign(h.context, {
             btnGen: h.els.btnGen, container: { appendChild() {} },
-            document: { createElement: () => loading }, getConnectedControlCenterState: () => ({}),
+            getConnectedControlCenterState: () => ({}),
+            startClothesPreviewGeneration: () => 1,
+            revealClothesPreview: async src => { h.els.previewImg.src = src; h.els.previewImg.style.display = 'block'; },
+            stopClothesPreviewGeneration() {},
         });
         h.context.node._randomizeSeedIfNeeded = () => {};
         h.context.api.fetchApi = async route => {
@@ -440,7 +448,7 @@ test('character selection retains committed costume ownership and blocks edits u
     assert.equal(h.state.costume_info.top, 'Bob cotton');
     assert.equal(h.els.top.disabled, false);
     await h.saveCostumeToBackend();
-    assert.deepEqual(saved, [{ character: 'Bob', costume: 'Dress', info: { top: 'Bob cotton', bottom: '', head: '', face: '', shoes: '' } }]);
+    assert.deepEqual(saved, [{ character: 'Bob', costume: 'Dress', info: { top: 'Bob cotton', bottom: '', head: '', face: '', shoes: '' }, revision: 'revision-0' }]);
 });
 
 for (const failure of ['http', 'json', 'network', 'schema']) {
@@ -544,3 +552,53 @@ for (const raw of ['{"character":"Alice"', 'null', '[]', '{"costume_info":[]}'])
         assert.equal(h.serialize().costume_info.top, 'recovered silk');
     });
 }
+
+test('two editors reject stale saves and retain the second draft through reload', async () => {
+    let disk = {top: 'cotton', shoes: 'boots'}, revision = 'revision-0';
+    const first = setup({disk}), second = setup({disk});
+    for (const h of [first, second]) h.configure({character: 'Alice', costume: 'Dress'});
+    await Promise.all([first.context.initialLoad, second.context.initialLoad]);
+    const save = async (route, options) => {
+        assert.equal(route, '/vnccs/save_costume');
+        const body = JSON.parse(options.body);
+        if (body.revision !== revision) return {ok: false, status: 409, json: async () => ({error: 'Costume changed; draft preserved'})};
+        disk = body.info; revision = 'revision-1';
+        return response({status: 'ok', revision});
+    };
+    first.context.api.fetchApi = second.context.api.fetchApi = save;
+    first.state.costume_info.top = 'silk';
+    second.state.costume_info.shoes = 'sandals';
+    await first.saveCostumeToBackend();
+    await assert.rejects(second.saveCostumeToBackend(), /Costume changed/);
+    assert.equal(disk.top, 'silk'); assert.equal(disk.shoes, 'boots');
+    const workflow = second.serialize();
+    assert.equal(workflow.costume_info.shoes, 'sandals');
+    assert.equal(workflow.costume_revision, 'revision-0');
+    const metadata = deferred(), reloaded = setup({disk, metadata});
+    reloaded.configure(workflow);
+    metadata.resolve(response(disk, revision));
+    await reloaded.context.initialLoad;
+    reloaded.context.api.fetchApi = save;
+    await assert.rejects(reloaded.saveCostumeToBackend(), /Costume changed/);
+    assert.equal(reloaded.serialize().costume_info.shoes, 'sandals');
+    assert.equal(disk.top, 'silk');
+});
+
+test('queued edits use the preceding disk acknowledgement as their revision', async () => {
+    const h = setup(); h.configure({character: 'Alice', costume: 'Dress'});
+    await h.context.initialLoad;
+    const pending = deferred(), bodies = [];
+    h.context.api.fetchApi = async (route, options) => {
+        const body = JSON.parse(options.body); bodies.push(body);
+        if (bodies.length === 1) { await pending.promise; return response({status: 'ok', revision: 'revision-1'}); }
+        assert.equal(body.revision, 'revision-1');
+        return response({status: 'ok', revision: 'revision-2'});
+    };
+    h.state.costume_info.top = 'first'; const first = h.saveCostumeToBackend();
+    h.state.costume_info.top = 'second'; const second = h.saveCostumeToBackend();
+    await new Promise(resolve => setImmediate(resolve)); pending.resolve();
+    await Promise.all([first, second]);
+    assert.equal(bodies[0].revision, 'revision-0');
+    assert.equal(bodies[1].info.top, 'second');
+    assert.equal(h.serialize().costume_revision, 'revision-2');
+});

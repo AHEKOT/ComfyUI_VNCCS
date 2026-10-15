@@ -1,6 +1,9 @@
 from ..operation_logger import log_event, log_stage, logged_operation
 
 from .preview_runtime import run_preview_job
+from .runtime_cleanup import inference_stage
+from .h3_still import h3_runtime_status, require_h3_still_support
+from .progress_state import _valid_scope
 import json
 import math
 import os
@@ -97,6 +100,15 @@ _FOLDER_MAP = {
 }
 _MODEL_FILE_EXTENSIONS = {".safetensors", ".gguf", ".ckpt", ".pt", ".pth", ".bin"}
 _MIN_MODEL_FILE_SIZE = 1024
+_SAFETENSORS_MAX_INDEX = (1 << 64) - 1
+_SAFETENSORS_DTYPE_BITS = {
+    "F4": 4, "F6_E2M3": 6, "F6_E3M2": 6,
+    "BOOL": 8, "U8": 8, "I8": 8, "F8_E5M2": 8, "F8_E4M3": 8,
+    "F8_E8M0": 8, "F8_E4M3FNUZ": 8, "F8_E5M2FNUZ": 8,
+    "I16": 16, "U16": 16, "F16": 16, "BF16": 16,
+    "I32": 32, "U32": 32, "F32": 32,
+    "I64": 64, "U64": 64, "F64": 64, "C64": 64,
+}
 _DEFAULT_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024 * 1024
 _MANAGER_CONFIG_MAX_BYTES = 1024 * 1024
 _MANAGER_INSTALL_SECURITY_LEVELS = {"weak", "normal", "normal-"}
@@ -547,9 +559,58 @@ def _validate_downloaded_model_file(path, expected_name="model"):
             raise ValueError(f"{expected_name} has an invalid safetensors header")
         with open(path, "rb") as handle:
             handle.seek(8)
-            first_header_byte = handle.read(1)
-        if first_header_byte != b"{":
+            encoded_header = handle.read(header_len)
+        if not encoded_header.startswith(b"{"):
             raise ValueError(f"{expected_name} has an invalid safetensors JSON header")
+
+        def unique_object(pairs):
+            result = dict(pairs)
+            if len(result) != len(pairs):
+                raise ValueError(f"{expected_name} has duplicate safetensors header keys")
+            return result
+
+        def invalid_constant(value):
+            raise ValueError(f"non-finite JSON value '{value}'")
+
+        try:
+            header = json.loads(encoded_header, object_pairs_hook=unique_object, parse_constant=invalid_constant)
+        except (ValueError, UnicodeError) as error:
+            raise ValueError(f"{expected_name} has an invalid safetensors JSON header: {error}") from error
+        if not isinstance(header, dict):
+            raise ValueError(f"{expected_name} has an invalid safetensors header")
+        ranges = []
+        for name, tensor in header.items():
+            if name == "__metadata__":
+                if not isinstance(tensor, dict) or any(not isinstance(value, str) for value in tensor.values()):
+                    raise ValueError(f"{expected_name} has invalid safetensors metadata")
+                continue
+            if not isinstance(tensor, dict):
+                raise ValueError(f"{expected_name} has invalid tensor metadata for '{name}'")
+            dtype, shape, offsets = tensor.get("dtype"), tensor.get("shape"), tensor.get("data_offsets")
+            if (not isinstance(dtype, str) or dtype not in _SAFETENSORS_DTYPE_BITS
+                    or not isinstance(shape, list) or any(type(dimension) is not int
+                        or not 0 <= dimension <= _SAFETENSORS_MAX_INDEX for dimension in shape)
+                    or not isinstance(offsets, list) or len(offsets) != 2
+                    or any(type(offset) is not int or not 0 <= offset <= _SAFETENSORS_MAX_INDEX for offset in offsets)):
+                raise ValueError(f"{expected_name} has invalid tensor metadata for '{name}'")
+            elements = 1
+            for dimension in shape:
+                elements *= dimension
+                if elements > _SAFETENSORS_MAX_INDEX:
+                    raise ValueError(f"{expected_name} has an overflowing tensor shape for '{name}'")
+            bits = elements * _SAFETENSORS_DTYPE_BITS[dtype]
+            start, end = offsets
+            if bits > _SAFETENSORS_MAX_INDEX or bits % 8 or end - start != bits // 8:
+                raise ValueError(f"{expected_name} has an invalid tensor size for '{name}'")
+            ranges.append((start, end))
+        # Every payload byte belongs to one tensor; gaps, overlaps and truncation are invalid.
+        covered = 0
+        for start, end in sorted(ranges):
+            if start != covered:
+                raise ValueError(f"{expected_name} has invalid safetensors tensor offsets")
+            covered = end
+        if covered != size - 8 - header_len:
+            raise ValueError(f"{expected_name} has incomplete or unindexed safetensors tensor data")
         return True
 
     if ext in {".ckpt", ".pt", ".pth", ".bin"}:
@@ -1450,8 +1511,9 @@ def _apply_loras(model, clip, lora_states, config, model_type, type_settings=Non
 
         full_path, exists = _find_model_on_disk(entry["local_path"])
         if not exists:
-            log_event("fallback", component="ControlCenter", level="warning", message=f"LoRA not on disk: '{name}', skipping.")
-            continue
+            raise FileNotFoundError(
+                f"Enabled LoRA '{name}' is not installed. Restore it or disable it before generating."
+            )
 
         log_event("lora_applied", component="ControlCenter", model=name, strength=strength)
         model, clip = _apply_lora_standard(model, clip, full_path, strength)
@@ -1778,10 +1840,19 @@ def _parse_control_center_state(node_state):
 
 def _preview_state_key(repo_id, node_state):
     state = _parse_control_center_state(node_state)
+    state = {key: value for key, value in state.items() if key != "preview_scope"}
     return str(repo_id), json.dumps(state, sort_keys=True, separators=(",", ":"))
 
 
 class VNCCS_ControlCenter:
+    @classmethod
+    def IS_CHANGED(cls, repo_id, **kwargs):
+        config = _apply_active_installed_paths(_get_cc_config(repo_id))
+        files = [_model_file_signature(_find_model_on_disk(entry.get("local_path", ""))[0])
+                 for category in ("models", "clip", "vae", "lora")
+                 for entry in config.get(category, [])]
+        return json.dumps([config, files], sort_keys=True)
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -1818,14 +1889,17 @@ class VNCCS_ControlCenter:
             custom_audio_vae=audio_vae,
         )
         if unique_id is not None:
-            key = str(unique_id)
-            _CUSTOM_PREVIEW_PIPES.pop(key, None)
-            if model is not None and clip is not None and vae is not None:
-                pipe.preview_state_key = _preview_state_key(repo_id, node_state)
-                _CUSTOM_PREVIEW_PIPES[key] = pipe
+            scope = _parse_control_center_state(node_state).get("preview_scope")
+            if _valid_scope(scope):
+                key = (scope, str(unique_id))
+                _CUSTOM_PREVIEW_PIPES.pop(key, None)
+                if model is not None and clip is not None and vae is not None:
+                    pipe.preview_state_key = _preview_state_key(repo_id, node_state)
+                    _CUSTOM_PREVIEW_PIPES[key] = pipe
         return (pipe,)
 
 
+@inference_stage()
 def _build_control_center_pipe(
     repo_id,
     node_state,
@@ -1896,6 +1970,8 @@ def _build_control_center_pipe(
         raise RuntimeError(f"[VNCCS Control Center] {NUNCHAKU_DISABLED_MESSAGE}")
 
     model_kind = _entry_kind(model_entry) or _normalize_model_kind(active_kind)
+    if model_kind == "minimaxh3":
+        require_h3_still_support()
     if model_kind == "qie2511":
         raise RuntimeError("[VNCCS Control Center] QIE2511 is no longer supported. Select a QI2 model.")
     selected_audio_vae_name = ""
@@ -2061,7 +2137,8 @@ def _clothes_preview_response(data):
 
         selected_type = (state.get("selected_types_by_kind") or {}).get(state.get("active_kind"), state.get("selected_type"))
         if selected_type == "custom":
-            pipe = _CUSTOM_PREVIEW_PIPES.get(str(data.get("control_center_id", "")))
+            scope = data.get("control_center_scope")
+            pipe = _CUSTOM_PREVIEW_PIPES.get((scope, str(data.get("control_center_id", "")))) if _valid_scope(scope) else None
             if pipe is None or pipe.preview_state_key != _preview_state_key(repo_id, node_state):
                 return web.Response(status=409, text=(
                     "Custom model inputs for this Control Center configuration are not available in preview memory. "
@@ -2118,7 +2195,7 @@ async def cc_check(request):
         import asyncio
 
         loop = asyncio.get_running_loop()
-        config = await loop.run_in_executor(None, lambda: _get_cc_config(repo_id, prefer_remote=True))
+        config = await loop.run_in_executor(None, lambda: _get_cc_config(repo_id, prefer_remote=force))
     except Exception as exc:
         err = str(exc)
         if "404" in err or "not found" in err.lower():
@@ -2482,6 +2559,7 @@ async def vnccs_module_status(request):
         key: dependency_status(spec)
         for key, spec in dependency_modules.items()
     }
+    result["comfyui"] = h3_runtime_status()
 
     return web.json_response(result)
 
