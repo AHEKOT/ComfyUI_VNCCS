@@ -1,13 +1,13 @@
-"""In-process HYWorld2-style 3DGS training for VNCCS orbit scenes.
+"""In-process Gaussian training for camera-calibrated VNCCS orbit scenes.
 
-Adapted from ComfyUI_HYWorld2's world_gs_trainer.py (MIT, MiuProject).
-The orbit dataset supplies RGB, alpha, COLMAP poses and sparse points; it does
-not supply HYWorld2 depth, normal, sky or anchor data. Only ordinary gsplat's
-public Python APIs are required; the HYWorld2 package is never imported.
+The dataset supplies RGB, alpha, camera poses and sparse points.
+Training uses public gsplat Python APIs without external processes.
 """
 
+from datetime import datetime
 from pathlib import Path
 import time
+import uuid
 
 import numpy as np
 import torch
@@ -15,26 +15,78 @@ import torch.nn.functional as F
 
 from .gaussian_reconstruction import (
     GAUSSIAN_SCENE_TYPE,
-    SH_C0,
-    _comfy_splat,
-    _output_path,
     _runtime_helpers,
     _scene_data,
-    _ssim_loss,
 )
-from ..utils import atomic_output_path
+from ..utils import atomic_output_path, safe_join_under
 
 
-def _hyworld2_scene_scale(frames):
+SH_C0 = 0.28209479177387814
+
+
+def _ssim_loss(rendered, target, kernel):
+    rendered = rendered.permute(0, 3, 1, 2)
+    target = target.permute(0, 3, 1, 2)
+    channels = rendered.shape[1]
+    moments = torch.cat(
+        (rendered, target, rendered.square(), target.square(), rendered * target), dim=0
+    )
+    horizontal = kernel[None, None, None].expand(channels, 1, 1, -1)
+    vertical = kernel[None, None, :, None].expand(channels, 1, -1, 1)
+    moments = F.conv2d(moments, horizontal, groups=channels)
+    moments = F.conv2d(moments, vertical, groups=channels)
+    mu_rendered, mu_target, square_rendered, square_target, product = moments.chunk(
+        5, dim=0
+    )
+    mu_rendered_sq = mu_rendered.square()
+    mu_target_sq = mu_target.square()
+    mu_product = mu_rendered * mu_target
+    variance_rendered = square_rendered - mu_rendered_sq
+    variance_target = square_target - mu_target_sq
+    covariance = product - mu_product
+    c1, c2 = 0.01**2, 0.03**2
+    score = ((2 * mu_product + c1) * (2 * covariance + c2)) / (
+        (mu_rendered_sq + mu_target_sq + c1)
+        * (variance_rendered + variance_target + c2)
+    )
+    return (1.0 - score.mean()).clamp(0.0, 2.0)
+
+
+def _comfy_splat(splats):
+    try:
+        from comfy_api.latest import Types
+    except ImportError as error:
+        raise RuntimeError("ComfyUI SPLAT support is unavailable; update ComfyUI") from error
+
+    return Types.SPLAT(
+        splats["means"].detach().cpu()[None],
+        torch.exp(splats["scales"].detach().expand(-1, 3)).cpu()[None],
+        F.normalize(splats["quats"].detach(), dim=-1).cpu()[None],
+        torch.sigmoid(splats["opacities"].detach()).cpu()[None, :, None],
+        torch.cat((splats["sh0"], splats["shN"]), dim=1).detach().cpu()[None],
+    )
+
+
+def _output_path():
+    try:
+        import folder_paths
+    except ImportError as error:
+        raise RuntimeError("ComfyUI output directory is unavailable") from error
+    root = safe_join_under(folder_paths.get_output_directory(), "VNCCS", "Gaussians")
+    filename = f"gaussian_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}.ply"
+    return safe_join_under(root, filename)
+
+
+def _scene_scale(frames):
     views = np.stack([frame["view"] for frame in frames]).astype(np.float64)
     centers = np.linalg.inv(views)[:, :3, 3]
     radius = np.linalg.norm(centers - centers.mean(axis=0), axis=1).max()
     if not np.isfinite(radius) or radius < 1e-6:
-        raise ValueError("HYWorld2 training requires non-degenerate camera positions")
+        raise ValueError("Gaussian training requires non-degenerate camera positions")
     return float(radius) * 1.1
 
 
-def _hyworld2_initial_scales(points):
+def _initial_scales(points):
     import cv2
 
     points = np.ascontiguousarray(points, dtype=np.float32)
@@ -45,7 +97,7 @@ def _hyworld2_initial_scales(points):
     return (0.5 * np.log(np.maximum(mean_squared_distance, 1e-12))).astype(np.float32)
 
 
-def _hyworld2_strategy(
+def _strategy(
     training_steps, refine_start_iter, refine_stop_iter, refine_every,
     reset_every, grow_grad2d, prune_opacity,
 ):
@@ -53,7 +105,7 @@ def _hyworld2_strategy(
     from gsplat.strategy.ops import duplicate, split
 
     class BudgetedDefaultStrategy(DefaultStrategy):
-        """HYWorld2 ADC: clone small splats, split large ones, respect the cap."""
+        """Clone small splats, split large ones and respect the cap."""
 
         @torch.no_grad()
         def _grow_gs(self, params, optimizers, state, step):
@@ -110,14 +162,14 @@ def _hyworld2_strategy(
     )
 
 
-def _hyworld2_loss(rendered, target, alpha, target_alpha, kernel, alpha_weight,
+def _training_loss(rendered, target, alpha, target_alpha, kernel, alpha_weight,
                    log_scales, scale_regularization):
     l1 = F.l1_loss(rendered, target)
     ssim = _ssim_loss(rendered, target, kernel) if kernel is not None else l1.new_zeros(())
     alpha_loss = F.l1_loss(alpha, target_alpha)
     scale_loss = l1.new_zeros(())
     if scale_regularization:
-        # PhysGaussian ratio regularization, evaluated every ten steps in HYWorld2.
+        # PhysGaussian ratio regularization, evaluated every ten steps.
         log_ratio = log_scales.amax(dim=-1) - log_scales.amin(dim=-1)
         scale_loss = 0.1 * (log_ratio.exp() - 5.0).clamp_min(0.0).mean()
     return l1, ssim, alpha_loss * alpha_weight, scale_loss
@@ -125,14 +177,14 @@ def _hyworld2_loss(rendered, target, alpha, target_alpha, kernel, alpha_weight,
 
 @torch.inference_mode(False)
 @torch.enable_grad()
-def _train_hyworld2_gaussians(
+def _train_gaussians(
     reconstruction, training_frames, output_path, training_steps, max_splats,
     sh_degree, ssim_weight, alpha_weight, use_scale_regularization, antialiased,
     optimizer_mode, refine_start_iter, refine_stop_iter, refine_every,
     reset_every, grow_grad2d, prune_opacity, seed, progress, interrupt,
 ):
     if not torch.cuda.is_available() or torch.version.hip is not None:
-        raise RuntimeError("HYWorld2 Gaussian training requires an NVIDIA CUDA build of PyTorch")
+        raise RuntimeError("Gaussian training requires an NVIDIA CUDA build of PyTorch")
     try:
         from gsplat import export_splats
         from gsplat.rendering import rasterization
@@ -140,13 +192,13 @@ def _train_hyworld2_gaussians(
         if optimizer_mode == "visible_adam":
             from gsplat.optimizers import SelectiveAdam
     except ImportError as error:
-        raise RuntimeError("gsplat 1.5.3 is required for HYWorld2 Gaussian training") from error
+        raise RuntimeError("gsplat 1.5.3 is required for Gaussian training") from error
 
     device = torch.device("cuda", torch.cuda.current_device())
     points, rgb, frames = _scene_data(reconstruction, training_frames)
-    scene_scale = _hyworld2_scene_scale(frames)
+    scene_scale = _scene_scale(frames)
     torch.manual_seed(seed)
-    initial_scales = _hyworld2_initial_scales(points)
+    initial_scales = _initial_scales(points)
     if len(points) > max_splats:
         selected = torch.randperm(len(points))[:max_splats].numpy()
         points, rgb = points[selected], rgb[selected]
@@ -187,7 +239,7 @@ def _train_hyworld2_gaussians(
     scheduler = torch.optim.lr_scheduler.ExponentialLR(
         optimizers["means"], gamma=0.01 ** (1.0 / training_steps)
     )
-    strategy = _hyworld2_strategy(
+    strategy = _strategy(
         training_steps, refine_start_iter, refine_stop_iter, refine_every,
         reset_every, grow_grad2d, prune_opacity,
     )
@@ -208,7 +260,7 @@ def _train_hyworld2_gaussians(
         kernel = torch.exp(-coordinates.square() / (2 * 1.5**2))
         kernel /= kernel.sum()
 
-    # Shuffled epochs give every registered view equal coverage, as in HYWorld2.
+    # Shuffled epochs give every registered view equal coverage.
     generator = torch.Generator().manual_seed(seed)
     order = iter(())
     transfer_stream = torch.cuda.Stream(device=device)
@@ -230,19 +282,19 @@ def _train_hyworld2_gaussians(
     prefetched = prefetch_frame()
     started = time.perf_counter()
     print(
-        f"[VNCCS HYWorld2] Training: frames={len(frames)}, initial_splats={count}, "
+        f"[VNCCS Gaussian] Training: frames={len(frames)}, initial_splats={count}, "
         f"steps={training_steps}, cap={max_splats}, scene_scale={scene_scale:.6g}, "
         f"means_lr={learning_rates['means']:.6g}, optimizer={optimizer_mode}"
     )
     print(
-        f"[VNCCS HYWorld2] ADC: start={strategy.refine_start_iter}, "
+        f"[VNCCS Gaussian] ADC: start={strategy.refine_start_iter}, "
         f"stop={strategy.refine_stop_iter}, every={strategy.refine_every}, "
         f"grow_grad2d={strategy.grow_grad2d:g}, reset_every={strategy.reset_every}; "
         f"SSIM={ssim_weight:g}, alpha={alpha_weight:g}, "
         f"scale_regularization={use_scale_regularization}, antialiased={antialiased}, "
         f"SH={sh_degree} from step 1; full-resolution shuffled frames"
     )
-    print(f"[VNCCS HYWorld2] Output: {output_path}")
+    print(f"[VNCCS Gaussian] Output: {output_path}")
     for step in range(training_steps):
         interrupt()
         training_stream.wait_stream(transfer_stream)
@@ -268,7 +320,7 @@ def _train_hyworld2_gaussians(
         )
         rendered = rendered + background * (1 - alpha)
         strategy.step_pre_backward(splats, optimizers, state, step, info)
-        l1, ssim, alpha_loss, scale_loss = _hyworld2_loss(
+        l1, ssim, alpha_loss, scale_loss = _training_loss(
             rendered, target, alpha, target_alpha, kernel, alpha_weight,
             splats["scales"], use_scale_regularization and step % 10 == 0,
         )
@@ -287,7 +339,7 @@ def _train_hyworld2_gaussians(
         if completed == 1 or completed % 25 == 0 or completed == training_steps:
             phase = "densify" if step < strategy.refine_stop_iter else "finetune"
             print(
-                f"[VNCCS HYWorld2] {completed}/{training_steps} ({phase}): "
+                f"[VNCCS Gaussian] {completed}/{training_steps} ({phase}): "
                 f"loss={loss.detach().item():.6f}, l1={l1.detach().item():.6f}, "
                 f"ssim={ssim.detach().item():.6f}, alpha={alpha_loss.detach().item():.6f}, "
                 f"scale={scale_loss.detach().item():.6f}, splats={len(splats['means'])}, "
@@ -305,7 +357,7 @@ def _train_hyworld2_gaussians(
             finite &= valid
         finite &= torch.isfinite(torch.exp(splats["scales"])).all(dim=-1)
         if not finite.any():
-            raise RuntimeError("HYWorld2 training produced no finite Gaussian parameters")
+            raise RuntimeError("Gaussian training produced no finite Gaussian parameters")
         if not finite.all():
             remove(params=splats, optimizers=optimizers, state=state, mask=~finite)
         splats["quats"].copy_(F.normalize(splats["quats"], dim=-1))
@@ -316,13 +368,13 @@ def _train_hyworld2_gaussians(
                 format="ply", save_to=temporary,
             )
         result = _comfy_splat(splats)
-    print(f"[VNCCS HYWorld2] Saved {len(splats['means'])} splats to {output_path}")
+    print(f"[VNCCS Gaussian] Saved {len(splats['means'])} splats to {output_path}")
     progress.update_absolute(training_steps)
     return result
 
 
-class VNCCSGaussianTrainingHYWorld2:
-    """Train a cached VNCCS orbit scene with HYWorld2's standard ADC trainer."""
+class VNCCSGaussianTrainer:
+    """Train Gaussian splats from a cached VNCCS orbit scene."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -373,7 +425,7 @@ class VNCCSGaussianTrainingHYWorld2:
         if not np.isfinite(grow_grad2d) or grow_grad2d < 0:
             raise ValueError("grow_grad2d must be finite and non-negative")
         if optimizer_mode not in {"visible_adam", "fused_adam", "adam"}:
-            raise ValueError("Unknown HYWorld2 optimizer mode")
+            raise ValueError("Unknown Gaussian optimizer mode")
         if refine_every < 1 or reset_every < 1:
             raise ValueError("Refinement and reset intervals must be positive")
         if refine_start_iter < 0 or refine_stop_iter < 0:
@@ -382,7 +434,7 @@ class VNCCSGaussianTrainingHYWorld2:
         output_path = _output_path()
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         progress, interrupt = _runtime_helpers(training_steps)
-        result = _train_hyworld2_gaussians(
+        result = _train_gaussians(
             reconstruction, training_frames, output_path, training_steps,
             max_splats, sh_degree, ssim_weight, alpha_weight,
             use_scale_regularization, antialiased, optimizer_mode,
@@ -393,9 +445,9 @@ class VNCCSGaussianTrainingHYWorld2:
 
 
 NODE_CLASS_MAPPINGS = {
-    "VNCCS_GaussianTrainingHYWorld2": VNCCSGaussianTrainingHYWorld2,
+    "VNCCS_GaussianTrainer": VNCCSGaussianTrainer,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "VNCCS_GaussianTrainingHYWorld2": "VNCCS Gaussian Training (HYWorld2)",
+    "VNCCS_GaussianTrainer": "VNCCS Gaussian Trainer",
 }
