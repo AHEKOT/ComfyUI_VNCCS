@@ -643,35 +643,24 @@ class EmotionGeneratorV2:
 
         # --- SETUP ---
         character_path = character_dir(character)
-        images = []
         emotion_data = []
-        
-        # Helper to get info
-        if info:
-            aesthetics = info.get("aesthetics", "")
-            background_color = info.get("background_color", "blue")
-            sex = info.get("sex", "")
-            age = info.get("age", 18)
-            race = info.get("race", "")
-            eyes = info.get("eyes", "")
-            hair = info.get("hair", "")
-            face_features = info.get("face", "")
-            body = info.get("body", "")
-            skin_color = info.get("skin_color", "")
-            additional_details = info.get("additional_details", "")
-            lora_prompt = info.get("lora_prompt", "")
-            
-            negative_prompt = info.get("negative_prompt", "") 
-            negative_prompt = negative_prompt + ", (facial droplet), (water drop), (water), (water droplets), (water drops)"
-            
-            seed = pipe_seed
-            base_negative_prompt = negative_prompt
-            positive_prompt = aesthetics
-        else:
-             seed = pipe_seed
-             base_negative_prompt = ""
-             positive_prompt = ""
-             log_event("warning", component="EmotionStudio", level="warning", message=f'Character info not found for {character}')
+
+        aesthetics = info.get("aesthetics", "")
+        background_color = info.get("background_color", "blue")
+        sex = info.get("sex", "")
+        age = info.get("age", 18)
+        race = info.get("race", "")
+        eyes = info.get("eyes", "")
+        hair = info.get("hair", "")
+        body = info.get("body", "")
+        skin_color = info.get("skin_color", "")
+        additional_details = info.get("additional_details", "")
+        lora_prompt = info.get("lora_prompt", "")
+
+        negative_prompt = info.get("negative_prompt", "")
+        negative_prompt += ", (facial droplet), (water drop), (water), (water droplets), (water drops)"
+        seed = pipe_seed
+        base_negative_prompt = negative_prompt
 
         # --- GENERATION LOOP ---
         for costume in selected_costumes:
@@ -704,7 +693,7 @@ class EmotionGeneratorV2:
                 sheet_output_path = os.path.join(sprite_dir, f"sprite_{emotion_key}_")
                 
                 # Prompt Building (Same as V1)
-                positive_prompt = f"{aesthetics}"
+                positive_prompt = aesthetics
                 if background_color: positive_prompt += f", {background_color} background"
                 if race: positive_prompt += f", {race} race"
                 if hair: positive_prompt += f", {hair} hair"

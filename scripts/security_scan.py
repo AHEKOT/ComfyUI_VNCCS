@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import ast
 from dataclasses import asdict, dataclass
+from fnmatch import fnmatchcase
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -53,6 +55,7 @@ SKIP_PARTS = {
     "node_modules",
 }
 SCANNER_RELATIVE_PATH = Path("scripts/security_scan.py")
+IGNORE_FILES = (".gitignore", ".comfyignore")
 
 FORBIDDEN_CREDENTIAL_MARKERS = (
     "hf_token",
@@ -277,14 +280,79 @@ def _javascript_findings(relative: str, text: str) -> list[Finding]:
     return findings
 
 
+def _read_ignore_rules(path: Path):
+    if not path.is_file():
+        return []
+    rules = []
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.rstrip()
+        if not line or line.startswith("#"):
+            continue
+        negated = line.startswith("!")
+        if negated:
+            line = line[1:]
+        elif line.startswith(r"\!") or line.startswith(r"\#"):
+            line = line[1:]
+        anchored = line.startswith("/")
+        directory_only = line.endswith("/")
+        line = line.strip("/")
+        line = re.sub(r"\\([ #!\\])", r"\1", line)
+        if line:
+            rules.append((tuple(line.split("/")), negated, directory_only, anchored))
+    return rules
+
+
+def _ignore_glob_matches(path_parts: tuple[str, ...], pattern_parts: tuple[str, ...]) -> bool:
+    if not pattern_parts:
+        return not path_parts
+    if pattern_parts[0] == "**":
+        return _ignore_glob_matches(path_parts, pattern_parts[1:]) or (
+            bool(path_parts) and _ignore_glob_matches(path_parts[1:], pattern_parts)
+        )
+    return bool(path_parts) and fnmatchcase(path_parts[0], pattern_parts[0]) and _ignore_glob_matches(
+        path_parts[1:], pattern_parts[1:]
+    )
+
+
+def _rules_ignore(relative_path: Path, is_dir: bool, rules) -> bool:
+    parts = relative_path.parts
+    ignored = False
+    for pattern_parts, negated, directory_only, anchored in rules:
+        prefixes = [parts[:length] for length in range(1, len(parts) + 1)]
+        if directory_only and not is_dir:
+            prefixes = prefixes[:-1]
+        if len(pattern_parts) == 1 and not anchored:
+            matched = any(fnmatchcase(prefix[-1], pattern_parts[0]) for prefix in prefixes)
+        else:
+            matched = any(_ignore_glob_matches(prefix, pattern_parts) for prefix in prefixes)
+        if matched:
+            ignored = not negated
+    return ignored
+
+
 def _iter_source_files(root: Path):
-    for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in SOURCE_SUFFIXES:
-            continue
-        relative_path = path.relative_to(root)
-        if relative_path == SCANNER_RELATIVE_PATH or any(part in SKIP_PARTS for part in relative_path.parts):
-            continue
-        yield path, relative_path.as_posix()
+    ignore_rule_sets = [_read_ignore_rules(root / name) for name in IGNORE_FILES]
+    for current, directories, filenames in os.walk(root):
+        current_path = Path(current)
+        kept_directories = []
+        for name in sorted(directories):
+            relative_path = (current_path / name).relative_to(root)
+            if any(part in SKIP_PARTS for part in relative_path.parts):
+                continue
+            if any(_rules_ignore(relative_path, True, rules) for rules in ignore_rule_sets):
+                continue
+            kept_directories.append(name)
+        directories[:] = kept_directories
+        for name in sorted(filenames):
+            path = current_path / name
+            if path.suffix.lower() not in SOURCE_SUFFIXES:
+                continue
+            relative_path = path.relative_to(root)
+            if relative_path == SCANNER_RELATIVE_PATH:
+                continue
+            if any(_rules_ignore(relative_path, False, rules) for rules in ignore_rule_sets):
+                continue
+            yield path, relative_path.as_posix()
 
 
 def scan_root(root: Path) -> list[Finding]:

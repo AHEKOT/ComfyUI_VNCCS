@@ -422,6 +422,35 @@ def test_emotion_preparation_failure_records_terminal_progress_without_tensors(m
     assert error in emitted[-1]['message']
 
 
+def test_emotion_preflight_rejects_any_unreadable_source_before_cache_writes(monkeypatch, generator_module):
+    import json
+    generator = generator_module
+    monkeypatch.setattr(generator, '_character_cache_dir_from_sheets_path', lambda *args: None)
+    monkeypatch.setattr(generator, '_load_run_inputs', lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        generator.VNCCS_EmotionsGenerator,
+        '_source_sprite_hw',
+        lambda _self, path, _character: (8, 8) if path == 'readable.png' else None,
+    )
+    monkeypatch.setattr(generator, '_rotate_preview_cache', lambda *args, **kwargs:
+                        pytest.fail('Preflight failure must not rotate the preview cache'))
+    monkeypatch.setattr(generator, '_save_run_inputs', lambda *args, **kwargs:
+                        pytest.fail('Preflight failure must not write run inputs'))
+    tasks = [
+        {'emotion_prompt': 'Happy', 'source_path': 'readable.png'},
+        {'emotion_prompt': 'Sad', 'source_path': 'missing.png'},
+    ]
+
+    with pytest.raises(RuntimeError, match='emotion task 2'):
+        generator.VNCCS_EmotionsGenerator().process(
+            None,
+            SimpleNamespace(model_kind='qi2'),
+            tasks,
+            widget_data=json.dumps({}),
+            unique_id=['5'],
+        )
+
+
 @pytest.mark.parametrize('contents', ['broken JSON', '[]', '{"costumes": []}'])
 def test_unreadable_configuration_is_not_replaced_by_a_costume_save(monkeypatch, tmp_path, contents):
     import utils

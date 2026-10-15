@@ -4328,10 +4328,11 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                     fallback = self._list_to_batch(image_items[index])
                     if torch.is_tensor(fallback) and fallback.ndim == 4:
                         shape = (int(fallback.shape[1]), int(fallback.shape[2]))
-                if shape is not None:
-                    source_shapes.append(shape)
-            if not source_shapes:
-                raise RuntimeError("No readable source pose images were found for the selected emotion tasks.")
+                if shape is None:
+                    raise RuntimeError(
+                        f"No readable source pose image was found for selected emotion task {index + 1}."
+                    )
+                source_shapes.append(shape)
             emotion_target_hw = (
                 max(shape[0] for shape in source_shapes),
                 max(shape[1] for shape in source_shapes),
