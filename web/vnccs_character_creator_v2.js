@@ -3681,10 +3681,12 @@ app.registerExtension({
                 btnNew.className = "vnccs-creator-btn vnccs-creator-btn-success vnccs-creator-btn-secondary";
                 btnNew.innerText = "NEW";
                 btnNew.onclick = () => doCreate();
+                els.btnNew = btnNew;
 
                 const btnDel = document.createElement("button");
                 btnDel.className = "vnccs-creator-btn vnccs-creator-btn-danger vnccs-creator-btn-secondary";
                 btnDel.innerText = "DELETE";
+                els.btnDel = btnDel;
                 // Modal Helper — delegates to vnccs_common showModal
                 const showModal = (title, contentFunc, buttons) => {
                     // Map widget-specific button classes to common classes
@@ -4630,7 +4632,11 @@ app.registerExtension({
                 let previewRunning = false;
                 let workflowBusy = true;
                 const syncPreviewButton = () => {
-                    els.btnGen.disabled = previewRunning || workflowBusy;
+                    const disabled = previewRunning || workflowBusy;
+                    els.btnGen.disabled = disabled;
+                    els.charSelect.disabled = disabled;
+                    els.btnNew.disabled = disabled;
+                    els.btnDel.disabled = disabled;
                     els.btnGen.innerText = previewRunning ? "GENERATING..." : workflowBusy ? "WORKFLOW BUSY..." : "GENERATE PREVIEW";
                     els.btnGen.title = workflowBusy ? "Preview is unavailable while a workflow is queued or running." : "";
                 };

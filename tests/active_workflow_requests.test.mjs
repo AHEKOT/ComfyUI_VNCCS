@@ -169,7 +169,10 @@ function creatorImageHarness() {
     const state = { character: 'Alice', character_info: {}, sprite_preview_count: 1,
         gen_settings: { ckpt_name: 'model', lora_stack: [] } };
     const node = { _randomizeSeedIfNeeded() {} };
-    const els = { previewImg: { style: {}, removeAttribute(name) { delete this[name]; } }, placeholder: { style: {} }, btnGen: {} };
+    const els = {
+        previewImg: { style: {}, removeAttribute(name) { delete this[name]; } },
+        placeholder: { style: {} }, btnGen: {}, charSelect: {}, btnNew: {}, btnDel: {},
+    };
     const context = createWidgetContext({
         state, node, els, console, container: {},
         Image: class { constructor() { images.push(this); } },

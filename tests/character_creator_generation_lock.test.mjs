@@ -31,11 +31,12 @@ function setup() {
         },
     };
     const node = { _randomizeSeedIfNeeded() {} };
+    const controls = { btnGen: {}, charSelect: {}, btnNew: {}, btnDel: {} };
     const state = { character: "Alice", character_info: {}, gen_settings: {
         generation_mode: "qi2", diffusion_model_name: "model", clip_name: "clip", vae_name: "vae", lora_stack: [],
     } };
     const context = createWidgetContext({
-        api, node, els: { btnGen: {} }, container: {},
+        api, node, els: controls, container: {},
         state,
         console: { warn() {} }, isSelectedCcAssetInstalled: () => true,
         saveCurrentGenerationModeValues() {}, saveState(valid = false) { state.preview_valid = valid; saves.push(valid); }, refreshPreviewImage() {},
@@ -52,10 +53,31 @@ function setup() {
     const emit = (name, detail) => {
         for (const callback of listeners.get(name) || []) callback({ detail });
     };
-    return { context, node, state, requests, listeners, messages, saves, reveals, button: context.els.btnGen,
+    return { context, node, state, requests, listeners, messages, saves, reveals, controls, button: context.els.btnGen,
         emit, status: count => emit("status", { exec_info: { queue_remaining: count } }) };
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
+const assertControlsDisabled = (controls, disabled) => {
+    for (const control of Object.values(controls)) assert.equal(control.disabled, disabled);
+};
+
+test("character controls are locked during preview generation and workflow execution", async () => {
+    const h = setup();
+    assertControlsDisabled(h.controls, true);
+    h.status(0);
+    assertControlsDisabled(h.controls, false);
+
+    const work = h.context.generate();
+    assertControlsDisabled(h.controls, true);
+    h.requests[1].resolve(response({}));
+    await work;
+    assertControlsDisabled(h.controls, false);
+
+    h.emit("execution_start", {});
+    assertControlsDisabled(h.controls, true);
+    h.status(0);
+    assertControlsDisabled(h.controls, false);
+});
 
 for (const field of ["queue_running", "queue_pending"]) {
     test(`preview remains disabled when restored ${field} is busy`, async () => {
