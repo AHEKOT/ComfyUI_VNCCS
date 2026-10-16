@@ -29,14 +29,51 @@ def test_initial_scales_use_rms_of_three_neighbors_without_brush_floor(monkeypat
     class Index:
         def knnSearch(self, query, count, params):
             assert count == 4
+            assert params == {"checks": -1}
             neighbors = np.tile(np.arange(4), (4, 1))
             return neighbors, np.zeros_like(neighbors)
 
     monkeypatch.setitem(sys.modules, "cv2", SimpleNamespace(flann_Index=lambda *_args: Index()))
     scales = np.exp(training._initial_scales(points))
 
-    assert scales[0] == pytest.approx(np.sqrt((1e-8 + 4e-8 + 9e-8) / 3))
+    assert scales[0] == pytest.approx(np.sqrt(1e-7))
     assert scales[0] < 1e-3
+    scaled = np.exp(training._initial_scales(points * 10, depth_unit=10))
+    assert np.allclose(scaled, scales * 10)
+
+
+def test_auto_refinement_scales_with_duration_and_preserves_explicit_steps():
+    assert training._refinement_schedule(30_000, -1, -1, -1) == (500, 15_000, 3_000)
+    assert training._refinement_schedule(8_000, -1, -1, -1) == (133, 4_000, 800)
+    assert training._refinement_schedule(1, -1, -1, -1) == (0, 0, 1)
+    assert training._refinement_schedule(8_000, 150, 3_500, 99_990) == (150, 3_500, 99_990)
+
+
+def test_surfel_cleanup_removes_each_invalid_category_without_reset_dependency(monkeypatch, capsys):
+    params = {
+        "means": torch.zeros((5, 3)), "scales": torch.full((5, 2), 0.01).log(),
+        "opacities": torch.logit(torch.tensor([0.8, 0.01, 0.8, 0.8, 0.8])),
+        "shN": torch.zeros((5, 0, 3)),
+    }
+    params["means"][2, 0] = float("nan")
+    params["scales"][3] = torch.tensor(0.2).log()
+    removals = []
+
+    def remove(params, optimizers, state, mask):
+        removals.append(mask.clone())
+        for name, value in params.items():
+            params[name] = value[~mask]
+
+    monkeypatch.setitem(sys.modules, "gsplat.strategy.ops", SimpleNamespace(remove=remove))
+    assert training._prune_surfels(params, {}, {"scene_scale": 1.0}, 0.05, True, "test",
+                                    torch.tensor([0., 0., 0., 0., 0.2])) == 4
+    assert removals[0].tolist() == [False, True, True, True, True]
+    log = capsys.readouterr().out
+    assert "nonfinite=1, opacity=1, world_size=1, screen_size=1" in log
+    survivor = params["means"]
+    with pytest.raises(RuntimeError, match="remove all surfels"):
+        training._prune_surfels(params, {}, {"scene_scale": 1.0}, 0.99, False, "test")
+    assert params["means"] is survivor and len(removals) == 1
 
 
 def test_alpha_loss_and_physgaussian_penalty_are_independent():
@@ -57,8 +94,9 @@ def test_alpha_loss_and_physgaussian_penalty_are_independent():
 
 @pytest.mark.parametrize("use_depth_loss", [False, True])
 @pytest.mark.parametrize("use_2dgs", [False, True])
+@pytest.mark.parametrize("point_splats", [False, True])
 def test_training_node_passes_scene_and_parameters_to_its_own_trainer(
-    monkeypatch, tmp_path, use_depth_loss, use_2dgs,
+    monkeypatch, tmp_path, use_depth_loss, use_2dgs, point_splats,
 ):
     output = str(tmp_path / "trained.ply")
     splat = object()
@@ -75,13 +113,14 @@ def test_training_node_passes_scene_and_parameters_to_its_own_trainer(
     scene = (object(), {})
     result = training.VNCCSGaussianTrainer().train(
         scene, training_steps=1, max_splats=1, optimizer_mode="adam", use_depth_loss=use_depth_loss,
-        use_2dgs=use_2dgs, distortion_weight=777.0, normal_weight=0.03,
+        use_2dgs=use_2dgs, distortion_weight=777.0, normal_weight=0.03, point_splats=point_splats,
     )
 
-    assert result == (output, splat, *images)
+    native = str(tmp_path / "trained_2dgs.ply") if use_2dgs else ""
+    assert result == (output, splat, *images, native)
     assert captured[:5] == [scene[0], scene[1], output, 1, 1]
     assert captured[10] == "adam"
-    assert captured[-4:] == [use_depth_loss, use_2dgs, 777.0, 0.03]
+    assert captured[-5:] == [use_depth_loss, use_2dgs, 777.0, 0.03, point_splats]
 
 
 @pytest.mark.parametrize("options, message", [
@@ -232,19 +271,21 @@ def test_training_stage_keeps_scene_input_and_file_and_splat_outputs():
     assert "max_resolution" not in inputs
     assert inputs["use_depth_loss"][0] == "BOOLEAN"
     assert inputs["use_depth_loss"][1]["default"] is False
-    assert list(inputs)[-5:] == [
-        "seed", "use_depth_loss", "use_2dgs", "distortion_weight", "normal_weight",
+    assert list(inputs)[-6:] == [
+        "seed", "use_depth_loss", "use_2dgs", "distortion_weight", "normal_weight", "point_splats",
     ]
     assert inputs["use_2dgs"][1]["default"] is False
+    assert inputs["point_splats"][0] == "BOOLEAN"
+    assert inputs["point_splats"][1]["default"] is False
     assert inputs["distortion_weight"][1]["default"] == 1_000
     assert inputs["normal_weight"][1]["default"] == 0.05
     assert "max" not in inputs["distortion_weight"][1]
     assert "max" not in inputs["normal_weight"][1]
     assert "surface_refinement" not in inputs
-    assert training.VNCCSGaussianTrainer.RETURN_TYPES == ("STRING", "SPLAT") + ("IMAGE",) * 8
+    assert training.VNCCSGaussianTrainer.RETURN_TYPES == ("STRING", "SPLAT") + ("IMAGE",) * 8 + ("STRING",)
     assert training.VNCCSGaussianTrainer.RETURN_NAMES == (
         "gaussian_file", "splat", "top_0", "source_0", "top_90", "source_90",
-        "top_180", "source_180", "top_270", "source_270",
+        "top_180", "source_180", "top_270", "source_270", "native_2dgs_file",
     )
     assert training.NODE_CLASS_MAPPINGS == {
         "VNCCS_GaussianCameraReconstruction": training.VNCCSGaussianCameraReconstruction,
@@ -301,10 +342,11 @@ def test_export_cleans_finite_parameters_normalizes_rotations_and_publishes_atom
     assert list(tmp_path.iterdir()) == [output]
 
 
-def test_2dgs_export_keeps_native_two_scales_and_publishes_thin_3dgs_compatibility(monkeypatch, tmp_path):
+@pytest.mark.parametrize("radii", [(0.2, 0.3), (0.2, 0.2)])
+def test_2dgs_export_keeps_native_two_scales_and_publishes_thin_3dgs_compatibility(monkeypatch, tmp_path, radii):
     params = torch.nn.ParameterDict({
         "means": torch.nn.Parameter(torch.tensor([[1.0, 2.0, 3.0]])),
-        "scales": torch.nn.Parameter(torch.log(torch.tensor([[0.2, 0.3]]))),
+        "scales": torch.nn.Parameter(torch.log(torch.tensor([radii]))),
         "quats": torch.nn.Parameter(torch.tensor([[2.0, 0.0, 0.0, 0.0]])),
         "opacities": torch.nn.Parameter(torch.zeros(1)),
         "sh0": torch.nn.Parameter(torch.zeros((1, 1, 3))),
@@ -314,6 +356,7 @@ def test_2dgs_export_keeps_native_two_scales_and_publishes_thin_3dgs_compatibili
 
     def native_ply(means, scales, quats, opacities, sh0, shN):
         assert scales.shape == (1, 2)
+        assert torch.allclose(scales.exp(), torch.tensor([radii]))
         assert sh0.shape == (1, 3) and shN.shape == (1, 0)
         assert torch.equal(quats, torch.tensor([[1.0, 0.0, 0.0, 0.0]]))
         return b"native 2DGS"
@@ -329,7 +372,7 @@ def test_2dgs_export_keeps_native_two_scales_and_publishes_thin_3dgs_compatibili
     training._export_gaussians(params, {}, {}, str(output))
     assert output.read_bytes() == b"compatibility 3DGS"
     assert (tmp_path / "trained_2dgs.ply").read_bytes() == b"native 2DGS"
-    assert torch.allclose(captured[0].exp(), torch.tensor([[0.2, 0.3, 0.0002]]))
+    assert torch.allclose(captured[0].exp(), torch.tensor([[*radii, min(radii) * 1e-3]]))
     assert params["scales"].shape == (1, 2), "Export must not change the trained representation"
 
 
@@ -339,8 +382,9 @@ def test_2dgs_previews_use_native_surfel_renderer_not_the_compatibility_ellipsoi
 
     calls = []
 
-    def render(splats, view, intrinsics, width, height, degree):
+    def render(splats, view, intrinsics, width, height, degree, depth_unit):
         calls.append(degree)
+        assert depth_unit == 1.0
         assert splats["scales"].shape == (1, 2)
         return torch.full((1, height, width, 3), 0.25), torch.ones((1, height, width, 1)), {}
 

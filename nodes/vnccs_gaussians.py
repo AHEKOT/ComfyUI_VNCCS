@@ -1,7 +1,7 @@
 """Camera reconstruction and Gaussian training for VNCCS orbit scenes.
 
 Includes MoGe depth supervision and planar 2DGS with squared NDC-depth distortion.
-Projection and tile sorting use gsplat; fused CUDA kernels composite RGB and geometry.
+Tile sorting uses gsplat; fused CUDA kernels composite RGB and geometry.
 """
 
 import ctypes as C
@@ -155,6 +155,7 @@ def _save_frames(
         training_rgba = torch.cat((rgba[..., :3], training_alpha[..., None]), dim=-1)
         training_frames[name] = {
             "rgba": (training_rgba * 255).round().to(torch.uint8).cpu().numpy(),
+            "alpha_uneroded": mask,
             "source_png": (image_dir / name).read_bytes(),
         }
         progress.update_absolute(position + 1)
@@ -333,6 +334,7 @@ def _scene_data(reconstruction, training_frames):
             "K": item[2].astype(np.float32),
             "rgba": item[3],
             "source_rgb": item[4],
+            "depth_unit": float(1.0 / radius),
         }
         for index, item in enumerate(registered)
     ]
@@ -701,8 +703,8 @@ def depth_loss(rendered_depth, target_depth, alpha):
 DISTORTION_WEIGHT = 1_000.0
 NORMAL_WEIGHT = 0.05
 NDC_NEAR = 0.2
-NDC_FAR = 1_000.0
-_NEAR_PLANE = 0.01
+NDC_FAR = 100.0
+_NEAR_PLANE = NDC_NEAR
 
 
 def compatibility_scales(log_scales):
@@ -713,56 +715,65 @@ def compatibility_scales(log_scales):
     return torch.cat((log_scales, thickness), dim=-1)
 
 
-def _inverse_depth_planes(means, quats, view):
-    """For camera ray r=(x,y,1), intersection z is 1 / dot(plane, r)."""
-    w, x, y, z = F.normalize(quats, dim=-1).unbind(-1)
-    normals = torch.stack((2 * (x * z + w * y), 2 * (y * z - w * x),
-                           1 - 2 * (x.square() + y.square())), dim=-1)
-    rotation = view[0, :3, :3]
-    camera_normals = normals @ rotation.T
-    camera_means = means @ rotation.T + view[0, :3, 3]
-    distance = (camera_normals * camera_means).sum(-1, keepdim=True)
-    # A plane through the camera has no numerically defined intersection depth.
-    tolerance = torch.finfo(means.dtype).eps * camera_means.norm(dim=-1, keepdim=True)
-    valid = torch.isfinite(distance) & (distance.abs() > tolerance)
-    planes = camera_normals / torch.where(valid, distance, torch.ones_like(distance))
-    planes = torch.where(valid, planes, torch.zeros_like(planes))
-    # Constant translation of NDC depth leaves pairwise distortion unchanged.
-    center = camera_means[:, 2].detach().mean().clamp_min(_NEAR_PLANE)
-    reference = -NDC_FAR * NDC_NEAR / (NDC_FAR - NDC_NEAR) / center
-    return planes, valid, reference
+@torch.no_grad()
+def _tie_planar_scale_gradients(log_scales):
+    # Equal initial radii and Adam states stay tied; the shared-radius derivative is the sum.
+    if log_scales.grad is not None:
+        log_scales.grad.copy_(log_scales.grad.sum(dim=-1, keepdim=True))
+
+
+def _project_surfels(means, quats, scales, view, intrinsics, width, height, near_plane):
+    """Perspective surfel transforms and the original three-sigma conic bounds.
+
+    This is per-surfel work; pixel compositing and its backward remain fused CUDA.
+    Keep the bounding-center derivative in the same graph as the transform.
+    """
+    from gsplat.utils import normalized_quat_to_rotmat
+
+    rotation = normalized_quat_to_rotmat(F.normalize(quats, dim=-1))
+    camera_rotation = view[0, :3, :3]
+    centers = means @ camera_rotation.T + view[0, :3, 3]
+    axes = camera_rotation @ (rotation[..., :2] * scales[:, None, :2])
+    local_to_camera = torch.cat((axes, centers[..., None]), dim=-1)
+    transforms = (intrinsics[0] @ local_to_camera)[None]
+    u, v, w = transforms.unbind(-2)
+    cutoff = transforms.new_tensor((9.0, 9.0, -1.0))
+    denominator = (cutoff * w.square()).sum(-1, keepdim=True)
+    valid = torch.isfinite(denominator) & (denominator.abs() > torch.finfo(means.dtype).tiny)
+    f = cutoff / torch.where(valid, denominator, torch.ones_like(denominator))
+    xy = torch.stack(((f * u * w).sum(-1), (f * v * w).sum(-1)), -1)
+    extent2 = xy.square() - torch.stack(((f * u.square()).sum(-1), (f * v.square()).sum(-1)), -1)
+    with torch.no_grad():
+        radius = torch.ceil(extent2.clamp_min(1e-4).sqrt().amax(-1).clamp_min(3 / math.sqrt(2)))
+        visible = (valid[..., 0] & torch.isfinite(xy).all(-1) & torch.isfinite(radius)
+                   & (centers[None, :, 2] > near_plane)
+                   & (xy[..., 0] + radius > 0) & (xy[..., 0] - radius < width)
+                   & (xy[..., 1] + radius > 0) & (xy[..., 1] - radius < height))
+        radii = torch.where(visible, radius, 0).to(torch.int32)[..., None].expand(-1, -1, 2).contiguous()
+    camera_normal = rotation[..., 2] @ camera_rotation.T
+    facing = torch.where((camera_normal * centers).sum(-1, keepdim=True) < 0, 1.0, -1.0)
+    normals = (camera_normal * facing)[None]
+    return radii, xy, centers[None, :, 2], transforms, normals
 
 
 def render_2dgs(splats, view, intrinsics, width, height, sh_degree, absgrad=False,
-                with_geometry=False):
+                with_geometry=False, depth_unit=1.0):
     coefficients = torch.cat((splats["sh0"], splats["shN"]), dim=1)
     scales = splats["scales"].exp()
-    # The third scale is not a parameter and is never used as surfel thickness.
-    scales = torch.cat((scales, torch.ones_like(scales[:, :1])), dim=-1)
-    if with_geometry:
-        return _render_surface(splats, coefficients, scales, view, intrinsics,
-                               width, height, sh_degree, absgrad)
-
-    from gsplat.rendering import rasterization_2dgs
-
-    rendered, alpha, _, _, _, _, info = rasterization_2dgs(
-        means=splats["means"], quats=splats["quats"], scales=scales,
-        opacities=splats["opacities"].sigmoid(),
-        colors=coefficients,
-        viewmats=view, Ks=intrinsics, width=width, height=height,
-        packed=False, absgrad=absgrad, sh_degree=sh_degree,
-        near_plane=_NEAR_PLANE, far_plane=1e10, render_mode="RGB", distloss=False,
-    )
-    return rendered[..., :3], alpha, info
+    return _render_surface(splats, coefficients, scales, view, intrinsics,
+                           width, height, sh_degree, absgrad, with_geometry, depth_unit)
 
 
-def _render_surface(splats, coefficients, scales, view, intrinsics, width, height, sh_degree, absgrad):
+def _render_surface(splats, coefficients, scales, view, intrinsics, width, height,
+                    sh_degree, absgrad, with_geometry=True, depth_unit=1.0):
     from gsplat import spherical_harmonics
-    from gsplat.cuda._wrapper import fully_fused_projection_2dgs, isect_offset_encode, isect_tiles
+    from gsplat.cuda._wrapper import isect_offset_encode, isect_tiles
 
-    radii, xy, depths, transforms, normals = fully_fused_projection_2dgs(
+    near_plane = _NEAR_PLANE * depth_unit
+    ndc = -NDC_FAR * NDC_NEAR / (NDC_FAR - NDC_NEAR) * depth_unit
+    radii, xy, depths, transforms, normals = _project_surfels(
         splats["means"], splats["quats"], scales, view, intrinsics, width, height,
-        near_plane=_NEAR_PLANE, far_plane=1e10, packed=False,
+        near_plane,
     )
     tile_width, tile_height = (width + 15) // 16, (height + 15) // 16
     tiles_per_gauss, isect_ids, flatten_ids = isect_tiles(
@@ -774,14 +785,15 @@ def _render_surface(splats, coefficients, scales, view, intrinsics, width, heigh
         sh_degree, splats["means"][None] - camera_center, coefficients[None],
         masks=(radii > 0).all(dim=-1),
     ) + 0.5).clamp_min(0)
-    planes, valid, reference = _inverse_depth_planes(splats["means"], splats["quats"], view)
+    reference = ndc / depths.detach().mean().clamp_min(near_plane)
     opacities = splats["opacities"].sigmoid()[None]
     densify = torch.zeros_like(xy, requires_grad=True)
     # Transform per surfel, not per pixel; this commutes with alpha compositing.
     world_normals = normals @ view[0, :3, :3]
     image, alpha, maps = rasterize_surface(
-        xy, transforms, rgb, opacities, world_normals, planes, valid, reference,
-        intrinsics, depths, densify, offsets, flatten_ids, width, height, absgrad,
+        xy, transforms, rgb, opacities, world_normals, reference,
+        depths, densify, offsets, flatten_ids, width, height, absgrad,
+        with_geometry, near_plane, ndc,
     )
     return image, alpha, {
         "camera_ids": None, "gaussian_ids": None, "radii": radii,
@@ -813,12 +825,9 @@ def geometry_losses(maps, view, intrinsics, use_normal=True):
 
     # gsplat returns composited normals in world space, including camera-facing signs.
     surface_normal = depth_to_normal(median, torch.linalg.inv(view), intrinsics)
-    valid = (alpha.detach() > 0.01) & torch.isfinite(median) & (median > 0)
-    interior = F.avg_pool2d(valid.permute(0, 3, 1, 2).float(), 3, 1, 1) > 0.999
-    interior = interior.permute(0, 2, 3, 1)
     target_normal = surface_normal * alpha.detach()
     normal_error = 1.0 - (maps[..., 3:6] * target_normal).sum(-1, keepdim=True)
-    normal_loss = torch.where(interior, normal_error, torch.zeros_like(normal_error)).mean()
+    normal_loss = normal_error.mean()
     return distortion.mean(), normal_loss, median
 
 
@@ -865,7 +874,10 @@ def split_2dgs(params, optimizers, state, mask):
     for name, value in state.items():
         if isinstance(value, torch.Tensor):
             repeats = [2] + [1] * (value.ndim - 1)
-            state[name] = torch.cat((value[rest], value[selected].repeat(repeats)))
+            children = value[selected].repeat(repeats)
+            if name == "radii":
+                children.zero_()  # Parent screen bounds are not observations of its children.
+            state[name] = torch.cat((value[rest], children))
 
 
 # Fused CUDA RGB and geometry compositing
@@ -876,36 +888,38 @@ __device__ __forceinline__ V3 cross3(V3 a, V3 b) {
     return {a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x};
 }
 struct Surfel {
-    float xy[2], opacity, u[3], v[3], w[3], rgb[3], normal[3], plane[3];
-    int id, valid;
+    float xy[2], opacity, u[3], v[3], w[3], rgb[3], normal[3];
+    int id;
 };
 __device__ __forceinline__ Surfel load_surfel(
     int g, const float* xy, const float* transforms, const float* rgb,
-    const float* opacity, const float* normals, const float* planes,
-    const unsigned char* valid) {
+    const float* opacity, const float* normals) {
     Surfel s;
-    s.id=g; s.valid=valid[g]; s.opacity=opacity[g];
+    s.id=g; s.opacity=opacity[g];
     s.xy[0]=xy[2*g]; s.xy[1]=xy[2*g+1];
     #pragma unroll
     for(int k=0;k<3;++k) {
         s.u[k]=transforms[9*g+k]; s.v[k]=transforms[9*g+3+k];
         s.w[k]=transforms[9*g+6+k]; s.rgb[k]=rgb[3*g+k];
-        s.normal[k]=normals[3*g+k]; s.plane[k]=planes[3*g+k];
+        s.normal[k]=normals[3*g+k];
     }
     return s;
 }
-struct Hit { V3 hu,hv,c; float su,sv,dx,dy,rho3,rho2,visibility,alpha; };
-__device__ __forceinline__ bool intersect(const Surfel& s,float px,float py,Hit& h) {
+struct Hit { V3 hu,hv,c; float su,sv,depth,dx,dy,rho3,rho2,visibility,alpha; };
+__device__ __forceinline__ bool intersect(const Surfel& s,float px,float py,float near_plane,Hit& h) {
     h.hu={px*s.w[0]-s.u[0],px*s.w[1]-s.u[1],px*s.w[2]-s.u[2]};
     h.hv={py*s.w[0]-s.v[0],py*s.w[1]-s.v[1],py*s.w[2]-s.v[2]};
     h.c=cross3(h.hu,h.hv);
     if(h.c.z==0.f) return false;
     h.su=h.c.x/h.c.z; h.sv=h.c.y/h.c.z;
+    h.depth=h.su*s.w[0]+h.sv*s.w[1]+s.w[2];
+    // The same accepted intersections feed RGB, alpha, depth, normals and distortion.
+    if(!isfinite(h.su)||!isfinite(h.sv)||!isfinite(h.depth)||h.depth<near_plane) return false;
     h.dx=s.xy[0]-px; h.dy=s.xy[1]-py;
     h.rho3=h.su*h.su+h.sv*h.sv;
     h.rho2=2.f*(h.dx*h.dx+h.dy*h.dy);
     h.visibility=__expf(-0.5f*fminf(h.rho3,h.rho2));
-    h.alpha=fminf(0.999f,s.opacity*h.visibility);
+    h.alpha=fminf(0.99f,s.opacity*h.visibility);
     return h.alpha>=1.f/255.f;
 }
 __device__ __forceinline__ float warp_sum(float value) {
@@ -917,9 +931,8 @@ __device__ __forceinline__ float warp_sum(float value) {
 
 extern "C" __global__ void surface_forward(
     const float* xy,const float* transforms,const float* rgb,const float* opacity,
-    const float* normals,const float* planes,const unsigned char* valid,
-    const float* reference,const float* K,const int* offsets,const int* ids,
-    int width,int height,int intersections,float ndc,
+    const float* normals,const float* reference,const int* offsets,const int* ids,
+    int width,int height,int intersections,float ndc,float near_plane,int geometry,
     float* image,float* alphas,float* maps,float* moments,int* last,int* median) {
     __shared__ Surfel batch[256];
     const int lane=threadIdx.y*16+threadIdx.x;
@@ -930,35 +943,31 @@ extern "C" __global__ void surface_forward(
     const int end=tile+1<tiles_x*tiles_y?offsets[tile+1]:intersections;
     const bool inside=x<width&&y<height;
     const float px=x+0.5f,py=y+0.5f;
-    const float rx=(px-K[2])/K[0],ry=(py-K[5])/K[4];
     float T=1.f,A=0.f,B=0.f,C=0.f,color[3]={},normal[3]={};
-    float median_inverse=0.f;
+    float median_depth=0.f;
     int last_id=start-1,median_id=-1;
     bool done=!inside;
     for(int base=start;base<end;base+=256) {
         if(__syncthreads_count(done)==256) break;
         const int index=base+lane;
-        if(index<end) batch[lane]=load_surfel(ids[index],xy,transforms,rgb,opacity,normals,planes,valid);
+        if(index<end) batch[lane]=load_surfel(ids[index],xy,transforms,rgb,opacity,normals);
         __syncthreads();
         const int size=min(256,end-base);
         for(int j=0;j<size&&!done;++j) {
             const Surfel& s=batch[j];
             Hit h;
-            if(!intersect(s,px,py,h)) continue;
+            if(!intersect(s,px,py,near_plane,h)) continue;
             const float next=T*(1.f-h.alpha);
-            if(next<=1e-4f) { done=true; break; }
+            if(next<1e-4f) { done=true; break; }
             const float weight=T*h.alpha;
             #pragma unroll
             for(int k=0;k<3;++k) {
-                color[k]+=weight*s.rgb[k]; normal[k]+=weight*s.normal[k];
+                color[k]+=weight*s.rgb[k];
+                if(geometry) normal[k]+=weight*s.normal[k];
             }
-            const float inverse=s.plane[0]*rx+s.plane[1]*ry+s.plane[2];
-            if(T>0.5f) {
-                median_id=s.valid&&isfinite(inverse)&&inverse>0.f&&inverse<100.f?s.id:-1;
-                median_inverse=inverse;
-            }
-            if(s.valid) {
-                const float m=ndc*inverse-reference[0];
+            if(geometry) {
+                if(T>0.5f) { median_id=s.id; median_depth=h.depth; }
+                const float m=ndc/h.depth-reference[0];
                 A+=weight; B+=weight*m; C+=weight*m*m;
             }
             T=next; last_id=base+j;
@@ -970,8 +979,8 @@ extern "C" __global__ void surface_forward(
     #pragma unroll
     for(int k=0;k<3;++k) { image[3*pixel+k]=color[k]; maps[6*pixel+3+k]=normal[k]; }
     alphas[pixel]=1.f-T;
-    maps[6*pixel]=median_id>=0?1.f/median_inverse:0.f;
-    maps[6*pixel+1]=A; maps[6*pixel+2]=fmaxf(A*C-B*B,0.f);
+    maps[6*pixel]=median_depth;
+    maps[6*pixel+1]=1.f-T; maps[6*pixel+2]=fmaxf(A*C-B*B,0.f);
     moments[4*pixel]=A; moments[4*pixel+1]=B;
     moments[4*pixel+2]=C; moments[4*pixel+3]=T;
     last[pixel]=last_id; median[pixel]=median_id;
@@ -979,13 +988,12 @@ extern "C" __global__ void surface_forward(
 
 extern "C" __global__ void surface_backward(
     const float* xy,const float* transforms,const float* rgb,const float* opacity,
-    const float* normals,const float* planes,const unsigned char* valid,
-    const float* reference,const float* K,const int* offsets,const int* ids,
-    int width,int height,int intersections,float ndc,
+    const float* normals,const float* reference,const int* offsets,const int* ids,
+    int width,int height,int intersections,float ndc,float near_plane,int geometry,
     const float* maps,const float* moments,const int* last,const int* median,
     const float* v_image,const float* v_alpha,const float* v_maps,
     float* v_xy,float* v_transform,float* v_rgb,float* v_opacity,
-    float* v_normals,float* v_planes,float* v_xy_abs) {
+    float* v_normals,float* v_xy_abs) {
     __shared__ Surfel batch[256];
     const int lane=threadIdx.y*16+threadIdx.x;
     const int x=blockIdx.x*16+threadIdx.x,y=blockIdx.y*16+threadIdx.y;
@@ -1001,7 +1009,6 @@ extern "C" __global__ void surface_backward(
     for(int offset=16;offset;offset>>=1)
         warp_final=max(warp_final,__shfl_xor_sync(0xffffffff,warp_final,offset));
     const float px=x+0.5f,py=y+0.5f;
-    const float rx=(px-K[2])/K[0],ry=(py-K[5])/K[4];
     const float A=moments[4*pixel],B=moments[4*pixel+1],C=moments[4*pixel+2];
     const float T_final=moments[4*pixel+3];
     float T=T_final,tail_rgb[3]={},tail_normal[3]={},tail_distortion=0.f;
@@ -1009,28 +1016,28 @@ extern "C" __global__ void surface_backward(
     #pragma unroll
     for(int k=0;k<3;++k) {
         color_grad[k]=inside&&v_image?v_image[3*pixel+k]:0.f;
-        normal_grad[k]=inside&&v_maps?v_maps[6*pixel+3+k]:0.f;
+        normal_grad[k]=inside&&v_maps&&geometry?v_maps[6*pixel+3+k]:0.f;
     }
     const float ga=inside&&v_alpha?v_alpha[pixel]:0.f;
     const float gm=inside&&v_maps?v_maps[6*pixel+1]:0.f;
-    const float gd=inside&&v_maps&&A*C-B*B>=0.f?v_maps[6*pixel+2]:0.f;
-    const float gz=inside&&v_maps?v_maps[6*pixel]:0.f;
+    const float gd=inside&&v_maps&&geometry&&A*C-B*B>=0.f?v_maps[6*pixel+2]:0.f;
+    const float gz=inside&&v_maps&&geometry?v_maps[6*pixel]:0.f;
     for(int base=end-1;base>=start;base-=256) {
         const int index=base-lane;
-        if(index>=start) batch[lane]=load_surfel(ids[index],xy,transforms,rgb,opacity,normals,planes,valid);
+        if(index>=start) batch[lane]=load_surfel(ids[index],xy,transforms,rgb,opacity,normals);
         __syncthreads();
         const int size=min(256,base-start+1);
         for(int j=max(0,base-warp_final);j<size;++j) {
             const Surfel& s=batch[j];
-            // xy(2), transform(9), RGB(3), opacity(1), normal(3), plane(3).
-            float gradient[21]={};
+            // xy(2), transform(9), RGB(3), opacity(1), normal(3).
+            float gradient[18]={};
             if(inside&&base-j<=final) {
                 Hit h;
-                if(intersect(s,px,py,h)) {
+                if(intersect(s,px,py,near_plane,h)) {
                     const float reciprocal=1.f/(1.f-h.alpha);
                     T*=reciprocal;
                     const float weight=h.alpha*T;
-                    float va=T_final*reciprocal*ga;
+                    float va=T_final*reciprocal*(ga+gm);
                     #pragma unroll
                     for(int k=0;k<3;++k) {
                         gradient[11+k]=weight*color_grad[k];
@@ -1039,44 +1046,39 @@ extern "C" __global__ void surface_backward(
                         va+=(s.normal[k]*T-tail_normal[k]*reciprocal)*normal_grad[k];
                         tail_rgb[k]+=weight*s.rgb[k]; tail_normal[k]+=weight*s.normal[k];
                     }
-                    float dw=0.f,vp=0.f;
-                    if(s.valid) {
-                        const float inverse=s.plane[0]*rx+s.plane[1]*ry+s.plane[2];
-                        const float m=ndc*inverse-reference[0];
-                        dw=gm+gd*(C+A*m*m-2.f*B*m);
-                        vp=2.f*weight*(A*m-B)*gd*ndc;
+                    float dw=0.f,vz=0.f;
+                    if(geometry) {
+                        const float m=ndc/h.depth-reference[0];
+                        dw=gd*(C+A*m*m-2.f*B*m);
+                        vz=-2.f*weight*(A*m-B)*gd*ndc/(h.depth*h.depth);
                     }
                     va+=T*dw-tail_distortion*reciprocal;
                     tail_distortion+=weight*dw;
                     if(s.id==median[pixel]&&gz!=0.f) {
-                        const float depth=maps[6*pixel];
-                        vp-=gz*depth*depth;
+                        vz+=gz;
                     }
-                    gradient[18]=vp*rx; gradient[19]=vp*ry; gradient[20]=vp;
-                    if(s.opacity*h.visibility<=0.999f) {
-                        const float vG=s.opacity*va;
-                        gradient[14]=h.visibility*va;
-                        if(h.rho3<=h.rho2) {
-                            const float vu=-h.visibility*vG*h.su;
-                            const float vv=-h.visibility*vG*h.sv;
-                            const V3 vc={vu/h.c.z,vv/h.c.z,-(vu*h.su+vv*h.sv)/h.c.z};
-                            const V3 vhu=cross3(h.hv,vc),vhv=cross3(vc,h.hu);
-                            gradient[2]=-vhu.x; gradient[3]=-vhu.y; gradient[4]=-vhu.z;
-                            gradient[5]=-vhv.x; gradient[6]=-vhv.y; gradient[7]=-vhv.z;
-                            gradient[8]=px*vhu.x+py*vhv.x;
-                            gradient[9]=px*vhu.y+py*vhv.y;
-                            gradient[10]=px*vhu.z+py*vhv.z;
-                        } else {
-                            gradient[0]=-2.f*h.visibility*vG*h.dx;
-                            gradient[1]=-2.f*h.visibility*vG*h.dy;
-                        }
+                    // Match the reference alpha-cap backward; do not freeze opaque surfels.
+                    const float vG=s.opacity*va;
+                    gradient[14]=h.visibility*va;
+                    const float vu=(h.rho3<=h.rho2?-h.visibility*vG*h.su:0.f)+vz*s.w[0];
+                    const float vv=(h.rho3<=h.rho2?-h.visibility*vG*h.sv:0.f)+vz*s.w[1];
+                    const V3 vc={vu/h.c.z,vv/h.c.z,-(vu*h.su+vv*h.sv)/h.c.z};
+                    const V3 vhu=cross3(h.hv,vc),vhv=cross3(vc,h.hu);
+                    gradient[2]=-vhu.x; gradient[3]=-vhu.y; gradient[4]=-vhu.z;
+                    gradient[5]=-vhv.x; gradient[6]=-vhv.y; gradient[7]=-vhv.z;
+                    gradient[8]=px*vhu.x+py*vhv.x+vz*h.su;
+                    gradient[9]=px*vhu.y+py*vhv.y+vz*h.sv;
+                    gradient[10]=px*vhu.z+py*vhv.z+vz;
+                    if(h.rho3>h.rho2) {
+                        gradient[0]=-2.f*h.visibility*vG*h.dx;
+                        gradient[1]=-2.f*h.visibility*vG*h.dy;
                     }
                 }
             }
             float ax=0.f,ay=0.f;
-            if(v_xy_abs) { ax=warp_sum(fabsf(gradient[0])); ay=warp_sum(fabsf(gradient[1])); }
+            if(v_xy_abs) { ax=warp_sum(fabsf(gradient[4])); ay=warp_sum(fabsf(gradient[7])); }
             #pragma unroll
-            for(int k=0;k<21;++k) gradient[k]=warp_sum(gradient[k]);
+            for(int k=0;k<18;++k) gradient[k]=warp_sum(gradient[k]);
             if((lane&31)==0) {
                 const int g=s.id;
                 #pragma unroll
@@ -1087,7 +1089,6 @@ extern "C" __global__ void surface_backward(
                 for(int k=0;k<3;++k) {
                     if(gradient[11+k]!=0.f) atomicAdd(v_rgb+3*g+k,gradient[11+k]);
                     if(gradient[15+k]!=0.f) atomicAdd(v_normals+3*g+k,gradient[15+k]);
-                    if(gradient[18+k]!=0.f) atomicAdd(v_planes+3*g+k,gradient[18+k]);
                 }
                 if(gradient[14]!=0.f) atomicAdd(v_opacity+g,gradient[14]);
                 if(v_xy_abs) { if(ax!=0.f) atomicAdd(v_xy_abs+2*g,ax); if(ay!=0.f) atomicAdd(v_xy_abs+2*g+1,ay); }
@@ -1105,14 +1106,6 @@ __device__ __forceinline__ bool normal_data(
     const float* maps,const float* R,const float* K,int width,int height,int x,int y,
     V3& dx,V3& dy,V3& c,float& length) {
     if(x<1||y<1||x>=width-1||y>=height-1) return false;
-    #pragma unroll
-    for(int yy=-1;yy<=1;++yy) {
-        #pragma unroll
-        for(int xx=-1;xx<=1;++xx) {
-            const int p=(y+yy)*width+x+xx;
-            if(!(maps[6*p+1]>0.01f&&isfinite(maps[6*p])&&maps[6*p]>0.f)) return false;
-        }
-    }
     const int p=y*width+x;
     const V3 down=world_ray(x,y+1,R,K),up=world_ray(x,y-1,R,K);
     const V3 right=world_ray(x+1,y,R,K),left=world_ray(x-1,y,R,K);
@@ -1129,7 +1122,7 @@ extern "C" __global__ void normal_forward(
     if(x>=width||y>=height) return;
     const int p=y*width+x;
     V3 dx,dy,c; float length;
-    loss[p]=0.f;
+    loss[p]=1.f;
     if(!normal_data(maps,R,K,width,height,x,y,dx,dy,c,length)) return;
     const float reciprocal=1.f/fmaxf(length,1e-12f);
     loss[p]=1.f-maps[6*p+1]*reciprocal*(maps[6*p+3]*c.x+maps[6*p+4]*c.y+maps[6*p+5]*c.z);
@@ -1194,20 +1187,22 @@ def _launch(kernel, tensors, scalars, outputs, width, height, device):
 
 class _SurfaceRasterization(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, xy, transforms, rgb, opacity, normals, planes, valid,
-                reference, K, depths, densify, offsets, ids, width, height, absgrad):
+    def forward(ctx, xy, transforms, rgb, opacity, normals,
+                reference, depths, densify, offsets, ids, width, height, absgrad,
+                with_geometry, near_plane, ndc):
         forward = _kernels(xy.device.index)[0]
-        inputs = tuple(t.contiguous() for t in (xy, transforms, rgb, opacity, normals, planes, valid,
-                                               reference, K, depths, densify, offsets, ids))
-        xy, transforms, rgb, opacity, normals, planes, valid, reference, K, depths, densify, offsets, ids = inputs
+        inputs = tuple(t.contiguous() for t in (xy, transforms, rgb, opacity, normals,
+                                               reference, depths, densify, offsets, ids))
+        xy, transforms, rgb, opacity, normals, reference, depths, densify, offsets, ids = inputs
         image = xy.new_empty((1, height, width, 3))
         alpha = xy.new_empty((1, height, width, 1))
         maps = xy.new_empty((1, height, width, 6))
         moments = xy.new_empty((height, width, 4))
         last = torch.empty((height, width), device=xy.device, dtype=torch.int32)
         median = torch.empty_like(last)
-        scalars = (C.c_int(width), C.c_int(height), C.c_int(ids.numel()), C.c_float(-1_000 * 0.2 / (1_000 - 0.2)))
-        _launch(forward, inputs[:9] + (offsets, ids), scalars,
+        scalars = (C.c_int(width), C.c_int(height), C.c_int(ids.numel()),
+                   C.c_float(ndc), C.c_float(near_plane), C.c_int(with_geometry))
+        _launch(forward, inputs[:6] + (offsets, ids), scalars,
                 (image, alpha, maps, moments, last, median), width, height, xy.device)
         ctx.save_for_backward(*inputs, maps, moments, last, median)
         ctx.width, ctx.height, ctx.absgrad, ctx.scalars = width, height, absgrad, scalars
@@ -1219,37 +1214,40 @@ class _SurfaceRasterization(torch.autograd.Function):
         backward = _kernels(ctx.saved_tensors[0].device.index)[1]
         inputs = ctx.saved_tensors[:-4]
         maps, moments, last, median = ctx.saved_tensors[-4:]
-        xy, transforms, rgb, opacity, normals, planes, valid, reference, K, depths, densify, offsets, ids = inputs
-        gradients = tuple(torch.zeros_like(t) for t in inputs[:6])
-        v_xy, v_transform, v_rgb, v_opacity, v_normals, v_planes = gradients
+        xy, transforms, rgb, opacity, normals, reference, depths, densify, offsets, ids = inputs
+        gradients = tuple(torch.zeros_like(t) for t in inputs[:5])
+        v_xy, v_transform, v_rgb, v_opacity, v_normals = gradients
         v_abs = torch.zeros_like(xy) if ctx.absgrad else None
         upstream = tuple(t.contiguous() if t is not None else None for t in (v_image, v_alpha, v_maps))
-        _launch(backward, inputs[:9] + (offsets, ids), ctx.scalars,
+        _launch(backward, inputs[:6] + (offsets, ids), ctx.scalars,
                 (maps, moments, last, median, *upstream, *gradients, v_abs), ctx.width, ctx.height, xy.device)
         if ctx.absgrad:
-            xy.absgrad = v_abs
-            densify.absgrad = v_abs
+            densify.absgrad = v_abs * depths[..., None]
         v_densify = torch.stack((v_transform[..., 0, 2], v_transform[..., 1, 2]), dim=-1) * depths[..., None]
-        return (*gradients, None, None, None, None, v_densify, None, None, None, None, None)
+        return (*gradients, None, None, v_densify, None, None, None, None, None, None, None, None)
 
 
-def rasterize_surface(xy, transforms, rgb, opacity, normals, planes, valid,
-                      reference, K, depths, densify, offsets, ids, width, height, absgrad=False):
+def rasterize_surface(xy, transforms, rgb, opacity, normals,
+                      reference, depths, densify, offsets, ids, width, height, absgrad=False,
+                      with_geometry=True, near_plane=_NEAR_PLANE,
+                      ndc=-NDC_FAR * NDC_NEAR / (NDC_FAR - NDC_NEAR)):
     """Single-camera, unpacked float32 interface to the fused forward/backward."""
     if width < 1 or height < 1 or xy.ndim != 3 or xy.shape[0] != 1 or xy.shape[1] < 1:
         raise ValueError("Surface rasterization requires one nonempty camera and positive image dimensions")
     count = xy.shape[1]
     shapes = ((1, count, 2), (1, count, 3, 3), (1, count, 3), (1, count),
-              (1, count, 3), (count, 3), (count, 1), (), (1, 3, 3), (1, count),
+              (1, count, 3), (), (1, count),
               (1, count, 2), (1, (height + 15) // 16, (width + 15) // 16))
-    tensors = (xy, transforms, rgb, opacity, normals, planes, valid, reference, K, depths, densify, offsets)
+    tensors = (xy, transforms, rgb, opacity, normals, reference, depths, densify, offsets)
     for index, (tensor, shape) in enumerate(zip(tensors, shapes)):
-        expected_dtype = torch.bool if index == 6 else torch.int32 if index == 11 else torch.float32
+        expected_dtype = torch.int32 if index == 8 else torch.float32
         if tuple(tensor.shape) != shape or tensor.dtype != expected_dtype or tensor.device != xy.device or not tensor.is_cuda:
             raise ValueError(f"Invalid surface rasterization input {index}: expected CUDA {expected_dtype} {shape}")
     if ids.ndim != 1 or ids.dtype != torch.int32 or ids.device != xy.device:
         raise ValueError("Surface tile indices must be an int32 vector on the rendering device")
-    return _SurfaceRasterization.apply(*tensors, ids, width, height, absgrad)
+    if not math.isfinite(near_plane) or near_plane <= 0 or not math.isfinite(ndc) or ndc >= 0:
+        raise ValueError("Surface depth units must define a positive near plane and negative NDC coefficient")
+    return _SurfaceRasterization.apply(*tensors, ids, width, height, absgrad, with_geometry, near_plane, ndc)
 
 
 class _NormalConsistency(torch.autograd.Function):
@@ -1300,8 +1298,8 @@ def _ssim_loss(rendered, target, kernel):
     )
     horizontal = kernel[None, None, None].expand(channels, 1, 1, -1)
     vertical = kernel[None, None, :, None].expand(channels, 1, -1, 1)
-    moments = F.conv2d(moments, horizontal, groups=channels)
-    moments = F.conv2d(moments, vertical, groups=channels)
+    moments = F.conv2d(moments, horizontal, padding=(0, 5), groups=channels)
+    moments = F.conv2d(moments, vertical, padding=(5, 0), groups=channels)
     mu_rendered, mu_target, square_rendered, square_target, product = moments.chunk(
         5, dim=0
     )
@@ -1345,10 +1343,43 @@ def _output_path():
 
 
 @torch.no_grad()
-def _export_gaussians(splats, optimizers, state, output_path):
+def _prune_surfels(splats, optimizers, state, opacity_threshold, allow_size, label,
+                    screen_radii=None):
+    from gsplat.strategy.ops import remove
+
+    finite = torch.ones(len(splats["means"]), dtype=torch.bool, device=splats["means"].device)
+    for value in splats.values():
+        finite &= torch.isfinite(value).reshape(len(finite), -1).all(-1)
+    scales = splats["scales"].exp().amax(-1)
+    finite &= torch.isfinite(scales)
+    opacity = splats["opacities"].sigmoid().flatten()
+    faint = finite & (opacity < opacity_threshold)
+    large = finite & (scales > 0.1 * state["scene_scale"]) if allow_size else torch.zeros_like(finite)
+    screen = (finite & (screen_radii > 0.15)
+              if allow_size and screen_radii is not None else torch.zeros_like(finite))
+    discard = ~finite | faint | large | screen
+    if discard.all():
+        raise RuntimeError("2DGS cleanup would remove all surfels; inspect the scene scale and prune_opacity")
+    counts = torch.stack(((~finite).sum(), faint.sum(), large.sum(), screen.sum(), discard.sum())).tolist()
+    if counts[-1]:
+        remove(params=splats, optimizers=optimizers, state=state, mask=discard)
+    kept = ~discard
+    opacity_range = opacity[kept].aminmax()
+    scale_range = scales[kept].aminmax()
+    print(f"[VNCCS Gaussian] {label}: removed={counts[-1]}, nonfinite={counts[0]}, "
+          f"opacity={counts[1]}, world_size={counts[2]}, screen_size={counts[3]} (reasons may overlap); "
+          f"remaining={len(splats['means'])}, opacity_range={opacity_range.min.item():.5g}..{opacity_range.max.item():.5g}, "
+          f"max_axis_range={scale_range.min.item():.5g}..{scale_range.max.item():.5g}")
+    return counts[-1]
+
+
+@torch.no_grad()
+def _export_gaussians(splats, optimizers, state, output_path, prune_opacity=None, allow_size=False):
     from gsplat import export_splats
     from gsplat.strategy.ops import remove
 
+    if prune_opacity is not None:
+        _prune_surfels(splats, optimizers, state, prune_opacity, allow_size, "Final cleanup")
     finite = torch.ones(len(splats["means"]), dtype=torch.bool, device=splats["means"].device)
     for value in splats.values():
         valid = torch.isfinite(value)
@@ -1390,15 +1421,24 @@ def _scene_scale(frames):
     return float(radius) * 1.1
 
 
-def _initial_scales(points):
+def _initial_scales(points, depth_unit=1.0):
     import cv2
 
     points = np.ascontiguousarray(points, dtype=np.float32)
-    index = cv2.flann_Index(points, {"algorithm": 1, "trees": 4})
-    neighbors, _ = index.knnSearch(points, 4, params={"checks": 64})
+    index = cv2.flann_Index(points, {"algorithm": 1, "trees": 1})
+    neighbors, _ = index.knnSearch(points, 4, params={"checks": -1})
     offsets = points[neighbors[:, 1:]] - points[:, None]
     mean_squared_distance = np.square(offsets).sum(axis=-1).mean(axis=-1)
-    return (0.5 * np.log(np.maximum(mean_squared_distance, 1e-12))).astype(np.float32)
+    return (0.5 * np.log(np.maximum(mean_squared_distance, 1e-7 * depth_unit**2))).astype(np.float32)
+
+
+def _refinement_schedule(training_steps, start, stop, reset):
+    """Minus one selects the original 500/15000/3000 proportions; explicit steps stay explicit."""
+    return (
+        int(training_steps / 60) if start == -1 else start,
+        min(training_steps, int(training_steps / 2) if stop == -1 else stop),
+        max(1, int(training_steps / 10)) if reset == -1 else reset,
+    )
 
 
 def _strategy(
@@ -1407,6 +1447,10 @@ def _strategy(
 ):
     from gsplat.strategy import DefaultStrategy
     from gsplat.strategy.ops import duplicate, split
+
+    refine_start_iter, refine_stop_iter, reset_every = _refinement_schedule(
+        training_steps, refine_start_iter, refine_stop_iter, reset_every,
+    )
 
     class BudgetedDefaultStrategy(DefaultStrategy):
         """Clone small splats, split large ones and respect the cap."""
@@ -1463,24 +1507,29 @@ def _strategy(
             # gsplat 1.5.3's reset condition has an operator-precedence bug.
             # Keep its 3D path unchanged and own the 2DGS schedule explicitly.
             if step >= self.refine_stop_iter:
-                return
+                return False
             self._update_state(params, state, info, packed=packed)
+            changed = False
             if (step > self.refine_start_iter and step % self.refine_every == 0
                     and step % self.reset_every >= self.pause_refine_after_reset):
                 cloned, divided = self._grow_gs(params, optimizers, state, step)
-                pruned = self._prune_gs(params, optimizers, state, step)
-                if not len(params["means"]):
-                    raise RuntimeError("2DGS refinement removed all surfels; lower prune_opacity")
+                pruned = _prune_surfels(
+                    params, optimizers, state, self.prune_opa,
+                    step > self.size_prune_start, f"Cleanup {step}", state["radii"],
+                )
                 state["grad2d"].zero_()
                 state["count"].zero_()
                 state["radii"].zero_()
                 print(f"[VNCCS Gaussian] 2DGS refine {step}: cloned={cloned}, "
                       f"split={divided}, pruned={pruned}, surfels={len(params['means'])}")
+                changed = True
             if step > 0 and step % self.reset_every == 0:
                 from gsplat.strategy.ops import reset_opa
 
                 reset_opa(params=params, optimizers=optimizers, state=state, value=0.01)
                 print(f"[VNCCS Gaussian] 2DGS opacity reset at step {step}")
+                changed = True
+            return changed
 
     stop = min(refine_stop_iter, training_steps)
     options = dict(
@@ -1496,7 +1545,9 @@ def _strategy(
     )
     if use_2dgs:
         options["key_for_gradient"] = "gradient_2dgs"
-    return BudgetedDefaultStrategy(**options)
+    strategy = BudgetedDefaultStrategy(**options)
+    strategy.size_prune_start = max(refine_start_iter, int(training_steps * 0.1))
+    return strategy
 
 
 def _training_loss(rendered, target, alpha, target_alpha, kernel, alpha_weight,
@@ -1533,6 +1584,7 @@ def _render_view_pairs(splats, previews, sh_degree, antialiased, interrupt):
             rendered, alpha, _ = render_2dgs(
                 splats, torch.as_tensor(view, device=device)[None],
                 torch.as_tensor(frame["K"], device=device)[None], width, height, sh_degree,
+                depth_unit=frame.get("depth_unit", 1.0),
             )
         else:
             rendered, alpha, _ = rasterization(
@@ -1564,9 +1616,13 @@ def _train_gaussians(
     reset_every, grow_grad2d, prune_opacity, seed, progress, interrupt,
     use_depth_loss=False,
     use_2dgs=False, distortion_weight=DISTORTION_WEIGHT, normal_weight=NORMAL_WEIGHT,
+    point_splats=False,
 ):
     if not torch.cuda.is_available() or torch.version.hip is not None:
         raise RuntimeError("Gaussian training requires an NVIDIA CUDA build of PyTorch")
+    if use_2dgs and optimizer_mode == "visible_adam":
+        print("[VNCCS Gaussian] Legacy visible_adam selected: using fused_adam for exact Adam updates in 2DGS")
+        optimizer_mode = "fused_adam"
     try:
         from gsplat import export_splats
         from gsplat.rendering import rasterization
@@ -1577,7 +1633,7 @@ def _train_gaussians(
         raise RuntimeError("gsplat 1.5.3 is required for Gaussian training") from error
 
     device = torch.device("cuda", torch.cuda.current_device())
-    if use_2dgs and (use_depth_loss or distortion_weight > 0 or normal_weight > 0):
+    if use_2dgs:
         print(f"[VNCCS Gaussian] Initializing fused surface kernels for PyTorch CUDA {torch.version.cuda}")
         prepare_surface_cuda(device)
     points, rgb, frames = _scene_data(reconstruction, training_frames)
@@ -1588,10 +1644,24 @@ def _train_gaussians(
             "VNCCS Gaussian Camera Reconstruction before training"
         )
     scene_scale = _scene_scale(frames)
+    depth_unit = frames[0].get("depth_unit", 1.0)
+    if use_2dgs:
+        legacy_masks = 0
+        for frame in frames:
+            cached = training_frames[frame["name"]]
+            original_alpha = cached.get("alpha_uneroded") if isinstance(cached, dict) else None
+            if original_alpha is not None:
+                frame["rgba"] = frame["rgba"].copy()
+                frame["rgba"][..., 3] = original_alpha
+            else:
+                legacy_masks += 1
+        if legacy_masks:
+            print(f"[VNCCS Gaussian] {legacy_masks} cached frames have legacy eroded alpha; "
+                  "keeping the cached cameras and masks. Newly reconstructed scenes preserve the original 2DGS silhouette.")
     if use_depth_loss:
         prepare_depth_targets(reconstruction, training_frames, points, frames, interrupt)
     torch.manual_seed(seed)
-    initial_scales = _initial_scales(points)
+    initial_scales = _initial_scales(points, depth_unit)
     if len(points) > max_splats:
         selected = torch.randperm(len(points))[:max_splats].numpy()
         points, rgb = points[selected], rgb[selected]
@@ -1684,6 +1754,8 @@ def _train_gaussians(
     started = time.perf_counter()
     last_log = started
     last_log_step = 0
+    sh_interval = max(1, training_steps // 30) if use_2dgs else 1000
+    fixed_background = torch.zeros((1, 1, 1, 3), device=device) if use_2dgs else None
     print(
         f"[VNCCS Gaussian] Training: frames={len(frames)}, initial_splats={count}, "
         f"steps={training_steps}, cap={max_splats}, scene_scale={scene_scale:.6g}, "
@@ -1693,6 +1765,7 @@ def _train_gaussians(
         f"[VNCCS Gaussian] ADC: start={strategy.refine_start_iter}, "
         f"stop={strategy.refine_stop_iter}, every={strategy.refine_every}, "
         f"grow_grad2d={strategy.grow_grad2d:g}, reset_every={strategy.reset_every}; "
+        f"size_prune_after={strategy.size_prune_start}; "
         f"SSIM={ssim_weight:g}, alpha={alpha_weight:g}, "
         f"scale_regularization={use_scale_regularization}, antialiased={antialiased}, "
         f"depth_supervision={use_depth_loss}, depth_weight={DEPTH_LOSS_WEIGHT:g}; "
@@ -1701,13 +1774,14 @@ def _train_gaussians(
     print(f"[VNCCS Gaussian] Output: {output_path}")
     if use_2dgs:
         print(
-            f"[VNCCS Gaussian] 2DGS: two tangential scales; planar splitting; "
-            f"gsplat projection/tiles with built-in low-pass filter; "
+            f"[VNCCS Gaussian] 2DGS: {'circular splats with shared radius' if point_splats else 'elliptical splats with two tangential scales'}; planar splitting; "
+            f"perspective three-sigma projection/bounds; gsplat tile sorting; "
             f"fused CUDA RGB/geometry forward and backward; no feature images or hit lists; "
             f"ray-plane median depth (no stock center-depth interpolation); "
             f"distortion_l2_ndc={distortion_weight:g} after {int(training_steps * 0.1)} steps, "
             f"normal={normal_weight:g} after {int(training_steps * 7 / 30)} steps; "
-            "SH increases every 1000 steps; geometry uses all pixels and contributors every step. "
+            f"SH increases every {sh_interval} steps; geometry uses all pixels and contributors every step. "
+            f"COLMAP depth unit={depth_unit:.6g}; NDC and clipping preserve pre-normalization depth units. "
             "Optional MoGe supervision uses bounded-scene median depth. "
             "PLY/SPLAT outputs are thin-3DGS compatibility approximations; "
             "native two-scale PLY is saved alongside; IMAGE outputs use native 2DGS."
@@ -1722,7 +1796,7 @@ def _train_gaussians(
         frame = frames[frame_index]
         if step + 1 < training_steps:
             prefetched = prefetch_frame()
-        background = torch.rand((1, 1, 1, 3), device=device)
+        background = fixed_background if use_2dgs else torch.rand((1, 1, 1, 3), device=device)
         target_alpha = rgba[None, ..., 3:4]
         target = rgba[None, ..., :3] * target_alpha + background * (1 - target_alpha)
         height, width = rgba.shape[:2]
@@ -1734,8 +1808,8 @@ def _train_gaussians(
             need_geometry = use_depth_loss or distortion_scale > 0 or normal_scale > 0
             rendered, alpha, info = render_2dgs(
                 splats, frame["view"], frame["K"], width, height,
-                min(step // 1_000, sh_degree), strategy.absgrad,
-                with_geometry=need_geometry,
+                min(step // sh_interval, sh_degree), strategy.absgrad,
+                with_geometry=need_geometry, depth_unit=depth_unit,
             )
             rendered_depth = None
             if need_geometry:
@@ -1776,15 +1850,21 @@ def _train_gaussians(
         if use_2dgs and not torch.isfinite(loss.detach()).item():
             raise RuntimeError(f"2DGS produced a non-finite loss at step {step + 1}; training stopped before the optimizer update")
         loss.backward()
+        if use_2dgs and point_splats:
+            _tie_planar_scale_gradients(splats["scales"])
+        refined = (strategy.step_post_backward(splats, optimizers, state, step, info, packed=False)
+                   if use_2dgs else False)
         visibility = (info["radii"] > 0).all(dim=-1).any(dim=0)
         for optimizer in optimizers.values():
-            if optimizer_mode == "visible_adam":
-                optimizer.step(visibility)
-            else:
-                optimizer.step()
+            if not refined:
+                if optimizer_mode == "visible_adam":
+                    optimizer.step(visibility)
+                else:
+                    optimizer.step()
             optimizer.zero_grad(set_to_none=True)
         scheduler.step()
-        strategy.step_post_backward(splats, optimizers, state, step, info, packed=False)
+        if not use_2dgs:
+            strategy.step_post_backward(splats, optimizers, state, step, info, packed=False)
         completed = step + 1
         if (completed == 1 or completed % 25 == 0 or completed == training_steps
                 or (use_2dgs and time.perf_counter() - last_log >= 5.0)):
@@ -1809,10 +1889,12 @@ def _train_gaussians(
             last_log_step = completed
 
     interrupt()
-    _export_gaussians(splats, optimizers, state, output_path)
+    _export_gaussians(splats, optimizers, state, output_path,
+                      prune_opacity if use_2dgs else None,
+                      use_2dgs and training_steps > strategy.size_prune_start)
     result = _comfy_splat(splats)
     print(f"[VNCCS Gaussian] Saved {len(splats['means'])} splats to {output_path}")
-    preview_degree = min((training_steps - 1) // 1_000, sh_degree) if use_2dgs else sh_degree
+    preview_degree = min((training_steps - 1) // sh_interval, sh_degree) if use_2dgs else sh_degree
     preview_images = _render_view_pairs(splats, previews, preview_degree, antialiased, interrupt)
     progress.update_absolute(training_steps)
     return (result, *preview_images)
@@ -1828,18 +1910,18 @@ class VNCCSGaussianTrainer:
                 "scene": (GAUSSIAN_SCENE_TYPE,),
                 "training_steps": ("INT", {"default": 8_000, "min": 1, "max": 0xFFFFFFFFFFFFFFFF, "step": 1}),
                 "max_splats": ("INT", {"default": 2_000_000, "min": 1, "max": 0xFFFFFFFFFFFFFFFF, "step": 1}),
-                "sh_degree": ("INT", {"default": 1, "min": 0, "max": 3, "step": 1}),
+                "sh_degree": ("INT", {"default": 3, "min": 0, "max": 3, "step": 1}),
                 "ssim_weight": ("FLOAT", {"default": 0.2, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "alpha_weight": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 100.0, "step": 0.01}),
-                "use_scale_regularization": ("BOOLEAN", {"default": True}),
-                "antialiased": ("BOOLEAN", {"default": True}),
-                "optimizer_mode": (["visible_adam", "fused_adam", "adam"], {"default": "visible_adam"}),
-                "refine_start_iter": ("INT", {"default": 150, "min": 0, "max": 0xFFFFFFFFFFFFFFFF, "step": 1}),
-                "refine_stop_iter": ("INT", {"default": 3_500, "min": 0, "max": 0xFFFFFFFFFFFFFFFF, "step": 1}),
+                "use_scale_regularization": ("BOOLEAN", {"default": False}),
+                "antialiased": ("BOOLEAN", {"default": True, "tooltip": "3DGS only. 2DGS always uses its native low-pass filter."}),
+                "optimizer_mode": (["fused_adam", "adam", "visible_adam"], {"default": "fused_adam", "tooltip": "2DGS uses exact Adam; legacy visible_adam maps to fused_adam in this mode."}),
+                "refine_start_iter": ("INT", {"default": -1, "min": -1, "max": 0xFFFFFFFFFFFFFFFF, "step": 1, "tooltip": "-1: automatic, 1/60 of training. Non-negative values are explicit steps."}),
+                "refine_stop_iter": ("INT", {"default": -1, "min": -1, "max": 0xFFFFFFFFFFFFFFFF, "step": 1, "tooltip": "-1: automatic, half of training. Non-negative values are explicit steps."}),
                 "refine_every": ("INT", {"default": 100, "min": 1, "max": 0xFFFFFFFFFFFFFFFF, "step": 1}),
-                "reset_every": ("INT", {"default": 99_990, "min": 1, "max": 0xFFFFFFFFFFFFFFFF, "step": 1}),
-                "grow_grad2d": ("FLOAT", {"default": 0.0001, "min": 0.0, "max": 1.0, "step": 0.00001}),
-                "prune_opacity": ("FLOAT", {"default": 0.005, "min": 0.0, "max": 1.0, "step": 0.001}),
+                "reset_every": ("INT", {"default": -1, "min": -1, "max": 0xFFFFFFFFFFFFFFFF, "step": 1, "tooltip": "-1: automatic, every 10% of training. Positive values are explicit intervals; 0 is invalid. Size pruning is independent."}),
+                "grow_grad2d": ("FLOAT", {"default": 0.0002, "min": 0.0, "max": 1.0, "step": 0.00001}),
+                "prune_opacity": ("FLOAT", {"default": 0.05, "min": 0.0, "max": 1.0, "step": 0.001}),
                 "seed": ("INT", {"default": 42, "min": 0, "max": 0xFFFFFFFF, "step": 1}),
                 "use_depth_loss": (
                     "BOOLEAN", {
@@ -1865,28 +1947,36 @@ class VNCCSGaussianTrainer:
                         "tooltip": "2DGS normal-consistency weight, enabled after 7/30 of training. Zero disables this loss.",
                     },
                 ),
+                "point_splats": (
+                    "BOOLEAN", {
+                        "default": False,
+                        "tooltip": "2DGS only: train circular surface splats with one shared adaptive tangential radius instead of elongated ellipses. Splitting and export preserve this shape. Tilted discs still look narrow edge-on. Ignored when use_2dgs is disabled.",
+                    },
+                ),
             }
         }
 
-    RETURN_TYPES = ("STRING", "SPLAT") + ("IMAGE",) * 8
+    RETURN_TYPES = ("STRING", "SPLAT") + ("IMAGE",) * 8 + ("STRING",)
     RETURN_NAMES = (
         "gaussian_file", "splat",
         "top_0", "source_0",
         "top_90", "source_90",
         "top_180", "source_180",
         "top_270", "source_270",
+        "native_2dgs_file",
     )
     FUNCTION = "train"
     CATEGORY = "VNCCS/3D"
     OUTPUT_NODE = True
 
     def train(
-        self, scene, training_steps=8_000, max_splats=2_000_000, sh_degree=1,
-        ssim_weight=0.2, alpha_weight=0.1, use_scale_regularization=True,
-        antialiased=True, optimizer_mode="visible_adam", refine_start_iter=150,
-        refine_stop_iter=3_500, refine_every=100, reset_every=99_990,
-        grow_grad2d=0.0001, prune_opacity=0.005, seed=42, use_depth_loss=False,
+        self, scene, training_steps=8_000, max_splats=2_000_000, sh_degree=3,
+        ssim_weight=0.2, alpha_weight=0.1, use_scale_regularization=False,
+        antialiased=True, optimizer_mode="fused_adam", refine_start_iter=-1,
+        refine_stop_iter=-1, refine_every=100, reset_every=-1,
+        grow_grad2d=0.0002, prune_opacity=0.05, seed=42, use_depth_loss=False,
         use_2dgs=False, distortion_weight=DISTORTION_WEIGHT, normal_weight=NORMAL_WEIGHT,
+        point_splats=False,
     ):
         if not isinstance(scene, (tuple, list)) or len(scene) != 2:
             raise ValueError("scene must come from VNCCS Gaussian Camera Reconstruction")
@@ -1902,10 +1992,10 @@ class VNCCSGaussianTrainer:
             raise ValueError("grow_grad2d must be finite and non-negative")
         if optimizer_mode not in {"visible_adam", "fused_adam", "adam"}:
             raise ValueError("Unknown Gaussian optimizer mode")
-        if refine_every < 1 or reset_every < 1:
-            raise ValueError("Refinement and reset intervals must be positive")
-        if refine_start_iter < 0 or refine_stop_iter < 0:
-            raise ValueError("Refinement steps must be non-negative")
+        if refine_every < 1 or (reset_every != -1 and reset_every < 1):
+            raise ValueError("Refinement interval must be positive; reset interval must be positive or -1 (automatic)")
+        if refine_start_iter < -1 or refine_stop_iter < -1:
+            raise ValueError("Refinement steps must be non-negative or -1 (automatic)")
         if use_2dgs and (not np.isfinite(distortion_weight) or distortion_weight < 0):
             raise ValueError("distortion_weight must be finite and non-negative")
         if use_2dgs and (not np.isfinite(normal_weight) or normal_weight < 0):
@@ -1920,9 +2010,10 @@ class VNCCSGaussianTrainer:
             use_scale_regularization, antialiased, optimizer_mode,
             refine_start_iter, refine_stop_iter, refine_every, reset_every,
             grow_grad2d, prune_opacity, seed, progress, interrupt, use_depth_loss,
-            use_2dgs, distortion_weight, normal_weight,
+            use_2dgs, distortion_weight, normal_weight, point_splats,
         )
-        return (output_path, *result)
+        native_path = str(Path(output_path).with_name(Path(output_path).stem + "_2dgs.ply")) if use_2dgs else ""
+        return (output_path, *result, native_path)
 
 
 NODE_CLASS_MAPPINGS = {

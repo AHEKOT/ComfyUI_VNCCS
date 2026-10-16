@@ -133,6 +133,8 @@ def test_camera_cache_keeps_only_four_original_rgb_references(monkeypatch):
         assert not data["rgba"][..., :3].any()
     assert sum(frame["source_rgb"] is not None for frame in scene_frames) == 4
     for name, data in cached_frames.items():
+        assert data["alpha_uneroded"].dtype == np.uint8
+        assert (data["alpha_uneroded"] == 255).all()
         with Image.open(BytesIO(data["source_png"])) as source:
             expected = (images[int(name[:5])] * 255).round().to(torch.uint8).numpy()
             np.testing.assert_array_equal(np.array(source), expected)
