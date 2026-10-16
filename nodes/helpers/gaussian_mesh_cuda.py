@@ -165,24 +165,26 @@ extern "C" __global__ void mesh_uv_bins(const float* uv,const long long* ends,un
 }
 __device__ bool uv_interiors_overlap(const float* a,const float* b) {
     // Separating axes detect even sub-texel overlap; touching edges remain valid.
-    float area_a=(a[2]-a[0])*(a[5]-a[1])-(a[3]-a[1])*(a[4]-a[0]);
-    float area_b=(b[2]-b[0])*(b[5]-b[1])-(b[3]-b[1])*(b[4]-b[0]);
+    double area_a=((double)a[2]-a[0])*((double)a[5]-a[1])-((double)a[3]-a[1])*((double)a[4]-a[0]);
+    double area_b=((double)b[2]-b[0])*((double)b[5]-b[1])-((double)b[3]-b[1])*((double)b[4]-b[0]);
     // FP32 UVs can collapse sub-texel faces to points; zero-area interiors cannot overlap.
     if(area_a==0.f || area_b==0.f) return false;
     for(int side=0;side<2;++side) {
         const float* t=side?b:a;
         for(int edge_id=0;edge_id<3;++edge_id) {
             int next=(edge_id+1)%3;
-            float dx=t[2*next]-t[2*edge_id],dy=t[2*next+1]-t[2*edge_id+1];
-            float epsilon=1.e-6f*(dx*dx+dy*dy);
-            if(epsilon==0) continue;
-            float amin=1.e30f,amax=-1.e30f,bmin=1.e30f,bmax=-1.e30f;
+            double dx=(double)t[2*next]-t[2*edge_id],dy=(double)t[2*next+1]-t[2*edge_id+1];
+            if(dx==0 && dy==0) continue;
+            double amin=1.e300,amax=-1.e300,bmin=1.e300,bmax=-1.e300,error=0;
             for(int j=0;j<3;++j) {
-                float pa=dx*(a[2*j+1]-t[2*edge_id+1])-dy*(a[2*j]-t[2*edge_id]);
-                float pb=dx*(b[2*j+1]-t[2*edge_id+1])-dy*(b[2*j]-t[2*edge_id]);
-                amin=fminf(amin,pa); amax=fmaxf(amax,pa); bmin=fminf(bmin,pb); bmax=fmaxf(bmax,pb);
+                double ax=dx*((double)a[2*j+1]-t[2*edge_id+1]),ay=dy*((double)a[2*j]-t[2*edge_id]);
+                double bx=dx*((double)b[2*j+1]-t[2*edge_id+1]),by=dy*((double)b[2*j]-t[2*edge_id]);
+                double pa=ax-ay,pb=bx-by;
+                error=fmax(error,fmax(fabs(ax)+fabs(ay),fabs(bx)+fabs(by)));
+                amin=fmin(amin,pa); amax=fmax(amax,pa); bmin=fmin(bmin,pb); bmax=fmax(bmax,pb);
             }
-            if(fminf(amax,bmax)-fmaxf(amin,bmin)<=epsilon) return false;
+            // Roundoff depends on both edge and point distances, not just edge length.
+            if(fmin(amax,bmax)-fmax(amin,bmin)<=32*2.220446049250313e-16*error) return false;
         }
     }
     return true;

@@ -7,9 +7,7 @@ Tile sorting uses gsplat; fused CUDA kernels composite RGB and geometry.
 import ctypes as C
 from datetime import datetime
 from functools import lru_cache
-import hashlib
 from io import BytesIO
-import json
 import math
 from pathlib import Path
 import tempfile
@@ -2130,7 +2128,7 @@ def _mesh_stereo_render(splats, frame, view, degree, device):
     return rgb, alpha[0, ..., 0]
 
 
-def _mesh_stereo_views(arrays, degree, frames, cache, directory, device, weights,
+def _mesh_stereo_views(arrays, degree, frames, cache, device, weights,
                        baseline_ratio, iterations, lr_threshold, alpha_threshold,
                        progress, interrupt):
     import comfy.model_management as management
@@ -2140,63 +2138,44 @@ def _mesh_stereo_views(arrays, degree, frames, cache, directory, device, weights
     baseline = radius * baseline_ratio
     if not np.isfinite(baseline) or baseline <= 0:
         raise ValueError("Orbit cameras do not define a valid stereo baseline")
-    pending = [i for i in range(len(frames)) if not all(
-        (Path(directory) / f"{prefix}_{i}.{suffix}").is_file()
-        for prefix, suffix in (("depth", "npy"), ("render", "png"))
-    )]
-    model = splats = None
+    pixels = max(int(np.prod(f["size"])) for f in frames)
+    management.free_memory(pixels * 2048 + (1 << 30), device)
+    # Validate every model key before rendering the first pair, not after a long reconstruction.
+    model = _mesh_stereo_model(device, weights)
+    prepare_surface_cuda(device)
+    splats = {name: torch.from_numpy(np.ascontiguousarray(value)).to(device)
+              for name, value in arrays.items()}
     try:
-        if pending:
-            pixels = max(int(np.prod(f["size"])) for f in frames)
-            management.free_memory(pixels * 2048 + (1 << 30), device)
-            # Validate every model key before rendering the first pair, not after a long reconstruction.
-            model = _mesh_stereo_model(device, weights)
-            prepare_surface_cuda(device)
-            splats = {name: torch.from_numpy(np.ascontiguousarray(value)).to(device)
-                      for name, value in arrays.items()}
         for index, frame in enumerate(frames):
             interrupt()
-            depth_path = Path(directory) / f"depth_{index}.npy"
-            render_path = Path(directory) / f"render_{index}.png"
-            if index in pending:
-                started = time.perf_counter()
-                rgb, alpha = _mesh_stereo_render(splats, frame, frame["view"], degree, device)
-                other, other_alpha = _mesh_stereo_render(
-                    splats, frame, _mesh_stereo_view(frame, baseline), degree, device)
-                disparities = _mesh_stereo_disparities(model, rgb, other, iterations, interrupt)
-                camera_z = arrays["means"] @ frame["view"][2, :3] + frame["view"][2, 3]
-                camera_z = camera_z[camera_z > 0]
-                if not len(camera_z):
-                    raise ValueError("The PLY has no surfels in front of a saved camera; the scene and PLY do not match")
-                near, far = np.quantile(camera_z, (.01, .99))
-                # Foreground masks and calibrated bounds replace GS2Mesh's scene-specific baseline clipping.
-                limits = (max(radius * 1.e-5, near - .1 * radius), far + .1 * radius)
-                depth = _mesh_stereo_depth(*disparities, alpha, other_alpha, frame["K"][0, 0],
-                                           baseline, alpha_threshold, lr_threshold, limits)
-                mask = torch.as_tensor(cache[frame["name"]]["alpha_uneroded"], device=device)
-                depth = torch.where(mask >= 230, depth, 0).float().cpu().numpy()
-                with atomic_output_path(str(render_path)) as temporary:
-                    Image.fromarray(rgb.cpu().numpy()).save(temporary, format="PNG")
-                _mesh_save_array(depth_path, depth)
-                print(f"[VNCCS PLY2MESH] GS2Mesh stereo: {index + 1}/{len(frames)}, "
-                      f"valid={np.count_nonzero(depth)}/{depth.size}, baseline={baseline:.5f}, "
-                      f"elapsed={time.perf_counter() - started:.2f}s", flush=True)
-                del rgb, other, alpha, other_alpha, disparities, depth
-            else:
-                print(f"[VNCCS PLY2MESH] Reusing GS2Mesh stereo: {index + 1}/{len(frames)}", flush=True)
-            cache[frame["name"]] = {**cache[frame["name"]], "render_path": str(render_path),
-                                     "mesh_depth_path": str(depth_path)}
+            started = time.perf_counter()
+            rgb, alpha = _mesh_stereo_render(splats, frame, frame["view"], degree, device)
+            other, other_alpha = _mesh_stereo_render(
+                splats, frame, _mesh_stereo_view(frame, baseline), degree, device)
+            disparities = _mesh_stereo_disparities(model, rgb, other, iterations, interrupt)
+            camera_z = arrays["means"] @ frame["view"][2, :3] + frame["view"][2, 3]
+            camera_z = camera_z[camera_z > 0]
+            if not len(camera_z):
+                raise ValueError("The PLY has no surfels in front of a camera; the scene and PLY do not match")
+            near, far = np.quantile(camera_z, (.01, .99))
+            # Foreground masks and calibrated bounds replace GS2Mesh's scene-specific baseline clipping.
+            limits = (max(radius * 1.e-5, near - .1 * radius), far + .1 * radius)
+            depth = _mesh_stereo_depth(*disparities, alpha, other_alpha, frame["K"][0, 0],
+                                       baseline, alpha_threshold, lr_threshold, limits)
+            mask = torch.as_tensor(cache[frame["name"]]["alpha_uneroded"], device=device)
+            depth = torch.where(mask >= 230, depth, 0).float().cpu().numpy()
+            cache[frame["name"]].update(mesh_rgb=rgb.cpu().numpy(), mesh_depth=depth)
+            print(f"[VNCCS PLY2MESH] GS2Mesh stereo: {index + 1}/{len(frames)}, "
+                  f"valid={np.count_nonzero(depth)}/{depth.size}, baseline={baseline:.5f}, "
+                  f"elapsed={time.perf_counter() - started:.2f}s", flush=True)
+            del rgb, other, alpha, other_alpha, disparities, depth
             progress.update_absolute(index + 1)
     finally:
         del model, splats
 
 
 def _mesh_reference_rgb(frame, cache):
-    path = cache[frame["name"]].get("render_path")
-    if path is None:
-        return _mesh_source(frame, cache)
-    with Image.open(path) as image:
-        return np.array(image.convert("RGB"), dtype=np.uint8)
+    return cache[frame["name"]]["mesh_rgb"]
 
 
 def _mesh_upright(vertices, normals, frames):
@@ -2346,12 +2325,6 @@ def _mesh_load_surfels(path):
     return splats, degree
 
 
-def _mesh_source(frame, cache):
-    entry = cache[frame["name"]]
-    source = BytesIO(entry["source_png"]) if "source_png" in entry else entry["source_path"]
-    with Image.open(source) as image:
-        return np.array(image.convert("RGB"), dtype=np.uint8)
-
 
 def _mesh_project(points, frame):
     camera = points @ frame["view"][:3, :3].T + frame["view"][:3, 3]
@@ -2396,48 +2369,39 @@ def _mesh_integrate_frame(volume, frame, depth, rgb, voxel_size):
 
 
 
-def _mesh_save_array(path, values):
-    with atomic_output_path(str(path)) as temporary:
-        with open(temporary, "wb") as handle:
-            np.save(handle, values, allow_pickle=False)
 
-
-def _mesh_gpu_frame(vertices, faces, frame, cache, directory, index, voxel_size, interrupt):
+def _mesh_gpu_frame(vertices, faces, frame, cache, interrupt):
     from .helpers.gaussian_mesh_cuda import depth_map
 
     device = vertices.device
     matrix = torch.as_tensor(frame["K"] @ frame["view"][:3], device=device).float().contiguous()
     center = torch.as_tensor(-(frame["view"][:3, :3].T @ frame["view"][:3, 3]), device=device).float().contiguous()
-    reference = np.load(cache[frame["name"]].get("mesh_depth_path", Path(directory) / f"filtered_{index}.npy"),
-                        allow_pickle=False)
+    reference = cache[frame["name"]]["mesh_depth"]
     alpha = cache[frame["name"]]["alpha_uneroded"]
     if (reference.ndim != 2 or alpha.shape != reference.shape or alpha.dtype != np.uint8
             or not np.isfinite(reference).all() or (reference < 0).any()):
-        raise ValueError("Saved mesh depth or foreground mask is invalid")
+        raise ValueError("Mesh depth or foreground mask is invalid")
     height, width = reference.shape
-    z_path = Path(directory) / f"mesh_z_{index}.npy"
-    if z_path.is_file():
-        z = np.load(z_path, allow_pickle=False)
-        if z.shape != reference.shape or z.dtype != np.float32 or np.isnan(z).any() or (z < 0).any():
-            raise ValueError("Saved mesh visibility buffer is invalid; original checkpoint was preserved")
-        z = torch.as_tensor(z, device=device).contiguous()
-    else:
-        z = depth_map(vertices, faces, matrix, width, height, interrupt)
-        _mesh_save_array(z_path, z.cpu().numpy())
+    # Visibility is used once per view; keep it on the GPU instead of caching full-resolution arrays.
+    z = depth_map(vertices, faces, matrix, width, height, interrupt)
     return (matrix, center, z, torch.as_tensor(reference, device=device).float().contiguous(),
             torch.as_tensor(alpha, device=device, dtype=torch.uint8).contiguous(), width, height)
 
 
 def _mesh_pack_uv_rectangles(uv, offsets, size, interrupt, padding=4):
-    """Conservative packing when a bitmap atlas still has subpixel intersections."""
+    """Pack chart bounds with fixed gutters and a strictly positive scale."""
     lower = np.minimum.reduceat(uv, offsets[:-1], axis=0)
     upper = np.maximum.reduceat(uv, offsets[:-1], axis=0)
     extents = upper - lower
     rotate = extents[:, 1] > extents[:, 0]
     spans = np.where(rotate[:, None], extents[:, ::-1], extents)
+    minimum_span = 64 * np.finfo(np.float32).eps * size
+    minimum_dimensions = (spans > 0).astype(np.int64) * math.ceil(minimum_span) + 1 + 2 * padding
 
     def pack(scale):
-        dimensions = np.ceil(spans * scale).astype(np.int64) + 1 + 2 * padding
+        # A zero-scale probe must reserve the same minimum footprint as a positive scale.
+        dimensions = np.maximum(np.ceil(spans * scale).astype(np.int64) + 1 + 2 * padding,
+                                minimum_dimensions)
         order = np.lexsort((-dimensions[:, 0], -dimensions[:, 1]))
         positions = np.empty((len(spans), 2), dtype=np.float64)
         x = y = row_height = 0
@@ -2464,106 +2428,163 @@ def _mesh_pack_uv_rectangles(uv, offsets, size, interrupt, padding=4):
             high = scale
         else:
             low = scale
+    if low <= 0:
+        raise ValueError("UV charts cannot fit at a positive scale; increase texture_size")
     charts = np.repeat(np.arange(len(spans)), np.diff(offsets))
-    local = (uv - lower[charts]) * low
+    stretch = np.ones_like(extents)
+    np.divide(minimum_span, extents * low, out=stretch, where=extents > 0)
+    np.maximum(stretch, 1, out=stretch)
+    # Keep sub-texel slivers representable after atlas offsets are rounded to FP32.
+    local = (uv - lower[charts]) * low * stretch[charts]
     local = np.where(rotate[charts, None], local[:, ::-1], local)
     return ((local + pack(low)[charts]) / size).astype(np.float32)
 
 
-def _mesh_repack_uv(mapping, faces, uv, positions, groups, size, interrupt, conservative=False):
-    """Duplicate UV seams, not geometry, and repack the conflict-free chart layers."""
-    groups = np.unique(np.asarray(groups), return_inverse=True)[1]
-    count = int(groups.max()) + 1
-    order = np.argsort(groups, kind="stable")
-    sorted_groups = groups[order]
-    unique, inverse = np.unique(sorted_groups[:, None] * len(uv) + faces[order], return_inverse=True)
-    vertex_charts, used = unique // len(uv), unique % len(uv)
-    vertex_offsets = np.r_[0, np.cumsum(np.bincount(vertex_charts, minlength=count))]
-    face_offsets = np.r_[0, np.cumsum(np.bincount(sorted_groups, minlength=count))]
-    global_faces = inverse.reshape(-1, 3)
-    local_faces = global_faces - vertex_offsets[sorted_groups, None]
-    chart_uv = uv[used].astype(np.float64)
-    triangles = chart_uv[global_faces]
+def _mesh_bad_uv_faces(mapping, faces, uv, positions):
+    triangle_uv = uv[faces].astype(np.float64)
+    ab, ac = triangle_uv[:, 1] - triangle_uv[:, 0], triangle_uv[:, 2] - triangle_uv[:, 0]
+    area = np.abs(ab[:, 0] * ac[:, 1] - ab[:, 1] * ac[:, 0])
+    longest = np.maximum.reduce((np.square(ab).sum(1), np.square(ac).sum(1),
+                                 np.square(ac - ab).sum(1)))
+    bad = area <= np.finfo(np.float32).eps * longest
+    ids = np.flatnonzero(bad)
+    triangles = positions[mapping[faces[ids]]].astype(np.float64)
     ab, ac = triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]
-    uv_area = np.bincount(sorted_groups, weights=.5 * np.abs(ab[:, 0] * ac[:, 1] - ab[:, 1] * ac[:, 0]), minlength=count)
-    triangles = positions[mapping[used]][global_faces].astype(np.float64)
-    area = .5 * np.linalg.norm(np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]), axis=1)
-    area_3d = np.bincount(sorted_groups, weights=area, minlength=count)
-    if conservative:
-        density = np.sqrt(area_3d / np.maximum(uv_area, 1.e-30))
-        chart_uv = _mesh_pack_uv_rectangles(chart_uv * density[vertex_charts, None], vertex_offsets, size, interrupt)
-    else:
-        from comfy_extras.nodes_mesh_postprocess import _uv_pack
+    world_area = np.linalg.norm(np.cross(ab, ac), axis=1)
+    world_longest = np.maximum.reduce((np.square(ab).sum(1), np.square(ac).sum(1),
+                                       np.square(ac - ab).sum(1)))
+    # Preserve genuine thin world triangles; repair only UV collapse, not their geometry.
+    bad[ids] &= (world_area > 0) & ((area[ids] == 0)
+                                   | (world_area > 4 * np.finfo(np.float32).eps * world_longest))
+    return bad
 
-        def progress(done, total):
-            interrupt()
-            print(f"[VNCCS PLY2MESH] Repacking repaired UVs: {done}/{total}", flush=True)
 
-        texels = math.sqrt(size**2 * .62 / max(float(area_3d.sum()), 1.e-30))
-        placements = _uv_pack.pack_bitmap_concat(
-            chart_uv, vertex_offsets, local_faces, face_offsets, area_3d, uv_area,
-            texels_per_unit=texels, padding_texels=4, progress_callback=progress)
-        chart_uv = _uv_pack.apply_placements_concat(chart_uv, vertex_offsets, *placements)
-    result_faces = np.empty_like(faces)
-    result_faces[order] = global_faces
-    return mapping[used], result_faces, np.asarray(chart_uv, dtype=np.float32)
+def _mesh_repack_uv(mapping, faces, uv, positions, groups, size, interrupt):
+    """Split UV seams and restore collapsed faces without moving or dropping geometry."""
+    groups = np.unique(np.asarray(groups), return_inverse=True)[1]
+    bad = _mesh_bad_uv_faces(mapping, faces, uv, positions)
+    while True:
+        interrupt()
+        partition = groups.copy()
+        partition[bad] = int(groups.max()) + 1 + np.arange(np.count_nonzero(bad))
+        partition = np.unique(partition, return_inverse=True)[1]
+        count = int(partition.max()) + 1
+        order = np.argsort(partition, kind="stable")
+        sorted_groups = partition[order]
+        unique, inverse = np.unique(sorted_groups[:, None] * len(uv) + faces[order], return_inverse=True)
+        vertex_charts, used = unique // len(uv), unique % len(uv)
+        vertex_offsets = np.r_[0, np.cumsum(np.bincount(vertex_charts, minlength=count))]
+        global_faces = inverse.reshape(-1, 3)
+        chart_uv = uv[used].astype(np.float64)
+        triangles = positions[mapping[used]][global_faces].astype(np.float64)
+        cross = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+        world_area = np.linalg.norm(cross, axis=1)
+        area_3d = np.bincount(sorted_groups, weights=.5 * world_area, minlength=count)
+        if bad.any():
+            broken = np.flatnonzero(bad[order])
+            edges = np.roll(triangles[broken], -1, axis=1) - triangles[broken]
+            # The longest edge is a stable base even for genuine world-space slivers.
+            base = np.argmax(np.square(edges).sum(2), axis=1)
+            corners = (base[:, None] + np.arange(3)) % 3
+            points = np.take_along_axis(triangles[broken], corners[..., None], axis=1)
+            ab, ac = points[:, 1] - points[:, 0], points[:, 2] - points[:, 0]
+            length = np.linalg.norm(ab, axis=1)
+            local = np.zeros((len(broken), 3, 2), dtype=np.float64)
+            local[:, 1, 0] = length
+            local[:, 2, 0] = (ab * ac).sum(1) / length
+            local[:, 2, 1] = world_area[broken] / length
+            chart_uv[np.take_along_axis(global_faces[broken], corners, axis=1)] = local
+        triangles_uv = chart_uv[global_faces]
+        ab, ac = triangles_uv[:, 1] - triangles_uv[:, 0], triangles_uv[:, 2] - triangles_uv[:, 0]
+        uv_area = np.bincount(sorted_groups, weights=.5 * np.abs(ab[:, 0] * ac[:, 1] - ab[:, 1] * ac[:, 0]),
+                              minlength=count)
+        density = np.zeros(count, dtype=np.float64)
+        np.divide(area_3d, uv_area, out=density, where=uv_area > 0)
+        np.sqrt(density, out=density)
+        # Remove chart offsets before rescaling; tiny UV areas must not amplify large offsets.
+        chart_uv -= np.minimum.reduceat(chart_uv, vertex_offsets[:-1], axis=0)[vertex_charts]
+        chart_uv *= density[vertex_charts, None]
+        chart_uv = _mesh_pack_uv_rectangles(chart_uv, vertex_offsets, size, interrupt)
+        # Check the coordinates actually rasterized, including the FP32 V flip.
+        raster_uv = chart_uv[global_faces].copy()
+        raster_uv[..., 1] = 1 - raster_uv[..., 1]
+        raster_uv = raster_uv.astype(np.float64)
+        ab, ac = raster_uv[:, 1] - raster_uv[:, 0], raster_uv[:, 2] - raster_uv[:, 0]
+        area = np.abs(ab[:, 0] * ac[:, 1] - ab[:, 1] * ac[:, 0])
+        longest = np.sqrt(np.maximum.reduce((np.square(ab).sum(1), np.square(ac).sum(1),
+                                            np.square(ac - ab).sum(1))))
+        # A whole-chart bounding box does not protect tiny interior triangles from rounding.
+        fragile = (world_area > 0) & (area <= 16 * np.finfo(np.float32).eps * longest)
+        if fragile.any():
+            newly_bad = order[fragile]
+            if bad[newly_bad].any():
+                raise ValueError(f"UV precision repair failed for {np.count_nonzero(fragile)} isolated faces")
+            bad[newly_bad] = True
+            print(f"[VNCCS PLY2MESH] UV precision seams: added={len(newly_bad)}, "
+                  f"total={np.count_nonzero(bad)}", flush=True)
+            continue
+        result_faces = np.empty_like(faces)
+        result_faces[order] = global_faces
+        print(f"[VNCCS PLY2MESH] UV repair: charts={count}, restored_faces={np.count_nonzero(bad)}, "
+              "packing=padded rectangles", flush=True)
+        return mapping[used], result_faces, chart_uv
 
 
 def _mesh_validate_uv(mapping, faces, uv, positions, size, device, interrupt):
     from .helpers.gaussian_mesh_cuda import color_overlaps, connected_charts, uv_map
 
-    # Bitmap packing can miss subpixel intersections; its parameterized charts can fold too.
-    # A graph coloring separates every intersecting pair without dropping surface triangles.
-    for attempt in range(3):
+    previous_charts = -1
+    while True:
         interrupt()
+        raster_uv = np.asarray(uv, dtype=np.float32).copy()
+        raster_uv[:, 1] = 1 - raster_uv[:, 1]
+        bad = _mesh_bad_uv_faces(mapping, faces, raster_uv, positions)
         gpu_faces = torch.as_tensor(faces, device=device, dtype=torch.int32).contiguous()
-        triangle_uv = uv[faces].copy()
-        triangle_uv[..., 1] = 1 - triangle_uv[..., 1]
+        triangle_uv = raster_uv[faces]
         gpu_uv = torch.as_tensor(triangle_uv, device=device).float().contiguous()
         charts = connected_charts(gpu_faces, torch.zeros(len(faces), device=device, dtype=torch.int32), interrupt)
         all_charts = torch.zeros_like(charts)
         owner, conflicts = uv_map(gpu_uv, all_charts, size, interrupt)
-        if not torch.count_nonzero(conflicts):
+        overlaps = bool(torch.count_nonzero(conflicts))
+        occupied = int(torch.count_nonzero(owner != 0x7FFFFFFF))
+        chart_count = int(charts.max()) + 1
+        print(f"[VNCCS PLY2MESH] UV validation: charts={chart_count}, overlaps={overlaps}, "
+              f"collapsed_faces={np.count_nonzero(bad)}, covered_texels={occupied}", flush=True)
+        if not overlaps and not bad.any() and occupied:
             return mapping, faces, uv, charts.cpu().numpy(), owner
-        if attempt == 2:
-            raise ValueError("UV intersections remain after conservative repair; all geometry/checkpoints were preserved")
-        layers = color_overlaps(gpu_uv, all_charts, size, interrupt)
-        if not torch.count_nonzero(layers):
-            raise ValueError("The UV intersection graph could not separate a detected overlap; checkpoints were preserved")
-        groups = charts.long() * (int(layers.max()) + 1) + layers.long()
-        mode = "conservative rectangles" if attempt else "native bitmap"
-        print(f"[VNCCS PLY2MESH] Repairing overlapping UVs: charts={int(charts.max()) + 1}, "
-              f"layers={int(layers.max()) + 1}, packing={mode}", flush=True)
+        if not occupied and previous_charts >= 0:
+            raise ValueError("UV atlas has no covered texels; increase texture_size")
+        if chart_count <= previous_charts:
+            raise ValueError(f"UV repair made no progress: overlaps={overlaps}, "
+                             f"collapsed_faces={np.count_nonzero(bad)}, covered_texels={occupied}; "
+                             "geometry was not changed")
+        previous_charts = chart_count
+        groups = charts.long()
+        if overlaps:
+            layers = color_overlaps(gpu_uv, all_charts, size, interrupt)
+            if not torch.count_nonzero(layers):
+                raise ValueError("The UV intersection graph could not separate a detected overlap")
+            groups = groups * (int(layers.max()) + 1) + layers.long()
         groups = groups.cpu().numpy()
-        del owner, conflicts, gpu_uv, gpu_faces, triangle_uv, charts, layers, all_charts
-        mapping, faces, uv = _mesh_repack_uv(mapping, faces, uv, positions, groups, size, interrupt,
-                                            conservative=attempt == 1)
-    raise AssertionError("Unreachable UV validation state")
+        del owner, conflicts, gpu_uv, gpu_faces, triangle_uv, raster_uv, charts, all_charts
+        mapping, faces, uv = _mesh_repack_uv(mapping, faces, uv, positions, groups, size, interrupt)
 
 
-def _mesh_unwrap(mesh, texture_size, device, interrupt, directory):
-    """Use ComfyUI's native GPU chart segmentation and conformal parameterization."""
+def _mesh_unwrap(mesh, texture_size, device, interrupt):
+    """Use only ComfyUI's parallel PEC chart segmentation and conformal parameterization."""
     import open3d as o3d
     from comfy_extras.nodes_mesh_postprocess import _uv_unwrap
 
     interrupt()
-    print(f"[VNCCS PLY2MESH] Native GPU UV unwrap: {len(mesh.triangle.indices)} triangles", flush=True)
+    print(f"[VNCCS PLY2MESH] Native GPU PEC UV unwrap: {len(mesh.triangle.indices)} triangles", flush=True)
     positions = mesh.vertex.positions.numpy()
     normals = mesh.vertex.normals.numpy()
     colors = mesh.vertex.colors.numpy()
-    atlas_path = Path(directory) / f"atlas_native_v2_{texture_size}.npz"
-    previous = Path(directory) / f"atlas_native_v1_{texture_size}.npz"
-    cached = atlas_path if atlas_path.is_file() else previous
-    if cached.is_file():
-        with np.load(cached, allow_pickle=False) as saved:
-            mapping, faces, uv = (saved[name] for name in ("mapping", "faces", "uv"))
-        print("[VNCCS PLY2MESH] Reusing native UV atlas", flush=True)
-    else:
-        mapping, faces, uv = _uv_unwrap(
-            torch.as_tensor(positions, device=device).float(),
-            torch.as_tensor(mesh.triangle.indices.numpy(), device=device).long(),
-            "pec", texture_size, 4, 0.0,
-        )
+    mapping, faces, uv = _uv_unwrap(
+        torch.as_tensor(positions, device=device).float(),
+        torch.as_tensor(mesh.triangle.indices.numpy(), device=device).long(),
+        "pec", texture_size, 4, 0.0,
+    )
     interrupt()
     mapping, faces, uv = np.asarray(mapping), np.asarray(faces), np.asarray(uv)
     if (not len(faces) or faces.ndim != 2 or faces.shape[1] != 3 or uv.shape != (len(mapping), 2)
@@ -2572,13 +2593,8 @@ def _mesh_unwrap(mesh, texture_size, device, interrupt, directory):
             or mapping.min() < 0 or mapping.max() >= len(positions)
             or faces.min() < 0 or faces.max() >= len(mapping)):
         raise ValueError("ComfyUI returned an invalid UV atlas")
-    original_mapping = mapping
     mapping, faces, uv, charts, owner = _mesh_validate_uv(
         mapping, faces, uv, positions, texture_size, device, interrupt)
-    if not atlas_path.is_file() or mapping is not original_mapping:
-        with atomic_output_path(str(atlas_path)) as temporary:
-            with open(temporary, "wb") as handle:
-                np.savez(handle, mapping=mapping, faces=faces, uv=uv)
     mesh.vertex.positions = o3d.core.Tensor(positions[mapping].copy())
     mesh.vertex.normals = o3d.core.Tensor(normals[mapping].copy())
     mesh.vertex.colors = o3d.core.Tensor(colors[mapping].copy())
@@ -2588,7 +2604,7 @@ def _mesh_unwrap(mesh, texture_size, device, interrupt, directory):
     return mesh, owner
 
 
-def _mesh_bake_texture(mesh, frames, cache, depth_dir, texture_size, voxel_size, tolerance,
+def _mesh_bake_texture(mesh, frames, cache, texture_size, voxel_size, tolerance,
                        progress, interrupt, offset):
     import comfy.model_management as management
     from .helpers.gaussian_mesh_cuda import dilate_texture, launch, prepare_mesh_cuda
@@ -2600,13 +2616,17 @@ def _mesh_bake_texture(mesh, frames, cache, depth_dir, texture_size, voxel_size,
     # Release idle ComfyUI models before allocating mesh hash tables and texel maps.
     requested = len(mesh.triangle.indices) * 14 * 1024 + texture_size**2 * 80
     management.free_memory(requested, device)
-    mesh, owner = _mesh_unwrap(mesh, texture_size, device, interrupt, depth_dir)
+    mesh, owner = _mesh_unwrap(mesh, texture_size, device, interrupt)
+    occupied = int(torch.count_nonzero(owner != 0x7FFFFFFF))
+    if not occupied:
+        raise RuntimeError("UV atlas contains no covered texels; UV unwrapping failed before source-view baking")
     vertices = torch.as_tensor(mesh.vertex.positions.numpy(), device=device).float().contiguous()
     faces = torch.as_tensor(mesh.triangle.indices.numpy(), device=device, dtype=torch.int32).contiguous()
     vertex_normals = torch.as_tensor(mesh.vertex.normals.numpy(), device=device).float().contiguous()
     vertex_colors = torch.as_tensor(mesh.vertex.colors.numpy(), device=device).float().contiguous()
     started = time.perf_counter()
-    print(f"[VNCCS PLY2MESH] GPU UV charts: {len(faces)} triangles, atlas={texture_size}x{texture_size}", flush=True)
+    print(f"[VNCCS PLY2MESH] GPU UV charts: {len(faces)} triangles, atlas={texture_size}x{texture_size}, "
+          f"occupied={occupied} texels", flush=True)
     uv_cpu = mesh.triangle.texture_uvs.numpy().copy()
     uv_cpu[..., 1] = 1 - uv_cpu[..., 1]
     uv = torch.as_tensor(uv_cpu, device=device).float().contiguous()
@@ -2623,10 +2643,10 @@ def _mesh_bake_texture(mesh, frames, cache, depth_dir, texture_size, voxel_size,
         interrupt()
         frame_started = time.perf_counter()
         matrix, center, depth, reference, alpha, width, height = _mesh_gpu_frame(
-            vertices, faces, frame, cache, depth_dir, index, voxel_size, interrupt)
+            vertices, faces, frame, cache, interrupt)
         source = _mesh_reference_rgb(frame, cache)
         if source.shape != (height, width, 3) or source.dtype != np.uint8:
-            raise ValueError("Saved original RGB and camera depth have different dimensions or types")
+            raise ValueError("Splat RGB and camera depth have different dimensions or types")
         rgb = torch.as_tensor(source, device=device).contiguous()
         launch("texture_view", (positions, normals, owner, matrix, center, reference, depth,
                                  alpha, rgb, scores, colors), texture_size**2,
@@ -2637,7 +2657,6 @@ def _mesh_bake_texture(mesh, frames, cache, depth_dir, texture_size, voxel_size,
         print(f"[VNCCS PLY2MESH] GPU texture views: {index + 1}/{len(frames)}; "
               f"view_time={time.perf_counter() - frame_started:.2f}s", flush=True)
     covered = int(torch.count_nonzero(scores))
-    occupied = int(torch.count_nonzero(owner != 0x7FFFFFFF))
     print(f"[VNCCS PLY2MESH] Source texture coverage: {covered}/{occupied} texels; uncovered areas retain TSDF colors", flush=True)
     if not covered:
         raise RuntimeError("No source frame covers the mesh UVs; the PLY and scene may not match")
@@ -2686,153 +2705,25 @@ def _mesh_uv_vertices(mesh, device=None):
     )
 
 
-def _mesh_restore_scene(directory, fingerprint, settings=None):
-    """Read a retained calibrated scene, including checkpoints made before GS2Mesh."""
-    with open(safe_join_under(directory, "scene.json"), encoding="utf-8") as handle:
-        metadata = json.load(handle)
-    if (metadata.get("version") != 1 or metadata.get("source") != fingerprint
-            or (settings is not None and metadata.get("settings") != settings)):
-        raise ValueError("Mesh checkpoint version or source does not match; existing data was preserved")
-    frames, cache = [], {}
-    for index, record in enumerate(metadata["frames"]):
-        view = np.asarray(record["view"], dtype=np.float32)
-        intrinsic = np.asarray(record["K"], dtype=np.float32)
-        shape = tuple(record["size"])
-        if (view.shape != (4, 4) or intrinsic.shape != (3, 3) or len(shape) != 2
-                or min(shape) < 1 or not np.isfinite(view).all() or not np.isfinite(intrinsic).all()
-                or intrinsic[0, 0] <= 0 or intrinsic[1, 1] <= 0):
-            raise ValueError("Saved camera matrices or image dimensions are invalid")
-        alpha = np.load(safe_join_under(directory, f"alpha_{index}.npy"), allow_pickle=False)
-        if alpha.shape != shape or alpha.dtype != np.uint8:
-            raise ValueError("Saved foreground mask is invalid")
-        frames.append({"name": record["name"], "view": view, "K": intrinsic,
-                       "size": shape, "depth_unit": record["depth_unit"]})
-        cache[record["name"]] = {"source_path": safe_join_under(directory, f"source_{index}.png"),
-                                 "alpha_uneroded": alpha}
-    if len(frames) < 2 or len(cache) != len(frames):
-        raise ValueError("Saved camera scene has missing or duplicate frames")
-    return frames, cache
-
-
-def _mesh_checkpoint(path, scene, settings, voxel_size):
-    """Keep stereo inputs independent of mesh/texture settings and preserve older scenes."""
-    import folder_paths
-
-    fingerprint = file_fingerprint(path)
-    key = hashlib.sha256(json.dumps([fingerprint, settings], sort_keys=True).encode("utf-8")).hexdigest()
-    cache_root = safe_join_under(folder_paths.get_output_directory(), "VNCCS", "Meshes", "cache")
-    root = safe_join_under(cache_root, key)
-    latest = safe_join_under(root, "latest.json")
-    if scene is None and Path(latest).is_file():
-        with open(latest, encoding="utf-8") as handle:
-            scene_key = json.load(handle)
-        if not isinstance(scene_key, str) or len(scene_key) != 64 or any(c not in "0123456789abcdef" for c in scene_key):
-            raise ValueError("Invalid mesh checkpoint index; existing data was preserved")
-        directory = safe_join_under(root, scene_key)
-        frames, cache = _mesh_restore_scene(directory, fingerprint, settings)
-        print(f"[VNCCS PLY2MESH] Restored saved cameras and RGB: {len(frames)} views", flush=True)
-        return directory, frames, cache
-    if scene is None:
-        # Only metadata under this node's own cache is considered; no model/video search.
-        candidates = sorted(Path(cache_root).glob("*/*/scene.json"), key=lambda item: item.stat().st_mtime_ns, reverse=True)
-        for candidate in candidates:
-            checked = safe_join_under(cache_root, str(candidate.relative_to(cache_root)))
-            try:
-                with open(checked, encoding="utf-8") as handle:
-                    metadata = json.load(handle)
-            except (OSError, json.JSONDecodeError) as error:
-                print(f"[VNCCS PLY2MESH] Ignoring unreadable unrelated cache metadata: {candidate}: {error}", flush=True)
-                continue
-            if isinstance(metadata, dict) and metadata.get("source") == fingerprint:
-                directory = safe_join_under(cache_root, str(candidate.parent.relative_to(cache_root)))
-                frames, cache = _mesh_restore_scene(directory, fingerprint)
-                print(f"[VNCCS PLY2MESH] Reusing calibrated inputs from a previous export: {directory}", flush=True)
-                break
-        else:
-            raise ValueError("No saved camera scene exists for this PLY. Connect the matching scene once; training is not required")
-    else:
-        _, _, frames = _scene_data(*scene)
-        frames = [dict(frame, size=tuple(frame["rgba"].shape[:2])) for frame in frames]
-        cache = {name: dict(entry) for name, entry in scene[1].items()}
+def _mesh_scene(scene):
+    if not isinstance(scene, (tuple, list)) or len(scene) != 2:
+        raise ValueError("Connect the matching scene from VNCCS Gaussian Camera Reconstruction; disk caches are not used")
+    _, _, frames = _scene_data(*scene)
+    frames = [dict(frame, size=tuple(frame["rgba"].shape[:2])) for frame in frames]
+    cache = {name: dict(entry) for name, entry in scene[1].items()}
     if len(frames) < 2:
         raise ValueError("PLY2MESH requires at least two registered views")
-    digest = hashlib.sha256()
     for frame in frames:
         entry = cache[frame["name"]]
-        if "alpha_uneroded" not in entry or not ("source_png" in entry or "source_path" in entry):
-            raise ValueError("The scene has no original RGB/masks; a matching Camera Reconstruction scene is required")
-        if (not np.isfinite(frame["view"]).all() or not np.isfinite(frame["K"]).all()
-                or frame["K"][0, 0] <= 0 or frame["K"][1, 1] <= 0):
+        view, intrinsic = frame["view"], frame["K"]
+        alpha = entry.get("alpha_uneroded")
+        if (view.shape != (4, 4) or intrinsic.shape != (3, 3)
+                or not np.isfinite(view).all() or not np.isfinite(intrinsic).all()
+                or intrinsic[0, 0] <= 0 or intrinsic[1, 1] <= 0):
             raise ValueError("The scene contains invalid camera matrices")
-        if entry["alpha_uneroded"].shape != frame["size"]:
-            raise ValueError("The scene's masks and frames have different resolutions")
-        source = entry.get("source_png")
-        if source is None:
-            source = Path(entry["source_path"]).read_bytes()
-        digest.update(frame["name"].encode("utf-8"))
-        digest.update(np.ascontiguousarray(frame["view"]).tobytes())
-        digest.update(np.ascontiguousarray(frame["K"]).tobytes())
-        digest.update(source)
-        digest.update(entry["alpha_uneroded"].tobytes())
-    scene_key = digest.hexdigest()
-    directory = safe_join_under(root, scene_key)
-    Path(directory).mkdir(parents=True, exist_ok=True)
-    metadata_path = safe_join_under(directory, "scene.json")
-    if Path(metadata_path).is_file():
-        with open(metadata_path, encoding="utf-8") as handle:
-            metadata = json.load(handle)
-        if metadata.get("version") != 1 or metadata.get("source") != fingerprint or metadata.get("settings") != settings:
-            raise ValueError("Mesh checkpoint metadata is invalid; existing data was preserved")
-    else:
-        records = []
-        for index, frame in enumerate(frames):
-            entry = cache[frame["name"]]
-            source = entry.get("source_png")
-            if source is None:
-                source = Path(entry["source_path"]).read_bytes()
-            with atomic_output_path(safe_join_under(directory, f"source_{index}.png")) as temporary:
-                with open(temporary, "wb") as handle:
-                    handle.write(source)
-            _mesh_save_array(safe_join_under(directory, f"alpha_{index}.npy"), entry["alpha_uneroded"])
-            records.append({"name": frame["name"], "view": frame["view"].tolist(), "K": frame["K"].tolist(),
-                            "size": list(frame["size"]), "depth_unit": float(frame["depth_unit"])})
-        metadata = {"version": 1, "source": fingerprint, "settings": settings,
-                    "voxel_size": voxel_size, "frames": records}
-        with atomic_output_path(metadata_path) as temporary:
-            with open(temporary, "w", encoding="utf-8") as handle:
-                json.dump(metadata, handle)
-    with atomic_output_path(latest) as temporary:
-        with open(temporary, "w", encoding="utf-8") as handle:
-            json.dump(scene_key, handle)
-    return directory, frames, cache
-
-
-def _mesh_save_geometry(mesh, directory):
-    with atomic_output_path(safe_join_under(directory, "geometry.npz")) as temporary:
-        with open(temporary, "wb") as handle:
-            np.savez(handle, positions=np.asarray(mesh.vertices, dtype=np.float32),
-                     faces=np.asarray(mesh.triangles, dtype=np.int32),
-                     normals=np.asarray(mesh.vertex_normals, dtype=np.float32),
-                     colors=np.asarray(mesh.vertex_colors, dtype=np.float32))
-    print(f"[VNCCS PLY2MESH] Saved mesh checkpoint: {directory}", flush=True)
-
-
-def _mesh_load_geometry(directory):
-    import open3d as o3d
-
-    with np.load(safe_join_under(directory, "geometry.npz"), allow_pickle=False) as saved:
-        positions, faces, normals, colors = (saved[name] for name in ("positions", "faces", "normals", "colors"))
-    if (positions.ndim != 2 or positions.shape[1] != 3 or faces.ndim != 2 or faces.shape[1] != 3
-            or not len(faces) or faces.dtype != np.int32 or normals.shape != positions.shape
-            or colors.shape != positions.shape or not np.isfinite(positions).all()
-            or not np.isfinite(normals).all() or not np.isfinite(colors).all()
-            or faces.min() < 0 or faces.max() >= len(positions)):
-        raise ValueError("Saved mesh geometry is invalid; existing data was preserved")
-    mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(positions), o3d.utility.Vector3iVector(faces))
-    mesh.vertex_normals = o3d.utility.Vector3dVector(normals)
-    mesh.vertex_colors = o3d.utility.Vector3dVector(colors)
-    print(f"[VNCCS PLY2MESH] Reusing mesh checkpoint: {len(faces)} triangles", flush=True)
-    return mesh
+        if alpha is None or alpha.shape != frame["size"] or alpha.dtype != np.uint8:
+            raise ValueError("The scene's foreground masks and frames have different resolutions or types")
+    return frames, cache
 
 
 @torch.inference_mode(False)
@@ -2840,12 +2731,11 @@ def _mesh_load_geometry(directory):
 def _ply_to_mesh(path, scene, mesh_resolution, texture_size, alpha_threshold,
                  depth_tolerance, min_component_faces, target_faces,
                  stereo_baseline=0.07, stereo_iterations=10, stereo_lr_threshold=3.0):
-    import folder_paths
+    frames, cache = _mesh_scene(scene)
     import comfy.model_management as management
     try:
         import open3d as o3d
         from comfy_api.latest import Types
-        from comfy_extras.nodes_save_3d import save_glb
         from comfy_extras.nodes_mesh_postprocess import _uv_unwrap
         from comfy_extras.mesh3d.postprocess.qem_decimate import QEMConfig, qem_decimate_simplify
         from .helpers.gaussian_stereo import DLNR
@@ -2861,77 +2751,64 @@ def _ply_to_mesh(path, scene, mesh_resolution, texture_size, alpha_threshold,
     if not np.isfinite(voxel_size) or voxel_size <= 0:
         raise ValueError("The PLY has a degenerate spatial extent")
     weights = _mesh_stereo_weights()
-    settings = {"version": 2, "method": "gs2mesh_dlnr_v1", "weights": file_fingerprint(weights),
-                "alpha_threshold": alpha_threshold, "stereo_baseline": stereo_baseline,
-                "stereo_iterations": stereo_iterations, "stereo_lr_threshold": stereo_lr_threshold}
-    directory, frames, cache = _mesh_checkpoint(path, scene, settings, voxel_size)
     if any(f["size"][0] < 32 or f["size"][1] < 32 for f in frames):
         raise ValueError("DLNR stereo requires images at least 32 pixels wide and high")
     progress, interrupt = _runtime_helpers(3 * len(frames) + 2)
     started = time.perf_counter()
-    print(f"[VNCCS PLY2MESH] GS2Mesh checkpoint: {directory}", flush=True)
-    _mesh_stereo_views(arrays, degree, frames, cache, directory, device, weights,
+    _mesh_stereo_views(arrays, degree, frames, cache, device, weights,
                        stereo_baseline, stereo_iterations, stereo_lr_threshold,
                        alpha_threshold, progress, interrupt)
     del arrays
-    geometry_settings = [2, mesh_resolution, min_component_faces, target_faces]
-    geometry_key = hashlib.sha256(json.dumps(geometry_settings).encode("utf-8")).hexdigest()
-    geometry_dir = safe_join_under(directory, geometry_key)
-    Path(geometry_dir).mkdir(parents=True, exist_ok=True)
-    if Path(safe_join_under(geometry_dir, "geometry.npz")).is_file():
-        mesh = _mesh_load_geometry(geometry_dir)
-    else:
-        volume = _mesh_tsdf_volume(voxel_size)
-        for index, frame in enumerate(frames):
-            interrupt()
-            depth = np.load(Path(directory) / f"depth_{index}.npy", allow_pickle=False)
-            if depth.shape != tuple(frame["size"]) or depth.dtype != np.float32 or not np.isfinite(depth).all() or (depth < 0).any():
-                raise ValueError("Saved stereo depth is invalid; existing checkpoint was preserved")
-            rgb = _mesh_reference_rgb(frame, cache)
-            if rgb.shape[:2] != depth.shape:
-                raise ValueError("Stereo RGB and depth have different resolutions")
-            blocks = _mesh_integrate_frame(volume, frame, depth, rgb, voxel_size)
-            progress.update_absolute(len(frames) + index + 1)
-            print(f"[VNCCS PLY2MESH] GS2Mesh TSDF (CPU): {index + 1}/{len(frames)}, "
-                  f"valid={np.count_nonzero(depth)}, frame_blocks={blocks}, "
-                  f"total_blocks={volume.hashmap().size()}", flush=True)
+    volume = _mesh_tsdf_volume(voxel_size)
+    for index, frame in enumerate(frames):
         interrupt()
-        if not volume.hashmap().size():
-            raise RuntimeError("GS2Mesh stereo produced no valid surface samples; inspect the saved stereo depth")
-        print("[VNCCS PLY2MESH] Extracting fused stereo surface (CPU)", flush=True)
-        mesh = _mesh_extract_surface(volume, voxel_size, interrupt)
-        del volume
-        raw_faces = len(mesh.triangles)
-        print(f"[VNCCS PLY2MESH] Raw mesh: {len(mesh.vertices)} vertices, {raw_faces} triangles", flush=True)
-        if not raw_faces:
-            raise RuntimeError("GS2Mesh TSDF produced no zero-crossing triangles; inspect stereo depth and cameras")
-        mesh.remove_degenerate_triangles()
-        mesh.remove_duplicated_triangles()
-        mesh.remove_duplicated_vertices()
-        if min_component_faces and len(mesh.triangles):
-            labels, counts, _ = mesh.cluster_connected_triangles()
-            mesh.remove_triangles_by_mask(np.asarray(counts)[np.asarray(labels)] < min_component_faces)
-        mesh.remove_unreferenced_vertices()
-        if not len(mesh.triangles):
-            raise RuntimeError(f"Mesh cleanup removed all {raw_faces} triangles; reduce min_component_faces")
-        if target_faces and len(mesh.triangles) > target_faces:
-            print(f"[VNCCS PLY2MESH] GPU decimation: {len(mesh.triangles)} to {target_faces} triangles", flush=True)
-            management.free_memory(len(mesh.triangles) * 1024, device)
-            vertices = torch.as_tensor(np.asarray(mesh.vertices), device=device).float()
-            faces = torch.as_tensor(np.asarray(mesh.triangles), device=device).long()
-            colors = torch.as_tensor(np.asarray(mesh.vertex_colors), device=device).float()
-            vertices, faces, colors, _, _ = qem_decimate_simplify(
-                vertices, faces, int(target_faces), colors=colors, config=QEMConfig())
-            mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(vertices.cpu().numpy()),
-                                              o3d.utility.Vector3iVector(faces.cpu().numpy()))
-            mesh.vertex_colors = o3d.utility.Vector3dVector(colors.cpu().numpy())
-            del vertices, faces, colors
-        mesh.compute_vertex_normals()
-        print(f"[VNCCS PLY2MESH] Mesh: {len(mesh.vertices)} vertices, {len(mesh.triangles)} triangles", flush=True)
-        _mesh_save_geometry(mesh, geometry_dir)
+        depth = cache[frame["name"]]["mesh_depth"]
+        if depth.shape != tuple(frame["size"]) or depth.dtype != np.float32 or not np.isfinite(depth).all() or (depth < 0).any():
+            raise ValueError("Stereo depth is invalid")
+        rgb = _mesh_reference_rgb(frame, cache)
+        if rgb.shape[:2] != depth.shape:
+            raise ValueError("Stereo RGB and depth have different resolutions")
+        blocks = _mesh_integrate_frame(volume, frame, depth, rgb, voxel_size)
+        progress.update_absolute(len(frames) + index + 1)
+        print(f"[VNCCS PLY2MESH] GS2Mesh TSDF (CPU): {index + 1}/{len(frames)}, "
+              f"valid={np.count_nonzero(depth)}, frame_blocks={blocks}, "
+              f"total_blocks={volume.hashmap().size()}", flush=True)
+    interrupt()
+    if not volume.hashmap().size():
+        raise RuntimeError("GS2Mesh stereo produced no valid surface samples; inspect the stereo inputs and cameras")
+    print("[VNCCS PLY2MESH] Extracting fused stereo surface (CPU)", flush=True)
+    mesh = _mesh_extract_surface(volume, voxel_size, interrupt)
+    del volume
+    raw_faces = len(mesh.triangles)
+    print(f"[VNCCS PLY2MESH] Raw mesh: {len(mesh.vertices)} vertices, {raw_faces} triangles", flush=True)
+    if not raw_faces:
+        raise RuntimeError("GS2Mesh TSDF produced no zero-crossing triangles; inspect stereo depth and cameras")
+    mesh.remove_degenerate_triangles()
+    mesh.remove_duplicated_triangles()
+    mesh.remove_duplicated_vertices()
+    if min_component_faces and len(mesh.triangles):
+        labels, counts, _ = mesh.cluster_connected_triangles()
+        mesh.remove_triangles_by_mask(np.asarray(counts)[np.asarray(labels)] < min_component_faces)
+    mesh.remove_unreferenced_vertices()
+    if not len(mesh.triangles):
+        raise RuntimeError(f"Mesh cleanup removed all {raw_faces} triangles; reduce min_component_faces")
+    if target_faces and len(mesh.triangles) > target_faces:
+        print(f"[VNCCS PLY2MESH] GPU decimation: {len(mesh.triangles)} to {target_faces} triangles", flush=True)
+        management.free_memory(len(mesh.triangles) * 1024, device)
+        vertices = torch.as_tensor(np.asarray(mesh.vertices), device=device).float()
+        faces = torch.as_tensor(np.asarray(mesh.triangles), device=device).long()
+        colors = torch.as_tensor(np.asarray(mesh.vertex_colors), device=device).float()
+        vertices, faces, colors, _, _ = qem_decimate_simplify(
+            vertices, faces, int(target_faces), colors=colors, config=QEMConfig())
+        mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(vertices.cpu().numpy()),
+                                          o3d.utility.Vector3iVector(faces.cpu().numpy()))
+        mesh.vertex_colors = o3d.utility.Vector3dVector(colors.cpu().numpy())
+        del vertices, faces, colors
+    mesh.compute_vertex_normals()
+    print(f"[VNCCS PLY2MESH] Mesh: {len(mesh.vertices)} vertices, {len(mesh.triangles)} triangles", flush=True)
     mesh = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
     progress.update_absolute(2 * len(frames) + 1)
-    texture = _mesh_bake_texture(mesh, frames, cache, geometry_dir, texture_size, voxel_size,
+    texture = _mesh_bake_texture(mesh, frames, cache, texture_size, voxel_size,
                                  depth_tolerance, progress, interrupt, 2 * len(frames) + 1)
     interrupt()
     vertices, faces, uvs, normals = _mesh_uv_vertices(mesh)
@@ -2940,14 +2817,9 @@ def _ply_to_mesh(path, scene, mesh_resolution, texture_size, alpha_threshold,
     # Splat renders already contain appearance/lighting; do not shade the baked color twice.
     result = Types.MESH(vertices[None], faces[None], uvs=uvs[None], normals=normals[None], texture=texture_tensor,
                         unlit=True)
-    output = safe_join_under(folder_paths.get_output_directory(), "VNCCS", "Meshes",
-                             f"mesh_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}.glb")
-    with atomic_output_path(output) as target:
-        save_glb(vertices, faces, filepath=target, uvs=uvs, normals=normals,
-                 texture_image=Image.fromarray(texture), unlit=True)
     progress.update_absolute(3 * len(frames) + 2)
-    print(f"[VNCCS PLY2MESH] Saved upright GS2Mesh textured mesh to {output}; elapsed={time.perf_counter() - started:.1f}s", flush=True)
-    return result, output, texture_tensor
+    print(f"[VNCCS PLY2MESH] Upright textured mesh ready in memory; elapsed={time.perf_counter() - started:.1f}s", flush=True)
+    return result, texture_tensor
 
 
 class VNCCSPLY2MESH:
@@ -2957,8 +2829,9 @@ class VNCCSPLY2MESH:
     def INPUT_TYPES(cls):
         return {"required": {
             "ply_path": ("STRING", {"default": "", "tooltip": "Connect native_2dgs_file from a use_2dgs training run. Standard 3DGS/compatibility PLY is not accepted."}),
-            "mesh_resolution": ("INT", {"default": 512, "min": 1, "max": 0x7FFFFFFF, "step": 64, "tooltip": "Voxels across the subject's robust longest extent. Higher values retain finer geometry and need more CPU time/RAM."}),
-            "texture_size": ("INT", {"default": 4096, "min": 1, "max": 0x7FFFFFFF, "step": 1024, "tooltip": "Square texture size. Native ComfyUI UV charting and splat-view baking run on CUDA; atlas packing and GLB encoding use CPU."}),
+            "scene": (GAUSSIAN_SCENE_TYPE, {"tooltip": "Connect the exact camera scene used for this PLY. All intermediate data stays in memory; no disk caches are read or written."}),
+            "mesh_resolution": ("INT", {"default": 512, "min": 1, "max": 0x7FFFFFFF, "step": 1, "tooltip": "Voxels across the subject's robust longest extent. Higher values retain finer geometry and need more CPU time/RAM."}),
+            "texture_size": ("INT", {"default": 4096, "min": 1, "max": 0x7FFFFFFF, "step": 1, "tooltip": "Square texture size. Native ComfyUI UV charting and splat-view baking run on CUDA; atlas packing uses CPU. Mesh and texture are returned in memory; use a separate node to save them."}),
             "alpha_threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Minimum rendered coverage for surface extraction. Higher values remove uncertain surfaces but may create holes."}),
             "depth_tolerance": ("FLOAT", {"default": 0.01, "min": 0.0, "max": 1.0, "step": 0.001, "tooltip": "Relative stereo-depth versus mesh disagreement allowed when baking texture. Occlusion is checked separately against mesh depth."}),
             "min_component_faces": ("INT", {"default": 100, "min": 0, "max": 0x7FFFFFFF, "step": 1, "tooltip": "Remove disconnected components smaller than this triangle count. Zero preserves every component."}),
@@ -2966,12 +2839,10 @@ class VNCCSPLY2MESH:
             "stereo_baseline": ("FLOAT", {"default": 0.07, "min": 0.001, "step": 0.01, "tooltip": "Stereo camera separation as a fraction of orbit radius. GS2Mesh uses 0.07. Larger values increase disparity but also occlusion."}),
             "stereo_iterations": ("INT", {"default": 10, "min": 1, "step": 1, "tooltip": "DLNR recurrent stereo iterations per direction; GS2Mesh default is 10. Runs at full scene resolution without custom CUDA extensions."}),
             "stereo_lr_threshold": ("FLOAT", {"default": 3.0, "min": 0.0, "step": 0.5, "tooltip": "Maximum left/right disparity disagreement in pixels. Lower values reject more uncertain geometry but can leave holes."}),
-        }, "optional": {
-            "scene": (GAUSSIAN_SCENE_TYPE, {"tooltip": "Connect the exact camera scene used for this PLY once. Later exports can restore cameras, RGB, depth and mesh from the persistent checkpoint without this input."}),
         }}
 
-    RETURN_TYPES = ("MESH", "STRING", "IMAGE")
-    RETURN_NAMES = ("mesh", "glb_file", "texture")
+    RETURN_TYPES = ("MESH", "IMAGE")
+    RETURN_NAMES = ("mesh", "texture")
     FUNCTION = "convert"
     CATEGORY = "VNCCS/3D"
     OUTPUT_NODE = True
@@ -3005,7 +2876,7 @@ class VNCCSPLY2MESH:
     def convert(self, ply_path, scene=None, mesh_resolution=512, texture_size=4096,
                 alpha_threshold=0.5, depth_tolerance=0.01, min_component_faces=100, target_faces=500000,
                 stereo_baseline=0.07, stereo_iterations=10, stereo_lr_threshold=3.0):
-        if scene is not None and (not isinstance(scene, (tuple, list)) or len(scene) != 2):
+        if not isinstance(scene, (tuple, list)) or len(scene) != 2:
             raise ValueError("scene must come from VNCCS Gaussian Camera Reconstruction")
         if mesh_resolution < 1 or texture_size < 1 or min_component_faces < 0 or target_faces < 0:
             raise ValueError("Resolutions must be positive; component and simplification counts must be non-negative")

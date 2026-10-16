@@ -131,7 +131,8 @@ def test_fused_backend_does_not_materialize_feature_images_or_host_hit_lists():
         assert forbidden not in source
     assert "surface_forward" in source and "surface_backward" in source
     assert "load_surface_kernels" in source
-    assert "+vz*h.su" in source and "h.depth<near_plane" in source
+    assert "+vz*h.local_u" in source and "+vz*h.sv" in source
+    assert "h.depth<near_plane" in source
 
 
 @pytest.mark.parametrize("variant", ["regular", "background", "invalid_plane", "near_plane", "clipped", "early_stop", "batch", "partial_tiles"])
