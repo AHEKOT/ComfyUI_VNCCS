@@ -1,3 +1,12 @@
+# VNCCS 3.2.5 Changelog
+
+This patch release fixes Character Creator and style preview generation failing on a freshly started ComfyUI server. The changes below are relative to `main` (`3.2.4`).
+
+## Character Creator Preview
+
+- Initialized ComfyUI's preview progress context before every Character Creator and style preview, preventing `PromptServer` from raising `AttributeError: 'PromptServer' object has no attribute 'last_prompt_id'` when preview generation runs before the first queued workflow.
+- The fix applies to Illustrious, Anima, and Qwen Image 2.1 previews without changing saved workflows, generation settings, or output formats.
+
 # VNCCS 3.2.4 Changelog
 
 This patch release fixes Qwen Image 2.1 adapter selection in Character Creator V2 and restores module update notifications in Control Center. The changes below are relative to `main` (`3.2.3`).

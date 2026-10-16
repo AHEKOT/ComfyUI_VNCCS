@@ -1684,6 +1684,7 @@ Example:
 
     def _generate_preview_response(data, style_preview=None):
         try:
+            _ensure_prompt_server_progress_context()
             gen_settings = normalize_gen_settings(data.get("gen_settings", {}))
             char_info = data.get("character_info", {})
             if style_preview is not None:
