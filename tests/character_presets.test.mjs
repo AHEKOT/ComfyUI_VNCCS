@@ -4,6 +4,26 @@ import test from "node:test";
 import { presetGroups, presetSelection } from "../web/character_presets.mjs";
 
 const catalog = JSON.parse(fs.readFileSync(new URL("../character_template/character_presets_v2.json", import.meta.url)));
+const legacy = JSON.parse(fs.readFileSync(new URL("../character_template/character_tags.json", import.meta.url)));
+
+test("the original catalog exposes its exact tags and nested eye and face sections", () => {
+    for (const [field, items] of [
+        ["hair", [...legacy.tags.hair_color, ...legacy.tags.hairstyles]],
+        ["eyes", [...legacy.tags.eyes.colors, ...legacy.tags.eyes.features]],
+        ["face", legacy.tags.eyes.face_characteristics],
+        ["race", legacy.tags.races], ["additional_details", legacy.tags.details],
+    ]) {
+        const groups = presetGroups(legacy, field);
+        assert.deepEqual(groups.flatMap(group => group.items), items);
+        for (const item of items) {
+            const selection = presetSelection("My Custom Trait", groups);
+            selection.toggle(item);
+            assert.equal(selection.value(), `My Custom Trait, ${item.tag.replaceAll("_", " ")}`);
+        }
+    }
+    assert.equal(presetGroups(legacy, "hair").flatMap(group => group.items).some(item => item.tag === "waist-length hair"), false);
+    assert.deepEqual(presetGroups(legacy, "unknown"), []);
+});
 
 test("every catalog category belongs to exactly one form field", () => {
     const fields = ["race", "skin_color", "body", "face", "hair", "eyes", "additional_details"];

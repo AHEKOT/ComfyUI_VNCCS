@@ -1,6 +1,7 @@
 import json
 import re
 import asyncio
+import copy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +15,9 @@ pytest.importorskip("torch")
 creator = _preload_node("character_creator_v2")
 CATALOG_PATH = Path(__file__).parents[1] / "character_template" / "character_styles.json"
 CATALOG = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+ANIMA_CATALOG_PATH = Path(__file__).parents[1] / "character_template" / "anima_styles.json"
+ANIMA_CATALOG = json.loads(ANIMA_CATALOG_PATH.read_text(encoding="utf-8"))
+ANIMA_STYLES = [style for group in ANIMA_CATALOG["groups"] for style in group["styles"]]
 LEGACY_STYLE_IDS = {
         "shonen_anime", "shojo_anime", "seinen_anime", "josei_anime",
         "anime_1970s", "anime_1980s", "anime_1990s", "anime_2000s", "anime_2010s", "anime_2020s",
@@ -59,6 +63,59 @@ def test_style_catalog_resolves_legacy_aliases():
     assert creator.CHARACTER_STYLE_ALIASES == CATALOG["aliases"]
     assert CATALOG["aliases"]["clio_ghibli_style"] == "ghibli_miyazaki"
     assert creator.DEFAULT_CHARACTER_STYLE == CATALOG["default_style"] == "ghibli_miyazaki"
+
+
+def test_anima_catalog_is_used_for_anima_and_illustrious_only():
+    assert creator.ANIMA_STYLE_CATALOG_PATH == str(ANIMA_CATALOG_PATH)
+    assert creator.ANIMA_STYLE_CATALOG == ANIMA_CATALOG
+    assert creator.ANIMA_STYLE_PROMPTS == {style["id"]: style["prompt"] for style in ANIMA_STYLES}
+    assert len(ANIMA_STYLES) == 510
+    assert all(set(style) == {"id", "label", "prompt"} for style in ANIMA_STYLES)
+    assert creator._style_catalog_for_mode("anima") is creator.ANIMA_STYLE_CATALOG
+    assert creator._style_catalog_for_mode("illustrious") is creator.ANIMA_STYLE_CATALOG
+    assert creator._style_catalog_for_mode("qi2") is creator.CHARACTER_STYLE_CATALOG
+    with pytest.raises(ValueError, match="Unsupported generation mode"):
+        creator._style_catalog_for_mode("unknown")
+    first = ANIMA_STYLES[0]
+    positive, _ = creator.CharacterCreatorV2.construct_prompt(_base_info(style=first["id"]), "anima")
+    assert positive.startswith(first["prompt"] + ", ")
+
+
+@pytest.mark.parametrize("mode", ["anima", "illustrious"])
+def test_optional_second_artist_reaches_creator_prompt_without_changing_fields(mode):
+    first, second = ANIMA_STYLES[:2]
+    info = _base_info(style=first["id"], secondary_style={"style": second["id"], "style_prompt": second["prompt"]})
+    original = copy.deepcopy(info)
+    positive, negative = creator.CharacterCreatorV2.construct_creator_prompt(info, mode)
+    assert positive.startswith(first["prompt"] + ", " + second["prompt"] + ", ")
+    body, body_negative = creator.CharacterCreatorV2.construct_creator_prompt(info, mode, include_style=False)
+    assert positive == first["prompt"] + ", " + second["prompt"] + ", " + body
+    assert negative == body_negative
+    assert info == original
+
+
+@pytest.mark.parametrize("extra", [None, {}, {"style": "none"}, {"style": ""}, {"style": []}])
+def test_empty_second_slot_preserves_the_original_single_style_prompt(extra):
+    info = _base_info(style=ANIMA_STYLES[0]["id"])
+    assert creator.CharacterCreatorV2.construct_creator_prompt({**info, "secondary_style": extra}, "anima") == (
+        creator.CharacterCreatorV2.construct_creator_prompt(info, "anima")
+    )
+
+
+def test_secondary_custom_and_saved_user_styles_keep_their_prompts_and_qi2_ignores_them(monkeypatch):
+    info = _base_info(style=ANIMA_STYLES[0]["id"])
+    secondary = {"style": "custom", "custom_style": "(@itomugi-kun:1.5)"}
+    assert creator.CharacterCreatorV2.construct_creator_prompt({**info, "secondary_style": secondary}, "anima")[0].startswith(
+        ANIMA_STYLES[0]["prompt"] + ", (@itomugi-kun:1.5), "
+    )
+    assert creator.CharacterCreatorV2.construct_creator_prompt({**info, "secondary_style": secondary}, "qi2") == (
+        creator.CharacterCreatorV2.construct_creator_prompt(info, "qi2")
+    )
+    user = {"style": "user_" + "a" * 32, "style_prompt": "Saved second style"}
+    monkeypatch.setattr(creator, "load_user_styles", lambda: [])
+    assert creator.CharacterCreatorV2.construct_creator_prompt({**info, "secondary_style": user}, "anima")[0].startswith(
+        ANIMA_STYLES[0]["prompt"] + ", Saved second style, "
+    )
 
 
 @pytest.mark.parametrize("style", STYLES, ids=lambda s: s["id"])
@@ -113,6 +170,14 @@ def test_style_routes_validate_origin_payload_and_expose_live_user_styles(monkey
     monkeypatch.setattr(creator, "load_user_styles", lambda: [user])
     result = asyncio.run(creator.get_character_styles(None))
     assert result.data["groups"][-1] == {"label": "My styles", "styles": [{**user, "image": ""}]}
+    anima_request = SimpleNamespace(rel_url=SimpleNamespace(query={"mode": "anima"}))
+    anima = asyncio.run(creator.get_character_styles(anima_request))
+    assert anima.data["groups"][0]["label"] == "Anima Artist Tags"
+    assert anima.data["groups"][0]["styles"][0]["prompt"] == ANIMA_STYLES[0]["prompt"]
+    illustrious_request = SimpleNamespace(rel_url=SimpleNamespace(query={"mode": "illustrious"}))
+    assert asyncio.run(creator.get_character_styles(illustrious_request)).data["default_style"] == ANIMA_CATALOG["default_style"]
+    invalid_request = SimpleNamespace(rel_url=SimpleNamespace(query={"mode": "unknown"}))
+    assert asyncio.run(creator.get_character_styles(invalid_request)).status == 400
     writes = []
     monkeypatch.setattr(creator, "save_user_style", lambda payload: writes.append(payload) or user)
 

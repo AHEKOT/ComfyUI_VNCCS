@@ -53,7 +53,8 @@ def test_real_preview_path_samples_a_square_at_selected_scale_and_writes_only_we
     def unexpected(*args):
         pytest.fail("Style previews must not write the character PNG cache")
     monkeypatch.setattr(creator, "character_dir", unexpected)
-    info = {"style": "anime_style", "hair": "black hair", "eyes": "blue eyes", "sex": "female", "age": 30, "framing": "full_body"}
+    info = {"style": "anime_style", "hair": "black hair", "eyes": "blue eyes", "sex": "female", "age": 30, "framing": "full_body",
+            "secondary_style": {"style": "custom", "custom_style": "Unwanted mixed thumbnail"}}
     settings = {"generation_mode": mode, "target_size": scale, "seed": 123, "steps": 17, "cfg": 3.5,
                 "sampler": "euler", "scheduler": "normal", "lora_stack": [{"name": "Mine", "strength": .4}], "turbo_enabled": False}
     response = creator._generate_preview_response({"character_info": info, "gen_settings": settings}, style_preview=info["style"])
@@ -68,6 +69,9 @@ def test_real_preview_path_samples_a_square_at_selected_scale_and_writes_only_we
     assert "cowboy_shot" not in encoded[0][0] and "standing, full body" not in encoded[0][0]
     preview_info = encoded[0][2]["character_info"]
     assert preview_info["image_type"] == "Portrait" and "framing" not in preview_info
+    assert preview_info["secondary_style"] is None
+    assert "Unwanted mixed thumbnail" not in encoded[0][0]
+    assert info["secondary_style"]["custom_style"] == "Unwanted mixed thumbnail"
     if mode == "qi2":
         assert "Portrait:" in creator._qi2_character_fields(preview_info)["framing"]
     assert info["framing"] == "full_body" and "image_type" not in info

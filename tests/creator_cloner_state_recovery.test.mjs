@@ -614,8 +614,9 @@ test('Creator ignores context responses from a previous configuration', async ()
 test('corrupt Creator state blocks direct character and style previews before API or disk work', async () => {
     const node = { _vnccsStateRestoreError: 'Cannot restore saved character state.' };
     let picker;
-    const context = createWidgetContext({ node, container: {}, characterStyleCatalog: {}, els: {},
-        state: { character_info: {} }, createStylePicker: options => { picker = options; return { root: {}, customInput: {} }; },
+    const context = createWidgetContext({ node, container: {}, styleCatalogForMode: () => ({}), els: {},
+        state: { character_info: {}, gen_settings: { generation_mode: 'anima' } },
+        createStylePicker: options => { picker = options; return { root: {}, customInput: {} }; },
         setHelpText() {}, helpFor() {}, mediaURL: value => value,
         saveState() { assert.fail('Corrupt character state must not save'); },
         api: { fetchApi() { assert.fail('Corrupt character state must not start API work'); } },

@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
-import { presetGroups, presetSelection } from "../web/character_presets.mjs";
 import { createWidgetContext } from "./widget_context.mjs";
 
 const source = readFileSync(new URL("../web/vnccs_character_creator_v2.js", import.meta.url), "utf8");
+const presetImport = source.match(/import \{ presetGroups, presetSelection \} from "([^"]+)";/)[1];
+const { presetGroups, presetSelection } = await import(new URL(presetImport, new URL("../web/vnccs_character_creator_v2.js", import.meta.url)));
 const common = readFileSync(new URL("../web/vnccs_common.js", import.meta.url), "utf8");
 const guards = common.slice(common.indexOf('export function registerCleanup'), common.indexOf('// ── DOM Widget Width Sync')).replaceAll('export ', '');
 const catalog = JSON.parse(readFileSync(new URL("../character_template/character_presets_v2.json", import.meta.url), "utf8"));
+const legacy = JSON.parse(readFileSync(new URL("../character_template/character_tags.json", import.meta.url), "utf8"));
 const tagTexts = values => values.children.map(chip => chip.attrs["data-tag"] || chip.textContent);
 const block = (start, end) => {
     const offset = source.indexOf(start);
@@ -35,15 +37,20 @@ class Element {
     dispatchEvent(event) { this[`on${event.type}`]?.({ target: this }); }
 }
 
-function setup(info = {}) {
-    const state = { character: "Test", character_info: info, gen_settings: {} };
+function setup(info = {}, { mode = "qi2", cached = true, fetchApi } = {}) {
+    const state = { character: "Test", character_info: info, gen_settings: { generation_mode: mode } };
     const widget = { name: "widget_data", value: "" };
+    const requests = [];
     let modal;
     const context = createWidgetContext({
         state, els: {}, node: { widgets: [widget] }, Event,
         document: { createElement: tag => new Element(tag) },
         setHelpText() {}, helpFor: () => "", syncBackgroundForGenerationMode() {}, saveCurrentGenerationModeValues() {},
-        TAG_DATA: catalog, presetGroups, presetSelection,
+        TAG_DATA: cached ? { creator_v2: catalog } : {}, presetGroups, presetSelection,
+        api: { fetchApi: async (route, options) => {
+            requests.push(route);
+            return fetchApi ? fetchApi(route, options) : { ok: true, json: async () => structuredClone(route.includes("catalog=creator_v2") ? catalog : legacy) };
+        } },
         showModal(title, builder, actions) {
             modal = { title, content: builder({ style: {} }), actions, overlay: { isConnected: true } };
         },
@@ -60,8 +67,74 @@ function setup(info = {}) {
         "this.makeField = createField; this.makeSegmented = createSegmentedField; this.sync = syncCharacterFields; this.wizard = applyCharacterWizardData;" +
         "this.makeBreastSection = () => {" + block("const breastSection =", "traitList.appendChild(breastSection);") + "return breastSection; };", context,
     );
-    return { context, state, widget, modal: () => modal };
+    return { context, state, widget, requests, modal: () => modal };
 }
+
+for (const mode of ["anima", "illustrious"]) {
+    test(`${mode} uses the original preset choices and saves their original tag values`, async () => {
+        const { context, state, widget, requests, modal } = setup({ sex: "female", hair: "My Custom Hair" }, { mode, cached: false });
+        for (const [field, items, chosen] of [
+            ["hair", [...legacy.tags.hair_color, ...legacy.tags.hairstyles], "long_hair"],
+            ["eyes", [...legacy.tags.eyes.colors, ...legacy.tags.eyes.features], "blue_eyes"],
+            ["face", legacy.tags.eyes.face_characteristics, "mole_under_eye"],
+            ["race", legacy.tags.races, "cat_girl"],
+            ["breast_size", legacy.tags.breast_size, "small_breasts"],
+            ["additional_details", legacy.tags.details, "tan_lines"],
+        ]) {
+            const row = context.makeField(field, field);
+            await row.children[2].onclick();
+            const chips = modal().content.children[1].children.filter(child => child.tagName === "button");
+            assert.deepEqual(chips.map(chip => chip.innerText), items.map(item => item.label || item.tag));
+            const item = items.find(item => item.tag === chosen);
+            chips.find(chip => chip.innerText === item.label).onclick();
+            modal().actions.find(action => action.text === "APPLY").action(modal().overlay);
+            const expected = (field === "hair" ? "My Custom Hair, " : "") + chosen.replaceAll("_", " ");
+            assert.equal(state.character_info[field], expected);
+            assert.equal(JSON.parse(widget.value).character_info[field], expected);
+        }
+        assert.deepEqual(requests, ["/vnccs/get_tags"]);
+    });
+
+    test(`${mode} retains skin and build choices introduced after the original catalog`, async () => {
+        const { context, modal } = setup({}, { mode });
+        for (const [field, category] of [["skin_color", "skin_color"], ["body", "body_type"]]) {
+            const row = context.makeField(field, field);
+            await row.children[2].onclick();
+            const chips = modal().content.children[1].children.filter(child => child.tagName === "button");
+            assert.deepEqual(chips.map(chip => chip.innerText), catalog.tags[category].map(item => item.label || item.tag));
+        }
+    });
+}
+
+test("switching QI2, Anima and Illustrious keeps separate preset caches and authored text", async () => {
+    const { context, state, requests, modal } = setup({ hair: "waist-length hair, My Custom Hair" }, { cached: false });
+    const row = context.makeField("Hair", "hair");
+    for (const mode of ["qi2", "anima", "illustrious", "qi2"]) {
+        state.gen_settings.generation_mode = mode;
+        await row.children[2].onclick();
+        const chips = modal().content.children[1].children.filter(child => child.tagName === "button");
+        const expected = presetGroups(mode === "qi2" ? catalog : legacy, "hair").flatMap(group => group.items);
+        assert.deepEqual(chips.map(chip => chip.innerText), expected.map(item => item.label || item.tag));
+        modal().actions.find(action => action.text === "APPLY").action(modal().overlay);
+        assert.equal(state.character_info.hair, "waist-length hair, My Custom Hair");
+    }
+    assert.deepEqual(requests, ["/vnccs/get_tags?catalog=creator_v2", "/vnccs/get_tags"]);
+});
+
+test("a preset catalog response cannot open an old model's picker after switching modes", async () => {
+    let finish;
+    const { context, state, modal } = setup({ hair: "Authored hair" }, {
+        mode: "anima", cached: false,
+        fetchApi: () => new Promise(resolve => { finish = resolve; }),
+    });
+    const row = context.makeField("Hair", "hair");
+    const pending = row.children[2].onclick();
+    state.gen_settings.generation_mode = "qi2";
+    finish({ ok: true, json: async () => legacy });
+    await pending;
+    assert.equal(modal(), undefined);
+    assert.equal(state.character_info.hair, "Authored hair");
+});
 
 test("character traits use label, editable tags and a plus button", () => {
     const info = { race: "human", hair: "black hair, long hair", additional_details: "<img src=x onerror=alert(1)>" };
@@ -269,7 +342,7 @@ test("a tag cross removes only its token, preserves raw remaining text, and neve
     assert.equal(row.children[2].focusOptions.preventScroll, true);
 });
 
-for (const obsolete of ['switch', 'configure', 'removal', 'close']) {
+for (const obsolete of ['switch', 'configure', 'removal', 'close', 'mode']) {
     test(`Creator preset Apply preserves authored fields after ${obsolete}`, async () => {
         const { context, state, widget, modal } = setup({ hair: 'Alice hair' });
         const row = context.makeField('Hair', 'hair');
@@ -278,6 +351,7 @@ for (const obsolete of ['switch', 'configure', 'removal', 'close']) {
         if (obsolete === 'configure') context.invalidate();
         if (obsolete === 'removal') context.node.onRemoved();
         if (obsolete === 'close') modal().overlay.isConnected = false;
+        if (obsolete === 'mode') state.gen_settings.generation_mode = 'anima';
         state.character_info.hair = 'new authored hair';
         context.sync();
         const original = JSON.stringify(state);

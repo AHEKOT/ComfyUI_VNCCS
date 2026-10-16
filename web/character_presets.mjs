@@ -7,13 +7,20 @@ const FIELD_CATEGORIES = {
     eyes: ["eye_color", "eye_features"],
     additional_details: ["details"],
 };
+const LEGACY_FIELD_CATEGORIES = {
+    hair: ["hair_color", "hairstyles"],
+    eyes: ["eyes.colors", "eyes.features"],
+    face: ["eyes.face_characteristics"],
+};
 
 export function presetGroups(catalog, field) {
     const groups = [];
-    for (const category of FIELD_CATEGORIES[field] || []) {
+    const categories = catalog?.tags?.eyes ? LEGACY_FIELD_CATEGORIES[field] || FIELD_CATEGORIES[field] : FIELD_CATEGORIES[field];
+    for (const category of categories || []) {
         const byGroup = new Map();
-        for (const item of catalog?.tags?.[category] || []) {
-            const header = item.group || category.replaceAll("_", " ");
+        const items = category.split(".").reduce((value, key) => value?.[key], catalog?.tags);
+        for (const item of items || []) {
+            const header = item.group || category.replaceAll(".", " ").replaceAll("_", " ");
             if (!byGroup.has(header)) byGroup.set(header, []);
             byGroup.get(header).push(item);
         }

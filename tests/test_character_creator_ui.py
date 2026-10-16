@@ -6,6 +6,9 @@ SOURCE = (Path(__file__).parents[1] / "web" / "vnccs_character_creator_v2.js").r
 STYLE_CATALOG = json.loads(
     (Path(__file__).parents[1] / "character_template" / "character_styles.json").read_text()
 )
+ANIMA_STYLE_CATALOG = json.loads(
+    (Path(__file__).parents[1] / "character_template" / "anima_styles.json").read_text()
+)
 
 
 COMMON = (Path(__file__).resolve().parents[1] / "web" / "vnccs_common.js").read_text(encoding="utf-8")
@@ -48,7 +51,8 @@ def test_style_selector_is_between_framing_and_race_with_custom_first():
     assert SOURCE.index(framing) < SOURCE.index(style) < SOURCE.index(race)
     assert 'style: "none", custom_style: ""' in SOURCE
     assert 'allowNone: () => state.gen_settings.generation_mode !== "qi2"' in SOURCE
-    assert 'api.fetchApi("/vnccs/character_styles")' in SOURCE
+    assert 'api.fetchApi(styleCatalogURL(mode))' in SOURCE
+    assert 'mode === "qi2" ? "qi2" : "anima"' in SOURCE
     assert "createStylePicker({" in SOURCE
     assert "getInfo: () => state.character_info" in SOURCE
 
@@ -57,7 +61,9 @@ def test_style_selector_has_readable_character_focused_options():
     assert ".vnccs-style-gallery" in SOURCE
     assert "grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--vnccs-style-card-size, 182px)), 1fr))" in SOURCE
     assert "white-space: nowrap; overflow: hidden; text-overflow: ellipsis" in SOURCE
-    assert "host: container, catalog: characterStyleCatalog" in SOURCE
+    assert "host: container, catalog: styleCatalogForMode(state.gen_settings.generation_mode)" in SOURCE
+    assert "els.style?.setCatalog?.(styleCatalogForMode(mode))" in SOURCE
+    assert len(ANIMA_STYLE_CATALOG["groups"][0]["styles"]) == 510
 
     labels = {
         style["label"]
