@@ -548,6 +548,7 @@ ${SAKURA_THEME_CSS}
     transform-origin: top left;
     transition: border-color 240ms ease, box-shadow 240ms ease;
 }
+.vnccs-pipe-img.is-entrance-pending { opacity: 0; }
 .vnccs-pipe-img-content { position: absolute; z-index: 1; inset: 4px; width: calc(100% - 8px); height: calc(100% - 8px); object-fit: contain; pointer-events: none; transition: filter 520ms ease, opacity 420ms ease, transform 520ms cubic-bezier(0.22,1,0.36,1); }
 .vnccs-pipe-img.is-waiting .vnccs-pipe-img-content { filter: grayscale(1) saturate(0.15) brightness(0.62); opacity: 0.64; transform: scale(0.992); }
 .vnccs-pipe-img.is-processing .vnccs-pipe-img-content { filter: none; opacity: 1; transform: scale(1); }
@@ -3756,7 +3757,7 @@ class CharacterGeneratorWidget {
         const busy = state.status === "running" || this.regenerateState?.activeStage === this.selectedPreview;
         const missingPosePreviews = this.selectedPreview.endsWith("pose_generation")
             && images.filter(Boolean).length < count;
-        const showPlaceholders = (busy || state.status === "waiting") && !upstream.some(Boolean)
+        const showPlaceholders = !this.isEmotions && (busy || state.status === "waiting") && !upstream.some(Boolean)
             && (missingPosePreviews || this._previewPlaceholderStage === this.selectedPreview);
         const mannequinURL = this.mannequinURL();
         this.previewEl.classList.toggle("is-male-character", mannequinURL === CHARACTER_MANNEQUIN_MALE_URL);
@@ -3819,7 +3820,12 @@ class CharacterGeneratorWidget {
             const source = (targeted && images.length === 1
                 ? (index === activeIndex ? images[0] : tile._previewSource || upstream[index])
                 : images[index] || (!showPlaceholders ? upstream[index] || (busy ? tile._previewSource : null) : null));
-            if (source) this.updatePreviewImage(tile, source);
+            if (source) {
+                if (this.isEmotions && tile._previewEntrancePending && !tile._previewImage) {
+                    tile.classList.add("is-entrance-pending");
+                }
+                this.updatePreviewImage(tile, source);
+            }
             else {
                 this.finishCharacterPreviewTransition(tile);
                 this.finishClothesPreviewTransition(tile);
@@ -3881,13 +3887,15 @@ class CharacterGeneratorWidget {
         this.previewCardEntranceFrame = requestAnimationFrame(() => {
             this.previewCardEntranceFrame = null;
             if (!this.previewGrid?.isConnected || this._disposed) return;
-            const cards = [...this.previewGrid.children].filter(tile => tile._previewEntrancePending);
+            const cards = [...this.previewGrid.children].filter(tile => tile._previewEntrancePending
+                && (!this.isEmotions || !tile._previewSource || tile._previewImage));
             cards.forEach((tile, index) => {
                 tile._previewEntrancePending = false;
                 const motion = this._ui?._playMotion(tile, [
                     { opacity: 0, transform: "translateY(10px) scale(0.97)" },
                     { opacity: 1, transform: "none" },
                 ], 380);
+                tile.classList.toggle("is-entrance-pending", false);
                 motion?.effect?.updateTiming?.({ delay: index * 70, fill: "backwards" });
             });
         });
@@ -4148,6 +4156,7 @@ class CharacterGeneratorWidget {
         }
         if (changed && [...(this.previewGrid?.children || [])].every(tile => tile.dataset.src)) this._previewPlaceholderStage = null;
         if (changed) this.schedulePreviewGridLayout(this.previewGrid);
+        if (changed) this.schedulePreviewCardEntrances();
         if (changed && this.viewer?.open) this.syncViewerImage();
     }
 
