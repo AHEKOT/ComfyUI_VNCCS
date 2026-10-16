@@ -1,4 +1,4 @@
-import { createStylePicker } from "./character_styles.mjs?v=style-mix-2";
+import { createStylePicker } from "./character_styles.mjs?v=style-mix-5";
 import { createSakuraInteractions } from "./sakura_interactions.mjs";
 import { app } from "../../scripts/app.js";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, refreshPreviewImage, watchConnection } from "./vnccs_transport.js";
@@ -146,6 +146,11 @@ ${SAKURA_THEME_CSS}
 
 /* Fields */
 .vnccs-creator-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 6px; flex-shrink: 0; }
+.vnccs-creator-framing-age-row {
+    display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 10px; align-items: start;
+}
+.vnccs-creator-framing-age-row > .vnccs-creator-field { min-width: 0; }
+.vnccs-creator-framing-field .vnccs-creator-select { width: 100%; }
 .vnccs-creator-label {
     color: var(--text-secondary);
     font-size: 10px;
@@ -202,24 +207,35 @@ ${SAKURA_THEME_CSS}
     border-radius: inherit;
 }
 .vnccs-style-summary > .vnccs-style-placeholder { width: 106.4px; flex-shrink: 0; }
-.vnccs-style-selection { display: flex; align-items: stretch; gap: 10px; min-width: 0; }
-.vnccs-style-selection > .vnccs-style-summary { flex: 1; min-width: 0; }
-.vnccs-style-secondary { position: relative; flex: 0 0 88px; min-width: 0; }
+.vnccs-style-selection {
+    display: flex; align-items: stretch; gap: 12px; min-width: 0; padding: 10px;
+    border: 1px solid var(--accent-border); border-radius: 12px; background: var(--bg-surface);
+}
+.vnccs-style-selection > .vnccs-style-summary { flex: 1 1 0; min-width: 0; }
+.vnccs-style-secondary { position: relative; flex: 1 1 0; min-width: 0; }
 .vnccs-style-secondary[hidden], .vnccs-style-secondary-clear[hidden] { display: none; }
+.vnccs-creator-container .vnccs-style-selection > .vnccs-style-summary,
 .vnccs-creator-container .vnccs-style-secondary-trigger {
-    position: relative; display: block; width: 100%; height: 100%; min-height: 88px; padding: 5px;
-    border: 1px dashed var(--accent-border); border-radius: 12px;
-    background: var(--bg-surface); color: var(--text-primary); cursor: pointer;
+    display: flex; align-items: center; gap: 10px; width: 100%; min-height: 88px; padding: 0;
+    border: 0; border-radius: 8px; background: transparent;
+    text-align: left; color: var(--text-primary); cursor: pointer;
 }
-.vnccs-style-secondary-trigger > .vnccs-style-placeholder { width: 100%; height: 100%; min-height: 76px; font-size: 30px; }
+.vnccs-style-secondary-trigger { justify-content: flex-end; height: 100%; }
+.vnccs-style-selection > .vnccs-style-summary > .vnccs-style-placeholder,
+.vnccs-style-secondary-trigger > .vnccs-style-placeholder {
+    width: min(88px, 45%); flex: 0 0 auto;
+}
+.vnccs-style-secondary-trigger > .vnccs-style-placeholder { font-size: 30px; }
+.vnccs-style-selection .vnccs-style-name { overflow-wrap: anywhere; }
 .vnccs-style-secondary-name {
-    position: absolute; inset: auto 5px 5px; padding: 18px 5px 5px;
-    background: linear-gradient(transparent, rgba(0,0,0,.85)); border-radius: 0 0 8px 8px;
-    font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    flex: 1 1 0; min-width: 0; padding-left: 16px; text-align: right;
+    font-size: 14px; font-weight: 600; overflow-wrap: anywhere;
 }
-.vnccs-style-secondary-name:empty { display: none; }
+.vnccs-style-secondary-name[data-empty="true"] {
+    color: var(--text-secondary); font-size: 11px; font-weight: 400; line-height: 1.4;
+}
 .vnccs-creator-container .vnccs-style-secondary-clear {
-    position: absolute; top: -5px; right: -5px; width: 28px; height: 28px; padding: 0;
+    position: absolute; top: 0; right: 0; width: 28px; height: 28px; padding: 0;
     border: 1px solid var(--accent-border); border-radius: 50%; background: var(--bg-primary);
     color: var(--text-primary); font-size: 20px; cursor: pointer;
 }
@@ -4139,11 +4155,16 @@ app.registerExtension({
                     { label: "Male", value: "male" },
                     { label: "Female", value: "female" },
                 ]));
-                colCenter.appendChild(createSlider("Age", "age", 1, 100, 1, state.character_info));
-                colCenter.appendChild(createField("Framing", "framing", "select", [
+                const framingAgeRow = document.createElement("div");
+                framingAgeRow.className = "vnccs-creator-framing-age-row";
+                const framingField = createField("Framing", "framing", "select", [
                     { label: "Cowboy shot", value: "cowboy_shot" },
                     { label: "Full body", value: "Full_body" },
-                ]));
+                ]);
+                framingField.classList.add("vnccs-creator-framing-field");
+                const ageField = createSlider("Age", "age", 1, 100, 1, state.character_info);
+                framingAgeRow.append(framingField, ageField);
+                colCenter.appendChild(framingAgeRow);
                 colCenter.appendChild(createStyleField());
                 const traitList = document.createElement("div");
                 traitList.className = "vnccs-creator-trait-list";

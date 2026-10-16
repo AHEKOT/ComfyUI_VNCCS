@@ -111,7 +111,17 @@ test("custom and unavailable workflows keep their text and style identity", asyn
 test("the optional second slot opens the same library, persists independently and clears back to plus", async () => {
     const info = { style: "legacy", style_prompt: "Legacy prompt", secondary_style: { style: "none" } };
     const ctx = setup(info, undefined, { getSecondaryInfo: () => info.secondary_style });
+    const selection = find(ctx.picker.root, "vnccs-style-selection");
+    assert.equal(find(ctx.picker.root, "vnccs-style-summary").parent, selection);
+    const secondary = find(ctx.picker.root, "vnccs-style-secondary");
+    assert.equal(secondary.parent, selection);
+    assert.equal(secondary.hidden, false);
     const extra = find(ctx.picker.root, "vnccs-style-secondary-trigger");
+    const secondaryName = find(ctx.picker.root, "vnccs-style-secondary-name");
+    assert.equal(extra.children[0], secondaryName);
+    assert.equal(extra.children[1].className, "vnccs-style-placeholder");
+    assert.equal(secondaryName.textContent, "Choose a second style to blend, or leave empty");
+    assert.equal(secondaryName.attrs["data-empty"], "true");
     const clear = find(ctx.picker.root, "vnccs-style-secondary-clear");
     assert.equal(extra.attrs["aria-label"], "Add second style");
     assert.equal(walk(extra).some(el => el.textContent === "+"), true);
@@ -128,6 +138,7 @@ test("the optional second slot opens the same library, persists independently an
     assert.equal(ctx.snapshots.at(-1).secondary_style.style_prompt, "Anime prompt");
     assert.equal(find(ctx.picker.root, "vnccs-style-name").textContent, "Legacy");
     assert.equal(find(ctx.picker.root, "vnccs-style-secondary-name").textContent, "Anime");
+    assert.equal(secondaryName.attrs["data-empty"], "false");
     assert.equal(ctx.document.activeElement, extra);
     assert.equal(extra.attrs["aria-expanded"], "false");
     assert.equal(clear.hidden, false);
@@ -140,6 +151,21 @@ test("the optional second slot opens the same library, persists independently an
     assert.equal(info.secondary_style.style_prompt, "");
     assert.equal(extra.attrs["aria-label"], "Add second style");
     assert.equal(clear.hidden, true);
+    assert.equal(secondaryName.textContent, "Choose a second style to blend, or leave empty");
+});
+
+test("the optional second slot stays hidden until the first style is selected", async () => {
+    const info = { style: "none", secondary_style: { style: "none" } };
+    const ctx = setup(info, undefined, { getSecondaryInfo: () => info.secondary_style });
+    const secondary = find(ctx.picker.root, "vnccs-style-secondary");
+    const extra = find(ctx.picker.root, "vnccs-style-secondary-trigger");
+    assert.equal(secondary.hidden, true);
+    await extra.onclick();
+    assert.equal(find(ctx.host, "vnccs-style-gallery"), undefined);
+    ctx.picker.setValue("legacy");
+    assert.equal(secondary.hidden, false);
+    ctx.picker.setValue("none");
+    assert.equal(secondary.hidden, true);
 });
 
 test("None in the second library clears only the optional style and QI2 can hide that slot", async () => {
@@ -174,6 +200,9 @@ test("None clears the serialized style and is offered only when the caller allow
     assert.equal(find(ctx.picker.root, "vnccs-style-reference").textContent, "No style selected");
     const restored = setup(ctx.snapshots.at(-1), undefined, { allowNone: () => true });
     assert.equal(find(restored.picker.root, "vnccs-style-name").textContent, "None");
+    const oldNone = setup({ style: "none", style_description: "Use the model's native style" });
+    assert.equal(find(oldNone.picker.root, "vnccs-style-description").textContent, "");
+    assert.equal(find(oldNone.picker.root, "vnccs-style-description").hidden, true);
     const qi2 = setup();
     await find(qi2.picker.root, "vnccs-style-summary").onclick();
     assert.equal(walk(qi2.host).some(el => el.textContent === "None"), false);
@@ -185,7 +214,8 @@ test("catalog switching selects model-specific styles and refreshes the matching
     ] }] };
     let route = "/vnccs/character_styles?mode=anima";
     const calls = [];
-    const ctx = setup({ style: "legacy" }, async url => { calls.push(url); return response(anima); }, {
+    const ctx = setup({ style: "legacy", style_description: "Use the model's native style", style_reference: "Stale reference" },
+        async url => { calls.push(url); return response(anima); }, {
         catalogURL: () => route,
     });
     ctx.picker.setCatalog(anima);
@@ -239,16 +269,20 @@ test("Creator bypasses the legacy helper cache and renders only the active model
     });
     for (const mode of ["anima", "qi2", "illustrious"]) {
         context.switchMode(mode);
-        assert.equal(find(ctx.picker.root, "vnccs-style-secondary").hidden, mode === "qi2");
+        const styles = catalogs[mode === "qi2" ? "qi2" : "anima"].groups.flatMap(group => group.styles);
+        assert.equal(find(ctx.picker.root, "vnccs-style-secondary").hidden, true);
+        if (mode !== "qi2") {
+            ctx.picker.setValue(styles[0].id);
+            assert.equal(find(ctx.picker.root, "vnccs-style-secondary").hidden, false);
+        }
         await find(ctx.picker.root, "vnccs-style-summary").onclick();
         const gallery = find(ctx.host, "vnccs-style-gallery");
-        const styles = catalogs[mode === "qi2" ? "qi2" : "anima"].groups.flatMap(group => group.styles);
         assert.equal(find(gallery, "vnccs-style-grid").children.length, styles.length + (mode === "qi2" ? 1 : 2));
         const generate = walk(gallery).find(el => el.textContent === "Generate all previews");
-        assert.equal(generate.hidden, false);
+        assert.equal(generate.hidden, true);
         assert.equal(generate.disabled, false);
         renders.length = 0;
-        assert.equal(await generate.onclick(), true);
+        assert.equal(await ctx.picker.generatePreviews(), true);
         assert.deepEqual(renders.map(body => body.style_id), styles.map(style => style.id));
         assert.ok(renders.every(body => body.gen_settings.generation_mode === mode && body.gen_settings.seed === 123 && body.gen_settings.steps === 25));
         ctx.picker.close();
@@ -371,7 +405,8 @@ test("previews use one immutable settings snapshot and appear before the next re
     const overlay = find(ctx.host, "vnccs-style-gallery");
     const generateAll = walk(overlay).find(el => el.textContent === "Generate all previews");
     assert.ok(generateAll);
-    const pending = generateAll.onclick();
+    assert.equal(generateAll.hidden, true);
+    const pending = ctx.picker.generatePreviews();
     assert.equal(requests.length, 1);
     assert.equal(requests[0].style_id, "legacy");
     payload.character_info.hair = "red hair";
@@ -405,8 +440,8 @@ test("Stop and node removal finish the current image without submitting the next
         await find(ctx.picker.root, "vnccs-style-summary").onclick();
         const overlay = find(ctx.host, "vnccs-style-gallery");
         const generateAll = walk(overlay).find(el => el.textContent === "Generate all previews");
-        const pending = generateAll.onclick();
-        if (remove) ctx.teardown(); else await generateAll.onclick();
+        const pending = ctx.picker.generatePreviews();
+        if (remove) ctx.teardown(); else await ctx.picker.generatePreviews();
         finish(previewResponse("legacy")); await pending;
         assert.equal(requests.length, 1);
         if (!remove) {
@@ -542,7 +577,7 @@ test("Custom style opens all fields and generates only its saved preview with se
     await find(ctx.picker.root, "vnccs-style-summary").onclick();
     const overlay = find(ctx.host, "vnccs-style-gallery");
     const grid = find(overlay, "vnccs-style-grid");
-    assert.equal(walk(overlay).some(el => el.textContent === "Generate all previews"), true);
+    assert.equal(walk(overlay).some(el => el.textContent === "Generate all previews" && !el.hidden), false);
     find(grid, "vnccs-style-card").onclick();
     const editor = find(overlay, "vnccs-style-editor");
     assert.equal(editor.hidden, false); assert.equal(grid.hidden, true);

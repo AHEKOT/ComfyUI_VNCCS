@@ -13,7 +13,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
     };
     const allStyles = () => catalog.groups.flatMap(group => group.styles.map(style => ({ ...style, group: group.label })));
     const custom = { id: "custom", label: "Custom style", description: "Describe your own visual style", reference: "Your prompt", image: catalog.custom_preview || "" };
-    const noStyle = { id: "none", label: "None", description: "Use the model's native style", reference: "", prompt: "" };
+    const noStyle = { id: "none", label: "None", description: "", reference: "", prompt: "" };
     const root = make("div", "vnccs-creator-field");
     root.append(make("div", "vnccs-creator-label", "Style"));
     const trigger = make("button", "vnccs-style-summary");
@@ -34,7 +34,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
     const secondaryThumbnail = make("span", "vnccs-style-placeholder");
     secondaryThumbnail.setAttribute("aria-hidden", "true");
     const secondaryName = make("span", "vnccs-style-secondary-name");
-    secondaryTrigger.append(secondaryThumbnail, secondaryName);
+    secondaryTrigger.append(secondaryName, secondaryThumbnail);
     const clearSecondary = make("button", "vnccs-style-secondary-clear", "×");
     clearSecondary.setAttribute("aria-label", "Remove second style");
     clearSecondary.title = "Remove second style";
@@ -67,6 +67,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
     let updateGallery = () => {};
     let refreshLibrary = () => {};
     let generatePreviews = async () => false;
+    const hasPrimaryStyle = () => !["", "none"].includes(String(getInfo()?.style || "").trim().toLowerCase());
     const paintPreview = (element, style) => {
         element.replaceChildren();
         const fallback = make("span", "", "Preview");
@@ -99,8 +100,8 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         if (!secondary) {
             paintPreview(thumbnail, style);
             name.textContent = style?.label || info.style_label || "Unavailable style";
-            description.textContent = style?.description || info.style_description || (style ? "" : "Saved style; restore its library to edit it");
-            const styleReference = style?.reference || info.style_reference || "";
+            description.textContent = style ? style.description || "" : info.style_description || "Saved style; restore its library to edit it";
+            const styleReference = style ? style.reference || "" : info.style_reference || "";
             reference.textContent = info.style === "none" ? "No style selected" : styleReference ? `Reference: ${styleReference}` : "";
             description.hidden = !description.textContent;
             reference.hidden = !reference.textContent;
@@ -113,8 +114,11 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         if (getSecondaryInfo) {
             const extra = getSecondaryInfo();
             const empty = !extra.style || extra.style === "none";
-            secondarySlot.hidden = !allowSecondary();
-            secondaryName.textContent = empty ? "" : selectedStyle(extra)?.label || extra.style_label || "Unavailable style";
+            secondarySlot.hidden = !allowSecondary() || !hasPrimaryStyle();
+            secondaryName.textContent = empty
+                ? "Choose a second style to blend, or leave empty"
+                : selectedStyle(extra)?.label || extra.style_label || "Unavailable style";
+            secondaryName.setAttribute("data-empty", String(empty));
             if (empty) secondaryThumbnail.replaceChildren(make("span", "", "+"));
             else paintPreview(secondaryThumbnail, selectedStyle(extra));
             secondaryTrigger.setAttribute("aria-label", empty ? "Add second style" : `Choose second style: ${secondaryName.textContent}`);
@@ -153,7 +157,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         for (const animation of [...(motion._motionAnimations || [])]) animation.cancel();
     });
     const open = async (secondary = false) => {
-        if (overlay || disposed || (secondary && (!getSecondaryInfo || !allowSecondary()))) return;
+        if (overlay || disposed || (secondary && (!getSecondaryInfo || !allowSecondary() || !hasPrimaryStyle()))) return;
         editingSecondary = secondary;
         if (!batch) progressMessage = "";
         overlay = make("section", "vnccs-style-gallery");
@@ -179,7 +183,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         const add = make("button", "vnccs-creator-btn", "New style");
         const generateAll = make("button", "vnccs-creator-btn", "Generate all previews");
         generateAll.title = "Render every library style sequentially using current Creator settings and resolution scale. Stop finishes the current image.";
-        generateAll.hidden = !getPreviewPayload;
+        generateAll.hidden = true;
         const dismiss = make("button", "vnccs-creator-btn", "Close");
         dismiss.title = "Close the library and stop after the current preview";
         dismiss.onclick = () => close();

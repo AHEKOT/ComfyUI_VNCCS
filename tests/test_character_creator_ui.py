@@ -34,12 +34,16 @@ def test_resolution_scale_is_persisted_for_every_generation_mode():
     assert "delete profile.resolution_preset" in SOURCE
 
 
-def test_framing_selector_is_between_age_and_race_and_persisted():
+def test_framing_and_age_share_a_content_sized_row_before_race():
     age = 'createSlider("Age", "age", 1, 100, 1, state.character_info)'
     framing = 'createField("Framing", "framing", "select"'
     race = 'createField("Race", "race")'
 
-    assert SOURCE.index(age) < SOURCE.index(framing) < SOURCE.index(race)
+    assert SOURCE.index(framing) < SOURCE.index(age) < SOURCE.index(race)
+    assert 'framingAgeRow.className = "vnccs-creator-framing-age-row"' in SOURCE
+    assert "framingAgeRow.append(framingField, ageField)" in SOURCE
+    assert "grid-template-columns: 132px minmax(0, 1fr)" in SOURCE
+    assert ".vnccs-creator-framing-field .vnccs-creator-select { width: 100%; }" in SOURCE
     assert 'framing: "cowboy_shot"' in SOURCE
 
 
