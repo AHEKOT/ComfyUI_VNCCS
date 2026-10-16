@@ -79,6 +79,7 @@ from ..utils import (
     normalize_filesystem_path,
     safe_join_under,
     staged_image_batch,
+    archive_current_image_batch,
     privileged_route,
     character_storage_lock,
     _link_or_copy,
@@ -2875,6 +2876,15 @@ class VNCCS_CharacterGenerator:
                 final_images = self._replace_batch_item(_load_cached_tensor(cache_dir, "bg_remove"), regenerate_index, final_images)
             self._save_stage(cache_dir, "bg_remove", final_images, normalized=bg_disabled)
             saved_paths = self._save_final_sprites(final_images, sheets_path, character_name, version_existing=not regenerate_from, normalized=bg_disabled)
+            character_root = _character_root_from_sheets_path(sheets_path, character_name)
+            if saved_paths and character_root:
+                original_root = safe_join_under(character_root, "Sprites", "Original")
+                for source_dir in (
+                    safe_join_under(original_root, "Neutral"),
+                    safe_join_under(original_root, "neutral"),
+                    original_root,
+                ):
+                    archive_current_image_batch(source_dir, lock_root=character_root)
             saved_suffix = f"; saved {len(saved_paths)} sprites" if saved_paths else ""
             bg_done = "Chroma key skipped for" if bg_disabled else "Background removed from"
             self._emit(unique_id, "bg_remove", "done", final_images, f"{bg_done} {bg_total} images{saved_suffix}", bg_total, bg_total, cache_dir=cache_dir, preview_paths=saved_paths if bg_disabled else None)
@@ -4410,14 +4420,21 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                     run_positions = [regenerate_index]
                 group_total = len(run_positions)
                 batch_total = max(1, (group_total + batch_size - 1) // batch_size)
+                source_preview_paths = [
+                    str(data_items[group["indices"][position]].get("source_path", "") or "")
+                    for position in run_positions
+                ] if regenerate_index is None else []
                 self._emit(
                     unique_id,
                     bg_stage_key,
                     "running",
+                    images=[] if source_preview_paths else None,
                     message=f"{plan_message}. Starting final {stage_label} generation",
                     current=0,
                     total=group_total,
                     cache_dir=cache_dir,
+                    preview_paths=source_preview_paths or None,
+                    replace_images=bool(source_preview_paths),
                 )
 
                 for batch_number, batch_start in enumerate(range(0, group_total, batch_size), start=1):
@@ -4499,6 +4516,23 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                                 detailer_mask_cache_key,
                                 group_position,
                                 resize_mask_batch(detailer_mask, emotion_target_hw),
+                            )
+
+                        raw_preview = self._emotion_preview_tensor(raw_result)
+                        if raw_preview is not None:
+                            next_position = group_position + 1 if group_position + 1 < group_total else None
+                            self._emit(
+                                unique_id,
+                                bg_stage_key,
+                                "running",
+                                raw_preview,
+                                message=f"Generated {stage_label} image {group_position + 1}/{group_total}; preparing final background",
+                                current=group_position + 1,
+                                total=group_total,
+                                cache_dir=cache_dir,
+                                preview_start=group_position,
+                                replace_images=True,
+                                processing_index=next_position,
                             )
 
                         try:
@@ -4641,8 +4675,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                         group_total,
                         cache_dir=cache_dir,
                         preview_start=batch_positions[0] if batch_positions else batch_start,
-                        append_images=batch_number > 1,
-                        replace_images=regenerate_index is not None,
+                        replace_images=True,
                     )
 
                     records.clear()

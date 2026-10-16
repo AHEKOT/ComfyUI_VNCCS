@@ -17,7 +17,8 @@ from ..utils import (
     load_character_info,
     apply_sex, append_age, generate_seed, build_face_details,
     list_costumes, load_costume_info, ensure_safe_name, safe_join_under,
-    privileged_route, file_fingerprint, config_path, atomic_output_path, character_storage_lock
+    privileged_route, file_fingerprint, config_path, atomic_output_path, character_storage_lock,
+    list_pose_preview_files,
 )
 from .emotion_library import load_emotion_library, save_emotion_library
 from .runtime_cleanup import inference_stage
@@ -632,6 +633,14 @@ class EmotionGeneratorV2:
                 except (TypeError, ValueError, OverflowError) as error:
                     raise ValueError("Selected pose indices must be positive integers in a list.") from error
                 selected_pose_indices.add(index)
+        base_pose_count = len(list_pose_preview_files(character))
+        if base_pose_count:
+            available_pose_indices = set(range(1, base_pose_count + 1))
+            selected_pose_indices = (
+                available_pose_indices
+                if selected_pose_indices is None
+                else selected_pose_indices & available_pose_indices
+            )
         pipe, pipe_seed = build_emotion_pipe(generation_model, generation_settings)
         mode = str(generation_model or "Anima").lower()
         effective_prompt_style = "Anima" if mode == "anima" else "SDXL Style"

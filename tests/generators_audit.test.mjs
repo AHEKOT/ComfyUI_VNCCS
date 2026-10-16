@@ -1281,8 +1281,8 @@ for (const available of [[], ['Bob']]) {
     });
 }
 
-for (const available of [[], ['Naked', 'Shelter'], ['Original']]) {
-    test(`Emotion Studio excludes absent Original and preserves saved user costumes (${available.join(', ') || 'empty'})`, async () => {
+for (const available of [[], ['Naked', 'Coat'], ['Original']]) {
+    test(`Emotion Studio drops saved costumes missing from confirmed inventory (${available.join(', ') || 'empty'})`, async () => {
         class Element {
             constructor() { this.children = []; this.dataset = {}; }
             set innerHTML(value) { this.children = []; }
@@ -1317,9 +1317,9 @@ for (const available of [[], ['Naked', 'Shelter'], ['Original']]) {
         assert.equal(costumes.value, '["Original","Coat"]', 'Rendering before inventory must preserve saved data');
         await context.fetchCharacterData('Alice');
         assert.deepEqual(previewLoads[0], { character: 'Alice', index: 4 });
-        const expected = available.includes('Original') ? ['Original', 'Coat'] : ['Coat'];
+        const expected = ['Original', 'Coat'].filter(costume => available.includes(costume));
         assert.deepEqual([...context.state.selectedCostumes], expected);
-        assert.deepEqual(labels(), [...available, 'Coat (missing sprites)']);
+        assert.deepEqual(labels(), available);
         assert.equal(costumes.value, JSON.stringify(expected));
         context.updateCostumesData();
         assert.equal(costumes.value, JSON.stringify(expected));
@@ -1328,7 +1328,7 @@ for (const available of [[], ['Naked', 'Shelter'], ['Original']]) {
             assert.equal(checkbox.checked, true);
             checkbox.checked = false;
             checkbox.onchange();
-            assert.equal(costumes.value, '["Coat"]');
+            assert.equal(costumes.value, '[]');
         }
         costumes.value = '["Original","Coat"]';
         context.api.fetchApi = async () => ({ ok: false, status: 503 });
@@ -1338,7 +1338,7 @@ for (const available of [[], ['Naked', 'Shelter'], ['Original']]) {
 }
 
 for (const removed of [false, true]) {
-    test(`Emotion Studio preview preserves selected poses and ignores removal (${removed})`, async () => {
+    test(`Emotion Studio preview drops selected poses hidden beyond the current base set and ignores removal (${removed})`, async () => {
         const cleanups = [], loaders = [], settings = { name: 'generation_settings', value: '{}' };
         const state = { character: 'Alice', gen: { generation_mode: 'anima', seed: 1 },
             selectedPoseIndices: new Set([2, 7]), poseCount: 0 };
@@ -1369,12 +1369,13 @@ for (const removed of [false, true]) {
         assert.equal(loaders.length, 1);
         if (removed) { context.disposed = true; cleanups.forEach(cleanup => cleanup()); }
         loaders[0].onload();
-        assert.deepEqual([...state.selectedPoseIndices], [2, 7]);
+        assert.deepEqual([...state.selectedPoseIndices], removed ? [2, 7] : [2]);
         if (removed) {
             assert.equal(settings.value, '{}');
             assert.equal(state.poseCount, 0);
         } else {
-            assert.deepEqual(JSON.parse(settings.value).selected_pose_indices, [2, 7]);
+            assert.deepEqual([...state.selectedPoseIndices], [2]);
+            assert.deepEqual(JSON.parse(settings.value).selected_pose_indices, [2]);
             assert.equal(context.selectedPoseCount(), 1);
         }
     });

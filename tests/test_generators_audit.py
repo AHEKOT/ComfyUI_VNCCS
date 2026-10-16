@@ -241,6 +241,62 @@ def test_emotion_background_regeneration_preserves_the_generated_face_crop(tmp_p
         assert opened.size == (4, 4)
 
 
+def test_emotion_generation_previews_selected_sources_then_reveals_each_result(tmp_path, monkeypatch):
+    from PIL import Image
+
+    output = tmp_path / "output"
+    root = output / "VNCCS" / "Characters" / "Alice"
+    monkeypatch.setattr(generator.folder_paths, "get_output_directory", lambda: str(output))
+    node = generator.VNCCS_EmotionsGenerator()
+    timeline = []
+
+    def emit(*args, **kwargs):
+        images = kwargs.get("images", args[3] if len(args) > 3 else None)
+        message = kwargs.get("message", args[4] if len(args) > 4 else "")
+        if kwargs.get("preview_paths"):
+            timeline.append(("sources", list(kwargs["preview_paths"])))
+        elif torch.is_tensor(images) and message.startswith("Generated "):
+            timeline.append(("preview", kwargs["preview_start"]))
+
+    monkeypatch.setattr(node, "_emit", emit)
+    monkeypatch.setattr(node, "_emotion_batch_plan", lambda *args, **kwargs: {
+        "batch_size": 3, "requested": 3, "gpu_limit": 3, "ram_limit": 3,
+        "free_vram_gib": 0, "total_vram_gib": 0,
+    })
+    monkeypatch.setattr(node, "_run_emotion_bg_remove", lambda images, *args, **kwargs: images)
+    generated = 0
+
+    def generate(image, *args, **kwargs):
+        nonlocal generated
+        timeline.append(("generate", generated))
+        generated += 1
+        return image, image[:, :4, :4], torch.ones(1, 8, 8)
+
+    monkeypatch.setattr(node, "_run_emotion_generation_one", generate)
+    source_paths = []
+    for index in range(1, 4):
+        path = root / "Sprites" / "Coat" / "Neutral" / f"sprite_pose_{index:04d}.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (8, 8), (index * 20,) * 3).save(path)
+        source_paths.append(str(path))
+    prefix = root / "Sprites" / "Coat" / "smile" / "sprite_smile_"
+    tasks = [{
+        "character": "Alice", "costume": "Coat", "emotion": "smile",
+        "emotion_prompt": "smile", "sprite_index": index,
+        "source_path": path, "sprite_output_path": str(prefix),
+    } for index, path in enumerate(source_paths, start=1)]
+    state = {"character_name": "Alice", "emotion_pairs": [{"costume": "Coat", "emotion": "smile"}]}
+
+    node.process([], object(), tasks, widget_data=json.dumps(state), unique_id="progressive")
+
+    assert timeline[:7] == [
+        ("sources", source_paths),
+        ("generate", 0), ("preview", 0),
+        ("generate", 1), ("preview", 1),
+        ("generate", 2), ("preview", 2),
+    ]
+
+
 def test_normal_emotion_run_prunes_excluded_tasks_only_after_success(tmp_path, monkeypatch):
     root = tmp_path / "VNCCS" / "Characters" / "Alice"
     monkeypatch.setattr(generator.folder_paths, "get_output_directory", lambda: str(tmp_path))

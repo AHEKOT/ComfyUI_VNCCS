@@ -203,10 +203,11 @@ def test_invalid_emotion_pose_selection_fails_before_models_and_keeps_authored_d
     assert authored.read_bytes() == b"authored pose must not be replaced by a truncated index"
 
 
-@pytest.mark.parametrize("indices,expected", [(None, list(range(1, 11))), ([], []),
-    ([1, 2], [1, 2]), (["2", "1_0"], [2, 10]), ([2.0], [2])])
+@pytest.mark.parametrize("indices,base_count,expected", [(None, 0, list(range(1, 11))), ([], 0, []),
+    ([1, 2], 0, [1, 2]), (["2", "1_0"], 0, [2, 10]), ([2.0], 0, [2]),
+    ([1, 4, 5], 4, [1, 4]), (None, 4, [1, 2, 3, 4])])
 def test_valid_emotion_pose_selection_builds_only_the_authored_tasks(
-    emotion_module, monkeypatch, tmp_path, indices, expected,
+    emotion_module, monkeypatch, tmp_path, indices, base_count, expected,
 ):
     monkeypatch.setattr(emotion_module.EmotionGeneratorV2, "_setup_emotions_data", classmethod(lambda cls:
         {"smile": {"description": "soft smile", "natural_prompt": "", "key": "Smile"}}))
@@ -218,6 +219,7 @@ def test_valid_emotion_pose_selection_builds_only_the_authored_tasks(
     monkeypatch.setattr(emotion_module, "costume_has_source_sprites", lambda *args: True)
     paths = [str(tmp_path / f"sprite_pose_{index:04d}.png") for index in range(1, 11)]
     monkeypatch.setattr(emotion_module, "list_costume_sprite_paths", lambda *args: paths)
+    monkeypatch.setattr(emotion_module, "list_pose_preview_files", lambda *args: paths[:base_count])
     settings = json.dumps({"selected_pose_indices": indices})
     _, pipe, tasks = emotion_module.EmotionGeneratorV2().generate_emotions_v2(
         character="Alice", costumes_data='["Coat"]', emotions_data='["smile"]', generation_settings=settings,

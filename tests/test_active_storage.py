@@ -120,6 +120,31 @@ def test_successful_publication_versions_current_and_preserves_archives(tmp_path
     assert list(tmp_path.iterdir()) == [target]
 
 
+def test_archive_current_image_batch_retires_only_active_images(tmp_path):
+    target = tmp_path / "Original" / "Neutral"
+    (target / "V1").mkdir(parents=True)
+    (target / "V1" / "first.png").write_bytes(b"first")
+    (target / "old.png").write_bytes(b"old")
+
+    assert utils.archive_current_image_batch(str(target), lock_root=str(tmp_path)) is True
+    assert (target / "V1" / "first.png").read_bytes() == b"first"
+    assert (target / "V2" / "old.png").read_bytes() == b"old"
+    assert not list(target.glob("*.png"))
+    assert utils.archive_current_image_batch(str(target), lock_root=str(tmp_path)) is False
+    assert not (target / "V3").exists()
+
+
+def test_base_generator_retires_original_only_after_publishing_naked():
+    source = (Path(__file__).resolve().parents[1] / "nodes" / "character_generator.py").read_text(encoding="utf-8")
+    base_process, clone_source = source.split('@logged_operation("CharacterGenerator", "generate")', 1)[1].split(
+        "class VNCCS_CharacterCloneGenerator", 1
+    )
+    publish = base_process.index("saved_paths = self._save_final_sprites(")
+    retire = base_process.index("archive_current_image_batch(")
+    assert publish < retire
+    assert "archive_current_image_batch(" not in clone_source.split("class VNCCS_ClothesGenerator", 1)[0]
+
+
 def test_regeneration_retains_other_current_images(tmp_path):
     target = tmp_path / "Neutral"
     target.mkdir()

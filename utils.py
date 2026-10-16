@@ -307,6 +307,24 @@ def staged_image_batch(target_dir, *, version_existing=True, lock_root=None):
             # A failed rollback leaves its backup in place for recovery.
 
 
+def archive_current_image_batch(target_dir, *, lock_root=None):
+    """Move current images into the next V* archive without publishing replacements."""
+    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+    with character_storage_lock(lock_root or target_dir):
+        if not os.path.isdir(target_dir):
+            return False
+        current_images = [
+            name for name in os.listdir(target_dir)
+            if os.path.isfile(os.path.join(target_dir, name))
+            and os.path.splitext(name)[1].lower() in image_exts
+        ]
+        if not current_images:
+            return False
+        with staged_image_batch(target_dir, lock_root=lock_root):
+            pass
+    return True
+
+
 def validate_costume_info(info):
     """Validate supported costume fields while preserving extension metadata."""
     if not isinstance(info, dict):
