@@ -2486,6 +2486,13 @@ class CharacterCreatorV2:
                      log_event("fallback", component="Creator", level="warning", message=f'Pose Preview Fallback Failed. Regenerating...')
 
         if image is None:
+            try:
+                server.PromptServer.instance.send_sync(
+                    "vnccs.preview.generation_started",
+                    {"node_id": unique_id, "character": character_name},
+                )
+            except Exception as e:
+                log_event('warning', component='Creator', level='warning', message=f'Failed to notify preview generation start: {e}', error=str(e))
             log_event("preview_generation", component="Creator", character=character_name, mode=generation_mode)
             stage = "preparing generation"
             log_stage(stage)

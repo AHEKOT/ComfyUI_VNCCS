@@ -44,7 +44,8 @@ test("Creator generation uses the gender mannequin, then reveals the new preview
     const placeholder = { style: {} };
     const els = {
         generationLayer: layer, generationBase: animated(), generationNew: animated(), generationScan: animated(),
-        previewFrame: frame, previewImg: preview, placeholder, _ui: {},
+        previewFrame: frame, previewImg: preview, placeholder,
+        _ui: { presentPreview(image, empty, src) { image.src = src; image.style.display = "block"; empty.style.display = "none"; } },
     };
     const node = { id: 7 };
     const context = vm.createContext({
@@ -86,15 +87,22 @@ test("Creator generation uses the gender mannequin, then reveals the new preview
     assert.equal(frame["aria-busy"], undefined);
     assert.notEqual(first, second);
 
-    listeners.get("executing")({ detail: { node: 7 } });
+    assert.equal(listeners.has("executing"), false, "A cache-only workflow must not start a fake generation animation");
+    listeners.get("vnccs.preview.generation_started")({ detail: { node_id: 7, character: "Kai" } });
     assert.equal(layer.hidden, false, "A normal workflow run must start the same preview animation");
-    listeners.get("executed")({ detail: { node: 7 } });
+    const animationCount = animations.length;
     const workflowReveal = node._vnccsRevealWorkflowPreview("Kai");
-    await new Promise(resolve => setImmediate(resolve));
-    completions.splice(0).forEach(resolve => resolve());
-    await new Promise(resolve => setImmediate(resolve));
-    finishPreviewDecode();
     assert.equal(await workflowReveal, true);
     assert.equal(preview.src.includes("/vnccs/get_cached_preview?character=Kai"), true);
     assert.equal(layer.hidden, true);
+    assert.equal(animations.length, animationCount, "Workflow handoff must not overlap pose generation with a reveal animation");
+
+    const previousPreview = preview.src;
+    listeners.get("vnccs.preview.generation_started")({ detail: { node_id: 7, character: "Kai" } });
+    listeners.get("execution_interrupted")({ detail: { node_id: 99 } });
+    assert.equal(layer.hidden, true, "Interrupted workflow hides the generation animation");
+    assert.equal(preview.src, previousPreview, "Interrupted workflow keeps the previous preview");
+    assert.equal(preview.style.display, "block");
+    assert.equal(frame["aria-busy"], undefined);
+    assert.doesNotMatch(source, /\.vnccs-creator-generation-layer\.is-interrupted/);
 });

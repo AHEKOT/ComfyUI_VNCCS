@@ -159,6 +159,7 @@ class TestProcessConfigSave:
     """Test the config-building logic in process() without model loading."""
 
     def test_info_fields_saved_to_config(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
         import utils as U
         monkeypatch.setattr(U, "base_output_dir", lambda: str(tmp_path))
 
@@ -187,10 +188,13 @@ class TestProcessConfigSave:
 
         def stop_at_model_boundary(settings):
             raise RuntimeError("Test model boundary reached")
+        events = []
+        prompt_server = SimpleNamespace(send_sync=lambda name, payload: events.append((name, payload)))
+        monkeypatch.setattr(cc_mod, "server", SimpleNamespace(PromptServer=SimpleNamespace(instance=prompt_server)))
         monkeypatch.setattr(cc_mod, "load_generation_assets", stop_at_model_boundary)
         node = CharacterCreatorV2()
         with pytest.raises(RuntimeError, match="Test model boundary reached"):
-            node.process(widget_data=widget_data)
+            node.process(widget_data=widget_data, unique_id="7")
 
         config = utils.load_config("TestChar")
         assert config is not None, "Config was not saved before model loading"
@@ -199,6 +203,7 @@ class TestProcessConfigSave:
         assert config["character_info"]["name"] == "TestChar"
         assert config["character_info"]["seed"] == 12345
         assert "costumes" in config
+        assert events == [("vnccs.preview.generation_started", {"node_id": "7", "character": "TestChar"})]
 
 
 class TestGenerationModes:

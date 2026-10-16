@@ -1593,8 +1593,28 @@ class CharacterGeneratorWidget {
             this.renderChain();
             this.saveBrowserState();
         };
+        this.onExecutionInterrupted = () => {
+            if (this._disposed) return;
+            const regenerateStage = this.regenerateState?.activeStage;
+            let changed = false;
+            for (const [key, state] of Object.entries(this.stageState)) {
+                if (state.status !== "running" && key !== regenerateStage) continue;
+                this.stageState[key] = { ...state, status: "waiting", message: "Stopped" };
+                changed = true;
+            }
+            if (!changed && !this.regenerateState) return;
+            this._interruptedProgressRunId = this._activeProgressRunId;
+            this._pendingAutoPreviewStage = null;
+            this.finishRegenerate({ render: false });
+            if (this.viewer?.open) this.syncViewerImage();
+            this.renderPreview();
+            this.renderChain();
+            this.saveBrowserState();
+        };
         api.addEventListener("vnccs.character_generator.stage", this.onStage);
+        api.addEventListener("execution_interrupted", this.onExecutionInterrupted);
         registerCleanup(this.node, () => api.removeEventListener("vnccs.character_generator.stage", this.onStage));
+        registerCleanup(this.node, () => api.removeEventListener("execution_interrupted", this.onExecutionInterrupted));
         watchConnection(this.node, () => this.refreshProgress(), registerCleanup);
         const timer = setInterval(() => {
             if (document.visibilityState !== "hidden") {
@@ -2722,6 +2742,7 @@ class CharacterGeneratorWidget {
             }
             if (snapshot.scope !== scope || String(snapshot.node_id) !== String(this.node.id)) return;
             if (!this.acceptsProgressRequest(snapshot.request_id)) return;
+            if (snapshot.run_id && snapshot.run_id === this._interruptedProgressRunId) return;
             if (this._progressScope === scope && this._progressEpoch === snapshot.epoch && snapshot.revision < (this._progressRevision || 0)) return;
             const previousView = this.progressViewKey();
             this._progressScope = scope;

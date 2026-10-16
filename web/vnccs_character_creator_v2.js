@@ -4992,25 +4992,39 @@ app.registerExtension({
                     clearPreviewHandlers();
                     hideSpriteNav();
                     setPreviewLoading(false);
-                    workflow.promise = (async () => {
-                        const presented = await revealGeneratedPreview(cacheUrl, character, workflow.revision);
-                        if (!presented || !currentRequest() || state.character !== character) return false;
+                    workflow.promise = Promise.resolve().then(() => {
+                        if (!currentRequest() || state.character !== character) return false;
+                        if (els._ui) els._ui.presentPreview(els.previewImg, els.placeholder, cacheUrl, character);
+                        else {
+                            els.previewImg.src = cacheUrl;
+                            els.previewImg.style.display = "block";
+                            els.placeholder.style.display = "none";
+                        }
                         state.preview_valid = true;
                         state.preview_source = "gen";
+                        stopPreviewGeneration(workflow.revision);
                         saveState(true);
                         return true;
-                    })();
+                    });
                     return workflow.promise;
                 };
                 const workflowPreviewStartHandler = event => {
-                    const executingNode = event.detail?.node ?? event.detail;
-                    if (String(executingNode) === String(node.id)) node._vnccsStartWorkflowPreview();
+                    const detail = event.detail || {};
+                    if (String(detail.node_id) === String(node.id) && detail.character === state.character) {
+                        node._vnccsStartWorkflowPreview();
+                    }
                 };
                 const workflowPreviewFailureHandler = event => {
                     const failedNode = event.detail?.node_id ?? event.detail?.node;
                     if (workflowPreviewGeneration && (failedNode == null || String(failedNode) === String(node.id))) {
                         stopPreviewGeneration(workflowPreviewGeneration.revision, true);
                     }
+                };
+                const workflowPreviewInterruptedHandler = () => {
+                    if (!workflowPreviewGeneration) return;
+                    beginPreviewRequest();
+                    setPreviewLoading(false);
+                    stopPreviewGeneration(undefined, true);
                 };
                 const workflowPreviewCompleteHandler = event => {
                     const executedNode = event.detail?.node ?? event.detail;
@@ -5021,15 +5035,15 @@ app.registerExtension({
                         if (state.character === character) tryCachePreview(character);
                     });
                 };
-                api.addEventListener("executing", workflowPreviewStartHandler);
+                api.addEventListener("vnccs.preview.generation_started", workflowPreviewStartHandler);
                 api.addEventListener("executed", workflowPreviewCompleteHandler);
                 api.addEventListener("execution_error", workflowPreviewFailureHandler);
-                api.addEventListener("execution_interrupted", workflowPreviewFailureHandler);
+                api.addEventListener("execution_interrupted", workflowPreviewInterruptedHandler);
                 registerCleanup(node, () => {
-                    api.removeEventListener("executing", workflowPreviewStartHandler);
+                    api.removeEventListener("vnccs.preview.generation_started", workflowPreviewStartHandler);
                     api.removeEventListener("executed", workflowPreviewCompleteHandler);
                     api.removeEventListener("execution_error", workflowPreviewFailureHandler);
-                    api.removeEventListener("execution_interrupted", workflowPreviewFailureHandler);
+                    api.removeEventListener("execution_interrupted", workflowPreviewInterruptedHandler);
                     delete node._vnccsStartWorkflowPreview;
                     delete node._vnccsRevealWorkflowPreview;
                 });
