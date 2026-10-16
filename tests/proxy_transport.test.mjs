@@ -400,7 +400,7 @@ test('snapshot recovery follows the latest stage while preserving explicit previ
     }
 });
 
-test('Clothes snapshot keeps source sprites visible while the source upscaler runs', async () => {
+test('Clothes snapshot follows the source upscaler without exposing source poses as results', async () => {
     const h = generator();
     Object.assign(h.widget, {
         isClothes: true,
@@ -417,12 +417,12 @@ test('Clothes snapshot keeps source sprites visible while the source upscaler ru
         scope: h.widget.progressScope(), node_id: '5', revision: 1, epoch: 'server',
         stages: {
             source_upscaler: { status: 'running', images: ['source'] },
-            pose_generation: { status: 'waiting', images: ['base-1', 'base-2'], current: 0, total: 2 },
+            pose_generation: { status: 'waiting', current: 0, total: 2 },
         },
     } });
     await h.widget.refreshProgress();
-    assert.equal(h.widget.selectedPreview, 'pose_generation');
-    assert.deepEqual(Array.from(h.widget.stageState.pose_generation.images), ['base-1', 'base-2']);
+    assert.equal(h.widget.selectedPreview, 'source_upscaler');
+    assert.equal(h.widget.stageState.pose_generation.images, undefined);
 });
 
 test('unchanged or absent idle snapshots do not rebuild interactive preview DOM', async () => {

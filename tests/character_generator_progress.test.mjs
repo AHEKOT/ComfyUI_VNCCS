@@ -161,7 +161,7 @@ test("single-image regeneration replaces its preview without dropping siblings",
     assert.deepEqual(Array.from(widget.stageState[stage].images), ["first", "second-new", "third"]);
 });
 
-test("Clothes Generator keeps source sprites selected and marks finished outfits for a scan reveal", () => {
+test("Clothes Generator shows its active stage without publishing source poses as results", () => {
     const { widget, listeners } = setup("source_upscaler");
     widget.isClothes = true;
     widget._clothesRevealIndices = new Set();
@@ -174,12 +174,12 @@ test("Clothes Generator keeps source sprites selected and marks finished outfits
     } });
 
     emit({ stage: "source_upscaler", current: 0, total: 1, images: ["source"] });
-    assert.equal(widget.selectedPreview, "pose_generation");
-    emit({ stage: "pose_generation", status: "waiting", current: 0, total: 2, images: ["base-1", "base-2"] });
-    emit({ stage: "pose_generation", current: 0, total: 2, images: ["base-1", "base-2"] });
+    assert.equal(widget.selectedPreview, "source_upscaler");
+    emit({ stage: "pose_generation", status: "waiting", current: 0, total: 2 });
+    emit({ stage: "pose_generation", current: 0, total: 2 });
     emit({ stage: "pose_generation", current: 1, total: 2, images: ["clothed-1"], preview_start: 0, replace_images: true });
 
-    assert.deepEqual(Array.from(widget.stageState.pose_generation.images), ["clothed-1", "base-2"]);
+    assert.deepEqual(Array.from(widget.stageState.pose_generation.images), ["clothed-1"]);
     assert.deepEqual(Array.from(widget._clothesRevealIndices), [0]);
 });
 

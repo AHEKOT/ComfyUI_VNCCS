@@ -67,11 +67,12 @@ def test_normal_and_nested_clothes_previews_keep_existing_selection_order(clothe
     assert clothes_paths.get_latest_sprite_path("Alice", "Naked") == str(nested / file.name)
 
 
-def test_archive_timestamps_cannot_select_an_old_reference(clothes_paths):
+@pytest.mark.parametrize("archive_name", ["V1", "V2", "V21", "v999"])
+def test_archive_sprites_never_become_a_clothes_reference(clothes_paths, archive_name):
     import os
     neutral = Path(utils.character_dir("Alice")) / "Sprites" / "Naked" / "Neutral"
-    (neutral / "V1").mkdir(parents=True)
-    current, archive = neutral / "pose.png", neutral / "V1" / "pose.png"
+    (neutral / archive_name).mkdir(parents=True)
+    current, archive = neutral / "pose.png", neutral / archive_name / "pose.png"
     current.write_bytes(b"current")
     archive.write_bytes(b"archive")
     os.utime(current, (1000, 1000))
@@ -80,6 +81,23 @@ def test_archive_timestamps_cannot_select_an_old_reference(clothes_paths):
     assert clothes_paths.list_preview_sprite_files("Alice") == utils.list_pose_preview_files("Alice") == [str(current)]
     current.unlink()
     assert clothes_paths.get_latest_sprite_path("Alice") is None
+    assert clothes_paths.list_preview_sprite_files("Alice") == utils.list_pose_preview_files("Alice") == []
+    assert clothes_paths.ClothesDesigner.reference_sprite_path("Alice") is None
+
+
+@pytest.mark.parametrize(("character", "costume"), [("V1", "Naked"), ("Alice", "V1")])
+def test_version_like_character_and_costume_names_remain_selectable(clothes_paths, character, costume):
+    neutral = Path(utils.character_dir(character)) / "Sprites" / costume / "Neutral"
+    current = neutral / "pose.png"
+    archived = neutral / "V2" / "pose.png"
+    for path in (current, archived):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(path.parent.name.encode())
+
+    assert character in utils.list_characters()
+    assert costume in utils.list_costumes(character)
+    assert clothes_paths.get_latest_sprite_path(character, costume) == str(current)
+    assert clothes_paths.list_preview_sprite_files(character, costume) == [str(current)]
 
 
 @pytest.mark.parametrize("link_kind", ["file", "neutral_directory"])
@@ -113,6 +131,25 @@ def test_clothes_latest_preview_skips_unsafe_neutral_directory(clothes_paths, tm
     (costume / "Neutral").symlink_to(outside, target_is_directory=True)
     assert clothes_paths.get_latest_sprite_path("Alice", "Naked") == str(valid)
     assert clothes_paths.ClothesDesigner.reference_sprite_path("Alice") == str(valid)
+
+
+def test_clothes_reference_never_uses_an_existing_costume_sprite(clothes_paths):
+    sprites = Path(utils.character_dir("Alice")) / "Sprites"
+    naked = sprites / "Naked" / "Neutral"
+    original = sprites / "Original" / "Neutral"
+    dress = sprites / "Dress" / "Neutral"
+    for directory in (naked, original, dress):
+        directory.mkdir(parents=True)
+    naked_paths = [naked / "pose_1.png", naked / "pose_2.png"]
+    for path in (*naked_paths, original / "pose.png", dress / "pose.png"):
+        path.write_bytes(path.parent.name.encode())
+
+    selected = {"selected_preview_sprite": {"character": "Alice", "costume": "Dress", "index": 1}}
+    assert clothes_paths.ClothesDesigner.reference_sprite_path("Alice", selected) == str(naked_paths[1])
+
+    for path in naked_paths:
+        path.unlink()
+    assert clothes_paths.ClothesDesigner.reference_sprite_path("Alice", selected) == str(original / "pose.png")
 
 
 def test_clothes_reference_tensor_uses_displayed_exif_orientation(clothes_paths, monkeypatch, tmp_path):

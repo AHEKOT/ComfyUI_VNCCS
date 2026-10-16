@@ -23,6 +23,7 @@ from typing import Optional, Dict, Any, List, Tuple
 EMOTIONS = ["neutral"]
 MAIN_DIRS = ["Sprites", "Faces", "Sheets"]
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,120}$")
+SPRITE_ARCHIVE_DIR_RE = re.compile(r"^V[0-9]+$", re.IGNORECASE)
 PRIVILEGED_REQUEST_HEADER = "X-VNCCS-CSRF"
 PRIVILEGED_REQUEST_VALUE = "1"
 _STORAGE_LOCKS = tuple(threading.RLock() for _ in range(64))
@@ -74,6 +75,11 @@ def ensure_safe_name(value: str, field: str = "name") -> str:
     if not SAFE_NAME_RE.match(value):
         raise ValueError(f"{field} may only contain letters, numbers, spaces, underscores and hyphens")
     return value
+
+
+def is_sprite_archive_dir(name: str) -> bool:
+    """Return whether a sprite directory is a generated version archive."""
+    return bool(SPRITE_ARCHIVE_DIR_RE.fullmatch(str(name or "")))
 
 
 def normalize_filesystem_path(value: str) -> str:

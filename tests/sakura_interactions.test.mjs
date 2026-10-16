@@ -348,6 +348,29 @@ test("Clothes Generator wipes each decoded outfit over its source sprite without
     assert.ok(Math.abs(parseFloat(tiles[0].style.width) / parseFloat(tiles[0].style.height) - 1) < 0.001);
 });
 
+test("Clothes Generator uses VNCCS mannequins instead of raw pose inputs for empty outfit slots", () => {
+    const h = setup();
+    h.context.app = { registerExtension() {} };
+    vm.runInContext(generator.replace(/^import .*;\n/gm, "") + '\nthis.Generator = CharacterGeneratorWidget;', h.context);
+    const preview = new h.Element("div"); h.root.appendChild(preview);
+    const widget = Object.assign(Object.create(h.context.Generator.prototype), {
+        previewEl: preview, _ui: h.ui, isClothes: true, syncStagesFromData() {}, schedulePreviewGridLayout() {},
+        stages: [["source_upscaler", "Source"], ["pose_generation", "Poses"]], selectedPreview: "pose_generation",
+        stageState: {
+            source_upscaler: { status: "done", images: ["source-character"] },
+            pose_generation: { status: "running", current: 0, total: 3, images: null },
+        },
+    });
+
+    widget.renderPreview();
+
+    const tiles = [...widget.previewGrid.children];
+    assert.equal(tiles.length, 3);
+    assert.ok(tiles.every(tile => tile.classList.contains("is-placeholder")));
+    assert.ok(tiles.every(tile => tile.querySelector(".vnccs-pipe-img-placeholder")?.src.includes("VNCCS_Character_Mannequin")));
+    assert.ok(tiles.every(tile => !tile._pendingImage));
+});
+
 test("Clone Generator fills Naked Pose with Original Pose cards and wipes each naked sprite over its original", async () => {
     const h = setup();
     h.context.cancelAnimationFrame = () => {};

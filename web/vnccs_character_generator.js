@@ -1574,8 +1574,7 @@ class CharacterGeneratorWidget {
                     processing_indices: detail.processing_indices,
                     preview_aspect: detail.preview_aspect ?? previousStageState.preview_aspect,
                 };
-                if (!this.userSelectedPreview && (!this.isClothes || stage !== "source_upscaler")
-                    && (status === "running" || status === "done" || detail.images)) {
+                if (!this.userSelectedPreview && (status === "running" || status === "done" || detail.images)) {
                     if (stage !== this.selectedPreview && this.hasPendingPreviewReveal()) {
                         // The backend can start the next stage before the browser has decoded
                         // the last preview. Keep this stage visible until its wipe completes.
@@ -2767,8 +2766,7 @@ class CharacterGeneratorWidget {
                     : incoming;
                 if (snapshot.run_id && incoming.status === "running" && key.endsWith("pose_generation")
                     && !incoming.images?.length && !previousImages?.length) this._previewPlaceholderStage = key;
-                if (["running", "done"].includes(this.stageState[key].status)
-                    && (!this.isClothes || key !== "source_upscaler")) followedStage = key;
+                if (["running", "done"].includes(this.stageState[key].status)) followedStage = key;
                 this.updateRegenerateProgress(key, this.stageState[key].status, { render: false });
             }
             if (!snapshot.error && !this.userSelectedPreview && followedStage && this.selectedPreview !== followedStage) {
@@ -3750,14 +3748,15 @@ class CharacterGeneratorWidget {
         const stageIndex = this.stages.findIndex(([key]) => key === this.selectedPreview);
         const originalPoseImages = this.isClone && this.selectedPreview === "naked_pose_generation"
             ? this.stageState.original_pose_generation?.images : null;
-        const upstream = originalPoseImages?.length ? originalPoseImages : this.stages.slice(0, stageIndex).reverse()
-            .map(([key]) => this.stageState[key]?.images).find(images => images?.length) || [];
+        const upstream = this.isClothes && this.selectedPreview === "pose_generation" ? []
+            : originalPoseImages?.length ? originalPoseImages : this.stages.slice(0, stageIndex).reverse()
+                .map(([key]) => this.stageState[key]?.images).find(images => images?.length) || [];
         const total = Math.max(0, Math.min(512, Number(state.total) || 0));
         const count = Math.min(512, Math.max(images.length, total, state.status === "done" ? 0 : upstream.length));
         const busy = state.status === "running" || this.regenerateState?.activeStage === this.selectedPreview;
         const missingPosePreviews = this.selectedPreview.endsWith("pose_generation")
             && images.filter(Boolean).length < count;
-        const showPlaceholders = busy && !upstream.some(Boolean)
+        const showPlaceholders = (busy || state.status === "waiting") && !upstream.some(Boolean)
             && (missingPosePreviews || this._previewPlaceholderStage === this.selectedPreview);
         const mannequinURL = this.mannequinURL();
         this.previewEl.classList.toggle("is-male-character", mannequinURL === CHARACTER_MANNEQUIN_MALE_URL);
@@ -4111,13 +4110,14 @@ class CharacterGeneratorWidget {
                 (!this.isClone && !this.isClothes && !this.isEmotions)
                 || (this.isClone && this.selectedPreview === "original_pose_generation")
             ));
-            const clothesReveal = Boolean(previous && (
+            const clothesRevealRequested = Boolean(
                 (this.isClothes && this.selectedPreview === "pose_generation"
                     && this._clothesRevealIndices?.delete(index))
                 || originalReveal
                 || (this.isClone && this.selectedPreview === "naked_pose_generation"
                     && this._nakedRevealIndices?.delete(index))
-            ));
+            );
+            const clothesReveal = Boolean(previous && clothesRevealRequested);
             tile._previewImage = image;
             const stateAspect = Number(this.stageState?.[this.selectedPreview]?.preview_aspect);
             const hasFixedStageAspect = Number.isFinite(stateAspect) && stateAspect > 0;

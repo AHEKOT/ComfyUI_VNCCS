@@ -60,6 +60,7 @@ test("Clothes Designer keeps the source preview and wipes the generated outfit b
     const node = { id: 8 };
     const context = vm.createContext({
         api, els, spritePrevBtn, spriteNextBtn, node,
+        syncCostumeEditControls() {},
         state: { character: "Alice", costume: "Fantasy", character_info: { sex: "male" } },
         hasSelectedEditableCostume: () => true,
         beginPreviewRequest: () => () => true,
@@ -128,7 +129,7 @@ test("Clothes Designer replaces only the right panel content when no costume exi
     const contentAttributes = {}, emptyAttributes = {};
     const control = () => ({ disabled: false });
     const els = {
-        btnNew: control(), btnGen: control(), btnDel: control(), wizardBtn: control(),
+        charSelect: control(), btnNew: control(), btnGen: control(), btnDel: control(), wizardBtn: control(),
         costSel: { disabled: false, options: [{}] },
         top: control(), bottom: control(), head: control(), face: control(), shoes: control(),
         designPanel: { classList: panelClasses },
@@ -155,4 +156,10 @@ test("Clothes Designer replaces only the right panel content when no costume exi
     assert.equal(els.designContent.inert, false);
     assert.equal(contentAttributes["aria-hidden"], "false");
     assert.equal(emptyAttributes["aria-hidden"], "true");
+
+    node._vnccsClothesPreviewRunning = true;
+    context.sync();
+    for (const key of ["charSelect", "costSel", "btnNew", "btnGen", "btnDel", "wizardBtn", "top", "bottom", "head", "face", "shoes"]) {
+        assert.equal(els[key].disabled, true, `${key} must stay locked during preview generation`);
+    }
 });

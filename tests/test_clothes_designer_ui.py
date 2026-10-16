@@ -51,3 +51,8 @@ def test_clone_preview_requires_reference_before_queue_or_api_execution():
 
 def test_serialization_updates_workflow_widget_values_with_latest_clone_state():
     assert 'o.widgets_values[index] = node.widgets[index].value' in SOURCE
+
+
+def test_design_panel_scrolls_only_vertically():
+    design_content = SOURCE.split(".vnccs-clothes-design-content {", 1)[1].split("}", 1)[0]
+    assert "overflow: hidden auto;" in design_content

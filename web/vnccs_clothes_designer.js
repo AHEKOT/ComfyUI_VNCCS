@@ -50,7 +50,7 @@ ${SAKURA_THEME_CSS}
     min-height: 0;
     flex-direction: column;
     gap: 10px;
-    overflow-y: auto;
+    overflow: hidden auto;
     opacity: 1;
     transform: none;
     filter: none;
@@ -911,12 +911,14 @@ app.registerExtension({
                 };
 
                 const syncCostumeEditControls = () => {
-                    const canEdit = !node._vnccsClothesSelectionPending && hasSelectedEditableCostume();
+                    const busy = !!node._vnccsClothesSelectionPending || !!node._vnccsClothesPreviewRunning;
+                    const canEdit = !busy && hasSelectedEditableCostume();
                     const needsCostume = !!state.character && !hasSelectedEditableCostume();
-                    if (els.btnNew) els.btnNew.disabled = !!node._vnccsClothesSelectionPending || !state.character;
+                    if (els.charSelect) els.charSelect.disabled = busy;
+                    if (els.btnNew) els.btnNew.disabled = busy || !state.character;
                     if (els.btnGen) els.btnGen.disabled = !canEdit;
                     if (els.btnDel) els.btnDel.disabled = !canEdit;
-                    if (els.costSel) els.costSel.disabled = !!node._vnccsClothesSelectionPending || !els.costSel.options.length;
+                    if (els.costSel) els.costSel.disabled = busy || !els.costSel.options.length;
                     if (els.wizardBtn) els.wizardBtn.disabled = !canEdit;
                     ["top", "bottom", "head", "face", "shoes"].forEach(k => {
                         if (els[k]) els[k].disabled = !canEdit;
@@ -2134,9 +2136,13 @@ app.registerExtension({
                     spriteNextBtn.disabled = false;
                     const visiblePreview = els.previewImg?.style?.display !== "none" && els.previewImg?.getAttribute?.("src");
                     if (restorePlaceholder && !visiblePreview && els.placeholder) els.placeholder.style.display = "flex";
+                    node._vnccsClothesPreviewRunning = false;
+                    syncCostumeEditControls();
                 };
                 const startClothesPreviewGeneration = () => {
                     const revision = ++previewGenerationRevision;
+                    node._vnccsClothesPreviewRunning = true;
+                    syncCostumeEditControls();
                     const sex = String(state.character_info?.sex || state.character_info?.gender || "").trim().toLowerCase();
                     els.previewFrame?.classList.toggle("is-male-character", sex === "male");
                     for (const animation of els.generationLayer?._animations || []) animation.cancel();
@@ -2265,7 +2271,7 @@ app.registerExtension({
                 spritePreviewNavigator = createSpritePreviewNavigator({
                     node,
                     isSelectionCurrent: preview => preview.character === state.character
-                        && preview.costume === (hasSelectedEditableCostume() ? state.costume : "Naked"),
+                        && preview.costume === "Naked",
                     image: pImg,
                     interactions: els._ui,
                     placeholder: els.placeholder,
@@ -2635,8 +2641,9 @@ app.registerExtension({
                     spritePreviewNavigator?.invalidate?.();
                     if (!state.character) return;
                     const ts = Date.now();
-                    const previewCostume = hasSelectedEditableCostume() ? state.costume : "Naked";
-                    let url = `/vnccs/get_preview?character=${encodeURIComponent(character)}&costume=${encodeURIComponent(previewCostume)}&ts=${ts}`;
+                    const sourceCostume = "Naked";
+                    const requestedCostume = forceCache && hasSelectedEditableCostume() ? state.costume : sourceCostume;
+                    let url = `/vnccs/get_preview?character=${encodeURIComponent(character)}&costume=${encodeURIComponent(requestedCostume)}&ts=${ts}`;
                     if (forceCache) url += "&force_cache=true";
                     if (!forceCache) {
                         state.selected_preview_sprite = null;
@@ -2660,10 +2667,10 @@ app.registerExtension({
                     }
 
                     if (forceCache) {
-                        spritePreviewNavigator?.showFallback(mediaURL(url), { character, costume: previewCostume });
+                        spritePreviewNavigator?.showFallback(mediaURL(url), { character, costume: sourceCostume });
                     } else {
                         await spritePreviewNavigator?.load(character, {
-                            costume: previewCostume,
+                            costume: sourceCostume,
                             fallbackUrl: mediaURL(url),
                         });
                     }

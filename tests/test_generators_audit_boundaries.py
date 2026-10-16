@@ -807,6 +807,37 @@ def test_custom_neutral_emotion_never_becomes_a_source_pose_directory(emotion_mo
     assert emotion_module.list_costume_sprite_paths("Alice", "Coat") == [str(source)]
 
 
+@pytest.mark.parametrize("archive_name", ["V1", "V2", "V21", "v999"])
+def test_emotion_sources_never_include_version_archives(emotion_module, monkeypatch, tmp_path, archive_name):
+    root = tmp_path / "Alice"
+    neutral = root / "Sprites" / "Coat" / "Neutral"
+    current = neutral / "sprite_pose_0001.png"
+    archived = neutral / archive_name / "sprite_pose_0001.png"
+    for path in (current, archived):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(path.parent.name.encode())
+    monkeypatch.setattr(emotion_module, "character_dir", lambda *args: str(root))
+
+    assert emotion_module.list_costume_sprite_paths("Alice", "Coat") == [str(current)]
+    current.unlink()
+    assert emotion_module.list_costume_sprite_paths("Alice", "Coat") == []
+
+
+@pytest.mark.parametrize(("character", "costume"), [("V1", "Coat"), ("Alice", "V1")])
+def test_emotion_sources_allow_version_like_character_and_costume_names(
+    emotion_module, monkeypatch, tmp_path, character, costume,
+):
+    root = tmp_path / character
+    current = root / "Sprites" / costume / "Neutral" / "sprite_pose_0001.png"
+    archived = current.parent / "V2" / current.name
+    for path in (current, archived):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(path.parent.name.encode())
+    monkeypatch.setattr(emotion_module, "character_dir", lambda *args: str(root))
+
+    assert emotion_module.list_costume_sprite_paths(character, costume) == [str(current)]
+
+
 @pytest.mark.parametrize("emotion", ["neutral", "Neutral"])
 def test_legacy_reserved_emotion_fails_before_loading_models(emotion_module, monkeypatch, emotion):
     monkeypatch.setattr(emotion_module, "load_character_info", lambda *args: {"name": "Alice"})
