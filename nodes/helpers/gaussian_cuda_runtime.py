@@ -59,7 +59,7 @@ def torch_cuda_installation():
 def _nvrtc_filename(name):
     if sys.platform == "win32":
         return re.fullmatch(r"nvrtc64_[0-9_]+\.dll", name) is not None
-    return re.fullmatch(r"libnvrtc(?:-[A-Za-z0-9]+)?\.so(?:\.[0-9]+)*", name) is not None
+    return re.fullmatch(r"libnvrtc(?!-builtins)(?:-[A-Za-z0-9]+)?\.so(?:\.[0-9]+)*", name) is not None
 
 
 def _nvrtc_paths(torch_file, cuda_version):

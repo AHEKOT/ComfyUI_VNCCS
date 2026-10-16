@@ -293,13 +293,18 @@ extern "C" __global__ void mesh_texture_view(const float* positions,const float*
     if(fabsf(hit/q.z-1.f)*distance>2*voxel) return;
     V3 n=point(normals,p);
     float cosine=fabsf(dot(n,direction))/fmaxf(distance*sqrtf(dot(n,n)),1.e-12f);
-    float score=cosine*cosine*cosine*cosine*focal/(q.z*q.z);
-    if(cosine<=.1f || score<=scores[p]) return;
+    // Favor frontal detail but blend compatible views instead of hard per-texel seams.
+    float score=powf(cosine,16.f)*focal/(q.z*q.z);
+    if(cosine<=.1f || score<=0.f) return;
     float fx=x-ix,fy=y-iy;
-    for(int j=0;j<3;++j) colors[3LL*p+j]=(
+    float total=scores[p]+score;
+    for(int j=0;j<3;++j) {
+        float sample=(
         (1-fy)*((1-fx)*rgb[3*i+j]+fx*rgb[3*(i+1)+j])+
         fy*((1-fx)*rgb[3*(i+w)+j]+fx*rgb[3*(i+w+1)+j]))/255.f;
-    scores[p]=score;
+        colors[3LL*p+j]=(colors[3LL*p+j]*scores[p]+sample*score)/total;
+    }
+    scores[p]=total;
 }
 extern "C" __global__ void mesh_gutter(const int* source,int* target,int start,int count,int w,int h,int radius) {
     int local=blockIdx.x*blockDim.x+threadIdx.x;
