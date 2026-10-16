@@ -290,10 +290,12 @@ def test_training_stage_keeps_scene_input_and_file_and_splat_outputs():
     assert training.NODE_CLASS_MAPPINGS == {
         "VNCCS_GaussianCameraReconstruction": training.VNCCSGaussianCameraReconstruction,
         "VNCCS_GaussianTrainer": training.VNCCSGaussianTrainer,
+        "VNCCS_PLY2MESH": training.VNCCSPLY2MESH,
     }
     assert training.NODE_DISPLAY_NAME_MAPPINGS == {
         "VNCCS_GaussianCameraReconstruction": "VNCCS Gaussian Camera Reconstruction",
         "VNCCS_GaussianTrainer": "VNCCS Gaussian Trainer",
+        "VNCCS_PLY2MESH": "VNCCS PLY2MESH",
     }
 
 
@@ -500,16 +502,17 @@ def test_separable_ssim_matches_the_full_gaussian_window():
     full_kernel = torch.outer(gaussian, gaussian)[None, None].repeat(3, 1, 1, 1)
     rendered_nchw = rendered.permute(0, 3, 1, 2)
     target_nchw = target.permute(0, 3, 1, 2)
-    mu_rendered = F.conv2d(rendered_nchw, full_kernel, groups=3)
-    mu_target = F.conv2d(target_nchw, full_kernel, groups=3)
+    # The reference 2DGS loss includes the zero-padded image boundary.
+    mu_rendered = F.conv2d(rendered_nchw, full_kernel, padding=5, groups=3)
+    mu_target = F.conv2d(target_nchw, full_kernel, padding=5, groups=3)
     variance_rendered = F.conv2d(
-        rendered_nchw.square(), full_kernel, groups=3
+        rendered_nchw.square(), full_kernel, padding=5, groups=3
     ) - mu_rendered.square()
     variance_target = F.conv2d(
-        target_nchw.square(), full_kernel, groups=3
+        target_nchw.square(), full_kernel, padding=5, groups=3
     ) - mu_target.square()
     covariance = F.conv2d(
-        rendered_nchw * target_nchw, full_kernel, groups=3
+        rendered_nchw * target_nchw, full_kernel, padding=5, groups=3
     ) - mu_rendered * mu_target
     reference_score = (
         (2 * mu_rendered * mu_target + 0.01**2) * (2 * covariance + 0.03**2)

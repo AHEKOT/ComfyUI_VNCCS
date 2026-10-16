@@ -8,6 +8,8 @@ huggingface-hub[torch]>=0.22
 json_repair
 aiohttp
 pymatting
+open3d>=0.19.0,<0.21
+plyfile==1.1
 gsplat==1.5.3; sys_platform == "linux" or sys_platform == "win32"
 pycolmap==4.2.1; sys_platform == "linux" or sys_platform == "win32"
 # install.py selects NVRTC only when missing, matching the existing torch.version.cuda.
