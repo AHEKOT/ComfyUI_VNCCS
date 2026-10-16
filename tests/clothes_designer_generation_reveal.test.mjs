@@ -118,7 +118,9 @@ test("Clothes Designer fills the preview by height without resizing the node", (
 test("Clothes Designer keeps the mode tabs and right panel inside their bounds", () => {
     assert.match(source, /\.cd-tab-bar\s*\{[^}]*margin:\s*0\s+0\s+12px/s);
     assert.doesNotMatch(source, /\.cd-tab-bar\s*\{[^}]*margin:\s*0\s+-16px/s);
-    assert.match(source, /\.vnccs-clothes-container \.cd-tab-bar\.vnccs-common-ui-segmented::before\s*\{[^}]*border-radius:\s*0/s);
+    assert.match(source, /\.vnccs-clothes-design-content\s*\{[^}]*overflow:\s*hidden auto;[^}]*padding-inline:\s*18px/s);
+    assert.match(source, /\.vnccs-clothes-container \.cd-tab-bar\.vnccs-common-ui-segmented\s*\{[^}]*border-radius:\s*var\(--radius-lg\)/s);
+    assert.match(source, /\.vnccs-clothes-container \.cd-tab-bar\.vnccs-common-ui-segmented::before\s*\{[^}]*border-radius:\s*var\(--radius-md\)/s);
 });
 
 test("Clothes Designer replaces only the right panel content when no costume exists", () => {

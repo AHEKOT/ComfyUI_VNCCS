@@ -4862,7 +4862,7 @@ app.registerExtension({
 
                             if (count > 0) {
                                 const index = restoredPreview && restoredPreviewSource === "pose"
-                                    ? restoredPreviewIndex : Math.floor(Math.random() * count);
+                                    ? restoredPreviewIndex : 0;
                                 showSpritePreview(n, index);
                             } else {
                                 hideSpriteNav();

@@ -65,7 +65,7 @@ from .vnccs_control_center import (
     _resolve_model_download_path,
     _validate_downloaded_model_file,
 )
-from .qi2_viggle import apply_viggle_turbo_lora, viggle_turbo_sigmas
+from .qi2_viggle import viggle_turbo_sigmas
 from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, _flatten_image_tensors, _as_bool
 from ..utils import (
     atomic_output_path,
@@ -309,6 +309,16 @@ def _call_comfy_node(class_name, **kwargs):
             raise RuntimeError(str(block_execution))
         result = result.result
     return result if isinstance(result, tuple) else (result,)
+
+
+def apply_viggle_turbo_lora(model, lora_name, strength=1.0):
+    """Apply Viggle through ComfyUI so DynamicVRAM owns every adapter tensor."""
+    return _call_comfy_node(
+        "LoraLoaderModelOnly",
+        model=model,
+        lora_name=lora_name,
+        strength_model=strength,
+    )[0]
 
 
 def _h3_memory_label(model):

@@ -1290,9 +1290,11 @@ for (const available of [[], ['Naked', 'Shelter'], ['Original']]) {
         }
         const costumes = { name: 'costumes_data', value: '["Original","Coat"]' };
         const costumesList = new Element();
-        const context = createWidgetContext({ ui: motionUI, state: { character: 'Alice', costumes: [], selectedCostumes: new Set(['Original', 'Coat']) },
+        const previewLoads = [];
+        const context = createWidgetContext({ ui: motionUI, state: { character: 'Alice', costumes: [], selectedCostumes: new Set(['Original', 'Coat']),
+                selectedPreviewSprite: null, gen: { selected_preview_sprite: { character: 'Alice', index: 4 } } },
             disposed: false, characterFetchToken: 0, costumesDataWidget: costumes, restoreErrors: new Map(),
-            spritePreviewNavigator: null, costumesList, markNodeDirty() {},
+            spritePreviewNavigator: { load: (character, options) => previewLoads.push({ character, ...options }) }, costumesList, markNodeDirty() {},
             document: { createElement: () => new Element() },
             api: { fetchApi: async () => ({ ok: true, json: async () => available }) },
         });
@@ -1314,6 +1316,7 @@ for (const available of [[], ['Naked', 'Shelter'], ['Original']]) {
         assert.deepEqual(labels(), ['Coat (missing sprites)']);
         assert.equal(costumes.value, '["Original","Coat"]', 'Rendering before inventory must preserve saved data');
         await context.fetchCharacterData('Alice');
+        assert.deepEqual(previewLoads[0], { character: 'Alice', index: 4 });
         const expected = available.includes('Original') ? ['Original', 'Coat'] : ['Coat'];
         assert.deepEqual([...context.state.selectedCostumes], expected);
         assert.deepEqual(labels(), [...available, 'Coat (missing sprites)']);
@@ -1362,7 +1365,7 @@ for (const removed of [false, true]) {
         vm.runInContext(commonSource.slice(commonStart, commonEnd).replace('export ', '')
             + emotionSource.slice(selectionStart, selectionEnd) + emotionSource.slice(saveStart, saveEnd)
             + emotionSource.slice(previewStart, previewEnd), context);
-        await context.spritePreviewNavigator.load('Alice', { random: false });
+        await context.spritePreviewNavigator.load('Alice', { index: 0 });
         assert.equal(loaders.length, 1);
         if (removed) { context.disposed = true; cleanups.forEach(cleanup => cleanup()); }
         loaders[0].onload();

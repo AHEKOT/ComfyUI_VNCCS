@@ -3235,7 +3235,10 @@ app.registerExtension({
                     if (disposed || !charName || charName === "Character Name") return;
                     const token = ++characterFetchToken;
 
-                    spritePreviewNavigator?.load(charName);
+                    const selectedPreview = state.selectedPreviewSprite || state.gen?.selected_preview_sprite;
+                    spritePreviewNavigator?.load(charName, {
+                        index: selectedPreview?.character === charName ? selectedPreview.index : undefined,
+                    });
 
                     // Costumes
                     try {

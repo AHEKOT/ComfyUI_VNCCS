@@ -822,9 +822,11 @@ export function createSpritePreviewNavigator({
         loader.src = url;
     };
 
-    const load = async (character, { costume = "", random = true, index = 0, fallbackUrl = "" } = {}) => {
+    const load = async (character, { costume = "", index, fallbackUrl = "" } = {}) => {
         if (disposed) return;
-        if (interactions && (character !== state.character || costume !== state.costume)) {
+        const sameSelection = character === state.character && costume === state.costume;
+        const currentIndex = sameSelection ? state.index : 0;
+        if (interactions && !sameSelection) {
             interactions.prepareCharacter(image, placeholder, character);
         }
         state.character = character || "";
@@ -854,8 +856,7 @@ export function createSpritePreviewNavigator({
                 showFallback(state.fallbackUrl);
                 return;
             }
-            const nextIndex = random ? Math.floor(Math.random() * state.count) : index;
-            show(nextIndex);
+            show(index ?? currentIndex);
         } catch (error) {
             if (!isCurrent(loadRequestId)) return;
             console.warn("[VNCCS] Failed to load sprite preview metadata:", error);

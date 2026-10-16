@@ -46,7 +46,7 @@ for (const status of [400, 500]) {
     });
 }
 
-for (const phase of ['restored_reference', 'pending_metadata', 'pending_image', 'no_reference']) {
+for (const phase of ['restored_reference', 'restored_preview', 'pending_metadata', 'pending_image', 'no_reference']) {
     test(`Cloner source preview remains authoritative during ${phase}`, async () => {
         const text = source('vnccs_character_cloner'), loaders = [];
         const element = () => ({ style: {}, children: [], classList: { toggle() {}, add() {}, remove() {} },
@@ -56,10 +56,14 @@ for (const phase of ['restored_reference', 'pending_metadata', 'pending_image', 
         loading.classList.toggle = (name, value) => { if (name === 'is-visible') loadingVisible = value; };
         const metadata = new Promise(resolve => { resolveMetadata = resolve; });
         const reference = { name: 'authored-reference.png', type: 'input' };
+        const fixedMath = Object.create(Math);
+        fixedMath.random = () => 0;
         const state = { character: 'Alice', character_info: {}, selected_idx: 0,
-            source_images: phase === 'restored_reference' ? [reference] : [], selected_preview_sprite: null };
+            source_images: phase === 'restored_reference' ? [reference] : [],
+            selected_preview_sprite: phase === 'restored_preview'
+                ? { character: 'Alice', costume: '', index: 1 } : null };
         const context = createWidgetContext({
-            node, state, console, URLSearchParams,
+            node, state, console, URLSearchParams, Math: fixedMath,
             Image: class { constructor() { loaders.push(this); } },
             document: { createElement: element }, imgList: element(), previewImg: image,
             previewLoading: loading, previewPlaceholder: element(), previewContainer: element(),
@@ -99,8 +103,9 @@ for (const phase of ['restored_reference', 'pending_metadata', 'pending_image', 
             }
             loaders[0]?.onload?.();
         }
-        if (phase === 'no_reference') {
+        if (phase === 'no_reference' || phase === 'restored_preview') {
             assert.match(image.src, /get_character_pose_preview/);
+            assert.match(image.src, new RegExp(`index=${phase === 'restored_preview' ? 1 : 0}`));
             assert.equal(state.selected_preview_sprite.character, 'Alice');
         } else {
             assert.match(image.src, /filename=authored-reference.png/);

@@ -1807,7 +1807,12 @@ app.registerExtension({
                         saveState();
                         if (name && name !== "None" && !state.source_images.length) {
                             const cacheUrl = mediaURL(`/vnccs/get_cached_preview?character=${encodeURIComponent(name)}&t=${Date.now()}`);
-                            await spritePreviewNavigator?.load(name, { fallbackUrl: cacheUrl });
+                            const selectedPreview = state.selected_preview_sprite;
+                            await spritePreviewNavigator?.load(name, {
+                                index: selectedPreview?.character === name && !selectedPreview.costume
+                                    ? selectedPreview.index : undefined,
+                                fallbackUrl: cacheUrl,
+                            });
                         }
                         return isCurrent();
                     } catch (error) {

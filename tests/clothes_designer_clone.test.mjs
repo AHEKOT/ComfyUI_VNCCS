@@ -209,6 +209,14 @@ test("QI2 Prompt Enhancement toggle persists and is hidden outside Generate Clot
     assert.equal(row.hidden, true);
 });
 
+test("Prompt Enhancement is rendered directly below Clothes Wizard only in the Generate panel", () => {
+    const attributes = block("const renderAttributes =", "// Helper to render Clone Panel");
+    const layout = block("const controlsWrap =", "// Tab Header");
+    assert.match(attributes, /container\.appendChild\(wizardBtn\);\s*container\.appendChild\(promptEnhancementControl\);/);
+    assert.match(layout, /const promptEnhancementControl = createPromptEnhancementControl\(\);/);
+    assert.doesNotMatch(layout, /designContent\.appendChild\(createPromptEnhancementControl\(\)\)/);
+});
+
 for (const stale of ['character', 'costume', 'tab', 'reference', 'removed', 'superseded', 'corrupt', 'current']) {
     test(`Clothes donor upload respects ${stale} ownership`, async () => {
         const h = setup();

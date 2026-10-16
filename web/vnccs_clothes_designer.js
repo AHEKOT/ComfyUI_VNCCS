@@ -51,6 +51,8 @@ ${SAKURA_THEME_CSS}
     flex-direction: column;
     gap: 10px;
     overflow: hidden auto;
+    padding-inline: 18px;
+    box-sizing: border-box;
     opacity: 1;
     transform: none;
     filter: none;
@@ -689,7 +691,8 @@ ${SAKURA_THEME_CSS}
     display: flex; border-bottom: 1px solid var(--border);
     margin: 0 0 12px; background: transparent;
 }
-.vnccs-clothes-container .cd-tab-bar.vnccs-common-ui-segmented::before { border-radius: 0; }
+.vnccs-clothes-container .cd-tab-bar.vnccs-common-ui-segmented { border-radius: var(--radius-lg); }
+.vnccs-clothes-container .cd-tab-bar.vnccs-common-ui-segmented::before { border-radius: var(--radius-md); }
 .cd-tab {
     flex: 1; text-align: center; padding: 10px 8px; cursor: pointer;
     font-size: 10px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase;
@@ -1837,6 +1840,7 @@ app.registerExtension({
                     wizardBtn.disabled = !hasSelectedEditableCostume();
                     els.wizardBtn = wizardBtn;
                     container.appendChild(wizardBtn);
+                    container.appendChild(promptEnhancementControl);
                     container.appendChild(createField("top", "e.g. White t-shirt"));
                     container.appendChild(createField("bottom", "e.g. Blue jeans"));
                     container.appendChild(createField("shoes", "e.g. Sneakers"));
@@ -2503,7 +2507,7 @@ app.registerExtension({
                 controlsWrap.style.paddingTop = "16px";
                 designContent.appendChild(controlsWrap);
                 designContent.appendChild(createResolutionControl());
-                designContent.appendChild(createPromptEnhancementControl());
+                const promptEnhancementControl = createPromptEnhancementControl();
 
                 // Tab Header
                 const tabBar = document.createElement("div");
@@ -2797,6 +2801,9 @@ app.registerExtension({
                     if (!state.character) return;
                     const ts = Date.now();
                     const previewCostume = hasSelectedEditableCostume() ? state.costume : "Naked";
+                    const selectedPreview = state.selected_preview_sprite;
+                    const selectedPreviewIndex = selectedPreview?.character === character
+                        && (selectedPreview.costume || "") === previewCostume ? selectedPreview.index : undefined;
                     let url = `/vnccs/get_preview?character=${encodeURIComponent(character)}&costume=${encodeURIComponent(previewCostume)}&ts=${ts}`;
                     if (forceCache) url += "&force_cache=true";
                     if (!forceCache) {
@@ -2825,6 +2832,7 @@ app.registerExtension({
                     } else {
                         await spritePreviewNavigator?.load(character, {
                             costume: previewCostume,
+                            index: selectedPreviewIndex,
                             fallbackUrl: mediaURL(url),
                         });
                     }
