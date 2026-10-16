@@ -2271,7 +2271,7 @@ app.registerExtension({
                 spritePreviewNavigator = createSpritePreviewNavigator({
                     node,
                     isSelectionCurrent: preview => preview.character === state.character
-                        && preview.costume === "Naked",
+                        && preview.costume === (hasSelectedEditableCostume() ? state.costume : "Naked"),
                     image: pImg,
                     interactions: els._ui,
                     placeholder: els.placeholder,
@@ -2641,9 +2641,8 @@ app.registerExtension({
                     spritePreviewNavigator?.invalidate?.();
                     if (!state.character) return;
                     const ts = Date.now();
-                    const sourceCostume = "Naked";
-                    const requestedCostume = forceCache && hasSelectedEditableCostume() ? state.costume : sourceCostume;
-                    let url = `/vnccs/get_preview?character=${encodeURIComponent(character)}&costume=${encodeURIComponent(requestedCostume)}&ts=${ts}`;
+                    const previewCostume = hasSelectedEditableCostume() ? state.costume : "Naked";
+                    let url = `/vnccs/get_preview?character=${encodeURIComponent(character)}&costume=${encodeURIComponent(previewCostume)}&ts=${ts}`;
                     if (forceCache) url += "&force_cache=true";
                     if (!forceCache) {
                         state.selected_preview_sprite = null;
@@ -2667,10 +2666,10 @@ app.registerExtension({
                     }
 
                     if (forceCache) {
-                        spritePreviewNavigator?.showFallback(mediaURL(url), { character, costume: sourceCostume });
+                        spritePreviewNavigator?.showFallback(mediaURL(url), { character, costume: previewCostume });
                     } else {
                         await spritePreviewNavigator?.load(character, {
-                            costume: sourceCostume,
+                            costume: previewCostume,
                             fallbackUrl: mediaURL(url),
                         });
                     }

@@ -158,8 +158,8 @@ for (const oldResult of ['success', 'missing', 'error', 'removed']) {
         await old;
         assert.equal(navigated.length, 1);
         assert.equal(navigated[0].character, 'Bob');
-        assert.equal(navigated[0].costume, 'Naked');
-        assert.match(navigated[0].fallbackUrl, /character=Bob&costume=Naked/);
+        assert.equal(navigated[0].costume, 'Suit');
+        assert.match(navigated[0].fallbackUrl, /character=Bob&costume=Suit/);
         assert.equal(saved.length, savedCount);
     });
 }
@@ -451,19 +451,19 @@ for (const previousSelection of [false, true]) {
         const navigatorCode = between(source('vnccs_common'), 'export function createSpritePreviewNavigator', '// ── DOM Widget Canvas Navigation').replace('export ', '');
         vm.runInContext(`${guardCode}\n${navigatorCode}\nconst beginPreviewRequest = createRequestGuard(node);
             const spritePreviewNavigator = createSpritePreviewNavigator({ node, image: els.previewImg, placeholder: els.placeholder,
-                isSelectionCurrent: value => value.character === state.character && value.costume === 'Naked',
+                isSelectionCurrent: value => value.character === state.character && value.costume === state.costume,
                 onLoaded: url => { if (!url.includes('force_cache=true')) state.selected_preview_sprite = null; }
             });
             ${between(source('vnccs_clothes_designer'), 'const updatePreviewImage =', 'const onPreviewUpdated =')}
             globalThis.update = updatePreviewImage; globalThis.navigator = spritePreviewNavigator;`, context);
         if (previousSelection) {
             state.character = 'Alice'; state.costume = 'Dress';
-            await context.navigator.load('Alice', { costume: 'Naked' });
+            await context.navigator.load('Alice', { costume: 'Dress' });
             images[0].onload();
             state.character = 'Bob'; state.costume = 'Suit';
         }
         const normal = context.update();
-        const selected = { character: 'Bob', costume: 'Naked', index: 2 };
+        const selected = { character: 'Bob', costume: 'Suit', index: 2 };
         state.selected_preview_sprite = selected;
         const cached = context.update(true);
         requests[1].resolve({ ok: true }); await cached;
@@ -475,7 +475,7 @@ for (const previousSelection of [false, true]) {
         assert.match(els.previewImg.src, /character=Bob&costume=Suit.*force_cache=true/);
         assert.equal(state.selected_preview_sprite, selected, 'Displaying cache must retain its source reference');
         assert.equal(context.navigator.state.character, 'Bob');
-        assert.equal(context.navigator.state.costume, 'Naked');
+        assert.equal(context.navigator.state.costume, 'Suit');
         assert.equal(images.length, previousSelection ? 2 : 1);
     });
 }
