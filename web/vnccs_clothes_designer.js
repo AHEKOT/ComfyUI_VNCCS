@@ -436,6 +436,97 @@ ${SAKURA_THEME_CSS}
 }
 .vnccs-clothes-lora-card.is-missing .vnccs-clothes-lora-card-badge { background: var(--error); box-shadow: none; }
 .vnccs-clothes-lora-card.is-missing .vnccs-clothes-lora-card-status { color: var(--error); }
+.vnccs-clothes-prompt-card {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 42px;
+    box-sizing: border-box;
+    margin: 0 0 12px;
+    padding: 9px 12px;
+    border: 1px solid rgba(0,214,143,0.25);
+    border-radius: var(--radius-md);
+    background: rgba(0,214,143,0.05);
+    cursor: pointer;
+    transition: all var(--transition);
+}
+.vnccs-clothes-prompt-card[hidden] { display: none; }
+.vnccs-clothes-prompt-card:hover:not(.is-selected):not(.is-disabled) {
+    border-color: rgba(0,214,143,0.42);
+    background: rgba(0,214,143,0.08);
+}
+.vnccs-clothes-prompt-card.is-selected {
+    border-color: var(--accent);
+    background: rgba(255,143,163,0.12);
+    box-shadow: 0 0 0 1px rgba(255,143,163,0.12) inset;
+}
+.vnccs-clothes-prompt-card.is-disabled { opacity: 0.55; cursor: not-allowed; }
+.vnccs-clothes-prompt-badge {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--success);
+}
+.vnccs-clothes-prompt-name {
+    flex: 1;
+    min-width: 0;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 700;
+}
+.vnccs-clothes-prompt-status {
+    flex-shrink: 0;
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+.vnccs-clothes-prompt-status.ok { color: var(--success); }
+.vnccs-clothes-prompt-toggle {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    flex-shrink: 0;
+}
+.vnccs-clothes-prompt-toggle input {
+    position: absolute;
+    width: 0;
+    height: 0;
+    opacity: 0;
+}
+.vnccs-clothes-prompt-toggle-track {
+    position: absolute;
+    inset: 0;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(255,255,255,0.08);
+    transition: all 0.25s ease;
+}
+.vnccs-clothes-prompt-toggle-thumb {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    transition: all 0.25s ease;
+}
+.vnccs-clothes-prompt-toggle input:checked ~ .vnccs-clothes-prompt-toggle-track {
+    border-color: var(--accent);
+    background: rgba(255,143,163,0.2);
+    box-shadow: 0 0 8px var(--accent-glow);
+}
+.vnccs-clothes-prompt-toggle input:checked ~ .vnccs-clothes-prompt-toggle-thumb {
+    transform: translateX(16px);
+    background: var(--accent);
+}
+.vnccs-clothes-prompt-toggle input:focus-visible ~ .vnccs-clothes-prompt-toggle-track {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
 
 /* Preview */
 .vnccs-clothes-preview-container {
@@ -780,7 +871,8 @@ app.registerExtension({
                         seed: 0,
                         seed_mode: "fixed",
                         lora_name: "none",
-                        lora_strength: 1.0
+                        lora_strength: 1.0,
+                        qi2_prompt_enhancement: true
                     }
                 };
 
@@ -920,6 +1012,7 @@ app.registerExtension({
                     if (els.btnDel) els.btnDel.disabled = !canEdit;
                     if (els.costSel) els.costSel.disabled = busy || !els.costSel.options.length;
                     if (els.wizardBtn) els.wizardBtn.disabled = !canEdit;
+                    els.promptEnhancement?.setDisabled?.(busy);
                     ["top", "bottom", "head", "face", "shoes"].forEach(k => {
                         if (els[k]) els[k].disabled = !canEdit;
                     });
@@ -1400,7 +1493,8 @@ app.registerExtension({
                     background_color: "Sets a solid chroma key background or native transparency for Qwen Image 2.1.",
                     lora_name: "VNCCS Clothes Core LoRA used to keep outfit generation compatible with this workflow.",
                     seed: "Numeric seed for reproducible clothing previews.",
-                    seed_mode: "Toggles fixed seed versus a fresh random seed for each preview."
+                    seed_mode: "Toggles fixed seed versus a fresh random seed for each preview.",
+                    qi2_prompt_enhancement: "Rewrites the Generate Clothes prompt with Qwen text generation before QI2 encoding. Disable to send the structured clothes prompt directly."
                 };
                 const helpFor = (key, fallback = "") => FIELD_HELP[key] || fallback;
 
@@ -1529,6 +1623,15 @@ app.registerExtension({
                     return true;
                 };
 
+                const syncPromptEnhancementControl = () => {
+                    if (!els.promptEnhancementRow || !els.promptEnhancement) return;
+                    els.promptEnhancementRow.hidden = !(
+                        getConnectedModelKind().trim().toLowerCase() === "qi2"
+                        && state.activeTab === "generate"
+                    );
+                    els.promptEnhancement.setValue(state.gen_settings.qi2_prompt_enhancement !== false);
+                };
+
                 const syncGenerationControls = () => {
                     const backgroundChanged = syncBackgroundForModel();
                     syncResolutionControl();
@@ -1540,6 +1643,7 @@ app.registerExtension({
                     }
                     els.background_color?.setValue?.(state.gen_settings.background_color || "Green");
                     renderClothesCoreLoraCard();
+                    syncPromptEnhancementControl();
                     if (backgroundChanged) saveState();
                     els._ui?.syncSelects();
                 };
@@ -1606,6 +1710,55 @@ app.registerExtension({
                     syncResolutionControl();
 
                     return resolutionWrap;
+                };
+
+                const createPromptEnhancementControl = () => {
+                    const row = document.createElement("div");
+                    row.className = "vnccs-clothes-prompt-card";
+                    setHelpText(row, helpFor("qi2_prompt_enhancement"));
+                    const badge = document.createElement("span");
+                    badge.className = "vnccs-clothes-prompt-badge";
+                    const name = document.createElement("div");
+                    name.className = "vnccs-clothes-prompt-name";
+                    name.textContent = "Prompt Enhancement";
+                    const status = document.createElement("div");
+                    const toggle = document.createElement("label");
+                    toggle.className = "vnccs-clothes-prompt-toggle";
+                    toggle.onclick = event => event.stopPropagation();
+                    const input = document.createElement("input");
+                    input.type = "checkbox";
+                    input.setAttribute("aria-label", "Prompt Enhancement");
+                    input.setValue = enabled => {
+                        input.checked = enabled;
+                        row.classList.toggle("is-selected", enabled);
+                        status.className = "vnccs-clothes-prompt-status" + (enabled ? " ok" : "");
+                        status.textContent = enabled ? "Enabled" : "Disabled";
+                    };
+                    input.setDisabled = disabled => {
+                        input.disabled = disabled;
+                        row.classList.toggle("is-disabled", disabled);
+                    };
+                    input.onchange = event => {
+                        state.gen_settings.qi2_prompt_enhancement = event.target.checked;
+                        input.setValue(event.target.checked);
+                        saveState();
+                    };
+                    input.onclick = event => event.stopPropagation();
+                    row.onclick = () => {
+                        if (input.disabled) return;
+                        input.checked = !input.checked;
+                        input.dispatchEvent(new Event("change"));
+                    };
+                    const track = document.createElement("div");
+                    track.className = "vnccs-clothes-prompt-toggle-track";
+                    const thumb = document.createElement("div");
+                    thumb.className = "vnccs-clothes-prompt-toggle-thumb";
+                    toggle.append(input, track, thumb);
+                    row.append(badge, name, status, toggle);
+                    els.promptEnhancementRow = row;
+                    els.promptEnhancement = input;
+                    syncPromptEnhancementControl();
+                    return row;
                 };
 
                 const createGenerationControls = () => {
@@ -2350,6 +2503,7 @@ app.registerExtension({
                 controlsWrap.style.paddingTop = "16px";
                 designContent.appendChild(controlsWrap);
                 designContent.appendChild(createResolutionControl());
+                designContent.appendChild(createPromptEnhancementControl());
 
                 // Tab Header
                 const tabBar = document.createElement("div");
@@ -2384,6 +2538,7 @@ app.registerExtension({
 
                     if (state.activeTab === "generate") renderAttributes(contentArea);
                     else renderClonePanel(contentArea);
+                    syncPromptEnhancementControl();
                     syncCostumeEditControls();
                     els._ui.syncSelection(tabBar);
                     els._ui.syncSelects();

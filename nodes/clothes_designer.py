@@ -613,7 +613,11 @@ class ClothesDesigner:
         source_reference_hash = hashlib.sha256(
             ref_image.detach().cpu().contiguous().numpy().tobytes()
         ).hexdigest()
-        use_qi2_rewriter = is_qi2 and active_tab != "clone"
+        use_qi2_rewriter = (
+            is_qi2
+            and active_tab != "clone"
+            and gen_settings.get("qi2_prompt_enhancement", True) is not False
+        )
         edit_system_prompt = _qi2_edit_system_prompt() if use_qi2_rewriter else None
 
         # 3. Cache check

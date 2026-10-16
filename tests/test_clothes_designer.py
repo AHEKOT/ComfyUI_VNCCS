@@ -561,6 +561,18 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
         assert call_names.count(encoder_name) == previous_calls + 1
         assert "Updated edit rules." in calls["TextGenerate"]["prompt"]
 
+        text_calls = call_names.count("TextGenerate")
+        encoder_calls = call_names.count(encoder_name)
+        data["gen_settings"]["qi2_prompt_enhancement"] = False
+        monkeypatch.setattr(
+            cd, "_qi2_edit_system_prompt",
+            lambda: pytest.fail("Disabled Prompt Enhancement must not load its template."),
+        )
+        node.process(pipe=pipe, widget_data=json.dumps(data), unique_id="123")
+        assert call_names.count("TextGenerate") == text_calls
+        assert call_names.count(encoder_name) == encoder_calls + 1
+        assert calls[encoder_name]["prompt"] == node.construct_prompt(data, model_kind="qi2")[0]
+
 
 class TestQI2EditRewriter:
     def test_official_template_is_bundled(self):
