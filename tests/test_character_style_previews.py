@@ -19,6 +19,8 @@ library = _preload_node("character_styles")
 @pytest.mark.parametrize("scale", [1024, 1536])
 @pytest.mark.parametrize("channels", [3, 4])
 def test_real_preview_path_samples_a_square_at_selected_scale_and_writes_only_webp(monkeypatch, tmp_path, mode, scale, channels):
+    prompt_server = creator.server.PromptServer.instance
+    monkeypatch.delattr(prompt_server, "last_prompt_id", raising=False)
     monkeypatch.setattr(library, "STYLE_PREVIEWS_DIR", str(tmp_path / "previews"))
     monkeypatch.setattr(creator, "save_style_preview", library.save_style_preview)
     monkeypatch.setattr(creator, "acquire_preview_assets", lambda settings: ("model", "clip", "vae"))
@@ -38,7 +40,11 @@ def test_real_preview_path_samples_a_square_at_selected_scale_and_writes_only_we
     dimensions = []
     monkeypatch.setattr(creator, "create_generation_latent", lambda model, width, height, settings: dimensions.append((width, height)) or "latent")
     sampled = []
-    monkeypatch.setattr(creator, "sample_generation_latent", lambda **kwargs: sampled.append(kwargs) or "sampled")
+    def sample(**kwargs):
+        assert prompt_server.last_prompt_id == "vnccs_character_creator_v2"
+        sampled.append(kwargs)
+        return "sampled"
+    monkeypatch.setattr(creator, "sample_generation_latent", sample)
     def decode(*args):
         width, height = dimensions[-1]
         return torch.zeros((1, height, width, channels))
