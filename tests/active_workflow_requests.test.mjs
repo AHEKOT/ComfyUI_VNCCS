@@ -164,12 +164,37 @@ for (const oldResult of ['success', 'missing', 'error', 'removed']) {
     });
 }
 
+test('clothes preview refresh preserves the user-selected image index', async () => {
+    const navigated = [];
+    const state = { character: 'Alice', costume: 'Dress',
+        selected_preview_sprite: { character: 'Alice', costume: 'Dress', index: 3 } };
+    const node = {};
+    const context = createWidgetContext({
+        state, node, console,
+        hasSelectedEditableCostume: () => true,
+        saveState() {},
+        api: { fetchApi: async () => ({ ok: true }) },
+        els: { previewImg: { style: {} }, placeholder: { style: {} } },
+        spritePreviewNavigator: {
+            invalidate() {},
+            load: async (character, options) => navigated.push({ character, ...options }),
+        },
+    });
+    vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\n${between(source('vnccs_clothes_designer'), 'const updatePreviewImage =', 'const onPreviewUpdated =')}\nglobalThis.update = updatePreviewImage;`, context);
+    await context.update();
+    assert.equal(navigated.length, 1);
+    assert.equal(navigated[0].index, 3);
+});
+
 function creatorImageHarness() {
     const images = [], saved = [], requests = [];
     const state = { character: 'Alice', character_info: {}, sprite_preview_count: 1,
         gen_settings: { ckpt_name: 'model', lora_stack: [] } };
     const node = { _randomizeSeedIfNeeded() {} };
-    const els = { previewImg: { style: {}, removeAttribute(name) { delete this[name]; } }, placeholder: { style: {} }, btnGen: {} };
+    const els = {
+        previewImg: { style: {}, removeAttribute(name) { delete this[name]; } },
+        placeholder: { style: {} }, btnGen: {}, charSelect: {}, btnNew: {}, btnDel: {},
+    };
     const context = createWidgetContext({
         state, node, els, console, container: {},
         Image: class { constructor() { images.push(this); } },
@@ -209,6 +234,16 @@ for (const previewSource of ['gen', 'pose']) {
         if (previewSource === 'pose') assert.equal(h.state.sprite_preview_index, 3);
     });
 }
+
+test('Creator defaults a fresh pose preview to the first sprite', async () => {
+    const h = creatorImageHarness();
+    vm.runInContext('Math.random = () => 0.75;', h.context);
+    const operation = h.loadChar('Alice', true);
+    h.requests[0].resolve(response({ count: 6 }));
+    await operation;
+    assert.match(h.images[0].src, /get_character_pose_preview.*index=0/);
+    assert.equal(h.state.sprite_preview_index, 0);
+});
 
 test('creator rejects an old pose callback after current cache preview succeeds', () => {
     const h = creatorImageHarness();
@@ -429,6 +464,44 @@ test('shared preview navigator ignores stale metadata errors and images after se
     nav.show(0); node.onRemoved();
     images[2].onload(); images[2].onerror();
     assert.equal(loaded.length, 1); assert.equal(missing.length, 0);
+});
+
+test('shared preview navigator defaults to the first image and preserves the user selection', async () => {
+    const images = [], countLabel = {}, node = {};
+    const button = () => ({
+        disabled: false,
+        addEventListener(name, handler) { if (name === 'click') this.click = () => { if (!this.disabled) handler(); }; },
+    });
+    const prevButton = button(), nextButton = button();
+    const context = createWidgetContext({
+        node, console, URLSearchParams,
+        Image: class { constructor() { images.push(this); } },
+        api: { fetchApi: async () => response({ count: 6 }) },
+        prevButton, nextButton, countLabel,
+    });
+    const navigatorCode = between(source('vnccs_common'), 'export function createSpritePreviewNavigator', '// ── DOM Widget Canvas Navigation').replace('export ', '');
+    vm.runInContext(`${guardCode}\n${navigatorCode}\nglobalThis.navigator = createSpritePreviewNavigator({ node, prevButton, nextButton, countLabel });`, context);
+    const nav = context.navigator;
+
+    await nav.load('Alice');
+    assert.equal(nav.state.index, 0);
+    assert.equal(countLabel.textContent, '1/6');
+    images[0].onload();
+    nextButton.click();
+    assert.equal(nav.state.index, 1);
+    assert.equal(countLabel.textContent, '2/6');
+
+    await nav.load('Alice');
+    assert.equal(nav.state.index, 1, 'Automatic refresh must retain the user-selected image');
+    assert.equal(countLabel.textContent, '2/6');
+
+    await nav.load('Bob');
+    assert.equal(nav.state.index, 0, 'A new selection must start from the first image');
+    assert.equal(countLabel.textContent, '1/6');
+
+    await nav.load('Carol', { index: 4 });
+    assert.equal(nav.state.index, 4, 'A restored user selection must remain selected');
+    assert.equal(countLabel.textContent, '5/6');
 });
 
 for (const previousSelection of [false, true]) {

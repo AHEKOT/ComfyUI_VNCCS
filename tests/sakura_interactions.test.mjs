@@ -348,6 +348,76 @@ test("Clothes Generator wipes each decoded outfit over its source sprite without
     assert.ok(Math.abs(parseFloat(tiles[0].style.width) / parseFloat(tiles[0].style.height) - 1) < 0.001);
 });
 
+test("Clothes Generator uses VNCCS mannequins instead of raw pose inputs for empty outfit slots", () => {
+    const h = setup();
+    h.context.app = { registerExtension() {} };
+    vm.runInContext(generator.replace(/^import .*;\n/gm, "") + '\nthis.Generator = CharacterGeneratorWidget;', h.context);
+    const preview = new h.Element("div"); h.root.appendChild(preview);
+    const widget = Object.assign(Object.create(h.context.Generator.prototype), {
+        previewEl: preview, _ui: h.ui, isClothes: true, syncStagesFromData() {}, schedulePreviewGridLayout() {},
+        stages: [["source_upscaler", "Source"], ["pose_generation", "Poses"]], selectedPreview: "pose_generation",
+        stageState: {
+            source_upscaler: { status: "done", images: ["source-character"] },
+            pose_generation: { status: "running", current: 0, total: 3, images: null },
+        },
+    });
+
+    widget.renderPreview();
+
+    const tiles = [...widget.previewGrid.children];
+    assert.equal(tiles.length, 3);
+    assert.ok(tiles.every(tile => tile.classList.contains("is-placeholder")));
+    assert.ok(tiles.every(tile => tile.querySelector(".vnccs-pipe-img-placeholder")?.src.includes("VNCCS_Character_Mannequin")));
+    assert.ok(tiles.every(tile => !tile._pendingImage));
+});
+
+test("Emotions Generator shows selected source sprites instead of mannequins while results are pending", async () => {
+    const h = setup();
+    h.context.app = { registerExtension() {} };
+    vm.runInContext(generator.replace(/^import .*;\n/gm, "") + '\nthis.Generator = CharacterGeneratorWidget;', h.context);
+    const preview = new h.Element("div"); h.root.appendChild(preview);
+    const stage = "emotion_0001_bg_remove";
+    const widget = Object.assign(Object.create(h.context.Generator.prototype), {
+        previewEl: preview, _ui: h.ui, isEmotions: true, _previewPlaceholderStage: stage,
+        syncStagesFromData() {}, schedulePreviewGridLayout() {},
+        stages: [[stage, "Coat / smile"]], selectedPreview: stage,
+        stageState: { [stage]: { status: "running", current: 0, total: 3,
+            images: ["source-1.png", "source-2.png", "source-3.png"] } },
+    });
+
+    widget.renderPreview();
+    h.flush();
+
+    const tiles = [...widget.previewGrid.children];
+    assert.equal(tiles.length, 3);
+    assert.ok(tiles.every(tile => !tile.classList.contains("is-placeholder")));
+    assert.ok(tiles.every(tile => tile.querySelector(".vnccs-pipe-img-placeholder")?.style.display === "none"));
+    const entrances = () => h.document.animations.filter(animation => animation.options.duration === 380);
+    assert.equal(entrances().length, 0, "Cards stay hidden until their source sprite is decoded");
+    assert.ok(tiles.every(tile => tile.classList.contains("is-entrance-pending")));
+    for (const [index, tile] of tiles.entries()) {
+        await tile._pendingImage.onload();
+        h.flush();
+        assert.equal(entrances().length, index + 1);
+        assert.equal(entrances()[index].effect.target, tile);
+        assert.equal(tile.classList.contains("is-entrance-pending"), false);
+    }
+    assert.deepEqual(tiles.map(tile => tile.dataset.src), ["source-1.png", "source-2.png", "source-3.png"]);
+
+    const previous = tiles[0]._previewImage;
+    const animationCount = h.document.animations.length;
+    widget.stageState[stage] = { status: "running", current: 1, total: 3,
+        images: ["result-1.png", "source-2.png", "source-3.png"] };
+    widget.renderPreview();
+    const replacement = tiles[0]._pendingImage;
+    await replacement.onload();
+
+    assert.deepEqual([...widget.previewGrid.children], tiles, "Progress replaces content without rebuilding cards");
+    const replacementMotion = h.document.animations.slice(animationCount);
+    assert.ok(replacementMotion.some(animation => animation.options.duration === 420 && animation.effect.target === replacement));
+    assert.ok(replacementMotion.some(animation => animation.options.duration === 280 && animation.effect.target === previous));
+});
+
 test("Clone Generator fills Naked Pose with Original Pose cards and wipes each naked sprite over its original", async () => {
     const h = setup();
     h.context.cancelAnimationFrame = () => {};

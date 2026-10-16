@@ -548,6 +548,7 @@ ${SAKURA_THEME_CSS}
     transform-origin: top left;
     transition: border-color 240ms ease, box-shadow 240ms ease;
 }
+.vnccs-pipe-img.is-entrance-pending { opacity: 0; }
 .vnccs-pipe-img-content { position: absolute; z-index: 1; inset: 4px; width: calc(100% - 8px); height: calc(100% - 8px); object-fit: contain; pointer-events: none; transition: filter 520ms ease, opacity 420ms ease, transform 520ms cubic-bezier(0.22,1,0.36,1); }
 .vnccs-pipe-img.is-waiting .vnccs-pipe-img-content { filter: grayscale(1) saturate(0.15) brightness(0.62); opacity: 0.64; transform: scale(0.992); }
 .vnccs-pipe-img.is-processing .vnccs-pipe-img-content { filter: none; opacity: 1; transform: scale(1); }
@@ -1574,8 +1575,7 @@ class CharacterGeneratorWidget {
                     processing_indices: detail.processing_indices,
                     preview_aspect: detail.preview_aspect ?? previousStageState.preview_aspect,
                 };
-                if (!this.userSelectedPreview && (!this.isClothes || stage !== "source_upscaler")
-                    && (status === "running" || status === "done" || detail.images)) {
+                if (!this.userSelectedPreview && (status === "running" || status === "done" || detail.images)) {
                     if (stage !== this.selectedPreview && this.hasPendingPreviewReveal()) {
                         // The backend can start the next stage before the browser has decoded
                         // the last preview. Keep this stage visible until its wipe completes.
@@ -1593,8 +1593,28 @@ class CharacterGeneratorWidget {
             this.renderChain();
             this.saveBrowserState();
         };
+        this.onExecutionInterrupted = () => {
+            if (this._disposed) return;
+            const regenerateStage = this.regenerateState?.activeStage;
+            let changed = false;
+            for (const [key, state] of Object.entries(this.stageState)) {
+                if (state.status !== "running" && key !== regenerateStage) continue;
+                this.stageState[key] = { ...state, status: "waiting", message: "Stopped" };
+                changed = true;
+            }
+            if (!changed && !this.regenerateState) return;
+            this._interruptedProgressRunId = this._activeProgressRunId;
+            this._pendingAutoPreviewStage = null;
+            this.finishRegenerate({ render: false });
+            if (this.viewer?.open) this.syncViewerImage();
+            this.renderPreview();
+            this.renderChain();
+            this.saveBrowserState();
+        };
         api.addEventListener("vnccs.character_generator.stage", this.onStage);
+        api.addEventListener("execution_interrupted", this.onExecutionInterrupted);
         registerCleanup(this.node, () => api.removeEventListener("vnccs.character_generator.stage", this.onStage));
+        registerCleanup(this.node, () => api.removeEventListener("execution_interrupted", this.onExecutionInterrupted));
         watchConnection(this.node, () => this.refreshProgress(), registerCleanup);
         const timer = setInterval(() => {
             if (document.visibilityState !== "hidden") {
@@ -2722,6 +2742,7 @@ class CharacterGeneratorWidget {
             }
             if (snapshot.scope !== scope || String(snapshot.node_id) !== String(this.node.id)) return;
             if (!this.acceptsProgressRequest(snapshot.request_id)) return;
+            if (snapshot.run_id && snapshot.run_id === this._interruptedProgressRunId) return;
             if (this._progressScope === scope && this._progressEpoch === snapshot.epoch && snapshot.revision < (this._progressRevision || 0)) return;
             const previousView = this.progressViewKey();
             this._progressScope = scope;
@@ -2746,8 +2767,7 @@ class CharacterGeneratorWidget {
                     : incoming;
                 if (snapshot.run_id && incoming.status === "running" && key.endsWith("pose_generation")
                     && !incoming.images?.length && !previousImages?.length) this._previewPlaceholderStage = key;
-                if (["running", "done"].includes(this.stageState[key].status)
-                    && (!this.isClothes || key !== "source_upscaler")) followedStage = key;
+                if (["running", "done"].includes(this.stageState[key].status)) followedStage = key;
                 this.updateRegenerateProgress(key, this.stageState[key].status, { render: false });
             }
             if (!snapshot.error && !this.userSelectedPreview && followedStage && this.selectedPreview !== followedStage) {
@@ -3729,14 +3749,15 @@ class CharacterGeneratorWidget {
         const stageIndex = this.stages.findIndex(([key]) => key === this.selectedPreview);
         const originalPoseImages = this.isClone && this.selectedPreview === "naked_pose_generation"
             ? this.stageState.original_pose_generation?.images : null;
-        const upstream = originalPoseImages?.length ? originalPoseImages : this.stages.slice(0, stageIndex).reverse()
-            .map(([key]) => this.stageState[key]?.images).find(images => images?.length) || [];
+        const upstream = this.isClothes && this.selectedPreview === "pose_generation" ? []
+            : originalPoseImages?.length ? originalPoseImages : this.stages.slice(0, stageIndex).reverse()
+                .map(([key]) => this.stageState[key]?.images).find(images => images?.length) || [];
         const total = Math.max(0, Math.min(512, Number(state.total) || 0));
         const count = Math.min(512, Math.max(images.length, total, state.status === "done" ? 0 : upstream.length));
         const busy = state.status === "running" || this.regenerateState?.activeStage === this.selectedPreview;
         const missingPosePreviews = this.selectedPreview.endsWith("pose_generation")
             && images.filter(Boolean).length < count;
-        const showPlaceholders = busy && !upstream.some(Boolean)
+        const showPlaceholders = !this.isEmotions && (busy || state.status === "waiting") && !upstream.some(Boolean)
             && (missingPosePreviews || this._previewPlaceholderStage === this.selectedPreview);
         const mannequinURL = this.mannequinURL();
         this.previewEl.classList.toggle("is-male-character", mannequinURL === CHARACTER_MANNEQUIN_MALE_URL);
@@ -3799,7 +3820,12 @@ class CharacterGeneratorWidget {
             const source = (targeted && images.length === 1
                 ? (index === activeIndex ? images[0] : tile._previewSource || upstream[index])
                 : images[index] || (!showPlaceholders ? upstream[index] || (busy ? tile._previewSource : null) : null));
-            if (source) this.updatePreviewImage(tile, source);
+            if (source) {
+                if (this.isEmotions && tile._previewEntrancePending && !tile._previewImage) {
+                    tile.classList.add("is-entrance-pending");
+                }
+                this.updatePreviewImage(tile, source);
+            }
             else {
                 this.finishCharacterPreviewTransition(tile);
                 this.finishClothesPreviewTransition(tile);
@@ -3861,13 +3887,15 @@ class CharacterGeneratorWidget {
         this.previewCardEntranceFrame = requestAnimationFrame(() => {
             this.previewCardEntranceFrame = null;
             if (!this.previewGrid?.isConnected || this._disposed) return;
-            const cards = [...this.previewGrid.children].filter(tile => tile._previewEntrancePending);
+            const cards = [...this.previewGrid.children].filter(tile => tile._previewEntrancePending
+                && (!this.isEmotions || !tile._previewSource || tile._previewImage));
             cards.forEach((tile, index) => {
                 tile._previewEntrancePending = false;
                 const motion = this._ui?._playMotion(tile, [
                     { opacity: 0, transform: "translateY(10px) scale(0.97)" },
                     { opacity: 1, transform: "none" },
                 ], 380);
+                tile.classList.toggle("is-entrance-pending", false);
                 motion?.effect?.updateTiming?.({ delay: index * 70, fill: "backwards" });
             });
         });
@@ -4090,13 +4118,14 @@ class CharacterGeneratorWidget {
                 (!this.isClone && !this.isClothes && !this.isEmotions)
                 || (this.isClone && this.selectedPreview === "original_pose_generation")
             ));
-            const clothesReveal = Boolean(previous && (
+            const clothesRevealRequested = Boolean(
                 (this.isClothes && this.selectedPreview === "pose_generation"
                     && this._clothesRevealIndices?.delete(index))
                 || originalReveal
                 || (this.isClone && this.selectedPreview === "naked_pose_generation"
                     && this._nakedRevealIndices?.delete(index))
-            ));
+            );
+            const clothesReveal = Boolean(previous && clothesRevealRequested);
             tile._previewImage = image;
             const stateAspect = Number(this.stageState?.[this.selectedPreview]?.preview_aspect);
             const hasFixedStageAspect = Number.isFinite(stateAspect) && stateAspect > 0;
@@ -4127,6 +4156,7 @@ class CharacterGeneratorWidget {
         }
         if (changed && [...(this.previewGrid?.children || [])].every(tile => tile.dataset.src)) this._previewPlaceholderStage = null;
         if (changed) this.schedulePreviewGridLayout(this.previewGrid);
+        if (changed) this.schedulePreviewCardEntrances();
         if (changed && this.viewer?.open) this.syncViewerImage();
     }
 

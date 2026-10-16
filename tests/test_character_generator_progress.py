@@ -277,9 +277,9 @@ def test_entry_points_forward_node_stage_and_actual_pose_count(monkeypatch, tmp_
         if mode == "clothes":
             assert kwargs["background"] == "Green"
             if regenerate_index is None:
-                assert events[-1]["images"] == []
+                assert "images" not in events[-1]
                 base_preview = next(event for event in events if event["stage"] == stage and event["status"] == "waiting")
-                assert base_preview["images"] == []
+                assert "images" not in base_preview
                 assert base_preview["total"] == 4
             else:
                 assert "images" not in events[-1]

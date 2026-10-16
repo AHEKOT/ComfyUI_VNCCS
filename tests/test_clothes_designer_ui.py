@@ -43,6 +43,14 @@ def test_qi2_background_defaults_to_transparent_without_wrapping_controls():
     assert 'btn.setAttribute("aria-pressed", String(selected))' in SOURCE
 
 
+def test_qi2_prompt_enhancement_defaults_on_and_is_saved_in_widget_state():
+    assert "qi2_prompt_enhancement: true" in SOURCE
+    assert "state.gen_settings.qi2_prompt_enhancement = event.target.checked" in SOURCE
+    assert 'input.setAttribute("aria-label", "Prompt Enhancement")' in SOURCE
+    assert 'getConnectedModelKind().trim().toLowerCase() === "qi2"' in SOURCE
+    assert 'state.activeTab === "generate"' in SOURCE
+
+
 def test_clone_preview_requires_reference_before_queue_or_api_execution():
     handler = SOURCE.split("btnGen.onclick = async () => {", 1)[1].split("const character = state.character;", 1)[0]
     assert 'state.activeTab === "clone" && !state.clone_image' in handler
@@ -51,3 +59,8 @@ def test_clone_preview_requires_reference_before_queue_or_api_execution():
 
 def test_serialization_updates_workflow_widget_values_with_latest_clone_state():
     assert 'o.widgets_values[index] = node.widgets[index].value' in SOURCE
+
+
+def test_design_panel_scrolls_only_vertically():
+    design_content = SOURCE.split(".vnccs-clothes-design-content {", 1)[1].split("}", 1)[0]
+    assert "overflow: hidden auto;" in design_content

@@ -144,6 +144,79 @@ test("background buttons update restored QI2 state, preview payload and workflow
     }
 });
 
+test("QI2 Prompt Enhancement toggle persists and is hidden outside Generate Clothes", () => {
+    const harness = setup();
+    harness.state.activeTab = "generate";
+    let connectedKind = "qi2";
+    const makeElement = tagName => {
+        const classes = new Set();
+        return {
+            tagName, children: [], attrs: {}, hidden: false, disabled: false, checked: false,
+            dataset: {}, style: {},
+            classList: {
+                toggle(name, force) {
+                    if (force === undefined ? !classes.has(name) : force) classes.add(name);
+                    else classes.delete(name);
+                },
+                contains: name => classes.has(name),
+            },
+            append(...children) { this.children.push(...children); },
+            appendChild(child) { this.children.push(child); },
+            setAttribute(name, value) { this.attrs[name] = value; },
+            dispatchEvent(event) { this[`on${event.type}`]?.({ target: this }); },
+        };
+    };
+    Object.assign(harness.context, {
+        Event: class { constructor(type) { this.type = type; } },
+        getConnectedModelKind: () => connectedKind,
+        setHelpText() {}, helpFor() {},
+        document: { createElement: makeElement },
+    });
+    vm.runInContext(
+        block("const syncPromptEnhancementControl =", "const syncGenerationControls =")
+        + block("const createPromptEnhancementControl =", "const createGenerationControls =")
+        + "this.promptEnhancementControl = createPromptEnhancementControl(); this.syncPromptEnhancement = syncPromptEnhancementControl;",
+        harness.context,
+    );
+
+    const row = harness.context.promptEnhancementControl;
+    const [badge, label, status, toggle] = row.children;
+    const [input, track, thumb] = toggle.children;
+    assert.equal(row.hidden, false);
+    assert.equal(badge.className, "vnccs-clothes-prompt-badge");
+    assert.equal(label.textContent, "Prompt Enhancement");
+    assert.equal(input.attrs["aria-label"], "Prompt Enhancement");
+    assert.equal(track.className, "vnccs-clothes-prompt-toggle-track");
+    assert.equal(thumb.className, "vnccs-clothes-prompt-toggle-thumb");
+    assert.equal(input.checked, true);
+    assert.equal(status.textContent, "Enabled");
+
+    row.onclick();
+    assert.equal(harness.state.gen_settings.qi2_prompt_enhancement, false);
+    assert.equal(JSON.parse(harness.dataWidget.value).gen_settings.qi2_prompt_enhancement, false);
+    assert.equal(status.textContent, "Disabled");
+
+    input.setDisabled(true);
+    row.onclick();
+    assert.equal(harness.state.gen_settings.qi2_prompt_enhancement, false);
+    input.setDisabled(false);
+    harness.state.activeTab = "clone";
+    harness.context.syncPromptEnhancement();
+    assert.equal(row.hidden, true);
+    harness.state.activeTab = "generate";
+    connectedKind = "minimaxh3";
+    harness.context.syncPromptEnhancement();
+    assert.equal(row.hidden, true);
+});
+
+test("Prompt Enhancement is rendered directly below Clothes Wizard only in the Generate panel", () => {
+    const attributes = block("const renderAttributes =", "// Helper to render Clone Panel");
+    const layout = block("const controlsWrap =", "// Tab Header");
+    assert.match(attributes, /container\.appendChild\(wizardBtn\);\s*container\.appendChild\(promptEnhancementControl\);/);
+    assert.match(layout, /const promptEnhancementControl = createPromptEnhancementControl\(\);/);
+    assert.doesNotMatch(layout, /designContent\.appendChild\(createPromptEnhancementControl\(\)\)/);
+});
+
 for (const stale of ['character', 'costume', 'tab', 'reference', 'removed', 'superseded', 'corrupt', 'current']) {
     test(`Clothes donor upload respects ${stale} ownership`, async () => {
         const h = setup();

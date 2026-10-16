@@ -18,10 +18,12 @@ function setup(saved, mode = "illustrious") {
     };
     const widget = { name: "widget_data", value: "{}" };
     const node = { widgets: [widget] };
-    const style = { setValue(value) { this.value = value; }, close() {} };
+    const style = { setValue(value) { this.value = value; }, setCatalog(value) { this.catalog = value; }, close() {} };
+    const catalogs = { anima: { name: "anima" }, qi2: { name: "qi2" } };
     const ctx = createWidgetContext({
         state, node, els: { style, aesthetics: {}, negative_prompt: {} },
         DEFAULT_CHARACTER_STYLE: "ghibli_miyazaki",
+        styleCatalogForMode: value => value === "qi2" ? catalogs.qi2 : catalogs.anima,
         saveCurrentGenerationModeValues() {}, syncBackgroundForGenerationMode() {},
         applyGenerationProfile() {}, syncGenerationControls() {}, refreshGenerationModeUI() {},
     });
@@ -43,12 +45,14 @@ function setup(saved, mode = "illustrious") {
 test("tag modes default to None and switch to their pre-3.2 tags; QI2 keeps its defaults", () => {
     const { ctx, state, style } = setup();
     assert.equal(state.character_info.style, "none");
+    assert.equal(style.catalog.name, "anima");
     assert.equal(state.character_info.aesthetics, "masterpiece, best quality");
     ctx.switchMode("anima");
     assert.equal(style.value, "none");
     assert.equal(state.character_info.aesthetics, "masterpiece, best quality, score_7, anime");
     assert.match(state.character_info.negative_prompt, /score_1, score_2, score_3/);
     ctx.switchMode("qi2");
+    assert.equal(style.catalog.name, "qi2");
     assert.equal(style.value, "ghibli_miyazaki");
     assert.equal(state.character_info.aesthetics, "");
     assert.equal(state.character_info.negative_prompt, "bad quality, worst quality, low quality, blurry, jpeg artifacts");
@@ -105,4 +109,31 @@ test("version 3 migration preserves authored choices and QI2 while restoring Ani
     ctx.switchMode("illustrious");
     assert.equal(state.character_info.aesthetics, "my quality");
     assert.equal(state.character_info.negative_prompt, "my negative");
+});
+
+test("the optional second style survives model switching, workflow serialization and immediate reload", () => {
+    const { ctx, state, node } = setup(undefined, "anima");
+    assert.equal(state.character_info.secondary_style, null);
+    const anima = { style: "anima_artist_5225", style_prompt: "@haruyama kazunori", style_label: "haruyama kazunori" };
+    state.character_info.style = "anima_artist_87540";
+    state.character_info.secondary_style = anima;
+    ctx.savePrompt(); ctx.save();
+    ctx.switchMode("qi2");
+    assert.equal(state.character_info.secondary_style, null);
+    assert.equal(state.character_info.style, "ghibli_miyazaki");
+    ctx.switchMode("illustrious");
+    assert.equal(state.character_info.secondary_style, null);
+    state.character_info.secondary_style = { style: "anima_artist_46580", style_prompt: "@itomugi-kun" };
+    ctx.savePrompt(); ctx.save();
+    ctx.switchMode("anima");
+    assert.equal(state.character_info.style, "anima_artist_87540");
+    assert.deepEqual(state.character_info.secondary_style, anima);
+    const workflow = { widgets_values: ["stale"] };
+    node.onSerialize(workflow);
+    const restored = setup(JSON.parse(workflow.widgets_values[0]));
+    assert.deepEqual(restored.state.character_info.secondary_style, anima);
+    restored.ctx.switchMode("illustrious");
+    assert.equal(restored.state.character_info.secondary_style.style, "anima_artist_46580");
+    restored.ctx.switchMode("qi2");
+    assert.equal(restored.state.character_info.secondary_style, null);
 });

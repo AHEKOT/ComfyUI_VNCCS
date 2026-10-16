@@ -1424,8 +1424,10 @@ app.registerExtension({
 
                 function selectedPoseIndexList() {
                     if (state.selectedPoseIndices === null) return null;
+                    const poseCount = Math.max(0, Number(state.poseCount) || 0);
                     return Array.from(state.selectedPoseIndices)
-                        .filter(index => Number.isInteger(index) && index > 0)
+                        .filter(index => Number.isInteger(index) && index > 0
+                            && (poseCount <= 0 || index <= poseCount))
                         .sort((a, b) => a - b);
                 }
 
@@ -2347,6 +2349,9 @@ app.registerExtension({
                     countLabel: spriteCount,
                     onLoaded: (_url, previewState) => {
                         state.poseCount = Math.max(0, Number(previewState.count || 0));
+                        if (state.selectedPoseIndices !== null) {
+                            state.selectedPoseIndices = new Set(selectedPoseIndexList());
+                        }
                         state.selectedPreviewSprite = previewState.count > 0
                             ? {
                                 character: previewState.character,
@@ -3235,7 +3240,10 @@ app.registerExtension({
                     if (disposed || !charName || charName === "Character Name") return;
                     const token = ++characterFetchToken;
 
-                    spritePreviewNavigator?.load(charName);
+                    const selectedPreview = state.selectedPreviewSprite || state.gen?.selected_preview_sprite;
+                    spritePreviewNavigator?.load(charName, {
+                        index: selectedPreview?.character === charName ? selectedPreview.index : undefined,
+                    });
 
                     // Costumes
                     try {
@@ -3249,11 +3257,12 @@ app.registerExtension({
                         if (costumesDataWidget && costumesDataWidget.value) {
                             const saved = parseSelection(costumesDataWidget);
                             if (restoreErrors.size) return;
-                            state.selectedCostumes = saved;
+                            state.selectedCostumes = new Set(
+                                [...saved].filter(costume => state.costumes.includes(costume))
+                            );
                         } else {
                             state.selectedCostumes = new Set(state.costumes);
                         }
-                        if (!state.costumes.includes("Original")) state.selectedCostumes.delete("Original");
 
                         renderCostumes();
                         updateCostumesData();

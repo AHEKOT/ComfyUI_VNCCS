@@ -270,6 +270,11 @@ CHARACTER_STYLE_CATALOG_PATH = os.path.join(
     "character_template",
     "character_styles.json",
 )
+ANIMA_STYLE_CATALOG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "character_template",
+    "anima_styles.json",
+)
 
 
 def _load_character_style_catalog(path=CHARACTER_STYLE_CATALOG_PATH):
@@ -329,6 +334,23 @@ def _load_character_style_catalog(path=CHARACTER_STYLE_CATALOG_PATH):
     CHARACTER_STYLE_ALIASES,
     DEFAULT_CHARACTER_STYLE,
 ) = _load_character_style_catalog()
+(
+    ANIMA_STYLE_CATALOG,
+    ANIMA_STYLE_PROMPTS,
+    _ANIMA_STYLE_ALIASES,
+    DEFAULT_ANIMA_STYLE,
+) = _load_character_style_catalog(ANIMA_STYLE_CATALOG_PATH)
+ALL_CHARACTER_STYLE_PROMPTS = {**CHARACTER_STYLE_PROMPTS, **ANIMA_STYLE_PROMPTS}
+ALL_CHARACTER_STYLE_ALIASES = {**CHARACTER_STYLE_ALIASES, **_ANIMA_STYLE_ALIASES}
+
+
+def _style_catalog_for_mode(mode):
+    mode = str(mode or "qi2").lower()
+    if mode == "qi2":
+        return CHARACTER_STYLE_CATALOG
+    if mode in {"anima", "illustrious"}:
+        return ANIMA_STYLE_CATALOG
+    raise ValueError(f"Unsupported generation mode: {mode}")
 
 
 def resolve_generation_seed(gen_settings, *, seed_resolved=False):
@@ -479,21 +501,27 @@ def _effective_character_background(value, generation_mode="illustrious"):
     return background
 
 
-def _character_style_prompt(info):
+def _character_style_prompt(info, *, include_secondary=False):
+    if include_secondary:
+        secondary = info.get("secondary_style")
+        extra = (_character_style_prompt(secondary)
+                 if isinstance(secondary, dict) and isinstance(secondary.get("style"), str)
+                 and secondary["style"].strip().lower() not in {"", "none"} else "")
+        return ", ".join(dict.fromkeys(part for part in (_character_style_prompt(info), extra) if part))
     style_key = str(info.get("style", DEFAULT_CHARACTER_STYLE) or DEFAULT_CHARACTER_STYLE).strip().lower()
     if style_key == "none":
         return ""
     if style_key == "custom":
         return str(info.get("custom_style", "") or "").strip()
-    style_key = CHARACTER_STYLE_ALIASES.get(style_key, style_key)
+    style_key = ALL_CHARACTER_STYLE_ALIASES.get(style_key, style_key)
     if style_key.startswith("user_"):
         styles = load_user_styles()
         match = next((style for style in styles if style["id"] == style_key), None)
         if match:
             return match["prompt"]
-    if style_key not in CHARACTER_STYLE_PROMPTS and info.get("style_prompt"):
+    if style_key not in ALL_CHARACTER_STYLE_PROMPTS and info.get("style_prompt"):
         return str(info["style_prompt"])[:16000].strip()
-    return CHARACTER_STYLE_PROMPTS.get(style_key, CHARACTER_STYLE_PROMPTS[DEFAULT_CHARACTER_STYLE])
+    return ALL_CHARACTER_STYLE_PROMPTS.get(style_key, CHARACTER_STYLE_PROMPTS[DEFAULT_CHARACTER_STYLE])
 
 
 def _infer_skin_color_from_description(description):
@@ -1503,13 +1531,18 @@ def decode_generation_samples(vae, samples, gen_settings):
 if server:
     @server.PromptServer.instance.routes.get("/vnccs/character_styles")
     async def get_character_styles(request):
+        query = getattr(getattr(request, "rel_url", None), "query", {}) if request is not None else {}
+        try:
+            catalog = _style_catalog_for_mode(query.get("mode", "qi2"))
+        except ValueError as error:
+            return web.json_response({"error": str(error)}, status=400)
         try:
             styles = await asyncio.to_thread(load_user_styles)
             groups = [
                 {**group, "styles": [{**style, "image": style_preview_url(style["id"])} for style in group["styles"]]}
-                for group in CHARACTER_STYLE_CATALOG["groups"] + ([{"label": "My styles", "styles": styles}] if styles else [])
+                for group in catalog["groups"] + ([{"label": "My styles", "styles": styles}] if styles else [])
             ]
-            return web.json_response({**CHARACTER_STYLE_CATALOG, "groups": groups, "custom_preview": style_preview_url("custom"), "preview_directory": STYLE_PREVIEWS_DIR})
+            return web.json_response({**catalog, "groups": groups, "custom_preview": style_preview_url("custom"), "preview_directory": STYLE_PREVIEWS_DIR})
         except (OSError, ValueError) as error:
             return web.json_response({"error": f"Cannot read user styles: {error}"}, status=500)
 
@@ -1850,10 +1883,11 @@ Example:
     @logged_operation("Creator", "preview")
     def _generate_preview_response(data, style_preview=None):
         try:
+            _ensure_prompt_server_progress_context()
             gen_settings = normalize_gen_settings(data.get("gen_settings", {}))
             char_info = data.get("character_info", {})
             if style_preview is not None:
-                char_info = {**char_info, "image_type": "Portrait"}
+                char_info = {**char_info, "image_type": "Portrait", "secondary_style": None}
                 char_info.pop("framing", None)
             style_revision = None
             if style_preview is not None and style_preview.startswith("user_"):
@@ -2027,7 +2061,7 @@ Example:
                 raise ValueError("Request must be an object")
             style_id = data.get("style_id", "")
             style_preview_path(style_id)
-            style_id = CHARACTER_STYLE_ALIASES.get(style_id, style_id)
+            style_id = ALL_CHARACTER_STYLE_ALIASES.get(style_id, style_id)
             info = data.get("character_info", {})
             settings = data.get("gen_settings", {})
             if not isinstance(info, dict) or not isinstance(settings, dict):
@@ -2035,7 +2069,7 @@ Example:
             if len(json.dumps(data)) > 150000:
                 raise ValueError("Style preview payload is too large")
             users = await asyncio.to_thread(load_user_styles)
-            styles = {**CHARACTER_STYLE_PROMPTS, **{style["id"]: style["prompt"] for style in users}}
+            styles = {**ALL_CHARACTER_STYLE_PROMPTS, **{style["id"]: style["prompt"] for style in users}}
             if style_id == "custom":
                 prompt = info.get("custom_style", "")
                 if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
@@ -2204,7 +2238,7 @@ class CharacterCreatorV2:
         """Use the pre-3.2 tag format for Anima and Illustrious."""
         defaults = CREATOR_TAG_PROMPT_DEFAULTS[generation_mode]
         sex = info.get("sex", "female")
-        style = _character_style_prompt({**info, "style": info.get("style") or "none"}) if include_style else ""
+        style = _character_style_prompt({**info, "style": info.get("style") or "none"}, include_secondary=True) if include_style else ""
         framing = {
             "portrait": "portrait, close-up, head and shoulders",
             "full_body": "standing, full body",
@@ -2280,7 +2314,9 @@ class CharacterCreatorV2:
         root = character_dir(character)
         paths = [config_path(character), safe_join_under(root, "cache", "preview.png")]
         paths.extend(list_pose_preview_files(character))
-        return json.dumps([_character_style_prompt(data.get("character_info", {})), [file_fingerprint(path) for path in paths],
+        return json.dumps([_character_style_prompt(data.get("character_info", {}),
+                                                  include_secondary=normalize_gen_settings(data.get("gen_settings", {}))["generation_mode"] in CREATOR_TAG_PROMPT_DEFAULTS),
+                           [file_fingerprint(path) for path in paths],
                            _generation_file_signatures(normalize_gen_settings(data.get("gen_settings", {})))])
 
     @logged_operation("Creator", "workflow")
@@ -2450,6 +2486,13 @@ class CharacterCreatorV2:
                      log_event("fallback", component="Creator", level="warning", message=f'Pose Preview Fallback Failed. Regenerating...')
 
         if image is None:
+            try:
+                server.PromptServer.instance.send_sync(
+                    "vnccs.preview.generation_started",
+                    {"node_id": unique_id, "character": character_name},
+                )
+            except Exception as e:
+                log_event('warning', component='Creator', level='warning', message=f'Failed to notify preview generation start: {e}', error=str(e))
             log_event("preview_generation", component="Creator", character=character_name, mode=generation_mode)
             stage = "preparing generation"
             log_stage(stage)

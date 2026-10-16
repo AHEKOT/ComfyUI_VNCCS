@@ -23,6 +23,7 @@ from typing import Optional, Dict, Any, List, Tuple
 EMOTIONS = ["neutral"]
 MAIN_DIRS = ["Sprites", "Faces", "Sheets"]
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,120}$")
+SPRITE_ARCHIVE_DIR_RE = re.compile(r"^V[0-9]+$", re.IGNORECASE)
 PRIVILEGED_REQUEST_HEADER = "X-VNCCS-CSRF"
 PRIVILEGED_REQUEST_VALUE = "1"
 _STORAGE_LOCKS = tuple(threading.RLock() for _ in range(64))
@@ -74,6 +75,11 @@ def ensure_safe_name(value: str, field: str = "name") -> str:
     if not SAFE_NAME_RE.match(value):
         raise ValueError(f"{field} may only contain letters, numbers, spaces, underscores and hyphens")
     return value
+
+
+def is_sprite_archive_dir(name: str) -> bool:
+    """Return whether a sprite directory is a generated version archive."""
+    return bool(SPRITE_ARCHIVE_DIR_RE.fullmatch(str(name or "")))
 
 
 def normalize_filesystem_path(value: str) -> str:
@@ -299,6 +305,24 @@ def staged_image_batch(target_dir, *, version_existing=True, lock_root=None):
             if os.path.exists(stage):
                 shutil.rmtree(stage)
             # A failed rollback leaves its backup in place for recovery.
+
+
+def archive_current_image_batch(target_dir, *, lock_root=None):
+    """Move current images into the next V* archive without publishing replacements."""
+    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+    with character_storage_lock(lock_root or target_dir):
+        if not os.path.isdir(target_dir):
+            return False
+        current_images = [
+            name for name in os.listdir(target_dir)
+            if os.path.isfile(os.path.join(target_dir, name))
+            and os.path.splitext(name)[1].lower() in image_exts
+        ]
+        if not current_images:
+            return False
+        with staged_image_batch(target_dir, lock_root=lock_root):
+            pass
+    return True
 
 
 def validate_costume_info(info):

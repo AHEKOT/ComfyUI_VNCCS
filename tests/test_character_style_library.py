@@ -17,7 +17,9 @@ ROOT = Path(__file__).parents[1]
 
 def test_packaged_catalog_is_unique_and_every_style_has_a_square_rgb_preview():
     catalog = json.loads((ROOT / "character_template/character_styles.json").read_text())
+    anima_catalog = json.loads((ROOT / "character_template/anima_styles.json").read_text())
     styles = [style for group in catalog["groups"] for style in group["styles"]]
+    anima_styles = [style for group in anima_catalog["groups"] for style in group["styles"]]
     assert len(styles) == len({style["id"] for style in styles}) == 358
     assert len({style["label"].casefold() for style in styles}) == len(styles)
     assert all(style["label"] and style["description"] and style["reference"] and style["prompt"] for style in styles)
@@ -26,9 +28,10 @@ def test_packaged_catalog_is_unique_and_every_style_has_a_square_rgb_preview():
     assert catalog["aliases"]["clio_toon_shader"] == "cel_shading"
     assert catalog["aliases"]["clio_photography"] == "photorealism"
     directory = ROOT / "character_template/style_previews"
-    assert {p.stem for p in directory.glob("*.webp") if not p.stem.startswith("user_") and p.stem != "custom"} == {style["id"] for style in styles}
-    for style in styles:
-        with Image.open(directory / (style["id"] + ".webp")) as image:
+    packaged_ids = {style["id"] for style in styles + anima_styles}
+    assert {p.stem for p in directory.glob("*.webp") if not p.stem.startswith("user_") and p.stem != "custom"} == packaged_ids
+    for style_id in packaged_ids:
+        with Image.open(directory / (style_id + ".webp")) as image:
             assert image.format == "WEBP" and image.size == (1024, 1024)
             assert image.mode == "RGB"
     assert catalog["default_style"] == "ghibli_miyazaki"

@@ -22,7 +22,7 @@ from ..utils import (
     sheets_dir,
     ensure_safe_name, safe_join_under, safe_relative_path, atomic_output_path,
     validate_costume_info, privileged_route, character_storage_lock, load_costume_snapshot,
-    require_existing_costume,
+    require_existing_costume, is_sprite_archive_dir,
 )
 from .character_generator import (
     _call_comfy_node,
@@ -203,7 +203,7 @@ def get_latest_sprite_path(character, costume="Naked"):
         if neutral_dir and os.path.isdir(neutral_dir):
             neutral_files = []
             for root, _dirs, filenames in os.walk(neutral_dir):
-                _dirs[:] = [name for name in _dirs if not re.fullmatch(r"V[0-9]+", name, re.IGNORECASE)]
+                _dirs[:] = [name for name in _dirs if not is_sprite_archive_dir(name)]
                 for filename in filenames:
                     neutral_files.append(os.path.join(root, filename))
             best = _latest_image_file(neutral_files, character_root)
@@ -221,7 +221,7 @@ def get_latest_sprite_path(character, costume="Naked"):
 
         nested_files = []
         for root, _dirs, filenames in os.walk(base):
-            _dirs[:] = [name for name in _dirs if not re.fullmatch(r"V[0-9]+", name, re.IGNORECASE)]
+            _dirs[:] = [name for name in _dirs if not is_sprite_archive_dir(name)]
             for filename in filenames:
                 nested_files.append(os.path.join(root, filename))
         return _latest_image_file(nested_files, character_root)
@@ -505,18 +505,14 @@ class ClothesDesigner:
         try:
             selected = data.get("selected_preview_sprite") if isinstance(data, dict) else None
             if isinstance(selected, dict) and selected.get("character") == character_name:
-                costume = selected.get("costume") or None
                 try:
-                    if costume:
-                        costume = ensure_safe_name(costume, "costume")
                     index = int(selected.get("index", 0))
-                    files = list_preview_sprite_files(character_name, costume)
+                    files = list_preview_sprite_files(character_name, "Naked")
                     if files:
-                        sprite_path = files[index % len(files)]
-                        return sprite_path
-                    log_event("fallback", component="ClothesDesigner", level="warning", message=f'Selected preview sprite list is empty for {character_name}/{costume}; falling back to latest base sprite.')
+                        return files[index % len(files)]
+                    log_event("fallback", component="ClothesDesigner", level="warning", message=f'Selected base sprite list is empty for {character_name}; falling back to latest base sprite.')
                 except Exception as exc:
-                    log_event('fallback', component='ClothesDesigner', level='warning', message=f'Failed to load selected preview sprite {selected}: {exc}. Falling back to latest base sprite.', error=str(exc))
+                    log_event('fallback', component='ClothesDesigner', level='warning', message=f'Failed to load selected base sprite index: {exc}. Falling back to latest base sprite.', error=str(exc))
 
             sprite_path = get_latest_sprite_path(character_name, "Naked") or get_latest_sprite_path(character_name, "Original")
             return sprite_path
@@ -617,7 +613,11 @@ class ClothesDesigner:
         source_reference_hash = hashlib.sha256(
             ref_image.detach().cpu().contiguous().numpy().tobytes()
         ).hexdigest()
-        use_qi2_rewriter = is_qi2 and active_tab != "clone"
+        use_qi2_rewriter = (
+            is_qi2
+            and active_tab != "clone"
+            and gen_settings.get("qi2_prompt_enhancement", True) is not False
+        )
         edit_system_prompt = _qi2_edit_system_prompt() if use_qi2_rewriter else None
 
         # 3. Cache check

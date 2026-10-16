@@ -19,6 +19,8 @@ library = _preload_node("character_styles")
 @pytest.mark.parametrize("scale", [1024, 1536])
 @pytest.mark.parametrize("channels", [3, 4])
 def test_real_preview_path_samples_a_square_at_selected_scale_and_writes_only_webp(monkeypatch, tmp_path, mode, scale, channels):
+    prompt_server = creator.server.PromptServer.instance
+    monkeypatch.delattr(prompt_server, "last_prompt_id", raising=False)
     monkeypatch.setattr(library, "STYLE_PREVIEWS_DIR", str(tmp_path / "previews"))
     monkeypatch.setattr(creator, "save_style_preview", library.save_style_preview)
     monkeypatch.setattr(creator, "acquire_preview_assets", lambda settings: ("model", "clip", "vae"))
@@ -38,7 +40,11 @@ def test_real_preview_path_samples_a_square_at_selected_scale_and_writes_only_we
     dimensions = []
     monkeypatch.setattr(creator, "create_generation_latent", lambda model, width, height, settings: dimensions.append((width, height)) or "latent")
     sampled = []
-    monkeypatch.setattr(creator, "sample_generation_latent", lambda **kwargs: sampled.append(kwargs) or "sampled")
+    def sample(**kwargs):
+        assert prompt_server.last_prompt_id == "vnccs_character_creator_v2"
+        sampled.append(kwargs)
+        return "sampled"
+    monkeypatch.setattr(creator, "sample_generation_latent", sample)
     def decode(*args):
         width, height = dimensions[-1]
         return torch.zeros((1, height, width, channels))
@@ -47,7 +53,8 @@ def test_real_preview_path_samples_a_square_at_selected_scale_and_writes_only_we
     def unexpected(*args):
         pytest.fail("Style previews must not write the character PNG cache")
     monkeypatch.setattr(creator, "character_dir", unexpected)
-    info = {"style": "anime_style", "hair": "black hair", "eyes": "blue eyes", "sex": "female", "age": 30, "framing": "full_body"}
+    info = {"style": "anime_style", "hair": "black hair", "eyes": "blue eyes", "sex": "female", "age": 30, "framing": "full_body",
+            "secondary_style": {"style": "custom", "custom_style": "Unwanted mixed thumbnail"}}
     settings = {"generation_mode": mode, "target_size": scale, "seed": 123, "steps": 17, "cfg": 3.5,
                 "sampler": "euler", "scheduler": "normal", "lora_stack": [{"name": "Mine", "strength": .4}], "turbo_enabled": False}
     response = creator._generate_preview_response({"character_info": info, "gen_settings": settings}, style_preview=info["style"])
@@ -62,6 +69,9 @@ def test_real_preview_path_samples_a_square_at_selected_scale_and_writes_only_we
     assert "cowboy_shot" not in encoded[0][0] and "standing, full body" not in encoded[0][0]
     preview_info = encoded[0][2]["character_info"]
     assert preview_info["image_type"] == "Portrait" and "framing" not in preview_info
+    assert preview_info["secondary_style"] is None
+    assert "Unwanted mixed thumbnail" not in encoded[0][0]
+    assert info["secondary_style"]["custom_style"] == "Unwanted mixed thumbnail"
     if mode == "qi2":
         assert "Portrait:" in creator._qi2_character_fields(preview_info)["framing"]
     assert info["framing"] == "full_body" and "image_type" not in info

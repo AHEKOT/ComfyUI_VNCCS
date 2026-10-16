@@ -7,7 +7,6 @@ torch = pytest.importorskip("torch")
 from nodes import character_generator as cg
 from nodes.qi2_viggle import (
     VIGGLE_TURBO_NODES,
-    _run_with_viggle_lora,
     viggle_turbo_sigmas,
 )
 
@@ -94,7 +93,7 @@ def test_qi2_2048_setting_means_two_megapixels_not_2048_squared(monkeypatch):
     assert empty == {"width": 935, "height": 2243, "batch_size": 1}
 
 
-def test_viggle_turbo_uses_unmerged_lora_cache_and_latent_dependent_sigmas(monkeypatch):
+def test_viggle_turbo_uses_native_lora_cache_and_latent_dependent_sigmas(monkeypatch):
     calls = []
 
     def fake_node(name, **kwargs):
@@ -149,28 +148,20 @@ def test_viggle_sigma_shift_depends_on_sampler_latent_resolution():
     assert torch.all(small[1:-1] < large[1:-1])
 
 
-def test_viggle_lora_hook_is_unmerged_and_removed_after_execution():
-    class DiffusionModel(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.block = torch.nn.Linear(2, 2, bias=False)
-            with torch.no_grad():
-                self.block.weight.zero_()
+def test_viggle_lora_uses_comfy_model_management(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        cg,
+        "_call_comfy_node",
+        lambda name, **kwargs: calls.append((name, kwargs)) or ("managed-model",),
+    )
 
-    class Executor:
-        def __init__(self, model):
-            self.class_obj = model
-
-        def __call__(self, tensor):
-            return self.class_obj.block(tensor)
-
-    model = DiffusionModel()
-    executor = Executor(model)
-    weights = {"block": [torch.eye(2), torch.eye(2)]}
-    value = torch.tensor([[2.0, 3.0]])
-    assert torch.equal(_run_with_viggle_lora(weights, executor, value), value)
-    assert torch.equal(executor(value), torch.zeros_like(value))
-    assert not model.block._forward_hooks
+    assert cg.apply_viggle_turbo_lora("base", "QI2/Viggle/turbo.safetensors", 0.75) == "managed-model"
+    assert calls == [("LoraLoaderModelOnly", {
+        "model": "base",
+        "lora_name": "QI2/Viggle/turbo.safetensors",
+        "strength_model": 0.75,
+    })]
 
 
 def test_qi2_base_sampler_uses_standard_ksampler(monkeypatch):
