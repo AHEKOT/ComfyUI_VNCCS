@@ -1,4 +1,4 @@
-"""Install the Qwen runtime used by ComfyUI Easy Install."""
+"""Install the Qwen llm runtime"""
 
 from importlib.metadata import PackageNotFoundError, distribution
 import platform
