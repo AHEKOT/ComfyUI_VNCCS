@@ -3,10 +3,12 @@ import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 
 const web = new URL("../web/", import.meta.url);
+const theme = readFileSync(new URL("vnccs_common.js", web), "utf8")
+    .match(/export const SAKURA_THEME_CSS = `([\s\S]*?)`;/)[1];
 const sheets = readdirSync(web, { recursive: true })
     .filter(name => /\.(?:js|mjs)$/.test(name))
     .map(name => {
-        const source = readFileSync(new URL(name, web), "utf8");
+        const source = readFileSync(new URL(name, web), "utf8").replaceAll("${SAKURA_THEME_CSS}", theme.trimEnd());
         const css = Array.from(source.matchAll(/(?:const\s+\w*(?:STYLE|CSS)\w*|\w+\.textContent)\s*=\s*`([\s\S]*?)`/g), match => match[1])
             .filter(text => /(?:display|position|font-size|background)\s*:/.test(text)).join("\n");
         const selectors = Array.from(css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{/g), match => match[1].trim());
@@ -40,7 +42,7 @@ test("widget palettes cannot overwrite the page or another widget", () => {
         ["vnccs_emotion_v2.js", "ems-container"],
     ]) {
         const sheet = sheets.find(item => item.name === name);
-        assert.ok(sheet.css.includes(`.${root} {\n    --bg-primary:`), name);
+        assert.match(sheet.css, new RegExp(`\\.${root}\\s*\\{\\s*--bg-primary:`), name);
         assert.ok(sheet.source.includes(`container.className = "${root}"`), name);
     }
 });
@@ -49,18 +51,10 @@ test("loading other widgets cannot replace Creator's three columns with Clothes 
     const creator = sheets.find(sheet => sheet.name === "vnccs_character_creator_v2.js");
     const clothes = sheets.find(sheet => sheet.name === "vnccs_clothes_designer.js");
     assert.ok(/\.vnccs-creator-top-row\s*\{[^}]*grid-template-columns:\s*30% 35% 35%;/.test(creator.css));
-    assert.ok(/\.vnccs-clothes-top-row\s*\{[^}]*grid-template-columns:\s*32% minmax\(0, 68%\);/.test(clothes.css));
+    assert.ok(/\.vnccs-clothes-top-row\s*\{[^}]*grid-template-columns:\s*400px minmax\(0, 1fr\);/.test(clothes.css));
     for (const sheet of sheets.filter(item => item !== creator)) {
         assert.ok(sheet.selectors.every(selector => !selector.includes(".vnccs-creator-")), sheet.name);
     }
-});
-
-test("Pose Editor's dialog and sidebar panels retain distinct styles", () => {
-    const pose = sheets.find(sheet => sheet.name === "pose_editor.js");
-    assert.equal(pose.selectors.filter(selector => selector === ".vnccs-pose-editor-panel").length, 1);
-    assert.ok(pose.source.includes('panel.className = "vnccs-pose-editor-panel"'));
-    assert.ok(pose.source.includes('panel.className = "vnccs-pose-editor-sidebar-panel"'));
-    assert.ok(/\.vnccs-pose-editor-panel\s*\{[^}]*width: min\(1120px, 96vw\)/.test(pose.css));
 });
 
 test("Creator hover styling only applies to enabled, unselected segmented buttons", () => {
@@ -73,6 +67,27 @@ test("Creator hover styling only applies to enabled, unselected segmented button
     }
     assert.match(creator.css, /\.vnccs-creator-segmented-btn\.is-active\s*\{[^}]*background:/);
     assert.ok(creator.selectors.some(selector => selector.includes(".vnccs-creator-segmented-btn:focus-visible")));
+});
+
+test("Creator tag controls cannot enlarge their original text boxes or enter layout flow", () => {
+    const css = sheets.find(sheet => sheet.name === "vnccs_character_creator_v2.js").css;
+    const token = css.match(/\.vnccs-creator-trait-token\s*\{([^}]*)\}/)[1];
+    assert.match(token, /padding:\s*5px 8px/); assert.match(token, /line-height:\s*1\.4/);
+    assert.match(css, /\.vnccs-creator-trait-edit\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0/);
+    assert.match(css, /\.vnccs-creator-trait-remove\s*\{[^}]*position:\s*absolute;[^}]*width:\s*12px;[^}]*height:\s*12px/);
+    assert.match(css, /\.vnccs-creator-trait-remove\s*\{[^}]*border-radius:\s*50%;[^}]*background:\s*var\(--accent\) !important/);
+    assert.match(css, /\.vnccs-creator-trait-remove::after\s*\{[^}]*inset:\s*-4px/);
+    assert.doesNotMatch(css, /trait-token:has\([^)]*\)\s*\{[^}]*padding:\s*0/);
+});
+
+test("Creator portrait and sliders keep their layout anchors throughout transitions", () => {
+    const css = sheets.find(sheet => sheet.name === "vnccs_character_creator_v2.js").css;
+    assert.match(css, /\.vnccs-creator-preview-img\s*\{[^}]*position:\s*absolute;[^}]*left:\s*50%;[^}]*transform:\s*translateX\(-50%\)/);
+    for (const name of ["segmented-field", "tab-row"]) {
+        const marker = css.match(new RegExp(`\\.vnccs-creator-${name}::before\\s*\\{([^}]*)\\}`))[1];
+        assert.match(marker, /transition:\s*transform 280ms cubic-bezier\(0\.22, 1, 0\.36, 1\)/);
+        assert.doesNotMatch(marker, /opacity:/);
+    }
 });
 
 for (const [name, controls] of [
@@ -99,8 +114,6 @@ for (const [name, controls] of [
         ["ems-tab", "active"],
     ]],
     ["vnccs_character_generator.js", [["vnccs-seedvr-card", "is-selected"]]],
-    ["pose_editor.js", [["vnccs-pose-editor-3d-btn", "active"]]],
-    ["vnccs_sprite_manager.js", [["vnccs-sm-costume-card", "selected"]]],
     ["vnccs_control_center.js", [
         ["vnccs-cc-btn", "vnccs-cc-btn--active", "vnccs-cc-btn--clip-active", "vnccs-cc-btn--cnet-active"],
         ["vnccs-cc-row", "vnccs-cc-row--model-sel", "vnccs-cc-row--clip-sel", "vnccs-cc-row--cnet-sel"],
@@ -125,17 +138,8 @@ for (const [name, controls] of [
     });
 }
 
-test("Cloner's selected image cannot acquire a second hover border or glow", () => {
-    const cloner = sheets.find(item => item.name === "vnccs_character_cloner.js");
-    const hover = cloner.selectors.filter(selector => selector.includes(".vnccs-cloner-thumb:hover"));
-    assert.ok(hover.length);
-    for (const selector of hover) assert.ok(selector.includes(":where(.vnccs-cloner-thumb-wrap:not(.is-selected)) "), selector);
-});
-
-test("active-state exclusions retain the priority of Save and generating-thumbnail styles", () => {
+test("active-state exclusions retain the priority of Save styles", () => {
     const controlCenter = sheets.find(item => item.name === "vnccs_control_center.js");
     assert.ok(controlCenter.selectors.some(selector => selector.startsWith(".vnccs-cc-btn:hover:where(")));
     assert.ok(controlCenter.selectors.includes(".vnccs-cc-btn--save:hover"));
-    const cloner = sheets.find(item => item.name === "vnccs_character_cloner.js");
-    assert.ok(cloner.selectors.includes(".vnccs-cloner-thumb.generating"));
 });

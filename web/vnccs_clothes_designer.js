@@ -1,63 +1,19 @@
 import { app } from "../../scripts/app.js";
-import { vnccsApi as api, mediaURL, checkedJSON, storage, refreshPreviewImage, watchConnection } from "./vnccs_transport.js";
-import { registerCleanup, injectStyles, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard } from "./vnccs_common.js";
-
-const RESOLUTION_SCALE_BASE = 1024;
-const RESOLUTION_SCALE_MIN_MP = 1;
-const RESOLUTION_SCALE_MAX_MP = 4;
-const RESOLUTION_SCALE_STEP_MP = 0.1;
-const RESOLUTION_SCALE_PRESETS = new Map([
-    [1.3, 1344],
-    [1.5, 1536],
-]);
-
-const resolutionScaleMegapixels = value => {
-    const numeric = Number(value);
-    const megapixels = Number.isFinite(numeric) ? numeric / RESOLUTION_SCALE_BASE : RESOLUTION_SCALE_MIN_MP;
-    return Math.max(RESOLUTION_SCALE_MIN_MP, Math.min(RESOLUTION_SCALE_MAX_MP, megapixels));
-};
-const resolutionScaleValue = megapixels => {
-    const clamped = Math.max(
-        RESOLUTION_SCALE_MIN_MP,
-        Math.min(RESOLUTION_SCALE_MAX_MP, Number(megapixels) || RESOLUTION_SCALE_MIN_MP)
-    );
-    const stepped = Number((Math.round(clamped / RESOLUTION_SCALE_STEP_MP) * RESOLUTION_SCALE_STEP_MP).toFixed(1));
-    return RESOLUTION_SCALE_PRESETS.get(stepped) ?? Math.round(stepped * RESOLUTION_SCALE_BASE);
-};
-const resolutionScaleText = value => `${resolutionScaleMegapixels(value).toFixed(1)} MP`;
+import { createSakuraInteractions } from "./sakura_interactions.mjs";
+import { vnccsApi as api, mediaURL, checkedJSON, storage, refreshPreviewImage, watchConnection, workflowScope } from "./vnccs_transport.js";
+import { createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, registerCleanup, injectStyles, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, animateWizardRows, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP, normalizeUploadFile, normalizeAgeValue } from "./vnccs_common.js";
 
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+${SAKURA_INTERACTION_CSS}
 
 .vnccs-clothes-container {
-    --bg-primary: #0a0a0f;
-    --bg-secondary: #12121a;
-    --bg-elevated: #1a1a26;
-    --bg-surface: #22222e;
-    --bg-hover: #2a2a38;
-    --text-primary: #e8e8f0;
-    --text-secondary: #9898a8;
-    --text-muted: #5e5e70;
-    --accent: #ff8fa3;
-    --accent-hover: #ffb6c8;
-    --accent-glow: rgba(255,143,163,0.3);
-    --accent-subtle: rgba(255,143,163,0.1);
-    --accent-border: rgba(255,143,163,0.22);
-    --accent-lavender: #b8a9e8;
-    --success: #00d68f;
+${SAKURA_THEME_CSS}
     --warning: #ffaa00;
-    --error: #ff4757;
-    --border: rgba(255,255,255,0.06);
-    --border-hover: rgba(255,255,255,0.12);
-    --font: 'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
-    --radius-sm: 8px;
-    --radius-md: 12px;
-    --radius-lg: 20px;
-    --transition: 0.2s ease;
 }
 
 .vnccs-clothes-container {
+    position: relative;
     display: flex; flex-direction: column;
     background: var(--bg-primary); color: var(--text-primary);
     font-family: var(--font); font-size: 13px;
@@ -65,7 +21,7 @@ const STYLE = `
     padding: 12px; gap: 12px; pointer-events: none; zoom: 0.67;
 }
 .vnccs-clothes-top-row {
-    display: grid; grid-template-columns: 32% minmax(0, 68%); gap: 12px;
+    display: grid; grid-template-columns: 400px minmax(0, 1fr); gap: 12px;
     flex: 1; min-height: 0; width: 100%;
 }
 .vnccs-clothes-col {
@@ -85,6 +41,109 @@ const STYLE = `
 }
 .vnccs-clothes-col::-webkit-scrollbar { width: 4px; }
 .vnccs-clothes-col::-webkit-scrollbar-thumb { background: var(--accent-border); border-radius: 2px; }
+.vnccs-clothes-design-panel { overflow: visible; }
+.vnccs-clothes-design-content {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+    gap: 10px;
+    overflow: hidden auto;
+    padding-inline: 18px;
+    box-sizing: border-box;
+    opacity: 1;
+    transform: none;
+    filter: none;
+    visibility: visible;
+    transition: opacity 280ms ease, transform 360ms cubic-bezier(0.22,1,0.36,1), filter 280ms ease, visibility 0s;
+}
+.vnccs-clothes-design-panel.is-costume-empty .vnccs-clothes-design-content {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+    filter: blur(6px);
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 200ms ease, transform 260ms ease, filter 200ms ease, visibility 0s 260ms;
+}
+.vnccs-clothes-costume-empty {
+    --vnccs-costume-empty-y: 210px;
+    position: absolute;
+    z-index: 3;
+    top: var(--vnccs-costume-empty-y);
+    left: 34px;
+    right: 28px;
+    padding: 18px 20px;
+    border: 1px solid rgba(255,143,163,0.38);
+    border-radius: 16px;
+    background:
+        radial-gradient(circle at 12% 18%, rgba(255,143,163,0.18), transparent 42%),
+        linear-gradient(135deg, rgba(38,25,43,0.96), rgba(20,18,31,0.96));
+    box-shadow: 0 16px 40px rgba(0,0,0,0.34), inset 0 1px rgba(255,255,255,0.05);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translate(14px, -50%) scale(0.97);
+    transform-origin: left center;
+    transition: opacity 220ms ease, transform 420ms cubic-bezier(0.22,1,0.36,1), visibility 0s 420ms;
+}
+.vnccs-clothes-design-panel.is-costume-empty .vnccs-clothes-costume-empty {
+    opacity: 1;
+    visibility: visible;
+    transform: translate(0, -50%) scale(1);
+    transition-delay: 100ms;
+}
+.vnccs-clothes-costume-empty-icon {
+    display: inline-flex;
+    width: 32px;
+    height: 32px;
+    margin-bottom: 10px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(255,143,163,0.34);
+    border-radius: 10px;
+    color: var(--accent);
+    background: rgba(255,143,163,0.1);
+    box-shadow: 0 0 20px rgba(255,143,163,0.12);
+}
+.vnccs-clothes-costume-empty-icon svg { width: 18px; height: 18px; }
+.vnccs-clothes-costume-empty-title {
+    color: var(--text-primary);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+}
+.vnccs-clothes-costume-empty-text {
+    max-width: 430px;
+    margin-top: 7px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.55;
+}
+.vnccs-clothes-costume-empty-arrow {
+    position: absolute;
+    top: 50%;
+    left: -58px;
+    width: 62px;
+    height: 42px;
+    overflow: visible;
+    color: var(--accent);
+    filter: drop-shadow(0 0 8px rgba(255,143,163,0.35));
+    transform: translateY(-50%);
+    animation: cd-costume-empty-arrow 2200ms ease-in-out infinite;
+}
+.vnccs-clothes-costume-empty-arrow path {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+@keyframes cd-costume-empty-arrow {
+    0%, 100% { transform: translate(0, -50%); opacity: 0.7; }
+    50% { transform: translate(-4px, -50%); opacity: 1; }
+}
 
 .vnccs-clothes-section-title {
     font-size: 10px; font-weight: 700; color: var(--accent);
@@ -115,7 +174,7 @@ const STYLE = `
     background: rgba(255,255,255,0.04); border: 1px solid var(--border);
     color: var(--text-primary); border-radius: var(--radius-md);
     padding: 8px 12px; font-family: var(--font); font-size: 12px;
-    width: 100%; box-sizing: border-box; zoom: 1.5; transition: all var(--transition);
+    width: 100%; box-sizing: border-box; transition: all var(--transition);
     color-scheme: dark;
 }
 .vnccs-clothes-select option {
@@ -196,7 +255,6 @@ const STYLE = `
 }
 
 .vnccs-clothes-btn-row { display: flex; gap: 8px; margin-top: auto; flex-shrink: 0; flex-wrap: wrap; }
-.vnccs-clothes-row { display: flex; gap: 8px; align-items: center; }
 
 .vnccs-clothes-setup-grid {
     --setup-control-height: 58px;
@@ -380,19 +438,128 @@ const STYLE = `
 }
 .vnccs-clothes-lora-card.is-missing .vnccs-clothes-lora-card-badge { background: var(--error); box-shadow: none; }
 .vnccs-clothes-lora-card.is-missing .vnccs-clothes-lora-card-status { color: var(--error); }
+.vnccs-clothes-prompt-card {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 42px;
+    box-sizing: border-box;
+    margin: 0 0 12px;
+    padding: 9px 12px;
+    border: 1px solid rgba(0,214,143,0.25);
+    border-radius: var(--radius-md);
+    background: rgba(0,214,143,0.05);
+    cursor: pointer;
+    transition: all var(--transition);
+}
+.vnccs-clothes-prompt-card[hidden] { display: none; }
+.vnccs-clothes-prompt-card:hover:not(.is-selected):not(.is-disabled) {
+    border-color: rgba(0,214,143,0.42);
+    background: rgba(0,214,143,0.08);
+}
+.vnccs-clothes-prompt-card.is-selected {
+    border-color: var(--accent);
+    background: rgba(255,143,163,0.12);
+    box-shadow: 0 0 0 1px rgba(255,143,163,0.12) inset;
+}
+.vnccs-clothes-prompt-card.is-disabled { opacity: 0.55; cursor: not-allowed; }
+.vnccs-clothes-prompt-badge {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--success);
+}
+.vnccs-clothes-prompt-name {
+    flex: 1;
+    min-width: 0;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 700;
+}
+.vnccs-clothes-prompt-status {
+    flex-shrink: 0;
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+.vnccs-clothes-prompt-status.ok { color: var(--success); }
+.vnccs-clothes-prompt-toggle {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    flex-shrink: 0;
+}
+.vnccs-clothes-prompt-toggle input {
+    position: absolute;
+    width: 0;
+    height: 0;
+    opacity: 0;
+}
+.vnccs-clothes-prompt-toggle-track {
+    position: absolute;
+    inset: 0;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(255,255,255,0.08);
+    transition: all 0.25s ease;
+}
+.vnccs-clothes-prompt-toggle-thumb {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    transition: all 0.25s ease;
+}
+.vnccs-clothes-prompt-toggle input:checked ~ .vnccs-clothes-prompt-toggle-track {
+    border-color: var(--accent);
+    background: rgba(255,143,163,0.2);
+    box-shadow: 0 0 8px var(--accent-glow);
+}
+.vnccs-clothes-prompt-toggle input:checked ~ .vnccs-clothes-prompt-toggle-thumb {
+    transform: translateX(16px);
+    background: var(--accent);
+}
+.vnccs-clothes-prompt-toggle input:focus-visible ~ .vnccs-clothes-prompt-toggle-track {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
 
 /* Preview */
 .vnccs-clothes-preview-container {
+    --vnccs-preview-accent: #ff8fa3;
+    --vnccs-preview-accent-rgb: 255, 143, 163;
+    --vnccs-preview-highlight-rgb: 255, 238, 246;
     flex: 1;
-    background: radial-gradient(circle, rgba(255,143,163,0.04) 1px, transparent 1px), rgba(10,10,15,0.7);
+    background: radial-gradient(circle, rgba(var(--vnccs-preview-accent-rgb), 0.04) 1px, transparent 1px), rgba(10,10,15,0.7);
     background-size: 20px 20px, 100% 100%;
     border: 1px solid var(--border); border-radius: var(--radius-md);
     display: flex; align-items: center; justify-content: center;
     overflow: hidden; position: relative; min-height: 0;
 }
+.vnccs-clothes-preview-container.is-male-character {
+    --vnccs-preview-accent: #63c7ff;
+    --vnccs-preview-accent-rgb: 99, 199, 255;
+    --vnccs-preview-highlight-rgb: 232, 248, 255;
+}
+.vnccs-clothes-preview-container.is-male-character[aria-busy="true"] {
+    border-color: rgba(var(--vnccs-preview-accent-rgb), 0.62);
+    box-shadow: 0 0 18px rgba(var(--vnccs-preview-accent-rgb), 0.14);
+}
 .vnccs-clothes-preview-img {
-    width: 100%; height: 100%; object-fit: contain;
-    animation: cd-fadein 0.4s ease;
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: auto;
+    max-width: none;
+    height: 100%;
+    object-fit: contain;
+    transform: translateX(-50%);
 }
 .vnccs-clothes-preview-loading {
     position: absolute;
@@ -409,12 +576,64 @@ const STYLE = `
     content: '';
     width: 34px;
     height: 34px;
-    border: 2px solid rgba(255, 143, 163, 0.24);
-    border-top-color: var(--accent);
+    border: 2px solid rgba(var(--vnccs-preview-accent-rgb), 0.24);
+    border-top-color: var(--vnccs-preview-accent);
     border-radius: 50%;
-    box-shadow: 0 0 18px rgba(255,143,163,0.25);
+    box-shadow: 0 0 18px rgba(var(--vnccs-preview-accent-rgb), 0.25);
     animation: cd-spin 0.75s linear infinite;
 }
+.vnccs-clothes-generation-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    overflow: hidden;
+    pointer-events: none;
+    background: radial-gradient(circle, rgba(var(--vnccs-preview-accent-rgb), 0.04) 1px, transparent 1px), #0f0f16;
+    background-size: 20px 20px, 100% 100%;
+}
+.vnccs-clothes-generation-layer[hidden] { display: none; }
+.vnccs-clothes-generation-img {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: auto;
+    max-width: none;
+    height: 100%;
+    object-fit: contain;
+    transform: translateX(-50%);
+}
+.vnccs-clothes-generation-base { animation: cd-preview-wait 1800ms ease-in-out infinite; }
+.vnccs-clothes-generation-new {
+    z-index: 1;
+    clip-path: inset(0 0 100% 0);
+}
+.vnccs-clothes-generation-scan {
+    position: absolute;
+    z-index: 2;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 100%;
+    transform: translateY(-100%);
+    opacity: 0.82;
+    mix-blend-mode: screen;
+    will-change: transform, opacity;
+    animation: cd-preview-process-scan 2200ms cubic-bezier(0.4,0,0.2,1) infinite;
+}
+.vnccs-clothes-generation-scan::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: clamp(18px, 6%, 42px);
+    background: linear-gradient(180deg, transparent, rgba(var(--vnccs-preview-accent-rgb), 0.24) 30%, rgba(var(--vnccs-preview-highlight-rgb), 0.98) 50%, rgba(var(--vnccs-preview-accent-rgb), 0.34) 68%, transparent);
+    box-shadow: 0 0 24px rgba(var(--vnccs-preview-accent-rgb), 0.3);
+}
+.vnccs-clothes-generation-layer.is-revealing .vnccs-clothes-generation-base { animation: none; }
+.vnccs-clothes-generation-layer.is-revealing .vnccs-clothes-generation-scan { animation: none; }
+@keyframes cd-preview-wait { 0%, 100% { opacity: 0.78; } 50% { opacity: 1; } }
+@keyframes cd-preview-process-scan { from { transform: translateY(-100%); opacity: 0.5; } to { transform: translateY(0); opacity: 0.9; } }
 .cd-sprite-nav {
     display: none;
     align-items: center;
@@ -460,7 +679,6 @@ const STYLE = `
     font-size: 10px;
     color: var(--text-secondary);
 }
-@keyframes cd-fadein { from { opacity: 0; } to { opacity: 1; } }
 @keyframes cd-spin { to { transform: rotate(360deg); } }
 .vnccs-clothes-placeholder {
     display: flex; flex-direction: column; align-items: center; gap: 10px;
@@ -471,8 +689,10 @@ const STYLE = `
 /* Tab bar */
 .cd-tab-bar {
     display: flex; border-bottom: 1px solid var(--border);
-    margin: 0 -16px 12px; background: transparent;
+    margin: 0 0 12px; background: transparent;
 }
+.vnccs-clothes-container .cd-tab-bar.vnccs-common-ui-segmented { border-radius: var(--radius-lg); }
+.vnccs-clothes-container .cd-tab-bar.vnccs-common-ui-segmented::before { border-radius: var(--radius-md); }
 .cd-tab {
     flex: 1; text-align: center; padding: 10px 8px; cursor: pointer;
     font-size: 10px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase;
@@ -570,60 +790,33 @@ const STYLE = `
     font-size: 12px;
 }
 
-/* Clone upload area */
-.cd-upload-area {
-    border: 1px dashed rgba(255,143,163,0.3);
-    background: rgba(255,143,163,0.04);
-    border-radius: var(--radius-md);
-    display: flex; align-items: center; justify-content: center;
-    cursor: pointer; transition: all var(--transition); position: relative;
-    min-height: 200px; overflow: hidden;
-}
-.cd-upload-area:hover { border-color: var(--accent); background: rgba(255,143,163,0.08); }
-.cd-upload-hint { color: var(--text-muted); font-size: 11px; text-align: center; }
-
-/* Loading overlay */
-.vnccs-clothes-loading-overlay {
-    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(10,10,15,0.92); backdrop-filter: blur(8px);
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    z-index: 1000; pointer-events: auto; gap: 16px; border-radius: var(--radius-lg);
-}
-.vnccs-clothes-spinner {
-    width: 44px; height: 44px; position: relative;
-}
-.vnccs-clothes-spinner::before, .vnccs-clothes-spinner::after {
-    content: ''; position: absolute; inset: 0; border-radius: 50%; border: 3px solid transparent;
-}
-.vnccs-clothes-spinner::before {
-    border-top-color: var(--accent); border-right-color: rgba(255,143,163,0.3);
-    animation: cd-spin 1s linear infinite;
-    box-shadow: 0 0 18px rgba(255,143,163,0.2);
-}
-.vnccs-clothes-spinner::after {
-    inset: 7px;
-    border-bottom-color: rgba(184,169,232,0.6); border-left-color: rgba(184,169,232,0.2);
-    animation: cd-spin 1.4s linear infinite reverse;
-}
 @keyframes cd-spin { to { transform: rotate(360deg); } }
-.vnccs-clothes-loading-text { color: var(--text-primary); font-size: 13px; font-weight: 600; }
-.vnccs-clothes-loading-dots::after {
-    content: ''; animation: cd-dots 1.5s steps(4,end) infinite;
+
+.vnccs-clothes-container :is(button, [role="button"]):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.vnccs-clothes-container :is(input, select, .vnccs-common-ui-select-trigger) { box-sizing: border-box; }
+@media (prefers-reduced-motion: reduce) {
+    .vnccs-clothes-container *, .vnccs-clothes-container *::before, .vnccs-clothes-container *::after {
+        animation: none !important; transition: none !important;
+    }
 }
-@keyframes cd-dots {
-    0%,20% { content: ''; } 40% { content: '.'; } 60% { content: '..'; } 80%,100% { content: '...'; }
-}
+.vnccs-clothes-input, .vnccs-clothes-select { height: 34px; min-height: 34px; }
+.cd-tab { font-family: var(--font); min-height: 34px; }
 `;
 
 app.registerExtension({
     name: "VNCCS.ClothesDesigner",
 
     async setup() {
+        if (app._vnccsClothesQueuePatched) return;
+        app._vnccsClothesQueuePatched = true;
         const queuePrompt = app.queuePrompt;
         const origQueuePrompt = (...args) => queuePrompt.apply(app, args);
         app.queuePrompt = async function(...args) {
             const nodes = app.graph?._nodes?.filter(n => n.type === "ClothesDesigner") || [];
             for (const node of nodes) {
+                if ([2, 4].includes(node.mode)) continue;
+                if (node._vnccsStateRestoreError) throw new Error(node._vnccsStateRestoreError);
+                if (node._vnccsClothesSelectionPending) throw new Error("Clothes Designer metadata is loading. Wait before running the workflow.");
                 node._randomizeSeedIfNeeded?.();
             }
             return origQueuePrompt(...args);
@@ -662,6 +855,7 @@ app.registerExtension({
                 const defaultState = {
                     character: "",
                     costume: "Naked",
+                    costume_revision: null,
                     activeTab: "generate", // 'generate' or 'clone'
                     clone_image: null,     // { name, type, subfolder }
                     selected_preview_sprite: null,
@@ -680,7 +874,8 @@ app.registerExtension({
                         seed: 0,
                         seed_mode: "fixed",
                         lora_name: "none",
-                        lora_strength: 1.0
+                        lora_strength: 1.0,
+                        qi2_prompt_enhancement: true
                     }
                 };
 
@@ -695,7 +890,16 @@ app.registerExtension({
                         const ls = storage.getItem("VNCCS_ClothesDesigner_State");
                         if (ls) saved = JSON.parse(ls);
                     }
-                } catch (e) { console.warn("[VNCCS] ClothesDesigner: Error loading state", e); }
+                    if (!saved || typeof saved !== "object" || Array.isArray(saved)
+                        || ["costume_info", "character_info", "gen_settings"].some(key => saved[key] !== undefined
+                            && (!saved[key] || typeof saved[key] !== "object" || Array.isArray(saved[key])))) {
+                        throw new Error("Saved clothes state must contain objects.");
+                    }
+                } catch (e) {
+                    node._vnccsStateRestoreError = "Cannot restore saved clothes state. Original widget data is preserved. Restore a valid workflow before editing or running.";
+                    saved = {};
+                    console.warn("[VNCCS] ClothesDesigner: Error loading state", e);
+                }
 
                 const state = {
                     ...defaultState,
@@ -712,33 +916,17 @@ app.registerExtension({
                 }
 
                 const els = {};
+                node._vnccsCostumeDraft = saved.costume_info ? { character: state.character, costume: state.costume } : null;
                 let spritePreviewNavigator = null;
                 const beginPreviewRequest = createRequestGuard(node);
                 const beginSelectionRequest = createRequestGuard(node);
+                const beginCharacterListRequest = createRequestGuard(node);
                 const beginDeleteRequest = createRequestGuard(node);
                 const beginClothesWizardRequest = createRequestGuard(node);
-
-                const normalizeUploadFile = (file, prefix = "vnccs_upload") => {
-                    const originalName = String(file?.name || "").trim();
-                    const extMatch = originalName.match(/(\.[A-Za-z0-9]{1,8})$/);
-                    const ext = extMatch ? extMatch[1] : ".png";
-                    let name = originalName.replace(/[\\/]/g, "_").trim();
-                    name = name.replace(/^[\s.-]+/, "");
-                    name = name.replace(/\s+/g, "_");
-                    name = name.replace(/[^A-Za-z0-9._-]/g, "_");
-                    if (!name || !/[A-Za-z0-9]/.test(name)) {
-                        name = `${prefix}_${Date.now()}${ext}`;
-                    }
-                    if (name !== originalName) {
-                        name = `${prefix}_${name}`;
-                    }
-                    return name === file.name ? file : new File([file], name, {
-                        type: file.type,
-                        lastModified: file.lastModified,
-                    });
-                };
+                const beginClothesUploadRequest = createRequestGuard(node);
 
                 const saveState = () => {
+                    if (node._vnccsStateRestoreError) return;
                     if (dataWidget) dataWidget.value = JSON.stringify(state);
                     try {
                         storage.setItem("VNCCS_ClothesDesigner_State", JSON.stringify(state));
@@ -756,7 +944,7 @@ app.registerExtension({
                 const onSerialize = node.onSerialize;
                 node.onSerialize = function (o) {
                     onSerialize?.apply(this, arguments);
-                    if (dataWidget) dataWidget.value = JSON.stringify(state);
+                    if (dataWidget && !node._vnccsStateRestoreError) dataWidget.value = JSON.stringify(state);
                     const index = node.widgets?.findIndex(widget => widget.name === "widget_data") ?? -1;
                     if (index >= 0 && Array.isArray(o?.widgets_values)) {
                         o.widgets_values[index] = node.widgets[index].value;
@@ -765,13 +953,29 @@ app.registerExtension({
 
                 const pendingCostumeSaves = new Set();
                 const saveCostumeToBackend = async () => {
+                    if (node._vnccsStateRestoreError) throw new Error(node._vnccsStateRestoreError);
+                    if (node._vnccsClothesSelectionPending) throw new Error("Clothes Designer metadata is loading. Wait before saving the costume.");
                     if (!state.character || !state.costume) return;
-                    const request = checkedJSON("/vnccs/save_costume", {
-                        method: "POST",
-                        body: JSON.stringify({ character: state.character, costume: state.costume, info: state.costume_info })
+                    const character = state.character, costume = state.costume;
+                    const info = JSON.parse(JSON.stringify(state.costume_info));
+                    let revision = state.costume_revision;
+                    const request = Promise.allSettled([...pendingCostumeSaves]).then(results => {
+                        for (const result of results) {
+                            if (result.status === "fulfilled" && result.value?.character === character && result.value.costume === costume) revision = result.value.revision;
+                        }
+                        return checkedJSON("/vnccs/save_costume", {
+                            method: "POST", body: JSON.stringify({ character, costume, info, revision })
+                        }).then(result => ({ ...result, character, costume }));
                     });
                     pendingCostumeSaves.add(request);
-                    try { return await request; }
+                    try {
+                        const result = await request;
+                        if (state.character === character && state.costume === costume && state.costume_revision === revision) {
+                            state.costume_revision = result.revision;
+                            saveState();
+                        }
+                        return result;
+                    }
                     finally { pendingCostumeSaves.delete(request); }
                 };
 
@@ -795,7 +999,7 @@ app.registerExtension({
 
                 const hasSelectedEditableCostume = () => {
                     const costume = String(state.costume || "").trim();
-                    return !!costume && costume !== "Naked" && costume !== "Original";
+                    return !!costume && !["naked", "original"].includes(costume.toLowerCase());
                 };
 
                 const showCreateCostumeRequired = () => {
@@ -803,11 +1007,26 @@ app.registerExtension({
                 };
 
                 const syncCostumeEditControls = () => {
-                    const canEdit = hasSelectedEditableCostume();
+                    const busy = !!node._vnccsClothesSelectionPending || !!node._vnccsClothesPreviewRunning;
+                    const canEdit = !busy && hasSelectedEditableCostume();
+                    const needsCostume = !!state.character && !hasSelectedEditableCostume();
+                    if (els.charSelect) els.charSelect.disabled = busy;
+                    if (els.btnNew) els.btnNew.disabled = busy || !state.character;
+                    if (els.btnGen) els.btnGen.disabled = !canEdit;
+                    if (els.btnDel) els.btnDel.disabled = !canEdit;
+                    if (els.costSel) els.costSel.disabled = busy || !els.costSel.options.length;
                     if (els.wizardBtn) els.wizardBtn.disabled = !canEdit;
+                    els.promptEnhancement?.setDisabled?.(busy);
                     ["top", "bottom", "head", "face", "shoes"].forEach(k => {
                         if (els[k]) els[k].disabled = !canEdit;
                     });
+                    els.designPanel?.classList.toggle("is-costume-empty", needsCostume);
+                    if (els.designContent) {
+                        els.designContent.inert = needsCostume;
+                        els.designContent.setAttribute("aria-hidden", String(needsCostume));
+                    }
+                    els.costumeEmptyState?.setAttribute("aria-hidden", String(!needsCostume));
+                    els.alignCostumeEmptyState?.();
                 };
 
                 const onValidationError = (event) => {
@@ -820,33 +1039,7 @@ app.registerExtension({
                 api.addEventListener("vnccs.clothes_designer.validation_error", onValidationError);
                 registerCleanup(node, () => api.removeEventListener("vnccs.clothes_designer.validation_error", onValidationError));
 
-                const ensureQwenVLReady = async () => {
-                    const statusResponse = await api.fetchApi("/vnccs/qwen_vl_model_status?vision=false");
-                    if (!statusResponse.ok) throw new Error("Failed to check Qwen3.5 model files.");
-                    const modelStatus = await statusResponse.json();
-                    if (modelStatus.ready) return true;
-                    const approved = await new Promise(resolve => {
-                        const { modal } = showModal("Qwen3.5 Model Required", () => {
-                            const text = document.createElement("div");
-                            text.textContent = `${modelStatus.message || modelStatus.model_name} Download the required files from Hugging Face now?`;
-                            return text;
-                        }, [
-                            { text: "Cancel", action: () => { resolve(false); return false; } },
-                            { text: "DOWNLOAD & INSTALL", class: "vnccs-clothes-btn-primary", action: () => { resolve(true); return false; } },
-                        ]);
-                        modal.addEventListener("keydown", event => {
-                            if (event.key === "Escape") resolve(false);
-                        }, true);
-                    });
-                    if (!approved) return false;
-
-                    const start = await api.fetchApi("/vnccs/qwen_vl_download_model?vision=false", { method: "POST" });
-                    if (!start.ok && start.status !== 409) {
-                        let err;
-                        try { err = await start.json(); } catch (e) { err = { error: await start.text() }; }
-                        throw new Error(err?.error || err?.message || "Failed to start QwenVL download.");
-                    }
-
+                const ensureQwenVLReady = createQwenVLModelLoader(node, showModal, () => {
                     const { overlay, modal } = showModal("Downloading Model...", () => {
                         const d = document.createElement("div");
                         d.className = "cd-wizard-modal";
@@ -863,40 +1056,8 @@ app.registerExtension({
                     const statusEl = modal.querySelector("#cd-dl-status");
                     const barEl = modal.querySelector("#cd-dl-bar");
                     const pctEl = modal.querySelector("#cd-dl-pct");
-
-                    return await new Promise((resolve, reject) => {
-                        const poll = async () => {
-                            try {
-                                const r = await api.fetchApi("/vnccs/qwen_vl_download_status");
-                                if (!r.ok) throw new Error(await r.text());
-                                const d = await r.json();
-                                const progress = Math.max(0, Math.min(100, Number(d.progress) || 0));
-                                statusEl.innerText = d.current_file ? `Downloading ${d.current_file}...` : "Preparing model files...";
-                                barEl.style.width = `${progress}%`;
-                                pctEl.innerText = `${progress}%`;
-
-                                if (d.status === "completed") {
-                                    statusEl.innerText = "Download Complete!";
-                                    barEl.style.width = "100%";
-                                    pctEl.innerText = "100%";
-                                    setTimeout(() => overlay.remove(), 450);
-                                    resolve(true);
-                                    return;
-                                }
-                                if (d.status === "error") {
-                                    overlay.remove();
-                                    reject(new Error(d.error || "QwenVL download failed."));
-                                    return;
-                                }
-                                setTimeout(poll, 700);
-                            } catch (e) {
-                                overlay.remove();
-                                reject(e);
-                            }
-                        };
-                        poll();
-                    });
-                };
+                    return { overlay, statusEl, barEl, pctEl, completedMessage: "Download Complete!" };
+                }, false);
 
                 const showWizardModelError = (err) => {
                     if (err?.error === "DEPENDENCY_MISSING") {
@@ -942,6 +1103,7 @@ app.registerExtension({
                 };
 
                 const openClothesWizard = () => {
+                    if (node._vnccsStateRestoreError || node._vnccsClothesSelectionPending) return;
                     if (!hasSelectedEditableCostume()) {
                         showCreateCostumeRequired();
                         return;
@@ -978,6 +1140,7 @@ app.registerExtension({
                                 }
                                 btn.disabled = true;
                                 btn.innerText = "CHECKING MODEL...";
+                                let pendingWizardApply = null;
                                 try {
                                     if (!await ensureQwenVLReady()) return isCurrent();
                                     if (!isCurrent()) return false;
@@ -991,23 +1154,32 @@ app.registerExtension({
                                     if (!r.ok) {
                                         let err = null;
                                         try { err = await r.json(); } catch (e) { err = { message: await r.text() }; }
+                                        if (!isCurrent()) return false;
                                         showWizardModelError(err);
                                         return false;
                                     }
                                     const data = await r.json();
                                     if (!isCurrent()) return false;
-                                    ["top", "bottom", "shoes", "head", "face"].forEach((key) => {
-                                        state.costume_info[key] = data[key] || "";
-                                        if (els[key]) {
+                                    const rowKeys = ["top", "bottom", "shoes", "head", "face"];
+                                    const sex = String(state.character_info?.sex || state.character_info?.gender || "").trim().toLowerCase();
+                                    rowKeys.forEach((key) => { state.costume_info[key] = data[key] || ""; });
+                                    node._vnccsCostumeDraft = { character: state.character, costume: state.costume };
+                                    saveState();
+                                    pendingWizardApply = () => {
+                                        rowKeys.forEach((key) => {
+                                            if (!els[key]) return;
                                             els[key].value = state.costume_info[key];
                                             if (els[key].autoResize) els[key].autoResize();
-                                        }
-                                    });
-                                    saveState();
+                                        });
+                                    };
                                     await saveCostumeToBackend();
+                                    animateWizardRows(rowKeys.map(key => els._wizardRows?.[key]), pendingWizardApply,
+                                        { duration: 240, gap: 30, delay: 90, accent: sex === "male" ? "#63c7ff" : "#ff8fa3" });
+                                    pendingWizardApply = null;
                                     return false;
                                 } catch (e) {
                                     if (!isCurrent()) return false;
+                                    pendingWizardApply?.();
                                     showInfo("Clothes Wizard Error", e.toString());
                                     return true;
                                 } finally {
@@ -1064,7 +1236,7 @@ app.registerExtension({
                     } catch {
                         selected_type = "";
                     }
-                    return { repo_id, node_state, selected_type, control_center_id: String(upstream.id) };
+                    return { repo_id, node_state, selected_type, control_center_id: String(upstream.id), control_center_scope: workflowScope(upstream) };
                 };
 
 
@@ -1174,11 +1346,6 @@ app.registerExtension({
                     saveState();
                 };
 
-                const normalizeAgeValue = (value) => {
-                    const parsed = parseFloat(value);
-                    if (!Number.isFinite(parsed)) return 18;
-                    return Math.max(1, Math.min(100, parsed));
-                };
                 const parsePoseStudioValues = () => {
                     const info = state.character_info || {};
                     const age = Number(info.age);
@@ -1190,6 +1357,7 @@ app.registerExtension({
                         signature: `${Number.isFinite(age) ? Math.round(age) : "?"}|${Number.isFinite(gender) ? gender : "?"}`
                     };
                 };
+                const isPoseStudioMounted = createRequestGuard(node)();
                 let poseStudioSyncRetryCount = 0;
                 const patchPoseStudioSync = () => {
                     const sync = window.__vnccsPoseStudioCharacterCreatorSync;
@@ -1254,6 +1422,7 @@ app.registerExtension({
                     return true;
                 };
                 const applyPoseStudioValues = (options = {}) => {
+                    if (!isPoseStudioMounted() || node._vnccsStateRestoreError) return;
                     node._vnccsGetPoseStudioValues = parsePoseStudioValues;
                     if (patchPoseStudioSync()) {
                         poseStudioSyncRetryCount = 0;
@@ -1281,26 +1450,37 @@ app.registerExtension({
                     }
                 };
                 const beginCharacterInfoRequest = createRequestGuard(node);
-                const loadCharacterInfo = async () => {
+                const loadCharacterInfo = async (character = state.character) => {
                     const currentRequest = beginCharacterInfoRequest();
-                    const character = state.character;
+                    const originalCharacter = state.character;
                     if (!character) return false;
                     try {
                         const r = await api.fetchApi(`/vnccs/character_info?character=${encodeURIComponent(character)}`);
                         if (!r.ok) throw new Error(`Character metadata request failed (${r.status})`);
                         const info = await r.json();
-                        if (!currentRequest() || state.character !== character) return false;
+                        if (!currentRequest() || state.character !== originalCharacter) return false;
+                        if (!info || typeof info !== "object" || Array.isArray(info) || (info.name && info.name !== character)) {
+                            throw new Error(`Invalid character metadata for '${character}'`);
+                        }
+                        const changed = character !== originalCharacter;
                         state.character_info = {
-                            ...state.character_info,
+                            ...(changed ? defaultState.character_info : state.character_info),
                             ...info,
-                            age: normalizeAgeValue(info.age ?? state.character_info.age),
-                            sex: String(info.sex || info.gender || state.character_info.sex || "female").toLowerCase()
+                            name: character,
+                            age: normalizeAgeValue(info.age ?? (changed ? defaultState.character_info.age : state.character_info.age)),
+                            sex: String(info.sex || info.gender || (changed ? defaultState.character_info.sex : state.character_info.sex) || "female").toLowerCase()
                         };
+                        els.previewFrame?.classList.toggle("is-male-character", state.character_info.sex === "male");
+                        state.character = character;
+                        if (changed) resetCostumeSelection();
                         saveState();
                         applyPoseStudioValues({ force: true });
                         return true;
                     } catch (e) {
-                        console.warn("[VNCCS] ClothesDesigner: Failed to load character info", e);
+                        if (currentRequest() && state.character === originalCharacter) {
+                            if (els.charSelect) els.charSelect.value = state.character;
+                            showInfo("Character Load Failed", e.message || String(e));
+                        }
                         return false;
                     }
                 };
@@ -1317,12 +1497,15 @@ app.registerExtension({
                     background_color: "Sets a solid chroma key background or native transparency for Qwen Image 2.1.",
                     lora_name: "VNCCS Clothes Core LoRA used to keep outfit generation compatible with this workflow.",
                     seed: "Numeric seed for reproducible clothing previews.",
-                    seed_mode: "Toggles fixed seed versus a fresh random seed for each preview."
+                    seed_mode: "Toggles fixed seed versus a fresh random seed for each preview.",
+                    qi2_prompt_enhancement: "Rewrites the Generate Clothes prompt with Qwen text generation before QI2 encoding. Disable to send the structured clothes prompt directly."
                 };
                 const helpFor = (key, fallback = "") => FIELD_HELP[key] || fallback;
 
                 const createField = (key, placeholder, multiline = true) => {
                     const wrap = document.createElement("div"); wrap.className = "vnccs-clothes-field";
+                    (wrap.dataset ||= {}).vnccsWizardField = key;
+                    (els._wizardRows ||= Object.create(null))[key] = wrap;
                     setHelpText(wrap, helpFor(key));
                     const l = document.createElement("div"); l.className = "vnccs-clothes-label";
                     l.innerText = key.toUpperCase();
@@ -1330,6 +1513,7 @@ app.registerExtension({
 
                     const inp = document.createElement(multiline ? "textarea" : "input");
                     inp.className = multiline ? "vnccs-clothes-textarea" : "vnccs-clothes-input";
+                    inp.dataset.focusKey = `costume-${key}`;
                     if (placeholder) inp.placeholder = placeholder;
 
                     inp.value = state.costume_info[key] || "";
@@ -1347,7 +1531,9 @@ app.registerExtension({
                     }
 
                     inp.oninput = (e) => {
+                        if (node._vnccsClothesSelectionPending) return;
                         state.costume_info[key] = e.target.value;
+                        node._vnccsCostumeDraft = { character: state.character, costume: state.costume };
                         saveState();
                     };
                     inp.onchange = (e) => {
@@ -1356,6 +1542,7 @@ app.registerExtension({
                     };
                     els[key] = inp;
                     wrap.appendChild(inp);
+                    wrap._vnccsWizardRevealTarget = inp;
                     return wrap;
                 };
 
@@ -1391,6 +1578,7 @@ app.registerExtension({
                             btn.classList.toggle("is-active", selected);
                             btn.setAttribute("aria-pressed", String(selected));
                         });
+                        els._ui?.syncSelection(segmented);
                         if (persist) saveState();
                     };
 
@@ -1439,6 +1627,15 @@ app.registerExtension({
                     return true;
                 };
 
+                const syncPromptEnhancementControl = () => {
+                    if (!els.promptEnhancementRow || !els.promptEnhancement) return;
+                    els.promptEnhancementRow.hidden = !(
+                        getConnectedModelKind().trim().toLowerCase() === "qi2"
+                        && state.activeTab === "generate"
+                    );
+                    els.promptEnhancement.setValue(state.gen_settings.qi2_prompt_enhancement !== false);
+                };
+
                 const syncGenerationControls = () => {
                     const backgroundChanged = syncBackgroundForModel();
                     syncResolutionControl();
@@ -1450,7 +1647,9 @@ app.registerExtension({
                     }
                     els.background_color?.setValue?.(state.gen_settings.background_color || "Green");
                     renderClothesCoreLoraCard();
+                    syncPromptEnhancementControl();
                     if (backgroundChanged) saveState();
+                    els._ui?.syncSelects();
                 };
 
                 const renderClothesCoreLoraCard = (entryOrPath = null) => {
@@ -1517,6 +1716,55 @@ app.registerExtension({
                     return resolutionWrap;
                 };
 
+                const createPromptEnhancementControl = () => {
+                    const row = document.createElement("div");
+                    row.className = "vnccs-clothes-prompt-card";
+                    setHelpText(row, helpFor("qi2_prompt_enhancement"));
+                    const badge = document.createElement("span");
+                    badge.className = "vnccs-clothes-prompt-badge";
+                    const name = document.createElement("div");
+                    name.className = "vnccs-clothes-prompt-name";
+                    name.textContent = "Prompt Enhancement";
+                    const status = document.createElement("div");
+                    const toggle = document.createElement("label");
+                    toggle.className = "vnccs-clothes-prompt-toggle";
+                    toggle.onclick = event => event.stopPropagation();
+                    const input = document.createElement("input");
+                    input.type = "checkbox";
+                    input.setAttribute("aria-label", "Prompt Enhancement");
+                    input.setValue = enabled => {
+                        input.checked = enabled;
+                        row.classList.toggle("is-selected", enabled);
+                        status.className = "vnccs-clothes-prompt-status" + (enabled ? " ok" : "");
+                        status.textContent = enabled ? "Enabled" : "Disabled";
+                    };
+                    input.setDisabled = disabled => {
+                        input.disabled = disabled;
+                        row.classList.toggle("is-disabled", disabled);
+                    };
+                    input.onchange = event => {
+                        state.gen_settings.qi2_prompt_enhancement = event.target.checked;
+                        input.setValue(event.target.checked);
+                        saveState();
+                    };
+                    input.onclick = event => event.stopPropagation();
+                    row.onclick = () => {
+                        if (input.disabled) return;
+                        input.checked = !input.checked;
+                        input.dispatchEvent(new Event("change"));
+                    };
+                    const track = document.createElement("div");
+                    track.className = "vnccs-clothes-prompt-toggle-track";
+                    const thumb = document.createElement("div");
+                    thumb.className = "vnccs-clothes-prompt-toggle-thumb";
+                    toggle.append(input, track, thumb);
+                    row.append(badge, name, status, toggle);
+                    els.promptEnhancementRow = row;
+                    els.promptEnhancement = input;
+                    syncPromptEnhancementControl();
+                    return row;
+                };
+
                 const createGenerationControls = () => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-clothes-setup-grid";
@@ -1548,7 +1796,12 @@ app.registerExtension({
                     seedInp.type = "number";
                     seedInp.value = state.gen_settings.seed || 0;
                     seedInp.onchange = (e) => {
-                        state.gen_settings.seed = Number(e.target.value) || 0;
+                        const value = e.target.valueAsNumber;
+                        if (!e.target.checkValidity() || !Number.isFinite(value)) {
+                            e.target.value = state.gen_settings.seed;
+                            return;
+                        }
+                        state.gen_settings.seed = value;
                         saveState();
                     };
                     els.seed = seedInp;
@@ -1588,6 +1841,7 @@ app.registerExtension({
                     wizardBtn.disabled = !hasSelectedEditableCostume();
                     els.wizardBtn = wizardBtn;
                     container.appendChild(wizardBtn);
+                    container.appendChild(promptEnhancementControl);
                     container.appendChild(createField("top", "e.g. White t-shirt"));
                     container.appendChild(createField("bottom", "e.g. Blue jeans"));
                     container.appendChild(createField("shoes", "e.g. Sneakers"));
@@ -1597,6 +1851,7 @@ app.registerExtension({
 
                 // Helper to render Clone Panel (New Tab)
                 const renderClonePanel = (container) => {
+                    const view = els._ui.captureView();
                     container.innerHTML = '';
 
                     const desc = document.createElement("div");
@@ -1638,6 +1893,7 @@ app.registerExtension({
                     btn.className = "vnccs-clothes-btn";
                     btn.style.background = "#444"; btn.style.border = "1px dashed #666";
                     btn.innerText = state.clone_image ? "REPLACE IMAGE" : "+ UPLOAD IMAGE";
+                    btn.disabled = !!node._vnccsClothesSelectionPending;
                     if (state.clone_image) { btn.style.opacity = "0.8"; btn.style.fontSize = "10px"; btn.style.padding = "4px 8px"; btn.style.position = "absolute"; btn.style.bottom = "10px"; }
 
                     overlay.appendChild(btn);
@@ -1645,19 +1901,26 @@ app.registerExtension({
                     const fileInp = document.createElement("input");
                     fileInp.type = "file"; fileInp.accept = "image/*"; fileInp.style.display = "none";
                     fileInp.onchange = async (e) => {
+                        if (node._vnccsStateRestoreError || node._vnccsClothesSelectionPending) return;
                         if (e.target.files.length) {
-                            const file = normalizeUploadFile(e.target.files[0], "clone_reference");
+                            const currentRequest = beginClothesUploadRequest();
+                            const character = state.character, costume = state.costume, previousImage = state.clone_image;
+                            const isCurrent = () => currentRequest() && !node._vnccsStateRestoreError && !node._vnccsClothesSelectionPending
+                                && state.character === character && state.costume === costume
+                                && state.activeTab === "clone" && state.clone_image === previousImage;
                             try {
+                                const file = normalizeUploadFile(e.target.files[0], "clone_reference");
                                 btn.innerText = "UPLOADING...";
+                                btn.disabled = true;
                                 const body = new FormData();
                                 body.append("image", file, file.name);
                                 body.append("type", "input");
-                                body.append("overwrite", "true");
                                 const resp = await api.fetchApi("/upload/image", { method: "POST", body });
                                 if (!resp.ok) {
                                     throw new Error(await resp.text() || `Upload failed (${resp.status})`);
                                 }
                                 const json = await resp.json();
+                                if (!isCurrent()) return;
                                 if (!json.name) {
                                     throw new Error("Upload response did not include an image name.");
                                 }
@@ -1670,7 +1933,13 @@ app.registerExtension({
                                 // Update View
                                 renderClonePanel(container);
                             } catch (err) {
-                                showInfo("Upload Failed", err.toString());
+                                if (isCurrent()) showInfo("Upload Failed", err.toString());
+                            } finally {
+                                if (currentRequest()) {
+                                    btn.disabled = false;
+                                    btn.innerText = state.clone_image ? "REPLACE IMAGE" : "+ UPLOAD IMAGE";
+                                    fileInp.value = "";
+                                }
                             }
                         }
                     };
@@ -1682,15 +1951,21 @@ app.registerExtension({
 
                     pContainer.appendChild(overlay);
                     container.appendChild(pContainer);
+                    els._ui.syncSelects();
+                    els._ui.restoreView(view);
                 };
 
 
                 // --- MAIN LAYOUT ---
                 const container = document.createElement("div"); container.className = "vnccs-clothes-container";
+                container.classList.add("vnccs-common-ui-host");
+                els._ui = createSakuraInteractions(container, node);
+                registerCleanup(node, () => els._ui.dispose());
                 const topRow = document.createElement("div"); topRow.className = "vnccs-clothes-top-row";
 
                 // --- COL 1: DESIGN STUDIO ---
                 const colLeft = document.createElement("div"); colLeft.className = "vnccs-clothes-col";
+                colLeft.dataset.sakuraScroll = "character";
                 colLeft.innerHTML = '<div class="vnccs-clothes-section-title">Design Studio</div>';
 
                 // Character Select
@@ -1699,15 +1974,28 @@ app.registerExtension({
                 charRow.innerHTML = '<div class="vnccs-clothes-label">CHARACTER</div>';
                 const charSel = document.createElement("select"); charSel.className = "vnccs-clothes-select";
                 charSel.onchange = async (e) => {
-                    state.character = e.target.value;
+                    els.cancelPreviewGeneration?.(true);
+                    beginClothesUploadRequest();
+                    const character = e.target.value;
+                    els.charSelect.value = character;
                     beginClothesWizardRequest();
                     const currentSelection = beginSelectionRequest();
                     const currentPreview = beginPreviewRequest();
                     spritePreviewNavigator?.invalidate?.();
-                    if (!await loadCharacterInfo() || !currentSelection()) return;
-                    if (!await loadCostumes() || !currentSelection()) return;
-                    if (currentPreview()) updatePreviewImage();
-                    saveState();
+                    node._vnccsClothesSelectionPending = true;
+                    syncCostumeEditControls();
+                    try {
+                        if (!await loadCharacterInfo(character) || !currentSelection()) return;
+                        if (!await loadCostumes() || !currentSelection()) return;
+                        if (currentPreview()) updatePreviewImage();
+                        saveState();
+                    } finally {
+                        if (currentSelection()) {
+                            node._vnccsClothesSelectionPending = false;
+                            els.charSelect.value = state.character;
+                            syncCostumeEditControls();
+                        }
+                    }
                 };
                 charRow.appendChild(charSel);
                 els.charSelect = charSel;
@@ -1719,15 +2007,26 @@ app.registerExtension({
                 costRow.innerHTML = '<div class="vnccs-clothes-label">COSTUME (Select to Edit)</div>';
                 const costSel = document.createElement("select"); costSel.className = "vnccs-clothes-select";
                 costSel.onchange = async (e) => {
-                    state.costume = e.target.value;
+                    els.cancelPreviewGeneration?.(true);
+                    beginClothesUploadRequest();
+                    const costume = e.target.value;
                     beginClothesWizardRequest();
-                    beginSelectionRequest();
+                    const currentSelection = beginSelectionRequest();
                     const currentPreview = beginPreviewRequest();
                     spritePreviewNavigator?.invalidate?.();
-                    if (!await loadCostumeInfo()) return false;
+                    node._vnccsClothesSelectionPending = true;
                     syncCostumeEditControls();
-                    if (currentPreview()) updatePreviewImage();
-                    saveState();
+                    try {
+                        if (!await loadCostumeInfo(false, costume) || !currentSelection()) return false;
+                        if (currentPreview()) updatePreviewImage();
+                        saveState();
+                    } finally {
+                        if (currentSelection()) {
+                            node._vnccsClothesSelectionPending = false;
+                            els.costSel.value = state.costume;
+                            syncCostumeEditControls();
+                        }
+                    }
                 };
                 els.costSel = costSel;
                 costRow.appendChild(costSel);
@@ -1742,29 +2041,43 @@ app.registerExtension({
                 btnNewCostume.innerText = "NEW";
                 btnNewCostume.style.fontSize = "10px";
                 btnNewCostume.onclick = () => {
+                    if (node._vnccsStateRestoreError || node._vnccsClothesSelectionPending) return;
+                    const character = state.character;
+                    const currentRequest = beginClothesUploadRequest();
                     showModal("New Costume Name", () => {
                         const inp = document.createElement("input"); inp.className = "vnccs-clothes-input";
                         return inp;
                     }, [{ text: "Cancel" }, {
                         text: "CREATE", class: "vnccs-clothes-btn-primary", action: async (ol, btn) => {
+                            if (node._vnccsStateRestoreError || node._vnccsClothesSelectionPending) return true;
+                            const isCurrent = () => currentRequest() && ol.isConnected
+                                && !node._vnccsStateRestoreError && !node._vnccsClothesSelectionPending
+                                && state.character === character;
+                            if (!isCurrent()) return false;
                             const n = ol.querySelector("input").value.trim();
                             if (n) {
-                                await checkedJSON("/vnccs/save_costume", {
-                                    method: "POST", body: JSON.stringify({ character: state.character, costume: n, info: {} })
-                                });
-                                await loadCostumes();
-                                state.costume = n;
-                                costSel.value = n;
-                                await loadCostumeInfo();
-                                syncCostumeEditControls();
-                                updatePreviewImage();
-                                saveState();
-                                return false;
+                                try {
+                                    await checkedJSON("/vnccs/save_costume", {
+                                        method: "POST", body: JSON.stringify({ character, costume: n, info: {}, create_only: true })
+                                    });
+                                    if (!isCurrent() || !await loadCostumes() || !isCurrent()) return false;
+                                    state.costume = n;
+                                    costSel.value = n;
+                                    if (!await loadCostumeInfo() || !isCurrent()) return false;
+                                    syncCostumeEditControls();
+                                    updatePreviewImage();
+                                    saveState();
+                                    return false;
+                                } catch (error) {
+                                    if (!isCurrent()) return false;
+                                    throw error;
+                                }
                             }
                             return true;
                         }
                     }]);
                 };
+                els.btnNew = btnNewCostume;
                 actionRow.appendChild(btnNewCostume);
 
                 const btnDelCostume = document.createElement("button");
@@ -1772,6 +2085,7 @@ app.registerExtension({
                 btnDelCostume.innerText = "DELETE";
                 btnDelCostume.style.fontSize = "10px";
                 btnDelCostume.onclick = () => {
+                    if (node._vnccsStateRestoreError) return;
                     if (!state.character || !hasSelectedEditableCostume()) {
                         showInfo("Warning", "Select an editable costume first. Base sprite sets cannot be deleted.");
                         return;
@@ -1783,7 +2097,8 @@ app.registerExtension({
                     const character = state.character;
                     const costume = state.costume;
                     const currentRequest = beginDeleteRequest();
-                    const isCurrent = () => currentRequest() && state.character === character && state.costume === costume;
+                    const isCurrent = () => currentRequest() && !node._vnccsStateRestoreError
+                        && state.character === character && state.costume === costume;
                     showModal("Delete", () => {
                         const d = document.createElement("div");
                         d.innerText = `Delete "${costume}" for ${character}? This removes its settings, generated images, and preview.`;
@@ -1792,6 +2107,7 @@ app.registerExtension({
                         [{ text: "Cancel" }, {
                             text: "DELETE", class: "vnccs-clothes-btn-danger", action: async () => {
                                 if (!isCurrent()) return false;
+                                beginClothesUploadRequest();
                                 if (els.btnGen?.disabled) {
                                     showInfo("Warning", "Wait for preview generation to finish before deleting a costume.");
                                     return true;
@@ -1845,6 +2161,8 @@ app.registerExtension({
                 btnGen.style.width = "100%"; btnGen.style.marginBottom = "5px";
                 btnGen.style.flex = "0 0 auto"; // Prevent vertical stretching
                 btnGen.onclick = async () => {
+                    if (node._vnccsStateRestoreError) return;
+                    if (node._vnccsClothesSelectionPending) return;
                     if (!state.character) { showInfo("Error", "Select Character"); return; }
                     if (!hasSelectedEditableCostume()) { showCreateCostumeRequired(); return; }
                     if (state.activeTab === "clone" && !state.clone_image) {
@@ -1862,20 +2180,14 @@ app.registerExtension({
                         return;
                     }
 
-                    // Show loading overlay
-                    const loadingOverlay = document.createElement('div');
-                    loadingOverlay.className = 'vnccs-clothes-loading-overlay';
-                    loadingOverlay.innerHTML = `
-                        <div class="vnccs-clothes-spinner"></div>
-                        <div class="vnccs-clothes-loading-text">Generating preview<span class="vnccs-clothes-loading-dots"></span></div>
-                    `;
-                    container.appendChild(loadingOverlay);
-
                     const character = state.character;
                     const costume = state.costume;
                     const currentRequest = beginPreviewRequest();
-                    const isCurrent = () => currentRequest() && state.character === character && state.costume === costume;
+                    const draft = JSON.stringify({ ...state, costume_revision: null });
+                    const isCurrent = () => currentRequest() && !node._vnccsStateRestoreError
+                        && state.character === character && state.costume === costume && JSON.stringify({ ...state, costume_revision: null }) === draft;
                     spritePreviewNavigator?.invalidate?.();
+                    const generationRevision = startClothesPreviewGeneration();
                     btnGen.innerText = "GENERATING..."; btnGen.disabled = true;
                     try {
                         await saveCostumeToBackend();
@@ -1893,9 +2205,7 @@ app.registerExtension({
                             const d = await r.json();
                             if (!isCurrent()) return;
                             if (d.image) {
-                                els.previewImg.src = "data:image/png;base64," + d.image;
-                                els.previewImg.style.display = "block";
-                                els.placeholder.style.display = "none";
+                                await revealClothesPreview("data:image/png;base64," + d.image, state.character, generationRevision);
                             }
                         } else {
                             const message = await r.text();
@@ -1903,8 +2213,9 @@ app.registerExtension({
                         }
                     } catch (e) { if (isCurrent()) showInfo("Error", e.toString()); }
                     finally {
-                        loadingOverlay.remove();
-                        btnGen.innerText = "GENERATE PREVIEW / SAVE"; btnGen.disabled = false;
+                        stopClothesPreviewGeneration(generationRevision);
+                        btnGen.innerText = "GENERATE PREVIEW / SAVE";
+                        btnGen.disabled = !!node._vnccsClothesSelectionPending || !hasSelectedEditableCostume();
                     }
                 };
                 els.btnGen = btnGen;
@@ -1912,6 +2223,8 @@ app.registerExtension({
 
                 // Preview
                 const frame = document.createElement("div"); frame.className = "vnccs-clothes-preview-container";
+                frame.classList.add("vnccs-common-ui-preview-host");
+                frame.classList.toggle("is-male-character", String(state.character_info?.sex || state.character_info?.gender || "").trim().toLowerCase() === "male");
                 frame.style.marginTop = "5px";
                 frame.innerHTML = `<div class="vnccs-clothes-placeholder">
                     <svg class="vnccs-clothes-placeholder-icon" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -1921,12 +2234,30 @@ app.registerExtension({
                     No Preview
                 </div>`;
                 const pImg = document.createElement("img"); pImg.className = "vnccs-clothes-preview-img"; pImg.style.display = "none";
+                const previewAura = document.createElement("div");
+                previewAura.className = "vnccs-common-ui-preview-aura";
+                frame.appendChild(previewAura);
                 pImg.onclick = () => window.open(pImg.src, "_blank");
                 frame.appendChild(pImg);
+                const generationLayer = document.createElement("div");
+                generationLayer.className = "vnccs-clothes-generation-layer";
+                generationLayer.hidden = true;
+                generationLayer.ariaHidden = "true";
+                generationLayer.innerHTML = `
+                    <img class="vnccs-clothes-generation-img vnccs-clothes-generation-base" alt="">
+                    <img class="vnccs-clothes-generation-img vnccs-clothes-generation-new" alt="">
+                    <span class="vnccs-clothes-generation-scan"></span>`;
+                frame.appendChild(generationLayer);
                 const previewLoading = document.createElement("div");
                 previewLoading.className = "vnccs-clothes-preview-loading";
                 frame.appendChild(previewLoading);
-                els.previewImg = pImg; els.placeholder = frame.querySelector(".vnccs-clothes-placeholder");
+                els.previewFrame = frame;
+                els.previewImg = pImg;
+                els.placeholder = frame.querySelector(".vnccs-clothes-placeholder");
+                els.generationLayer = generationLayer;
+                els.generationBase = generationLayer.querySelector(".vnccs-clothes-generation-base");
+                els.generationNew = generationLayer.querySelector(".vnccs-clothes-generation-new");
+                els.generationScan = generationLayer.querySelector(".vnccs-clothes-generation-scan");
                 colLeft.appendChild(frame);
                 const spriteNav = document.createElement("div");
                 spriteNav.className = "cd-sprite-nav";
@@ -1944,11 +2275,163 @@ app.registerExtension({
                 spriteNextBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
                 spriteNav.append(spritePrevBtn, spriteCount, spriteNextBtn);
                 colLeft.appendChild(spriteNav);
+                let previewGenerationRevision = 0;
+                let workflowPreviewGeneration = null;
+                const stopClothesPreviewGeneration = (revision, restorePlaceholder = false) => {
+                    if (revision !== undefined && revision !== previewGenerationRevision) return;
+                    if (revision === undefined || workflowPreviewGeneration?.revision === revision) workflowPreviewGeneration = null;
+                    previewGenerationRevision += 1;
+                    for (const animation of els.generationLayer?._animations || []) animation.cancel();
+                    if (els.generationLayer) {
+                        els.generationLayer._animations = [];
+                        els.generationLayer.classList.remove("is-revealing");
+                        els.generationLayer.hidden = true;
+                    }
+                    els.generationBase?.removeAttribute("src");
+                    els.generationNew?.removeAttribute("src");
+                    els.previewFrame?.removeAttribute("aria-busy");
+                    spritePrevBtn.disabled = false;
+                    spriteNextBtn.disabled = false;
+                    const visiblePreview = els.previewImg?.style?.display !== "none" && els.previewImg?.getAttribute?.("src");
+                    if (restorePlaceholder && !visiblePreview && els.placeholder) els.placeholder.style.display = "flex";
+                    node._vnccsClothesPreviewRunning = false;
+                    syncCostumeEditControls();
+                };
+                const startClothesPreviewGeneration = () => {
+                    const revision = ++previewGenerationRevision;
+                    node._vnccsClothesPreviewRunning = true;
+                    syncCostumeEditControls();
+                    const sex = String(state.character_info?.sex || state.character_info?.gender || "").trim().toLowerCase();
+                    els.previewFrame?.classList.toggle("is-male-character", sex === "male");
+                    for (const animation of els.generationLayer?._animations || []) animation.cancel();
+                    const existing = els.previewImg?.style?.display !== "none"
+                        ? els.previewImg?.getAttribute?.("src") || els.previewImg?.src : "";
+                    if (existing) {
+                        els.generationBase.src = existing;
+                        els.generationBase.style.display = "block";
+                    } else {
+                        els.generationBase.removeAttribute("src");
+                        els.generationBase.style.display = "none";
+                    }
+                    els.generationBase.style.clipPath = "inset(0% 0 0 0)";
+                    els.generationNew.removeAttribute("src");
+                    els.generationNew.style.clipPath = "inset(0 0 100% 0)";
+                    els.generationScan.style.transform = "translateY(-100%)";
+                    els.generationLayer.classList.remove("is-revealing");
+                    els.generationLayer.hidden = false;
+                    els.previewFrame.setAttribute("aria-busy", "true");
+                    spritePrevBtn.disabled = true;
+                    spriteNextBtn.disabled = true;
+                    if (els.placeholder) els.placeholder.style.display = "none";
+                    return revision;
+                };
+                const revealClothesPreview = async (src, name, revision) => {
+                    if (revision !== previewGenerationRevision) return false;
+                    els.generationNew.src = src;
+                    try { await els.generationNew.decode?.(); } catch { /* decoded data remains available to the transition */ }
+                    if (revision !== previewGenerationRevision) return false;
+                    els.generationLayer.classList.add("is-revealing");
+                    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+                    if (!reducedMotion && els.generationNew.animate && els.generationBase.animate && els.generationScan.animate) {
+                        const options = { duration: 1350, easing: "cubic-bezier(0.4, 0, 0.2, 1)", fill: "forwards" };
+                        const reveal = els.generationNew.animate([
+                            { clipPath: "inset(0 0 100% 0)" },
+                            { clipPath: "inset(0 0 0% 0)" },
+                        ], options);
+                        const conceal = els.generationBase.animate([
+                            { clipPath: "inset(0% 0 0 0)" },
+                            { clipPath: "inset(100% 0 0 0)" },
+                        ], options);
+                        const scan = els.generationScan.animate([
+                            { transform: "translateY(-100%)", opacity: 1 },
+                            { transform: "translateY(0)", opacity: 1 },
+                        ], options);
+                        els.generationLayer._animations = [reveal, conceal, scan];
+                        await Promise.all([reveal.finished.catch(() => {}), conceal.finished.catch(() => {}), scan.finished.catch(() => {})]);
+                    }
+                    if (revision !== previewGenerationRevision) return false;
+                    els.previewImg.src = src;
+                    els.previewImg.alt = `Preview of ${name}`;
+                    els.previewImg.style.display = "block";
+                    els.previewImg.style.opacity = "";
+                    try { await els.previewImg.decode?.(); } catch { /* keep the completed transition visible */ }
+                    await new Promise(resolve => window.requestAnimationFrame ? window.requestAnimationFrame(resolve) : resolve());
+                    if (revision !== previewGenerationRevision) return false;
+                    els.placeholder.style.display = "none";
+                    if (els._ui) els._ui._previewSource = src;
+                    stopClothesPreviewGeneration(revision);
+                    return true;
+                };
+                node._vnccsStartWorkflowPreview = () => {
+                    if (!state.character) return null;
+                    workflowPreviewGeneration = {
+                        revision: startClothesPreviewGeneration(),
+                        character: state.character,
+                        costume: hasSelectedEditableCostume() ? state.costume : "Naked",
+                    };
+                    return workflowPreviewGeneration.revision;
+                };
+                node._vnccsRevealWorkflowPreview = character => {
+                    const workflow = workflowPreviewGeneration;
+                    const currentCostume = hasSelectedEditableCostume() ? state.costume : "Naked";
+                    if (!workflow || workflow.character !== character || state.character !== character
+                        || workflow.costume !== currentCostume) return null;
+                    if (workflow.promise) return workflow.promise;
+                    const currentRequest = beginPreviewRequest();
+                    spritePreviewNavigator?.invalidate?.();
+                    spritePreviewNavigator?.hideNav?.();
+                    previewLoading?.classList.remove("is-visible");
+                    const params = new URLSearchParams({
+                        character,
+                        costume: workflow.costume,
+                        ts: String(Date.now()),
+                        force_cache: "true",
+                    });
+                    const url = mediaURL(`/vnccs/get_preview?${params.toString()}`);
+                    workflow.promise = (async () => {
+                        const presented = await revealClothesPreview(url, character, workflow.revision);
+                        return Boolean(presented && currentRequest() && state.character === character
+                            && (hasSelectedEditableCostume() ? state.costume : "Naked") === workflow.costume);
+                    })();
+                    return workflow.promise;
+                };
+                const workflowPreviewStartHandler = event => {
+                    const executingNode = event.detail?.node ?? event.detail;
+                    if (String(executingNode) === String(node.id)) node._vnccsStartWorkflowPreview();
+                };
+                const workflowPreviewFailureHandler = event => {
+                    const failedNode = event.detail?.node_id ?? event.detail?.node;
+                    if (workflowPreviewGeneration && (failedNode == null || String(failedNode) === String(node.id))) {
+                        stopClothesPreviewGeneration(workflowPreviewGeneration.revision, true);
+                    }
+                };
+                const workflowPreviewCompleteHandler = event => {
+                    const executedNode = event.detail?.node ?? event.detail;
+                    if (String(executedNode) !== String(node.id) || !workflowPreviewGeneration) return;
+                    node._vnccsRevealWorkflowPreview(workflowPreviewGeneration.character)?.catch(error => {
+                        console.warn("[VNCCS] Workflow clothes preview transition failed", error);
+                    });
+                };
+                api.addEventListener("executing", workflowPreviewStartHandler);
+                api.addEventListener("executed", workflowPreviewCompleteHandler);
+                api.addEventListener("execution_error", workflowPreviewFailureHandler);
+                api.addEventListener("execution_interrupted", workflowPreviewFailureHandler);
+                registerCleanup(node, () => {
+                    api.removeEventListener("executing", workflowPreviewStartHandler);
+                    api.removeEventListener("executed", workflowPreviewCompleteHandler);
+                    api.removeEventListener("execution_error", workflowPreviewFailureHandler);
+                    api.removeEventListener("execution_interrupted", workflowPreviewFailureHandler);
+                    delete node._vnccsStartWorkflowPreview;
+                    delete node._vnccsRevealWorkflowPreview;
+                });
+                els.cancelPreviewGeneration = restore => stopClothesPreviewGeneration(undefined, restore);
+                registerCleanup(node, () => els.cancelPreviewGeneration?.());
                 spritePreviewNavigator = createSpritePreviewNavigator({
                     node,
                     isSelectionCurrent: preview => preview.character === state.character
                         && preview.costume === (hasSelectedEditableCostume() ? state.costume : "Naked"),
                     image: pImg,
+                    interactions: els._ui,
                     placeholder: els.placeholder,
                     loading: previewLoading,
                     nav: spriteNav,
@@ -1982,23 +2465,66 @@ app.registerExtension({
                 topRow.appendChild(colLeft);
 
                 // --- COL 2: MIDDLE PANEL (Tabs) ---
-                const colMid = document.createElement("div"); colMid.className = "vnccs-clothes-col";
+                const colMid = document.createElement("div"); colMid.className = "vnccs-clothes-col vnccs-clothes-design-panel";
+                colMid.dataset.sakuraScroll = "design";
                 colMid.style.paddingTop = "0"; // Reset padding for tabs
+
+                const designContent = document.createElement("div");
+                designContent.className = "vnccs-clothes-design-content";
+                colMid.appendChild(designContent);
+
+                const costumeEmptyState = document.createElement("div");
+                costumeEmptyState.className = "vnccs-clothes-costume-empty";
+                costumeEmptyState.setAttribute("role", "status");
+                costumeEmptyState.setAttribute("aria-live", "polite");
+                costumeEmptyState.setAttribute("aria-hidden", "true");
+                costumeEmptyState.innerHTML = `
+                    <svg class="vnccs-clothes-costume-empty-arrow" viewBox="0 0 62 42" aria-hidden="true">
+                        <path d="M60 21H10"></path><path d="m18 12-9 9 9 9"></path>
+                    </svg>
+                    <span class="vnccs-clothes-costume-empty-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M8 4h8l1 3 3 2-2 4-2-1v8H8v-8l-2 1-2-4 3-2 1-3Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+                    </span>
+                    <div class="vnccs-clothes-costume-empty-title">Create a costume first</div>
+                    <div class="vnccs-clothes-costume-empty-text">Click NEW to create a costume. The design controls will appear here as soon as it is ready.</div>`;
+                colMid.appendChild(costumeEmptyState);
+                els.designPanel = colMid;
+                els.designContent = designContent;
+                els.costumeEmptyState = costumeEmptyState;
+
+                const alignCostumeEmptyState = () => requestAnimationFrame(() => {
+                    if (!actionRow.isConnected || !colMid.isConnected) return;
+                    const actionRect = actionRow.getBoundingClientRect();
+                    const panelRect = colMid.getBoundingClientRect();
+                    const scaleY = panelRect.height / Math.max(colMid.offsetHeight, 1);
+                    const center = (actionRect.top - panelRect.top + actionRect.height / 2) / Math.max(scaleY, 0.01);
+                    if (Number.isFinite(center)) costumeEmptyState.style.setProperty("--vnccs-costume-empty-y", `${center}px`);
+                });
+                els.alignCostumeEmptyState = alignCostumeEmptyState;
+                node._vnccsAlignCostumeEmptyState = alignCostumeEmptyState;
+                registerCleanup(node, () => { delete node._vnccsAlignCostumeEmptyState; });
 
                 const controlsWrap = createGenerationControls();
                 controlsWrap.style.paddingTop = "16px";
-                colMid.appendChild(controlsWrap);
-                colMid.appendChild(createResolutionControl());
+                designContent.appendChild(controlsWrap);
+                designContent.appendChild(createResolutionControl());
+                const promptEnhancementControl = createPromptEnhancementControl();
 
                 // Tab Header
                 const tabBar = document.createElement("div");
                 tabBar.className = "cd-tab-bar";
+                tabBar.setAttribute("role", "group");
+                tabBar.setAttribute("aria-label", "Clothes mode");
 
                 const createTab = (id, label) => {
-                    const t = document.createElement("div");
+                    const t = document.createElement("button");
+                    t.type = "button";
+                    t.dataset.focusKey = `clothes-tab-${id}`;
                     t.className = "cd-tab" + (state.activeTab === id ? " active" : "");
                     t.innerText = label;
                     t.onclick = () => {
+                        els.cancelPreviewGeneration?.(true);
+                        beginClothesUploadRequest();
                         state.activeTab = id;
                         saveState();
                         refreshTabs();
@@ -2010,57 +2536,124 @@ app.registerExtension({
                 contentArea.style.flex = "1"; contentArea.style.display = "flex"; contentArea.style.flexDirection = "column";
 
                 const refreshTabs = () => {
+                    const view = els._ui.captureView();
                     tabBar.innerHTML = '';
                     tabBar.appendChild(createTab("generate", "GENERATE CLOTHES"));
                     tabBar.appendChild(createTab("clone", "CLONE CLOTHES"));
 
                     if (state.activeTab === "generate") renderAttributes(contentArea);
                     else renderClonePanel(contentArea);
+                    syncPromptEnhancementControl();
+                    syncCostumeEditControls();
+                    els._ui.syncSelection(tabBar);
+                    els._ui.syncSelects();
+                    els._ui.restoreView(view);
                 };
 
                 refreshTabs(); // Initial Render
 
-                colMid.appendChild(tabBar);
-                colMid.appendChild(contentArea);
+                designContent.appendChild(tabBar);
+                designContent.appendChild(contentArea);
                 topRow.appendChild(colMid);
+                syncCostumeEditControls();
 
                 node._vnccsRestoreClothesState = () => {
+                    els.cancelPreviewGeneration?.(true);
+                    beginClothesUploadRequest();
+                    beginClothesWizardRequest();
+                    beginDeleteRequest();
+                    spritePreviewNavigator?.invalidate?.();
+                    beginSelectionRequest();
+                    beginCharacterInfoRequest();
+                    beginCostumeInfoRequest();
+                    node._vnccsClothesSelectionPending = false;
                     try {
                         const restored = JSON.parse(dataWidget.value || "{}");
-                        Object.assign(state, restored, {
+                        if (!restored || typeof restored !== "object" || Array.isArray(restored)
+                            || ["costume_info", "character_info", "gen_settings"].some(key => restored[key] !== undefined
+                                && (!restored[key] || typeof restored[key] !== "object" || Array.isArray(restored[key])))) {
+                            throw new Error("Saved clothes state must contain objects.");
+                        }
+                        delete node._vnccsStateRestoreError;
+                        Object.assign(state, defaultState, restored, {
                             costume_info: { ...defaultState.costume_info, ...restored.costume_info },
                             character_info: { ...defaultState.character_info, ...restored.character_info },
                             gen_settings: { ...defaultState.gen_settings, ...restored.gen_settings },
                         });
+                        node._vnccsCostumeDraft = restored.costume_info ? { character: state.character, costume: state.costume } : null;
+                        for (const key of Object.keys(defaultState.costume_info)) {
+                            if (els[key]) els[key].value = state.costume_info[key];
+                        }
+                        if (els.charSelect) {
+                            if (state.character && !Array.from(els.charSelect.options).some(option => option.value === state.character)) {
+                                els.charSelect.add(new Option(state.character, state.character));
+                            }
+                            els.charSelect.value = state.character;
+                        }
+                        if (els.costSel) els.costSel.value = state.costume;
+                        refreshTabs();
                         syncGenerationControls();
-                    } catch (error) { console.warn("[VNCCS] Clothes Designer state restore failed", error); }
+                        syncCostumeEditControls();
+                        loadCharList();
+                    } catch (error) {
+                        node._vnccsStateRestoreError = "Cannot restore saved clothes state. Original widget data is preserved. Restore a valid workflow before editing or running.";
+                        console.warn("[VNCCS] Clothes Designer state restore failed", error);
+                        showInfo("State Restore Failed", node._vnccsStateRestoreError);
+                    }
                 };
-                registerCleanup(node, () => { delete node._vnccsRestoreClothesState; });
+                registerCleanup(node, () => { delete node._vnccsRestoreClothesState; delete node._vnccsCostumeDraft; });
 
                 // Initial Load
-                (async () => {
+                const loadCharList = async () => {
                     const isMounted = createRequestGuard(node)();
+                    const currentList = beginCharacterListRequest();
                     const currentSelection = beginSelectionRequest();
                     const currentPreview = beginPreviewRequest();
-                    const r = await api.fetchApi("/vnccs/context_lists");
-                    const d = await r.json();
-                    if (!isMounted()) return;
-                    setClothesCoreLora();
-                    syncGenerationControls();
-                    saveState(); // Ensure defaults are persisted immediately
+                    node._vnccsClothesSelectionPending = true;
+                    syncCostumeEditControls();
+                    try {
+                        const d = await checkedJSON("/vnccs/context_lists");
+                        if (!isMounted() || !currentList() || node._vnccsStateRestoreError) return;
+                        if (!Array.isArray(d.characters)) throw new Error("Invalid character list.");
+                        setClothesCoreLora();
+                        syncGenerationControls();
 
-                    // Char List
-                    els.charSelect.innerHTML = "";
-                    d.characters.forEach(c => els.charSelect.add(new Option(c, c)));
-                    if (state.character) els.charSelect.value = state.character;
-                    else if (d.characters.length) { state.character = d.characters[0]; els.charSelect.value = state.character; }
+                        const selectedCharacter = currentSelection()
+                            ? (d.characters.includes(state.character) ? state.character : d.characters[0] || "")
+                            : els.charSelect.value;
+                        els.charSelect.innerHTML = "";
+                        d.characters.forEach(c => els.charSelect.add(new Option(c, c)));
+                        if (!currentSelection()) {
+                            if (selectedCharacter && !d.characters.includes(selectedCharacter)) {
+                                els.charSelect.add(new Option(selectedCharacter, selectedCharacter));
+                            }
+                            els.charSelect.value = selectedCharacter;
+                            return;
+                        }
+                        if (!selectedCharacter) {
+                            els.charSelect.add(new Option("No characters", ""));
+                            state.character = "";
+                            state.character_info = { ...defaultState.character_info };
+                            els.costSel.innerHTML = "";
+                            resetCostumeSelection();
+                            return;
+                        }
+                        els.charSelect.value = selectedCharacter;
 
-                    if (!currentSelection()) return;
-                    if (!await loadCharacterInfo() || !currentSelection()) return;
-                    if (!await loadCostumes() || !currentSelection()) return;
-                    if (currentPreview()) updatePreviewImage();
-                    saveState();
-                })();
+                        if (!await loadCharacterInfo(selectedCharacter) || !currentSelection()) return;
+                        if (!await loadCostumes(true) || !currentSelection()) return;
+                        if (currentPreview()) updatePreviewImage();
+                        saveState();
+                    } catch (error) {
+                        if (isMounted() && currentSelection()) showInfo("Character List Failed", error.message || String(error));
+                    } finally {
+                        if (isMounted() && currentSelection()) {
+                            node._vnccsClothesSelectionPending = false;
+                            syncCostumeEditControls();
+                        }
+                    }
+                };
+                loadCharList();
                 container.appendChild(topRow);
 
                 // Sync LoRA options from Control Center
@@ -2083,7 +2676,9 @@ app.registerExtension({
                 // Functions
                 const beginCostumesRequest = createRequestGuard(node);
                 const resetCostumeSelection = () => {
+                    els.cancelPreviewGeneration?.(true);
                     state.costume = "";
+                    state.costume_revision = null;
                     state.costume_info = { ...defaultState.costume_info };
                     state.selected_preview_sprite = null;
                     if (els.costSel) els.costSel.value = "";
@@ -2099,18 +2694,24 @@ app.registerExtension({
                     syncCostumeEditControls();
                     saveState();
                 };
-                const loadCostumes = async () => {
+                const loadCostumes = async (preserveDraft = false) => {
                     const currentRequest = beginCostumesRequest();
                     const c = state.character;
+                    const originalInfo = state.costume_info;
+                    const isCurrent = () => currentRequest() && state.character === c
+                        && (preserveDraft || state.costume_info === originalInfo);
                     if (!c) return;
                     try {
                         const r = await api.fetchApi(`/vnccs/list_costumes?character=${encodeURIComponent(c)}`);
                         let list = await r.json();
-                        if (!currentRequest() || state.character !== c) return false;
+                        if (!isCurrent()) return false;
                         if (!r.ok || !Array.isArray(list)) throw new Error("Failed to load character costumes.");
 
                         // Filter base sprite sets from display list.
                         const displayList = list.filter(i => i !== "Naked" && i !== "Original");
+                        if (preserveDraft && node._vnccsCostumeDraft?.character === c
+                            && node._vnccsCostumeDraft?.costume === state.costume && hasSelectedEditableCostume()
+                            && !displayList.includes(state.costume)) displayList.push(state.costume);
 
                         els.costSel.innerHTML = "";
                         displayList.forEach(i => els.costSel.add(new Option(i, i)));
@@ -2136,20 +2737,24 @@ app.registerExtension({
                             els.costSel.value = state.costume;
                         }
 
-                        if (!await loadCostumeInfo()) return false;
+                        if (!await loadCostumeInfo(preserveDraft)) return false;
                         syncCostumeEditControls();
                         return true;
                     } catch (error) {
-                        if (currentRequest() && !(state.character !== c)) showInfo("Error", error.message || String(error));
+                        if (isCurrent()) showInfo("Error", error.message || String(error));
                         return false;
                     }
                 };
 
                 const beginCostumeInfoRequest = createRequestGuard(node);
-                const loadCostumeInfo = async () => {
+                const loadCostumeInfo = async (preserveDraft = false, costume = state.costume) => {
                     const currentRequest = beginCostumeInfoRequest();
                     const c = state.character;
-                    const cos = state.costume;
+                    const originalCostume = state.costume;
+                    const originalInfo = state.costume_info;
+                    const cos = costume;
+                    const isCurrent = () => currentRequest() && state.character === c && state.costume === originalCostume
+                        && (preserveDraft || state.costume_info === originalInfo);
                     if (els.btnGen) els.btnGen.disabled = true;
                     if (els.btnDel) els.btnDel.disabled = true;
                     ["top", "bottom", "head", "face", "shoes"].forEach(key => {
@@ -2159,21 +2764,32 @@ app.registerExtension({
                     try {
                         const r = await api.fetchApi(`/vnccs/get_costume?character=${encodeURIComponent(c)}&costume=${encodeURIComponent(cos)}`);
                         const info = await r.json();
-                        if (!currentRequest() || state.character !== c || state.costume !== cos) return false;
+                        if (!isCurrent()) return false;
                         if (!r.ok) throw new Error("Failed to load costume metadata.");
                         if (!info || typeof info !== "object" || Array.isArray(info)) {
                             throw new Error("Invalid costume metadata.");
                         }
 
+                        state.costume = cos;
+                        const preservingDraft = preserveDraft && node._vnccsCostumeDraft?.character === c
+                            && node._vnccsCostumeDraft?.costume === cos;
+                        const draftMatchesDisk = preservingDraft && Object.entries(state.costume_info).every(([key, value]) =>
+                            JSON.stringify(value) === JSON.stringify(info[key] ?? defaultState.costume_info[key]));
+                        if (!preservingDraft || draftMatchesDisk) {
+                            state.costume_revision = r.headers?.get?.("ETag") || null;
+                        }
                         state.costume_info = {
+                            ...info,
                             top: info.top || "",
                             bottom: info.bottom || "",
                             head: info.head || "",
                             face: info.face || "",
-                            shoes: info.shoes || ""
+                            shoes: info.shoes || "",
+                            ...(preserveDraft && node._vnccsCostumeDraft?.character === c
+                                && node._vnccsCostumeDraft?.costume === cos ? state.costume_info : {})
                         };
 
-                        for (const k in state.costume_info) {
+                        for (const k of ["top", "bottom", "head", "face", "shoes"]) {
                             if (els[k]) {
                                 els[k].value = state.costume_info[k];
                                 if (els[k].autoResize) els[k].autoResize();
@@ -2186,8 +2802,9 @@ app.registerExtension({
                         saveState();
                         return true;
                     } catch (error) {
-                        if (currentRequest() && state.character === c && state.costume === cos) {
-                            resetCostumeSelection();
+                        if (isCurrent()) {
+                            if (cos === originalCostume && !(preserveDraft && node._vnccsCostumeDraft?.character === c
+                                && node._vnccsCostumeDraft?.costume === cos)) resetCostumeSelection();
                             showInfo("Error", error.message || String(error));
                         }
                         return false;
@@ -2195,14 +2812,20 @@ app.registerExtension({
                 };
 
                 const updatePreviewImage = async (forceCache = false) => {
+                    els.cancelPreviewGeneration?.(true);
                     const currentRequest = beginPreviewRequest();
                     const character = state.character;
                     const costume = state.costume;
-                    const isCurrent = () => currentRequest() && state.character === character && state.costume === costume;
+                    const info = state.costume_info;
+                    const isCurrent = () => currentRequest() && state.character === character && state.costume === costume
+                        && state.costume_info === info;
                     spritePreviewNavigator?.invalidate?.();
                     if (!state.character) return;
                     const ts = Date.now();
                     const previewCostume = hasSelectedEditableCostume() ? state.costume : "Naked";
+                    const selectedPreview = state.selected_preview_sprite;
+                    const selectedPreviewIndex = selectedPreview?.character === character
+                        && (selectedPreview.costume || "") === previewCostume ? selectedPreview.index : undefined;
                     let url = `/vnccs/get_preview?character=${encodeURIComponent(character)}&costume=${encodeURIComponent(previewCostume)}&ts=${ts}`;
                     if (forceCache) url += "&force_cache=true";
                     if (!forceCache) {
@@ -2215,8 +2838,7 @@ app.registerExtension({
                         const r = await api.fetchApi(url);
                         if (!isCurrent()) return;
                         if (!r.ok) {
-                            els.previewImg.style.display = "none";
-                            els.placeholder.style.display = "block";
+                            els._ui.emptyPreview(els.previewImg, els.placeholder, character, "No preview available");
                             spritePreviewNavigator?.hideNav();
                             state.selected_preview_sprite = null;
                             saveState();
@@ -2232,6 +2854,7 @@ app.registerExtension({
                     } else {
                         await spritePreviewNavigator?.load(character, {
                             costume: previewCostume,
+                            index: selectedPreviewIndex,
                             fallbackUrl: mediaURL(url),
                         });
                     }
@@ -2242,7 +2865,12 @@ app.registerExtension({
                     const myId = String(node.id);
                     if (targetId === myId) {
                         console.log("VNCCS Preview Update Received for Node:", myId);
-                        updatePreviewImage(true);
+                        const transition = node._vnccsRevealWorkflowPreview?.(event.detail?.character);
+                        if (transition) transition.catch(error => {
+                            console.warn("[VNCCS] Workflow clothes preview transition failed", error);
+                            updatePreviewImage(true);
+                        });
+                        else updatePreviewImage(true);
                     }
                 };
                 api.addEventListener("vnccs.preview.updated", onPreviewUpdated);
@@ -2263,7 +2891,10 @@ app.registerExtension({
             nodeType.prototype.onResize = function (size) {
                 onResize?.apply(this, arguments);
                 syncDOMWidgetWidth(this, "clothes_designer_ui");
-                requestAnimationFrame(() => syncDOMWidgetWidth(this, "clothes_designer_ui"));
+                requestAnimationFrame(() => {
+                    syncDOMWidgetWidth(this, "clothes_designer_ui");
+                    this._vnccsAlignCostumeEmptyState?.();
+                });
             };
 
             const onConfigure = nodeType.prototype.onConfigure;

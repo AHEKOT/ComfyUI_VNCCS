@@ -4,7 +4,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from .runtime_cleanup import inference_lock
-
+from ..operation_logger import log_event
 
 # A single worker also prevents preview requests from racing shared model caches.
 _preview_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vnccs-preview")
@@ -47,4 +47,6 @@ async def run_wizard_job(callback, payload, kind):
         return response
 
     emit("queued", "Waiting for the model worker")
+    log_event("queued", component="Wizard", kind=kind, node_id=payload.get("node_id"),
+              request_id=payload.get("request_id"))
     return await run_preview_job(perform)

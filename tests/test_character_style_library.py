@@ -17,7 +17,9 @@ ROOT = Path(__file__).parents[1]
 
 def test_packaged_catalog_is_unique_and_every_style_has_a_square_rgb_preview():
     catalog = json.loads((ROOT / "character_template/character_styles.json").read_text())
+    anima_catalog = json.loads((ROOT / "character_template/anima_styles.json").read_text())
     styles = [style for group in catalog["groups"] for style in group["styles"]]
+    anima_styles = [style for group in anima_catalog["groups"] for style in group["styles"]]
     assert len(styles) == len({style["id"] for style in styles}) == 358
     assert len({style["label"].casefold() for style in styles}) == len(styles)
     assert all(style["label"] and style["description"] and style["reference"] and style["prompt"] for style in styles)
@@ -26,9 +28,10 @@ def test_packaged_catalog_is_unique_and_every_style_has_a_square_rgb_preview():
     assert catalog["aliases"]["clio_toon_shader"] == "cel_shading"
     assert catalog["aliases"]["clio_photography"] == "photorealism"
     directory = ROOT / "character_template/style_previews"
-    assert {p.stem for p in directory.glob("*.webp") if not p.stem.startswith("user_") and p.stem != "custom"} == {style["id"] for style in styles}
-    for style in styles:
-        with Image.open(directory / (style["id"] + ".webp")) as image:
+    packaged_ids = {style["id"] for style in styles + anima_styles}
+    assert {p.stem for p in directory.glob("*.webp") if not p.stem.startswith("user_") and p.stem != "custom"} == packaged_ids
+    for style_id in packaged_ids:
+        with Image.open(directory / (style_id + ".webp")) as image:
             assert image.format == "WEBP" and image.size == (1024, 1024)
             assert image.mode == "RGB"
     assert catalog["default_style"] == "ghibli_miyazaki"
@@ -111,6 +114,25 @@ def test_corrupt_library_is_preserved_instead_of_reset(tmp_path):
     with pytest.raises(ValueError):
         library.save_user_style({"label": "N", "prompt": "P"}, path)
     assert path.read_text() == "{broken"
+
+
+@pytest.mark.parametrize("edit", [False, True])
+def test_utf8_size_limit_rejects_save_before_replacing_readable_library(tmp_path, monkeypatch, edit):
+    monkeypatch.setattr(library, "_MAX_LIBRARY_BYTES", 2000)
+    path = tmp_path / "character_styles.user.json"
+    kept = library.save_user_style({"label": "Kept", "prompt": "Kept"}, path)
+    original = path.read_bytes()
+    payload = {"label": "Large", "prompt": "界" * 700}
+    if edit:
+        payload["id"] = kept["id"]
+        payload["revision"] = kept["revision"]
+    with pytest.raises(ValueError, match="previous library has been preserved"):
+        library.save_user_style(payload, path)
+    assert path.read_bytes() == original
+    assert library.load_user_styles(path) == [kept]
+    assert not list(tmp_path.glob("*.tmp"))
+    saved = library.save_user_style({"label": "Small", "prompt": "Short prompt"}, path)
+    assert library.load_user_styles(path) == [kept, saved]
 
 
 def test_concurrent_creators_do_not_lose_styles(tmp_path):
@@ -314,14 +336,32 @@ def test_deleted_style_cannot_publish_a_late_render(monkeypatch, tmp_path):
     monkeypatch.setattr(library, "STYLE_PREVIEWS_DIR", str(tmp_path / "previews"))
     style = library.save_user_style({"label": "Mine", "prompt": "Ink"})
     image = Image.new("RGB", (32, 32), "pink")
-    saved = library.save_user_style_preview(style["id"], image)
+    saved = library.save_user_style_preview(style["id"], image, style["revision"])
     assert Path(saved["path"]).exists()
     assert library.delete_user_style(style["id"]) is True
     with pytest.raises(ValueError, match="no longer exists"):
-        library.save_user_style_preview(style["id"], image)
+        library.save_user_style_preview(style["id"], image, style["revision"])
     assert not Path(saved["path"]).exists()
     with pytest.raises(ValueError, match="no longer exists"):
         library.save_user_style({**style, "prompt": "Recreated"})
+
+
+def test_edited_style_rejects_late_render_and_preserves_current_preview(monkeypatch, tmp_path):
+    monkeypatch.setattr(library, "USER_CHARACTER_STYLES_PATH", str(tmp_path / "styles.json"))
+    monkeypatch.setattr(library, "STYLE_PREVIEWS_DIR", str(tmp_path / "previews"))
+    old = library.save_user_style({"label": "Mine", "prompt": "Red ink"})
+    saved = library.save_user_style_preview(old["id"], Image.new("RGB", (32, 32), "red"), old["revision"])
+    preview = Path(saved["path"])
+    original = preview.read_bytes()
+    current = library.save_user_style({**old, "prompt": "Blue paint"})
+    library_bytes = Path(library.USER_CHARACTER_STYLES_PATH).read_bytes()
+    with pytest.raises(library.StorageConflictError, match="changed during rendering"):
+        library.save_user_style_preview(old["id"], Image.new("RGB", (32, 32), "red"), old["revision"])
+    assert preview.read_bytes() == original
+    assert Path(library.USER_CHARACTER_STYLES_PATH).read_bytes() == library_bytes
+    library.save_user_style_preview(current["id"], Image.new("RGB", (32, 32), "blue"), current["revision"])
+    with Image.open(preview) as image:
+        assert image.getpixel((0, 0))[2] > 250
 
 
 def test_deletion_preserves_a_corrupt_library_and_linked_preview(monkeypatch, tmp_path):

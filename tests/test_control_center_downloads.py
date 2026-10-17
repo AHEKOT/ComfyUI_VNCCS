@@ -1,6 +1,7 @@
 """Download progress and atomic installation regressions, without network access."""
 
 import queue
+import json
 import sys
 import threading
 from contextlib import nullcontext
@@ -230,3 +231,23 @@ def test_worker_installs_only_after_validation(monkeypatch, hub_progress, tmp_pa
     assert target.read_bytes() == (cached.read_bytes() if valid else b"old model")
     assert bool(versions) == valid
     assert list(target.parent.iterdir()) == [target]
+
+
+def test_worker_keeps_installed_model_when_tensor_data_is_truncated(monkeypatch, tmp_path):
+    header = json.dumps({"weight": {"dtype": "F32", "shape": [1024], "data_offsets": [0, 4096]}}).encode()
+    cached = tmp_path / "truncated.safetensors"
+    cached.write_bytes(len(header).to_bytes(8, "little") + header + b"\0" * 1024)
+    target = tmp_path / "installed.safetensors"
+    target.write_bytes(b"existing model must remain")
+    tasks = queue.Queue()
+    tasks.put(("public/models", "truncated-model", {"local_path": "models/unet/model.safetensors", "hf_path": "model.safetensors"}))
+    tasks.put(None)
+    monkeypatch.setattr(cc, "_DOWNLOAD_QUEUE", tasks)
+    monkeypatch.setattr(cc, "_DOWNLOAD_STATUS", {})
+    monkeypatch.setattr(cc, "_resolve_model_download_path", lambda path: str(target))
+    monkeypatch.setattr(cc, "_download_with_progress", lambda *args, **kwargs: str(cached))
+    monkeypatch.setattr(cc, "update_installed_version", lambda *args: pytest.fail("Invalid model must not update its version"))
+    cc._download_worker_loop()
+    assert cc._DOWNLOAD_STATUS["truncated-model"]["status"] == "error"
+    assert target.read_bytes() == b"existing model must remain"
+    assert set(tmp_path.iterdir()) == {cached, target}

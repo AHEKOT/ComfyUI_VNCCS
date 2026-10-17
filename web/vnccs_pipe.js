@@ -1,59 +1,62 @@
 import { app } from "../../scripts/app.js";
 
-function _applyOptions(node, options) {
-    const loraWidget  = node.widgets?.find(w => w.name === "lora_name");
-    const cacheWidget = node.widgets?.find(w => w.name === "lora_options_json");
-    if (!loraWidget) return;
-
-    const full = ["none", ...options];
-    loraWidget.options.values = full;
-    if (!full.includes(loraWidget.value)) loraWidget.value = "none";
-    if (cacheWidget) cacheWidget.value = JSON.stringify(full);
+function applyOptions(node, options) {
+    const widget = node.widgets?.find(w => w.name === "lora_name");
+    if (!widget) return;
+    const values = [...new Set(["none", ...options.filter(value => typeof value === "string")])];
+    if (widget.value && !values.includes(widget.value)) values.push(widget.value);
+    widget.options.values = values;
     node.setDirtyCanvas(true, true);
 }
 
-function _restoreFromCache(node) {
-    const loraWidget  = node.widgets?.find(w => w.name === "lora_name");
-    const cacheWidget = node.widgets?.find(w => w.name === "lora_options_json");
-    if (!loraWidget || !cacheWidget) return;
-
+function restoreOptions(node) {
+    const cache = node.widgets?.find(w => w.name === "lora_options_json");
     try {
-        const cached = JSON.parse(cacheWidget.value);
-        if (Array.isArray(cached) && cached.length > 0) {
-            loraWidget.options.values = cached;
-            // Don't reset value — let ComfyUI restore it from the workflow JSON
-        }
-    } catch { /* corrupt cache — leave defaults */ }
+        const options = JSON.parse(cache?.value);
+        if (Array.isArray(options)) applyOptions(node, options);
+    } catch { /* Preserve the selected LoRA if the options cache is unreadable. */ }
 }
 
 app.registerExtension({
     name: "VNCCS.Pipe",
 
-    async nodeCreated(node) {
+    nodeCreated(node) {
         if (node.comfyClass !== "VNCCS_Pipe") return;
-
-        // Hide cache widget immediately, then restore options from it
-        const cacheWidget = node.widgets?.find(w => w.name === "lora_options_json");
-        if (cacheWidget) {
-            cacheWidget.type = "hidden";
-            cacheWidget.computeSize = () => [0, -4];
-            cacheWidget.draw = () => {};
-            if (cacheWidget.element) cacheWidget.element.style.display = "none";
+        const cache = node.widgets?.find(w => w.name === "lora_options_json");
+        if (cache) {
+            cache.type = "hidden";
+            cache.computeSize = () => [0, -4];
+            cache.draw = () => {};
+            if (cache.element) cache.element.style.display = "none";
         }
-
-        // Restore persisted options on page load before the CC fires any events
-        setTimeout(() => _restoreFromCache(node), 100);
-
-        const onLoraOptions = (e) => {
-            const options = e.detail?.options;
-            if (Array.isArray(options)) _applyOptions(node, options);
+        const onConfigure = node.onConfigure;
+        node.onConfigure = function () {
+            const result = onConfigure?.apply(this, arguments);
+            restoreOptions(this);
+            return result;
         };
-        window.addEventListener("vnccs-lora-options-updated", onLoraOptions);
 
-        const origOnRemoved = node.onRemoved;
-        node.onRemoved = function (...args) {
-            window.removeEventListener("vnccs-lora-options-updated", onLoraOptions);
-            origOnRemoved?.apply(this, args);
+        const onSerialize = node.onSerialize;
+        node.onSerialize = function (output) {
+            const result = onSerialize?.apply(this, arguments);
+            const widget = this.widgets?.find(w => w.name === "lora_name");
+            const cache = this.widgets?.find(w => w.name === "lora_options_json");
+            if (widget && cache) {
+                cache.value = JSON.stringify(widget.options.values);
+                const index = this.widgets.indexOf(cache);
+                if (Array.isArray(output.widgets_values)) output.widgets_values[index] = cache.value;
+            }
+            return result;
+        };
+
+        const onOptions = event => {
+            if (Array.isArray(event.detail?.options)) applyOptions(node, event.detail.options);
+        };
+        window.addEventListener("vnccs-lora-options-updated", onOptions);
+        const onRemoved = node.onRemoved;
+        node.onRemoved = function () {
+            window.removeEventListener("vnccs-lora-options-updated", onOptions);
+            return onRemoved?.apply(this, arguments);
         };
     },
 });

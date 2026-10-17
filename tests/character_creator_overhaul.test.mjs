@@ -11,6 +11,7 @@ class Element {
         this.tagName = tag;
         this.children = [];
         this.style = {};
+        this.dataset = {};
         this.attrs = {};
         this.classes = new Set();
         this.classList = { toggle: (key, enabled) => enabled ? this.classes.add(key) : this.classes.delete(key) };
@@ -41,14 +42,13 @@ function setup(saved) {
         els: {},
         state, node: { id: 42, widgets: [widget] }, localStorage: { setItem() {} },
         document: { createElement: tag => new Element(tag) },
-        ccConfig: { lora: [
+        ccState: { downloadStatus: {}, config: { lora: [
             { name: "Turbo", kind: "QI2", type: "TurboLora", local_path: "models/loras/turbo.safetensors", status: "installed" },
             { name: "VNCCS Overhaul QI2", kind: "QI2", type: "Helper", local_path: "models/loras/QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.safetensors", status: "installed" },
             { name: "Other Helper", kind: "QI2", type: "Helper", local_path: "models/loras/other.safetensors" },
-        ] },
+        ] } },
         ccKind: entry => entry.kind?.toLowerCase(), ccType: entry => entry.type?.toLowerCase(),
         ccRelPath: entry => entry.local_path.replace(/^models\/loras\//, ""),
-        ccResolveStatus: entry => entry.status || "missing",
         cardStatusLabel: status => status,
         ccDownloadEntry: (cat, entry) => downloads.push([cat, entry.name]),
         localAssetRelSet: names => new Set(names || []), localAssets: { loras: [] },
@@ -60,8 +60,9 @@ function setup(saved) {
         block("const cloneSettingsValue", "const syncGenerationControls") +
         block("const migrateGenerationModeSettings", "const clearPreviewHandlers") +
         block("const syncBackgroundForGenerationMode", "const clearCharacterSelection") +
+        block("const ccStatusKey =", "const ccRelPath =") +
         block("const buildAssetCard", "const selectCcAsset") +
-        block("const renderModeLoraCards", "const renderCardSection") +
+        block("const renderModeLoraCards", "const renderModelPicker") +
         `this.render = renderModeLoraCards; this.makeCard = buildOverhaulCard;
          this.migrate = migrateGenerationModeSettings; this.applyProfile = applyGenerationProfile;
          this.saveProfile = saveCurrentGenerationModeValues; this.normalize = normalizeOverhaulStrength;`, ctx);
@@ -121,7 +122,7 @@ test("slider saves every step, invalidates preview and preserves focus through l
 
 test("missing card retains catalog identity for Download and can be set to zero", () => {
     const { ctx, downloads, state } = setup();
-    ctx.ccConfig.lora[1].status = "missing";
+    ctx.ccState.config.lora[1].status = "missing";
     const root = new Element("div");
     ctx.render(root, "qi2");
     const card = root.children[1];
@@ -134,9 +135,61 @@ test("missing card retains catalog identity for Download and can be set to zero"
     assert.equal(state.gen_settings.qi2_overhaul_strength, 0);
 });
 
+test("backend Missing keeps Download visible even when the local name list and saved settings disagree", () => {
+    const { ctx, state } = setup();
+    ctx.ccState.config.lora.forEach(entry => { entry.status = "missing"; });
+    ctx.localAssets.loras = ["turbo.safetensors", "QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.safetensors"];
+    state.gen_settings.turbo_enabled = true;
+    state.gen_settings.dmd_lora_name = "turbo.safetensors";
+    state.gen_settings.qi2_overhaul_strength = 1;
+    const root = new Element("div");
+    ctx.render(root, "qi2");
+    const cards = walk(root).filter(element => element.className === "vnccs-creator-model-card");
+    assert.equal(cards.length, 2);
+    for (const card of cards) {
+        assert.equal(card.classes.has("is-installed"), false);
+        assert.equal(card.classes.has("is-selected"), false);
+        assert.equal(walk(card).some(element => element.type === "checkbox"), false);
+        assert.ok(walk(card).some(element => element.className === "vnccs-creator-model-card-download"));
+    }
+    assert.equal(state.gen_settings.turbo_enabled, true);
+    assert.equal(state.gen_settings.qi2_overhaul_strength, 1);
+});
+
+for (const downloadStatus of ["queued", "downloading"]) {
+    test(`Creator Turbo and Overhaul follow server ${downloadStatus} over cached Installed`, () => {
+        const { ctx, state } = setup();
+        state.gen_settings.turbo_enabled = true;
+        state.gen_settings.dmd_lora_name = "turbo.safetensors";
+        for (const entry of ctx.ccState.config.lora) {
+            ctx.ccState.downloadStatus[`cc_lora_${entry.name}`] = { status: downloadStatus };
+        }
+        const root = new Element("div");
+        ctx.render(root, "qi2");
+        for (const card of walk(root).filter(element => element.className === "vnccs-creator-model-card")) {
+            assert.equal(card.classes.has("is-installed"), false);
+            assert.equal(card.classes.has("is-selected"), false);
+            assert.equal(walk(card).some(element => element.type === "checkbox"), false);
+            const status = walk(card).find(element => element.className.startsWith("vnccs-creator-model-card-status"));
+            assert.equal(status.textContent, downloadStatus);
+            assert.equal(walk(card).find(element => element.className === "vnccs-creator-model-card-download").disabled, true);
+        }
+    });
+}
+
+test("server-installed Overhaul remains installed when the local filename list is empty", () => {
+    const { ctx } = setup();
+    ctx.localAssets.loras = [];
+    const entry = ctx.ccState.config.lora[1];
+    entry.local_path = "models/loras/configured-folder/VNCCS_QI2_AnimeOverhaulV1.2.safetensors";
+    const card = ctx.makeCard(entry);
+    assert.equal(card.classes.has("is-installed"), true);
+    assert.equal(walk(card).some(element => element.className === "vnccs-creator-model-card-download"), false);
+});
+
 test("catalog Overhaul version stays installed and cannot enter manual slots", () => {
     const { ctx } = setup();
-    ctx.ccConfig.lora[1].local_path = "models/loras/QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.2.safetensors";
+    ctx.ccState.config.lora[1].local_path = "models/loras/QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.2.safetensors";
     const root = new Element("div");
     ctx.render(root, "qi2");
     assert.equal(walk(root.children[1]).some(el => el.className === "vnccs-creator-model-card-download"), false);

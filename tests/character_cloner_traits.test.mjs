@@ -29,6 +29,8 @@ class Element {
         this.classList = { toggle() {}, add() {}, remove() {} };
     }
     append(...children) { this.children.push(...children); }
+    get textContent() { return (this._text || "") + this.children.map(child => child.textContent || "").join(""); }
+    set textContent(value) { this._text = String(value); this.children = []; }
     appendChild(child) { this.append(child); }
     replaceChildren(...children) { this.children = children; }
     setAttribute(name, value) { this.attrs[name] = value; }
@@ -53,7 +55,7 @@ function setup(upload) {
         imgList: { querySelectorAll: () => [] }, ensureQwenVLReady: async () => true,
         createLoadingOverlay: () => ({ remove() {} }), console: { log() {} },
         showCommonModal(parent, title, builder, buttons) {
-            const overlay = { removed: false, remove() { this.removed = true; } };
+            const overlay = { removed: false, isConnected: true, remove() { this.removed = true; this.isConnected = false; } };
             const modal = { style: {} }, content = builder(modal);
             modals.push({ parent, title, content, buttons, overlay, modal });
             return { overlay, modal, content };
@@ -68,16 +70,16 @@ function setup(upload) {
         } },
     });
     vm.runInContext(
-        block(common, "export function registerCleanup", "// ── Widget Data Sync").replaceAll("export ", "") +
+        block(common, "export function registerCleanup", "// ── DOM Widget Width Sync").replaceAll("export ", "") +
         "const beginCaptionRequest = createRequestGuard(node); const beginUploadRequest = createRequestGuard(node);" +
-        block(source, "const saveState =", "const normalizeAgeValue =") +
+        block(source, "const saveState =", "const parsePoseStudioValues =") +
         block(source, "const createTraitField =", "const createSegmentedField =") +
         block(source, "const updateUIFromState =", "// --- Helpers (Hoisted)") +
         block(source, "const showModal =", "const showSourceImageRequiredModal =") +
         block(source, "const openTagConstructor =", "const beginCharacterRequest =") +
         block(source, "fileInput.onchange =", "// Click anywhere on overlay triggers upload") +
         block(source, "autoGenBtn.onclick =", "// Helper: Progress Polling") +
-        "this.makeField = createField; this.sync = updateUIFromState; this.prompt = showCharacterDescriptionPrompt;", context,
+        "this.makeField = createField; this.sync = updateUIFromState; this.prompt = showCharacterDescriptionPrompt; this.invalidate = beginCaptionRequest;", context,
     );
     return { context, state, widget, modals, requests, events, container, node, fileInput, uploadBtn };
 }
@@ -109,7 +111,7 @@ test("presets preserve custom text and the Skin plus button opens existing skin 
     const { context, state, modals, requests } = setup();
     const hair = context.makeField("Hair", "hair");
     await hair.children[2].onclick();
-    modals.at(-1).buttons.find(button => button.text === "APPLY").action();
+    modals.at(-1).buttons.find(button => button.text === "APPLY").action(modals.at(-1).overlay);
     assert.equal(state.character_info.hair, "Black Hair, My Custom Hair");
     const skin = context.makeField("Skin", "skin_color");
     await skin.children[2].onclick();
@@ -117,11 +119,43 @@ test("presets preserve custom text and the Skin plus button opens existing skin 
     const chip = modal.content.children.find(chip => chip.innerText === "Golden Tan");
     assert.ok(chip);
     chip.onclick();
-    modal.buttons.find(button => button.text === "APPLY").action();
+    modal.buttons.find(button => button.text === "APPLY").action(modal.overlay);
     assert.equal(state.character_info.skin_color, "golden tan skin");
-    assert.equal(skin.children[1].children[0].children[0].textContent, "golden tan skin");
+    assert.equal(skin.children[1].children[0].textContent, "golden tan skin");
     assert.equal(requests.filter(request => request.path.includes("catalog=creator_v2")).length, 1);
 });
+
+for (const obsolete of ['switch', 'configure', 'removal', 'close']) {
+    test(`Cloner preset Apply preserves authored fields after ${obsolete}`, async () => {
+        const { context, state, widget, modals, node } = setup();
+        const row = context.makeField('Hair', 'hair');
+        await row.children[2].onclick();
+        const modal = modals.at(-1);
+        if (obsolete === 'switch') state.character = 'Bob';
+        if (obsolete === 'configure') context.invalidate();
+        if (obsolete === 'removal') node.onRemoved();
+        if (obsolete === 'close') modal.overlay.isConnected = false;
+        state.character_info.hair = 'new authored hair';
+        context.sync();
+        const original = JSON.stringify(state);
+        modal.buttons.find(button => button.text === 'APPLY').action(modal.overlay);
+        assert.equal(JSON.stringify(state), original);
+        assert.equal(widget.value, '');
+    });
+}
+
+for (const obsolete of ['switch', 'configure', 'removal']) {
+    test(`Cloner discards a preset catalog response after ${obsolete}`, async () => {
+        const { context, state, modals, node } = setup();
+        const row = context.makeField('Hair', 'hair');
+        const opening = row.children[2].onclick();
+        if (obsolete === 'switch') state.character = 'Bob';
+        if (obsolete === 'configure') context.invalidate();
+        if (obsolete === 'removal') node.onRemoved();
+        await opening;
+        assert.equal(modals.length, 0);
+    });
+}
 
 test("a single upload replaces the reference and offers the wizard for that image", async () => {
     const { context, fileInput, uploadBtn, state, widget, modals, requests, container } = setup();
@@ -218,3 +252,14 @@ for (const stale of ["character", "reference", "removed"]) {
         assert.equal(h.context.els.face.hidden, true);
     });
 }
+
+test("Cloner left panel and preview match the Clothes Designer proportions", () => {
+    assert.match(source, /\.vnccs-cloner-top-row\s*\{[^}]*grid-template-columns:\s*400px\s+minmax\(0,\s*1fr\)/s);
+    assert.match(source, /\.vnccs-cloner-bottom-row\s*\{[^}]*grid-template-columns:\s*400px\s+minmax\(0,\s*1fr\)/s);
+    assert.doesNotMatch(source.match(/\.vnccs-cloner-select\s*\{[^}]*\}/s)?.[0] || "", /zoom\s*:/);
+    assert.doesNotMatch(source, /className\s*=\s*["']vnccs-cloner-img-list["']/);
+    assert.doesNotMatch(source, /className\s*=\s*["']vnccs-cloner-thumb["']/);
+    assert.match(source, /\.vnccs-cloner-preview-img\s*\{[^}]*top:\s*0[^}]*left:\s*50%[^}]*width:\s*auto[^}]*max-width:\s*none[^}]*height:\s*100%[^}]*translateX\(-50%\)/s);
+    const workflow = JSON.parse(readFileSync(new URL("../workflows/VNCCS_3.2_Step1_CharacterCloner.json", import.meta.url), "utf8"));
+    assert.deepEqual(workflow.nodes.find(node => node.type === "CharacterCloner").size, [690, 950]);
+});

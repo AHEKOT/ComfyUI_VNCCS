@@ -6,6 +6,9 @@ SOURCE = (
 ).read_text(encoding="utf-8")
 
 
+COMMON = (Path(__file__).resolve().parents[1] / "web" / "vnccs_common.js").read_text(encoding="utf-8")
+
+
 def test_clothes_core_card_filters_by_connected_model_kind():
     assert "const getConnectedModelKind = () =>" in SOURCE
     assert "const loraMatchesConnectedKind = (entry) =>" in SOURCE
@@ -21,11 +24,11 @@ def test_clothes_core_sync_resolves_from_its_connected_control_center():
 
 def test_resolution_scale_is_a_one_to_four_megapixel_slider():
     assert 'resolutionSlider.type = "range"' in SOURCE
-    assert "RESOLUTION_SCALE_MIN_MP = 1" in SOURCE
-    assert "RESOLUTION_SCALE_MAX_MP = 4" in SOURCE
-    assert "RESOLUTION_SCALE_STEP_MP = 0.1" in SOURCE
-    assert "[1.3, 1344]" in SOURCE
-    assert "[1.5, 1536]" in SOURCE
+    assert "RESOLUTION_SCALE_MIN_MP = 1" in COMMON
+    assert "RESOLUTION_SCALE_MAX_MP = 4" in COMMON
+    assert "RESOLUTION_SCALE_STEP_MP = 0.1" in COMMON
+    assert "[1.3, 1344]" in COMMON
+    assert "[1.5, 1536]" in COMMON
     assert "resolutionScaleValue(resolutionSlider.value)" in SOURCE
     assert 'new Option("Auto (1024)", "")' not in SOURCE
 
@@ -40,11 +43,24 @@ def test_qi2_background_defaults_to_transparent_without_wrapping_controls():
     assert 'btn.setAttribute("aria-pressed", String(selected))' in SOURCE
 
 
+def test_qi2_prompt_enhancement_defaults_on_and_is_saved_in_widget_state():
+    assert "qi2_prompt_enhancement: true" in SOURCE
+    assert "state.gen_settings.qi2_prompt_enhancement = event.target.checked" in SOURCE
+    assert 'input.setAttribute("aria-label", "Prompt Enhancement")' in SOURCE
+    assert 'getConnectedModelKind().trim().toLowerCase() === "qi2"' in SOURCE
+    assert 'state.activeTab === "generate"' in SOURCE
+
+
 def test_clone_preview_requires_reference_before_queue_or_api_execution():
-    handler = SOURCE.split("btnGen.onclick = async () => {", 1)[1].split("// Show loading overlay", 1)[0]
+    handler = SOURCE.split("btnGen.onclick = async () => {", 1)[1].split("const character = state.character;", 1)[0]
     assert 'state.activeTab === "clone" && !state.clone_image' in handler
     assert 'showInfo("Reference Required"' in handler
 
 
 def test_serialization_updates_workflow_widget_values_with_latest_clone_state():
     assert 'o.widgets_values[index] = node.widgets[index].value' in SOURCE
+
+
+def test_design_panel_scrolls_only_vertically():
+    design_content = SOURCE.split(".vnccs-clothes-design-content {", 1)[1].split("}", 1)[0]
+    assert "overflow: hidden auto;" in design_content

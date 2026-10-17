@@ -27,9 +27,12 @@ def test_bg_output_reuses_normalized_batch_and_saved_previews(tmp_path, monkeypa
         expected[..., 3] *= 0.5
     output = tmp_path / "output"
     root = output / "VNCCS" / "Characters" / "Alice"
-    sheets = root / "Sheets" / "Naked" / "neutral"
+    sheets = root / "Sheets" / ("Coat" if mode == "clothes" else "Naked") / "neutral"
     sheets.mkdir(parents=True)
     monkeypatch.setattr(cg.folder_paths, "get_output_directory", lambda: str(output))
+    if mode == "clothes":
+        import utils
+        utils.save_costume_info("Alice", "Coat", {})
     monkeypatch.setattr(node, "_extract_pipe", lambda pipe: {"seed": 42})
     monkeypatch.setattr(node, "_find_pose_lora", lambda pipe: {})
     monkeypatch.setattr(node, "_find_clothes_lora", lambda pipe: {})

@@ -5,6 +5,81 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
+
+def test_actual_node_loader_registers_workflow_nodes_and_preserved_tools():
+    pytest.importorskip("torch")
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("_vnccs.nodes", root / "nodes" / "__init__.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert set(module.NODE_CLASS_MAPPINGS) == {
+        "CharacterCloner", "CharacterCreatorV2", "ClothesDesigner", "EmotionGeneratorV2",
+        "VNCCS_ControlCenter", "VNCCS_CharacterGenerator", "VNCCS_CharacterCloneGenerator",
+        "VNCCS_ClothesGenerator", "VNCCS_EmotionsGenerator", "VNCCSStylePreviewTest",
+        "VNCCS_QWEN_Encoder", "VNCCSChromaKey", "VNCCS_MaskExtractor",
+        "VNCCS_Flux_Klein_Encoder", "VNCCS_Pipe", "VNCCSSamplerSchedulerPicker",
+    }
+    assert module.NODE_DISPLAY_NAME_MAPPINGS["VNCCSChromaKey"] == "VNCCS Chroma Key"
+
+
+def test_registered_nodes_match_workflows_and_preserved_tools():
+    import ast
+    import json
+
+    root = Path(__file__).resolve().parents[1]
+    workflows = list((root / "workflows").rglob("*.json"))
+    used = {
+        node["type"]
+        for path in workflows
+        for node in json.loads(path.read_text())["nodes"]
+    }
+    registered = set()
+    for path in (root / "nodes").glob("*.py"):
+        for statement in ast.parse(path.read_text()).body:
+            if isinstance(statement, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "NODE_CLASS_MAPPINGS"
+                for target in statement.targets
+            ):
+                registered.update(ast.literal_eval(key) for key in statement.value.keys)
+    assert registered == (used - {"VNCCS_PoseStudio", "PreviewImage"}) | {
+        "VNCCSStylePreviewTest", "VNCCS_QWEN_Encoder", "VNCCSChromaKey", "VNCCS_MaskExtractor",
+        "VNCCS_Flux_Klein_Encoder", "VNCCS_Pipe", "VNCCSSamplerSchedulerPicker",
+    }
+
+
+def test_chroma_key_preserves_saved_workflow_schema_without_torch():
+    import ast
+
+    root = Path(__file__).resolve().parents[1]
+    tree = ast.parse((root / "nodes" / "vnccs_utils.py").read_text())
+    processor = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "VNCCSChromaKey")
+    inputs = next(node for node in processor.body if isinstance(node, ast.FunctionDef) and node.name == "INPUT_TYPES")
+    required = ast.literal_eval(inputs.body[0].value)["required"]
+    assert list(required) == [
+        "image", "tolerance", "softness", "despill_strength", "edge_width",
+        "matte_cleanup", "foreground_recover", "edge_decontaminate", "edge_choke",
+        "matte_method", "screen_mode", "output_mode", "use_sam3_recovery_mask",
+    ]
+    assert required["image"] == ("IMAGE",)
+    assert required["matte_method"] == (
+        ["chroma_soft", "guided_edge", "pymatting_if_available", "screen_matte"],
+        {"default": "screen_matte"},
+    )
+    assert required["screen_mode"] == (["auto", "green", "blue", "red"], {"default": "auto"})
+    assert required["output_mode"] == (["straight_rgba", "premultiplied_rgba"], {"default": "straight_rgba"})
+    assert required["use_sam3_recovery_mask"][1]["default"] is False
+    metadata = {
+        node.targets[0].id: ast.literal_eval(node.value)
+        for node in processor.body
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+    }
+    assert metadata["RETURN_TYPES"] == ("IMAGE", "MASK", "IMAGE")
+    assert metadata["RETURN_NAMES"] == ("image", "matte", "edge_debug")
+    assert metadata["CATEGORY"] == "VNCCS"
+    assert metadata["FUNCTION"] == "chroma_key"
+
 
 def test_namespace_nodes_placeholder_is_replaced(tmp_path, monkeypatch):
     project_root = Path(__file__).resolve().parents[1]

@@ -1,0 +1,2570 @@
+{
+  "version": 7,
+  "default_style": "anima_artist_87540",
+  "groups": [
+    {
+      "label": "Anima Artist Tags",
+      "styles": [
+        {
+          "id": "anima_artist_87540",
+          "label": "dairi",
+          "prompt": "@dairi"
+        },
+        {
+          "id": "anima_artist_5225",
+          "label": "haruyama kazunori",
+          "prompt": "@haruyama kazunori"
+        },
+        {
+          "id": "anima_artist_46580",
+          "label": "itomugi-kun",
+          "prompt": "@itomugi-kun"
+        },
+        {
+          "id": "anima_artist_62361",
+          "label": "rebecca (keinelove)",
+          "prompt": "@rebecca \\(keinelove\\)"
+        },
+        {
+          "id": "anima_artist_13316",
+          "label": "bkub",
+          "prompt": "@bkub"
+        },
+        {
+          "id": "anima_artist_56889",
+          "label": "onikobe rin",
+          "prompt": "@onikobe rin"
+        },
+        {
+          "id": "anima_artist_164808",
+          "label": "gomashio (goma feet)",
+          "prompt": "@gomashio \\(goma feet\\)"
+        },
+        {
+          "id": "anima_artist_50350",
+          "label": "yua (checkmate)",
+          "prompt": "@yua \\(checkmate\\)"
+        },
+        {
+          "id": "anima_artist_4999",
+          "label": "namori",
+          "prompt": "@namori"
+        },
+        {
+          "id": "anima_artist_56176",
+          "label": "agawa ryou",
+          "prompt": "@agawa ryou"
+        },
+        {
+          "id": "anima_artist_604005",
+          "label": "kotorai",
+          "prompt": "@kotorai"
+        },
+        {
+          "id": "anima_artist_124207",
+          "label": "kaamin (mariarose753)",
+          "prompt": "@kaamin \\(mariarose753\\)"
+        },
+        {
+          "id": "anima_artist_250828",
+          "label": "youyume-kun",
+          "prompt": "@youyume-kun"
+        },
+        {
+          "id": "anima_artist_6892",
+          "label": "oouso",
+          "prompt": "@oouso"
+        },
+        {
+          "id": "anima_artist_274548",
+          "label": "menma (enaic31)",
+          "prompt": "@menma \\(enaic31\\)"
+        },
+        {
+          "id": "anima_artist_409329",
+          "label": "fujigaya arctia",
+          "prompt": "@fujigaya arctia"
+        },
+        {
+          "id": "anima_artist_271441",
+          "label": "tf cafe",
+          "prompt": "@tf cafe"
+        },
+        {
+          "id": "anima_artist_83788",
+          "label": "dandon fuga",
+          "prompt": "@dandon fuga"
+        },
+        {
+          "id": "anima_artist_113663",
+          "label": "saku usako (rabbit)",
+          "prompt": "@saku usako \\(rabbit\\)"
+        },
+        {
+          "id": "anima_artist_67901",
+          "label": "sakura oriko",
+          "prompt": "@sakura oriko"
+        },
+        {
+          "id": "anima_artist_286574",
+          "label": "xinzoruo",
+          "prompt": "@xinzoruo"
+        },
+        {
+          "id": "anima_artist_114780",
+          "label": "pentagon (railgun ky1206)",
+          "prompt": "@pentagon \\(railgun ky1206\\)"
+        },
+        {
+          "id": "anima_artist_75394",
+          "label": "ryuuichi (f dragon)",
+          "prompt": "@ryuuichi \\(f dragon\\)"
+        },
+        {
+          "id": "anima_artist_170234",
+          "label": "meyoco",
+          "prompt": "@meyoco"
+        },
+        {
+          "id": "anima_artist_27833",
+          "label": "mitsumoto jouji",
+          "prompt": "@mitsumoto jouji"
+        },
+        {
+          "id": "anima_artist_57135",
+          "label": "koto inari",
+          "prompt": "@koto inari"
+        },
+        {
+          "id": "anima_artist_78886",
+          "label": "elf (stroll in the woods)",
+          "prompt": "@elf \\(stroll in the woods\\)"
+        },
+        {
+          "id": "anima_artist_82104",
+          "label": "rtil",
+          "prompt": "@rtil"
+        },
+        {
+          "id": "anima_artist_14417",
+          "label": "riyo (lyomsnpmp)",
+          "prompt": "@riyo \\(lyomsnpmp\\)"
+        },
+        {
+          "id": "anima_artist_155966",
+          "label": "massakasama",
+          "prompt": "@massakasama"
+        },
+        {
+          "id": "anima_artist_133332",
+          "label": "yukimoto shuuji (gurigura)",
+          "prompt": "@yukimoto shuuji \\(gurigura\\)"
+        },
+        {
+          "id": "anima_artist_73732",
+          "label": "wanta (futoshi)",
+          "prompt": "@wanta \\(futoshi\\)"
+        },
+        {
+          "id": "anima_artist_76788",
+          "label": "rinka (qqqrinkappp)",
+          "prompt": "@rinka \\(qqqrinkappp\\)"
+        },
+        {
+          "id": "anima_artist_186685",
+          "label": "takeuchi ryousuke",
+          "prompt": "@takeuchi ryousuke"
+        },
+        {
+          "id": "anima_artist_87370",
+          "label": "bbb (friskuser)",
+          "prompt": "@bbb \\(friskuser\\)"
+        },
+        {
+          "id": "anima_artist_87417",
+          "label": "setz",
+          "prompt": "@setz"
+        },
+        {
+          "id": "anima_artist_59266",
+          "label": "ergot",
+          "prompt": "@ergot"
+        },
+        {
+          "id": "anima_artist_6743",
+          "label": "nagian",
+          "prompt": "@nagian"
+        },
+        {
+          "id": "anima_artist_5385",
+          "label": "murata range",
+          "prompt": "@murata range"
+        },
+        {
+          "id": "anima_artist_34224",
+          "label": "aono3",
+          "prompt": "@aono3"
+        },
+        {
+          "id": "anima_artist_8168",
+          "label": "hikawa shou",
+          "prompt": "@hikawa shou"
+        },
+        {
+          "id": "anima_artist_5269",
+          "label": "kei jiei",
+          "prompt": "@kei jiei"
+        },
+        {
+          "id": "anima_artist_19899",
+          "label": "syope",
+          "prompt": "@syope"
+        },
+        {
+          "id": "anima_artist_9612",
+          "label": "miuku (marine sapphire)",
+          "prompt": "@miuku \\(marine sapphire\\)"
+        },
+        {
+          "id": "anima_artist_119379",
+          "label": "yuune (ayanepuna)",
+          "prompt": "@yuune \\(ayanepuna\\)"
+        },
+        {
+          "id": "anima_artist_423164",
+          "label": "pipi (m1x mix)",
+          "prompt": "@pipi \\(m1x mix\\)"
+        },
+        {
+          "id": "anima_artist_114433",
+          "label": "furukawa (yomawari)",
+          "prompt": "@furukawa \\(yomawari\\)"
+        },
+        {
+          "id": "anima_artist_76112",
+          "label": "melon22",
+          "prompt": "@melon22"
+        },
+        {
+          "id": "anima_artist_64522",
+          "label": "komaku juushoku",
+          "prompt": "@komaku juushoku"
+        },
+        {
+          "id": "anima_artist_105334",
+          "label": "hitotsuki nebura",
+          "prompt": "@hitotsuki nebura"
+        },
+        {
+          "id": "anima_artist_149062",
+          "label": "donguri suzume",
+          "prompt": "@donguri suzume"
+        },
+        {
+          "id": "anima_artist_4650",
+          "label": "zankuro",
+          "prompt": "@zankuro"
+        },
+        {
+          "id": "anima_artist_59923",
+          "label": "yt (wai-tei)",
+          "prompt": "@yt \\(wai-tei\\)"
+        },
+        {
+          "id": "anima_artist_9239",
+          "label": "rom (20)",
+          "prompt": "@rom \\(20\\)"
+        },
+        {
+          "id": "anima_artist_70754",
+          "label": "porforever",
+          "prompt": "@porforever"
+        },
+        {
+          "id": "anima_artist_16327",
+          "label": "lielos",
+          "prompt": "@lielos"
+        },
+        {
+          "id": "anima_artist_100583",
+          "label": "pekeko (pepekekeko)",
+          "prompt": "@pekeko \\(pepekekeko\\)"
+        },
+        {
+          "id": "anima_artist_262468",
+          "label": "lemon89h",
+          "prompt": "@lemon89h"
+        },
+        {
+          "id": "anima_artist_47208",
+          "label": "m.m",
+          "prompt": "@m.m"
+        },
+        {
+          "id": "anima_artist_137045",
+          "label": "fugtrup",
+          "prompt": "@fugtrup"
+        },
+        {
+          "id": "anima_artist_17859",
+          "label": "kotoba noriaki",
+          "prompt": "@kotoba noriaki"
+        },
+        {
+          "id": "anima_artist_251344",
+          "label": "heripantomorrow",
+          "prompt": "@heripantomorrow"
+        },
+        {
+          "id": "anima_artist_31391",
+          "label": "udon (shiratama)",
+          "prompt": "@udon \\(shiratama\\)"
+        },
+        {
+          "id": "anima_artist_103520",
+          "label": "daizu (melon-lemon)",
+          "prompt": "@daizu \\(melon-lemon\\)"
+        },
+        {
+          "id": "anima_artist_195147",
+          "label": "kaiman garupan",
+          "prompt": "@kaiman garupan"
+        },
+        {
+          "id": "anima_artist_305371",
+          "label": "blushyspicy",
+          "prompt": "@blushyspicy"
+        },
+        {
+          "id": "anima_artist_425568",
+          "label": "woodonly",
+          "prompt": "@woodonly"
+        },
+        {
+          "id": "anima_artist_116938",
+          "label": "chamaji",
+          "prompt": "@chamaji"
+        },
+        {
+          "id": "anima_artist_118297",
+          "label": "23 (real xxiii)",
+          "prompt": "@23 \\(real xxiii\\)"
+        },
+        {
+          "id": "anima_artist_112577",
+          "label": "kokaki mumose",
+          "prompt": "@kokaki mumose"
+        },
+        {
+          "id": "anima_artist_117541",
+          "label": "mizuumi (bb)",
+          "prompt": "@mizuumi \\(bb\\)"
+        },
+        {
+          "id": "anima_artist_65665",
+          "label": "masara (chuujou)",
+          "prompt": "@masara \\(chuujou\\)"
+        },
+        {
+          "id": "anima_artist_117896",
+          "label": "john doe (jdart)",
+          "prompt": "@john doe \\(jdart\\)"
+        },
+        {
+          "id": "anima_artist_11223",
+          "label": "kokudou juunigou",
+          "prompt": "@kokudou juunigou"
+        },
+        {
+          "id": "anima_artist_17910",
+          "label": "ashiomi masato",
+          "prompt": "@ashiomi masato"
+        },
+        {
+          "id": "anima_artist_13580",
+          "label": "genzoman",
+          "prompt": "@genzoman"
+        },
+        {
+          "id": "anima_artist_51640",
+          "label": "ri-net",
+          "prompt": "@ri-net"
+        },
+        {
+          "id": "anima_artist_96895",
+          "label": "ryo (tg290)",
+          "prompt": "@ryo \\(tg290\\)"
+        },
+        {
+          "id": "anima_artist_21052",
+          "label": "yanagi (nurikoboshi)",
+          "prompt": "@yanagi \\(nurikoboshi\\)"
+        },
+        {
+          "id": "anima_artist_191623",
+          "label": "krekkov",
+          "prompt": "@krekkov"
+        },
+        {
+          "id": "anima_artist_21057",
+          "label": "hounori",
+          "prompt": "@hounori"
+        },
+        {
+          "id": "anima_artist_140823",
+          "label": "tamtamdi",
+          "prompt": "@tamtamdi"
+        },
+        {
+          "id": "anima_artist_223575",
+          "label": "takahashi kurage",
+          "prompt": "@takahashi kurage"
+        },
+        {
+          "id": "anima_artist_97735",
+          "label": "nuu (nu-nyu)",
+          "prompt": "@nuu \\(nu-nyu\\)"
+        },
+        {
+          "id": "anima_artist_66137",
+          "label": "sugano manami",
+          "prompt": "@sugano manami"
+        },
+        {
+          "id": "anima_artist_90865",
+          "label": "nameo (judgemasterkou)",
+          "prompt": "@nameo \\(judgemasterkou\\)"
+        },
+        {
+          "id": "anima_artist_215677",
+          "label": "shima (wansyon144)",
+          "prompt": "@shima \\(wansyon144\\)"
+        },
+        {
+          "id": "anima_artist_100440",
+          "label": "soranamae",
+          "prompt": "@soranamae"
+        },
+        {
+          "id": "anima_artist_39966",
+          "label": "roki (hirokix)",
+          "prompt": "@roki \\(hirokix\\)"
+        },
+        {
+          "id": "anima_artist_165567",
+          "label": "bluethebone",
+          "prompt": "@bluethebone"
+        },
+        {
+          "id": "anima_artist_152166",
+          "label": "shpo",
+          "prompt": "@shpo"
+        },
+        {
+          "id": "anima_artist_125079",
+          "label": "redlhzz",
+          "prompt": "@redlhzz"
+        },
+        {
+          "id": "anima_artist_104544",
+          "label": "sirokuma shake",
+          "prompt": "@sirokuma shake"
+        },
+        {
+          "id": "anima_artist_92007",
+          "label": "muk (monsieur)",
+          "prompt": "@muk \\(monsieur\\)"
+        },
+        {
+          "id": "anima_artist_317269",
+          "label": "t1kosewad",
+          "prompt": "@t1kosewad"
+        },
+        {
+          "id": "anima_artist_160387",
+          "label": "skeptycally",
+          "prompt": "@skeptycally"
+        },
+        {
+          "id": "anima_artist_285547",
+          "label": "possummachine",
+          "prompt": "@possummachine"
+        },
+        {
+          "id": "anima_artist_238753",
+          "label": "aosora2823",
+          "prompt": "@aosora2823"
+        },
+        {
+          "id": "anima_artist_58341",
+          "label": "haguhagu (rinjuu circus)",
+          "prompt": "@haguhagu \\(rinjuu circus\\)"
+        },
+        {
+          "id": "anima_artist_68735",
+          "label": "yutakasan-love",
+          "prompt": "@yutakasan-love"
+        },
+        {
+          "id": "anima_artist_218465",
+          "label": "butterchalk",
+          "prompt": "@butterchalk"
+        },
+        {
+          "id": "anima_artist_115087",
+          "label": "kajin (kajinman)",
+          "prompt": "@kajin \\(kajinman\\)"
+        },
+        {
+          "id": "anima_artist_5954",
+          "label": "pairan",
+          "prompt": "@pairan"
+        },
+        {
+          "id": "anima_artist_383467",
+          "label": "mizikayo",
+          "prompt": "@mizikayo"
+        },
+        {
+          "id": "anima_artist_74527",
+          "label": "sseopik",
+          "prompt": "@sseopik"
+        },
+        {
+          "id": "anima_artist_119774",
+          "label": "the golden smurf",
+          "prompt": "@the golden smurf"
+        },
+        {
+          "id": "anima_artist_178787",
+          "label": "hokuro ryuuseigun",
+          "prompt": "@hokuro ryuuseigun"
+        },
+        {
+          "id": "anima_artist_296889",
+          "label": "mimimi (mimimim9999)",
+          "prompt": "@mimimi \\(mimimim9999\\)"
+        },
+        {
+          "id": "anima_artist_49605",
+          "label": "miyako hito",
+          "prompt": "@miyako hito"
+        },
+        {
+          "id": "anima_artist_40837",
+          "label": "terada tera",
+          "prompt": "@terada tera"
+        },
+        {
+          "id": "anima_artist_15295",
+          "label": "alex ahad",
+          "prompt": "@alex ahad"
+        },
+        {
+          "id": "anima_artist_29408",
+          "label": "abara heiki",
+          "prompt": "@abara heiki"
+        },
+        {
+          "id": "anima_artist_11653",
+          "label": "ham (points)",
+          "prompt": "@ham \\(points\\)"
+        },
+        {
+          "id": "anima_artist_324811",
+          "label": "mleth",
+          "prompt": "@mleth"
+        },
+        {
+          "id": "anima_artist_265674",
+          "label": "chahan (fried rice0614)",
+          "prompt": "@chahan \\(fried rice0614\\)"
+        },
+        {
+          "id": "anima_artist_184300",
+          "label": "muku jirushi",
+          "prompt": "@muku jirushi"
+        },
+        {
+          "id": "anima_artist_26035",
+          "label": "metata",
+          "prompt": "@metata"
+        },
+        {
+          "id": "anima_artist_216876",
+          "label": "centurii-chan",
+          "prompt": "@centurii-chan"
+        },
+        {
+          "id": "anima_artist_150114",
+          "label": "harumina mau",
+          "prompt": "@harumina mau"
+        },
+        {
+          "id": "anima_artist_60308",
+          "label": "maze (gochama ze gohan)",
+          "prompt": "@maze \\(gochama ze gohan\\)"
+        },
+        {
+          "id": "anima_artist_153996",
+          "label": "tokuura",
+          "prompt": "@tokuura"
+        },
+        {
+          "id": "anima_artist_135009",
+          "label": "sakuramochi (sakura frappe)",
+          "prompt": "@sakuramochi \\(sakura frappe\\)"
+        },
+        {
+          "id": "anima_artist_14073",
+          "label": "yuizaki kazuya",
+          "prompt": "@yuizaki kazuya"
+        },
+        {
+          "id": "anima_artist_205307",
+          "label": "scott malin",
+          "prompt": "@scott malin"
+        },
+        {
+          "id": "anima_artist_160927",
+          "label": "task (s task80)",
+          "prompt": "@task \\(s task80\\)"
+        },
+        {
+          "id": "anima_artist_23034",
+          "label": "tsuzuri (tuzuri)",
+          "prompt": "@tsuzuri \\(tuzuri\\)"
+        },
+        {
+          "id": "anima_artist_47601",
+          "label": "suzutsuki kurara",
+          "prompt": "@suzutsuki kurara"
+        },
+        {
+          "id": "anima_artist_153205",
+          "label": "huyandere",
+          "prompt": "@huyandere"
+        },
+        {
+          "id": "anima_artist_66335",
+          "label": "kawachi koorogi",
+          "prompt": "@kawachi koorogi"
+        },
+        {
+          "id": "anima_artist_197709",
+          "label": "takatisakana",
+          "prompt": "@takatisakana"
+        },
+        {
+          "id": "anima_artist_49095",
+          "label": "cessa",
+          "prompt": "@cessa"
+        },
+        {
+          "id": "anima_artist_57361",
+          "label": "kiryu manzoku",
+          "prompt": "@kiryu manzoku"
+        },
+        {
+          "id": "anima_artist_8026",
+          "label": "imaichi",
+          "prompt": "@imaichi"
+        },
+        {
+          "id": "anima_artist_98597",
+          "label": "reeh (yukuri130)",
+          "prompt": "@reeh \\(yukuri130\\)"
+        },
+        {
+          "id": "anima_artist_228983",
+          "label": "beudelb",
+          "prompt": "@beudelb"
+        },
+        {
+          "id": "anima_artist_66582",
+          "label": "glitchedpuppet",
+          "prompt": "@glitchedpuppet"
+        },
+        {
+          "id": "anima_artist_225636",
+          "label": "umikochannart",
+          "prompt": "@umikochannart"
+        },
+        {
+          "id": "anima_artist_257308",
+          "label": "kalmahul",
+          "prompt": "@kalmahul"
+        },
+        {
+          "id": "anima_artist_172135",
+          "label": "pikaole",
+          "prompt": "@pikaole"
+        },
+        {
+          "id": "anima_artist_132268",
+          "label": "makio (makiomeigenbot)",
+          "prompt": "@makio \\(makiomeigenbot\\)"
+        },
+        {
+          "id": "anima_artist_149117",
+          "label": "arim0k0",
+          "prompt": "@arim0k0"
+        },
+        {
+          "id": "anima_artist_265090",
+          "label": "uenomigi",
+          "prompt": "@uenomigi"
+        },
+        {
+          "id": "anima_artist_249402",
+          "label": "sarukaiwolf",
+          "prompt": "@sarukaiwolf"
+        },
+        {
+          "id": "anima_artist_14383",
+          "label": "woofycakes",
+          "prompt": "@woofycakes"
+        },
+        {
+          "id": "anima_artist_233921",
+          "label": "kutone shirika",
+          "prompt": "@kutone shirika"
+        },
+        {
+          "id": "anima_artist_428726",
+          "label": "horuhara",
+          "prompt": "@horuhara"
+        },
+        {
+          "id": "anima_artist_308335",
+          "label": "sun iiinu",
+          "prompt": "@sun iiinu"
+        },
+        {
+          "id": "anima_artist_42657",
+          "label": "kisaragi yuu (fallen sky)",
+          "prompt": "@kisaragi yuu \\(fallen sky\\)"
+        },
+        {
+          "id": "anima_artist_604018",
+          "label": "batrobin k",
+          "prompt": "@batrobin k"
+        },
+        {
+          "id": "anima_artist_366909",
+          "label": "rotomdocs",
+          "prompt": "@rotomdocs"
+        },
+        {
+          "id": "anima_artist_264625",
+          "label": "beeru (veil8801)",
+          "prompt": "@beeru \\(veil8801\\)"
+        },
+        {
+          "id": "anima_artist_166518",
+          "label": "himadera",
+          "prompt": "@himadera"
+        },
+        {
+          "id": "anima_artist_201231",
+          "label": "ferret-san",
+          "prompt": "@ferret-san"
+        },
+        {
+          "id": "anima_artist_180244",
+          "label": "aetherion",
+          "prompt": "@aetherion"
+        },
+        {
+          "id": "anima_artist_220682",
+          "label": "pantsu-ripper",
+          "prompt": "@pantsu-ripper"
+        },
+        {
+          "id": "anima_artist_126942",
+          "label": "sasucchi95",
+          "prompt": "@sasucchi95"
+        },
+        {
+          "id": "anima_artist_157783",
+          "label": "fizintine",
+          "prompt": "@fizintine"
+        },
+        {
+          "id": "anima_artist_216284",
+          "label": "paddy field",
+          "prompt": "@paddy field"
+        },
+        {
+          "id": "anima_artist_162548",
+          "label": "rakugakiraid",
+          "prompt": "@rakugakiraid"
+        },
+        {
+          "id": "anima_artist_50379",
+          "label": "taiki (6240taiki)",
+          "prompt": "@taiki \\(6240taiki\\)"
+        },
+        {
+          "id": "anima_artist_6461",
+          "label": "takamichi",
+          "prompt": "@takamichi"
+        },
+        {
+          "id": "anima_artist_99527",
+          "label": "lyy",
+          "prompt": "@lyy"
+        },
+        {
+          "id": "anima_artist_10857",
+          "label": "miyao ryuu",
+          "prompt": "@miyao ryuu"
+        },
+        {
+          "id": "anima_artist_93654",
+          "label": "tenobe",
+          "prompt": "@tenobe"
+        },
+        {
+          "id": "anima_artist_224207",
+          "label": "kakeru (dbskakeru)",
+          "prompt": "@kakeru \\(dbskakeru\\)"
+        },
+        {
+          "id": "anima_artist_204673",
+          "label": "shuuko (s h uuko)",
+          "prompt": "@shuuko \\(s h uuko\\)"
+        },
+        {
+          "id": "anima_artist_47780",
+          "label": "folks (nabokof)",
+          "prompt": "@folks \\(nabokof\\)"
+        },
+        {
+          "id": "anima_artist_14502",
+          "label": "omar dogan",
+          "prompt": "@omar dogan"
+        },
+        {
+          "id": "anima_artist_6218",
+          "label": "fei (maidoll)",
+          "prompt": "@fei \\(maidoll\\)"
+        },
+        {
+          "id": "anima_artist_54298",
+          "label": "shigetake (buroira)",
+          "prompt": "@shigetake \\(buroira\\)"
+        },
+        {
+          "id": "anima_artist_168352",
+          "label": "toshimichi yukari",
+          "prompt": "@toshimichi yukari"
+        },
+        {
+          "id": "anima_artist_192316",
+          "label": "pot-de",
+          "prompt": "@pot-de"
+        },
+        {
+          "id": "anima_artist_169807",
+          "label": "danmakuman",
+          "prompt": "@danmakuman"
+        },
+        {
+          "id": "anima_artist_12260",
+          "label": "arimura yuu",
+          "prompt": "@arimura yuu"
+        },
+        {
+          "id": "anima_artist_55404",
+          "label": "hiyuu (hiyualice)",
+          "prompt": "@hiyuu \\(hiyualice\\)"
+        },
+        {
+          "id": "anima_artist_105340",
+          "label": "hainchu",
+          "prompt": "@hainchu"
+        },
+        {
+          "id": "anima_artist_5149",
+          "label": "rustle",
+          "prompt": "@rustle"
+        },
+        {
+          "id": "anima_artist_25994",
+          "label": "takatora",
+          "prompt": "@takatora"
+        },
+        {
+          "id": "anima_artist_184713",
+          "label": "shi chimi",
+          "prompt": "@shi chimi"
+        },
+        {
+          "id": "anima_artist_137264",
+          "label": "olchas",
+          "prompt": "@olchas"
+        },
+        {
+          "id": "anima_artist_64420",
+          "label": "edoya inuhachi",
+          "prompt": "@edoya inuhachi"
+        },
+        {
+          "id": "anima_artist_30909",
+          "label": "aikei ake",
+          "prompt": "@aikei ake"
+        },
+        {
+          "id": "anima_artist_142081",
+          "label": "nonamejd",
+          "prompt": "@nonamejd"
+        },
+        {
+          "id": "anima_artist_46378",
+          "label": "ebimomo",
+          "prompt": "@ebimomo"
+        },
+        {
+          "id": "anima_artist_187454",
+          "label": "ushiyama ame",
+          "prompt": "@ushiyama ame"
+        },
+        {
+          "id": "anima_artist_5169",
+          "label": "abe yoshitoshi",
+          "prompt": "@abe yoshitoshi"
+        },
+        {
+          "id": "anima_artist_194720",
+          "label": "ebonyxh",
+          "prompt": "@ebonyxh"
+        },
+        {
+          "id": "anima_artist_189237",
+          "label": "fenyon",
+          "prompt": "@fenyon"
+        },
+        {
+          "id": "anima_artist_32157",
+          "label": "funamusea (artist)",
+          "prompt": "@funamusea \\(artist\\)"
+        },
+        {
+          "id": "anima_artist_86692",
+          "label": "chii (tsumami tsumamare)",
+          "prompt": "@chii \\(tsumami tsumamare\\)"
+        },
+        {
+          "id": "anima_artist_81191",
+          "label": "gorilla (bun0615)",
+          "prompt": "@gorilla \\(bun0615\\)"
+        },
+        {
+          "id": "anima_artist_209158",
+          "label": "1ssakawaguchi",
+          "prompt": "@1ssakawaguchi"
+        },
+        {
+          "id": "anima_artist_238843",
+          "label": "tonchamon san",
+          "prompt": "@tonchamon san"
+        },
+        {
+          "id": "anima_artist_154634",
+          "label": "elliemaplefox",
+          "prompt": "@elliemaplefox"
+        },
+        {
+          "id": "anima_artist_7099",
+          "label": "mori toshiaki",
+          "prompt": "@mori toshiaki"
+        },
+        {
+          "id": "anima_artist_92355",
+          "label": "elizabeth (tomas21)",
+          "prompt": "@elizabeth \\(tomas21\\)"
+        },
+        {
+          "id": "anima_artist_383222",
+          "label": "tp p pt",
+          "prompt": "@tp p pt"
+        },
+        {
+          "id": "anima_artist_216147",
+          "label": "nama udon",
+          "prompt": "@nama udon"
+        },
+        {
+          "id": "anima_artist_6537",
+          "label": "pu-en",
+          "prompt": "@pu-en"
+        },
+        {
+          "id": "anima_artist_35677",
+          "label": "f7(eiki)",
+          "prompt": "@f7\\(eiki\\)"
+        },
+        {
+          "id": "anima_artist_140443",
+          "label": "kiriya (552260)",
+          "prompt": "@kiriya \\(552260\\)"
+        },
+        {
+          "id": "anima_artist_23682",
+          "label": "harumachi nagaaki",
+          "prompt": "@harumachi nagaaki"
+        },
+        {
+          "id": "anima_artist_155613",
+          "label": "appleq",
+          "prompt": "@appleq"
+        },
+        {
+          "id": "anima_artist_218580",
+          "label": "suyohara",
+          "prompt": "@suyohara"
+        },
+        {
+          "id": "anima_artist_197948",
+          "label": "kionant",
+          "prompt": "@kionant"
+        },
+        {
+          "id": "anima_artist_108368",
+          "label": "akakura",
+          "prompt": "@akakura"
+        },
+        {
+          "id": "anima_artist_134724",
+          "label": "diives",
+          "prompt": "@diives"
+        },
+        {
+          "id": "anima_artist_172938",
+          "label": "tatahai",
+          "prompt": "@tatahai"
+        },
+        {
+          "id": "anima_artist_253247",
+          "label": "hacco mayu",
+          "prompt": "@hacco mayu"
+        },
+        {
+          "id": "anima_artist_142201",
+          "label": "jouhou",
+          "prompt": "@jouhou"
+        },
+        {
+          "id": "anima_artist_20942",
+          "label": "sasaki tomomi",
+          "prompt": "@sasaki tomomi"
+        },
+        {
+          "id": "anima_artist_66403",
+          "label": "matsuda hikari",
+          "prompt": "@matsuda hikari"
+        },
+        {
+          "id": "anima_artist_122470",
+          "label": "tkgsize",
+          "prompt": "@tkgsize"
+        },
+        {
+          "id": "anima_artist_51405",
+          "label": "toriyama akira",
+          "prompt": "@toriyama akira"
+        },
+        {
+          "id": "anima_artist_137064",
+          "label": "ogata tei",
+          "prompt": "@ogata tei"
+        },
+        {
+          "id": "anima_artist_85936",
+          "label": "sagami jon",
+          "prompt": "@sagami jon"
+        },
+        {
+          "id": "anima_artist_121922",
+          "label": "makaroll",
+          "prompt": "@makaroll"
+        },
+        {
+          "id": "anima_artist_199312",
+          "label": "so-taro",
+          "prompt": "@so-taro"
+        },
+        {
+          "id": "anima_artist_272438",
+          "label": "far tarooo",
+          "prompt": "@far tarooo"
+        },
+        {
+          "id": "anima_artist_361826",
+          "label": "zozozoshion",
+          "prompt": "@zozozoshion"
+        },
+        {
+          "id": "anima_artist_92325",
+          "label": "u-non (annon'an)",
+          "prompt": "@u-non \\(annon'an\\)"
+        },
+        {
+          "id": "anima_artist_144530",
+          "label": "doppel (bonnypir)",
+          "prompt": "@doppel \\(bonnypir\\)"
+        },
+        {
+          "id": "anima_artist_207798",
+          "label": "unime seaflower",
+          "prompt": "@unime seaflower"
+        },
+        {
+          "id": "anima_artist_143398",
+          "label": "nekobell",
+          "prompt": "@nekobell"
+        },
+        {
+          "id": "anima_artist_28420",
+          "label": "bowalia",
+          "prompt": "@bowalia"
+        },
+        {
+          "id": "anima_artist_70453",
+          "label": "onnaski",
+          "prompt": "@onnaski"
+        },
+        {
+          "id": "anima_artist_165421",
+          "label": "devilhs",
+          "prompt": "@devilhs"
+        },
+        {
+          "id": "anima_artist_413489",
+          "label": "name omoitukan2",
+          "prompt": "@name omoitukan2"
+        },
+        {
+          "id": "anima_artist_105409",
+          "label": "suzuki kyoutarou",
+          "prompt": "@suzuki kyoutarou"
+        },
+        {
+          "id": "anima_artist_141397",
+          "label": "neruzou",
+          "prompt": "@neruzou"
+        },
+        {
+          "id": "anima_artist_604024",
+          "label": "sokura (mochichitose)",
+          "prompt": "@sokura \\(mochichitose\\)"
+        },
+        {
+          "id": "anima_artist_108509",
+          "label": "soukou makura",
+          "prompt": "@soukou makura"
+        },
+        {
+          "id": "anima_artist_5379",
+          "label": "tsukushi akihito",
+          "prompt": "@tsukushi akihito"
+        },
+        {
+          "id": "anima_artist_257412",
+          "label": "cris art",
+          "prompt": "@cris art"
+        },
+        {
+          "id": "anima_artist_269362",
+          "label": "yumi5469",
+          "prompt": "@yumi5469"
+        },
+        {
+          "id": "anima_artist_126837",
+          "label": "kz oji",
+          "prompt": "@kz oji"
+        },
+        {
+          "id": "anima_artist_259849",
+          "label": "mocacoffee 1001",
+          "prompt": "@mocacoffee 1001"
+        },
+        {
+          "id": "anima_artist_67707",
+          "label": "potato pot",
+          "prompt": "@potato pot"
+        },
+        {
+          "id": "anima_artist_64647",
+          "label": "shunsuke",
+          "prompt": "@shunsuke"
+        },
+        {
+          "id": "anima_artist_211623",
+          "label": "zero130rider",
+          "prompt": "@zero130rider"
+        },
+        {
+          "id": "anima_artist_69744",
+          "label": "ikeda ruriko",
+          "prompt": "@ikeda ruriko"
+        },
+        {
+          "id": "anima_artist_4452",
+          "label": "randou",
+          "prompt": "@randou"
+        },
+        {
+          "id": "anima_artist_177453",
+          "label": "uzuki mei",
+          "prompt": "@uzuki mei"
+        },
+        {
+          "id": "anima_artist_131809",
+          "label": "saizu nitou gunsou",
+          "prompt": "@saizu nitou gunsou"
+        },
+        {
+          "id": "anima_artist_14189",
+          "label": "tantaka",
+          "prompt": "@tantaka"
+        },
+        {
+          "id": "anima_artist_78283",
+          "label": "yuyu (00365676)",
+          "prompt": "@yuyu \\(00365676\\)"
+        },
+        {
+          "id": "anima_artist_53924",
+          "label": "maruyo",
+          "prompt": "@maruyo"
+        },
+        {
+          "id": "anima_artist_16242",
+          "label": "matataku",
+          "prompt": "@matataku"
+        },
+        {
+          "id": "anima_artist_357524",
+          "label": "sanamaru (sana79261827)",
+          "prompt": "@sanamaru \\(sana79261827\\)"
+        },
+        {
+          "id": "anima_artist_87564",
+          "label": "suenari (peace)",
+          "prompt": "@suenari \\(peace\\)"
+        },
+        {
+          "id": "anima_artist_27928",
+          "label": "zun (artist)",
+          "prompt": "@zun \\(artist\\)"
+        },
+        {
+          "id": "anima_artist_156713",
+          "label": "chocojax",
+          "prompt": "@chocojax"
+        },
+        {
+          "id": "anima_artist_283134",
+          "label": "anisdrawn",
+          "prompt": "@anisdrawn"
+        },
+        {
+          "id": "anima_artist_18752",
+          "label": "sanemichi hajime",
+          "prompt": "@sanemichi hajime"
+        },
+        {
+          "id": "anima_artist_230964",
+          "label": "nzeneee",
+          "prompt": "@nzeneee"
+        },
+        {
+          "id": "anima_artist_258753",
+          "label": "kagoya1219",
+          "prompt": "@kagoya1219"
+        },
+        {
+          "id": "anima_artist_604028",
+          "label": "die (die0118)",
+          "prompt": "@die \\(die0118\\)"
+        },
+        {
+          "id": "anima_artist_247416",
+          "label": "lemon pan",
+          "prompt": "@lemon pan"
+        },
+        {
+          "id": "anima_artist_47530",
+          "label": "megateru",
+          "prompt": "@megateru"
+        },
+        {
+          "id": "anima_artist_122090",
+          "label": "ayya sap",
+          "prompt": "@ayya sap"
+        },
+        {
+          "id": "anima_artist_242876",
+          "label": "durindana 7",
+          "prompt": "@durindana 7"
+        },
+        {
+          "id": "anima_artist_395589",
+          "label": "bambi2000line",
+          "prompt": "@bambi2000line"
+        },
+        {
+          "id": "anima_artist_261926",
+          "label": "soleil (soleilmtfbwy03)",
+          "prompt": "@soleil \\(soleilmtfbwy03\\)"
+        },
+        {
+          "id": "anima_artist_20645",
+          "label": "musen-shiki sanhankikan",
+          "prompt": "@musen-shiki sanhankikan"
+        },
+        {
+          "id": "anima_artist_83704",
+          "label": "totoharu (kujirai minato)",
+          "prompt": "@totoharu \\(kujirai minato\\)"
+        },
+        {
+          "id": "anima_artist_77505",
+          "label": "umekko",
+          "prompt": "@umekko"
+        },
+        {
+          "id": "anima_artist_162326",
+          "label": "hito komoru",
+          "prompt": "@hito komoru"
+        },
+        {
+          "id": "anima_artist_204663",
+          "label": "vanripper",
+          "prompt": "@vanripper"
+        },
+        {
+          "id": "anima_artist_132431",
+          "label": "kasugai (de-tteiu)",
+          "prompt": "@kasugai \\(de-tteiu\\)"
+        },
+        {
+          "id": "anima_artist_76626",
+          "label": "kaifei (kaifei 29)",
+          "prompt": "@kaifei \\(kaifei 29\\)"
+        },
+        {
+          "id": "anima_artist_54851",
+          "label": "david revoy",
+          "prompt": "@david revoy"
+        },
+        {
+          "id": "anima_artist_194184",
+          "label": "erakin",
+          "prompt": "@erakin"
+        },
+        {
+          "id": "anima_artist_173783",
+          "label": "au (d elete)",
+          "prompt": "@au \\(d elete\\)"
+        },
+        {
+          "id": "anima_artist_7304",
+          "label": "kieyza",
+          "prompt": "@kieyza"
+        },
+        {
+          "id": "anima_artist_195629",
+          "label": "bakushi (smys2017)",
+          "prompt": "@bakushi \\(smys2017\\)"
+        },
+        {
+          "id": "anima_artist_87319",
+          "label": "senzzang",
+          "prompt": "@senzzang"
+        },
+        {
+          "id": "anima_artist_85790",
+          "label": "ootsuka shin'ichirou",
+          "prompt": "@ootsuka shin'ichirou"
+        },
+        {
+          "id": "anima_artist_140837",
+          "label": "katiko",
+          "prompt": "@katiko"
+        },
+        {
+          "id": "anima_artist_86556",
+          "label": "maeka (kumaekake)",
+          "prompt": "@maeka \\(kumaekake\\)"
+        },
+        {
+          "id": "anima_artist_13577",
+          "label": "kureha (ironika)",
+          "prompt": "@kureha \\(ironika\\)"
+        },
+        {
+          "id": "anima_artist_39371",
+          "label": "pila-pela",
+          "prompt": "@pila-pela"
+        },
+        {
+          "id": "anima_artist_162774",
+          "label": "hakuleg",
+          "prompt": "@hakuleg"
+        },
+        {
+          "id": "anima_artist_219558",
+          "label": "soresaki",
+          "prompt": "@soresaki"
+        },
+        {
+          "id": "anima_artist_14921",
+          "label": "nadeara bukichi",
+          "prompt": "@nadeara bukichi"
+        },
+        {
+          "id": "anima_artist_211559",
+          "label": "raya (uk 0128)",
+          "prompt": "@raya \\(uk 0128\\)"
+        },
+        {
+          "id": "anima_artist_36163",
+          "label": "matsunaga (haku)",
+          "prompt": "@matsunaga \\(haku\\)"
+        },
+        {
+          "id": "anima_artist_25066",
+          "label": "gomamiso (gomamiso sp)",
+          "prompt": "@gomamiso \\(gomamiso sp\\)"
+        },
+        {
+          "id": "anima_artist_275512",
+          "label": "eddybird55555",
+          "prompt": "@eddybird55555"
+        },
+        {
+          "id": "anima_artist_300579",
+          "label": "toastytoast",
+          "prompt": "@toastytoast"
+        },
+        {
+          "id": "anima_artist_146988",
+          "label": "ridy (ri sui)",
+          "prompt": "@ridy \\(ri sui\\)"
+        },
+        {
+          "id": "anima_artist_218284",
+          "label": "wass nonnam",
+          "prompt": "@wass nonnam"
+        },
+        {
+          "id": "anima_artist_228875",
+          "label": "saaal653",
+          "prompt": "@saaal653"
+        },
+        {
+          "id": "anima_artist_247203",
+          "label": "jk arts",
+          "prompt": "@jk arts"
+        },
+        {
+          "id": "anima_artist_173879",
+          "label": "oka mochi",
+          "prompt": "@oka mochi"
+        },
+        {
+          "id": "anima_artist_378821",
+          "label": "wuwuren",
+          "prompt": "@wuwuren"
+        },
+        {
+          "id": "anima_artist_85032",
+          "label": "alkemanubis",
+          "prompt": "@alkemanubis"
+        },
+        {
+          "id": "anima_artist_12028",
+          "label": "yamamoto kazue",
+          "prompt": "@yamamoto kazue"
+        },
+        {
+          "id": "anima_artist_186151",
+          "label": "hisha (kan moko)",
+          "prompt": "@hisha \\(kan moko\\)"
+        },
+        {
+          "id": "anima_artist_86289",
+          "label": "hanarito",
+          "prompt": "@hanarito"
+        },
+        {
+          "id": "anima_artist_467938",
+          "label": "fumiddition",
+          "prompt": "@fumiddition"
+        },
+        {
+          "id": "anima_artist_153804",
+          "label": "tsuaii",
+          "prompt": "@tsuaii"
+        },
+        {
+          "id": "anima_artist_295006",
+          "label": "ken'ichi (ken1ro u)",
+          "prompt": "@ken'ichi \\(ken1ro u\\)"
+        },
+        {
+          "id": "anima_artist_5114",
+          "label": "soyosoyo",
+          "prompt": "@soyosoyo"
+        },
+        {
+          "id": "anima_artist_45870",
+          "label": "minami aomori",
+          "prompt": "@minami aomori"
+        },
+        {
+          "id": "anima_artist_13752",
+          "label": "baku taso",
+          "prompt": "@baku taso"
+        },
+        {
+          "id": "anima_artist_208024",
+          "label": "kornod",
+          "prompt": "@kornod"
+        },
+        {
+          "id": "anima_artist_103474",
+          "label": "sakai (motomei)",
+          "prompt": "@sakai \\(motomei\\)"
+        },
+        {
+          "id": "anima_artist_309672",
+          "label": "lingyi",
+          "prompt": "@lingyi"
+        },
+        {
+          "id": "anima_artist_213892",
+          "label": "nocopyrightgirl",
+          "prompt": "@nocopyrightgirl"
+        },
+        {
+          "id": "anima_artist_135679",
+          "label": "masaki (ekakiningen)",
+          "prompt": "@masaki \\(ekakiningen\\)"
+        },
+        {
+          "id": "anima_artist_21905",
+          "label": "wakino keibun",
+          "prompt": "@wakino keibun"
+        },
+        {
+          "id": "anima_artist_20723",
+          "label": "gaketsu",
+          "prompt": "@gaketsu"
+        },
+        {
+          "id": "anima_artist_58461",
+          "label": "toriga naku",
+          "prompt": "@toriga naku"
+        },
+        {
+          "id": "anima_artist_43545",
+          "label": "inutose",
+          "prompt": "@inutose"
+        },
+        {
+          "id": "anima_artist_344043",
+          "label": "pinoli (pinoli66)",
+          "prompt": "@pinoli \\(pinoli66\\)"
+        },
+        {
+          "id": "anima_artist_300089",
+          "label": "cinnabus",
+          "prompt": "@cinnabus"
+        },
+        {
+          "id": "anima_artist_180321",
+          "label": "uni souchou",
+          "prompt": "@uni souchou"
+        },
+        {
+          "id": "anima_artist_289169",
+          "label": "chronozbergh",
+          "prompt": "@chronozbergh"
+        },
+        {
+          "id": "anima_artist_92669",
+          "label": "chichibu (watson)",
+          "prompt": "@chichibu \\(watson\\)"
+        },
+        {
+          "id": "anima_artist_184128",
+          "label": "kousaka 0v0",
+          "prompt": "@kousaka 0v0"
+        },
+        {
+          "id": "anima_artist_162830",
+          "label": "dayama",
+          "prompt": "@dayama"
+        },
+        {
+          "id": "anima_artist_6851",
+          "label": "geetsu",
+          "prompt": "@geetsu"
+        },
+        {
+          "id": "anima_artist_73056",
+          "label": "habatakuhituji",
+          "prompt": "@habatakuhituji"
+        },
+        {
+          "id": "anima_artist_442600",
+          "label": "sesmkun",
+          "prompt": "@sesmkun"
+        },
+        {
+          "id": "anima_artist_53961",
+          "label": "nanatsuta",
+          "prompt": "@nanatsuta"
+        },
+        {
+          "id": "anima_artist_247556",
+          "label": "hershuar",
+          "prompt": "@hershuar"
+        },
+        {
+          "id": "anima_artist_12881",
+          "label": "ganto",
+          "prompt": "@ganto"
+        },
+        {
+          "id": "anima_artist_216258",
+          "label": "putong xiao gou",
+          "prompt": "@putong xiao gou"
+        },
+        {
+          "id": "anima_artist_352175",
+          "label": "syooooyoooo",
+          "prompt": "@syooooyoooo"
+        },
+        {
+          "id": "anima_artist_61404",
+          "label": "cherico",
+          "prompt": "@cherico"
+        },
+        {
+          "id": "anima_artist_90112",
+          "label": "darkkanan",
+          "prompt": "@darkkanan"
+        },
+        {
+          "id": "anima_artist_30498",
+          "label": "ouhashi",
+          "prompt": "@ouhashi"
+        },
+        {
+          "id": "anima_artist_199617",
+          "label": "203wolves",
+          "prompt": "@203wolves"
+        },
+        {
+          "id": "anima_artist_185342",
+          "label": "garouma",
+          "prompt": "@garouma"
+        },
+        {
+          "id": "anima_artist_190153",
+          "label": "paloma piquet",
+          "prompt": "@paloma piquet"
+        },
+        {
+          "id": "anima_artist_106698",
+          "label": "bukurote",
+          "prompt": "@bukurote"
+        },
+        {
+          "id": "anima_artist_224513",
+          "label": "cremanata",
+          "prompt": "@cremanata"
+        },
+        {
+          "id": "anima_artist_172962",
+          "label": "miraa (chikurin)",
+          "prompt": "@miraa \\(chikurin\\)"
+        },
+        {
+          "id": "anima_artist_49630",
+          "label": "inoshishi (ikatomo)",
+          "prompt": "@inoshishi \\(ikatomo\\)"
+        },
+        {
+          "id": "anima_artist_179972",
+          "label": "kawatsu yuuki",
+          "prompt": "@kawatsu yuuki"
+        },
+        {
+          "id": "anima_artist_414489",
+          "label": "mashikaku (ma4kaku10fu)",
+          "prompt": "@mashikaku \\(ma4kaku10fu\\)"
+        },
+        {
+          "id": "anima_artist_160434",
+          "label": "beitemian",
+          "prompt": "@beitemian"
+        },
+        {
+          "id": "anima_artist_394423",
+          "label": "sakari (pear 8 ll)",
+          "prompt": "@sakari \\(pear 8 ll\\)"
+        },
+        {
+          "id": "anima_artist_172716",
+          "label": "k (gear labo)",
+          "prompt": "@k \\(gear labo\\)"
+        },
+        {
+          "id": "anima_artist_244658",
+          "label": "kojiro337",
+          "prompt": "@kojiro337"
+        },
+        {
+          "id": "anima_artist_56235",
+          "label": "mikel (4hands)",
+          "prompt": "@mikel \\(4hands\\)"
+        },
+        {
+          "id": "anima_artist_295600",
+          "label": "yuri (fl0werspace)",
+          "prompt": "@yuri \\(fl0werspace\\)"
+        },
+        {
+          "id": "anima_artist_172517",
+          "label": "kotobukkii (yt lvlv)",
+          "prompt": "@kotobukkii \\(yt lvlv\\)"
+        },
+        {
+          "id": "anima_artist_229225",
+          "label": "odmised",
+          "prompt": "@odmised"
+        },
+        {
+          "id": "anima_artist_132274",
+          "label": "tsukasa (tsukasa mimizuku)",
+          "prompt": "@tsukasa \\(tsukasa mimizuku\\)"
+        },
+        {
+          "id": "anima_artist_340932",
+          "label": "primsla",
+          "prompt": "@primsla"
+        },
+        {
+          "id": "anima_artist_121116",
+          "label": "tesun (g noh)",
+          "prompt": "@tesun \\(g noh\\)"
+        },
+        {
+          "id": "anima_artist_331388",
+          "label": "c/h",
+          "prompt": "@c/h"
+        },
+        {
+          "id": "anima_artist_25413",
+          "label": "moto murabito",
+          "prompt": "@moto murabito"
+        },
+        {
+          "id": "anima_artist_346206",
+          "label": "zipsunz",
+          "prompt": "@zipsunz"
+        },
+        {
+          "id": "anima_artist_334232",
+          "label": "kamatama rom",
+          "prompt": "@kamatama rom"
+        },
+        {
+          "id": "anima_artist_190594",
+          "label": "yalmyu",
+          "prompt": "@yalmyu"
+        },
+        {
+          "id": "anima_artist_17270",
+          "label": "aoblue",
+          "prompt": "@aoblue"
+        },
+        {
+          "id": "anima_artist_417341",
+          "label": "yogurt pt",
+          "prompt": "@yogurt pt"
+        },
+        {
+          "id": "anima_artist_375836",
+          "label": "kinzaibatsu91",
+          "prompt": "@kinzaibatsu91"
+        },
+        {
+          "id": "anima_artist_176866",
+          "label": "heikala",
+          "prompt": "@heikala"
+        },
+        {
+          "id": "anima_artist_138801",
+          "label": "atsumi yoshioka",
+          "prompt": "@atsumi yoshioka"
+        },
+        {
+          "id": "anima_artist_17205",
+          "label": "amu (m aa)",
+          "prompt": "@amu \\(m aa\\)"
+        },
+        {
+          "id": "anima_artist_125539",
+          "label": "sikijou77o",
+          "prompt": "@sikijou77o"
+        },
+        {
+          "id": "anima_artist_4859",
+          "label": "satou toshiyuki",
+          "prompt": "@satou toshiyuki"
+        },
+        {
+          "id": "anima_artist_112367",
+          "label": "honzawa yuuichirou",
+          "prompt": "@honzawa yuuichirou"
+        },
+        {
+          "id": "anima_artist_271162",
+          "label": "pungson mori",
+          "prompt": "@pungson mori"
+        },
+        {
+          "id": "anima_artist_125050",
+          "label": "nazo no diaboro",
+          "prompt": "@nazo no diaboro"
+        },
+        {
+          "id": "anima_artist_206873",
+          "label": "deerwhisky",
+          "prompt": "@deerwhisky"
+        },
+        {
+          "id": "anima_artist_166290",
+          "label": "halkawa501",
+          "prompt": "@halkawa501"
+        },
+        {
+          "id": "anima_artist_15916",
+          "label": "tsukiyo no ribbon",
+          "prompt": "@tsukiyo no ribbon"
+        },
+        {
+          "id": "anima_artist_62232",
+          "label": "onimaru (onimal7802)",
+          "prompt": "@onimaru \\(onimal7802\\)"
+        },
+        {
+          "id": "anima_artist_32371",
+          "label": "nakayama tooru",
+          "prompt": "@nakayama tooru"
+        },
+        {
+          "id": "anima_artist_16975",
+          "label": "tocky",
+          "prompt": "@tocky"
+        },
+        {
+          "id": "anima_artist_215734",
+          "label": "teketeke (tasutekete)",
+          "prompt": "@teketeke \\(tasutekete\\)"
+        },
+        {
+          "id": "anima_artist_144760",
+          "label": "umigraphics",
+          "prompt": "@umigraphics"
+        },
+        {
+          "id": "anima_artist_170825",
+          "label": "rizu (rizunm)",
+          "prompt": "@rizu \\(rizunm\\)"
+        },
+        {
+          "id": "anima_artist_156768",
+          "label": "gero zoukin",
+          "prompt": "@gero zoukin"
+        },
+        {
+          "id": "anima_artist_284645",
+          "label": "pori (kmt pori)",
+          "prompt": "@pori \\(kmt pori\\)"
+        },
+        {
+          "id": "anima_artist_111571",
+          "label": "kuon (kwonchanji)",
+          "prompt": "@kuon \\(kwonchanji\\)"
+        },
+        {
+          "id": "anima_artist_135642",
+          "label": "kudou (ooabareteng)",
+          "prompt": "@kudou \\(ooabareteng\\)"
+        },
+        {
+          "id": "anima_artist_19829",
+          "label": "dowman sayman",
+          "prompt": "@dowman sayman"
+        },
+        {
+          "id": "anima_artist_347150",
+          "label": "ganaishoten",
+          "prompt": "@ganaishoten"
+        },
+        {
+          "id": "anima_artist_237010",
+          "label": "kabu usagi",
+          "prompt": "@kabu usagi"
+        },
+        {
+          "id": "anima_artist_116287",
+          "label": "rabbit (wlsdnjs950)",
+          "prompt": "@rabbit \\(wlsdnjs950\\)"
+        },
+        {
+          "id": "anima_artist_88244",
+          "label": "chameleon man (three)",
+          "prompt": "@chameleon man \\(three\\)"
+        },
+        {
+          "id": "anima_artist_134304",
+          "label": "namahamu (hmhm 81)",
+          "prompt": "@namahamu \\(hmhm 81\\)"
+        },
+        {
+          "id": "anima_artist_5202",
+          "label": "gambler club",
+          "prompt": "@gambler club"
+        },
+        {
+          "id": "anima_artist_146269",
+          "label": "kinohara kossuta",
+          "prompt": "@kinohara kossuta"
+        },
+        {
+          "id": "anima_artist_323957",
+          "label": "deadpool yuchan",
+          "prompt": "@deadpool yuchan"
+        },
+        {
+          "id": "anima_artist_76957",
+          "label": "keishin",
+          "prompt": "@keishin"
+        },
+        {
+          "id": "anima_artist_293109",
+          "label": "5altybitter5",
+          "prompt": "@5altybitter5"
+        },
+        {
+          "id": "anima_artist_148857",
+          "label": "djcomps",
+          "prompt": "@djcomps"
+        },
+        {
+          "id": "anima_artist_4308",
+          "label": "sonoda ken'ichi",
+          "prompt": "@sonoda ken'ichi"
+        },
+        {
+          "id": "anima_artist_137688",
+          "label": "yuchi (salmon-1000)",
+          "prompt": "@yuchi \\(salmon-1000\\)"
+        },
+        {
+          "id": "anima_artist_254968",
+          "label": "mamei mema",
+          "prompt": "@mamei mema"
+        },
+        {
+          "id": "anima_artist_365440",
+          "label": "linterteatime",
+          "prompt": "@linterteatime"
+        },
+        {
+          "id": "anima_artist_212532",
+          "label": "starmilk",
+          "prompt": "@starmilk"
+        },
+        {
+          "id": "anima_artist_171246",
+          "label": "bacun",
+          "prompt": "@bacun"
+        },
+        {
+          "id": "anima_artist_28810",
+          "label": "fukuoka katsumi",
+          "prompt": "@fukuoka katsumi"
+        },
+        {
+          "id": "anima_artist_104126",
+          "label": "novcel",
+          "prompt": "@novcel"
+        },
+        {
+          "id": "anima_artist_225985",
+          "label": "ostwindprojekt",
+          "prompt": "@ostwindprojekt"
+        },
+        {
+          "id": "anima_artist_81985",
+          "label": "zhaoyebai",
+          "prompt": "@zhaoyebai"
+        },
+        {
+          "id": "anima_artist_95513",
+          "label": "guuchama",
+          "prompt": "@guuchama"
+        },
+        {
+          "id": "anima_artist_288993",
+          "label": "2zuz4hru",
+          "prompt": "@2zuz4hru"
+        },
+        {
+          "id": "anima_artist_135028",
+          "label": "dungeon toaster",
+          "prompt": "@dungeon toaster"
+        },
+        {
+          "id": "anima_artist_6634",
+          "label": "falcoon",
+          "prompt": "@falcoon"
+        },
+        {
+          "id": "anima_artist_235521",
+          "label": "the olphy",
+          "prompt": "@the olphy"
+        },
+        {
+          "id": "anima_artist_236421",
+          "label": "yuio58ok",
+          "prompt": "@yuio58ok"
+        },
+        {
+          "id": "anima_artist_261450",
+          "label": "mixplin",
+          "prompt": "@mixplin"
+        },
+        {
+          "id": "anima_artist_7853",
+          "label": "fukudahda",
+          "prompt": "@fukudahda"
+        },
+        {
+          "id": "anima_artist_207754",
+          "label": "wafu (youzora samo18)",
+          "prompt": "@wafu \\(youzora samo18\\)"
+        },
+        {
+          "id": "anima_artist_309833",
+          "label": "liowig",
+          "prompt": "@liowig"
+        },
+        {
+          "id": "anima_artist_269739",
+          "label": "reo (mmocc123)",
+          "prompt": "@reo \\(mmocc123\\)"
+        },
+        {
+          "id": "anima_artist_14413",
+          "label": "suna (sunaipu)",
+          "prompt": "@suna \\(sunaipu\\)"
+        },
+        {
+          "id": "anima_artist_41344",
+          "label": "minuspal",
+          "prompt": "@minuspal"
+        },
+        {
+          "id": "anima_artist_350542",
+          "label": "yaki apple",
+          "prompt": "@yaki apple"
+        },
+        {
+          "id": "anima_artist_269136",
+          "label": "zedd (zedgawr)",
+          "prompt": "@zedd \\(zedgawr\\)"
+        },
+        {
+          "id": "anima_artist_21276",
+          "label": "ugif",
+          "prompt": "@ugif"
+        },
+        {
+          "id": "anima_artist_210404",
+          "label": "james turner",
+          "prompt": "@james turner"
+        },
+        {
+          "id": "anima_artist_50748",
+          "label": "tsunamayo",
+          "prompt": "@tsunamayo"
+        },
+        {
+          "id": "anima_artist_339965",
+          "label": "anjuro zeeku",
+          "prompt": "@anjuro zeeku"
+        },
+        {
+          "id": "anima_artist_37527",
+          "label": "ishikawa hideki",
+          "prompt": "@ishikawa hideki"
+        },
+        {
+          "id": "anima_artist_337516",
+          "label": "bm tol",
+          "prompt": "@bm tol"
+        },
+        {
+          "id": "anima_artist_165108",
+          "label": "findoworld",
+          "prompt": "@findoworld"
+        },
+        {
+          "id": "anima_artist_402123",
+          "label": "veyonis",
+          "prompt": "@veyonis"
+        },
+        {
+          "id": "anima_artist_177305",
+          "label": "tansho",
+          "prompt": "@tansho"
+        },
+        {
+          "id": "anima_artist_85194",
+          "label": "sao satoru",
+          "prompt": "@sao satoru"
+        },
+        {
+          "id": "anima_artist_207474",
+          "label": "hunyan",
+          "prompt": "@hunyan"
+        },
+        {
+          "id": "anima_artist_141683",
+          "label": "auko",
+          "prompt": "@auko"
+        },
+        {
+          "id": "anima_artist_214232",
+          "label": "watanabe tomari",
+          "prompt": "@watanabe tomari"
+        },
+        {
+          "id": "anima_artist_191318",
+          "label": "emily kim",
+          "prompt": "@emily kim"
+        },
+        {
+          "id": "anima_artist_286641",
+          "label": "ketsu juuji killer (kejuki)",
+          "prompt": "@ketsu juuji killer \\(kejuki\\)"
+        },
+        {
+          "id": "anima_artist_56467",
+          "label": "kitazume hiroyuki",
+          "prompt": "@kitazume hiroyuki"
+        },
+        {
+          "id": "anima_artist_179007",
+          "label": "matsukuzu",
+          "prompt": "@matsukuzu"
+        },
+        {
+          "id": "anima_artist_355709",
+          "label": "azukiharuta ju",
+          "prompt": "@azukiharuta ju"
+        },
+        {
+          "id": "anima_artist_353678",
+          "label": "suruga kanade",
+          "prompt": "@suruga kanade"
+        },
+        {
+          "id": "anima_artist_125009",
+          "label": "ezaki bisuko",
+          "prompt": "@ezaki bisuko"
+        },
+        {
+          "id": "anima_artist_4963",
+          "label": "inoue takuya",
+          "prompt": "@inoue takuya"
+        },
+        {
+          "id": "anima_artist_59606",
+          "label": "komatsuzaki rui",
+          "prompt": "@komatsuzaki rui"
+        },
+        {
+          "id": "anima_artist_244628",
+          "label": "foolish potato",
+          "prompt": "@foolish potato"
+        },
+        {
+          "id": "anima_artist_5771",
+          "label": "kamiya yuu",
+          "prompt": "@kamiya yuu"
+        },
+        {
+          "id": "anima_artist_203240",
+          "label": "vialnite",
+          "prompt": "@vialnite"
+        },
+        {
+          "id": "anima_artist_169142",
+          "label": "yknsugar",
+          "prompt": "@yknsugar"
+        },
+        {
+          "id": "anima_artist_66232",
+          "label": "do (4-rt)",
+          "prompt": "@do \\(4-rt\\)"
+        },
+        {
+          "id": "anima_artist_251557",
+          "label": "xichii",
+          "prompt": "@xichii"
+        },
+        {
+          "id": "anima_artist_10121",
+          "label": "amano kozue",
+          "prompt": "@amano kozue"
+        },
+        {
+          "id": "anima_artist_195691",
+          "label": "kitamurashu",
+          "prompt": "@kitamurashu"
+        },
+        {
+          "id": "anima_artist_12905",
+          "label": "sabachiyo land",
+          "prompt": "@sabachiyo land"
+        },
+        {
+          "id": "anima_artist_41969",
+          "label": "asatani tomoyo",
+          "prompt": "@asatani tomoyo"
+        },
+        {
+          "id": "anima_artist_137116",
+          "label": "guri gom",
+          "prompt": "@guri gom"
+        },
+        {
+          "id": "anima_artist_260658",
+          "label": "shin (shin k009)",
+          "prompt": "@shin \\(shin k009\\)"
+        },
+        {
+          "id": "anima_artist_300697",
+          "label": "iro (mywife sunny)",
+          "prompt": "@iro \\(mywife sunny\\)"
+        },
+        {
+          "id": "anima_artist_34778",
+          "label": "gurageida",
+          "prompt": "@gurageida"
+        },
+        {
+          "id": "anima_artist_12898",
+          "label": "tsukasa jun",
+          "prompt": "@tsukasa jun"
+        },
+        {
+          "id": "anima_artist_170512",
+          "label": "yaco (nuitnotte)",
+          "prompt": "@yaco \\(nuitnotte\\)"
+        },
+        {
+          "id": "anima_artist_30531",
+          "label": "psd (psdgai)",
+          "prompt": "@psd \\(psdgai\\)"
+        },
+        {
+          "id": "anima_artist_53513",
+          "label": "yoropa",
+          "prompt": "@yoropa"
+        },
+        {
+          "id": "anima_artist_129247",
+          "label": "cheri zao",
+          "prompt": "@cheri zao"
+        },
+        {
+          "id": "anima_artist_97463",
+          "label": "daeho cha",
+          "prompt": "@daeho cha"
+        },
+        {
+          "id": "anima_artist_99244",
+          "label": "tabletorgy",
+          "prompt": "@tabletorgy"
+        },
+        {
+          "id": "anima_artist_328730",
+          "label": "goomyloid",
+          "prompt": "@goomyloid"
+        },
+        {
+          "id": "anima_artist_16011",
+          "label": "yu 3",
+          "prompt": "@yu 3"
+        },
+        {
+          "id": "anima_artist_74727",
+          "label": "kokura masashi",
+          "prompt": "@kokura masashi"
+        },
+        {
+          "id": "anima_artist_225894",
+          "label": "keenbiscuit",
+          "prompt": "@keenbiscuit"
+        },
+        {
+          "id": "anima_artist_21401",
+          "label": "izayoi seishin",
+          "prompt": "@izayoi seishin"
+        },
+        {
+          "id": "anima_artist_56466",
+          "label": "yasuhiko yoshikazu",
+          "prompt": "@yasuhiko yoshikazu"
+        },
+        {
+          "id": "anima_artist_137399",
+          "label": "o (crazyoton46)",
+          "prompt": "@o \\(crazyoton46\\)"
+        },
+        {
+          "id": "anima_artist_51801",
+          "label": "yurano (upao)",
+          "prompt": "@yurano \\(upao\\)"
+        },
+        {
+          "id": "anima_artist_115510",
+          "label": "lee (dragon garou)",
+          "prompt": "@lee \\(dragon garou\\)"
+        },
+        {
+          "id": "anima_artist_164764",
+          "label": "myon (tokipi)",
+          "prompt": "@myon \\(tokipi\\)"
+        },
+        {
+          "id": "anima_artist_162521",
+          "label": "bolos",
+          "prompt": "@bolos"
+        },
+        {
+          "id": "anima_artist_128255",
+          "label": "nagasawa tougo",
+          "prompt": "@nagasawa tougo"
+        },
+        {
+          "id": "anima_artist_386898",
+          "label": "isaacchief300",
+          "prompt": "@isaacchief300"
+        },
+        {
+          "id": "anima_artist_112661",
+          "label": "franz (217franz)",
+          "prompt": "@franz \\(217franz\\)"
+        },
+        {
+          "id": "anima_artist_102312",
+          "label": "brekkist",
+          "prompt": "@brekkist"
+        },
+        {
+          "id": "anima_artist_41147",
+          "label": "medinki",
+          "prompt": "@medinki"
+        },
+        {
+          "id": "anima_artist_65457",
+          "label": "haun",
+          "prompt": "@haun"
+        },
+        {
+          "id": "anima_artist_144517",
+          "label": "shiba yuuji",
+          "prompt": "@shiba yuuji"
+        },
+        {
+          "id": "anima_artist_55970",
+          "label": "kikuchi milo",
+          "prompt": "@kikuchi milo"
+        },
+        {
+          "id": "anima_artist_316028",
+          "label": "ellievsbear",
+          "prompt": "@ellievsbear"
+        },
+        {
+          "id": "anima_artist_104804",
+          "label": "karasu (naoshow357)",
+          "prompt": "@karasu \\(naoshow357\\)"
+        },
+        {
+          "id": "anima_artist_219084",
+          "label": "relio db318",
+          "prompt": "@relio db318"
+        },
+        {
+          "id": "anima_artist_186679",
+          "label": "denaseey",
+          "prompt": "@denaseey"
+        },
+        {
+          "id": "anima_artist_25036",
+          "label": "216",
+          "prompt": "@216"
+        },
+        {
+          "id": "anima_artist_140214",
+          "label": "chon (chon33v)",
+          "prompt": "@chon \\(chon33v\\)"
+        },
+        {
+          "id": "anima_artist_266858",
+          "label": "msa (fary white)",
+          "prompt": "@msa \\(fary white\\)"
+        },
+        {
+          "id": "anima_artist_216389",
+          "label": "eriimyon",
+          "prompt": "@eriimyon"
+        },
+        {
+          "id": "anima_artist_197438",
+          "label": "huxiao (mistlakefront)",
+          "prompt": "@huxiao \\(mistlakefront\\)"
+        },
+        {
+          "id": "anima_artist_204833",
+          "label": "konohoshi",
+          "prompt": "@konohoshi"
+        },
+        {
+          "id": "anima_artist_22819",
+          "label": "shiroma (mamiko)",
+          "prompt": "@shiroma \\(mamiko\\)"
+        },
+        {
+          "id": "anima_artist_266550",
+          "label": "white gorilla (okamoto)",
+          "prompt": "@white gorilla \\(okamoto\\)"
+        },
+        {
+          "id": "anima_artist_192943",
+          "label": "rockthebull",
+          "prompt": "@rockthebull"
+        },
+        {
+          "id": "anima_artist_61951",
+          "label": "ayame hashinimasen",
+          "prompt": "@ayame hashinimasen"
+        },
+        {
+          "id": "anima_artist_128321",
+          "label": "admiral paru",
+          "prompt": "@admiral paru"
+        },
+        {
+          "id": "anima_artist_91115",
+          "label": "chutohampa",
+          "prompt": "@chutohampa"
+        },
+        {
+          "id": "anima_artist_166013",
+          "label": "fleebites",
+          "prompt": "@fleebites"
+        },
+        {
+          "id": "anima_artist_134291",
+          "label": "autumn-sacura",
+          "prompt": "@autumn-sacura"
+        },
+        {
+          "id": "anima_artist_326684",
+          "label": "yabarn",
+          "prompt": "@yabarn"
+        },
+        {
+          "id": "anima_artist_9064",
+          "label": "angeldust",
+          "prompt": "@angeldust"
+        },
+        {
+          "id": "anima_artist_154864",
+          "label": "charamells",
+          "prompt": "@charamells"
+        },
+        {
+          "id": "anima_artist_119776",
+          "label": "kirisaki nuko",
+          "prompt": "@kirisaki nuko"
+        },
+        {
+          "id": "anima_artist_337152",
+          "label": "kanbaki",
+          "prompt": "@kanbaki"
+        },
+        {
+          "id": "anima_artist_83781",
+          "label": "kuga zankurou",
+          "prompt": "@kuga zankurou"
+        },
+        {
+          "id": "anima_artist_185957",
+          "label": "kicdon",
+          "prompt": "@kicdon"
+        },
+        {
+          "id": "anima_artist_10586",
+          "label": "gusu",
+          "prompt": "@gusu"
+        },
+        {
+          "id": "anima_artist_72891",
+          "label": "tamanegiinyo",
+          "prompt": "@tamanegiinyo"
+        },
+        {
+          "id": "anima_artist_119957",
+          "label": "speedoru",
+          "prompt": "@speedoru"
+        },
+        {
+          "id": "anima_artist_334798",
+          "label": "memeh",
+          "prompt": "@memeh"
+        },
+        {
+          "id": "anima_artist_12122",
+          "label": "matayoshi",
+          "prompt": "@matayoshi"
+        }
+      ]
+    }
+  ],
+  "sources": [
+    {
+      "name": "Anima Style Explorer",
+      "url": "https://github.com/ThetaCursed/Anima-Style-Explorer/tree/1b17fbba0d4444d650a39f406ee30594cf128fef",
+      "credit": "Artist tags and metrics compiled by ThetaCursed.",
+      "style_count": 510
+    }
+  ],
+  "aliases": {}
+}

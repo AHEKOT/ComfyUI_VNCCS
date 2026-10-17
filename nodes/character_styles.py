@@ -1,4 +1,5 @@
 """User-owned style library; packaged updates never write this file."""
+from ..operation_logger import log_event
 
 import json
 import math
@@ -10,7 +11,7 @@ import uuid
 import numpy as np
 from PIL import Image
 
-from ..utils import atomic_output_path, safe_join_under
+from ..utils import atomic_output_path, safe_join_under, json_revision, StorageConflictError
 
 
 USER_CHARACTER_STYLES_PATH = os.path.join(
@@ -18,6 +19,7 @@ USER_CHARACTER_STYLES_PATH = os.path.join(
     "character_template", "character_styles.user.json",
 )
 _STYLE_LOCK = threading.RLock()
+_MAX_LIBRARY_BYTES = 18000000
 _TEXT_LIMITS = {"label": 100, "description": 240, "reference": 500, "prompt": 16000}
 STYLE_PREVIEWS_DIR = os.path.join(os.path.dirname(USER_CHARACTER_STYLES_PATH), "style_previews")
 
@@ -77,11 +79,7 @@ def save_style_preview(style_id, image):
             if stored.format != "WEBP" or stored.size != image.size:
                 raise OSError("Style preview could not be verified on disk")
         verified = time.perf_counter()
-    print(
-        f"[VNCCS Style Preview] Saved {style_id} ({image.width}x{image.height}, WebP): "
-        f"encode/write={encoded - started:.3f}s, verify={verified - encoded:.3f}s, "
-        f"publish={time.perf_counter() - verified:.3f}s"
-    )
+    log_event("preview_saved", component="Styles", style=style_id, width=image.width, height=image.height, encode_s=round(encoded - started, 3), verify_s=round(verified - encoded, 3), publish_s=round(time.perf_counter() - verified, 3))
     return {"style_id": style_id, "image": style_preview_url(style_id), "width": image.width, "height": image.height, "saved": True, "path": path}
 
 
@@ -108,7 +106,7 @@ def load_user_styles(path=None):
     with _STYLE_LOCK:
         if not os.path.exists(path):
             return []
-        if os.path.getsize(path) > 18000000:
+        if os.path.getsize(path) > _MAX_LIBRARY_BYTES:
             raise ValueError("User style library is too large")
         with open(path, encoding="utf-8") as source:
             library = json.load(source)
@@ -119,7 +117,7 @@ def load_user_styles(path=None):
         styles = [validate_user_style(style) for style in library["styles"]]
         if len({style["id"] for style in styles}) != len(styles):
             raise ValueError("Duplicate user style IDs")
-        return styles
+        return [{**style, "revision": json_revision(style)} for style in styles]
 
 
 def save_user_style(value, path=None):
@@ -134,6 +132,9 @@ def save_user_style(value, path=None):
         index = next((i for i, item in enumerate(styles) if item["id"] == style["id"]), None)
         if supplied_id and index is None:
             raise ValueError("User style no longer exists; save it as a new style")
+        if index is not None and value.get("revision") != styles[index]["revision"]:
+            if style != validate_user_style(styles[index]):
+                raise StorageConflictError("This style changed in another editor. Your local draft has been preserved; reload the style before saving.")
         if index is None:
             if len(styles) >= 1000:
                 raise ValueError("User style library supports up to 1000 styles")
@@ -142,9 +143,11 @@ def save_user_style(value, path=None):
             styles[index] = style
         with atomic_output_path(path) as temporary:
             with open(temporary, "w", encoding="utf-8") as output:
-                json.dump({"version": 1, "styles": styles}, output, ensure_ascii=False, indent=2)
+                json.dump({"version": 1, "styles": [validate_user_style(item) for item in styles]}, output, ensure_ascii=False, indent=2)
                 output.write("\n")
-    return style
+            if os.path.getsize(temporary) > _MAX_LIBRARY_BYTES:
+                raise ValueError("User style library is too large; the previous library has been preserved")
+    return {**style, "revision": json_revision(style)}
 
 
 def delete_user_style(style_id, path=None):
@@ -167,7 +170,7 @@ def delete_user_style(style_id, path=None):
         try:
             with atomic_output_path(path) as temporary:
                 with open(temporary, "w", encoding="utf-8") as output:
-                    json.dump({"version": 1, "styles": remaining}, output, ensure_ascii=False, indent=2)
+                    json.dump({"version": 1, "styles": [validate_user_style(item) for item in remaining]}, output, ensure_ascii=False, indent=2)
                     output.write("\n")
                 if previous is not None:
                     os.unlink(preview)
@@ -181,9 +184,12 @@ def delete_user_style(style_id, path=None):
         return True
 
 
-def save_user_style_preview(style_id, image):
-    # A render finishing after deletion must not recreate an orphan preview.
+def save_user_style_preview(style_id, image, revision):
+    # A late render must not publish over a deleted or edited style.
     with _STYLE_LOCK:
-        if not any(style["id"] == style_id for style in load_user_styles()):
+        style = next((style for style in load_user_styles() if style["id"] == style_id), None)
+        if style is None:
             raise ValueError("User style no longer exists")
+        if revision != style["revision"]:
+            raise StorageConflictError("This style changed during rendering. Generate its preview again.")
         return save_style_preview(style_id, image)

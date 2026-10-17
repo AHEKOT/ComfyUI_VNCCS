@@ -10,63 +10,13 @@ Class: VNCCS_QWEN_Encoder
 
 This file relies on runtime objects provided by ComfyUI (clip, vae, comfy.utils, node_helpers).
 """
-
-import types
-import sys
-try:
-    import node_helpers
-except Exception:
-    # minimal safe fallback for environments without ComfyUI
-    class _NodeHelpersFallback:
-        @staticmethod
-        def conditioning_set_values(conditioning, values, append=False):
-            # best-effort: if conditioning looks like a list of (tensor, dict) pairs, attach values
-            try:
-                new_conditioning = []
-                for cond in conditioning:
-                    if isinstance(cond, (list, tuple)) and len(cond) >= 2:
-                        cond_tensor = cond[0]
-                        cond_dict = dict(cond[1]) if isinstance(cond[1], dict) else {}
-                        if append:
-                            for k, v in values.items():
-                                if k in cond_dict and isinstance(cond_dict[k], list):
-                                    cond_dict[k].extend(v if isinstance(v, list) else [v])
-                                else:
-                                    cond_dict[k] = list(v) if isinstance(v, list) else [v]
-                        else:
-                            cond_dict.update(values)
-                        new_conditioning.append((cond_tensor, cond_dict))
-                    else:
-                        new_conditioning.append(cond)
-                return new_conditioning
-            except Exception:
-                return conditioning
-    node_helpers = _NodeHelpersFallback()
-
-try:
-    import comfy.utils
-except Exception:
-    # minimal comfy.utils fallback with common_upscale passthrough
-    class _ComfyUtilsFallback:
-        @staticmethod
-        def common_upscale(samples, width, height, method, crop):
-            # best-effort: return input unchanged
-            return samples
-    comfy = types.SimpleNamespace(utils=_ComfyUtilsFallback())
+from ..operation_logger import log_event
 
 import math
-try:
-    import torch
-except Exception:
-    torch = None
-try:
-    import numpy as np
-except Exception:
-    np = None
-try:
-    from PIL import Image
-except Exception:
-    Image = None
+
+import torch
+import comfy.utils
+import node_helpers
 
 
 ENCODER_BACKGROUND_RGB = {
@@ -236,7 +186,7 @@ class VNCCS_QWEN_Encoder:
                background_color="White",
                ):
         
-        ref_latents = []
+        ref_latents = [None, None, None]
         input_images = [image1, image2, image3]
         names = [image1_name, image2_name, image3_name]
         
@@ -269,7 +219,7 @@ class VNCCS_QWEN_Encoder:
                 image = self._prepare_encoder_image(image, background_color)
                 # 1. Processing for Reference Latents (VAE)
                 processed_ref = self._process_image(image, target_size, upscale_method, crop_method)
-                ref_latents.append(vae.encode(processed_ref[:, :, :, :3]))
+                ref_latents[i] = vae.encode(processed_ref[:, :, :, :3])
                 
                 # 2. Processing for VL (Qwen) - resizing to vl_size and padding/cropping
                 processed_vl = self._process_image(image, vl_size, upscale_method, crop_method)
@@ -291,23 +241,21 @@ class VNCCS_QWEN_Encoder:
                 conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents_method": method})
         except Exception as exc:
             # best-effort: if node_helpers not available or fails, continue with unmodified conditioning
-            print(f"[VNCCS Qwen Encoder] Failed to apply reference latent conditioning metadata: {exc}")
+            log_event('warning', component='QwenEncoder', level='warning', message=f'Failed to apply reference latent conditioning metadata: {exc}', error=str(exc))
         
         conditioning_full_ref = conditioning
-        if len(ref_latents) > 0:
+        if any(latent is not None for latent in ref_latents):
             # Apply weights to ref_latents
             weights_list = [weight1, weight2, weight3]
-            ref_latents_weighted = [ (w ** 2) * latent for w, latent in zip(weights_list[:len(ref_latents)], ref_latents) ]
-            
-            # Filter out zero-weighted latents for full_ref
-            ref_latents_full = [latent for latent, w in zip(ref_latents_weighted, weights_list[:len(ref_latents)]) if w > 0]
+            ref_latents_full = [(w ** 2) * latent for w, latent in zip(weights_list, ref_latents)
+                                if latent is not None and w > 0]
             conditioning_full_ref = node_helpers.conditioning_set_values(conditioning, {"reference_latents": ref_latents_full}, append=True)
         
         # Create negative conditioning by zeroing out the positive conditioning tensors
         conditioning_negative = [(torch.zeros_like(cond[0]), cond[1]) for cond in conditioning_full_ref]
         
         # Return latent of selected image if available, otherwise return empty latent
-        if len(ref_latents) >= latent_image_index:
+        if 1 <= latent_image_index <= len(ref_latents) and ref_latents[latent_image_index - 1] is not None:
             samples = ref_latents[latent_image_index - 1]
         else:
             samples = torch.zeros(1, 4, 128, 128)

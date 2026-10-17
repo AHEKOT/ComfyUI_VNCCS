@@ -112,6 +112,27 @@ def test_progress_isolated_between_workflows_and_resets_for_a_new_run():
     assert progress.begin_progress('../bad', 5) is None
 
 
+def test_preview_aspect_survives_phase_updates_reconnection_and_new_runs():
+    scope = progress.begin_progress('preview-aspect:5', 5, 'first')
+    progress.record_progress(scope, event(preview_aspect=2 / 3, current=0, total=4), 'first')
+    for update in [event(message='Sampling poses'), event(images=['preview']), event(status='done')]:
+        progress.record_progress(scope, update, 'first')
+        assert progress.progress_snapshot(scope)['stages']['pose_generation']['preview_aspect'] == 2 / 3
+    progress.begin_progress(scope, 5, 'second')
+    progress.record_progress(scope, event(preview_aspect=1), 'second')
+    assert progress.progress_snapshot(scope)['stages']['pose_generation']['preview_aspect'] == 1
+
+
+def test_progress_results_belong_to_the_selected_character():
+    scope = progress.begin_progress('character:5', 5, 'alice', character_name='Alice')
+    progress.record_progress(scope, event(status='done', images=['Alice-preview']), 'alice')
+    assert progress.progress_snapshot(scope)['character_name'] == 'Alice'
+    progress.begin_progress(scope, 5, 'bob', 'pose_generation', True, character_name='Bob')
+    snapshot = progress.progress_snapshot(scope)
+    assert snapshot['character_name'] == 'Bob'
+    assert snapshot['stages'] == {}
+
+
 def test_progress_limits_memory_and_expires_old_snapshots(monkeypatch):
     monkeypatch.setattr(progress, 'MAX_STATES', 2)
     monkeypatch.setattr(progress, 'MAX_IMAGE_CHARS', 10)
@@ -146,6 +167,18 @@ def test_partial_regeneration_keeps_unchanged_previews_and_resets_downstream_sta
     assert snapshot['stages']['bg_remove']['status'] == 'running'
 
 
+def test_processing_card_indices_survive_progress_reconnection():
+    scope = progress.begin_progress('processing-cards', 5, 'run')
+    progress.record_progress(scope, event(current=2, total=6, processing_index=1), 'run')
+    assert progress.progress_snapshot(scope)['stages']['pose_generation']['processing_index'] == 1
+    indices = [2, 3]
+    progress.record_progress(scope, event(current=0, total=2, processing_indices=indices), 'run')
+    indices.clear()
+    assert progress.progress_snapshot(scope)['stages']['pose_generation']['processing_indices'] == [2, 3]
+    progress.record_progress(scope, event(status='done'), 'run')
+    assert 'processing_indices' not in progress.progress_snapshot(scope)['stages']['pose_generation']
+
+
 def test_regenerate_contexts_separate_workflows_with_identical_node_ids(monkeypatch):
     from nodes import generator_context as context
     from collections import OrderedDict
@@ -170,6 +203,9 @@ def test_create_route_accepts_checked_post_and_rejects_invalid_or_cross_site_req
     import server
     from aiohttp import web
     import utils
+    from creator_storage_helpers import load_creator_storage
+
+    creator = load_creator_storage(monkeypatch)
 
     handlers = {}
     def register(method):
@@ -192,6 +228,7 @@ def test_create_route_accepts_checked_post_and_rejects_invalid_or_cross_site_req
     nodes_package = types.ModuleType(package_name + '.nodes')
     nodes_package.__path__ = [str(root / 'nodes')]
     monkeypatch.setitem(sys.modules, package_name + '.nodes', nodes_package)
+    monkeypatch.setitem(sys.modules, package_name + '.nodes.character_creator_v2', creator)
     original_find_spec = importlib.util.find_spec
     monkeypatch.delitem(sys.modules, 'torch', raising=False)
     monkeypatch.setattr(importlib.util, 'find_spec', lambda name, *args: None if name == 'torch' else original_find_spec(name, *args))
@@ -217,7 +254,6 @@ def test_create_route_accepts_checked_post_and_rejects_invalid_or_cross_site_req
     config.write_text('broken JSON')
     assert asyncio.run(invoke({'name': 'Alice'}, headers)).status == 500
     assert config.read_text() == 'broken JSON'
-    creator = sys.modules[package_name + '.nodes.character_creator']
     with monkeypatch.context() as patch:
         patch.setattr(creator, 'save_config', lambda *args: '')
         failed = asyncio.run(invoke({'name': 'CannotSave'}, headers))
@@ -343,7 +379,6 @@ def generator_module(monkeypatch):
     import sys
     import types
     from pathlib import Path
-    from contextlib import contextmanager
     import utils
     import server
 
@@ -357,27 +392,44 @@ def generator_module(monkeypatch):
     module(package, __path__=[str(root)])
     module(package + '.nodes', __path__=[str(root / 'nodes')])
     monkeypatch.setitem(sys.modules, package + '.utils', utils)
-    tensor = module('torch', is_tensor=lambda value: False)
+    tensor = module('torch', Tensor=object, is_tensor=lambda value: False)
     tensor.nn = module('torch.nn')
     tensor.nn.functional = module('torch.nn.functional')
     prefix = package + '.nodes.'
-    @contextmanager
-    def inference_stage():
-        yield
-    from threading import RLock
-    module(prefix + 'runtime_cleanup', inference_stage=inference_stage, inference_lock=RLock())
-    module(prefix + 'vnccs_pipe', VNCCS_Pipe=object)
+    from nodes import runtime_cleanup
+    from nodes.vnccs_control_center import _model_file_signature, _resolve_model_download_path, _validate_downloaded_model_file
+    monkeypatch.setitem(sys.modules, prefix + 'runtime_cleanup', runtime_cleanup)
     module(prefix + 'vnccs_control_center', _apply_lora_standard=lambda *a: None,
            _find_model_on_disk=lambda *a: None, _rel_within_folder=lambda *a: None,
-           _entry_kind=lambda entry: '')
-    module(prefix + 'vnccs_flux_klein_encoder', VNCCS_Flux_Klein_Encoder=object)
+           _entry_kind=lambda entry: '', _model_file_signature=_model_file_signature,
+           _resolve_model_download_path=_resolve_model_download_path,
+           _validate_downloaded_model_file=_validate_downloaded_model_file)
     module(prefix + 'qi2_viggle', apply_viggle_turbo_lora=lambda *a: None, viggle_turbo_sigmas=lambda *a: None)
-    module(prefix + 'vnccs_utils', VNCCSChromaKey=object, VNCCS_MaskExtractor=object, VNCCS_RMBG2=object)
+    module('cv2')
+    spec = importlib.util.spec_from_file_location(prefix + 'vnccs_utils', root / 'nodes/vnccs_utils.py')
+    vnccs_utils = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, vnccs_utils)
+    spec.loader.exec_module(vnccs_utils)
     spec = importlib.util.spec_from_file_location(prefix + 'character_generator', root / 'nodes/character_generator.py')
     generator = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, spec.name, generator)
     spec.loader.exec_module(generator)
     return generator
+
+
+def test_generator_publishes_character_identity_in_events_and_reconnect_snapshots(monkeypatch, generator_module):
+    import server
+    generator = generator_module
+    emitted = []
+    monkeypatch.setattr(server.PromptServer.instance, 'send_sync', lambda name, payload: emitted.append(payload), raising=False)
+    node = generator.VNCCS_CharacterGenerator()
+    node._begin_progress({'character_name': 'Alice', 'ui': {'progress_scope': 'character-events:5'}}, '5')
+    node._emit('5', 'pose_generation', 'running', current=0, total=4, preview_aspect=2 / 3)
+    node._emit('5', 'pose_generation', 'running', message='Sampling poses')
+    snapshot = generator.progress_snapshot('character-events:5')
+    assert snapshot['character_name'] == 'Alice'
+    assert snapshot['stages']['pose_generation']['preview_aspect'] == 2 / 3
+    assert emitted and all(event['character_name'] == 'Alice' for event in emitted)
 
 
 @pytest.mark.parametrize('tasks,error', [
@@ -404,6 +456,35 @@ def test_emotion_preparation_failure_records_terminal_progress_without_tensors(m
     assert emitted[-1]['node_id'] == '5'
     assert emitted[-1]['stage'] == 'error'
     assert error in emitted[-1]['message']
+
+
+def test_emotion_preflight_rejects_any_unreadable_source_before_cache_writes(monkeypatch, generator_module):
+    import json
+    generator = generator_module
+    monkeypatch.setattr(generator, '_character_cache_dir_from_sheets_path', lambda *args: None)
+    monkeypatch.setattr(generator, '_load_run_inputs', lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        generator.VNCCS_EmotionsGenerator,
+        '_source_sprite_hw',
+        lambda _self, path, _character: (8, 8) if path == 'readable.png' else None,
+    )
+    monkeypatch.setattr(generator, '_rotate_preview_cache', lambda *args, **kwargs:
+                        pytest.fail('Preflight failure must not rotate the preview cache'))
+    monkeypatch.setattr(generator, '_save_run_inputs', lambda *args, **kwargs:
+                        pytest.fail('Preflight failure must not write run inputs'))
+    tasks = [
+        {'emotion_prompt': 'Happy', 'source_path': 'readable.png'},
+        {'emotion_prompt': 'Sad', 'source_path': 'missing.png'},
+    ]
+
+    with pytest.raises(RuntimeError, match='emotion task 2'):
+        generator.VNCCS_EmotionsGenerator().process(
+            None,
+            SimpleNamespace(model_kind='qi2'),
+            tasks,
+            widget_data=json.dumps({}),
+            unique_id=['5'],
+        )
 
 
 @pytest.mark.parametrize('contents', ['broken JSON', '[]', '{"costumes": []}'])
@@ -518,7 +599,11 @@ def test_required_tensor_loss_invalidates_the_entire_input_bundle(tensor_cache):
 @pytest.mark.parametrize('node_type', ['VNCCS_CharacterGenerator', 'VNCCS_CharacterCloneGenerator', 'VNCCS_ClothesGenerator'])
 def test_cache_failure_drops_live_regeneration_context_and_records_error(tensor_cache, monkeypatch, node_type):
     import json
+    import utils
+    from pathlib import Path
     generator, Tensor, cache = tensor_cache
+    monkeypatch.setattr(utils, 'base_output_dir', lambda: str(Path(cache) / 'characters'))
+    utils.save_costume_info('Alice', 'Coat', {})
     node = getattr(generator, node_type)()
     monkeypatch.setattr(generator, '_character_cache_dir_from_sheets_path', lambda *args: cache)
     monkeypatch.setattr(generator, '_rotate_preview_cache', lambda *args: None)
@@ -529,7 +614,7 @@ def test_cache_failure_drops_live_regeneration_context_and_records_error(tensor_
     scope = 'cache-failure:5'
     with pytest.raises(OSError, match='Disk full'):
         node.process(Tensor('pose'), Tensor('character'), object(), 'prompt', unique_id=['5'],
-                     widget_data=[json.dumps({'ui': {'progress_scope': scope}})])
+                     widget_data=[json.dumps({'character_name': 'Alice', 'costume': 'Coat', 'ui': {'progress_scope': scope}})])
     assert generator._get_generator_context('5', scope) is None
     assert 'Disk full' in generator.progress_snapshot(scope)['error']['message']
     monkeypatch.setattr(generator.web, 'json_response', lambda data, status=200: SimpleNamespace(data=data, status=status), raising=False)
@@ -573,7 +658,9 @@ def creative_modules(generator_module, monkeypatch, tmp_path):
     from pathlib import Path
     import utils
     prefix = generator_module.__package__ + '.'
-    helpers = sys.modules[prefix + 'vnccs_utils']
+    from nodes import qwen_vl
+    monkeypatch.setitem(sys.modules, prefix + 'qwen_vl', qwen_vl)
+    helpers = qwen_vl
     for name, value in {'_ensure_qwen_vl_assets': lambda *a: None, '_find_qwen_vl_model': lambda *a: None,
                         'QWEN_VL_MODEL_FILENAME': 'unused-model'}.items():
         monkeypatch.setattr(helpers, name, value, raising=False)
@@ -599,7 +686,7 @@ def test_creator_and_clothes_routes_report_failed_configuration_saves(creative_m
         m.creator.CharacterCreatorV2().process(json.dumps({'character': 'Alice'}))
     monkeypatch.setattr(m.clothes, 'save_costume_info', lambda *args: False)
     async def payload():
-        return {'character': 'Alice', 'costume': 'Dress', 'info': {'top': 'silk'}}
+        return {'character': 'Alice', 'costume': 'Dress', 'info': {'top': 'silk'}, 'create_only': True}
     response = asyncio.run(m.clothes.vnccs_save_costume(SimpleNamespace(json=payload, headers={'X-VNCCS-CSRF': '1'})))
     assert response.status == 500
     assert 'Could not save costume' in response.data['error']
@@ -657,6 +744,55 @@ def test_costume_delete_route_reports_cleanup_warning_as_success(creative_module
     )))
     assert response.status == 200
     assert response.data == {'status': 'ok', 'warning': 'Cleanup pending'}
+
+
+def test_costume_delete_waits_for_generation_then_forgets_regeneration(creative_modules):
+    from concurrent.futures import ThreadPoolExecutor
+    from pathlib import Path
+    import sys
+    import threading
+
+    m = creative_modules
+    context = sys.modules[m.clothes.__package__ + '.generator_context']
+    m.utils.save_costume_info('Alice', 'Dress', {'top': 'silk'})
+    m.utils.ensure_costume_structure('Alice', 'Dress')
+    root = Path(m.utils.character_dir('Alice'))
+    scope = 'costume-delete:5'
+    started, release = threading.Event(), threading.Event()
+
+    def generate():
+        with context.generator_execution_lock('5', scope):
+            started.set()
+            assert release.wait(3)
+            with m.utils.staged_image_batch(str(root / 'Sprites' / 'Dress' / 'Neutral'), lock_root=str(root)) as stage:
+                Path(stage, 'sprite_pose_0001.png').write_bytes(b'finished sprite')
+            context._remember_generator_context('5', 'VNCCS_ClothesGenerator', str(root / 'cache'), object(), scope)
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            generation = loop.run_in_executor(worker, generate)
+            deletion = None
+            try:
+                assert started.wait(2)
+                async def body():
+                    return {'character': 'Alice', 'costume': 'Dress'}
+                deletion = asyncio.create_task(m.clothes.vnccs_delete_costume(SimpleNamespace(
+                    json=body, headers={'X-VNCCS-CSRF': '1'})))
+                await asyncio.sleep(.05)
+                assert not deletion.done(), 'Deletion must wait for the running generator'
+                assert 'Dress' in m.utils.load_config('Alice', strict=True)['costumes']
+            finally:
+                release.set()
+                await generation
+            assert deletion is not None
+            result = await deletion
+            assert result.status == 200
+
+    asyncio.run(scenario())
+    assert 'Dress' not in m.utils.list_costumes('Alice')
+    assert all(not (root / group / 'Dress').exists() for group in m.utils.MAIN_DIRS)
+    assert context._get_generator_context('5', scope) is None
 
 
 @pytest.mark.parametrize('failure', ['image', 'metadata'])

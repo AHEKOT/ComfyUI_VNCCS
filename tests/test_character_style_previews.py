@@ -25,8 +25,8 @@ def test_real_preview_path_samples_a_square_at_selected_scale_and_writes_only_we
     monkeypatch.setattr(creator, "save_style_preview", library.save_style_preview)
     monkeypatch.setattr(creator, "acquire_preview_assets", lambda settings: ("model", "clip", "vae"))
     monkeypatch.setattr(creator, "get_lora_full_path", lambda name: "/test/lora.safetensors")
-    monkeypatch.setitem(creator.PREVIEW_CACHE, "loras", {})
-    monkeypatch.setattr(creator.comfy.utils, "load_torch_file", lambda *a, **kw: {"weight": 1}, raising=False)
+    monkeypatch.setattr(creator.comfy.utils, "load_torch_file", lambda *a, **kw:
+        ({"weight": 1}, {}) if kw.get("return_metadata") else {"weight": 1}, raising=False)
     adapters = []
     monkeypatch.setattr(creator.comfy.sd, "load_lora_for_models", lambda m, c, weights, strength, clip_strength: adapters.append((strength, clip_strength)) or (m, c), raising=False)
     monkeypatch.setattr(creator, "apply_creator_overhaul", lambda model, clip, *a: (model, clip))
@@ -53,7 +53,8 @@ def test_real_preview_path_samples_a_square_at_selected_scale_and_writes_only_we
     def unexpected(*args):
         pytest.fail("Style previews must not write the character PNG cache")
     monkeypatch.setattr(creator, "character_dir", unexpected)
-    info = {"style": "anime_style", "hair": "black hair", "eyes": "blue eyes", "sex": "female", "age": 30, "framing": "full_body"}
+    info = {"style": "anime_style", "hair": "black hair", "eyes": "blue eyes", "sex": "female", "age": 30, "framing": "full_body",
+            "secondary_style": {"style": "custom", "custom_style": "Unwanted mixed thumbnail"}}
     settings = {"generation_mode": mode, "target_size": scale, "seed": 123, "steps": 17, "cfg": 3.5,
                 "sampler": "euler", "scheduler": "normal", "lora_stack": [{"name": "Mine", "strength": .4}], "turbo_enabled": False}
     response = creator._generate_preview_response({"character_info": info, "gen_settings": settings}, style_preview=info["style"])
@@ -68,6 +69,9 @@ def test_real_preview_path_samples_a_square_at_selected_scale_and_writes_only_we
     assert "cowboy_shot" not in encoded[0][0] and "standing, full body" not in encoded[0][0]
     preview_info = encoded[0][2]["character_info"]
     assert preview_info["image_type"] == "Portrait" and "framing" not in preview_info
+    assert preview_info["secondary_style"] is None
+    assert "Unwanted mixed thumbnail" not in encoded[0][0]
+    assert info["secondary_style"]["custom_style"] == "Unwanted mixed thumbnail"
     if mode == "qi2":
         assert "Portrait:" in creator._qi2_character_fields(preview_info)["framing"]
     assert info["framing"] == "full_body" and "image_type" not in info
@@ -84,6 +88,45 @@ def test_real_preview_path_samples_a_square_at_selected_scale_and_writes_only_we
     assert list(tmp_path.rglob("*.png")) == []
     assert response.data["image"].startswith("/vnccs/character_styles/preview?")
     assert response.data["saved"] is True and response.data["path"] == str(path)
+
+
+@pytest.mark.parametrize("mode", ["illustrious", "anima", "qi2"])
+def test_render_uses_one_style_revision_and_rejects_edit_during_loading(monkeypatch, tmp_path, mode):
+    monkeypatch.setattr(library, "USER_CHARACTER_STYLES_PATH", str(tmp_path / "styles.json"))
+    monkeypatch.setattr(library, "STYLE_PREVIEWS_DIR", str(tmp_path / "previews"))
+    style = library.save_user_style({"label": "Mine", "prompt": "Red ink"})
+    previous = library.save_user_style_preview(style["id"], Image.new("RGB", (32, 32), "pink"), style["revision"])
+    preview = Path(previous["path"])
+    original = preview.read_bytes()
+    monkeypatch.setattr(creator, "load_user_styles", library.load_user_styles)
+    monkeypatch.setattr(creator.web, "json_response", lambda data, status=200: SimpleNamespace(data=data, status=status), raising=False)
+    monkeypatch.setattr(creator.web, "Response", lambda **data: pytest.fail(str(data)), raising=False)
+
+    def load(settings):
+        library.save_user_style({**style, "prompt": "Blue paint"})
+        return "model", "clip", "vae"
+
+    monkeypatch.setattr(creator, "acquire_preview_assets", load)
+    monkeypatch.setattr(creator, "apply_generation_lora", lambda model, clip, *args: (model, clip))
+    monkeypatch.setattr(creator, "apply_creator_overhaul", lambda model, clip, *args: (model, clip))
+    monkeypatch.setattr(creator, "prepare_qi2_model", lambda model, *args: (model, False))
+    encoded = []
+    monkeypatch.setattr(creator, "encode_generation_conditioning", lambda *args, **kwargs:
+                        encoded.append((args, kwargs)) or ("positive", "negative", "prompt"))
+    monkeypatch.setattr(creator, "validate_anima_conditioning", lambda *args: None)
+    monkeypatch.setattr(creator, "create_generation_latent", lambda *args: "latent")
+    monkeypatch.setattr(creator, "sample_generation_latent", lambda **kwargs: "sampled")
+    monkeypatch.setattr(creator, "decode_generation_samples", lambda *args: torch.zeros(1, 32, 32, 3))
+    info = {"style": style["id"], "age": 30, "sex": "female"}
+    response = creator._generate_preview_response({"character_info": info,
+        "gen_settings": {"generation_mode": mode}}, style_preview=style["id"])
+    assert response.status == 409
+    assert encoded[0][1]["style_reference"] == "Red ink"
+    if mode != "qi2":
+        assert "Red ink" in encoded[0][0][2] and "Blue paint" not in encoded[0][0][2]
+    assert preview.read_bytes() == original
+    assert library.load_user_styles()[0]["prompt"] == "Blue paint"
+    assert info == {"style": style["id"], "age": 30, "sex": "female"}
 
 
 def test_generation_route_validates_style_and_keeps_tags_settings_and_scoped_events(monkeypatch):

@@ -33,33 +33,26 @@ For experienced users:
 Find `VNCCS - Visual Novel Character Creation Suite` in Custom Nodes Manager and click install latest version
 
 Manual install:
-1. Place the downloaded folder into `ComfyUI/custom_nodes/`
-2. Alternatively, in the console: go to `ComfyUI/custom_nodes/` and run `git clone https://github.com/AHEKOT/ComfyUI_VNCCS.git`
-3. cd ComfyUI_VNCCS_Utils
-4. pip install -r requirements.txt
+1. Rename the downloaded node folder to `vnccs` and place it into `ComfyUI/custom_nodes/`. The resulting path must be `ComfyUI/custom_nodes/vnccs/`.
+2. Alternatively, in the console: go to `ComfyUI/custom_nodes/` and run `git clone https://github.com/AHEKOT/ComfyUI_VNCCS.git vnccs`
+3. `cd vnccs`
+4. `pip install -r requirements.txt`
 
 Post install steps:
 Launch ComfyUI and open Comfy Manager
 Click "Install missing custom nodes"
 
-## VNCCS 3.0 Workflow
+## VNCCS 3.2 Workflow
 
 Hi! My name is V-chan, and I am going to show you how to use the new VNCCS!
 
 We got a BIIIIIIG update, and now everything is completely new, so listen carefully!
 
-## Step 0: Migration assistant
-
-If you used VNCCS before - you characters are safe. But you need to do one extra step:
-Open **VNCCS_MigrationAssistant.json**, select your characters and click **migrate**. It will transfer you characters in new VNCCS format.
-
-!!!MAKE SURE THAT THEY WORK CORRECTLY BEFORE DELETING OLD FOLDER!!!
-
 ## Step 1: Character Creator
 
 Open the workflow:
 
-`VNCCS_3.0_Step1_CharacterCreator.json`
+`VNCCS_3.2_Step1_CharacterCreator.json`
 
 Let's start from the very beginning. The first thing you need to do, besides opening the workflow, silly, is figure out the **VNCCS Control Center**.
 ![Header](images/v3/ReadMe1.png)
@@ -73,6 +66,18 @@ Inside it, you will find the models that turn your character into different pose
 Choose wisely, but in the end nobody is stopping you from trying them all and deciding later.
 
 And then, at the very bottom of the widget, you can click the big **Download** button and the magic will do everything by itself.
+
+<table>
+<tr>
+<td width="50%" align="center" valign="top">
+<img src="images/v3.3/controlcenter.webp" width="100%" alt="Downloading model components in VNCCS Control Center">
+</td>
+<td width="50%" valign="top">
+<strong>Let the Control Center do the downloading!</strong><br>
+Choose the model components you need and press <strong>Download / Update</strong>. The model cards show download progress and installation status, so you can see when everything is ready for your character adventures.
+</td>
+</tr>
+</table>
 
 Next, go to **VNCCS Character Creator V2**.
 
@@ -98,11 +103,59 @@ Race presets include natural-language descriptions of their distinctive anatomy,
 
 Click the **Style** card to open the style library. Built-in styles and their 1024×1024 WebP previews ship with the node in `character_template/character_styles.json` and `character_template/style_previews/`. Style prompts describe artistic rendering; background, pose and framing remain separate Creator settings.
 
+<table>
+<tr>
+<td width="50%" align="center" valign="top">
+<img src="images/v3.3/Styles_anima.webp" width="100%" alt="Choosing an Anima style and generating a character preview">
+</td>
+<td width="50%" valign="top">
+<strong>Give your character a new drawing style!</strong><br>
+With <strong>Anima</strong> selected, open the style library, pick a style card, and press <strong>GENERATE PREVIEW</strong>. Watch the preview appear with the chosen style. Try a few looks before committing to a whole set of sprites!
+</td>
+</tr>
+<tr>
+<td width="50%" align="center" valign="top">
+<img src="images/v3.3/Styles_anima_blend.webp" width="100%" alt="Adding a second Anima style and previewing the blended result">
+</td>
+<td width="50%" valign="top">
+<strong>One style is good. What about two?</strong><br>
+Click the <strong>+</strong> card beside the first style and choose another one from the library. Generate a new preview to see how Anima combines them. The animation starts with the first style's preview and ends with the mixed result. Time for a little experimenting, hehe!
+</td>
+</tr>
+<tr>
+<td width="50%" align="center" valign="top">
+<img src="images/v3.3/styles_QI2.webp" width="100%" alt="Searching and filtering Qwen Image 2.1 styles before generating a preview">
+</td>
+<td width="50%" valign="top">
+<strong>Find your look with Qwen Image 2.1!</strong><br>
+Browse the style previews, search by name, or narrow the library with the category filter. Choose a style and press <strong>GENERATE PREVIEW</strong> with <strong>Qwen Image 2.1</strong> selected to try it on your character. So many looks to choose from!
+</td>
+</tr>
+</table>
+
 Choose **Custom style** or **New style** to enter a name, short description, reference and style prompt. **Save style** adds it to **My styles**; **Generate preview** saves it and renders only that style using the current character tags and generation settings, a square portrait and seed 0. **Resolution scale** controls the render quality before the preview is resized to 1024×1024. Previews are composited onto the same dark gradient as the style cards and saved as opaque WebP at quality 90 directly inside the node, rather than ComfyUI's output directory. User styles live in `character_template/character_styles.user.json`, with `user_*.webp` previews alongside the built-in images; these user files are excluded from Git and packaged updates.
 
 The **×** button in the upper-right corner of a user style card opens a deletion confirmation. Confirming removes its library entry and preview, if present. Built-in styles cannot be deleted. Deleting the selected style switches the Creator to its default style.
 
+Style edits carry the `revision` returned by `/vnccs/character_styles`. A stale edit returns HTTP 409 and keeps the editor draft open. Keep any draft text before reloading the current style.
+
+If a user style changes during preview generation, the render returns HTTP 409 and preserves the previous preview. Generate the preview again for the updated style.
+
 A new little feature is the **GENERATE PREVIEW** button. It lets you see what the character will look like without restarting the whole generation. So press it already, and if you like everything, move on. If you want to make changes, edit the descriptions and press it again!
+
+<table>
+<tr>
+<td width="50%" align="center" valign="top">
+<img src="images/v3.3/character_preview.webp" width="100%" alt="Generating a character preview inside VNCCS Character Creator V2">
+</td>
+<td width="50%" valign="top">
+<strong>Meet your character before the big generation!</strong><br>
+Press <strong>GENERATE PREVIEW</strong> and watch the character appear in the Creator's preview panel. Check the face, hair, body, and overall look. Something does not feel right? Change the character descriptions and try again until you are happy with the result!
+</td>
+</tr>
+</table>
+
+Creator and Cloner run with the character settings restored from the workflow and save them to the selected character's profile. Restoring a workflow keeps its draft fields; it does not require a profile version. Storage locks and atomic writes protect the save, while unreadable configurations and metadata belonging to another character are rejected.
 
 ## VNCCS Pose Studio
 
@@ -125,11 +178,23 @@ In **BG Remove**, you can choose a chroma key preset. **Balanced** is a very goo
 Ready? Then press **Run**! Now just wait, and the magic will do everything for you!
 ![Header](images/v3/ReadMe5.png)
 
+<table>
+<tr>
+<td width="50%" align="center" valign="top">
+<img src="images/v3.3/Pose_gen.webp" width="100%" alt="Pose guides and a generated character sprite appearing in the generation preview">
+</td>
+<td width="50%" valign="top">
+<strong>From a pose guide to a character sprite!</strong><br>
+After you press <strong>Run</strong>, the generation preview shows the pose guides and the finished character sprite as it becomes ready. Check how the character follows the pose and whether the proportions look right. Your character is getting ready to move into the story!
+</td>
+</tr>
+</table>
+
 ## Step 1.1: Character Cloner
 
 Open the workflow:
 
-`VNCCS_3.0_Step1_CharacterCloner.json`
+`VNCCS_3.2_Step1_CharacterCloner.json`
 
 This workflow is basically a complete copy of Character Creator, but it is made for cloning existing character images.
 
@@ -149,7 +214,7 @@ Now press **Run** and look at the result!
 
 Open the workflow:
 
-`VNCCS_3.0_Step2_CharacterClothes.json`
+`VNCCS_3.2_Step2_CharacterClothes.json`
 
 Now we move to the tastiest part! In this workflow, you will make clothes for the character. As many sets as you think you need.
 
@@ -166,15 +231,33 @@ You also have an option to clone any clothes from any picture! Open the **CLONE 
 
 The **GENERATE PREVIEW** button will help you see what your character will look like before starting the big and heavy generation of all poses.
 
+<table>
+<tr>
+<td width="50%" align="center" valign="top">
+<img src="images/v3.3/new_clothes.webp" width="100%" alt="Creating a costume, filling its fields with Clothes Wizzard, and generating an explorer outfit preview">
+</td>
+<td width="50%" valign="top">
+<strong>A new outfit, from idea to preview!</strong><br>
+Choose your character, press <strong>New</strong>, and give the costume a name. Open <strong>Clothes Wizzard</strong>, describe the outfit, and press <strong>FILL FIELDS</strong>. Here, a short explorer-clothes idea becomes descriptions for the top, bottom, shoes, head, and face. Check those fields, then press <strong>GENERATE PREVIEW</strong> to see the character dressed for an adventure. A hat, boots, goggles... ready to go!
+</td>
+</tr>
+</table>
+
 And that is all! Again, do not forget about **VNCCS Pose Studio**, and press **Run**!
 
 When you finish the first set, you can press **New** again and create as many outfits as you want!
+
+Costume saves detect changes made in another editor. A conflicting save preserves your local draft instead of replacing newer metadata or recreating a deleted costume. Reload the costume before retrying; retain any draft text you want to apply to the current version.
+
+API clients must read `/vnccs/get_costume` and send its `ETag` header as the `revision` field when posting an edit to `/vnccs/save_costume`. Successful saves return the next `revision`; stale edits return HTTP 409, and edits without a revision return HTTP 428. Creating a new costume uses `create_only: true`.
+
+Deleting and recreating a costume changes its version even when its name and fields are identical. Clothes Generator rejects the protected `Naked` and `Original` sets and requires an editable costume.
 
 ## Step 3: Character Emotions
 
 Open the workflow:
 
-`VNCCS_3.0_Step3_CharacterEmotions.json`
+`VNCCS_3.2_Step3_CharacterEmotions.json`
 
 Here we will create emotions for the character! Up to this moment, all sprites had a calm facial expression. This will be our base.
 
@@ -183,6 +266,18 @@ In the **VNCCS Emotion Studio** widget, choose the character you are going to ma
 ![Header](images/v3/ReadMe8.png)
 
 Now, in the huge list, click the emotions you need and add them to the selected ones. Also, if by some miracle you did not find what you need, you can add a **Custom** emotion and describe what you want yourself.
+
+<table>
+<tr>
+<td width="50%" align="center" valign="top">
+<img src="images/v3.3/emotions.webp" width="100%" alt="Selecting emotion cards and using search to find another expression in VNCCS Emotion Studio">
+</td>
+<td width="50%" valign="top">
+<strong>Pick the expressions your story needs!</strong><br>
+Click emotion cards to add them to the selected list above the library. Use the search field to find a particular expression without scrolling through every card. The animation builds a small selection of different moods. A little pout, a happy smile, maybe something more mischievous?
+</td>
+</tr>
+</table>
 
 After that, you again need to decide which model will do the generation.
 
@@ -206,6 +301,18 @@ There is no ready-made recipe here. It all depends on the character and the sele
 For the first try, do not select all costumes and emotions at once. It will take a long time, and if the result does not satisfy you, it will be sad. Better find the optimal settings first, and then go all in!
 
 Press **Run**, and may luck be with you!
+
+<table>
+<tr>
+<td width="50%" align="center" valign="top">
+<img src="images/v3.3/emotions_gen.webp" width="100%" alt="Generating the yandere-smile expression across multiple character poses">
+</td>
+<td width="50%" valign="top">
+<strong>Now let your character show some feelings!</strong><br>
+Here, <strong>Qwen Image 2.1</strong> applies the selected <strong>yandere-smile</strong> expression to the character's poses. The pose cards update as each sprite is generated, while the progress bar shows the batch status. Check the faces before moving on to a bigger batch!
+</td>
+</tr>
+</table>
 
 At this point, the current VNCCS features end, but not for long! Planned features include animations, 3D environments and CG image creation inside them, character voice generation, and music track generation for your game or project.
 

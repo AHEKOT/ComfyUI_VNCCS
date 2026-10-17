@@ -22,6 +22,23 @@ comfy.sd = comfy_sd
 comfy.utils = comfy_utils
 comfy.samplers = comfy_samplers
 
+# Native ComfyUI API surface only; tensor/model execution stays optional.
+comfy_ldm = _make_stub("comfy.ldm")
+comfy_minimax = _make_stub("comfy.ldm.minimax")
+comfy_h3_vae = _make_stub("comfy.ldm.minimax.vae")
+comfy.ldm = comfy_ldm
+comfy_ldm.minimax = comfy_minimax
+comfy_minimax.vae = comfy_h3_vae
+
+class _H3VideoVAEStub:
+    def __init__(self, still_frame=None):
+        raise NotImplementedError("Model execution requires the real ComfyUI runtime")
+
+    def _adaptive_decode(self, z, frames=slice(None)):
+        raise NotImplementedError("Model execution requires the real ComfyUI runtime")
+
+comfy_h3_vae.MiniMaxH3VideoVAE = _H3VideoVAEStub
+
 class _KSamplerStub:
     SAMPLERS = ["euler", "euler_a", "heun", "dpm_2", "dpm_2_ancestral"]
     SCHEDULERS = ["normal", "karras", "exponential", "sgm_uniform"]
@@ -51,6 +68,7 @@ aiohttp = _make_stub("aiohttp")
 aiohttp.web = _make_stub("aiohttp.web")
 
 # ── other optional deps ───────────────────────────────────────────────────────
+_make_stub("node_helpers")
 _make_stub("requests")
 _hf_hub = _make_stub("huggingface_hub")
 _hf_hub.hf_hub_download = lambda *a, **kw: None
@@ -132,10 +150,3 @@ class _NodeAliasFinder(importlib.abc.MetaPathFinder):
 
 
 sys.meta_path.insert(0, _NodeAliasFinder())
-
-
-# Pre-load node files that use `from ..utils import` (relative double-dot imports).
-# Other node files use absolute imports and load fine on demand.
-if importlib.util.find_spec("torch") is not None:
-    for _basename in ("character_creator", "dataset_generator"):
-        _preload_node(_basename)

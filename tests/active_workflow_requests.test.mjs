@@ -6,13 +6,65 @@ import vm from 'node:vm';
 
 const source = name => readFileSync(new URL(`../web/${name}.js`, import.meta.url), 'utf8');
 const between = (text, start, end) => text.slice(text.indexOf(start), text.indexOf(end, text.indexOf(start)));
-const guardCode = between(source('vnccs_common'), 'export function registerCleanup', '// ── Widget Data Sync').replaceAll('export ', '');
+const guardCode = between(source('vnccs_common'), 'export function registerCleanup', '// ── DOM Widget Width Sync').replaceAll('export ', '');
 const deferred = () => {
     let resolve;
     const promise = new Promise(done => { resolve = done; });
     return { promise, resolve };
 };
 const response = data => ({ ok: true, json: async () => data });
+const clothesInitialization = text => between(text, '// Initial Load', 'container.appendChild(topRow)')
+    .replace('const loadCharList = async () => {', 'const loadCharList = () => globalThis.initialization = (async () => {')
+    .replace('};\n                loadCharList();', '})();\n                loadCharList();');
+
+for (const kind of ['creator', 'cloner']) {
+    for (const obsolete of ['current', 'before_confirmation', 'selection', 'removal', 'close']) {
+        test(`${kind} character delete preserves selection ownership through ${obsolete}`, async () => {
+            const text = source(kind === 'creator' ? 'vnccs_character_creator_v2' : 'vnccs_character_cloner');
+            const state = { character: 'Alice', character_info: { name: 'Alice', hair: 'Alice hair' } };
+            const node = {}, pending = deferred(), requests = [];
+            const select = { options: [{ value: 'Alice' }, { value: 'Bob' }], remove(index) { this.options.splice(index, 1); } };
+            let buttons;
+            const overlay = { isConnected: true };
+            const replace = name => { state.character = name; state.character_info = { name }; };
+            const context = createWidgetContext({
+                node, state, els: { charSelect: select }, console,
+                document: { createElement: () => ({ style: {}, append() {}, appendChild() {} }) },
+                showModal(title, content, actions) { content(); buttons = actions; },
+                showAlertModal() { assert.fail('Stale deletion must not show an error'); },
+                clearCharacterSelection: () => replace(''), loadChar: async name => replace(name),
+                setCharacter: async name => replace(name), saveState() {},
+                api: { fetchApi(route) { requests.push(route); return pending.promise; } },
+            });
+            const deleteCode = between(text, 'const doDelete =', kind === 'creator' ? 'const openTagConstructor =' : '// --- LAYOUT ---');
+            vm.runInContext(`${guardCode}\nconst beginCharacterRequest = createRequestGuard(node);\n${deleteCode}\nglobalThis.openDelete = doDelete; globalThis.selectCharacter = beginCharacterRequest;`, context);
+            context.openDelete();
+            if (obsolete === 'before_confirmation') {
+                context.selectCharacter();
+                state.character = 'Bob';
+                state.character_info = { name: 'Bob', hair: 'authored Bob draft' };
+                await buttons[1].action(overlay, {});
+                assert.deepEqual(requests, []);
+                assert.equal(state.character_info.hair, 'authored Bob draft');
+                return;
+            }
+            const operation = buttons[1].action(overlay, {});
+            assert.deepEqual(requests, ['/vnccs/delete']);
+            if (obsolete === 'selection') context.selectCharacter();
+            else if (obsolete === 'removal') node.onRemoved();
+            else if (obsolete === 'close') overlay.isConnected = false;
+            if (obsolete !== 'current') {
+                state.character = 'Bob';
+                state.character_info = { name: 'Bob', hair: 'authored Bob draft' };
+            }
+            pending.resolve({ ok: true });
+            await operation;
+            assert.equal(state.character, 'Bob');
+            assert.equal(state.character_info.hair, obsolete === 'current' ? undefined : 'authored Bob draft');
+            assert.equal(select.options.length, obsolete === 'current' ? 1 : 2);
+        });
+    }
+}
 
 test('request guards reject superseded and removed-node responses, preserving cleanup', () => {
     let originalCleanup = 0;
@@ -33,7 +85,7 @@ for (const widget of ['clothes', 'cloner', 'creator']) {
     test(`${widget} ignores reversed metadata responses and responses after removal`, async () => {
         const requests = [];
         const previews = [];
-        const state = { character: 'Alice', costume: 'Dress', character_info: {}, gen_settings: {} };
+        const state = { character: 'Alice', costume: 'Dress', character_info: {}, gen_settings: {}, source_images: [] };
         const node = {};
         const context = createWidgetContext({
             state, node, console, els: {},
@@ -46,6 +98,7 @@ for (const widget of ['clothes', 'cloner', 'creator']) {
             spritePreviewNavigator: { load: async name => previews.push(name) },
             getDefaultCharacterInfo: () => ({}), syncBackgroundForGenerationMode() {},
             MODE_PROMPT_DEFAULTS: { illustrious: {}, anima: {}, qi2: {} }, PROMPT_DEFAULTS_VERSION: 1,
+            STYLE_PROMPT_KEYS: JSON.parse(source('vnccs_character_creator_v2').match(/const STYLE_PROMPT_KEYS = (\[[^\n]+\]);/)[1]),
             applyPromptModeToFields() {}, syncCharacterFields() {}, hideSpriteNav() {},
             tryCachePreview: name => previews.push(name), showSpritePreview: name => previews.push(name),
         });
@@ -82,90 +135,6 @@ for (const widget of ['clothes', 'cloner', 'creator']) {
     });
 }
 
-function migrationHarness() {
-    const events = [], errors = [], timers = new Map(), requests = [];
-    const state = { runId: 'job', running: true, selected: new Set(['Alice']), scan: { characters: [{ legacy_name: 'Alice' }] } };
-    const node = {};
-    const context = createWidgetContext({
-        state, node, AbortController,
-        console: { error: (...args) => errors.push(args), warn() {} },
-        setTimeout: fn => { const key = Symbol(); timers.set(key, fn); return key; },
-        clearTimeout: key => timers.delete(key),
-        api: { fetchApi: (route, options) => { const task = deferred(); task.route = route; task.options = options; requests.push(task); return task.promise; } },
-        fill: { style: {} }, progressText: {},
-        scanBtn: {}, selectedBtn: {}, allBtn: {}, repairBtn: {}, retryBtn: {}, log: {},
-        window: { dispatchEvent: event => events.push(event.type) },
-        CustomEvent: class { constructor(type) { this.type = type; } },
-    });
-    const text = source('vnccs_migration_assistant');
-    vm.runInContext(`${guardCode}\n${between(text, 'let removed = false', 'const root = el')}\n${between(text, 'const renderStatus =', 'const scan =')}\n${between(text, 'const poll = async', 'const start = async')}\n${between(text, 'const start = async', 'scanBtn.onclick =')}\nglobalThis.poll = poll; globalThis.setBusy = setBusy; globalThis.start = start; globalThis.repair = repairSprites;`, context);
-    return { context, state, node, requests, events, errors, timers };
-}
-
-test('migration status failures unlock retry without starting a duplicate job', async () => {
-    const h = migrationHarness();
-    let work = h.context.poll();
-    h.requests[0].resolve(response({ status: 'running' }));
-    await work;
-    assert.equal(h.timers.size, 1);
-    work = h.context.poll();
-    h.requests[1].resolve({ ok: false, status: 503, json: async () => ({ error: 'Service unavailable' }) });
-    await work;
-    assert.equal(h.state.running, false);
-    assert.equal(h.context.scanBtn.textContent, 'Retry Status');
-    assert.equal(h.context.allBtn.disabled, true);
-    assert.equal(h.errors.length, 1);
-    assert.equal(h.timers.size, 0);
-    // This is also called by a checkbox change after the status connection fails.
-    h.state.selected.delete('Alice'); h.context.setBusy(h.state.running);
-    h.state.selected.add('Alice'); h.context.setBusy(h.state.running);
-    assert.equal(h.context.scanBtn.disabled, false);
-    assert.equal(h.context.selectedBtn.disabled, true);
-    assert.equal(h.context.allBtn.disabled, true);
-    assert.equal(h.context.repairBtn.disabled, true);
-    await h.context.start(true); await h.context.repair();
-    assert.equal(h.requests.length, 2, 'A disconnected existing job must prevent new mutations');
-    work = h.context.poll();
-    h.requests[2].resolve(response({ status: 'done' }));
-    await work;
-    assert.equal(h.state.runId, '');
-    assert.deepEqual(h.events, ['vnccs.characters.updated', 'vnccs.migration.complete']);
-});
-
-test('migration handles missing jobs and cleans up pending polling on removal', async () => {
-    const h = migrationHarness();
-    let work = h.context.poll();
-    h.requests[0].resolve({ ok: false, status: 404, json: async () => ({ error: 'Unknown job' }) });
-    await work;
-    assert.equal(h.state.runId, '');
-    assert.equal(h.context.scanBtn.textContent, 'Scan');
-    h.state.runId = 'next';
-    work = h.context.poll();
-    h.node.onRemoved();
-    h.requests[1].resolve(response({ status: 'done' }));
-    await work;
-    assert.deepEqual(h.events, []);
-    assert.equal(h.timers.size, 0);
-});
-
-test('terminal backend job errors release migration controls and report their cause', async () => {
-    const h = migrationHarness();
-    const work = h.context.poll();
-    h.requests[0].resolve(response({ status: 'error', error: 'Disk full', log: ['Converting sprites'] }));
-    await work;
-    assert.equal(h.state.runId, '');
-    assert.equal(h.state.running, false);
-    assert.equal(h.context.scanBtn.textContent, 'Scan');
-    assert.equal(h.context.selectedBtn.disabled, false);
-    assert.equal(h.context.allBtn.disabled, false);
-    assert.equal(h.context.repairBtn.disabled, false);
-    assert.match(h.context.log.textContent, /Disk full/);
-    assert.doesNotMatch(h.context.log.textContent, /may still be running/);
-    assert.equal(h.errors.length, 1);
-    assert.equal(h.timers.size, 0);
-    assert.deepEqual(h.events, []);
-});
-
 for (const oldResult of ['success', 'missing', 'error', 'removed']) {
     test(`clothes preview ignores stale ${oldResult} after a selection change`, async () => {
         const requests = [], navigated = [], saved = [];
@@ -198,12 +167,37 @@ for (const oldResult of ['success', 'missing', 'error', 'removed']) {
     });
 }
 
+test('clothes preview refresh preserves the user-selected image index', async () => {
+    const navigated = [];
+    const state = { character: 'Alice', costume: 'Dress',
+        selected_preview_sprite: { character: 'Alice', costume: 'Dress', index: 3 } };
+    const node = {};
+    const context = createWidgetContext({
+        state, node, console,
+        hasSelectedEditableCostume: () => true,
+        saveState() {},
+        api: { fetchApi: async () => ({ ok: true }) },
+        els: { previewImg: { style: {} }, placeholder: { style: {} } },
+        spritePreviewNavigator: {
+            invalidate() {},
+            load: async (character, options) => navigated.push({ character, ...options }),
+        },
+    });
+    vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\n${between(source('vnccs_clothes_designer'), 'const updatePreviewImage =', 'const onPreviewUpdated =')}\nglobalThis.update = updatePreviewImage;`, context);
+    await context.update();
+    assert.equal(navigated.length, 1);
+    assert.equal(navigated[0].index, 3);
+});
+
 function creatorImageHarness() {
     const images = [], saved = [], requests = [];
     const state = { character: 'Alice', character_info: {}, sprite_preview_count: 1,
         gen_settings: { ckpt_name: 'model', lora_stack: [] } };
     const node = { _randomizeSeedIfNeeded() {} };
-    const els = { previewImg: { style: {}, removeAttribute(name) { delete this[name]; } }, placeholder: { style: {} }, btnGen: {} };
+    const els = {
+        previewImg: { style: {}, removeAttribute(name) { delete this[name]; } },
+        placeholder: { style: {} }, btnGen: {}, charSelect: {}, btnNew: {}, btnDel: {},
+    };
     const context = createWidgetContext({
         state, node, els, console, container: {},
         Image: class { constructor() { images.push(this); } },
@@ -222,6 +216,37 @@ function creatorImageHarness() {
     vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\n${previewButton}\nworkflowBusy = false;\n${between(text, 'const clearCharacterSelection =', 'const applyStoredPrefs =')}\n${between(text, 'const beginCharacterRequest =', 'const doGenerate = async')}\n${between(text, 'const doGenerate = async', '// 7. Graph Restore Hook')}\nglobalThis.preview = { showSpritePreview, tryCachePreview, clearCharacterSelection, doGenerate, loadChar };`, context);
     return { context, state, node, els, images, saved, requests, ...context.preview };
 }
+
+for (const previewSource of ['gen', 'pose']) {
+    test(`Creator keeps the restored ${previewSource} preview when loading saved character state`, async () => {
+        const h = creatorImageHarness();
+        Object.assign(h.state, { preview_valid: true, preview_source: previewSource, sprite_preview_index: 3 });
+        const operation = h.loadChar('Alice', true);
+        if (h.requests.length) h.requests[0].resolve(response({ count: 4 }));
+        await operation;
+        assert.equal(h.images.length, 1);
+        if (previewSource === 'gen') {
+            assert.equal(h.requests.length, 0, 'A generated preview must load its cache instead of a random pose');
+            assert.match(h.images[0].src, /get_cached_preview/);
+        } else {
+            assert.match(h.images[0].src, /get_character_pose_preview.*index=3/);
+        }
+        h.images[0].onload();
+        assert.equal(h.state.preview_valid, true);
+        assert.equal(h.state.preview_source, previewSource);
+        if (previewSource === 'pose') assert.equal(h.state.sprite_preview_index, 3);
+    });
+}
+
+test('Creator defaults a fresh pose preview to the first sprite', async () => {
+    const h = creatorImageHarness();
+    vm.runInContext('Math.random = () => 0.75;', h.context);
+    const operation = h.loadChar('Alice', true);
+    h.requests[0].resolve(response({ count: 6 }));
+    await operation;
+    assert.match(h.images[0].src, /get_character_pose_preview.*index=0/);
+    assert.equal(h.state.sprite_preview_index, 0);
+});
 
 test('creator rejects an old pose callback after current cache preview succeeds', () => {
     const h = creatorImageHarness();
@@ -272,6 +297,36 @@ test('creator generation invalidates older images and ignores responses for a pr
     assert.equal(h.saved.filter(item => item.valid).length, 1);
 });
 
+test('Creator preview submits a temporary resolved-seed marker without saving it in widget state', async () => {
+    const h = creatorImageHarness();
+    Object.assign(h.state.gen_settings, { seed: 23, seed_mode: 'randomize' });
+    const generation = h.doGenerate();
+    const sent = JSON.parse(h.requests[0].options.body);
+    assert.equal(sent._vnccs_seed_resolved, true);
+    assert.equal(sent.gen_settings.seed, 23);
+    assert.equal(sent.gen_settings.seed_mode, 'randomize');
+    assert.equal(h.state._vnccs_seed_resolved, undefined);
+    h.requests[0].resolve(response({ image: 'generated-image' }));
+    await generation;
+    assert.equal(h.state.gen_settings.seed_mode, 'randomize');
+    assert.equal(h.state._vnccs_seed_resolved, undefined);
+});
+
+for (const field of ['hair', 'seed']) {
+    test(`creator presents pending preview after ${field} changes but keeps it invalid for the edited inputs`, async () => {
+        const h = creatorImageHarness();
+        const generation = h.doGenerate();
+        if (field === 'hair') h.state.character_info.hair = 'new authored hair';
+        else h.state.gen_settings.seed = 42;
+        h.requests[0].resolve(response({ image: 'old-generated-image' }));
+        await generation;
+        assert.equal(h.els.previewImg.src, 'data:image/png;base64,old-generated-image');
+        assert.equal(h.saved.filter(item => item.valid).length, 0);
+        assert.equal(h.state.preview_valid, false);
+        assert.equal(h.els.btnGen.disabled, false);
+    });
+}
+
 for (const result of ['poses', 'cache', 'error']) {
     test(`creator ignores old ${result} metadata after a newer generation completes`, async () => {
         const h = creatorImageHarness();
@@ -294,21 +349,21 @@ for (const operation of ['character', 'costume', 'initialization']) {
         let previewUpdates = 0, costumeLoads = 0;
         const context = createWidgetContext({
             state, node, console, charSel: {}, costSel: {},
-            els: { charSelect: { innerHTML: '', add() {} } }, Option: class {},
+            els: { charSelect: { innerHTML: '', add() {} }, costSel: {} }, Option: class {},
             spritePreviewNavigator: { invalidate() {} },
             api: { fetchApi: async () => response({ characters: ['Alice'] }) },
             loadCharacterInfo: () => metadata.promise,
             loadCostumeInfo: () => metadata.promise,
             loadCostumes: async () => { costumeLoads++; state.costumes = ['Dress', 'Casual']; return true; },
-            syncCostumeEditControls() {}, saveState() {}, setClothesCoreLora() {}, syncGenerationControls() {},
+            syncCostumeEditControls() {}, saveState() {}, setClothesCoreLora() {}, syncGenerationControls() {}, beginClothesUploadRequest() {},
             updatePreviewImage: () => { previewUpdates++; },
         });
         const text = source('vnccs_clothes_designer');
         let code;
         if (operation === 'character') code = between(text, 'charSel.onchange =', 'charRow.appendChild(charSel)');
         else if (operation === 'costume') code = between(text, 'costSel.onchange =', 'els.costSel = costSel;');
-        else code = between(text, '// Initial Load', 'container.appendChild(topRow)').replace('(async () => {', 'globalThis.initialization = (async () => {');
-        vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\nconst beginSelectionRequest = createRequestGuard(node);\nconst beginClothesWizardRequest = createRequestGuard(node);\nglobalThis.supersede = beginPreviewRequest;\n${code}`, context);
+        else code = clothesInitialization(text);
+        vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\nconst beginSelectionRequest = createRequestGuard(node);\nconst beginCharacterListRequest = createRequestGuard(node);\nconst beginClothesWizardRequest = createRequestGuard(node);\nglobalThis.supersede = beginPreviewRequest;\n${code}`, context);
         const pending = operation === 'initialization' ? context.initialization : context[operation === 'character' ? 'charSel' : 'costSel'].onchange({ target: { value: operation === 'character' ? 'Alice' : 'Dress' } });
         await new Promise(resolve => setImmediate(resolve));
         context.supersede(); // A newer generated/cache preview now owns the display.
@@ -333,13 +388,13 @@ test('new clothes cache preview does not cancel delayed context and selector ini
         els: { charSelect: { innerHTML: '', add: value => options.push(value.value) }, previewImg: { style: {} }, placeholder: { style: {} } },
         api: { fetchApi: route => route.startsWith('/vnccs/get_preview?') ? Promise.resolve({ ok: true }) : contextRequest.promise },
         spritePreviewNavigator: { invalidate() {}, showFallback: url => shown.push(url) },
-        hasSelectedEditableCostume: () => true, setClothesCoreLora() {}, syncGenerationControls() {}, saveState() {},
+        hasSelectedEditableCostume: () => true, setClothesCoreLora() {}, syncGenerationControls() {}, syncCostumeEditControls() {}, saveState() {},
         loadCharacterInfo: async () => { metadataLoads++; return true; },
         loadCostumes: async () => { state.costumes = ['Dress', 'Casual']; return true; },
     });
     const text = source('vnccs_clothes_designer');
-    const initialCode = between(text, '// Initial Load', 'container.appendChild(topRow)').replace('(async () => {', 'globalThis.initialization = (async () => {');
-    vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\nconst beginSelectionRequest = createRequestGuard(node);\n${between(text, 'const updatePreviewImage =', 'const onPreviewUpdated =')}\nglobalThis.update = updatePreviewImage;\n${initialCode}`, context);
+    const initialCode = clothesInitialization(text);
+    vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\nconst beginSelectionRequest = createRequestGuard(node);\nconst beginCharacterListRequest = createRequestGuard(node);\n${between(text, 'const updatePreviewImage =', 'const onPreviewUpdated =')}\nglobalThis.update = updatePreviewImage;\n${initialCode}`, context);
     await context.update(true);
     contextRequest.resolve(response({ characters: ['Alice', 'Bob'] }));
     await context.initialization;
@@ -358,17 +413,22 @@ test('delayed clothes initialization cannot take ownership from a newer characte
     let metadataLoads = 0;
     const context = createWidgetContext({
         state, node, console, charSel: {}, Option: class { constructor(label, value) { this.value = value; } },
-        beginClothesWizardRequest: () => () => true,
+        beginClothesWizardRequest: () => () => true, beginClothesUploadRequest() {},
         els: { charSelect: { innerHTML: '', add: option => options.push(option.value) } },
         api: { fetchApi: () => contextRequest.promise }, spritePreviewNavigator: { invalidate() {} },
-        loadCharacterInfo: () => { metadataLoads++; return metadataRequest.promise; },
+        loadCharacterInfo: async character => {
+            metadataLoads++;
+            const ready = await metadataRequest.promise;
+            if (ready) state.character = character;
+            return ready;
+        },
         loadCostumes: async () => { state.costume = 'BobSuit'; return true; },
-        setClothesCoreLora() {}, syncGenerationControls() {}, saveState() {},
+        setClothesCoreLora() {}, syncGenerationControls() {}, syncCostumeEditControls() {}, saveState() {},
         updatePreviewImage: () => shown.push([state.character, state.costume]),
     });
     const text = source('vnccs_clothes_designer');
-    const initialCode = between(text, '// Initial Load', 'container.appendChild(topRow)').replace('(async () => {', 'globalThis.initialization = (async () => {');
-    vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\nconst beginSelectionRequest = createRequestGuard(node);\nconst beginClothesWizardRequest = createRequestGuard(node);\n${between(text, 'charSel.onchange =', 'charRow.appendChild(charSel)')}\n${initialCode}`, context);
+    const initialCode = clothesInitialization(text);
+    vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\nconst beginSelectionRequest = createRequestGuard(node);\nconst beginCharacterListRequest = createRequestGuard(node);\nconst beginClothesWizardRequest = createRequestGuard(node);\n${between(text, 'charSel.onchange =', 'charRow.appendChild(charSel)')}\n${initialCode}`, context);
     const selection = context.charSel.onchange({ target: { value: 'Bob' } });
     contextRequest.resolve(response({ characters: ['Alice', 'Bob'] }));
     await context.initialization;
@@ -407,6 +467,44 @@ test('shared preview navigator ignores stale metadata errors and images after se
     nav.show(0); node.onRemoved();
     images[2].onload(); images[2].onerror();
     assert.equal(loaded.length, 1); assert.equal(missing.length, 0);
+});
+
+test('shared preview navigator defaults to the first image and preserves the user selection', async () => {
+    const images = [], countLabel = {}, node = {};
+    const button = () => ({
+        disabled: false,
+        addEventListener(name, handler) { if (name === 'click') this.click = () => { if (!this.disabled) handler(); }; },
+    });
+    const prevButton = button(), nextButton = button();
+    const context = createWidgetContext({
+        node, console, URLSearchParams,
+        Image: class { constructor() { images.push(this); } },
+        api: { fetchApi: async () => response({ count: 6 }) },
+        prevButton, nextButton, countLabel,
+    });
+    const navigatorCode = between(source('vnccs_common'), 'export function createSpritePreviewNavigator', '// ── DOM Widget Canvas Navigation').replace('export ', '');
+    vm.runInContext(`${guardCode}\n${navigatorCode}\nglobalThis.navigator = createSpritePreviewNavigator({ node, prevButton, nextButton, countLabel });`, context);
+    const nav = context.navigator;
+
+    await nav.load('Alice');
+    assert.equal(nav.state.index, 0);
+    assert.equal(countLabel.textContent, '1/6');
+    images[0].onload();
+    nextButton.click();
+    assert.equal(nav.state.index, 1);
+    assert.equal(countLabel.textContent, '2/6');
+
+    await nav.load('Alice');
+    assert.equal(nav.state.index, 1, 'Automatic refresh must retain the user-selected image');
+    assert.equal(countLabel.textContent, '2/6');
+
+    await nav.load('Bob');
+    assert.equal(nav.state.index, 0, 'A new selection must start from the first image');
+    assert.equal(countLabel.textContent, '1/6');
+
+    await nav.load('Carol', { index: 4 });
+    assert.equal(nav.state.index, 4, 'A restored user selection must remain selected');
+    assert.equal(countLabel.textContent, '5/6');
 });
 
 for (const previousSelection of [false, true]) {
@@ -486,7 +584,7 @@ for (const widget of ['creator', 'cloner']) {
     }
     test(`${widget} keeps workflow ownership until successful metadata arrival`, async () => {
         const pending = deferred(), saved = [];
-        const state = { character: 'Alice', character_info: { name: 'Alice', hair: 'old', extra: 'only Alice' }, gen_settings: {} };
+        const state = { character: 'Alice', character_info: { name: 'Alice', hair: 'old', extra: 'only Alice' }, gen_settings: {}, source_images: [] };
         const context = createWidgetContext({
             state, node: {}, els: { charSelect: { value: 'Bob' } },
             defaultCharacterInfo: {}, restoredInfoCharacter: null, restoredWidgetInfoCharacter: null,
@@ -494,6 +592,7 @@ for (const widget of ['creator', 'cloner']) {
             spritePreviewNavigator: { invalidate() {}, load: async () => {} },
             getDefaultCharacterInfo: () => ({}), syncBackgroundForGenerationMode() {},
             MODE_PROMPT_DEFAULTS: { illustrious: {}, anima: {}, qi2: {} }, PROMPT_DEFAULTS_VERSION: 1,
+            STYLE_PROMPT_KEYS: JSON.parse(source('vnccs_character_creator_v2').match(/const STYLE_PROMPT_KEYS = (\[[^\n]+\]);/)[1]),
             applyPromptModeToFields() {}, syncCharacterFields() {}, hideSpriteNav() {}, tryCachePreview() {},
             showModal() { assert.fail('Unexpected error'); }, showAlertModal() { assert.fail('Unexpected error'); },
             api: { fetchApi: route => route.includes('preview_meta') ? Promise.resolve(response({ count: 0 })) : pending.promise },
@@ -514,40 +613,3 @@ for (const widget of ['creator', 'cloner']) {
         assert.equal(saved[0].character_info.name, 'Bob');
     });
 }
-
-
-test('partial migration shows failures and retries only failed sheets', async () => {
-    const h = migrationHarness();
-    const poll = h.context.poll();
-    h.requests[0].resolve(response({ status: 'partial', current: 1, total: 1, failed_sheets: 1,
-        failed_characters: ['Alice'], results: [{ legacy_name: 'Alice', failed_sheet_paths: ['Sheets/Coat/neutral/broken.png'] }] }));
-    await poll;
-    assert.equal(h.state.running, false);
-    assert.equal(h.context.retryBtn.hidden, false);
-    assert.match(h.context.progressText.textContent, /1 sheet\(s\) failed/);
-    assert.deepEqual(h.events, ['vnccs.characters.updated']);
-    const retry = h.context.start(false, true);
-    assert.deepEqual(JSON.parse(h.requests[1].options.body), { characters: ['Alice'], force: true,
-        retry_sheets: { Alice: ['Sheets/Coat/neutral/broken.png'] } });
-    h.requests[1].resolve(response({ run_id: 'retry' }));
-    await new Promise(resolve => setImmediate(resolve));
-    h.requests[2].resolve(response({ status: 'done' }));
-    await retry;
-    assert.equal(h.context.retryBtn.hidden, true);
-});
-
-test('migration retry preserves earlier partial failures after a later character errors', async () => {
-    const h = migrationHarness();
-    const poll = h.context.poll();
-    h.requests[0].resolve(response({ status: 'error', error: 'Disk full', failed_sheets: 1,
-        failed_characters: ['Alice', 'Bob'], results: [{ legacy_name: 'Alice', failed_sheet_paths: ['Sheets/Coat/neutral/broken.png'] }] }));
-    await poll;
-    assert.equal(h.context.retryBtn.hidden, false);
-    const retry = h.context.start(false, true);
-    assert.deepEqual(JSON.parse(h.requests[1].options.body), { characters: ['Alice', 'Bob'], force: true,
-        retry_sheets: { Alice: ['Sheets/Coat/neutral/broken.png'] } });
-    h.requests[1].resolve(response({ run_id: 'retry' }));
-    await new Promise(resolve => setImmediate(resolve));
-    h.requests[2].resolve(response({ status: 'done' }));
-    await retry;
-});

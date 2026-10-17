@@ -1,7 +1,8 @@
+import { createSakuraSelect, openSakuraDropdown, closeSakuraDropdown, playSakuraMotion, stopSakuraMotion, animateSakuraIndicator } from "./sakura_interactions.mjs";
 // web/vnccs_control_center.js
 import { app } from "../../scripts/app.js";
-import { vnccsApi as api, storage, sessionStore, serverRegistry } from "./vnccs_transport.js";
-import { syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard } from "./vnccs_common.js";
+import { vnccsApi as api, storage, sessionStore, serverRegistry, workflowScope } from "./vnccs_transport.js";
+import { SAKURA_INTERACTION_CSS, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard } from "./vnccs_common.js";
 
 // Global registry cache — prevents API storms when multiple CC nodes exist
 
@@ -25,10 +26,11 @@ const DEFAULT_MODEL_CFG = 1.0;
 const DEFAULT_MODEL_SCHEDULER = "simple";
 const PENDING_DEPENDENCY_INSTALLS_KEY = "vnccs-control-center-pending-dependency-installs";
 const DEFAULT_QI2_MODEL = "Qwen Image 2.1 INT8 ConvRot";
+const QI2_TURBO_MODEL_NAME = "qwen_image_2.1_turbo_int8_convrot.safetensors";
 const MODEL_FAMILIES = [
     { kind: "QI2", label: "Qwen Image 2.1", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 25, cfg: 3, sampler: "euler" },
     { kind: "Klein9b", label: "Flux Klein9b", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 4, sampler: "euler" },
-    { kind: "MiniMaxH3", label: "MiniMax H3", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 20, sampler: "res_multistep" },
+    { kind: "MiniMaxH3", label: "MiniMax H3", defaultType: "unet", preferredTypes: ["unet", "custom"], steps: 8, sampler: "res_multistep" },
 ];
 
 // ─── CSS injection (once per page load) ──────────────────────────────────────
@@ -38,9 +40,17 @@ function _injectVNCCSControlCenterStyles() {
     const s = document.createElement("style");
     s.id = "vnccs-cc-styles";
     s.textContent = `
+${SAKURA_INTERACTION_CSS}
 /* ── VNCCS Control Center – Sakura Design ─────────────────────────────── */
 
 .vnccs-cc-root {
+    --vnccs-cc-accent: #ff8fa3;
+    --vnccs-cc-muted: #9898a8;
+    --vnccs-cc-control-height: 28px;
+    --vnccs-cc-motion: 240ms;
+    --vnccs-cc-ease: cubic-bezier(0.22, 1, 0.36, 1);
+    min-width: 0;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     width: 100%;
@@ -55,6 +65,8 @@ function _injectVNCCSControlCenterStyles() {
 
 /* Header */
 .vnccs-cc-header {
+    position: relative;
+    overflow: hidden;
     padding: 6px 10px;
     background: #12121a;
     border-bottom: 1px solid rgba(255,143,163,0.15);
@@ -64,12 +76,18 @@ function _injectVNCCSControlCenterStyles() {
     flex-shrink: 0;
 }
 .vnccs-cc-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-size: 11px;
     font-weight: 700;
     color: #e8e8f0;
     letter-spacing: 0.06em;
 }
 .vnccs-cc-header-btns {
+    flex-shrink: 0;
+    margin-left: 8px;
     display: flex;
     gap: 5px;
 }
@@ -128,7 +146,6 @@ function _injectVNCCSControlCenterStyles() {
     letter-spacing: 0.05em;
 }
 .vnccs-cc-btn--download-all:hover {
-    transform: translateY(-1px);
     box-shadow: 0 4px 16px rgba(255,143,163,0.4);
 }
 .vnccs-cc-btn--download-all:focus,
@@ -151,8 +168,19 @@ function _injectVNCCSControlCenterStyles() {
 }
 
 /* Scroll */
+.vnccs-cc-content {
+    position: relative;
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+}
 .vnccs-cc-scroll {
     flex: 1;
+    min-height: 0;
+    min-width: 0;
+    overflow-anchor: none;
     overflow-y: auto;
     padding: 6px 7px;
     display: flex;
@@ -160,6 +188,68 @@ function _injectVNCCSControlCenterStyles() {
     gap: 5px;
     scrollbar-width: thin;
     scrollbar-color: rgba(255,143,163,0.2) transparent;
+    transition: opacity 280ms ease-out, transform 280ms ease-out;
+}
+.vnccs-cc-scroll > * { flex-shrink: 0; }
+
+/* Initial catalog skeleton and refresh feedback */
+.vnccs-cc-loading {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 7px;
+    overflow: hidden;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 180ms ease-out, visibility 0s linear 180ms;
+}
+.vnccs-cc-loading-intro { padding: 8px 4px; }
+.vnccs-cc-loading-title { font-size: 12px; font-weight: 700; color: #e8e8f0; }
+.vnccs-cc-loading-hint { margin-top: 5px; font-size: 10px; color: var(--vnccs-cc-muted); }
+.vnccs-cc-loading-tabs { display: flex; gap: 6px; }
+.vnccs-cc-loading-tabs > * { flex: 1; height: 30px; }
+.vnccs-cc-loading-block {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 80px;
+    padding: 10px;
+    gap: 8px;
+    border: 1px solid rgba(255,143,163,0.13);
+    border-radius: 10px;
+    background: rgba(26,26,38,0.3);
+}
+.vnccs-cc-loading-bone { border-radius: 6px; background: rgba(255,143,163,0.07); }
+.vnccs-cc-loading-heading { width: 34%; height: 10px; flex-shrink: 0; }
+.vnccs-cc-loading-card { flex: 1; min-height: 28px; }
+.vnccs-cc-loading-line { width: 68%; height: 8px; flex-shrink: 0; }
+.vnccs-cc-loading::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(105deg, transparent 35%, rgba(255,143,163,0.08) 50%, transparent 65%);
+    animation: vnccs-cc-loading-sweep 1800ms ease-in-out infinite paused;
+}
+.vnccs-cc-root--config-skeleton .vnccs-cc-loading { opacity: 1; visibility: visible; transition: none; }
+.vnccs-cc-root--config-skeleton .vnccs-cc-loading::after { animation-play-state: running; }
+.vnccs-cc-root--config-skeleton .vnccs-cc-scroll { opacity: 0; transform: translateY(6px); pointer-events: none; }
+.vnccs-cc-root--config-loading .vnccs-cc-header::after {
+    content: "";
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--vnccs-cc-accent), transparent);
+    animation: vnccs-cc-loading-sweep 1600ms ease-in-out infinite;
+}
+.vnccs-cc-btn--download-all:disabled { opacity: 0.5; cursor: default; }
+@keyframes vnccs-cc-loading-sweep {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(100%); }
 }
 
 /* Footer */
@@ -172,7 +262,7 @@ function _injectVNCCSControlCenterStyles() {
 
 /* States */
 .vnccs-cc-empty {
-    color: #5e5e70;
+    color: var(--vnccs-cc-muted);
     text-align: center;
     margin-top: 40px;
     font-size: 11px;
@@ -191,6 +281,12 @@ function _injectVNCCSControlCenterStyles() {
     background: rgba(10,10,15,0.5);
 }
 .vnccs-cc-block-hdr {
+    width: 100%;
+    min-height: var(--vnccs-cc-control-height);
+    border: 0;
+    font-family: inherit;
+    text-align: left;
+    gap: 8px;
     padding: 5px 10px;
     background: rgba(26,26,38,0.95);
     cursor: pointer;
@@ -210,7 +306,7 @@ function _injectVNCCSControlCenterStyles() {
     background: rgba(255,143,163,0.07);
 }
 .vnccs-cc-block-hdr-count {
-    color: #5e5e70;
+    color: var(--vnccs-cc-muted);
     font-weight: 400;
     font-size: 9px;
     margin-left: 4px;
@@ -218,8 +314,38 @@ function _injectVNCCSControlCenterStyles() {
 }
 .vnccs-cc-block-arrow {
     font-size: 9px;
-    color: #5e5e70;
+    color: var(--vnccs-cc-muted);
+    transition: transform var(--vnccs-cc-motion) var(--vnccs-cc-ease);
 }
+.vnccs-cc-block--collapsed .vnccs-cc-block-arrow { transform: rotate(-90deg); }
+.vnccs-cc-disclosure {
+    display: grid;
+    grid-template-rows: 1fr;
+    opacity: 1;
+    transition: grid-template-rows var(--vnccs-cc-motion) var(--vnccs-cc-ease), opacity 160ms ease-out;
+}
+.vnccs-cc-disclosure-inner { min-height: 0; overflow: hidden; }
+.vnccs-cc-block--collapsed .vnccs-cc-disclosure { grid-template-rows: 0fr; opacity: 0; }
+.vnccs-cc-root > .vnccs-cc-motion-ghost { position: absolute; pointer-events: none; z-index: 3; margin: 0 !important; }
+.vnccs-cc-tab-glide {
+    border: 1px solid rgba(255,143,163,0.55);
+    border-radius: 8px;
+    background: rgba(255,143,163,0.12);
+    transform-origin: top left;
+}
+.vnccs-cc-root :is(button, [role="button"]) {
+    transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease, box-shadow 180ms ease, opacity 160ms ease, transform 160ms ease;
+}
+.vnccs-cc-root :is(button, [role="button"]):not(.vnccs-cc-btn--download-all):active:not(:disabled) { transform: translateY(1px); }
+.vnccs-cc-badge { transition: color 200ms ease; }
+.vnccs-cc-row-bg--indeterminate::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(100deg, transparent 30%, rgba(184,169,232,0.15) 50%, transparent 70%);
+    animation: vnccs-cc-loading-sweep 1800ms ease-in-out infinite;
+}
+
 .vnccs-cc-block-body {
     padding: 4px 6px 6px;
     display: flex;
@@ -229,7 +355,7 @@ function _injectVNCCSControlCenterStyles() {
     overflow: visible;
 }
 .vnccs-cc-block-empty {
-    color: #5e5e70;
+    color: var(--vnccs-cc-muted);
     font-size: 10px;
     padding: 4px;
 }
@@ -264,15 +390,18 @@ function _injectVNCCSControlCenterStyles() {
 }
 .vnccs-cc-twocol-right,
 .vnccs-cc-twocol-right2 {
-    width: 130px;
+    width: min(24%, 130px);
+    box-sizing: border-box;
+    min-width: 0;
     flex-shrink: 0;
-    padding: 7px 8px;
+    padding: 4px 6px;
     display: flex;
     flex-direction: column;
     gap: 6px;
     background: rgba(26,26,38,0.3);
 }
 .vnccs-cc-twocol-right2 {
+    width: min(30%, 130px);
     border-left: 1px solid rgba(255,255,255,0.04);
 }
 
@@ -295,11 +424,19 @@ function _injectVNCCSControlCenterStyles() {
 }
 .vnccs-cc-row-bg {
     position: absolute;
-    top: 0; left: 0; height: 100%; width: 0%;
+    top: 0; left: 0; height: 100%; width: 100%;
     z-index: 0;
     pointer-events: none;
-    transition: width 0.3s linear;
+    transform-origin: left center;
+    transition: transform 360ms linear, opacity 180ms ease, background-color 200ms ease;
 }
+.vnccs-cc-root :is(.vnccs-cc-model-card, .vnccs-cc-lora-card, .vnccs-cc-turbo-strip, .vnccs-cc-row) {
+    transition: border-color 200ms ease, background-color 200ms ease, box-shadow 200ms ease;
+}
+.vnccs-cc-root [data-download-status="error"] { border-color: rgba(255,71,87,0.45); }
+.vnccs-cc-root [data-download-status="downloading"],
+.vnccs-cc-root [data-download-status="success"],
+.vnccs-cc-root [data-download-status="queued"] { border-color: rgba(184,169,232,0.4); }
 .vnccs-cc-row > *:not(.vnccs-cc-row-bg) {
     position: relative;
     z-index: 1;
@@ -331,13 +468,13 @@ function _injectVNCCSControlCenterStyles() {
 }
 .vnccs-cc-row-desc {
     font-size: 9px;
-    color: #5e5e70;
+    color: var(--vnccs-cc-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 .vnccs-cc-row-tag {
-    color: #5e5e70;
+    color: var(--vnccs-cc-muted);
     font-size: 9px;
     white-space: nowrap;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
@@ -349,7 +486,7 @@ function _injectVNCCSControlCenterStyles() {
 }
 
 /* Status badges */
-.vnccs-cc-badge { font-size: 12px; flex-shrink: 0; }
+.vnccs-cc-badge { display: inline-grid; place-items: center; width: 14px; font-size: 12px; flex-shrink: 0; }
 .vnccs-cc-badge--installed   { color: #00d68f; }
 .vnccs-cc-badge--missing     { color: #ff4757; }
 .vnccs-cc-badge--queued      { color: #b8a9e8; }
@@ -398,7 +535,12 @@ function _injectVNCCSControlCenterStyles() {
     background: #0d0d13;
     color: #8e93a8;
     padding: 8px 6px;
-    font: 700 10px/1.2 inherit;
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1.3;
+    min-height: 34px;
+    text-wrap: balance;
     letter-spacing: 0;
     cursor: pointer;
 }
@@ -420,6 +562,10 @@ function _injectVNCCSControlCenterStyles() {
     background: rgba(8,8,12,0.5);
 }
 .vnccs-cc-model-tab {
+    min-width: 0;
+    min-height: 30px;
+    font-family: inherit;
+    overflow-wrap: anywhere;
     border: 1px solid rgba(255,255,255,0.08);
     border-radius: 8px;
     background: rgba(18,18,26,0.8);
@@ -443,7 +589,8 @@ function _injectVNCCSControlCenterStyles() {
     box-shadow: inset 0 0 0 1px rgba(255,143,163,0.12);
 }
 .vnccs-cc-model-tab--missing {
-    opacity: 0.45;
+    color: var(--vnccs-cc-muted);
+    border-style: dashed;
 }
 .vnccs-cc-model-card-top {
     display: flex;
@@ -525,11 +672,12 @@ function _injectVNCCSControlCenterStyles() {
     min-height: 28px;
 }
 .vnccs-cc-turbo-strip {
+    overflow: hidden;
     display: flex;
     align-items: center;
     gap: 10px;
     min-height: 42px;
-    padding: 0 12px;
+    padding: 8px 10px;
     border-radius: 10px;
     border: 1px solid rgba(255,255,255,0.08);
     background: rgba(18,18,26,0.8);
@@ -551,16 +699,17 @@ function _injectVNCCSControlCenterStyles() {
     font-size: 10.5px;
     font-weight: 700;
     color: #e8e8f0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 .vnccs-cc-turbo-strip-status {
-    font-size: 8.5px;
+    max-width: 40%;
+    overflow-wrap: anywhere;
+    font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.05em;
     text-transform: uppercase;
-    white-space: nowrap;
+    white-space: normal;
     flex-shrink: 0;
 }
 .vnccs-cc-turbo-strip-status--ok { color: #00d68f; }
@@ -573,7 +722,7 @@ function _injectVNCCSControlCenterStyles() {
     align-items: center;
     justify-content: center;
     width: 34px;
-    height: 20px;
+    height: 24px;
     flex-shrink: 0;
 }
 .vnccs-cc-toggle input {
@@ -584,6 +733,7 @@ function _injectVNCCSControlCenterStyles() {
     margin: 0;
 }
 .vnccs-cc-toggle-track {
+    pointer-events: none;
     position: absolute;
     inset: 0;
     border-radius: 999px;
@@ -592,12 +742,13 @@ function _injectVNCCSControlCenterStyles() {
     transition: border-color 0.16s ease, background 0.16s ease;
 }
 .vnccs-cc-toggle-thumb {
+    pointer-events: none;
     position: absolute;
     width: 14px;
     height: 14px;
     border-radius: 999px;
     left: 3px;
-    top: 3px;
+    top: 5px;
     background: #cfcfe6;
     transition: transform 0.16s ease, background 0.16s ease;
 }
@@ -653,7 +804,7 @@ function _injectVNCCSControlCenterStyles() {
     transform: translateY(-1px);
 }
 .vnccs-cc-lora-add-note {
-    font-size: 8.5px;
+    font-size: 10px;
     color: #8d8ca1;
     line-height: 1.35;
     padding: 0 2px;
@@ -668,75 +819,96 @@ function _injectVNCCSControlCenterStyles() {
 }
 .vnccs-cc-lora-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 6px;
 }
 .vnccs-cc-lora-grid--compact {
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
     align-items: start;
 }
 .vnccs-cc-lora-card {
+    box-sizing: border-box;
+    display: grid;
+    grid-template-rows: 28px 14px 28px;
+    height: 96px;
+    min-width: 0;
     gap: 5px;
     padding: 7px 8px;
-    cursor: pointer;
+    cursor: default;
     transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
 }
 .vnccs-cc-lora-card:hover:not(.vnccs-cc-lora-card--active) {
     border-color: rgba(255,143,163,0.32);
-    transform: translateY(-1px);
 }
 .vnccs-cc-lora-card--active {
     border-color: rgba(255,143,163,0.52);
     background: linear-gradient(180deg, rgba(255,143,163,0.14) 0%, rgba(10,26,22,0.92) 100%);
     box-shadow: inset 0 0 0 1px rgba(255,143,163,0.14);
-    padding-right: 72px;
 }
-.vnccs-cc-lora-card--has-remove {
-    padding-right: 110px;
-}
+.vnccs-cc-lora-card[role="button"] { cursor: pointer; }
 .vnccs-cc-lora-card--compact {
-    padding: 4px 52px 4px 7px;
-    gap: 2px;
-    height: 56px;
-    min-height: 56px;
-    max-height: 56px;
-    overflow: hidden;
-}
-.vnccs-cc-lora-card--compact.vnccs-cc-lora-card--downloadable {
-    padding-right: 78px;
+    padding: 6px 7px;
+    gap: 4px;
+    grid-template-rows: 28px 14px;
+    height: 60px;
 }
 .vnccs-cc-lora-card--compact .vnccs-cc-lora-card-meta {
     gap: 1px;
 }
 .vnccs-cc-lora-card-top {
     display: flex;
+    flex-wrap: nowrap;
     align-items: flex-start;
     gap: 6px;
+    height: 28px;
+    min-width: 0;
 }
 .vnccs-cc-lora-card-meta {
     display: flex;
     flex-direction: column;
     gap: 3px;
-    flex: 1;
+    flex: 1 1 0;
     min-width: 0;
 }
+.vnccs-cc-lora-card-tools {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+    height: var(--vnccs-cc-control-height);
+}
+.vnccs-cc-lora-card--compact .vnccs-cc-lora-card-status {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.vnccs-cc-model-card-status[hidden],
+.vnccs-cc-lora-card-status[hidden],
+.vnccs-cc-turbo-strip-status[hidden],
+.vnccs-cc-download-btn[hidden] { display: none; }
 .vnccs-cc-lora-card-name {
     font-size: 10.5px;
     font-weight: 700;
     color: #e8e8f0;
-    line-height: 1.2;
-    white-space: normal;
-    overflow: visible;
-    text-overflow: clip;
+    line-height: 14px;
+    height: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .vnccs-cc-lora-card--compact .vnccs-cc-lora-card-name {
     font-size: 10px;
 }
 .vnccs-cc-lora-card-status {
-    font-size: 8.5px;
+    font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.05em;
     text-transform: uppercase;
+}
+.vnccs-cc-lora-card-status--ok {
+    color: #00d68f;
 }
 .vnccs-cc-lora-card-status--active {
     color: #ff8fa3;
@@ -744,21 +916,19 @@ function _injectVNCCSControlCenterStyles() {
 .vnccs-cc-lora-card-status--pipe {
     color: #00d68f;
 }
-.vnccs-cc-lora-card-status--corner {
-    position: absolute;
-    top: 6px;
-    right: 8px;
-    line-height: 1;
+.vnccs-cc-lora-card-status--progress {
+    color: #b8a9e8;
 }
-.vnccs-cc-lora-card--has-remove .vnccs-cc-lora-card-status--corner {
-    right: 42px;
+.vnccs-cc-lora-card-status--missing {
+    color: #ff4757;
+}
+.vnccs-cc-lora-card-status--corner {
+    line-height: 1.35;
 }
 .vnccs-cc-lora-remove-btn {
-    position: absolute;
-    top: 4px;
-    right: 6px;
+    flex: 0 0 26px;
     min-width: 26px;
-    height: 20px;
+    height: 24px;
     border-radius: 6px;
     border: 1px solid rgba(255, 71, 87, 0.24);
     background: rgba(255, 71, 87, 0.08);
@@ -773,58 +943,81 @@ function _injectVNCCSControlCenterStyles() {
     background: rgba(255, 71, 87, 0.16);
     border-color: rgba(255, 71, 87, 0.42);
 }
-.vnccs-cc-lora-download-btn {
-    position: absolute;
-    right: 7px;
-    top: 5px;
+.vnccs-cc-download-btn {
+    flex-shrink: 0;
     min-width: 58px;
-    height: 20px;
+    height: 24px;
     padding: 0 7px;
     border-radius: 6px;
     border: 1px solid rgba(255,143,163,0.32);
     background: rgba(255,143,163,0.08);
     color: #ff8fa3;
-    font-size: 8px;
+    font-size: 10px;
     font-weight: 700;
     letter-spacing: 0.03em;
     line-height: 1;
     cursor: pointer;
     font-family: inherit;
+    white-space: nowrap;
 }
-.vnccs-cc-lora-download-btn:hover {
+.vnccs-cc-download-btn:hover {
     background: rgba(255,143,163,0.2);
     border-color: rgba(255,143,163,0.52);
 }
+.vnccs-cc-download-slot {
+    display: grid;
+    place-items: center end;
+    flex: 0 0 80px;
+    width: 80px;
+    height: var(--vnccs-cc-control-height);
+    min-width: 0;
+    font-variant-numeric: tabular-nums;
+}
+.vnccs-cc-download-slot > * { grid-area: 1 / 1; min-width: 0; max-width: 100%; box-sizing: border-box; }
+.vnccs-cc-download-slot > .vnccs-cc-download-btn { width: 100%; height: 100%; }
+.vnccs-cc-download-slot > :not(button) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    line-height: 1.35;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: none;
+    transition: color 180ms ease;
+}
+.vnccs-cc-root [data-download-key] > .vnccs-cc-row-bg { top: auto; bottom: 0; height: 3px; }
+.vnccs-cc-row-bg--indeterminate { animation: vnccs-cc-download-flow 1200ms linear infinite; }
+@keyframes vnccs-cc-download-flow { to { background-position: 28px 0; } }
 .vnccs-cc-lora-card-desc {
-    font-size: 8.5px;
+    font-size: 10px;
     color: #a3a3b3;
-    line-height: 1.3;
-    white-space: normal;
-    overflow: visible;
+    line-height: 14px;
+    height: 14px;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .vnccs-cc-lora-card-detail-row {
-    display: flex;
-    align-items: baseline;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 40px;
+    align-items: center;
     gap: 6px;
     min-width: 0;
-}
-.vnccs-cc-lora-card-detail-row .vnccs-cc-lora-card-desc {
-    flex: 1;
-    min-width: 0;
+    height: 14px;
 }
 .vnccs-cc-lora-card-version {
-    flex-shrink: 0;
-    color: #777889;
-    font-size: 7.5px;
-    font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    line-height: 1;
-    white-space: nowrap;
-}
-.vnccs-cc-lora-card--compact .vnccs-cc-lora-card-desc {
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
+    height: 14px;
+    min-width: 0;
     overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: right;
+    color: var(--vnccs-cc-muted);
+    font-size: 9px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    line-height: 14px;
+    white-space: nowrap;
 }
 .vnccs-cc-lora-card-actions {
     display: flex;
@@ -870,7 +1063,7 @@ function _injectVNCCSControlCenterStyles() {
 /* Params panel */
 .vnccs-cc-params {
     display: grid;
-    grid-template-rows: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(2, auto);
     gap: 12px;
     align-content: start;
 }
@@ -883,14 +1076,13 @@ function _injectVNCCSControlCenterStyles() {
 .vnccs-cc-params--right .vnccs-cc-select {
     -webkit-appearance: none;
     appearance: none;
-    height: auto;
-    min-height: 0;
+    height: var(--vnccs-cc-control-height);
     line-height: 1.2;
-    padding: 3px 30px 3px 4px;
+    padding: 3px 18px 3px 4px;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='20' viewBox='0 0 12 20'%3E%3Cpath d='M1 8l5-5 5 5' fill='none' stroke='%23f1eef7' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M1 12l5 5 5-5' fill='none' stroke='%23f1eef7' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
-    background-position: right 8px center;
-    background-size: 12px 20px;
+    background-position: right 4px center;
+    background-size: 8px 16px;
 }
 .vnccs-cc-param-field {
     display: flex;
@@ -898,13 +1090,19 @@ function _injectVNCCSControlCenterStyles() {
     gap: 4px;
 }
 .vnccs-cc-param-label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    line-height: 12px;
     font-size: 9px;
-    color: #5e5e70;
+    color: var(--vnccs-cc-muted);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.07em;
 }
 .vnccs-cc-input {
+    min-width: 0;
+    height: var(--vnccs-cc-control-height);
     width: 100%;
     background: rgba(255,255,255,0.04);
     color: #e8e8f0;
@@ -921,6 +1119,9 @@ function _injectVNCCSControlCenterStyles() {
     border-color: rgba(255,143,163,0.35);
 }
 .vnccs-cc-select {
+    min-width: 0;
+    height: var(--vnccs-cc-control-height);
+    font-family: inherit;
     width: 100%;
     background: rgba(255,255,255,0.04);
     color: #e8e8f0;
@@ -939,6 +1140,9 @@ function _injectVNCCSControlCenterStyles() {
 }
 
 .vnccs-cc-lora-slider {
+    min-width: 0;
+    min-height: 24px;
+    margin: 0;
     width: 100%;
     accent-color: #ff8fa3;
     flex: 1;
@@ -966,6 +1170,9 @@ function _injectVNCCSControlCenterStyles() {
     box-sizing: border-box;
 }
 .vnccs-cc-settings-panel {
+    box-sizing: border-box;
+    min-width: 0;
+    overflow-wrap: anywhere;
     background: rgba(14,10,22,0.97);
     border: 1px solid rgba(255,143,163,0.22);
     border-radius: 12px;
@@ -990,7 +1197,12 @@ function _injectVNCCSControlCenterStyles() {
     padding-bottom: 8px;
     letter-spacing: 0.06em;
 }
-.vnccs-cc-settings-details summary {
+.vnccs-cc-settings-summary {
+    width: 100%;
+    border: 0;
+    background: none;
+    font-family: inherit;
+    text-align: left;
     font-size: 10px;
     color: #9898a8;
     cursor: pointer;
@@ -998,22 +1210,26 @@ function _injectVNCCSControlCenterStyles() {
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    list-style: none;
     transition: color 0.15s;
 }
-.vnccs-cc-settings-details summary:hover { color: #ff8fa3; }
+.vnccs-cc-settings-summary:hover { color: #ff8fa3; }
+.vnccs-cc-settings-summary::after { content: "⌄"; float: right; transition: transform var(--vnccs-cc-motion) ease; }
+.vnccs-cc-block--collapsed .vnccs-cc-settings-summary::after { transform: rotate(-90deg); }
 .vnccs-cc-settings-field {
     margin-top: 6px;
 }
 .vnccs-cc-settings-label {
     font-size: 9px;
-    color: #5e5e70;
+    color: var(--vnccs-cc-muted);
     display: block;
     margin-bottom: 3px;
     text-transform: uppercase;
     letter-spacing: 0.07em;
 }
 .vnccs-cc-settings-select {
+    min-width: 0;
+    min-height: var(--vnccs-cc-control-height);
+    font-family: inherit;
     width: 100%;
     background: rgba(255,255,255,0.04);
     color: #e8e8f0;
@@ -1047,6 +1263,7 @@ function _injectVNCCSControlCenterStyles() {
 }
 .vnccs-cc-settings-btns {
     display: flex;
+    flex-wrap: wrap;
     gap: 6px;
     justify-content: flex-end;
     padding-top: 4px;
@@ -1093,6 +1310,8 @@ function _injectVNCCSControlCenterStyles() {
 }
 .vnccs-cc-deps-actions {
     display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
     gap: 6px;
     align-items: center;
 }
@@ -1130,13 +1349,16 @@ function _injectVNCCSControlCenterStyles() {
 .vnccs-cc-status-label {
     font-size: 9px;
     font-weight: 700;
-    color: #5e5e70;
+    color: var(--vnccs-cc-muted);
     text-transform: uppercase;
     letter-spacing: 0.08em;
     margin-right: 2px;
     flex-shrink: 0;
 }
 .vnccs-cc-pill {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
     display: inline-flex;
     align-items: center;
     gap: 4px;
@@ -1147,13 +1369,11 @@ function _injectVNCCSControlCenterStyles() {
     font-weight: 600;
     border: 1px solid transparent;
     transition: all 0.18s ease;
-    white-space: nowrap;
+    white-space: normal;
 }
 .vnccs-cc-pill--dependency {
     padding-inline: 6px;
-    max-width: 92px;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    max-width: 100%;
 }
 .vnccs-cc-pill--ok {
     background: rgba(0,214,143,0.08);
@@ -1174,7 +1394,7 @@ function _injectVNCCSControlCenterStyles() {
 .vnccs-cc-pill--loading {
     background: rgba(255,255,255,0.03);
     border-color: rgba(255,255,255,0.06);
-    color: #5e5e70;
+    color: var(--vnccs-cc-muted);
 }
 .vnccs-cc-pill--dup {
     background: rgba(255,170,0,0.08);
@@ -1192,6 +1412,7 @@ function _injectVNCCSControlCenterStyles() {
     color: #ffaa00;
 }
 .vnccs-cc-update-banner {
+    overflow-wrap: anywhere;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -1202,6 +1423,28 @@ function _injectVNCCSControlCenterStyles() {
     color: #ffaa00;
     font-weight: 600;
     letter-spacing: 0.04em;
+}
+.vnccs-cc-root :is(button, input, select, summary, [tabindex]):focus-visible {
+    outline: 2px solid #ff8fa3;
+    outline-offset: -2px;
+}
+.vnccs-cc-toggle input:focus-visible ~ .vnccs-cc-toggle-track {
+    outline: 2px solid #ff8fa3;
+    outline-offset: 2px;
+}
+.vnccs-cc-root button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+.vnccs-cc-param-label :is(input, select),
+.vnccs-cc-settings-label :is(input, select) { text-transform: none; letter-spacing: normal; }
+.vnccs-cc-row-progress { max-width: 45%; white-space: normal; overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: reduce) {
+    .vnccs-cc-root * { transition: none !important; animation: none !important; }
+    .vnccs-cc-root :is(button, [role="button"], .vnccs-cc-scroll) { transform: none !important; }
+    .vnccs-cc-root *::after { animation: none !important; transition: none !important; }
+    .vnccs-cc-loading::after, .vnccs-cc-header::after, .vnccs-cc-row-bg::after { transform: none !important; }
 }
 `;
 
@@ -1236,6 +1479,7 @@ app.registerExtension({
         const onResize = nodeType.prototype.onResize;
         nodeType.prototype.onResize = function (size) {
             onResize?.apply(this, arguments);
+            this._cc_widget?._closeDropdown(false);
             syncDOMWidgetWidth(this, "cc_widget");
             requestAnimationFrame(() => syncDOMWidgetWidth(this, "cc_widget"));
         };
@@ -1243,12 +1487,16 @@ app.registerExtension({
         const onRemoved = nodeType.prototype.onRemoved;
         nodeType.prototype.onRemoved = function () {
             onRemoved?.apply(this, arguments);
+            if (this._cc_widget) this._cc_widget._removed = true;
+            this._cc_widget?._stopMotion();
+            clearTimeout(this._cc_widget?._initTimer);
             if (this._cc_widget?.pollingInterval)
                 clearInterval(this._cc_widget.pollingInterval);
             if (this._cc_widget?._onGlobalPointerUp)
                 window.removeEventListener("pointerup", this._cc_widget._onGlobalPointerUp);
             if (this._cc_widget?._onRegistryUpdate)
                 window.removeEventListener("vnccs-cc-registry-updated", this._cc_widget._onRegistryUpdate);
+            for (const overlay of [...(this._cc_widget?._overlays ?? [])]) overlay.remove();
             if (this._cc_widget?._onManagerTaskCompleted)
                 api.removeEventListener("cm-task-completed", this._cc_widget._onManagerTaskCompleted);
             if (this._cc_widget?._onManagerQueueStatus)
@@ -1263,13 +1511,11 @@ class VNCCSControlCenterWidget {
     constructor(node) {
         this.node = node;
         this._beginModuleStatusRequest = createRequestGuard(node);
+        this._beginConfigRequest = createRequestGuard(node);
+        this._beginDownloadStatusRequest = createRequestGuard(node);
         this.config   = null;
         this.state    = {};
         this.dlStatus = {};
-        this.dependencyStatus = { ok: true, message: "" };
-        this._lastDependencyModalMessage = "";
-        this._dependencyRefreshTimer = null;
-        this._dependencyRefreshSeq = 0;
         this._draggingLoraSlider = false;
         this._onGlobalPointerUp = null;
         this._downloadRefreshPending = false;
@@ -1291,7 +1537,8 @@ class VNCCSControlCenterWidget {
         this._fetchSamplerLists();
         this._fetchModuleStatus(); // once on init
 
-        setTimeout(() => {
+        this._initTimer = setTimeout(() => {
+            if (this._removed) return;
             const rw = this.node.widgets?.find(w => w.name === "repo_id");
             if (rw) {
                 const orig = rw.callback;
@@ -1309,9 +1556,11 @@ class VNCCSControlCenterWidget {
             const repoId = e.detail?.repo_id;
             const myRepo = this._getRepoId();
             if (repoId && repoId === myRepo && serverRegistry("VNCCS_CC_REGISTRY")[repoId]) {
+                if (this.config === serverRegistry("VNCCS_CC_REGISTRY")[repoId]) return;
                 this.config = serverRegistry("VNCCS_CC_REGISTRY")[repoId];
                 this._syncCustomModelInput();
-                if (!this._isUserInteracting()) this._renderAll();
+                if (e.detail.download_update) this._updateDownloadIndicators();
+                else if (!this._isUserInteracting()) this._renderAll();
             }
         };
         window.addEventListener("vnccs-cc-registry-updated", this._onRegistryUpdate);
@@ -1407,22 +1656,7 @@ class VNCCSControlCenterWidget {
 
         this._syncCustomModelInput();
         this._saveState();
-        this._renderAll();
-        this._scheduleDependencyRefresh(true);
-    }
-
-    _scheduleDependencyRefresh(showModal = false, delay = 120, rerender = true) {
-        if (this._dependencyRefreshTimer) {
-            clearTimeout(this._dependencyRefreshTimer);
-        }
-
-        const refreshSeq = ++this._dependencyRefreshSeq;
-        this._dependencyRefreshTimer = setTimeout(async () => {
-            this._dependencyRefreshTimer = null;
-            await this._refreshDependencyStatus(showModal);
-            if (refreshSeq !== this._dependencyRefreshSeq) return;
-            if (rerender) this._renderAll();
-        }, delay);
+        this._renderAll({ preserveDraft: false });
     }
 
     // ── Sampler/scheduler lists ───────────────────────────────────────────────
@@ -1465,17 +1699,36 @@ class VNCCSControlCenterWidget {
     _getSelectedModelName(type = this._getSelectedType()) {
         const selectedByType = this.state.selected_models ?? {};
         const familyKey = `${this._activeKind()}:${type}`;
+        const isCustom = this._getSelectedType() === "custom";
+        const savedName = selectedByType[familyKey] || (isCustom ? selectedByType[type] : "") || this.state.selected_model;
+        const variants = this._visibleModelsByType(type);
+        const findVariant = name => variants.find(entry => entry.name.trim().toLowerCase() === name?.trim().toLowerCase());
+        const selected = findVariant(savedName) || (!selectedByType[familyKey] && !isCustom && this._activeKind() === "QI2"
+            ? findVariant(selectedByType[type]) : null);
+        if (selected) return selected.name;
         if (selectedByType[familyKey]) return selectedByType[familyKey];
         if (this._activeKind() === "QI2") {
-            const legacy = this.state.selected_model;
-            if (legacy && this._visibleModelsByType(type).some(entry => entry.name === legacy)) return legacy;
-            return type === "unet" ? (this._visibleModelsByType(type)[0]?.name || DEFAULT_QI2_MODEL) : "";
+            return type === "unet" ? (variants[0]?.name || DEFAULT_QI2_MODEL) : "";
         }
         return "";
     }
 
     _setSelectedModelName(type, modelName) {
         if (!type || !modelName) return;
+        const previousName = this._getSelectedModelName(type);
+        const previous = this.config?.models?.find(entry => entry.name === previousName);
+        const selected = this.config?.models?.find(entry => entry.name === modelName);
+        const turboModel = this._isQi2TurboModel(selected);
+        if (modelName !== previousName && (turboModel || this._isQi2TurboModel(previous))) {
+            const params = this._currentModelParams();
+            params.steps = turboModel ? 8 : 25;
+            params.cfg = turboModel ? 1.0 : 3.0;
+            params.turbo_previous_settings = null;
+            const turboNames = new Set(this._compatibleTurboLoras().map(entry => entry.name));
+            for (const lora of this.state.loras || []) {
+                if (turboNames.has(lora.name)) lora.auto_apply = false;
+            }
+        }
         if (!this.state.selected_models) this.state.selected_models = {};
         this.state.selected_models[`${this._activeKind()}:${type}`] = modelName;
         if (type === this._getSelectedType()) {
@@ -1548,16 +1801,21 @@ class VNCCSControlCenterWidget {
     _currentModelParams() {
         if (!this.state.model_params_by_kind) this.state.model_params_by_kind = {};
         const kind = this._activeKind();
-        if (!this.state.model_params_by_kind[kind]) {
-            const family = this._familyDefinition(kind);
-            this.state.model_params_by_kind[kind] = {
-                steps: family.steps ?? DEFAULT_MODEL_STEPS,
-                cfg: family.cfg ?? DEFAULT_MODEL_CFG,
-                sampler: family.sampler ?? "euler",
-                scheduler: DEFAULT_MODEL_SCHEDULER,
-            };
-        }
+        const family = this._familyDefinition(kind);
+        const turboModel = this._isQi2TurboModel(this._getSelectedModelEntry());
+        this.state.model_params_by_kind[kind] = {
+            steps: turboModel ? 8 : family.steps ?? DEFAULT_MODEL_STEPS,
+            cfg: turboModel ? 1.0 : family.cfg ?? DEFAULT_MODEL_CFG,
+            sampler: family.sampler ?? "euler",
+            scheduler: DEFAULT_MODEL_SCHEDULER,
+            ...(this.state.model_params_by_kind[kind] || {}),
+        };
         return this.state.model_params_by_kind[kind];
+    }
+
+    _isQi2TurboModel(entry) {
+        return this._metaKind(entry).toLowerCase() === "qi2"
+            && String(entry?.local_path || "").replace(/\\/g, "/").split("/").pop() === QI2_TURBO_MODEL_NAME;
     }
 
     _syncActiveFamilyState() {
@@ -1568,6 +1826,7 @@ class VNCCSControlCenterWidget {
         this.state.selected_types_by_kind[kind] = type;
         this.state.selected_type = type;
         this.state.selected_model = this._getSelectedModelName(type);
+        if (this.state.selected_model) this._setSelectedModelName(type, this.state.selected_model);
         this.state.model_params = { ...this._currentModelParams() };
     }
 
@@ -1582,9 +1841,9 @@ class VNCCSControlCenterWidget {
         }
         this._syncCustomModelInput();
         this._saveState();
-        this._renderAll();
+        this._renderAll({ preserveDraft: false });
         this.scrollArea?.querySelector(`.vnccs-cc-family-tab[data-kind="${kind}"]`)?.focus({ preventScroll: true });
-        this._scheduleDependencyRefresh(true);
+        this._checkH3Compatibility();
     }
 
     _isTurboLora(entry) {
@@ -1596,14 +1855,6 @@ class VNCCSControlCenterWidget {
         return (this.config?.lora || []).filter(entry =>
             !entry.custom && this._isTurboLora(entry) && this._exactKind(entry, selectedKind)
         );
-    }
-
-    _preferredTurboLora() {
-        const entries = this._compatibleTurboLoras();
-        return entries.find(entry => {
-            const identity = `${entry.name || ""} ${entry.local_path || ""}`.toLowerCase();
-            return identity.includes("lightning");
-        }) || entries[0] || null;
     }
 
     _setTurboPreset(enabled) {
@@ -1629,20 +1880,8 @@ class VNCCSControlCenterWidget {
         return this._metaType(entry).toLowerCase() === "helper";
     }
 
-    _hasEnabledLoras() {
-        const selectedKind = this._selectedKind();
-        const entryByName = Object.fromEntries((this.config?.lora ?? []).map(entry => [entry.name, entry]));
-        return (this.state.loras ?? []).some(l => {
-            if (!l?.name || l.auto_apply !== true) return false;
-            const entry = entryByName[l.name];
-            if (!entry) return false;
-            if (this._isTurboLora(entry)) return this._exactKind(entry, selectedKind);
-            if (Math.abs(Number(l.strength ?? 1)) <= 1e-6) return false;
-            return entry.custom;
-        });
-    }
-
     _saveState() {
+        if (this._stateRestoreError || this._removed) return;
         this._syncActiveFamilyState();
         const w = this._getStateWidget();
         if (w) w.value = JSON.stringify(this.state);
@@ -1668,9 +1907,63 @@ class VNCCSControlCenterWidget {
     }
 
     restoreState() {
+        this._closeDropdown(false);
         const w = this._getStateWidget();
-        if (w?.value && w.value !== "{}") {
-            try { this.state = JSON.parse(w.value); } catch { this.state = {}; }
+        this._stateRestoreError = null;
+        if (w) {
+            try {
+                const state = JSON.parse(w.value === "" ? "{}" : w.value);
+                const isObject = value => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+                if (!isObject(state)) throw new Error("State must be an object");
+                for (const key of ["selected_models", "selected_types_by_kind", "model_params", "model_params_by_kind", "type_settings", "qi2_cache", "collapsed"]) {
+                    if (state[key] !== undefined && !isObject(state[key])) throw new Error(`${key} must be an object`);
+                }
+                for (const key of ["model_params_by_kind", "type_settings"]) {
+                    if (Object.values(state[key] || {}).some(value => !isObject(value))) throw new Error(`${key} entries must be objects`);
+                }
+                for (const key of ["selected_models", "selected_types_by_kind"]) {
+                    if (Object.values(state[key] || {}).some(value => typeof value !== "string")) throw new Error(`${key} entries must be strings`);
+                }
+                for (const key of ["active_kind", "selected_type", "selected_model", "unsupported_model_kind"]) {
+                    if (state[key] !== undefined && typeof state[key] !== "string") throw new Error(`${key} must be a string`);
+                }
+                if (state.loras !== undefined && (!Array.isArray(state.loras) || state.loras.some(lora =>
+                    !isObject(lora) || (lora.name !== undefined && typeof lora.name !== "string")))) {
+                    throw new Error("LoRA states must be objects in an array");
+                }
+                const isFiniteNumber = (value, integer = false) => {
+                    if (typeof value === "string") {
+                        const decimal = integer ? /^[+-]?\d(?:_?\d)*$/
+                            : /^[+-]?(?:\d(?:_?\d)*(?:\.(?:\d(?:_?\d)*)?)?|\.\d(?:_?\d)*)(?:e[+-]?\d(?:_?\d)*)?$/i;
+                        return decimal.test(value.trim()) && Number.isFinite(Number(value.replaceAll("_", "")));
+                    }
+                    return ["number", "boolean"].includes(typeof value) && Number.isFinite(Number(value));
+                };
+                for (const params of [state.model_params || {}, ...Object.values(state.model_params_by_kind || {})]) {
+                    for (const field of ["steps", "cfg"]) {
+                        const value = params[field];
+                        if (value != null && !(field === "steps" && value === "") && !isFiniteNumber(value, field === "steps")) {
+                            throw new Error(`${field} must be a finite number`);
+                        }
+                    }
+                    for (const field of ["sampler", "scheduler"]) {
+                        if (params[field] != null && typeof params[field] !== "string") throw new Error(`${field} must be a string`);
+                    }
+                }
+                for (const field of ["device", "dtype"]) {
+                    const value = state.qi2_cache?.[field];
+                    if (value != null && typeof value !== "string") throw new Error(`qi2_cache.${field} must be a string`);
+                }
+                if (state.loras?.some(lora => lora.strength !== undefined && !isFiniteNumber(lora.strength))) {
+                    throw new Error("LoRA strength must be a finite number");
+                }
+                this.state = state;
+            } catch (error) {
+                this._stateRestoreError = error;
+                this._setConfigLoading(false);
+                this.showMessage("Control Center state could not be restored. Original workflow data is preserved; repair node_state before editing.", true);
+                return;
+            }
         }
         if (Array.isArray(this.state.loras)) {
             this.state.loras = this.state.loras.map(lora => {
@@ -1693,144 +1986,31 @@ class VNCCSControlCenterWidget {
         }
         this.state.active_kind = this._activeKind();
         if (!this.state.selected_types_by_kind) this.state.selected_types_by_kind = {};
-        if (!this.state.selected_types_by_kind.QI2 && this.state.selected_type) {
-            this.state.selected_types_by_kind.QI2 = this.state.selected_type;
+        const kind = this._activeKind();
+        if (this.state.model_params && typeof this.state.model_params === "object") {
+            this.state.model_params_by_kind ??= {};
+            this.state.model_params_by_kind[kind] = {
+                ...this.state.model_params,
+                ...this.state.model_params_by_kind[kind],
+            };
+        }
+        if (!this.state.selected_types_by_kind[kind] && this.state.selected_type) {
+            this.state.selected_types_by_kind[kind] = this.state.selected_type;
         }
         // Control Center now exposes a single pipe output.
         this.state.output_slot_names = [];
         this._syncOutputSlots();
         this._syncCustomModelInput();
+        this._checkH3Compatibility();
         const repo = this._getRepoId();
         if (repo) this.fetchConfig(repo);
-    }
-
-    async _refreshDependencyStatus(showModal = false) {
-        // TECH DEBT: Nunchaku dependency checks are disabled. Delete this no-op
-        // and the commented legacy implementation after stale workflows migrate.
-        this.dependencyStatus = { ok: true, message: "" };
-        this._lastDependencyModalMessage = "";
-        return this.dependencyStatus;
-
-        /*
-        const selectedType = this._getSelectedType();
-        const selectedModelEntry = this._getSelectedModelEntry();
-
-        if (selectedType !== "nunchaku" || !selectedModelEntry) {
-            this.dependencyStatus = { ok: true, message: "" };
-            return this.dependencyStatus;
-        }
-
-        try {
-            const response = await api.fetchApi("/vnccs/control_center/dependencies", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    model_type: selectedType,
-                    model_name: selectedModelEntry.name,
-                    model_path: selectedModelEntry.local_path ?? "",
-                    has_enabled_loras: this._hasEnabledLoras(),
-                }),
-            });
-            this.dependencyStatus = response.ok ? await response.json() : { ok: false, message: "Dependency check failed." };
-        } catch (error) {
-            this.dependencyStatus = { ok: false, message: String(error?.message || error) };
-        }
-
-        if (showModal && !this.dependencyStatus.ok && this.dependencyStatus.message) {
-            if (this._lastDependencyModalMessage !== this.dependencyStatus.message) {
-                this._lastDependencyModalMessage = this.dependencyStatus.message;
-                this.showMessage(this.dependencyStatus.message, true);
-            }
-        }
-
-        if (this.dependencyStatus.ok) {
-            this._lastDependencyModalMessage = "";
-        }
-
-        // Auto-modal: if Qwen model selected and fix not installed
-        if (showModal && selectedType === "nunchaku" && selectedModelEntry) {
-            const modelId = ((selectedModelEntry.name || "") + " " + (selectedModelEntry.local_path || "")).toLowerCase();
-            if (modelId.includes("qwen")) {
-                try {
-                    const fixResp = await api.fetchApi("/vnccs/control_center/nunchaku_fix_status");
-                    if (fixResp.ok) {
-                        const fixStatus = await fixResp.json();
-                        if (!fixStatus.installed && !fixStatus.nunchaku_missing) {
-                            const fixKey = "__qwen_fix_modal__";
-                            if (this._lastDependencyModalMessage !== fixKey) {
-                                this._lastDependencyModalMessage = fixKey;
-                                this._showQwenFixModal();
-                            }
-                        }
-                    }
-                } catch (_) {}
-            }
-        }
-
-        return this.dependencyStatus;
-        */
-    }
-
-    _showQwenFixModal() {
-        // TECH DEBT: Nunchaku/Qwen fix modal is disabled. Delete this legacy
-        // modal after old Nunchaku support is removed completely.
-        return;
-
-        /*
-        const ov = document.createElement("div");
-        ov.style.cssText = `
-            position: absolute; top:0; left:0; width:100%; height:100%;
-            background: rgba(0,0,0,0.75); display:flex; align-items:center;
-            justify-content:center; z-index:1000; padding:16px; box-sizing:border-box;
-        `;
-        const box = document.createElement("div");
-        box.style.cssText = `
-            background: #12121a; border: 1px solid rgba(255,143,163,0.25);
-            border-radius: 10px; padding: 16px; max-width: 280px; width:100%;
-            text-align:center; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-        `;
-        box.innerHTML = `<div style="color:#e8e8f0;font-size:12px;margin-bottom:14px;line-height:1.5;font-family:'Sora',sans-serif;">
-            Qwen-Image model requires the PR&#xA0;#790 fix to work correctly.<br><br>Install it now?
-        </div>`;
-        const row = document.createElement("div");
-        row.style.cssText = "display:flex;gap:8px;justify-content:center;";
-        const cancelBtn = document.createElement("button");
-        cancelBtn.textContent = "Later";
-        cancelBtn.className = "vnccs-cc-btn";
-        cancelBtn.onclick = () => ov.remove();
-        const installBtn = document.createElement("button");
-        installBtn.textContent = "Install Fix";
-        installBtn.className = "vnccs-cc-btn vnccs-cc-btn--save";
-        installBtn.onclick = async () => {
-            installBtn.textContent = "Installing…";
-            installBtn.disabled = true;
-            try {
-                const res = await api.fetchApi("/vnccs/control_center/nunchaku_apply_fix", { method: "POST" });
-                const result = await res.json();
-                ov.remove();
-                if (result.ok) {
-                    this.showMessage("Fix applied. Please restart ComfyUI to apply changes.");
-                } else {
-                    this.showMessage("Failed: " + (result.message || "Unknown error"), true);
-                }
-            } catch (e) {
-                ov.remove();
-                this.showMessage("Error: " + e.message, true);
-            }
-        };
-        row.append(cancelBtn, installBtn);
-        box.appendChild(row);
-        ov.appendChild(box);
-        ov.onclick = e => { if (e.target === ov) ov.remove(); };
-        this.container.appendChild(ov);
-        */
     }
 
     // ── Polling ───────────────────────────────────────────────────────────────
 
     _isUserInteracting() {
         // Skip re-render if any focusable element inside our container is active
-        // (e.g. an open <select> dropdown, a focused input)
+        // (e.g. an open dropdown or a focused input)
         if (this._draggingLoraSlider) return true;
         const active = document.activeElement;
         return active && this.container?.contains(active);
@@ -1839,10 +2019,19 @@ class VNCCSControlCenterWidget {
     _startPolling() {
         if (this.pollingInterval) clearInterval(this.pollingInterval);
         this.pollingInterval = setInterval(async () => {
+            if (this._removed || this._downloadStatusPolling || document.visibilityState === "hidden") return;
+            this._downloadStatusPolling = true;
+            const isCurrent = this._beginDownloadStatusRequest();
+            const repoId = this._getRepoId();
             try {
-                const r = await api.fetchApi("/vnccs/manager/status");
+                const r = await api.fetchApi(`/vnccs/manager/status?repo_id=${encodeURIComponent(repoId)}`);
                 if (!r.ok) return;
                 const newStatuses = await r.json();
+                if (!isCurrent() || this._getRepoId() !== repoId) return;
+                for (const key of this._pendingDownloads?.keys() || []) {
+                    if (!["queued", "downloading"].includes(newStatuses[key]?.status)) newStatuses[key] = this.dlStatus[key];
+                }
+                const changedStatuses = JSON.stringify(this.dlStatus) !== JSON.stringify(newStatuses);
 
                 // Detect transitions to "success" → re-fetch config to update disk state
                 for (const key in newStatuses) {
@@ -1854,20 +2043,19 @@ class VNCCSControlCenterWidget {
                     }
                 }
 
+                this._downloadStatusRepoId = repoId;
                 this.dlStatus = newStatuses;
+                if (changedStatuses) window.dispatchEvent(new CustomEvent("vnccs-cc-registry-updated", {
+                    detail: { repo_id: repoId, download_status: newStatuses },
+                }));
                 this._updateDownloadIndicators();
 
-                if (this._isUserInteracting()) return;
                 if (this._downloadRefreshPending) {
                     const repo = this._getRepoId();
-                    if (repo) {
-                        this._downloadRefreshPending = false;
-                        await this.fetchConfig(repo);
-                    }
-                } else {
-                    this._renderAll();
+                    if (repo) await this.fetchConfig(repo, true, { preserveCards: true });
                 }
             } catch { /* ignore */ }
+            finally { this._downloadStatusPolling = false; }
         }, 2000);
     }
 
@@ -1876,7 +2064,7 @@ class VNCCSControlCenterWidget {
     _buildUI() {
         // Create container first, then pass it to addDOMWidget (same pattern as Pose Studio)
         const c = document.createElement("div");
-        c.className = "vnccs-cc-root";
+        c.className = "vnccs-cc-root vnccs-common-ui-host";
         this.container = c;
         enableMiddleMouseCanvasPan(c);
         attachHelpTooltips(c);
@@ -1890,6 +2078,16 @@ class VNCCSControlCenterWidget {
         // Hide node_state widget so it takes no space
         const stateW = this.node.widgets?.find(w => w.name === "node_state");
         if (stateW) {
+            const node = this.node;
+            const serializeValue = stateW.serializeValue;
+            stateW.serializeValue = function () {
+                const raw = serializeValue?.apply(this, arguments) ?? this.value;
+                try {
+                    const state = JSON.parse(raw);
+                    if (!state || typeof state !== "object" || Array.isArray(state)) return raw;
+                    return JSON.stringify({ ...state, preview_scope: workflowScope(node) });
+                } catch { return raw; }
+            };
             stateW.computeSize = () => [0, -4];
             stateW.type = "hidden";
             stateW.draw = () => {};
@@ -1900,6 +2098,7 @@ class VNCCSControlCenterWidget {
         this._buildHeader();
         this._buildScroll();
         this._buildFooter();
+        this._setConfigLoading(Boolean(this._getRepoId()));
     }
 
     _buildHeader() {
@@ -1909,6 +2108,7 @@ class VNCCSControlCenterWidget {
         this.statusText = document.createElement("span");
         this.statusText.className = "vnccs-cc-title";
         this.statusText.textContent = "VNCCS Control Center";
+        this.statusText.setAttribute("role", "status");
 
         const btns = document.createElement("div");
         btns.className = "vnccs-cc-header-btns";
@@ -1924,15 +2124,59 @@ class VNCCSControlCenterWidget {
     }
 
     _buildScroll() {
+        const content = document.createElement("div");
+        content.className = "vnccs-cc-content";
         this.scrollArea = document.createElement("div");
         this.scrollArea.className = "vnccs-cc-scroll";
+        this.scrollArea.addEventListener("scroll", () => this._closeDropdown(false), { passive: true });
 
         const empty = document.createElement("div");
         empty.className = "vnccs-cc-empty";
         empty.textContent = "Enter repo_id and click ↺ to load";
         this.scrollArea.appendChild(empty);
 
-        this.container.appendChild(this.scrollArea);
+        const loading = document.createElement("div");
+        loading.className = "vnccs-cc-loading";
+        loading.setAttribute("aria-hidden", "true");
+        const intro = document.createElement("div");
+        intro.className = "vnccs-cc-loading-intro";
+        for (const [name, text] of [["title", "Loading configuration"], ["hint", "Preparing models and controls…"]]) {
+            const line = document.createElement("div");
+            line.className = `vnccs-cc-loading-${name}`;
+            line.textContent = text;
+            intro.appendChild(line);
+        }
+        loading.appendChild(intro);
+        const tabs = document.createElement("div");
+        tabs.className = "vnccs-cc-loading-tabs";
+        for (const family of MODEL_FAMILIES) {
+            const tab = document.createElement("div");
+            tab.className = "vnccs-cc-loading-bone";
+            tabs.appendChild(tab);
+        }
+        loading.appendChild(tabs);
+        for (let index = 0; index < 3; index++) {
+            const block = document.createElement("div");
+            block.className = "vnccs-cc-loading-block";
+            for (const name of ["heading", "card", "line"]) {
+                const bone = document.createElement("div");
+                bone.className = `vnccs-cc-loading-bone vnccs-cc-loading-${name}`;
+                block.appendChild(bone);
+            }
+            loading.appendChild(block);
+        }
+        content.append(this.scrollArea, loading);
+        this.container.appendChild(content);
+    }
+
+    _setConfigLoading(loading) {
+        const showSkeleton = loading && !this.config;
+        this.container.classList.toggle("vnccs-cc-root--config-loading", loading);
+        this.container.classList.toggle("vnccs-cc-root--config-skeleton", showSkeleton);
+        this.scrollArea.setAttribute("aria-busy", String(loading));
+        this.scrollArea.setAttribute("aria-hidden", String(showSkeleton));
+        this.scrollArea.inert = showSkeleton;
+        this.downloadAllButton.disabled = loading || !this.config;
     }
 
     _buildFooter() {
@@ -1943,6 +2187,7 @@ class VNCCSControlCenterWidget {
         b.className = "vnccs-cc-btn--download-all";
         b.textContent = "⬇ Download / Update";
         b.onclick = () => this._downloadAllMissing();
+        this.downloadAllButton = b;
 
         f.appendChild(b);
         this.container.appendChild(f);
@@ -2081,6 +2326,7 @@ class VNCCSControlCenterWidget {
 
     async _ensureManagerInstallPolicy(items) {
         const policy = await this._getManagerInstallPolicy();
+        if (this._removed) return false;
         if (!policy || policy.install_allowed) return true;
         if (!policy.security_level_allows_install) {
             this.showMessage(
@@ -2147,7 +2393,7 @@ class VNCCSControlCenterWidget {
         panel.append(title, text, buttons);
         ov.appendChild(panel);
         ov.onclick = event => { if (event.target === ov) ov.remove(); };
-        this.container.appendChild(ov);
+        this._mountOverlay(ov, panel, title.textContent);
     }
 
     async _queueLegacyDependencyInstall(item, uiId) {
@@ -2210,6 +2456,10 @@ class VNCCSControlCenterWidget {
         try {
             let mode = await this._queueLegacyDependencyInstall(item, uiId);
             if (!mode) {
+                if (this._removed) {
+                    this._dependencyInstallTasks.delete(uiId);
+                    return null;
+                }
                 mode = "modern";
                 tracked.mode = mode;
                 const response = await api.fetchApi("/v2/manager/queue/task", {
@@ -2239,12 +2489,13 @@ class VNCCSControlCenterWidget {
     }
 
     async _installDependency(item, button, options = {}) {
+        if (this._removed) return false;
         const originalLabel = button.textContent;
         if (!options.skipPolicyCheck && !await this._ensureManagerInstallPolicy([item])) return false;
         button.disabled = true;
         button.textContent = "Queueing…";
         try {
-            await this._queueDependencyInstall(item, button);
+            if (!await this._queueDependencyInstall(item, button)) return false;
             return true;
         } catch (error) {
             button.disabled = false;
@@ -2327,6 +2578,47 @@ class VNCCSControlCenterWidget {
         }
     }
 
+    _checkH3Compatibility() {
+        if (this._removed || !this._h3Runtime) return;
+        if (this._activeKind() !== "MiniMaxH3" || this._h3Runtime?.h3_still_supported === true) {
+            this._h3UpdateOverlay?.remove();
+            this._h3WarningShown = false;
+            return;
+        }
+        if (this._h3Runtime.h3_still_supported !== false || this._h3WarningShown) return;
+        this._h3WarningShown = true;
+        this._showH3UpdateModal();
+    }
+
+    _showH3UpdateModal() {
+        const ov = document.createElement("div");
+        ov.className = "vnccs-cc-settings-overlay";
+        this._h3UpdateOverlay = ov;
+        const panel = document.createElement("div");
+        panel.className = "vnccs-cc-settings-panel";
+        panel.style.maxWidth = "460px";
+        const title = document.createElement("div");
+        title.className = "vnccs-cc-deps-modal-title";
+        title.textContent = "ComfyUI update required for MiniMax H3";
+        const text = document.createElement("div");
+        text.className = "vnccs-cc-deps-modal-text";
+        text.textContent = `${this._h3Runtime.h3_update_message} Detected ComfyUI version: ${this._h3Runtime.version || "unknown"}.`;
+        const buttons = document.createElement("div");
+        buttons.className = "vnccs-cc-settings-btns";
+        const details = document.createElement("a");
+        details.className = "vnccs-cc-btn";
+        details.textContent = "View required ComfyUI fix";
+        details.href = "https://github.com/Comfy-Org/ComfyUI/pull/16881";
+        details.target = "_blank";
+        details.rel = "noopener noreferrer";
+        const close = this._btn("Close", () => ov.remove());
+        buttons.append(details, close);
+        panel.append(title, text, buttons);
+        ov.appendChild(panel);
+        ov.onclick = event => { if (event.target === ov) ov.remove(); };
+        this._mountOverlay(ov, panel, title.textContent);
+    }
+
     _showRestartRequiredModal() {
         if (this._restartRequiredOverlay?.isConnected) return;
         const ov = document.createElement("div");
@@ -2354,7 +2646,7 @@ class VNCCSControlCenterWidget {
         panel.append(title, text, buttons);
         ov.appendChild(panel);
         ov.onclick = event => { if (event.target === ov) ov.remove(); };
-        this.container.appendChild(ov);
+        this._mountOverlay(ov, panel, title.textContent);
     }
 
     _finishDependencyInstall(uiId, success, message = "Installation failed.") {
@@ -2497,7 +2789,7 @@ class VNCCSControlCenterWidget {
         panel.append(title, text, list, btns);
         ov.appendChild(panel);
         ov.onclick = event => { if (event.target === ov) ov.remove(); };
-        this.container.appendChild(ov);
+        this._mountOverlay(ov, panel, title.textContent);
     }
 
     _showUpdateBanner(lines) {
@@ -2550,6 +2842,8 @@ class VNCCSControlCenterWidget {
             if (r.ok) local = await r.json();
         } catch { /* server may not be ready yet */ }
         if (!isCurrent()) return;
+        this._h3Runtime = local.comfyui;
+        this._checkH3Compatibility();
 
         const latestVersions = Object.fromEntries(await Promise.all(
             Object.entries({ main: "vnccs", utils: "vnccs-utils" }).map(async ([key, managerId]) => [
@@ -2638,11 +2932,113 @@ class VNCCSControlCenterWidget {
 
     _btn(label, onClick, title = "") {
         const b = document.createElement("button");
+        b.type = "button";
         b.className = "vnccs-cc-btn";
         b.textContent = label;
-        if (title) b.title = title;
+        if (title) {
+            b.title = title;
+            b.ariaLabel = title;
+        }
         b.onclick = onClick;
         return b;
+    }
+
+    _downloadButton(cat, entry, status) {
+        const action = status === "outdated" ? "Update" : "Download";
+        const button = this._btn(action, event => {
+            event.stopPropagation();
+            this._downloadEntry(cat, entry);
+        }, `${action} ${entry.name}`);
+        button.className = "vnccs-cc-download-btn";
+        button.dataset.focusKey = `download-${cat}-${entry.name}`;
+        setHelpText(button, this._statusLabel(status, this.dlStatus[`cc_${cat}_${entry.name}`]));
+        return button;
+    }
+
+    _mountDownloadStatus(card, parent, cat, entry, statusClass, mode = "") {
+        const slot = document.createElement("div");
+        slot.className = "vnccs-cc-download-slot";
+        const label = document.createElement("span");
+        label.className = statusClass;
+        label.dataset.focusKey = `status-${cat}-${entry.name}`;
+        label.setAttribute("role", "status");
+        const button = !entry.custom || entry.hf_path ? this._downloadButton(cat, entry, entry.status) : null;
+        slot.appendChild(label);
+        if (button) slot.appendChild(button);
+        parent.appendChild(slot);
+        card._downloadView = { cat, entry, slot, label, button, statusClass, mode,
+            badge: card.querySelector(".vnccs-cc-badge") };
+    }
+
+    _updateDownloadCard(card, animate = true) {
+        const view = card._downloadView;
+        if (!view) return;
+        const { cat, slot, label, button, badge, statusClass, mode } = view;
+        const entry = this.config?.[cat]?.find(item => item.name === view.entry.name) || view.entry;
+        view.entry = entry;
+        const key = `cc_${cat}_${entry.name}`;
+        const dls = this.dlStatus[key] || {};
+        const status = dls.status === "success" && entry.status !== "installed" && this._downloadRefreshPending ? "success"
+            : this._resolveStatus(dls.status, entry.status);
+        const installed = status === "installed";
+        const active = installed && cat === "lora" && mode !== "pipe" && (this.state.loras || []).some(item => item.name === entry.name && item.auto_apply);
+        const text = installed ? (active ? "Active" : mode === "pipe" || mode === "custom" ? "Pipe" : "Installed")
+            : status === "auth_required" ? "Key required" : this._statusLabel(status, dls, true);
+        const fullText = status === "success" ? "Checking installation…" : installed ? text : this._statusLabel(status, dls);
+        const downloadable = !!button && this._isDownloadableStatus(status);
+        const focused = slot.contains(document.activeElement) ? document.activeElement : null;
+        label.className = `${statusClass} ${statusClass}--${active ? "active" : installed ? "ok"
+            : ["queued", "downloading", "success"].includes(status) ? "progress" : "missing"}`;
+        if (label.textContent !== text) label.textContent = text;
+        label.hidden = downloadable;
+        label.tabIndex = downloadable ? -1 : 0;
+        label.title = label.ariaLabel = fullText;
+        setHelpText(label, fullText);
+        if (button) {
+            const action = status === "outdated" ? "Update" : "Download";
+            if (button.textContent !== action) button.textContent = action;
+            button.title = button.ariaLabel = `${action} ${entry.name}`;
+            setHelpText(button, fullText);
+            button.hidden = !downloadable;
+            button.disabled = !downloadable;
+        }
+        if (focused?.hidden) (downloadable ? button : label).focus({ preventScroll: true });
+        const updated = this._badge(status);
+        if (badge) {
+            badge.className = updated.className;
+            if (badge.textContent !== updated.textContent) badge.textContent = updated.textContent;
+            badge.ariaLabel = updated.ariaLabel;
+        }
+        if (cat === "lora" && ["custom", "turbo"].includes(mode)) {
+            if (installed) {
+                card.onclick = () => mode === "turbo" ? this._selectTurboLora(entry.name, !active)
+                    : this._updateLora(entry.name, { auto_apply: !active }, { commit: true, rerender: "lora" });
+                this._enableCardKeyboard(card, active, entry.name);
+            } else {
+                card.onclick = card.onkeydown = null;
+                if (card.role === "button") { card.removeAttribute("role"); card.tabIndex = -1; }
+            }
+            if (mode === "turbo") {
+                card.classList.toggle("is-installed", installed);
+                card.classList.toggle("is-active", active);
+                const toggle = card.querySelector(".vnccs-cc-toggle");
+                if (toggle) {
+                    toggle.style.visibility = installed ? "visible" : "hidden";
+                    toggle.inert = !installed;
+                    const input = toggle.querySelector("input");
+                    input.checked = active;
+                    input.disabled = !installed;
+                }
+            }
+        }
+        const signature = `${status}:${active}`;
+        if (animate && view.signature && view.signature !== signature) {
+            this._playMotion(slot, [{ opacity: 0.25 }, { opacity: 1 }], 200);
+            this._playMotion(badge, [{ opacity: 0.3, transform: "scale(0.8)" }, { opacity: 1, transform: "none" }], 200);
+        }
+        view.signature = signature;
+        view.refreshVariants?.();
+        this._applyProgressLayer(card, key, { ...dls, status });
     }
 
     _badge(status) {
@@ -2655,109 +3051,155 @@ class VNCCSControlCenterWidget {
         const span = document.createElement("span");
         span.className = `vnccs-cc-badge vnccs-cc-badge--${cls[status] ?? "missing"}`;
         span.textContent = lbl[status] ?? "?";
+        span.ariaLabel = status === "success" ? "Checking installation" : this._statusLabel(status);
         return span;
     }
 
     _sel(id, opts, val, onChange) {
-        const s = document.createElement("select");
-        s.id = id;
-        s.className = "vnccs-cc-select";
-        opts.forEach(o => {
-            const op = document.createElement("option");
-            op.value = op.textContent = o;
-            if (o === val) op.selected = true;
-            s.appendChild(op);
-        });
-        s.onchange = () => onChange(s.value);
-        return s;
+        return this._selectControl(id, opts, val, onChange);
+    }
+
+    _selectControl(id, choices, value, onChange, className = "vnccs-cc-select") {
+        return createSakuraSelect(this, id, choices, value, onChange, className);
+    }
+
+    _openDropdown(trigger, options, label) {
+        return openSakuraDropdown(this, trigger, options, label);
+    }
+
+    _closeDropdown(restoreFocus = true) {
+        return closeSakuraDropdown(this, restoreFocus);
     }
 
     _numInput(val, min, max, step, onChange) {
         const i = document.createElement("input");
+        val = Number(typeof val === "string" ? val.replaceAll("_", "") : val);
         i.type = "number"; i.value = val; i.min = min; i.max = max; i.step = step;
         i.className = "vnccs-cc-input";
-        i.onchange = () => onChange(parseFloat(i.value));
+        i.onchange = () => {
+            const value = i.valueAsNumber;
+            if (!i.checkValidity() || !Number.isFinite(value)) { i.value = val; return; }
+            val = value;
+            onChange(value);
+        };
         return i;
     }
 
-    _label(text) {
-        const l = document.createElement("div");
+    _label(text, control) {
+        const l = document.createElement("label");
         l.className = "vnccs-cc-param-label";
         l.textContent = text;
+        control.dataset.focusKey ||= text;
+        if (control.role === "combobox") control.ariaLabel = text;
+        l.appendChild(control);
         return l;
+    }
+
+    _enableCardKeyboard(card, active, label) {
+        card.role = "button";
+        card.tabIndex = 0;
+        card.ariaPressed = String(active);
+        card.ariaLabel = label;
+        card.dataset.focusKey = card.dataset.downloadKey;
+        card.onkeydown = event => {
+            if (event.target !== card || !["Enter", " "].includes(event.key)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (!event.repeat) card.onclick();
+        };
     }
 
     // ── Config fetch ──────────────────────────────────────────────────────────
 
-    async fetchConfig(repoId, force = false) {
+    async fetchConfig(repoId, force = false, { preserveCards = false } = {}) {
+        if (this._removed) return;
+        if (this._downloadStatusRepoId !== repoId) {
+            this.dlStatus = {};
+            this._pendingDownloads?.clear();
+            this._downloadRefreshPending = false;
+            this._downloadStatusRepoId = repoId;
+        }
+        const isCurrent = this._beginConfigRequest();
         this.statusText.textContent = "Loading…";
+        this._setConfigLoading(true);
 
         const cacheKey = `vnccs_cc_cache_${repoId}`;
 
-        if (force) {
+        if (force && !preserveCards) {
             delete serverRegistry("VNCCS_CC_REGISTRY")[repoId];
             storage.removeItem(cacheKey);
         }
 
         // Show cached data immediately while fetching fresh
-        if (!force && serverRegistry("VNCCS_CC_REGISTRY")[repoId]) {
+        if (!force && !preserveCards && serverRegistry("VNCCS_CC_REGISTRY")[repoId]) {
             this.config = serverRegistry("VNCCS_CC_REGISTRY")[repoId];
             this.statusText.textContent = this.config.name || "Control Center";
             if (!this.state.output_slot_names) this.state.output_slot_names = [];
             this._syncCustomModelInput();
             this._renderAll();
             this._dispatchLoraOptions();
+            this._setConfigLoading(true);
         }
 
         // Debounce: reuse in-flight fetch for same repo
-        if (!force && serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId]) {
-            try {
-                const data = await serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId];
-                this.config = data;
-                this.statusText.textContent = data.name || "Control Center";
-                if (!this.state.output_slot_names) this.state.output_slot_names = [];
-                this._syncCustomModelInput();
-                this._renderAll();
-                this._dispatchLoraOptions();
-            } catch { /* already shown by the original caller */ }
-            return;
+        const previousPromise = serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId];
+        let fetchPromise = !force && previousPromise;
+        if (!fetchPromise) {
+            fetchPromise = (async () => {
+                try {
+                    const url = `/vnccs/control_center/check?repo_id=${encodeURIComponent(repoId)}${force ? "&force_refresh=true" : ""}`;
+                    const r = await api.fetchApi(url);
+                    const data = await r.json();
+                    if (!r.ok) throw new Error(data.error || `Catalog request failed (${r.status})`);
+                    if (data.error) throw new Error(data.error);
+                    if (serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId] === fetchPromise) {
+                        serverRegistry("VNCCS_CC_REGISTRY")[repoId] = data;
+                    }
+                    return data;
+                } finally {
+                    if (serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId] === fetchPromise) {
+                        delete serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId];
+                    }
+                }
+            })();
+            serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId] = fetchPromise;
+            if (previousPromise) previousPromise.replacement = fetchPromise;
         }
 
-        const fetchPromise = (async () => {
-            try {
-                const url = `/vnccs/control_center/check?repo_id=${encodeURIComponent(repoId)}${force ? "&force_refresh=true" : ""}`;
-                const r = await api.fetchApi(url);
-                const data = await r.json();
-                if (data.error) throw new Error(data.error);
-                serverRegistry("VNCCS_CC_REGISTRY")[repoId] = data;
-                return data;
-            } finally {
-                delete serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId];
-            }
-        })();
-
-        serverRegistry("VNCCS_CC_FETCH_PROMISES")[repoId] = fetchPromise;
-
         try {
-            const data = await fetchPromise;
+            let data;
+            while (true) {
+                try { data = await fetchPromise; }
+                catch (error) { if (!fetchPromise.replacement) throw error; }
+                if (!isCurrent()) return;
+                if (!fetchPromise.replacement) break;
+                fetchPromise = fetchPromise.replacement;
+            }
+            if (!isCurrent() || serverRegistry("VNCCS_CC_REGISTRY")[repoId] !== data) return;
             this.config = data;
             this.statusText.textContent = data.name || "Control Center";
             storage.setItem(cacheKey, JSON.stringify(data));
             this._syncCnetSlots(data);
             this._syncCustomModelInput();
-            await this._refreshDependencyStatus(true);
-            this._renderAll();
+            if (preserveCards) {
+                this._downloadRefreshPending = false;
+                this._updateDownloadIndicators();
+            } else this._renderAll();
             this._dispatchLoraOptions();
             window.dispatchEvent(new CustomEvent("vnccs-cc-registry-updated", {
-                detail: { repo_id: repoId }
+                detail: { repo_id: repoId, download_update: preserveCards }
             }));
         } catch (e) {
+            if (!isCurrent()) return;
             this.statusText.textContent = "Error";
+            if (preserveCards) return;
             this.scrollArea.innerHTML = "";
             const err = document.createElement("div");
             err.className = "vnccs-cc-error";
             err.textContent = "✕ " + e.message;
             this.scrollArea.appendChild(err);
+        } finally {
+            if (isCurrent()) this._setConfigLoading(false);
         }
     }
 
@@ -2775,11 +3217,12 @@ class VNCCSControlCenterWidget {
         return status === "missing" || status === "error" || status === "outdated";
     }
 
-    _downloadLabel(status) {
-        return status === "outdated" ? "↑ Update" : "⬇ Download";
-    }
-
-    _statusLabel(status, dls = {}) {
+    _statusLabel(status, dls = {}, compact = false) {
+        if (compact) {
+            if (status === "downloading") return Number.isFinite(dls.progress) ? `${Math.round(Math.max(0, Math.min(100, dls.progress)))}%` : "Loading";
+            if (status === "queued") return "Queued";
+            if (status === "success") return "Checking";
+        }
         if (status === "installed") return "✓ Installed";
         if (status === "outdated") return "↑ Update";
         if (status === "queued") return "⏳ Queued";
@@ -2789,24 +3232,127 @@ class VNCCSControlCenterWidget {
         return "↓ Missing";
     }
 
-    _renderAll() {
+    _playMotion(element, keyframes, duration = 240, onFinish) {
+        return playSakuraMotion(this, element, keyframes, duration, onFinish);
+    }
+
+    _stopMotion() {
+        return stopSakuraMotion(this);
+    }
+
+    _captureMotion() {
+        const snapshot = new Map();
+        if (!this.container?.clientWidth || !this.scrollArea?.getBoundingClientRect) return snapshot;
+        const root = this.container.getBoundingClientRect();
+        const scaleX = root.width / this.container.clientWidth || 1;
+        const scaleY = root.height / this.container.clientHeight || 1;
+        for (const element of this.scrollArea.querySelectorAll(".vnccs-cc-block, [data-download-key], .vnccs-cc-input[data-focus-key], .vnccs-cc-family-tab--active, .vnccs-cc-model-tab--active")) {
+            if (!element.classList.contains("vnccs-cc-block") && element.closest(".vnccs-cc-block--collapsed")) continue;
+            const rect = element.getBoundingClientRect();
+            if (!rect.width || !rect.height || rect.bottom < root.top || rect.top > root.bottom) continue;
+            const key = element.dataset.blockKey ? `block:${element.dataset.blockKey}`
+                : element.dataset.downloadKey ? `card:${element.dataset.downloadKey}`
+                : element.classList.contains("vnccs-cc-family-tab--active") ? "tab:family"
+                : element.classList.contains("vnccs-cc-model-tab--active") ? "tab:type"
+                : `param:${element.dataset.focusKey}`;
+            snapshot.set(key, {
+                element, x: (rect.left - root.left) / scaleX, y: (rect.top - root.top) / scaleY,
+                width: rect.width / scaleX, height: rect.height / scaleY,
+                signature: `${element.className}|${element.textContent}|${element.value ?? ""}`,
+            });
+        }
+        return snapshot;
+    }
+
+    _motionGhost(previous, tab = false) {
+        const ghost = tab ? document.createElement("div") : previous.element.cloneNode(true);
+        ghost.removeAttribute("id");
+        for (const child of ghost.querySelectorAll("[id]")) child.removeAttribute("id");
+        ghost.classList.add("vnccs-cc-motion-ghost");
+        if (tab) ghost.classList.add("vnccs-cc-tab-glide");
+        ghost.inert = true;
+        ghost.ariaHidden = "true";
+        Object.assign(ghost.style, { left: `${previous.x}px`, top: `${previous.y}px`, width: `${previous.width}px`, height: `${previous.height}px` });
+        this.container.appendChild(ghost);
+        return ghost;
+    }
+
+    _animateView(before) {
+        if (!before.size || !this.scrollArea?.animate || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+        const after = this._captureMotion();
+        for (const [key, current] of after) {
+            const previous = before.get(key);
+            const dx = previous ? previous.x - current.x : 0;
+            const dy = previous ? previous.y - current.y : 0;
+            if (key.startsWith("block:")) {
+                if (Math.abs(dx) + Math.abs(dy) > 1) {
+                    this._playMotion(current.element, [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }]);
+                }
+            } else if (key.startsWith("tab:")) {
+                if (previous && previous.signature !== current.signature) {
+                    animateSakuraIndicator(this, previous, current);
+                }
+            } else if (!previous || previous.signature !== current.signature) {
+                if (previous && previous.element !== current.element) {
+                    const ghost = this._motionGhost(previous);
+                    this._playMotion(ghost, [{ opacity: 1 }, { opacity: 0, transform: "translateY(-5px)" }], 160, () => ghost.remove());
+                }
+                this._playMotion(current.element, [{ opacity: 0, transform: "translateY(6px)" }, { opacity: 1, transform: "none" }]);
+            } else if (Math.abs(dx) + Math.abs(dy) > 1) {
+                this._playMotion(current.element, [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }]);
+            }
+        }
+        for (const [key, previous] of before) {
+            if (!key.startsWith("card:") || after.has(key)) continue;
+            const ghost = this._motionGhost(previous);
+            this._playMotion(ghost, [{ opacity: 1 }, { opacity: 0, transform: "translateY(-5px)" }], 160, () => ghost.remove());
+        }
+    }
+
+    _renderAll(options) {
         if (!this.config) return;
+        this._preserveView(() => this._renderContent(), options);
+    }
+
+    _preserveView(render, { preserveDraft = true } = {}) {
+        this._closeDropdown(false);
+        const before = this._captureMotion();
         const renderSequence = (this._renderSequence ?? 0) + 1;
         this._renderSequence = renderSequence;
         const previousScrollTop = this.scrollArea.scrollTop;
         const previousScrollLeft = this.scrollArea.scrollLeft;
-        this.scrollArea.innerHTML = "";
-
-        // TECH DEBT: legacy Nunchaku error rendering disabled. Delete after
-        // stale workflow state cannot select Nunchaku anymore.
-        /*
-        if (this._getSelectedType() === "nunchaku" && this.dependencyStatus && !this.dependencyStatus.ok) {
-            const err = document.createElement("div");
-            err.className = "vnccs-cc-error";
-            err.textContent = "✕ " + this.dependencyStatus.message;
-            this.scrollArea.appendChild(err);
+        const active = document.activeElement;
+        const focusKey = this.scrollArea.contains(active) ? active.dataset?.focusKey : null;
+        const draft = preserveDraft && focusKey && active.tagName === "INPUT" && active.type === "number" ? active.value : null;
+        render();
+        for (const animation of [...(this._motionAnimations || [])]) {
+            const target = animation.effect?.target;
+            if (target && (!target.isConnected || target.classList.contains("vnccs-cc-motion-ghost"))) animation.cancel();
         }
-        */
+        if (focusKey) {
+            const replacement = [...this.scrollArea.querySelectorAll("[data-focus-key]")]
+                .find(element => element.dataset.focusKey === focusKey);
+            if (replacement && !replacement.closest?.(".vnccs-cc-disclosure")?.inert) {
+                if (draft !== null) replacement.value = draft;
+                replacement.focus({ preventScroll: true });
+            }
+        }
+        this.scrollArea.scrollTop = previousScrollTop;
+        this.scrollArea.scrollLeft = previousScrollLeft;
+        const restoredTop = this.scrollArea.scrollTop;
+        const restoredLeft = this.scrollArea.scrollLeft;
+        this._animateView(before);
+        requestAnimationFrame(() => {
+            if (this._removed || !this.scrollArea?.isConnected || this._renderSequence !== renderSequence) return;
+            // A deliberate scroll after rendering takes precedence over restoration.
+            if (this.scrollArea.scrollTop !== restoredTop || this.scrollArea.scrollLeft !== restoredLeft) return;
+            this.scrollArea.scrollTop = previousScrollTop;
+            this.scrollArea.scrollLeft = previousScrollLeft;
+        });
+    }
+
+    _renderContent() {
+        this.scrollArea.innerHTML = "";
 
         const selType = this._getSelectedType();
         const isCP    = selType === "checkpoint";
@@ -2862,10 +3408,11 @@ class VNCCSControlCenterWidget {
         this._renderCustomLoraBlock();
 
         const modelBlock = this.scrollArea?.querySelector(`.vnccs-cc-block[data-block-key="models"]`);
+        const modelContent = modelBlock?.querySelector(".vnccs-cc-disclosure-inner");
         const cacheInline = this._buildQI2CacheInlineSection();
-        if (cacheInline) modelBlock?.appendChild(cacheInline);
+        if (cacheInline) modelContent?.appendChild(cacheInline);
         const turboInline = this._buildModelTurboInlineSection();
-        if (turboInline) modelBlock?.appendChild(turboInline);
+        if (turboInline) modelContent?.appendChild(turboInline);
 
         // CONTROLNET / OTHER
         this._renderBlock("CONTROLNET", this.config.controlnet, "controlnet",
@@ -2873,13 +3420,6 @@ class VNCCSControlCenterWidget {
         this._renderBlock("OTHER", this.config.other, "other",
             e => this._renderCnetEntry("other", e));
 
-        this.scrollArea.scrollTop = previousScrollTop;
-        this.scrollArea.scrollLeft = previousScrollLeft;
-        requestAnimationFrame(() => {
-            if (!this.scrollArea?.isConnected || this._renderSequence !== renderSequence) return;
-            this.scrollArea.scrollTop = previousScrollTop;
-            this.scrollArea.scrollLeft = previousScrollLeft;
-        });
     }
 
     _renderFamilyTabs() {
@@ -2893,6 +3433,7 @@ class VNCCSControlCenterWidget {
             button.className = "vnccs-cc-family-tab";
             button.textContent = family.label;
             button.dataset.kind = family.kind;
+            button.dataset.focusKey = `family-${family.kind}`;
             button.setAttribute("role", "tab");
             button.setAttribute("aria-selected", String(family.kind === activeKind));
             button.setAttribute("aria-label", `${family.label} model family`);
@@ -2914,17 +3455,11 @@ class VNCCSControlCenterWidget {
         return tabs;
     }
 
-    _divider() {
-        const d = document.createElement("div");
-        d.className = "vnccs-cc-divider";
-        return d;
-    }
-
     // Generic single-column collapsible block
     _renderBlock(title, entries, key, rowFn) {
         const collapsed = this.state.collapsed?.[key] ?? false;
         const block = this._blockShell(title, entries?.length ?? 0, key, collapsed);
-        if (!collapsed) {
+        {
             const body = document.createElement("div");
             body.className = "vnccs-cc-block-body";
             (entries ?? []).forEach(e => body.appendChild(rowFn(e)));
@@ -2936,7 +3471,7 @@ class VNCCSControlCenterWidget {
             }
             block.appendChild(body);
         }
-        this.scrollArea.appendChild(block);
+        this.scrollArea.appendChild(this._finishBlock(block));
     }
 
     _buildClipVaeBlock() {
@@ -2948,7 +3483,7 @@ class VNCCSControlCenterWidget {
         const collapsed = this.state.collapsed?.clip_vae ?? false;
         const block = this._blockShell("CLIP + VAE", entries.length, "clip_vae", collapsed);
 
-        if (!collapsed) {
+        {
             const body = document.createElement("div");
             body.className = "vnccs-cc-card-grid";
 
@@ -2964,51 +3499,11 @@ class VNCCSControlCenterWidget {
             block.appendChild(body);
         }
 
-        return block;
+        return this._finishBlock(block);
     }
 
     _renderClipVaeBlock() {
         this.scrollArea.appendChild(this._buildClipVaeBlock());
-    }
-
-    _buildTurboModelBlock() {
-        const selectedKind = this._selectedKind();
-        const entries = (this.config.lora || []).filter(entry =>
-            !entry.custom && this._isTurboLora(entry) && this._exactKind(entry, selectedKind)
-        );
-        const collapsed = this.state.collapsed?.turbo_model ?? false;
-        const block = this._blockShell("TURBO MODEL", entries.length, "turbo_model", collapsed);
-
-        if (!collapsed) {
-            const body = document.createElement("div");
-            body.className = "vnccs-cc-lora-sections";
-
-            const grid = document.createElement("div");
-            grid.className = "vnccs-cc-lora-grid vnccs-cc-lora-grid--compact";
-            entries.forEach(entry => {
-                const ls = (this.state.loras ?? []).find(l => l.name === entry.name);
-                grid.appendChild(this._renderLoraCard(entry, {
-                    compact: true,
-                    active: ls?.auto_apply === true,
-                    mode: "turbo",
-                }));
-            });
-
-            if (entries.length) body.appendChild(grid);
-            else {
-                const empty = document.createElement("div");
-                empty.className = "vnccs-cc-block-empty";
-                empty.textContent = "No entries";
-                body.appendChild(empty);
-            }
-            block.appendChild(body);
-        }
-
-        return block;
-    }
-
-    _renderTurboModelBlock() {
-        this.scrollArea.appendChild(this._buildTurboModelBlock());
     }
 
     _buildLoraBlock() {
@@ -3019,7 +3514,7 @@ class VNCCSControlCenterWidget {
         const collapsed = this.state.collapsed?.lora ?? false;
         const block = this._blockShell("LORA", entries.length, "lora", collapsed);
 
-        if (!collapsed) {
+        {
             const body = document.createElement("div");
             body.className = "vnccs-cc-lora-sections";
 
@@ -3038,7 +3533,7 @@ class VNCCSControlCenterWidget {
             block.appendChild(body);
         }
 
-        return block;
+        return this._finishBlock(block);
     }
 
     _buildCustomLoraBlock() {
@@ -3051,7 +3546,7 @@ class VNCCSControlCenterWidget {
         const collapsed = this.state.collapsed?.custom_lora ?? false;
         const block = this._blockShell("CUSTOM LORAS", entries.length, "custom_lora", collapsed);
 
-        if (!collapsed) {
+        {
             const body = document.createElement("div");
             body.className = "vnccs-cc-lora-sections";
 
@@ -3100,6 +3595,8 @@ class VNCCSControlCenterWidget {
             addWrap.className = "vnccs-cc-lora-add-wrap";
 
             const addBtn = document.createElement("button");
+            addBtn.type = "button";
+            addBtn.dataset.focusKey = "add-custom-lora";
             addBtn.className = "vnccs-cc-lora-add-btn";
             addBtn.textContent = "+ Add Custom LoRA";
             addBtn.onclick = () => this._showCustomLoraDialog();
@@ -3114,7 +3611,7 @@ class VNCCSControlCenterWidget {
             block.appendChild(body);
         }
 
-        return block;
+        return this._finishBlock(block);
     }
 
     _renderLoraBlock() {
@@ -3136,9 +3633,11 @@ class VNCCSControlCenterWidget {
 
     _refreshLoraBlock() {
         if (!this.config) return;
-        this._replaceBlock("lora", this._buildLoraBlock());
-        this.scrollArea?.querySelector(`.vnccs-cc-block[data-block-key="turbo_model"]`)?.remove();
-        this._replaceBlock("custom_lora", this._buildCustomLoraBlock());
+        this._preserveView(() => {
+            this._replaceBlock("lora", this._buildLoraBlock());
+            this.scrollArea?.querySelector(`.vnccs-cc-block[data-block-key="turbo_model"]`)?.remove();
+            this._replaceBlock("custom_lora", this._buildCustomLoraBlock());
+        });
     }
 
     async _removeCustomLora(entry) {
@@ -3147,8 +3646,13 @@ class VNCCSControlCenterWidget {
             this.showMessage("Load control center config first.", true);
             return;
         }
+        const state = this.state;
+        const kind = this._activeKind();
+        const isCurrent = () => !this._removed && !this._stateRestoreError && this.state === state
+            && this._getRepoId() === repoId && this._activeKind() === kind;
 
         this.showConfirm(`Remove custom LoRA \"${entry.name}\" from the list?`, async () => {
+            if (!isCurrent()) return;
             try {
                 const response = await api.fetchApi("/vnccs/control_center/custom_lora/delete", {
                     method: "POST",
@@ -3162,13 +3666,13 @@ class VNCCSControlCenterWidget {
                 const result = await response.json();
                 if (!response.ok || result.error) throw new Error(result.error || "Failed to remove custom LoRA");
 
+                delete serverRegistry("VNCCS_CC_REGISTRY")[repoId];
+                if (!isCurrent()) return;
                 this.state.loras = (this.state.loras || []).filter(lora => lora.name !== entry.name);
                 this._saveState();
-                delete serverRegistry("VNCCS_CC_REGISTRY")[repoId];
                 await this.fetchConfig(repoId, true);
-                this._refreshLoraBlock();
             } catch (error) {
-                this.showMessage(String(error?.message || error), true);
+                if (isCurrent()) this.showMessage(String(error?.message || error), true);
             }
         });
     }
@@ -3179,6 +3683,10 @@ class VNCCSControlCenterWidget {
             this.showMessage("Load control center config first.", true);
             return;
         }
+        const state = this.state;
+        const kind = this._activeKind();
+        const isCurrent = () => !this._removed && !this._stateRestoreError && this.state === state
+            && this._getRepoId() === repoId && this._activeKind() === kind;
 
         let payload;
         try {
@@ -3186,9 +3694,10 @@ class VNCCSControlCenterWidget {
             payload = await response.json();
             if (!response.ok || payload.error) throw new Error(payload.error || "Failed to load LoRA list");
         } catch (error) {
-            this.showMessage(String(error?.message || error), true);
+            if (isCurrent()) this.showMessage(String(error?.message || error), true);
             return;
         }
+        if (!isCurrent()) return;
 
         const items = (payload.items || []).filter(item => !item.already_added);
         if (!items.length) {
@@ -3217,21 +3726,17 @@ class VNCCSControlCenterWidget {
         const selectLabel = document.createElement("label");
         selectLabel.className = "vnccs-cc-settings-label";
         selectLabel.textContent = "LoRA File";
-        const select = document.createElement("select");
-        select.className = "vnccs-cc-settings-select";
-        items.forEach(item => {
-            const option = document.createElement("option");
-            option.value = item.path;
-            option.textContent = item.path;
-            select.appendChild(option);
-        });
-        selectWrap.append(selectLabel, select);
+        const select = this._selectControl("vnccs-cc-lora-file", items.map(item => item.path), items[0].path, null, "vnccs-cc-settings-select");
+        select.ariaLabel = "LoRA file";
+        selectLabel.appendChild(select);
+        selectWrap.appendChild(selectLabel);
         panel.appendChild(selectWrap);
 
         const btns = document.createElement("div");
         btns.className = "vnccs-cc-settings-btns";
         const cancelBtn = this._btn("Cancel", () => ov.remove());
         const saveBtn = this._btn("Add", async () => {
+            if (!isCurrent()) { ov.remove(); return; }
             const path = select.value;
             if (!path) return;
             saveBtn.disabled = true;
@@ -3240,16 +3745,17 @@ class VNCCSControlCenterWidget {
                 const response = await api.fetchApi("/vnccs/control_center/custom_lora", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ repo_id: repoId, path, kind: this._activeKind() }),
+                    body: JSON.stringify({ repo_id: repoId, path, kind }),
                 });
                 const result = await response.json();
                 if (!response.ok || result.error) throw new Error(result.error || "Failed to add custom LoRA");
 
                 ov.remove();
                 delete serverRegistry("VNCCS_CC_REGISTRY")[repoId];
+                if (!isCurrent()) return;
                 await this.fetchConfig(repoId, true);
-                this._refreshLoraBlock();
             } catch (error) {
+                if (!isCurrent()) { ov.remove(); return; }
                 saveBtn.disabled = false;
                 saveBtn.textContent = "Add";
                 this.showMessage(String(error?.message || error), true);
@@ -3261,14 +3767,14 @@ class VNCCSControlCenterWidget {
 
         ov.appendChild(panel);
         ov.onclick = e => { if (e.target === ov) ov.remove(); };
-        this.container.appendChild(ov);
+        this._mountOverlay(ov, panel, title.textContent);
     }
 
     // Two-column block with a single pre-built row (MODEL slot)
     _renderTwoColBlockSingle(title, count, key, rowFn, rightFn, rightFn2 = null, topFn = null, showEmptyLeft = true, renderLeftWhenEmpty = false) {
         const collapsed = this.state.collapsed?.[key] ?? false;
         const block = this._blockShell(title, count, key, collapsed);
-        if (!collapsed) {
+        {
             if (topFn) {
                 block.appendChild(topFn());
             }
@@ -3307,44 +3813,40 @@ class VNCCSControlCenterWidget {
 
             block.appendChild(wrap);
         }
-        this.scrollArea.appendChild(block);
+        this.scrollArea.appendChild(this._finishBlock(block));
     }
 
-    // Two-column block: left=list, right=panel
-    _renderTwoColBlock(title, entries, key, rowFn, rightFn) {
-        const collapsed = this.state.collapsed?.[key] ?? false;
-        const block = this._blockShell(title, entries?.length ?? 0, key, collapsed);
-        if (!collapsed) {
-            const row = document.createElement("div");
-            row.className = "vnccs-cc-twocol";
+    _finishBlock(block, collapsed = Boolean(this.state.collapsed?.[block.dataset.blockKey])) {
+        const disclosure = document.createElement("div");
+        disclosure.className = "vnccs-cc-disclosure";
+        const inner = document.createElement("div");
+        inner.className = "vnccs-cc-disclosure-inner";
+        for (const child of [...block.children].slice(1)) inner.appendChild(child);
+        disclosure.appendChild(inner);
+        block.appendChild(disclosure);
+        this._setDisclosure(block, collapsed);
+        return block;
+    }
 
-            const left = document.createElement("div");
-            left.className = "vnccs-cc-twocol-left";
-            (entries ?? []).forEach(e => left.appendChild(rowFn(e)));
-            if (!entries?.length) {
-                const empty = document.createElement("div");
-                empty.className = "vnccs-cc-block-empty";
-                empty.textContent = "No entries";
-                left.appendChild(empty);
-            }
-
-            const right = document.createElement("div");
-            right.className = "vnccs-cc-twocol-right";
-            right.appendChild(rightFn());
-
-            row.append(left, right);
-            block.appendChild(row);
-        }
-        this.scrollArea.appendChild(block);
+    _setDisclosure(block, collapsed) {
+        block.classList.toggle("vnccs-cc-block--collapsed", collapsed);
+        block.firstChild.ariaExpanded = String(!collapsed);
+        const disclosure = block.querySelector(".vnccs-cc-disclosure");
+        disclosure.inert = collapsed;
+        disclosure.ariaHidden = String(collapsed);
     }
 
     _blockShell(title, count, key, collapsed) {
         const block = document.createElement("div");
         block.className = "vnccs-cc-block";
+        block.classList.toggle("vnccs-cc-block--collapsed", collapsed);
         block.dataset.blockKey = key;
 
-        const hdr = document.createElement("div");
+        const hdr = document.createElement("button");
+        hdr.type = "button";
         hdr.className = "vnccs-cc-block-hdr";
+        hdr.ariaExpanded = String(!collapsed);
+        hdr.dataset.focusKey = `block-${key}`;
 
         const titleWrap = document.createElement("span");
         titleWrap.textContent = title;
@@ -3355,13 +3857,19 @@ class VNCCSControlCenterWidget {
 
         const arrow = document.createElement("span");
         arrow.className = "vnccs-cc-block-arrow";
-        arrow.textContent = collapsed ? "▶" : "▼";
+        arrow.textContent = "▼";
+        arrow.ariaHidden = "true";
 
         hdr.append(titleWrap, arrow);
         hdr.onclick = () => {
-            if (!this.state.collapsed) this.state.collapsed = {};
-            this.state.collapsed[key] = !this.state.collapsed[key];
-            this._saveState(); this._renderAll();
+            this._preserveView(() => {
+                this.state.collapsed ??= {};
+                const collapsed = !this.state.collapsed[key];
+                this.state.collapsed[key] = collapsed;
+                this._setDisclosure(block, collapsed);
+                if (collapsed) hdr.focus({ preventScroll: true });
+                this._saveState();
+            });
         };
         block.appendChild(hdr);
         return block;
@@ -3381,11 +3889,14 @@ class VNCCSControlCenterWidget {
             button.className = "vnccs-cc-model-tab";
             if (tabType === type) button.classList.add("vnccs-cc-model-tab--active");
             button.textContent = tabType.toUpperCase();
+            button.ariaPressed = String(tabType === type);
+            button.dataset.focusKey = `model-type-${tabType}`;
 
             const hasVariants = tabType === "custom"
                 ? true
                 : this._visibleModelsByType(tabType).length > 0;
             if (!hasVariants) button.classList.add("vnccs-cc-model-tab--missing");
+            button.ariaLabel = hasVariants ? `${tabType} models` : `${tabType} (no compatible models)`;
 
             button.onclick = () => this._setSelectedType(tabType);
             tabsRow.appendChild(button);
@@ -3406,7 +3917,7 @@ class VNCCSControlCenterWidget {
         card.className = "vnccs-cc-model-card";
         this._applyProgressLayer(card, key, dls);
 
-        // Top: badge + name + status label
+        // Top: badge + name + status or download button
         const top = document.createElement("div");
         top.className = "vnccs-cc-model-card-top";
         top.appendChild(this._badge(status));
@@ -3416,22 +3927,7 @@ class VNCCSControlCenterWidget {
         nameEl.textContent = cur.name;
         top.appendChild(nameEl);
 
-        const statusLbl = document.createElement("span");
-        statusLbl.className = "vnccs-cc-model-card-status";
-        if (status === "installed") {
-            statusLbl.textContent = this._statusLabel(status, dls);
-            statusLbl.classList.add("vnccs-cc-model-card-status--ok");
-        } else if (status === "downloading" || status === "queued") {
-            statusLbl.textContent = this._statusLabel(status, dls);
-            statusLbl.classList.add("vnccs-cc-model-card-status--progress");
-        } else if (status === "outdated") {
-            statusLbl.textContent = this._statusLabel(status, dls);
-            statusLbl.classList.add("vnccs-cc-model-card-status--missing");
-        } else {
-            statusLbl.textContent = this._statusLabel(status, dls);
-            statusLbl.classList.add("vnccs-cc-model-card-status--missing");
-        }
-        top.appendChild(statusLbl);
+        this._mountDownloadStatus(card, top, "models", cur, "vnccs-cc-model-card-status");
         card.appendChild(top);
 
         // Description
@@ -3442,7 +3938,7 @@ class VNCCSControlCenterWidget {
             card.appendChild(desc);
         }
 
-        // Footer: variant dropdown at bottom + download button
+        // Footer: variant dropdown at bottom
         const footer = document.createElement("div");
         footer.className = "vnccs-cc-model-card-footer";
 
@@ -3459,17 +3955,19 @@ class VNCCSControlCenterWidget {
 
             const icon = s => ({ installed:"●", missing:"↓", outdated:"↑", queued:"…", downloading:"⬇", error:"✕", auth_required:"⚠" }[s] ?? "?");
 
-            const sel = document.createElement("select");
-            sel.className = "vnccs-cc-model-card-select";
-            variants.forEach(v => {
+            const choices = () => variants.map(v => {
+                v = this.config.models.find(entry => entry.name === v.name) || v;
                 const vDls = this.dlStatus[`cc_models_${v.name}`] ?? {};
-                const vSt  = this._resolveStatus(vDls.status, v.status);
-                const op = document.createElement("option");
-                op.value = v.name;
-                op.textContent = (v.name.slice(prefixLen) || v.name) + "  " + icon(vSt);
-                if (v.name === cur.name) op.selected = true;
-                sel.appendChild(op);
+                const vSt = this._resolveStatus(vDls.status, v.status);
+                return { value: v.name, label: (v.name.slice(prefixLen) || v.name) + "  " + icon(vSt) };
             });
+            const sel = this._selectControl("vnccs-cc-model-variant", choices(), cur.name, null, "vnccs-cc-model-card-select");
+            card._downloadView.refreshVariants = () => {
+                if (this._dropdown?.trigger !== sel) sel.setChoices(choices(), sel.value);
+            };
+            sel.ariaLabel = "Model variant";
+            sel.dataset.focusKey = "model-variant";
+            setHelpText(sel, cur.name);
             sel.onchange = () => {
                 const chosen = variants.find(v => v.name === sel.value);
                 if (chosen) {
@@ -3478,23 +3976,14 @@ class VNCCSControlCenterWidget {
                     this.state.selected_types_by_kind[this._activeKind()] = chosen.type || type;
                     this.state.selected_type  = chosen.type || type;
                     this._saveState();
-                    this._renderAll();
-                    this._scheduleDependencyRefresh(true);
+                    this._renderAll({ preserveDraft: false });
                 }
             };
             footer.appendChild(sel);
         }
 
-        if (status === "auth_required") {
-            const warning = document.createElement("span");
-            warning.className = "vnccs-cc-row-progress";
-            warning.textContent = "Authentication required";
-            footer.appendChild(warning);
-        } else if (this._isDownloadableStatus(status)) {
-            footer.appendChild(this._btn(this._downloadLabel(status), () => this._downloadEntry("models", cur)));
-        }
-
         if (footer.children.length) card.appendChild(footer);
+        this._updateDownloadCard(card, false);
         return card;
     }
 
@@ -3537,22 +4026,7 @@ class VNCCSControlCenterWidget {
         nameEl.textContent = entry.name;
         top.appendChild(nameEl);
 
-        const statusLbl = document.createElement("span");
-        statusLbl.className = "vnccs-cc-model-card-status";
-        if (status === "installed") {
-            statusLbl.textContent = this._statusLabel(status, dls);
-            statusLbl.classList.add("vnccs-cc-model-card-status--ok");
-        } else if (status === "downloading" || status === "queued") {
-            statusLbl.textContent = this._statusLabel(status, dls);
-            statusLbl.classList.add("vnccs-cc-model-card-status--progress");
-        } else if (status === "auth_required") {
-            statusLbl.textContent = this._statusLabel(status, dls);
-            statusLbl.classList.add("vnccs-cc-model-card-status--missing");
-        } else {
-            statusLbl.textContent = this._statusLabel(status, dls);
-            statusLbl.classList.add("vnccs-cc-model-card-status--missing");
-        }
-        top.appendChild(statusLbl);
+        this._mountDownloadStatus(card, top, cat, entry, "vnccs-cc-model-card-status");
         card.appendChild(top);
 
         if (entry.description) {
@@ -3562,13 +4036,7 @@ class VNCCSControlCenterWidget {
             card.appendChild(desc);
         }
 
-        if (this._isDownloadableStatus(status)) {
-            const footer = document.createElement("div");
-            footer.className = "vnccs-cc-model-card-footer";
-            footer.appendChild(this._btn(this._downloadLabel(status), () => this._downloadEntry(cat, entry)));
-            card.appendChild(footer);
-        }
-
+        this._updateDownloadCard(card, false);
         return card;
     }
 
@@ -3610,7 +4078,7 @@ class VNCCSControlCenterWidget {
             const wrap = document.createElement("div");
             wrap.className = "vnccs-cc-param-field";
             setHelpText(wrap, help);
-            wrap.append(this._label(labelText), control);
+            wrap.appendChild(this._label(labelText, control));
             return wrap;
         };
         strip.append(
@@ -3632,6 +4100,7 @@ class VNCCSControlCenterWidget {
     }
 
     _buildModelTurboInlineSection() {
+        if (this._isQi2TurboModel(this._getSelectedModelEntry())) return null;
         const entries = this._compatibleTurboLoras();
         if (!entries.length) return null;
 
@@ -3657,11 +4126,12 @@ class VNCCSControlCenterWidget {
 
         const row = document.createElement("div");
         row.className = "vnccs-cc-turbo-strip";
-        row.dataset.downloadKey = `cc_lora_${entry.name}`;
+        this._applyProgressLayer(row, `cc_lora_${entry.name}`, dls);
         row.classList.toggle("is-installed", installed);
         row.classList.toggle("is-active", active);
         if (installed) {
             row.onclick = () => this._selectTurboLora(entry.name, !active);
+            this._enableCardKeyboard(row, active, entry.name);
         }
 
         row.appendChild(this._badge(status));
@@ -3671,27 +4141,17 @@ class VNCCSControlCenterWidget {
         name.textContent = entry.name;
         row.appendChild(name);
 
-        const statusLbl = document.createElement("div");
-        statusLbl.className = "vnccs-cc-turbo-strip-status";
-        if (installed) {
-            statusLbl.textContent = active ? "Active" : "Installed";
-            statusLbl.classList.add(active ? "vnccs-cc-turbo-strip-status--active" : "vnccs-cc-turbo-strip-status--ok");
-        } else if (status === "downloading" || status === "queued") {
-            statusLbl.textContent = this._statusLabel(status, dls);
-            statusLbl.classList.add("vnccs-cc-turbo-strip-status--progress");
-        } else {
-            statusLbl.textContent = this._statusLabel(status, dls);
-            statusLbl.classList.add("vnccs-cc-turbo-strip-status--missing");
-        }
-        row.appendChild(statusLbl);
+        this._mountDownloadStatus(row, row, "lora", entry, "vnccs-cc-turbo-strip-status", "turbo");
 
-        if (installed) {
+        {
             const toggle = document.createElement("label");
             toggle.className = "vnccs-cc-toggle";
             toggle.onclick = event => event.stopPropagation();
             const input = document.createElement("input");
             input.type = "checkbox";
             input.checked = active;
+            input.ariaLabel = `Enable ${entry.name}`;
+            input.dataset.focusKey = `toggle-${entry.name}`;
             input.onchange = event => {
                 event.stopPropagation();
                 this._selectTurboLora(entry.name, event.target.checked);
@@ -3702,26 +4162,22 @@ class VNCCSControlCenterWidget {
             thumb.className = "vnccs-cc-toggle-thumb";
             toggle.append(input, track, thumb);
             row.appendChild(toggle);
-        } else if (status === "auth_required") {
-            const warning = document.createElement("span");
-            warning.className = "vnccs-cc-row-progress";
-            warning.textContent = "Authentication required";
-            row.appendChild(warning);
-        } else if (this._isDownloadableStatus(status)) {
-            const btn = this._btn(this._downloadLabel(status), () => this._downloadEntry("lora", entry));
-            btn.onclick = event => {
-                event.stopPropagation();
-                this._downloadEntry("lora", entry);
-            };
-            row.appendChild(btn);
         }
 
+        row.appendChild(row._downloadView.slot);
+        this._updateDownloadCard(row, false);
         return row;
     }
 
     _renderModelParams() {
         const p  = this._currentModelParams();
-        const mp = { steps: DEFAULT_MODEL_STEPS, cfg: DEFAULT_MODEL_CFG, ...p };
+        const family = this._familyDefinition();
+        const turbo = this._isQi2TurboModel(this._getSelectedModelEntry());
+        const steps = p.steps || (turbo ? 8 : family.steps ?? DEFAULT_MODEL_STEPS);
+        const mp = {
+            steps: Math.trunc(Number(typeof steps === "string" ? steps.replaceAll("_", "") : steps)),
+            cfg: p.cfg ?? (turbo ? 1.0 : family.cfg ?? DEFAULT_MODEL_CFG),
+        };
 
         const panel = document.createElement("div");
         panel.className = "vnccs-cc-params";
@@ -3734,8 +4190,7 @@ class VNCCSControlCenterWidget {
                 CFG: "Default prompt guidance strength shared with connected VNCCS generator nodes."
             }[labelText];
             setHelpText(wrap, help);
-            wrap.appendChild(this._label(labelText));
-            wrap.appendChild(el);
+            wrap.appendChild(this._label(labelText, el));
             return wrap;
         };
 
@@ -3749,7 +4204,8 @@ class VNCCSControlCenterWidget {
 
     _renderModelSamplerParams() {
         const p  = this._currentModelParams();
-        const mp = { sampler: "euler", scheduler: DEFAULT_MODEL_SCHEDULER, ...p };
+        const mp = { sampler: p.sampler || this._familyDefinition().sampler || "euler",
+            scheduler: p.scheduler || DEFAULT_MODEL_SCHEDULER };
 
         const panel = document.createElement("div");
         panel.className = "vnccs-cc-params vnccs-cc-params--right";
@@ -3762,8 +4218,7 @@ class VNCCSControlCenterWidget {
                 Scheduler: "Default scheduler/noise schedule shared with connected VNCCS generator nodes."
             }[labelText];
             setHelpText(wrap, help);
-            wrap.appendChild(this._label(labelText));
-            wrap.appendChild(el);
+            wrap.appendChild(this._label(labelText, el));
             return wrap;
         };
 
@@ -3775,68 +4230,12 @@ class VNCCSControlCenterWidget {
         return panel;
     }
 
-    // ── CLIP + VAE entry ──────────────────────────────────────────────────────
-
-    _renderClipVaeEntry(entry) {
-        const isClip = entry._cat === "clip";
-        const cat    = isClip ? "clip" : "vae";
-        const dls    = this.dlStatus[`cc_${cat}_${entry.name}`] ?? {};
-        const status = this._resolveStatus(dls.status, entry.status);
-
-        const key2 = `cc_${cat}_${entry.name}`;
-        const row = document.createElement("div");
-        row.className = "vnccs-cc-row vnccs-cc-row--clip-sel";
-        this._applyProgressLayer(row, key2, dls);
-
-        row.appendChild(this._badge(status));
-
-        const tag = document.createElement("span");
-        tag.className = "vnccs-cc-row-tag";
-        tag.textContent = isClip ? "CLIP" : "VAE";
-        row.appendChild(tag);
-
-        const nameWrap = document.createElement("div");
-        nameWrap.className = "vnccs-cc-row-name-wrap";
-        const name = document.createElement("span");
-        name.className = "vnccs-cc-row-name";
-        name.textContent = entry.name;
-        nameWrap.appendChild(name);
-        if (entry.description) {
-            const desc = document.createElement("span");
-            desc.className = "vnccs-cc-row-desc";
-            desc.textContent = entry.description;
-            nameWrap.appendChild(desc);
-        }
-        row.appendChild(nameWrap);
-
-        if (status === "downloading") {
-            const p = document.createElement("span");
-            p.className = "vnccs-cc-row-progress";
-            p.textContent = dls.message;
-            row.appendChild(p);
-        } else if (status === "queued") {
-            const p = document.createElement("span");
-            p.className = "vnccs-cc-row-progress";
-            p.textContent = "⏳ Queued";
-            row.appendChild(p);
-        } else if (status === "auth_required") {
-            const warning = document.createElement("span");
-            warning.className = "vnccs-cc-row-progress";
-            warning.textContent = "Authentication required";
-            row.appendChild(warning);
-        } else if (this._isDownloadableStatus(status)) {
-            row.appendChild(this._btn(status === "outdated" ? "↑" : "↓", () => this._downloadEntry(cat, entry)));
-        }
-        return row;
-    }
-
     // ── LORA entry ────────────────────────────────────────────────────────────
 
     _renderLoraCard(entry, options = {}) {
         const { active = false, compact = false, mode = "custom" } = options;
         const isPipeMode = mode === "pipe";
         const isTurboMode = mode === "turbo";
-        const isInteractive = mode === "custom" || isTurboMode;
         const ls  = (this.state.loras ?? []).find(l => l.name === entry.name)
             ?? { name: entry.name, auto_apply: false, strength: 1.0 };
         const dls = this.dlStatus[`cc_lora_${entry.name}`] ?? {};
@@ -3847,18 +4246,10 @@ class VNCCSControlCenterWidget {
         card.className = "vnccs-cc-model-card vnccs-cc-lora-card";
         if (active && !isPipeMode) card.classList.add("vnccs-cc-lora-card--active");
         if (compact) card.classList.add("vnccs-cc-lora-card--compact");
-        if (compact && this._isDownloadableStatus(status)) card.classList.add("vnccs-cc-lora-card--downloadable");
         if (entry.custom) card.classList.add("vnccs-cc-lora-card--has-remove");
         this._applyProgressLayer(card, loraKey, dls);
-        if (status === "installed" && isInteractive) {
-            card.onclick = () => {
-                if (isTurboMode) {
-                    this._selectTurboLora(entry.name, !ls.auto_apply);
-                } else {
-                    this._updateLora(entry.name, { auto_apply: !ls.auto_apply }, { commit: true, rerender: "lora" });
-                }
-            };
-        }
+        const tools = document.createElement("div");
+        tools.className = "vnccs-cc-lora-card-tools";
 
         if (entry.custom) {
             const removeBtn = document.createElement("button");
@@ -3866,24 +4257,13 @@ class VNCCSControlCenterWidget {
             removeBtn.className = "vnccs-cc-lora-remove-btn";
             removeBtn.textContent = "×";
             removeBtn.title = "Remove custom LoRA from list";
+            removeBtn.ariaLabel = `Remove ${entry.name} from list`;
+            removeBtn.dataset.focusKey = `remove-${entry.name}`;
             removeBtn.onclick = e => {
                 e.stopPropagation();
                 this._removeCustomLora(entry);
             };
-            card.appendChild(removeBtn);
-        }
-
-        if (compact && this._isDownloadableStatus(status)) {
-            const downloadBtn = document.createElement("button");
-            downloadBtn.type = "button";
-            downloadBtn.className = "vnccs-cc-lora-download-btn";
-            downloadBtn.textContent = status === "outdated" ? "Update" : "Download";
-            downloadBtn.title = this._downloadLabel(status);
-            downloadBtn.onclick = e => {
-                e.stopPropagation();
-                this._downloadEntry("lora", entry);
-            };
-            card.appendChild(downloadBtn);
+            tools.appendChild(removeBtn);
         }
 
         const top = document.createElement("div");
@@ -3896,75 +4276,40 @@ class VNCCSControlCenterWidget {
         const nameEl = document.createElement("span");
         nameEl.className = "vnccs-cc-lora-card-name";
         nameEl.textContent = entry.name;
+        nameEl.title = entry.name;
         meta.appendChild(nameEl);
 
-        const statusLbl = document.createElement("span");
-        statusLbl.className = "vnccs-cc-lora-card-status";
-        if (status === "installed") {
-            const effectiveActive = !isPipeMode && ls.auto_apply === true;
-            statusLbl.textContent = effectiveActive ? "Active" : "Pipe";
-            statusLbl.classList.add(effectiveActive ? "vnccs-cc-lora-card-status--active" : "vnccs-cc-lora-card-status--pipe");
-        } else if (status === "downloading" || status === "queued") {
-            statusLbl.textContent = this._statusLabel(status, dls);
-            statusLbl.classList.add("vnccs-cc-model-card-status--progress");
-        } else if (status === "outdated") {
-            statusLbl.textContent = this._statusLabel(status, dls);
-            statusLbl.classList.add("vnccs-cc-model-card-status--missing");
-        } else {
-            statusLbl.textContent = this._statusLabel(status, dls);
-            statusLbl.classList.add("vnccs-cc-model-card-status--missing");
-        }
-        if ((compact && status === "installed" && (isPipeMode || ls.auto_apply !== true)) ||
-            (active && status === "installed" && !isPipeMode && ls.auto_apply === true)) {
-            statusLbl.classList.add("vnccs-cc-lora-card-status--corner");
-            card.appendChild(statusLbl);
-        } else {
-            meta.appendChild(statusLbl);
-        }
+        this._mountDownloadStatus(card, tools, "lora", entry, "vnccs-cc-lora-card-status", mode);
         top.appendChild(meta);
+        if (tools.children.length) top.appendChild(tools);
         card.appendChild(top);
 
-        if (entry.description || entry.version) {
-            const detailRow = document.createElement("div");
-            detailRow.className = "vnccs-cc-lora-card-detail-row";
-
-            const desc = document.createElement("div");
-            desc.className = "vnccs-cc-lora-card-desc";
-            desc.textContent = entry.description || "";
-            detailRow.appendChild(desc);
-
-            if (entry.version) {
-                const versionEl = document.createElement("span");
-                versionEl.className = "vnccs-cc-lora-card-version";
-                versionEl.textContent = `v${entry.version}`;
-                versionEl.title = `Version ${entry.version}`;
-                detailRow.appendChild(versionEl);
-            }
-
-            card.appendChild(detailRow);
-        }
+        const detailRow = document.createElement("div");
+        detailRow.className = "vnccs-cc-lora-card-detail-row";
+        const desc = document.createElement("div");
+        desc.className = "vnccs-cc-lora-card-desc";
+        desc.textContent = desc.title = entry.description || "";
+        const versionEl = document.createElement("span");
+        versionEl.className = "vnccs-cc-lora-card-version";
+        versionEl.textContent = versionEl.title = entry.version ? `v${entry.version}` : "";
+        detailRow.append(desc, versionEl);
+        card.appendChild(detailRow);
 
         const footer = document.createElement("div");
         footer.className = active ? "vnccs-cc-lora-strength-row" : "vnccs-cc-lora-card-actions";
         footer.onclick = e => e.stopPropagation();
 
-        if (this._isDownloadableStatus(status) && !compact) {
-            const btn = this._btn(this._downloadLabel(status), () => this._downloadEntry("lora", entry));
-            btn.addEventListener("click", e => e.stopPropagation());
-            footer.appendChild(btn);
-        } else if (status === "auth_required") {
-            const warning = document.createElement("span");
-            warning.className = "vnccs-cc-row-progress";
-            warning.textContent = "Authentication required";
-            footer.appendChild(warning);
-        } else if (status === "installed" && active && !isPipeMode && !isTurboMode) {
+        if (status === "installed" && active && !isPipeMode && !isTurboMode) {
+                const strength = Number(typeof ls.strength === "string" ? ls.strength.replaceAll("_", "") : ls.strength ?? 1.0);
                 const slider = document.createElement("input");
                 slider.type = "range";
-                slider.min = -2;
-                slider.max = 2;
+                slider.min = Math.min(-2, strength);
+                slider.max = Math.max(2, strength);
                 slider.step = 0.05;
-                slider.value = ls.strength ?? 1.0;
+                slider.value = strength;
                 slider.className = "vnccs-cc-lora-slider";
+                slider.ariaLabel = `${entry.name} strength`;
+                slider.dataset.focusKey = `strength-${entry.name}`;
 
                 slider.onpointerdown = () => {
                     this._draggingLoraSlider = true;
@@ -3982,12 +4327,12 @@ class VNCCSControlCenterWidget {
 
                 const val = document.createElement("span");
                 val.className = "vnccs-cc-lora-val";
-                val.textContent = parseFloat(slider.value).toFixed(2);
+                val.textContent = strength.toFixed(2);
 
                 slider.oninput = () => {
                     const strength = parseFloat(slider.value);
                     val.textContent = strength.toFixed(2);
-                    this._updateLora(entry.name, { strength }, { commit: false, persist: false });
+                    this._updateLora(entry.name, { strength }, { commit: false });
                 };
 
                 slider.onchange = () => {
@@ -4000,6 +4345,7 @@ class VNCCSControlCenterWidget {
         }
 
         if (footer.children.length) card.appendChild(footer);
+        this._updateDownloadCard(card, false);
         return card;
     }
 
@@ -4014,7 +4360,6 @@ class VNCCSControlCenterWidget {
             this._refreshLoraBlock();
         }
         if (commit) {
-            this._scheduleDependencyRefresh(true, 120, false);
         }
     }
 
@@ -4050,8 +4395,7 @@ class VNCCSControlCenterWidget {
         }
 
         this._saveState();
-        this._renderAll();
-        this._scheduleDependencyRefresh(true, 120, false);
+        this._renderAll({ preserveDraft: false });
     }
 
     // ── CONTROLNET / OTHER entry ──────────────────────────────────────────────
@@ -4081,46 +4425,9 @@ class VNCCSControlCenterWidget {
         }
         row.appendChild(nameWrap);
 
-        if (status === "downloading") {
-            const p = document.createElement("span");
-            p.className = "vnccs-cc-row-progress";
-            p.textContent = dls.message;
-            row.appendChild(p);
-        } else if (status === "queued") {
-            const p = document.createElement("span");
-            p.className = "vnccs-cc-row-progress";
-            p.textContent = "⏳ Queued";
-            row.appendChild(p);
-        } else if (status === "auth_required") {
-            const warning = document.createElement("span");
-            warning.className = "vnccs-cc-row-progress";
-            warning.textContent = "Authentication required";
-            row.appendChild(warning);
-        } else if (this._isDownloadableStatus(status)) {
-            row.appendChild(this._btn(status === "outdated" ? "↑" : "↓", () => this._downloadEntry(cat, entry)));
-        }
+        this._mountDownloadStatus(row, row, cat, entry, "vnccs-cc-model-card-status");
+        this._updateDownloadCard(row, false);
         return row;
-    }
-
-    // ── Output slot management ────────────────────────────────────────────────
-    // Control Center exposes only slot 0 = pipe.
-
-    _assignSlot(name) {
-        if (!this.state.output_slot_names) this.state.output_slot_names = [];
-        this.state.output_slot_names.push(name);
-        this.node.addOutput(name, "*");
-        this.node.setDirtyCanvas(true, true);
-    }
-
-    _freeSlot(name) {
-        if (!this.state.output_slot_names) return;
-        const stateIdx = this.state.output_slot_names.indexOf(name);
-        if (stateIdx === -1) return;
-        // Find actual slot index in node.outputs (skip slot 0 = pipe)
-        const outIdx = (this.node.outputs ?? []).findIndex((o, i) => i > 0 && o.name === name);
-        if (outIdx >= 0) this.node.removeOutput(outIdx);
-        this.state.output_slot_names.splice(stateIdx, 1);
-        this.node.setDirtyCanvas(true, true);
     }
 
     _syncOutputSlots() {
@@ -4139,6 +4446,9 @@ class VNCCSControlCenterWidget {
     // ── Settings overlay ──────────────────────────────────────────────────────
 
     _showSettings() {
+        const state = this.state;
+        const repoId = this._getRepoId();
+        const kind = this._activeKind();
         const ov = document.createElement("div");
         ov.className = "vnccs-cc-settings-overlay";
 
@@ -4146,39 +4456,25 @@ class VNCCSControlCenterWidget {
         panel.className = "vnccs-cc-settings-panel";
 
         const ts   = this.state.type_settings ?? {};
-        const sel  = this._getSelectedType() || "unet";
         const unet = ts.unet ?? {};
-        // TECH DEBT: legacy Nunchaku settings are disabled. Delete after stale
-        // workflow state no longer stores type_settings.nunchaku.
-        // const nun  = ts.nunchaku ?? {};
 
         const field = (labelText, el) => {
             const w = document.createElement("div");
             w.className = "vnccs-cc-settings-field";
             const help = {
                 "Weight Dtype": "Precision mode for UNet loading. Default follows the loader; fp8 modes can reduce memory use.",
-                // TECH DEBT: Nunchaku settings help removed with disabled UI.
-                // "CPU Offload": "Controls whether Nunchaku can offload model blocks to CPU memory.",
-                // "Blocks On GPU": "How many Nunchaku blocks should stay on GPU. Higher uses more VRAM and can be faster.",
-                // "Pinned Memory": "Enables pinned CPU memory for Nunchaku transfers when supported."
             }[labelText];
             setHelpText(w, help);
             const l = document.createElement("label");
             l.className = "vnccs-cc-settings-label";
             l.textContent = labelText;
-            w.append(l, el); return w;
+            l.appendChild(el);
+            w.appendChild(l); return w;
         };
         const mkSel = (id, opts, val) => {
-            const s = document.createElement("select");
-            s.id = id;
-            s.className = "vnccs-cc-settings-select";
-            opts.forEach(o => {
-                const op = document.createElement("option");
-                op.value = op.textContent = o;
-                if (o === val) op.selected = true;
-                s.appendChild(op);
-            });
-            return s;
+            const control = this._selectControl(id, opts, val, null, "vnccs-cc-settings-select");
+            control.ariaLabel = "Weight Dtype";
+            return control;
         };
         const title = document.createElement("h3");
         title.className = "vnccs-cc-settings-title";
@@ -4186,86 +4482,20 @@ class VNCCSControlCenterWidget {
         panel.appendChild(title);
 
         // UNet
-        const unetDet = document.createElement("details");
+        const unetDet = document.createElement("div");
         unetDet.className = "vnccs-cc-settings-details";
-        unetDet.open = sel === "unet";
-        const unetSum = document.createElement("summary");
+        const collapsed = (this._getSelectedType() || "unet") !== "unet";
+        const unetSum = document.createElement("button");
+        unetSum.type = "button";
+        unetSum.className = "vnccs-cc-settings-summary";
         unetSum.textContent = "UNet";
+        unetSum.onclick = () => this._setDisclosure(unetDet, unetSum.ariaExpanded === "true");
         unetDet.appendChild(unetSum);
         unetDet.appendChild(field("Weight Dtype",
             mkSel("vnccs-cc-unet-dtype",
                 ["default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2"],
                 unet.weight_dtype ?? "default")));
-        panel.appendChild(unetDet);
-
-        /*
-        // TECH DEBT: Nunchaku settings UI is disabled. Delete this commented
-        // legacy block after old workflow JSON no longer references Nunchaku.
-        const nunDet = document.createElement("details");
-        nunDet.className = "vnccs-cc-settings-details";
-        nunDet.open = sel === "nunchaku";
-        const nunSum = document.createElement("summary");
-        nunSum.textContent = "Nunchaku";
-        nunDet.appendChild(nunSum);
-        nunDet.appendChild(field("CPU Offload",
-            mkSel("vnccs-cc-nun-offload", ["auto","enable","disable"], nun.cpu_offload ?? "auto")));
-        nunDet.appendChild(field("Blocks On GPU",
-            mkInput("vnccs-cc-nun-blocks", "number", 1, 60, 1, nun.num_blocks_on_gpu ?? 1)));
-        nunDet.appendChild(field("Pinned Memory",
-            mkSel("vnccs-cc-nun-pin", ["enable","disable"], nun.use_pin_memory ?? "disable")));
-
-        // Qwen Fix button
-        const fixField = document.createElement("div");
-        fixField.className = "vnccs-cc-settings-field";
-        const fixLabel = document.createElement("label");
-        fixLabel.textContent = "Qwen Fix (PR #790)";
-        const fixBtn = this._btn("Checking…", () => {});
-        fixBtn.disabled = true;
-        fixBtn.style.fontSize = "10px";
-        fixField.append(fixLabel, fixBtn);
-        nunDet.appendChild(fixField);
-
-        const applyQwenFix = async () => {
-            fixBtn.textContent = "Installing…";
-            fixBtn.disabled = true;
-            try {
-                const res = await api.fetchApi("/vnccs/control_center/nunchaku_apply_fix", { method: "POST" });
-                const result = await res.json();
-                if (result.ok) {
-                    fixBtn.textContent = "✓ Installed";
-                    fixBtn.style.color = "#4caf50";
-                    fixBtn.style.borderColor = "rgba(76,175,80,0.4)";
-                    this.showMessage("Fix applied. Please restart ComfyUI to apply changes.");
-                } else {
-                    fixBtn.textContent = "Install Fix";
-                    fixBtn.disabled = false;
-                    this.showMessage("Failed: " + (result.message || "Unknown error"), true);
-                }
-            } catch (e) {
-                fixBtn.textContent = "Install Fix";
-                fixBtn.disabled = false;
-                this.showMessage("Error: " + e.message, true);
-            }
-        };
-
-        api.fetchApi("/vnccs/control_center/nunchaku_fix_status").then(async r => {
-            if (!r.ok) { fixBtn.textContent = "N/A"; return; }
-            const status = await r.json();
-            if (status.nunchaku_missing) {
-                fixBtn.textContent = "N/A";
-            } else if (status.installed) {
-                fixBtn.textContent = "✓ Installed";
-                fixBtn.style.color = "#4caf50";
-                fixBtn.style.borderColor = "rgba(76,175,80,0.4)";
-            } else {
-                fixBtn.textContent = "Install Fix";
-                fixBtn.disabled = false;
-                fixBtn.onclick = applyQwenFix;
-            }
-        }).catch(() => { fixBtn.textContent = "N/A"; });
-
-        panel.appendChild(nunDet);
-        */
+        panel.appendChild(this._finishBlock(unetDet, collapsed));
 
         // Buttons
         const btns = document.createElement("div");
@@ -4274,6 +4504,11 @@ class VNCCSControlCenterWidget {
         const cancelBtn = this._btn("Cancel", () => ov.remove());
 
         const saveBtn = this._btn("Save", async () => {
+            if (this._removed || this._stateRestoreError || this.state !== state
+                || this._getRepoId() !== repoId || this._activeKind() !== kind) {
+                ov.remove();
+                return;
+            }
             this.state.selected_type = this._getSelectedType();
             if (!this.state.type_settings) this.state.type_settings = {};
             this.state.type_settings.unet = {
@@ -4283,7 +4518,6 @@ class VNCCSControlCenterWidget {
             // stale workflow state no longer stores type_settings.nunchaku.
             delete this.state.type_settings.nunchaku;
             this._saveState();
-            await this._refreshDependencyStatus(true);
             ov.remove();
             this._renderAll();
         });
@@ -4292,7 +4526,7 @@ class VNCCSControlCenterWidget {
         panel.appendChild(btns);
 
         ov.appendChild(panel);
-        this.container.appendChild(ov);
+        this._mountOverlay(ov, panel, title.textContent);
     }
 
     // ── Downloads ─────────────────────────────────────────────────────────────
@@ -4300,10 +4534,21 @@ class VNCCSControlCenterWidget {
     async _downloadEntry(cat, entry) {
         const repoId = this._getRepoId();
         if (!repoId) return;
+        const state = this.state;
+        const kind = this._activeKind();
+        const isCurrent = () => !this._removed && !this._stateRestoreError && this.state === state
+            && this._getRepoId() === repoId && this._activeKind() === kind;
+        if (!isCurrent()) return;
         const key = `cc_${cat}_${entry.name}`;
+        if (["queued", "downloading"].includes(this.dlStatus[key]?.status) || this._pendingDownloads?.has(key)) return;
+        this._pendingDownloads ??= new Map();
+        const pending = {};
+        this._pendingDownloads.set(key, pending);
         // Show the queued state while the server accepts the request.
+        this._beginDownloadStatusRequest();
+        this._downloadStatusRepoId = repoId;
         this.dlStatus[key] = { status: "queued", message: "Queued…" };
-        this._renderAll();
+        this._updateDownloadIndicators();
         try {
             const r = await api.fetchApi("/vnccs/control_center/download", {
                 method: "POST",
@@ -4313,10 +4558,11 @@ class VNCCSControlCenterWidget {
             const responseText = await r.text();
             let d = {};
             try { d = responseText ? JSON.parse(responseText) : {}; } catch { d = {}; }
+            if (!isCurrent()) return;
             if (!r.ok || d.error) {
                 const message = d.error || responseText || `Download request failed (${r.status})`;
                 this.dlStatus[key] = { status: "error", message };
-                this._renderAll();
+                this._updateDownloadIndicators();
                 this.showMessage(message, true);
             } else {
                 window.dispatchEvent(new CustomEvent("vnccs-cc-registry-updated", {
@@ -4324,15 +4570,24 @@ class VNCCSControlCenterWidget {
                 }));
             }
         } catch (e) {
+            if (!isCurrent()) return;
             const message = String(e?.message || e);
             this.dlStatus[key] = { status: "error", message };
-            this._renderAll();
+            this._updateDownloadIndicators();
             this.showMessage(message, true);
+        } finally {
+            if (this._pendingDownloads.get(key) === pending) this._pendingDownloads.delete(key);
+            if (isCurrent()) this._beginDownloadStatusRequest();
         }
     }
 
     async _downloadAllMissing() {
         if (!this.config) { this.showMessage("Load config first.", true); return; }
+        const state = this.state;
+        const repoId = this._getRepoId();
+        const kind = this._activeKind();
+        const isCurrent = () => !this._removed && !this._stateRestoreError && this.state === state
+            && this._getRepoId() === repoId && this._activeKind() === kind;
 
         const tasks = [];
 
@@ -4347,6 +4602,7 @@ class VNCCSControlCenterWidget {
         const selectedKind = this._selectedKind();
         for (const cat of ["clip", "vae", "lora", "controlnet", "other"]) {
             for (const e of (this.config[cat] ?? [])) {
+                if (cat === "lora" && e.custom && !e.hf_path) continue;
                 if (["clip", "vae"].includes(cat) && !this._sameKind(e, selectedKind)) continue;
                 if (cat === "lora" && !e.custom && !this._exactKind(e, selectedKind)) continue;
                 if (this._isDownloadableStatus(e.status)) tasks.push({ cat, e });
@@ -4356,6 +4612,7 @@ class VNCCSControlCenterWidget {
         if (!tasks.length) { this.showMessage("All selected items are installed."); return; }
         this.showConfirm(`Download/update ${tasks.length} item(s)?`, async () => {
             for (const { cat, e } of tasks) {
+                if (!isCurrent()) return;
                 await this._downloadEntry(cat, e);
                 await new Promise(r => setTimeout(r, 300));
             }
@@ -4365,59 +4622,102 @@ class VNCCSControlCenterWidget {
     // ── Progress bar helper ───────────────────────────────────────────────────
 
     _updateDownloadIndicators() {
-        // Update only status DOM while an input or dropdown is focused. Replacing
-        // the full widget here would interrupt editing and reset open controls.
-        for (const row of this.scrollArea.querySelectorAll("[data-download-key]")) {
-            const key = row.dataset.downloadKey;
-            const dls = this.dlStatus[key];
-            if (!dls) continue;
-            if (dls.status === "success" && !this._downloadRefreshPending) continue;
-            const badge = row.querySelector(".vnccs-cc-badge");
-            if (badge) {
-                const updated = this._badge(dls.status);
-                badge.className = updated.className;
-                badge.textContent = updated.textContent;
-            }
-            const label = row.querySelector(".vnccs-cc-model-card-status, .vnccs-cc-lora-card-status, .vnccs-cc-turbo-strip-status, .vnccs-cc-row-progress");
-            if (label) {
-                label.textContent = dls.status === "success" ? "Checking installation…"
-                    : this._statusLabel(dls.status, dls);
-            }
-            if (!row.classList.contains("vnccs-cc-turbo-strip")) {
-                this._applyProgressLayer(row, key, dls);
-            }
-        }
+        for (const card of this.scrollArea.querySelectorAll("[data-download-key]")) this._updateDownloadCard(card);
     }
 
     _applyProgressLayer(row, key, dls) {
         row.dataset.downloadKey = key;
-        row.querySelector(".vnccs-cc-row-bg")?.remove();
         const status = dls?.status;
-        if (!["downloading", "queued", "auth_required", "error"].includes(status)) return;
-
-        const bg = document.createElement("div");
+        row.dataset.downloadStatus = status || "idle";
+        row.ariaBusy = String(["queued", "downloading", "success"].includes(status));
+        let bg = row.querySelector(".vnccs-cc-row-bg");
+        if (!["downloading", "queued", "success", "auth_required", "error"].includes(status)) {
+            if (bg && !bg.dataset.retiring) {
+                bg.dataset.retiring = "true";
+                this._playMotion(bg, [{ opacity: 1 }, { opacity: 0 }], 160, () => {
+                    if (!["downloading", "queued", "success", "auth_required", "error"].includes(row.dataset.downloadStatus)) bg.remove();
+                });
+            }
+            return;
+        }
+        const created = !bg;
+        bg ||= document.createElement("div");
+        bg.dataset.retiring = "";
+        this._motionByElement?.get(bg)?.cancel();
         bg.className = "vnccs-cc-row-bg";
+        bg.style.width = "100%";
+        bg.style.opacity = "1";
+        bg.style.transform = "scaleX(1)";
 
         if (status === "downloading" && Number.isFinite(dls.progress)) {
             const progress = Math.max(0, Math.min(dls.progress, 100));
-            bg.style.width = `${progress}%`;
-            bg.style.background = "rgba(0, 214, 143, 0.15)";
-            bg.style.transition = "width 0.3s linear";
-        } else if (status === "queued" || status === "downloading") {
-            bg.style.width = "100%";
+            bg.style.transform = `scaleX(${progress / 100})`;
+            bg.style.background = "rgba(0, 214, 143, 0.7)";
+        } else if (["queued", "downloading", "success"].includes(status)) {
+            bg.className += " vnccs-cc-row-bg--indeterminate";
             bg.style.background = "repeating-linear-gradient(45deg, rgba(184,169,232,0.12), rgba(184,169,232,0.12) 10px, transparent 10px, transparent 20px)";
         } else if (status === "auth_required") {
-            bg.style.width = "100%";
             bg.style.background = "rgba(255,170,0,0.12)";
         } else if (status === "error") {
-            bg.style.width = "100%";
             bg.style.background = "rgba(255,71,87,0.1)";
         }
 
-        row.insertBefore(bg, row.firstChild);
+        if (created) {
+            row.insertBefore(bg, row.firstChild);
+            this._playMotion(bg, [{ opacity: 0 }, { opacity: 1 }], 180);
+        }
     }
 
     // ── Styled message/confirm overlays (replaces alert/confirm) ──────────────
+
+    _mountOverlay(overlay, panel, title) {
+        this._closeDropdown(false);
+        const opener = document.activeElement;
+        this._overlays ??= [];
+        this._overlays.push(overlay);
+        panel.role = "dialog";
+        panel.ariaModal = "true";
+        panel.ariaLabel = title;
+        panel.tabIndex = -1;
+        const fields = () => [...panel.querySelectorAll("button, input, select, summary, a[href], [tabindex]")]
+            .filter(element => !element.disabled && !element.closest?.(".vnccs-cc-disclosure")?.inert && element.getClientRects().length);
+        const remove = overlay.remove;
+        overlay.remove = () => {
+            if (overlay.inert) return;
+            if (this._dropdown && overlay.contains(this._dropdown.trigger)) this._closeDropdown(false);
+            const wasTop = this._overlays.at(-1) === overlay;
+            overlay.inert = true;
+            overlay.ariaHidden = "true";
+            overlay.style.pointerEvents = "none";
+            this._overlays = this._overlays.filter(item => item !== overlay);
+            this._playMotion(overlay, [{ opacity: 1 }, { opacity: 0 }], 140, () => remove.call(overlay));
+            if (wasTop && !this._removed && opener?.isConnected) opener.focus({ preventScroll: true });
+        };
+        overlay.onkeydown = event => {
+            if (this._overlays.at(-1) !== overlay) return;
+            if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                overlay.remove();
+            } else if (event.key === "Tab") {
+                const controls = fields();
+                const index = controls.indexOf(document.activeElement);
+                if (!controls.length || (event.shiftKey ? index <= 0 : index < 0 || index === controls.length - 1)) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    (event.shiftKey ? controls.at(-1) || panel : controls[0] || panel).focus({ preventScroll: true });
+                }
+            }
+        };
+        panel.addEventListener?.("scroll", () => this._closeDropdown(false), { passive: true });
+        this.container.appendChild(overlay);
+        this._playMotion(overlay, [{ opacity: 0 }, { opacity: 1 }], 180);
+        this._playMotion(panel, [{ opacity: 0, transform: "translateY(8px) scale(0.98)" }, { opacity: 1, transform: "none" }], 240);
+        requestAnimationFrame(() => {
+            if (this._removed || !overlay.isConnected || this._overlays.at(-1) !== overlay) return;
+            (fields()[0] || panel).focus({ preventScroll: true });
+        });
+    }
 
     showMessage(text, isError = false) {
         const ov = document.createElement("div");
@@ -4430,6 +4730,7 @@ class VNCCSControlCenterWidget {
         box.style.cssText = `
             background: #12121a; border: 1px solid ${isError ? "rgba(255,71,87,0.4)" : "rgba(255,143,163,0.25)"};
             border-radius: 10px; padding: 16px; max-width: 280px; width:100%;
+            max-height:100%; overflow:auto; overflow-wrap:anywhere;
             text-align:center; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
         `;
         const message = document.createElement("div");
@@ -4444,7 +4745,7 @@ class VNCCSControlCenterWidget {
         box.appendChild(btn);
         ov.appendChild(box);
         ov.onclick = e => { if (e.target === ov) ov.remove(); };
-        this.container.appendChild(ov);
+        this._mountOverlay(ov, box, isError ? "Error" : "Message");
     }
 
     showConfirm(text, onConfirm) {
@@ -4458,6 +4759,7 @@ class VNCCSControlCenterWidget {
         box.style.cssText = `
             background: #12121a; border: 1px solid rgba(255,143,163,0.25);
             border-radius: 10px; padding: 16px; max-width: 280px; width:100%;
+            max-height:100%; overflow:auto; overflow-wrap:anywhere;
             text-align:center; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
         `;
         const message = document.createElement("div");
@@ -4477,7 +4779,7 @@ class VNCCSControlCenterWidget {
         row.append(cancelBtn, okBtn);
         box.appendChild(row);
         ov.appendChild(box);
-        this.container.appendChild(ov);
+        this._mountOverlay(ov, box, "Confirmation");
     }
 
 }

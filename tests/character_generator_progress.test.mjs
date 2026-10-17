@@ -9,8 +9,10 @@ const source = readFileSync(new URL("../web/vnccs_character_generator.js", impor
 function setup(stage = "pose_generation") {
     const listeners = new Map();
     const cleanups = [];
+    let progressSnapshot = null;
     const context = createWidgetContext({
         api: {
+            fetchApi: async () => ({ ok: true, status: 200, json: async () => ({ snapshot: progressSnapshot }) }),
             addEventListener: (name, callback) => listeners.set(name, callback),
             removeEventListener: (name, callback) => {
                 assert.equal(listeners.get(name), callback);
@@ -23,7 +25,7 @@ function setup(stage = "pose_generation") {
         + "\nthis.Widget = CharacterGeneratorWidget;", context);
     const widget = Object.create(context.Widget.prototype);
     Object.assign(widget, {
-        node: { id: 17 },
+        node: { id: 17, type: "VNCCS_CharacterGenerator", graph: { extra: { vnccs_workflow_id: "workflow" } } },
         stageState: { [stage]: { status: "waiting", images: null }, upscaler: { status: "waiting" } },
         stages: [[stage, "Pose Generation"], ["upscaler", "Upscaler"]],
         data: { ui: {} },
@@ -40,6 +42,7 @@ function setup(stage = "pose_generation") {
         widget,
         cleanups,
         listeners,
+        setProgressSnapshot: snapshot => { progressSnapshot = snapshot; },
         emit: detail => listeners.get("vnccs.character_generator.stage")({ detail: {
             node_id: "17", stage, status: "running", ...detail,
         } }),
@@ -81,6 +84,73 @@ test("events from other nodes do not alter this widget; removal cleans up the li
     assert.equal(listeners.size, 0);
 });
 
+test("progress for another character or an empty source cannot restore old cards", async () => {
+    const { widget, emit, setProgressSnapshot } = setup();
+    widget.data.character_name = 'Bob';
+    emit({ character_name: 'Alice', images: ['Alice-preview'], total: 4 });
+    assert.equal(widget.stageState.pose_generation.status, 'waiting');
+    assert.equal(widget.renders, 0);
+    setProgressSnapshot({ scope: widget.progressScope(), node_id: '17', character_name: 'Alice', epoch: 'server', revision: 1,
+        stages: { pose_generation: { status: 'done', images: ['Alice-preview'], total: 4 } } });
+    await widget.refreshProgress();
+    assert.equal(widget.stageState.pose_generation.images, null);
+    widget._sourceCharacter = '';
+    widget.data.character_name = '';
+    emit({ images: ['old-preview'], total: 4 });
+    await widget.refreshProgress();
+    assert.equal(widget.stageState.pose_generation.images, null);
+    assert.equal(widget.renders, 0);
+});
+
+test("progress for the selected character still updates its cards", () => {
+    const { widget, emit } = setup();
+    widget.data.character_name = 'Alice';
+    emit({ character_name: 'Alice', images: ['Alice-preview'], total: 4 });
+    assert.deepEqual(Array.from(widget.stageState.pose_generation.images), ['Alice-preview']);
+    assert.equal(widget.renders, 1);
+});
+
+for (const [name, flags] of [
+    ["Character Generator", {}],
+    ["Character Clone Generator", { isClone: true }],
+    ["Clothes Generator", { isClothes: true }],
+    ["Emotions Generator", { isEmotions: true }],
+]) {
+    test(`${name} stops and grays its active preview when ComfyUI interrupts execution`, async () => {
+        const { widget, listeners, setProgressSnapshot } = setup();
+        Object.assign(widget, flags);
+        const images = ["preview"];
+        widget.stageState.pose_generation = { status: "running", images, message: "Sampling" };
+        widget._activeProgressRunId = "interrupted-run";
+        widget.regenerateState = { activeStage: "pose_generation" };
+        let finished = 0;
+        widget.finishRegenerate = ({ render }) => {
+            assert.equal(render, false);
+            widget.regenerateState = null;
+            finished++;
+        };
+
+        listeners.get("execution_interrupted")({ detail: { node_id: "17" } });
+
+        assert.equal(widget.stageState.pose_generation.status, "waiting");
+        assert.equal(widget.stageState.pose_generation.message, "Stopped");
+        assert.equal(widget.stageState.pose_generation.images, images);
+        assert.equal(widget.renders, 1);
+        assert.equal(finished, 1);
+
+        const scope = widget.progressScope();
+        setProgressSnapshot({
+            scope, node_id: "17", run_id: "interrupted-run", request_id: null,
+            epoch: "epoch", revision: 10,
+            stages: { pose_generation: { status: "running", images, message: "Sampling" } },
+            error: null,
+        });
+        await widget.refreshProgress();
+        assert.equal(widget.stageState.pose_generation.status, "waiting");
+        assert.equal(widget.renders, 1);
+    });
+}
+
 test("starting a new generation resets downstream stages and follows its preview", () => {
     const { widget, emit } = setup();
     widget.stageState.pose_generation.status = "done";
@@ -105,6 +175,8 @@ test("single-image regeneration replaces its preview without dropping siblings",
 
     emit({ status: "running", message: "Regenerating image 2" });
     assert.deepEqual(Array.from(widget.stageState[stage].images), ["first", "second", "third"]);
+    emit({ status: "running", images: ["second-in-progress"], current: 0, total: 1 });
+    assert.deepEqual(Array.from(widget.stageState[stage].images), ["first", "second-in-progress", "third"]);
 
     emit({
         status: "running",
@@ -113,4 +185,50 @@ test("single-image regeneration replaces its preview without dropping siblings",
         replace_images: true,
     });
     assert.deepEqual(Array.from(widget.stageState[stage].images), ["first", "second-new", "third"]);
+});
+
+test("Clothes Generator shows its active stage without publishing source poses as results", () => {
+    const { widget, listeners } = setup("source_upscaler");
+    widget.isClothes = true;
+    widget._clothesRevealIndices = new Set();
+    widget.stages = [["source_upscaler", "Source"], ["pose_generation", "Poses"], ["upscaler", "Upscaler"]];
+    widget.stageState.pose_generation = { status: "waiting", images: null };
+    widget.selectedPreview = "pose_generation";
+    widget.userSelectedPreview = false;
+    const emit = detail => listeners.get("vnccs.character_generator.stage")({ detail: {
+        node_id: "17", status: "running", ...detail,
+    } });
+
+    emit({ stage: "source_upscaler", current: 0, total: 1, images: ["source"] });
+    assert.equal(widget.selectedPreview, "source_upscaler");
+    emit({ stage: "pose_generation", status: "waiting", current: 0, total: 2 });
+    emit({ stage: "pose_generation", current: 0, total: 2 });
+    emit({ stage: "pose_generation", current: 1, total: 2, images: ["clothed-1"], preview_start: 0, replace_images: true });
+
+    assert.deepEqual(Array.from(widget.stageState.pose_generation.images), ["clothed-1"]);
+    assert.deepEqual(Array.from(widget._clothesRevealIndices), [0]);
+});
+
+test("Clone Generator marks each finished naked pose for a scan reveal", () => {
+    const { widget, emit } = setup("naked_pose_generation");
+    widget.isClone = true;
+    widget._nakedRevealIndices = new Set();
+
+    emit({ current: 0, total: 3 });
+    emit({ current: 1, total: 3, images: ["naked-1"], preview_start: 0, replace_images: true });
+
+    assert.deepEqual(Array.from(widget.stageState.naked_pose_generation.images), ["naked-1"]);
+    assert.deepEqual(Array.from(widget._nakedRevealIndices), [0]);
+});
+
+test("Clone Generator marks each finished original pose for a scan reveal", () => {
+    const { widget, emit } = setup("original_pose_generation");
+    widget.isClone = true;
+    widget._originalRevealIndices = new Set();
+
+    emit({ current: 0, total: 3 });
+    emit({ current: 1, total: 3, images: ["original-1"], preview_start: 0, replace_images: true });
+
+    assert.deepEqual(Array.from(widget.stageState.original_pose_generation.images), ["original-1"]);
+    assert.deepEqual(Array.from(widget._originalRevealIndices), [0]);
 });

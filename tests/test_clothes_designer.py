@@ -299,7 +299,7 @@ class TestEditableCostumeValidation:
     def test_accepts_editable_costumes(self, costume):
         assert ClothesDesigner._is_editable_costume(costume)
 
-    @pytest.mark.parametrize("costume", ["", None, "Naked", "Original"])
+    @pytest.mark.parametrize("costume", ["", None, "Naked", "Original", "naked", "ORIGINAL"])
     def test_rejects_missing_or_base_costumes(self, costume):
         assert not ClothesDesigner._is_editable_costume(costume)
 
@@ -377,11 +377,16 @@ class TestPipeContext:
     ("Klein9b", None, 1024), ("Klein9b", 2048, 2048),
 ])
 @pytest.mark.parametrize("clone", [False, True])
-def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, size, expected, clone):
+@pytest.mark.parametrize("cfg", [None, 0.0])
+def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, size, expected, clone, cfg):
     from _vnccs.nodes import clothes_designer as cd
     from _vnccs.nodes import character_generator as cg
     from PIL import Image
     import json
+    import utils
+
+    monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path / "characters"))
+    utils.save_costume_info("Alice", "Dress", {})
 
     reference_channels = 4 if kind == "QI2" else 3
     reference = torch.zeros((1, 96, 64, reference_channels))
@@ -415,7 +420,7 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
                 "rewritten_prompt": "Dress the character in the image with the requested outfit precisely.",
                 "wh_ratio": "", "ratio_follow": "<image1>",
             }),)
-        if name == cd.KLEIN_ENCODER_CLASS:
+        if name == "VNCCS_Flux_Klein_Encoder":
             return "positive", "negative", {"samples": torch.zeros(1)}
         if name == "ImageScale":
             return (kwargs["image"],)
@@ -434,9 +439,9 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
         if name == "MiniMaxH3ReferenceToVideo":
             return "positive", {"samples": torch.zeros(1)}
         if name in ("KSampler", "SamplerCustomAdvanced"):
-            return ({"samples": torch.zeros(1)},)
+            return ({"samples": torch.zeros(1, 24, 2, 4, 4) if kind == "MiniMaxH3" else torch.zeros(1)},)
         if name in ("VAEDecodeTiled", "VAEDecode"):
-            return (torch.zeros((5 if kind == "MiniMaxH3" else 1, 96, 64, 3)),)
+            return (torch.zeros((1, 96, 64, 3)),)
         return (object(),)
     monkeypatch.setattr(cd, "_call_comfy_node", call)
     monkeypatch.setattr(cg, "_call_comfy_node", call)
@@ -447,6 +452,7 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
     pipe = types.SimpleNamespace(
         model=object(), clip=object(), vae=object(), audio_vae=object(), model_entry={"kind": kind},
         model_cache_key={"model": {"kind": kind, "name": "Test catalog model"}},
+        cfg=cfg,
     )
     data = {"character": "Alice", "costume": "Dress", "gen_settings": {
                 "target_size": size,
@@ -467,8 +473,9 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
         assert "VAEDecode" in calls
         assert "VAEDecodeTiled" not in calls
         assert set(calls["VAEDecode"]) == {"samples", "vae"}
+        assert calls["VAEDecode"]["samples"]["samples"].shape == (1, 24, 1, 4, 4)
     elif kind == "Klein9b":
-        assert calls[cd.KLEIN_ENCODER_CLASS]["megapixels"] == expected / 1024
+        assert calls["VNCCS_Flux_Klein_Encoder"]["megapixels"] == expected / 1024
     else:
         assert background == "Alpha"
         latent = calls["EmptyLatentImage"]
@@ -499,7 +506,7 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
         assert "VAEDecodeTiled" not in calls
     if kind != "QI2":
         assert "TextGenerate" not in calls
-        encoder_name = "MiniMaxH3ReferenceToVideo" if kind == "MiniMaxH3" else cd.KLEIN_ENCODER_CLASS
+        encoder_name = "MiniMaxH3ReferenceToVideo" if kind == "MiniMaxH3" else "VNCCS_Flux_Klein_Encoder"
         assert "#00FF00" in calls[encoder_name]["prompt"]
     else:
         encoder_name = "TextEncodeQwenImage21"
@@ -531,6 +538,7 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
     else:
         assert calls[sampler_name]["positive"] == "positive"
         assert calls[sampler_name]["negative"] == "negative"
+        assert calls[sampler_name]["cfg"] == (cfg if cfg is not None else 3.0 if kind == "QI2" else 1.0)
 
     node.process(pipe=pipe, widget_data=json.dumps(data), unique_id="123")
     assert call_names.count(encoder_name) == 1
@@ -552,6 +560,18 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
         assert call_names.count("TextGenerate") == previous_calls + 1
         assert call_names.count(encoder_name) == previous_calls + 1
         assert "Updated edit rules." in calls["TextGenerate"]["prompt"]
+
+        text_calls = call_names.count("TextGenerate")
+        encoder_calls = call_names.count(encoder_name)
+        data["gen_settings"]["qi2_prompt_enhancement"] = False
+        monkeypatch.setattr(
+            cd, "_qi2_edit_system_prompt",
+            lambda: pytest.fail("Disabled Prompt Enhancement must not load its template."),
+        )
+        node.process(pipe=pipe, widget_data=json.dumps(data), unique_id="123")
+        assert call_names.count("TextGenerate") == text_calls
+        assert call_names.count(encoder_name) == encoder_calls + 1
+        assert calls[encoder_name]["prompt"] == node.construct_prompt(data, model_kind="qi2")[0]
 
 
 class TestQI2EditRewriter:

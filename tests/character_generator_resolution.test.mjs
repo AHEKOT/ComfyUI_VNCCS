@@ -4,7 +4,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-const source = readFileSync(new URL("../web/vnccs_character_generator.js", import.meta.url), "utf8");
+const source = readFileSync(new URL("../web/vnccs_character_generator.js", import.meta.url), "utf8")
+    .replace(/new URL\(([^,]+), import\.meta\.url\)\.href/g, "$1");
 
 function setup({ kind = "QI2", saved = {}, clone = false, clothes = false, emotions = false } = {}) {
     const listeners = new Map();
@@ -82,8 +83,64 @@ function setupEmotionStudio(mode = "qi2", saved = {}) {
         saveBrowserState() {},
     });
     widget.bindModelResolutionSync();
-    return { widget, studio, settings, serialized, timers, app };
+    return { widget, studio, settings, serialized, timers, app, context };
 }
+
+test("QI2 face scale keeps the same slider through input and workflow snapshots", () => {
+    const { widget, studio, settings, serialized, timers, app, context } = setupEmotionStudio("qi2");
+    timers.get(1)();
+    widget.bindEvents();
+    class Element {
+        constructor() { this.children = []; this.style = { setProperty() {} }; }
+        append(...children) { this.children.push(...children); }
+        addEventListener() {}
+        setAttribute() {}
+    }
+    context.document.createElement = () => new Element();
+    context.setHelpText = () => {};
+    let control = widget.resolutionScaleSlider("emotion_generation");
+    const slider = control.children[1], caption = control.children[0].children[1];
+    let renders = 0;
+    widget.renderSettings = () => { renders++; control = widget.resolutionScaleSlider("emotion_generation"); };
+    const emotionSource = readFileSync(new URL("../web/vnccs_emotion_v2.js", import.meta.url), "utf8");
+    const start = emotionSource.indexOf("                function saveGenerationSettings()");
+    const end = emotionSource.indexOf("                function setGenerationMode(", start);
+    const studioContext = createWidgetContext({
+        state: { gen: { generation_mode: "qi2", mode_settings: {} } },
+        initialSharedSeed: 0, GENERATION_DEFAULTS: { mode_settings: { qi2: {}, anima: {}, illustrious: {} } },
+        generationSettingsWidget: settings, modelWidget: null, styleWidget: null,
+        syncSelectedPoseIndicesToGenerationSettings() {},
+        commitWidget(control, value) { if (control) control.value = value; },
+        window: { dispatchEvent() { widget.onEmotionStudioModeChanged(); } }, CustomEvent: class {},
+    });
+    vm.runInContext(emotionSource.slice(start, end), studioContext);
+    const snapshots = [];
+    app.canvas = { emitEvent({ subType }) { snapshots.push(subType); studioContext.saveGenerationSettings(false); } };
+    for (const value of ["2.1", "2.2", "2.3", "3.0", "4.0", "1.0"]) {
+        slider.value = value;
+        slider.oninput();
+        assert.equal(control.children[1], slider, "Workflow snapshots must not replace the active slider");
+        assert.equal(caption.textContent, `${value} MP`);
+        assert.equal(JSON.parse(serialized.value).emotion_generation.target_size, widget.data.emotion_generation.target_size);
+        assert.equal(context.resolutionScaleText(widget.data.emotion_generation.target_size), `${value} MP`);
+    }
+    assert.equal(renders, 0);
+    assert.equal(snapshots.length, 12, "Every input still records its workflow change");
+    settings.value = '{"generation_mode":"anima"}';
+    widget.onEmotionStudioModeChanged();
+    assert.equal(renders, 1, "Changing the connected generation mode still rebuilds its controls");
+    assert.equal(widget.data.bg_remove.preset, "balanced");
+    widget.onEmotionStudioModeChanged();
+    assert.equal(renders, 1);
+    studio.widgets.push({ name: "character", value: "Alice" },
+        { name: "costumes_data", value: '["Coat"]' }, { name: "emotions_data", value: '["happy"]' });
+    widget.onEmotionStudioModeChanged();
+    assert.equal(renders, 2, "Changed source selections still refresh their controls");
+    assert.equal(JSON.parse(serialized.value).character_name, "Alice");
+    assert.deepEqual(JSON.parse(serialized.value).emotion_pairs, [{ costume: "Coat", emotion: "happy" }]);
+    widget.onEmotionStudioModeChanged();
+    assert.equal(renders, 2);
+});
 
 for (const mode of [{}, { clone: true }, { clothes: true }, { emotions: true }]) {
     test(`retired GAN settings migrate to OFF and stay retired on save (${JSON.stringify(mode)})`, () => {

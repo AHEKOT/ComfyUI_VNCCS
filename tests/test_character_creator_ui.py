@@ -6,15 +6,21 @@ SOURCE = (Path(__file__).parents[1] / "web" / "vnccs_character_creator_v2.js").r
 STYLE_CATALOG = json.loads(
     (Path(__file__).parents[1] / "character_template" / "character_styles.json").read_text()
 )
+ANIMA_STYLE_CATALOG = json.loads(
+    (Path(__file__).parents[1] / "character_template" / "anima_styles.json").read_text()
+)
+
+
+COMMON = (Path(__file__).resolve().parents[1] / "web" / "vnccs_common.js").read_text(encoding="utf-8")
 
 
 def test_resolution_scale_is_a_one_to_four_megapixel_slider():
     assert 'resolutionSlider.type = "range"' in SOURCE
-    assert "RESOLUTION_SCALE_MIN_MP = 1" in SOURCE
-    assert "RESOLUTION_SCALE_MAX_MP = 4" in SOURCE
-    assert "RESOLUTION_SCALE_STEP_MP = 0.1" in SOURCE
-    assert "[1.3, 1344]" in SOURCE
-    assert "[1.5, 1536]" in SOURCE
+    assert "RESOLUTION_SCALE_MIN_MP = 1" in COMMON
+    assert "RESOLUTION_SCALE_MAX_MP = 4" in COMMON
+    assert "RESOLUTION_SCALE_STEP_MP = 0.1" in COMMON
+    assert "[1.3, 1344]" in COMMON
+    assert "[1.5, 1536]" in COMMON
     assert "resolutionScaleValue(resolutionSlider.value)" in SOURCE
     assert 'resolutionLabel.textContent = "Resolution scale"' in SOURCE
 
@@ -28,12 +34,16 @@ def test_resolution_scale_is_persisted_for_every_generation_mode():
     assert "delete profile.resolution_preset" in SOURCE
 
 
-def test_framing_selector_is_between_age_and_race_and_persisted():
+def test_framing_and_age_share_a_content_sized_row_before_race():
     age = 'createSlider("Age", "age", 1, 100, 1, state.character_info)'
     framing = 'createField("Framing", "framing", "select"'
     race = 'createField("Race", "race")'
 
-    assert SOURCE.index(age) < SOURCE.index(framing) < SOURCE.index(race)
+    assert SOURCE.index(framing) < SOURCE.index(age) < SOURCE.index(race)
+    assert 'framingAgeRow.className = "vnccs-creator-framing-age-row"' in SOURCE
+    assert "framingAgeRow.append(framingField, ageField)" in SOURCE
+    assert "grid-template-columns: 132px minmax(0, 1fr)" in SOURCE
+    assert ".vnccs-creator-framing-field .vnccs-creator-select { width: 100%; }" in SOURCE
     assert 'framing: "cowboy_shot"' in SOURCE
 
 
@@ -43,8 +53,10 @@ def test_style_selector_is_between_framing_and_race_with_custom_first():
     race = 'createField("Race", "race")'
 
     assert SOURCE.index(framing) < SOURCE.index(style) < SOURCE.index(race)
-    assert 'style: DEFAULT_CHARACTER_STYLE, custom_style: ""' in SOURCE
-    assert 'api.fetchApi("/vnccs/character_styles")' in SOURCE
+    assert 'style: "none", custom_style: ""' in SOURCE
+    assert 'allowNone: () => state.gen_settings.generation_mode !== "qi2"' in SOURCE
+    assert 'api.fetchApi(styleCatalogURL(mode))' in SOURCE
+    assert 'mode === "qi2" ? "qi2" : "anima"' in SOURCE
     assert "createStylePicker({" in SOURCE
     assert "getInfo: () => state.character_info" in SOURCE
 
@@ -53,7 +65,9 @@ def test_style_selector_has_readable_character_focused_options():
     assert ".vnccs-style-gallery" in SOURCE
     assert "grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--vnccs-style-card-size, 182px)), 1fr))" in SOURCE
     assert "white-space: nowrap; overflow: hidden; text-overflow: ellipsis" in SOURCE
-    assert "host: container, catalog: characterStyleCatalog" in SOURCE
+    assert "host: container, catalog: styleCatalogForMode(state.gen_settings.generation_mode)" in SOURCE
+    assert "els.style?.setCatalog?.(styleCatalogForMode(mode))" in SOURCE
+    assert len(ANIMA_STYLE_CATALOG["groups"][0]["styles"]) == 510
 
     labels = {
         style["label"]
@@ -83,12 +97,11 @@ def test_style_selector_has_readable_character_focused_options():
     assert "Fortiche / Arcane" not in SOURCE
 
 
-def test_aesthetics_defaults_do_not_force_anime():
-    assert "const PROMPT_DEFAULTS_VERSION = 3;" in SOURCE
-    assert 'aesthetics: "masterpiece, best quality, score_7"' in SOURCE
+def test_anima_restores_legacy_quality_tags_without_changing_qi2():
+    assert "const PROMPT_DEFAULTS_VERSION = 4;" in SOURCE
+    assert 'aesthetics: "masterpiece, best quality, score_7, anime"' in SOURCE
     assert 'aesthetics: "",' in SOURCE
-    assert 'aesthetics: "masterpiece, best quality, score_7, anime"' not in SOURCE
-    assert 'removePromptToken(mergedModes.anima.aesthetics, "anime")' in SOURCE
+    assert 'removePromptToken(mergedModes.anima.aesthetics, "anime")' not in SOURCE
     assert 'removePromptToken(mergedModes.qi2.aesthetics, "anime")' in SOURCE
 
 
@@ -112,4 +125,4 @@ def test_qi2_generation_profile_exposes_model_cache_and_viggle_controls():
     assert 'renderModeLoraCards(els.qi2LoraCards, "qi2")' in SOURCE
     assert 'state.gen_settings.steps = mode === "qi2" ? 6 : 12;' in SOURCE
     assert 'const QI2_DEFAULTS = {' in SOURCE
-    assert 'steps: 25, cfg: 3.0' in SOURCE
+    assert 'steps: 25, cfg: 1.0' in SOURCE

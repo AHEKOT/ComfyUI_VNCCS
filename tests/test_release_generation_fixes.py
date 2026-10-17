@@ -11,7 +11,6 @@ torch = pytest.importorskip("torch")
 
 from _vnccs.nodes import character_generator as cg
 from _vnccs.nodes import clothes_designer as cd
-from _vnccs.nodes.vnccs_pipe import VNCCS_Pipe
 
 
 def test_h3_body_preparation_uses_clothes_lora_and_returns_one_frame(monkeypatch):
@@ -26,17 +25,25 @@ def test_h3_body_preparation_uses_clothes_lora_and_returns_one_frame(monkeypatch
     calls = []
     applied = []
     events = []
+    released = []
+    clothes_model = SimpleNamespace(
+        detach=lambda: released.append("detach"),
+        cleanup=lambda: released.append("cleanup"),
+    )
     monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: events.append((args, kwargs)))
     monkeypatch.setattr(node, "_apply_lora_to_model", lambda model, clip, pipe, lora, stage:
-                        applied.append((lora, stage)) or "clothes_model")
-    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", lambda: SimpleNamespace(fill_alpha_with_color=lambda x: (x,)))
+                        applied.append((lora, stage)) or clothes_model)
+    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", type("MaskExtractor", (), {"fill_alpha_with_color": staticmethod(lambda x: (x,))}))
 
     def call(name, **kwargs):
         calls.append((name, kwargs))
         if name == "MiniMaxH3ReferenceToVideo":
             return "conditioning", "latent"
         if name == "VAEDecode":
+            assert kwargs["samples"]["samples"].shape == (1, 24, 1, 4, 4)
             return (decoded,)
+        if name == "SamplerCustomAdvanced":
+            return ({"samples": torch.rand(1, 24, 2, 4, 4)},)
         assert name != "KSampler"
         return (name,)
 
@@ -50,7 +57,8 @@ def test_h3_body_preparation_uses_clothes_lora_and_returns_one_frame(monkeypatch
     assert encoding["ref_images"]["ref_image_1"] is image
     assert encoding["width"] * encoding["height"] == pytest.approx(1536 * 1024, rel=0.05)
     assert applied == [(lora, "Remove Clothes")]
-    assert dict(calls)["BasicScheduler"]["model"] == "clothes_model"
+    assert dict(calls)["BasicScheduler"]["model"] is clothes_model
+    assert released == ["detach", "cleanup"]
     assert dict(calls)["RandomNoise"]["noise_seed"] == 17
     assert torch.equal(result, decoded[:1])
     assert result.untyped_storage().nbytes() == result.numel() * result.element_size()
@@ -70,6 +78,9 @@ def test_klein_preparation_passes_selected_resolution(monkeypatch, size):
 
 @pytest.fixture
 def designer_run(tmp_path, monkeypatch):
+    import utils
+    monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path / "characters"))
+    utils.save_costume_info("Alice", "Coat", {})
     source = tmp_path / "source.png"
     Image.new("RGB", (32, 32)).save(source)
     monkeypatch.setattr(cd, "get_latest_sprite_path", lambda *args: str(source))
@@ -130,15 +141,6 @@ def test_preview_cache_reuses_only_unchanged_model_assets(designer_run, change):
     if change == "custom":
         run()
         assert len(seeds) == 3
-
-
-@pytest.mark.parametrize("override", [None, "model", "clip", "vae"])
-def test_pipe_invalidates_asset_identity_on_external_override(override):
-    source = SimpleNamespace(model=object(), clip=object(), vae=object(), model_cache_key={"model": "QI2"})
-    node = VNCCS_Pipe()
-    kwargs = {override: object()} if override else {}
-    node.process_pipe(pipe=source, **kwargs)
-    assert node.model_cache_key == (None if override else source.model_cache_key)
 
 
 def test_h3_clothes_catalog_entry_is_resolved():

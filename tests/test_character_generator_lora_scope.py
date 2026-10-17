@@ -14,7 +14,7 @@ def generator(monkeypatch):
     from nodes import character_generator as cg
 
     monkeypatch.setattr(cg, "_find_model_on_disk", lambda path: (path, True))
-    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", lambda: SimpleNamespace(fill_alpha_with_color=lambda image: (image,)))
+    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", type("MaskExtractor", (), {"fill_alpha_with_color": staticmethod(lambda image: (image,))}))
     node = cg.VNCCS_CharacterGenerator()
     node._qwen_settings = lambda *args: {"target_size": 1024}
     node._sampler_settings = lambda *args: {"seed": 1, "steps": 6, "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "denoise": 1}
@@ -91,6 +91,9 @@ def test_remove_clothes_uses_only_selected_lora_and_releases_it(generator, monke
         physical["patches"] = model.patches.copy()
         if failure == "sample":
             raise RuntimeError("sample failed")
+        if kind == "MiniMaxH3":
+            torch = pytest.importorskip("torch")
+            return {"samples": torch.zeros(1, 24, 2, 4, 4)}
         return "samples"
 
     def decode():

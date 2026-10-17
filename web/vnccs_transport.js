@@ -11,7 +11,13 @@ export const vnccsApi = new Proxy(api, {
                 headers.set("Content-Type", "application/json");
             }
             // Plain records also work with older Comfy clients that spread headers.
-            return target.fetchApi(route, { cache: "no-store", ...options, headers: Object.fromEntries(headers.entries()) });
+            return target.fetchApi(route, {
+                cache: "no-store",
+                // Model loading and queued inference have no fixed response deadline.
+                ...(method === "POST" && route.startsWith("/vnccs/") ? { timeoutMs: null } : {}),
+                ...options,
+                headers: Object.fromEntries(headers.entries()),
+            });
         };
         const value = target[property];
         return typeof value === "function" ? (...args) => value.apply(target, args) : value;
@@ -85,15 +91,23 @@ export function serverRegistry(name) {
     return registries.get(key);
 }
 
+let pageScope;
 export function workflowScope(node) {
     const graph = node.graph;
     if (!graph) return null;
+    if (!pageScope) {
+        const previous = sessionStore.getItem("workflow-session");
+        // Duplicated tabs copy sessionStorage; only a reload may reuse this identity.
+        const reload = globalThis.performance?.getEntriesByType("navigation")[0]?.type === "reload";
+        pageScope = reload && /^[A-Za-z0-9_-]{1,80}$/.test(previous || "") ? previous : cacheIdentity();
+        sessionStore.setItem("workflow-session", pageScope);
+    }
     graph.extra ||= {};
     if (!/^[A-Za-z0-9_-]{1,80}$/.test(graph.extra.vnccs_workflow_id || "")) {
         // randomUUID is unavailable on some plain-HTTP ComfyUI installations.
         graph.extra.vnccs_workflow_id = cacheIdentity();
     }
-    return `${graph.extra.vnccs_workflow_id}:${node.type || "node"}:${node.id}`;
+    return `${pageScope}:${graph.extra.vnccs_workflow_id}:${node.type || "node"}:${node.id}`;
 }
 
 // Re-read server state after reconnect or when a suspended launcher becomes active.

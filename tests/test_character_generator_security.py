@@ -15,6 +15,14 @@ pytest.importorskip("torch")
 from nodes import character_generator as cg
 
 
+@pytest.mark.parametrize("node", [cg.VNCCS_CharacterCloneGenerator, cg.VNCCS_ClothesGenerator])
+def test_generator_variants_inherit_fresh_compatible_input_schemas(node):
+    assert node.INPUT_TYPES() == cg.VNCCS_CharacterGenerator.INPUT_TYPES()
+    schema = node.INPUT_TYPES()
+    schema["required"].pop("poses")
+    assert "poses" in node.INPUT_TYPES()["required"]
+
+
 def test_chroma_key_presets_use_edge_safe_tolerance_scale():
     tolerances = {
         name: values["tolerance"]
@@ -38,7 +46,7 @@ def test_chroma_key_presets_use_edge_safe_tolerance_scale():
         "foreground_recover": 0.35,
         "edge_decontaminate": 0.75,
         "edge_choke": 0.08,
-        "matte_method": "guided_edge",
+        "matte_method": "screen_matte",
         "output_mode": "straight_rgba",
     }
 
@@ -219,106 +227,6 @@ def test_native_bg_remove_preserves_alpha_through_upscaler(monkeypatch):
         source[..., 3:4].movedim(-1, 1), size=(4, 4), mode="bilinear", align_corners=False,
     ).movedim(1, -1)
     assert torch.allclose(result[..., 3:4], expected_alpha)
-
-
-def test_settings_force_internal_rmbg_off_for_legacy_workflows():
-    settings = cg.VNCCS_CharacterGenerator()._settings(
-        json.dumps({"bg_remove": {"use_internal_rmbg": True}})
-    )
-
-    assert settings["bg_remove"]["use_internal_rmbg"] is False
-
-
-def test_internal_rmbg_cannot_run_when_directly_requested(monkeypatch):
-    torch = pytest.importorskip("torch")
-
-    class FailingRMBG:
-        def process_image(self, *args, **kwargs):
-            raise AssertionError("internal RMBG should be force-disabled")
-
-    generator = cg.VNCCS_CharacterGenerator()
-    monkeypatch.setattr(cg, "VNCCS_RMBG2", FailingRMBG)
-    monkeypatch.setattr(
-        generator,
-        "_run_seedvr_upscale_one",
-        lambda image, dit, vae, settings, seed: image,
-    )
-    image = torch.rand(1, 4, 4, 3)
-
-    result = generator._run_upscale_one(
-        image,
-        dit=None,
-        vae=None,
-        background="Green",
-        settings={},
-        seed=42,
-        use_internal_rmbg=True,
-    )
-
-    assert torch.equal(result, image)
-
-
-def test_upscaler_batch_internal_rmbg_cannot_run_when_directly_requested(monkeypatch):
-    torch = pytest.importorskip("torch")
-
-    class FailingRMBG:
-        def process_image(self, *args, **kwargs):
-            raise AssertionError("internal RMBG should be force-disabled")
-
-    generator = cg.VNCCS_CharacterGenerator()
-    monkeypatch.setattr(cg, "VNCCS_RMBG2", FailingRMBG)
-    monkeypatch.setattr(
-        generator,
-        "_run_upscaler_models",
-        lambda settings, node_id=None: (None, None),
-    )
-    monkeypatch.setattr(
-        generator,
-        "_run_seedvr_upscale_batch",
-        lambda images, dit, vae, settings, seed, **kwargs: images,
-    )
-    monkeypatch.setattr(generator, "_emit", lambda *args, **kwargs: None)
-    monkeypatch.setattr(generator, "_log_stage", lambda *args, **kwargs: None)
-    images = torch.rand(2, 4, 4, 3)
-
-    result = generator._run_upscaler(
-        images,
-        "Green",
-        {"mode": "seedvr"},
-        seed=42,
-        use_internal_rmbg=True,
-    )
-
-    assert torch.equal(result, images)
-
-
-def test_clothes_internal_rmbg_cannot_run_when_directly_requested(monkeypatch):
-    torch = pytest.importorskip("torch")
-
-    class FailingRMBG:
-        def process_image(self, *args, **kwargs):
-            raise AssertionError("internal RMBG should be force-disabled")
-
-    generator = cg.VNCCS_ClothesGenerator()
-    monkeypatch.setattr(cg, "VNCCS_RMBG2", FailingRMBG)
-    monkeypatch.setattr(
-        generator,
-        "_run_pose_generation",
-        lambda poses, character, pipe, prompt, settings, **kwargs: poses,
-    )
-    poses = torch.rand(1, 4, 4, 3)
-
-    result = generator._run_clothes_pose_generation(
-        poses,
-        character=None,
-        pipe=None,
-        prompt="",
-        background="Green",
-        settings={},
-        use_internal_rmbg=True,
-    )
-
-    assert torch.equal(result, poses)
 
 
 def test_bg_remove_disables_sam3_details_recovery_by_default(monkeypatch):
@@ -666,7 +574,6 @@ def test_emotions_generator_bg_remove_uses_character_background_color(tmp_path, 
     monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(node, "_save_stage", lambda *args, **kwargs: None)
     monkeypatch.setattr(node, "_load_source_sprite_from_path", lambda *args, **kwargs: (None, None))
-    monkeypatch.setattr(node, "_pad_alpha_sources_to_uniform_canvas", lambda data, items: (items, (4, 4)))
     monkeypatch.setattr(
         node,
         "_run_emotion_generation_one",
@@ -754,7 +661,6 @@ def test_emotions_generator_single_bg_regenerate_slices_cached_raw_batch(tmp_pat
     monkeypatch.setattr(node, "_save_stage", lambda *args, **kwargs: None)
     monkeypatch.setattr(cg, "_save_cached_tensor", lambda *args, **kwargs: None)
     monkeypatch.setattr(node, "_load_source_sprite_from_path", lambda *args, **kwargs: (None, None))
-    monkeypatch.setattr(node, "_pad_alpha_sources_to_uniform_canvas", lambda data, items: (items, (4, 4)))
     monkeypatch.setattr(
         node,
         "_run_emotion_generation_one",
@@ -975,14 +881,14 @@ def test_emotion_detailer_prompt_orders_emotion_then_face_details():
 
     result = generator._detailer_positive_prompt(
         "The character is furious.\n\nEmotion Tags: angry, open_mouth",
-        "1girl, blue eyes, long black hair, (wear glasses on face:1.0), (wear hood on head:1.0)",
+        "1girl, blue eyes, long black hair, wear glasses on face, wear hood on head",
     )
 
     assert result.index("The character is furious.") < result.index("Character face details:")
     assert "blue eyes" in result
     assert "long black hair" in result
-    assert "(wear glasses on face:1.0)" in result
-    assert "(wear hood on head:1.0)" in result
+    assert "wear glasses on face" in result
+    assert "wear hood on head" in result
     assert "The character is furious." in result
     assert "Emotion Tags: angry, open_mouth" in result
     assert "masterpiece" not in result
@@ -1096,7 +1002,7 @@ def test_h3_pose_generation_follows_reference_workflow_and_returns_first_frame(m
             "MiniMaxH3ReferenceToVideo": ("positive", "latent"),
             "BasicGuider": ("guider",),
             "RandomNoise": ("noise",),
-            "SamplerCustomAdvanced": ("sampled", "denoised"),
+            "SamplerCustomAdvanced": ({"samples": torch.rand(1, 24, 2, 4, 4)}, "denoised"),
             "VAEDecode": (decoded,),
         }
         return outputs[class_name]
@@ -1133,6 +1039,9 @@ def test_h3_pose_generation_follows_reference_workflow_and_returns_first_frame(m
     scheduler_call = next(kwargs for name, kwargs in calls if name == "BasicScheduler")
     assert scheduler_call["model"] == "pose_model"
     h3_calls = [kwargs for name, kwargs in calls if name == "MiniMaxH3ReferenceToVideo"]
+    for name, kwargs in calls:
+        if name == "VAEDecode":
+            assert kwargs["samples"]["samples"].shape == (1, 24, 1, 4, 4)
     assert len(h3_calls) == 2
     for index, h3_kwargs in enumerate(h3_calls):
         assert h3_kwargs["prompt"] == "Draw character from image2\n<lighting>"
@@ -1339,7 +1248,6 @@ def test_seedvr_upscaler_runs_each_image_independently(monkeypatch):
         "Green",
         generator._settings("{}")["upscaler"],
         seed=42,
-        use_internal_rmbg=False,
     )
 
     assert len(calls) == 4

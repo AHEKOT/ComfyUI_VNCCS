@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 import utils
-from nodes import migration_assistant as ma
 from nodes.preview_runtime import run_wizard_job
 
 
@@ -19,6 +18,26 @@ def test_paths_reject_symlink_escape_and_portable_traversal(tmp_path):
     for path in ("escape/file.png", "../outside/file.png", "..\\outside\\file.png", "C:\\outside\\file.png"):
         with pytest.raises(ValueError):
             utils.safe_join_under(str(root), path)
+
+
+@pytest.mark.parametrize("operation", ["read", "write"])
+def test_character_config_rejects_external_file_symlinks(tmp_path, monkeypatch, operation):
+    root = tmp_path / "characters"
+    character = root / "Alice"
+    character.mkdir(parents=True)
+    outside = tmp_path / "outside.json"
+    original = b'{"private": "must stay outside the character library"}'
+    outside.write_bytes(original)
+    config = character / "Alice_config.json"
+    config.symlink_to(outside)
+    monkeypatch.setattr(utils, "base_output_dir", lambda: str(root))
+    with pytest.raises(ValueError, match="outside allowed directory"):
+        if operation == "read":
+            utils.load_config("Alice", strict=True)
+        else:
+            utils.save_config("Alice", {"character_info": {}})
+    assert outside.read_bytes() == original
+    assert config.is_symlink()
 
 
 @pytest.mark.parametrize("group", utils.MAIN_DIRS)
@@ -101,6 +120,31 @@ def test_successful_publication_versions_current_and_preserves_archives(tmp_path
     assert list(tmp_path.iterdir()) == [target]
 
 
+def test_archive_current_image_batch_retires_only_active_images(tmp_path):
+    target = tmp_path / "Original" / "Neutral"
+    (target / "V1").mkdir(parents=True)
+    (target / "V1" / "first.png").write_bytes(b"first")
+    (target / "old.png").write_bytes(b"old")
+
+    assert utils.archive_current_image_batch(str(target), lock_root=str(tmp_path)) is True
+    assert (target / "V1" / "first.png").read_bytes() == b"first"
+    assert (target / "V2" / "old.png").read_bytes() == b"old"
+    assert not list(target.glob("*.png"))
+    assert utils.archive_current_image_batch(str(target), lock_root=str(tmp_path)) is False
+    assert not (target / "V3").exists()
+
+
+def test_base_generator_retires_original_only_after_publishing_naked():
+    source = (Path(__file__).resolve().parents[1] / "nodes" / "character_generator.py").read_text(encoding="utf-8")
+    base_process, clone_source = source.split('@logged_operation("CharacterGenerator", "generate")', 1)[1].split(
+        "class VNCCS_CharacterCloneGenerator", 1
+    )
+    publish = base_process.index("saved_paths = self._save_final_sprites(")
+    retire = base_process.index("archive_current_image_batch(")
+    assert publish < retire
+    assert "archive_current_image_batch(" not in clone_source.split("class VNCCS_ClothesGenerator", 1)[0]
+
+
 def test_regeneration_retains_other_current_images(tmp_path):
     target = tmp_path / "Neutral"
     target.mkdir()
@@ -112,7 +156,7 @@ def test_regeneration_retains_other_current_images(tmp_path):
     assert (target / "two.png").read_bytes() == b"old"
 
 
-def test_post_commit_cleanup_warns_without_rejecting_published_images(tmp_path, monkeypatch, capsys):
+def test_post_commit_cleanup_warns_without_rejecting_published_images(tmp_path, monkeypatch, caplog):
     target = tmp_path / "Neutral"
     target.mkdir()
     (target / "old.png").write_bytes(b"old")
@@ -128,134 +172,17 @@ def test_post_commit_cleanup_warns_without_rejecting_published_images(tmp_path, 
     assert (target / "V1" / "old.png").read_bytes() == b"old"
     backups = list(tmp_path.glob(".vnccs-rollback-*"))
     assert len(backups) == 1
-    assert str(backups[0]) in capsys.readouterr().out
+    assert str(backups[0]) in caplog.text
 
 
-def test_migration_cleanup_warning_is_successful_sheet_publication(tmp_path, monkeypatch):
-    legacy, current = tmp_path / "legacy", tmp_path / "current"
-    sheet_dir = legacy / "Alice" / "Sheets" / "Coat" / "neutral"
-    sheet_dir.mkdir(parents=True)
-    from PIL import Image
-    Image.new("RGBA", (2, 2), "blue").save(sheet_dir / "sheet.png")
-    target = current / "Alice" / "Sprites" / "Coat" / "neutral"
-    target.mkdir(parents=True)
-    Image.new("RGBA", (2, 2), "red").save(target / "old.png")
-    monkeypatch.setattr(ma, "get_legacy_output_dir", lambda: str(legacy))
-    monkeypatch.setattr(ma, "base_output_dir", lambda: str(current))
-    monkeypatch.setattr(ma, "_crop_sprites", lambda image: [image.copy()])
-    remove = utils.shutil.rmtree
-    def deny_backup(path, **kwargs):
-        if ".vnccs-rollback-" in str(path):
-            raise PermissionError("Backup is locked")
-        return remove(path, **kwargs)
-    monkeypatch.setattr(utils.shutil, "rmtree", deny_backup)
-    result = ma._migrate_character({"log": []}, "Alice", "Alice", True)
-    assert result["sprites_saved"] == 1
-    assert result["failed_sheets"] == 0
-    assert (target / "sprite_neutral_0000.png").exists()
 
 
-def test_later_migration_exception_retains_prior_sheet_failures(monkeypatch):
-    run = {"log": []}
-    monkeypatch.setitem(ma.RUNS, "mixed-test", run)
-    failed_paths = ["Sheets/Coat/neutral/broken.png"]
-    def migrate(run, old_name, new_name, force):
-        if old_name == "Bob":
-            raise OSError("Disk full")
-        return {"legacy_name": old_name, "failed_sheets": 1, "failed_sheet_paths": failed_paths}
-    monkeypatch.setattr(ma, "_migrate_character", migrate)
-    ma._run_migration("mixed-test", [{"legacy_name": name, "new_name": name} for name in ("Alice", "Bob", "Charlie")], False)
-    assert run["status"] == "error"
-    assert run["failed_sheets"] == 1
-    assert run["failed_characters"] == ["Alice", "Bob", "Charlie"]
-    assert run["results"][0]["failed_sheet_paths"] == failed_paths
 
 
-def test_migration_partial_status_reports_failed_sheets(monkeypatch):
-    run = {"log": []}
-    monkeypatch.setitem(ma.RUNS, "partial-test", run)
-    monkeypatch.setattr(ma, "_migrate_character", lambda *args: {
-        "legacy_name": "Alice", "sprites_saved": 1, "failed_sheets": 1,
-        "failed_sheet_paths": ["Sheets/Coat/neutral/broken.png"],
-    })
-    ma._run_migration("partial-test", [{"legacy_name": "Alice", "new_name": "Alice"}], False)
-    assert run["status"] == "partial"
-    assert run["failed_sheets"] == 1
-    assert run["failed_characters"] == ["Alice"]
-    assert run["results"][0]["failed_sheet_paths"] == ["Sheets/Coat/neutral/broken.png"]
 
 
-@pytest.mark.parametrize("failure", ["alpha_repair", "target_directory", "target_boundary"])
-def test_sheet_preparation_failure_retains_progress_and_retries_only_failed_sheet(tmp_path, monkeypatch, failure):
-    from PIL import Image
-    legacy, current, outside = (tmp_path / name for name in ("legacy", "current", "outside"))
-    outside.mkdir()
-    for costume in ("A", "B", "C"):
-        source = legacy / "Alice" / "Sheets" / costume / "neutral" / "sheet.png"
-        source.parent.mkdir(parents=True)
-        Image.new("RGBA", (2, 2), "red").save(source)
-    target = current / "Alice" / "Sprites" / "B" / "neutral"
-    original_makedirs = ma.os.makedirs
-    if failure == "alpha_repair":
-        target.mkdir(parents=True)
-        (target / "sprite_neutral_0000.png").write_bytes(b"corrupt image")
-    elif failure == "target_boundary":
-        target.parent.parent.mkdir(parents=True)
-        target.parent.symlink_to(outside, target_is_directory=True)
-    else:
-        def deny_target(path, *args, **kwargs):
-            if Path(path) == target:
-                raise PermissionError("Target directory is locked")
-            return original_makedirs(path, *args, **kwargs)
-        monkeypatch.setattr(ma.os, "makedirs", deny_target)
-    monkeypatch.setattr(ma, "get_legacy_output_dir", lambda: str(legacy))
-    monkeypatch.setattr(ma, "base_output_dir", lambda: str(current))
-    monkeypatch.setattr(ma, "_crop_sprites", lambda image: [image.copy()])
-    run = {"log": []}
-    monkeypatch.setitem(ma.RUNS, "sheet-failure", run)
-    ma._run_migration("sheet-failure", [{"legacy_name": "Alice", "new_name": "Alice"}], False)
-    assert run["status"] == "partial"
-    assert run["failed_sheets"] == 1
-    assert run["failed_characters"] == ["Alice"]
-    result = run["results"][0]
-    assert result["sprites_saved"] == 2
-    assert result["failed_sheet_paths"] == ["B/neutral/sheet.png"]
-    successful = [current / "Alice" / "Sprites" / costume / "neutral" / "sprite_neutral_0000.png" for costume in ("A", "C")]
-    for path in successful:
-        Image.new("RGBA", (2, 2), "green").save(path)
-    original_images = [path.read_bytes() for path in successful]
-    monkeypatch.setattr(ma.os, "makedirs", original_makedirs)
-    if failure == "target_boundary":
-        target.parent.unlink()
-    retry = {"log": []}
-    monkeypatch.setitem(ma.RUNS, "sheet-retry", retry)
-    ma._run_migration("sheet-retry", [{"legacy_name": "Alice", "new_name": "Alice",
-                                       "retry_sheets": result["failed_sheet_paths"]}], True)
-    assert retry["status"] == "done"
-    assert retry["failed_sheets"] == 0
-    assert retry["results"][0]["sheet_count"] == 1
-    assert retry["results"][0]["sprites_saved"] == 1
-    assert [path.read_bytes() for path in successful] == original_images
-    assert all(not list(path.parent.glob("V*")) for path in successful)
-    assert not list(outside.iterdir())
-    with Image.open(target / "sprite_neutral_0000.png") as image:
-        assert image.getpixel((0, 0)) == (255, 0, 0, 255)
 
 
-def test_migration_job_history_and_logs_are_bounded(monkeypatch):
-    monkeypatch.setattr(ma, "RUNS", ma.OrderedDict())
-    monkeypatch.setattr(ma, "time", SimpleNamespace(time=lambda: 1000))
-    for index in range(ma.MAX_RUNS + 20):
-        ma.RUNS[str(index)] = {"status": "done", "updated_at": 1000}
-    ma.RUNS["active"] = {"status": "running", "updated_at": 0}
-    ma._prune_runs()
-    assert len(ma.RUNS) == ma.MAX_RUNS
-    assert "active" in ma.RUNS
-    assert ma._start_job(lambda *args: None, (), 1, "Queued") is None
-    run = {"log": []}
-    for index in range(ma.MAX_LOG_LINES + 10):
-        ma._log(run, str(index))
-    assert len(run["log"]) == ma.MAX_LOG_LINES
 
 
 def test_wizard_worker_keeps_event_loop_responsive_and_scopes_events(monkeypatch):

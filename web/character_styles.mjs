@@ -1,6 +1,9 @@
+import { mountSakuraDialogMotion } from "./sakura_interactions.mjs";
+
 // Style selection stays in widget_data; the user library lives on the server.
 export function createStylePicker({ host, catalog, getInfo, save, fetchApi, cleanup,
-    getPreviewPayload, imageURL = value => value, listenPreview, showModal }) {
+    getPreviewPayload, imageURL = value => value, listenPreview, showModal, allowNone = () => false,
+    catalogURL = () => "/vnccs/character_styles", getSecondaryInfo, allowSecondary = () => true }) {
     const make = (tag, className, text) => {
         const element = document.createElement(tag);
         element.className = className;
@@ -10,6 +13,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
     };
     const allStyles = () => catalog.groups.flatMap(group => group.styles.map(style => ({ ...style, group: group.label })));
     const custom = { id: "custom", label: "Custom style", description: "Describe your own visual style", reference: "Your prompt", image: catalog.custom_preview || "" };
+    const noStyle = { id: "none", label: "None", description: "", reference: "", prompt: "" };
     const root = make("div", "vnccs-creator-field");
     root.append(make("div", "vnccs-creator-label", "Style"));
     const trigger = make("button", "vnccs-style-summary");
@@ -23,6 +27,18 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
     const reference = make("span", "vnccs-style-reference");
     details.append(name, description, reference);
     trigger.append(thumbnail, details);
+    const secondarySlot = make("div", "vnccs-style-secondary");
+    const secondaryTrigger = make("button", "vnccs-style-secondary-trigger");
+    secondaryTrigger.setAttribute("aria-haspopup", "dialog");
+    secondaryTrigger.setAttribute("aria-expanded", "false");
+    const secondaryThumbnail = make("span", "vnccs-style-placeholder");
+    secondaryThumbnail.setAttribute("aria-hidden", "true");
+    const secondaryName = make("span", "vnccs-style-secondary-name");
+    secondaryTrigger.append(secondaryName, secondaryThumbnail);
+    const clearSecondary = make("button", "vnccs-style-secondary-clear", "×");
+    clearSecondary.setAttribute("aria-label", "Remove second style");
+    clearSecondary.title = "Remove second style";
+    secondarySlot.append(secondaryTrigger, clearSecondary);
     const customInput = make("input", "vnccs-creator-input");
     customInput.type = "text";
     customInput.placeholder = "Describe any visual style";
@@ -30,19 +46,28 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
     customInput.maxLength = 16000;
     customInput.hidden = true;
     customInput.oninput = () => { getInfo().custom_style = customInput.value; save(); };
-    root.append(trigger, customInput);
+    if (getSecondaryInfo) {
+        const selection = make("div", "vnccs-style-selection");
+        selection.append(trigger, secondarySlot);
+        root.append(selection, customInput);
+    } else root.append(trigger, customInput);
     let overlay = null;
     let disposed = false;
+    const motion = { get _removed() { return disposed; } };
     let requestId = 0;
+    let contextRevision = 0;
     let inertChildren = [];
     let batch = null;
     let deleting = false;
     let confirmation = null;
+    let editingSecondary = false;
+    const selectedInfo = () => editingSecondary ? getSecondaryInfo() : getInfo();
     let cardScale = 130;
     let progressMessage = "";
     let updateGallery = () => {};
     let refreshLibrary = () => {};
     let generatePreviews = async () => false;
+    const hasPrimaryStyle = () => !["", "none"].includes(String(getInfo()?.style || "").trim().toLowerCase());
     const paintPreview = (element, style) => {
         element.replaceChildren();
         const fallback = make("span", "", "Preview");
@@ -67,20 +92,39 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
             updateGallery();
         }
     });
-    const selectedStyle = () => allStyles().find(style => style.id === getInfo().style);
-    const setValue = (value, persist = false) => {
-        const info = getInfo();
-        info.style = catalog.aliases?.[value] || value || catalog.default_style || "custom";
-        const style = info.style === "custom" ? custom : selectedStyle();
-        paintPreview(thumbnail, style);
-        name.textContent = style?.label || info.style_label || "Unavailable style";
-        description.textContent = style?.description || info.style_description || "Saved style; restore its library to edit it";
-        reference.textContent = `Reference: ${style?.reference || info.style_reference || "Not specified"}`;
-        description.title = description.textContent;
-        reference.title = reference.textContent;
-        customInput.value = info.custom_style || "";
-        customInput.style.display = "none";
-        trigger.setAttribute("aria-label", `Choose style: ${name.textContent}`);
+    const selectedStyle = (info = getInfo()) => allStyles().find(style => style.id === info.style);
+    const setValue = (value, persist = false, secondary = false) => {
+        const info = secondary ? getSecondaryInfo() : getInfo();
+        info.style = catalog.aliases?.[value] || value || (secondary ? "none" : catalog.default_style || "custom");
+        const style = info.style === "none" ? noStyle : info.style === "custom" ? custom : selectedStyle(info);
+        if (!secondary) {
+            paintPreview(thumbnail, style);
+            name.textContent = style?.label || info.style_label || "Unavailable style";
+            description.textContent = style ? style.description || "" : info.style_description || "Saved style; restore its library to edit it";
+            const styleReference = style ? style.reference || "" : info.style_reference || "";
+            reference.textContent = info.style === "none" ? "No style selected" : styleReference ? `Reference: ${styleReference}` : "";
+            description.hidden = !description.textContent;
+            reference.hidden = !reference.textContent;
+            description.title = description.textContent;
+            reference.title = reference.textContent;
+            customInput.value = info.custom_style || "";
+            customInput.style.display = "none";
+            trigger.setAttribute("aria-label", `Choose style: ${name.textContent}`);
+        }
+        if (getSecondaryInfo) {
+            const extra = getSecondaryInfo();
+            const empty = !extra.style || extra.style === "none";
+            secondarySlot.hidden = !allowSecondary() || !hasPrimaryStyle();
+            secondaryName.textContent = empty
+                ? "Choose a second style to blend, or leave empty"
+                : selectedStyle(extra)?.label || extra.style_label || "Unavailable style";
+            secondaryName.setAttribute("data-empty", String(empty));
+            if (empty) secondaryThumbnail.replaceChildren(make("span", "", "+"));
+            else paintPreview(secondaryThumbnail, selectedStyle(extra));
+            secondaryTrigger.setAttribute("aria-label", empty ? "Add second style" : `Choose second style: ${secondaryName.textContent}`);
+            secondaryTrigger.title = empty ? "Add an optional second style to mix with the first" : secondaryName.textContent;
+            clearSecondary.hidden = empty;
+        }
         if (persist) {
             info.style_prompt = style?.prompt || "";
             info.style_label = style?.label || "";
@@ -89,6 +133,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
             save();
         }
     };
+    clearSecondary.onclick = () => setValue("none", true, true);
     const close = (restoreFocus = true) => {
         requestId++;
         if (batch) {
@@ -104,11 +149,16 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         for (const [element, previous] of inertChildren) element.inert = previous;
         inertChildren = [];
         trigger.setAttribute("aria-expanded", "false");
-        if (restoreFocus && !disposed) trigger.focus();
+        secondaryTrigger.setAttribute("aria-expanded", "false");
+        if (restoreFocus && !disposed) (editingSecondary ? secondaryTrigger : trigger).focus({ preventScroll: true });
     };
-    cleanup(() => { disposed = true; close(false); });
-    const open = async () => {
-        if (overlay || disposed) return;
+    cleanup(() => {
+        disposed = true; close(false);
+        for (const animation of [...(motion._motionAnimations || [])]) animation.cancel();
+    });
+    const open = async (secondary = false) => {
+        if (overlay || disposed || (secondary && (!getSecondaryInfo || !allowSecondary() || !hasPrimaryStyle()))) return;
+        editingSecondary = secondary;
         if (!batch) progressMessage = "";
         overlay = make("section", "vnccs-style-gallery");
         overlay.setAttribute("role", "dialog");
@@ -131,10 +181,13 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         const filter = make("select", "vnccs-creator-select");
         filter.setAttribute("aria-label", "Style category");
         const add = make("button", "vnccs-creator-btn", "New style");
+        const generateAll = make("button", "vnccs-creator-btn", "Generate all previews");
+        generateAll.title = "Render every library style sequentially using current Creator settings and resolution scale. Stop finishes the current image.";
+        generateAll.hidden = true;
         const dismiss = make("button", "vnccs-creator-btn", "Close");
         dismiss.title = "Close the library and stop after the current preview";
         dismiss.onclick = () => close();
-        header.append(search, filter, add, dismiss);
+        header.append(search, filter, add, generateAll, dismiss);
         const sizeControls = make("label", "vnccs-style-size-controls", "Card size");
         const sizeSlider = make("input", "vnccs-style-size-slider");
         sizeSlider.type = "range";
@@ -167,12 +220,15 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         inertChildren = [...host.children].map(element => [element, element.inert]);
         for (const [element] of inertChildren) element.inert = true;
         host.append(overlay);
-        trigger.setAttribute("aria-expanded", "true");
-        search.focus();
+        mountSakuraDialogMotion(motion, overlay, overlay);
+        (editingSecondary ? secondaryTrigger : trigger).setAttribute("aria-expanded", "true");
+        search.focus({ preventScroll: true });
         let loadingCatalog = true;
         const previewSlots = new Map();
         updateGallery = (styleId) => {
             add.disabled = !editor.hidden || !!batch || deleting;
+            generateAll.textContent = batch ? (batch.cancelled ? "Stopping..." : "Stop after current") : "Generate all previews";
+            generateAll.disabled = loadingCatalog || deleting || !editor.hidden || !!batch?.cancelled;
             for (const edit of grid.querySelectorAll(".vnccs-style-edit")) edit.disabled = !!batch || deleting;
             for (const button of grid.querySelectorAll(".vnccs-style-delete")) button.disabled = loadingCatalog || !!batch || deleting;
             if (styleId) {
@@ -180,6 +236,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
                 const slot = previewSlots.get(styleId);
                 if (slot) paintPreview(slot, style);
                 if (getInfo().style === styleId) paintPreview(thumbnail, style);
+                if (getSecondaryInfo?.().style === styleId) paintPreview(secondaryThumbnail, style);
             }
             if (progressMessage) status.textContent = progressMessage;
         };
@@ -187,14 +244,14 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
             grid.replaceChildren();
             previewSlots.clear();
             const query = search.value.trim().toLowerCase();
-            const styles = [custom, ...allStyles()].filter(style =>
+            const styles = [...(editingSecondary || allowNone() ? [noStyle] : []), custom, ...allStyles()].filter(style =>
                 (!filter.value || style.group === filter.value) &&
                 [style.label, style.description, style.reference].join(" ").toLowerCase().includes(query));
             status.textContent = styles.length ? `${styles.length} styles` : "No matching styles";
             for (const style of styles) {
                 const tile = make("div", "vnccs-style-tile");
                 const card = make("button", "vnccs-style-card");
-                card.setAttribute("aria-pressed", String(style.id === getInfo().style));
+                card.setAttribute("aria-pressed", String(style.id === selectedInfo().style));
                 card.title = [style.description, style.reference].filter(Boolean).join("\n");
                 const placeholder = make("span", "vnccs-style-placeholder", "Preview");
                 placeholder.setAttribute("aria-hidden", "true");
@@ -203,8 +260,8 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
                 card.append(placeholder, make("span", "vnccs-style-card-label", style.label));
                 card.onclick = () => {
                     if (style.id === "custom") {
-                        showEditor({ label: "Custom style", prompt: getInfo().custom_style || "", reference: "Your prompt" });
-                    } else { setValue(style.id, true); close(); }
+                        showEditor({ label: "Custom style", prompt: selectedInfo().custom_style || "", reference: "Your prompt" });
+                    } else { setValue(style.id, true, editingSecondary); close(); }
                 };
                 tile.append(card);
                 if (style.user) {
@@ -230,6 +287,8 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
                                     if (deleting || disposed || overlay !== currentOverlay) return false;
                                     deleting = true;
                                     updateGallery();
+                                    const selection = JSON.stringify(getInfo());
+                                    const selectionRevision = contextRevision;
                                     try {
                                         const response = await fetchApi(`/vnccs/character_styles/delete?style=${encodeURIComponent(style.id)}`, {
                                             method: "POST", headers: { "X-VNCCS-CSRF": "1" },
@@ -240,7 +299,10 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
                                         if (disposed) return false;
                                         for (const group of catalog.groups) group.styles = group.styles.filter(item => item.id !== style.id);
                                         catalog.groups = catalog.groups.filter(group => group.label !== "My styles" || group.styles.length);
-                                        if (getInfo().style === style.id) setValue(catalog.default_style, true);
+                                        if (contextRevision === selectionRevision && JSON.stringify(getInfo()) === selection) {
+                                            if (getInfo().style === style.id) setValue(catalog.default_style, true);
+                                            if (getSecondaryInfo?.().style === style.id) setValue("none", true, true);
+                                        }
                                         progressMessage = `Deleted: ${style.label}`;
                                         refreshLibrary();
                                         if (overlay === currentOverlay) search.focus();
@@ -319,6 +381,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
                 const token = ++requestId;
                 const payload = Object.fromEntries(Object.entries(fields).map(([key, input]) => [key, input.value]));
                 if (draft.id) payload.id = draft.id;
+                if (draft.revision) payload.revision = draft.revision;
                 const response = await fetchApi("/vnccs/character_styles", {
                     method: "POST", headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" }, body: JSON.stringify(payload),
                 });
@@ -330,7 +393,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
                 group.styles = group.styles.filter(item => item.id !== result.style.id);
                 draft = result.style;
                 group.styles.push(draft);
-                setValue(draft.id, true);
+                setValue(draft.id, true, editingSecondary);
                 paintPreview(preview, draft);
                 return draft;
             };
@@ -360,7 +423,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         };
         search.oninput = filter.onchange = render;
         add.onclick = () => showEditor();
-        // Retain the sequential renderer for maintenance; the UI generates one user style.
+        generateAll.onclick = () => generatePreviews();
         generatePreviews = async (requestedStyles, requestedPayload) => {
             if (batch) {
                 batch.cancelled = true;
@@ -414,7 +477,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         render();
         const token = ++requestId;
         try {
-            const response = await fetchApi("/vnccs/character_styles");
+            const response = await fetchApi(catalogURL());
             const result = await response.json();
             if (token !== requestId || disposed) return;
             if (!response.ok || !Array.isArray(result.groups)) throw new Error(result.error || `HTTP ${response.status}`);
@@ -431,7 +494,16 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
             }
         }
     };
-    trigger.onclick = open;
+    trigger.onclick = () => open();
+    secondaryTrigger.onclick = () => open(true);
     setValue(getInfo().style);
-    return { root, setValue, customInput, generatePreviews: (...args) => generatePreviews(...args) };
+    const setCatalog = nextCatalog => {
+        if (!nextCatalog || !Array.isArray(nextCatalog.groups) || catalog === nextCatalog) return;
+        contextRevision++;
+        close(false);
+        catalog = nextCatalog;
+        custom.image = catalog.custom_preview || "";
+    };
+    return { root, setValue, setCatalog, close: (restoreFocus = true) => { contextRevision++; close(restoreFocus); },
+        customInput, generatePreviews: (...args) => generatePreviews(...args) };
 }

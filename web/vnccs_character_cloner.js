@@ -1,41 +1,20 @@
 import { app } from "../../scripts/app.js";
+import { createSakuraInteractions } from "./sakura_interactions.mjs";
 import { vnccsApi as api, mediaURL, checkedJSON } from "./vnccs_transport.js";
 import { presetSelection } from "./character_presets.mjs";
-import { showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, registerCleanup } from "./vnccs_common.js";
+import { createTraitInput, createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, registerCleanup, animateWizardRows, normalizeUploadFile, normalizeAgeValue } from "./vnccs_common.js";
 
 // --- STYLES: Sakura Archive Design System ---
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+${SAKURA_INTERACTION_CSS}
 
 /* ── Variables ── */
 .vnccs-cloner-container {
-    --bg-primary: #0a0a0f;
-    --bg-secondary: #12121a;
-    --bg-elevated: #1a1a26;
-    --bg-surface: #22222e;
-    --bg-hover: #2a2a38;
-    --text-primary: #e8e8f0;
-    --text-secondary: #9898a8;
-    --text-muted: #5e5e70;
-    --accent: #ff8fa3;
-    --accent-hover: #ffb6c8;
-    --accent-glow: rgba(255, 143, 163, 0.3);
-    --accent-subtle: rgba(255, 143, 163, 0.1);
-    --accent-border: rgba(255, 143, 163, 0.22);
-    --accent-lavender: #b8a9e8;
-    --success: #00d68f;
+${SAKURA_THEME_CSS}
     --warning: #ffaa00;
-    --error: #ff4757;
-    --border: rgba(255, 255, 255, 0.06);
-    --border-hover: rgba(255, 255, 255, 0.12);
-    --font: 'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
-    --radius-sm: 8px;
-    --radius-md: 12px;
-    --radius-lg: 20px;
     --shadow-subtle: 0 2px 8px rgba(0, 0, 0, 0.3);
     --shadow-elevated: 0 8px 32px rgba(0, 0, 0, 0.5);
-    --transition: 0.2s ease;
 }
 
 /* ── Container ── */
@@ -60,7 +39,7 @@ const STYLE = `
 /* ── Rows ── */
 .vnccs-cloner-top-row {
     display: grid;
-    grid-template-columns: 40% 60%;
+    grid-template-columns: 400px minmax(0, 1fr);
     gap: 12px;
     flex: 1;
     min-height: 0;
@@ -69,7 +48,7 @@ const STYLE = `
 
 .vnccs-cloner-bottom-row {
     display: grid;
-    grid-template-columns: 40% 60%;
+    grid-template-columns: 400px minmax(0, 1fr);
     gap: 12px;
     height: 80px;
     min-height: 80px;
@@ -84,7 +63,7 @@ const STYLE = `
     background: rgba(20, 16, 30, 0.88);
     border: 1px solid var(--accent-border);
     border-radius: var(--radius-lg);
-    padding: 14px 16px;
+    padding: 16px;
     gap: 10px;
     overflow-y: auto;
     height: 100%;
@@ -98,7 +77,7 @@ const STYLE = `
     position: absolute;
     top: 0; left: 18%; right: 18%;
     height: 1px;
-    background: linear-gradient(90deg, transparent, rgba(255, 143, 163, 0.6), transparent);
+    background: linear-gradient(90deg, transparent, rgba(255, 143, 163, 0.5), transparent);
     border-radius: 1px;
 }
 .vnccs-cloner-col::-webkit-scrollbar { width: 4px; }
@@ -167,7 +146,6 @@ const STYLE = `
     font-size: 12px;
     width: 100%;
     box-sizing: border-box;
-    zoom: 1.5;
     transition: all var(--transition);
     color-scheme: dark;
 }
@@ -331,64 +309,6 @@ const STYLE = `
     background: rgba(255, 143, 163, 0.15);
     border-color: var(--accent);
     box-shadow: 0 0 16px var(--accent-subtle);
-}
-
-/* ── Image Grid ── */
-.vnccs-cloner-img-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    min-height: 66px;
-    flex-shrink: 0;
-}
-.vnccs-cloner-thumb-wrap {
-    position: relative;
-    display: inline-block;
-    margin: 2px;
-    border: 2px solid transparent;
-    border-radius: var(--radius-sm);
-    transition: all var(--transition);
-}
-.vnccs-cloner-thumb-wrap.is-selected {
-    border-color: var(--accent);
-    box-shadow: 0 0 10px rgba(255, 143, 163, 0.3);
-}
-.vnccs-cloner-thumb {
-    width: 60px;
-    height: 60px;
-    object-fit: cover;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: all var(--transition);
-}
-:where(.vnccs-cloner-thumb-wrap:not(.is-selected)) .vnccs-cloner-thumb:hover { border-color: var(--accent); box-shadow: 0 0 8px var(--accent-subtle); }
-.vnccs-cloner-thumb.generating {
-    border: 2px solid var(--accent);
-    animation: clonerPulse 1s infinite alternate;
-    box-shadow: 0 0 12px var(--accent-glow);
-}
-@keyframes clonerPulse { from { opacity: 0.6; } to { opacity: 1; } }
-.vnccs-cloner-thumb-remove {
-    position: absolute;
-    top: -1px;
-    right: -1px;
-    min-width: 20px;
-    height: 20px;
-    border-radius: 0 var(--radius-sm) 0 var(--radius-sm);
-    background: rgba(10, 10, 15, 0.82);
-    border: 1px solid rgba(255, 71, 87, 0.28);
-    color: var(--error);
-    cursor: pointer;
-    font-size: 14px;
-    line-height: 18px;
-    text-align: center;
-    font-weight: 700;
-    transition: all var(--transition);
-}
-.vnccs-cloner-thumb-remove:hover {
-    background: rgba(255, 71, 87, 0.2);
-    border-color: var(--error);
 }
 
 /* ── Toggle Switch ── */
@@ -559,8 +479,10 @@ const STYLE = `
 
 /* ── Preview Container ── */
 .vnccs-cloner-preview-container {
+    --vnccs-preview-accent: #ff8fa3;
+    --vnccs-preview-accent-rgb: 255, 143, 163;
     flex: 1;
-    background: radial-gradient(circle, rgba(255, 143, 163, 0.04) 1px, transparent 1px), rgba(10, 10, 15, 0.7);
+    background: radial-gradient(circle, rgba(var(--vnccs-preview-accent-rgb), 0.04) 1px, transparent 1px), rgba(10, 10, 15, 0.7);
     background-size: 20px 20px, 100% 100%;
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
@@ -571,14 +493,45 @@ const STYLE = `
     position: relative;
     min-height: 0;
 }
+.vnccs-cloner-preview-container.is-male-character {
+    --vnccs-preview-accent: #63c7ff;
+    --vnccs-preview-accent-rgb: 99, 199, 255;
+}
 .vnccs-cloner-preview-img {
-    width: 100%;
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: auto;
+    max-width: none;
     height: 100%;
     object-fit: contain;
+    transform: translateX(-50%);
     display: none;
-    animation: clonerFadein 0.4s ease;
 }
-@keyframes clonerFadein { from { opacity: 0; } to { opacity: 1; } }
+.vnccs-cloner-preview-remove {
+    position: absolute;
+    z-index: 15;
+    top: 10px;
+    right: 10px;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid rgba(255, 71, 87, 0.42);
+    border-radius: 9px;
+    background: rgba(10, 10, 15, 0.78);
+    color: var(--error);
+    font: 700 18px/26px var(--font);
+    cursor: pointer;
+    opacity: 0.72;
+    transition: opacity var(--transition), background var(--transition), border-color var(--transition), transform var(--transition);
+}
+.vnccs-cloner-preview-remove:hover {
+    opacity: 1;
+    background: rgba(255, 71, 87, 0.18);
+    border-color: var(--error);
+    transform: scale(1.04);
+}
+.vnccs-cloner-preview-remove[hidden] { display: none; }
 .vnccs-cloner-preview-placeholder {
     display: flex;
     flex-direction: column;
@@ -611,10 +564,10 @@ const STYLE = `
     content: '';
     width: 34px;
     height: 34px;
-    border: 2px solid rgba(255, 143, 163, 0.24);
-    border-top-color: var(--accent);
+    border: 2px solid rgba(var(--vnccs-preview-accent-rgb), 0.24);
+    border-top-color: var(--vnccs-preview-accent);
     border-radius: 50%;
-    box-shadow: 0 0 18px rgba(255,143,163,0.25);
+    box-shadow: 0 0 18px rgba(var(--vnccs-preview-accent-rgb), 0.25);
     animation: clonerSpin 0.75s linear infinite;
 }
 .vnccs-cloner-sprite-nav {
@@ -721,63 +674,11 @@ const STYLE = `
 .vnccs-cloner-preview-container,
 .vnccs-cloner-input,
 .vnccs-cloner-select,
-.vnccs-cloner-textarea,
-.vnccs-cloner-img-list {
+.vnccs-cloner-textarea {
     pointer-events: auto;
 }
 
-/* ── Loading Overlay ── */
-.vnccs-cloner-loading-overlay {
-    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(10, 10, 15, 0.92);
-    backdrop-filter: blur(10px);
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    z-index: 1000; pointer-events: auto; gap: 16px;
-    border-radius: var(--radius-lg);
-}
-.vnccs-cloner-spinner {
-    width: 44px;
-    height: 44px;
-    position: relative;
-}
-.vnccs-cloner-spinner::before, .vnccs-cloner-spinner::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    border-radius: 50%;
-    border: 3px solid transparent;
-}
-.vnccs-cloner-spinner::before {
-    border-top-color: var(--accent);
-    border-right-color: rgba(255, 143, 163, 0.3);
-    animation: clonerSpin 1s linear infinite;
-    box-shadow: 0 0 18px rgba(255, 143, 163, 0.2);
-}
-.vnccs-cloner-spinner::after {
-    inset: 7px;
-    border-bottom-color: rgba(184, 169, 232, 0.6);
-    border-left-color: rgba(184, 169, 232, 0.2);
-    animation: clonerSpin 1.4s linear infinite reverse;
-}
 @keyframes clonerSpin { to { transform: rotate(360deg); } }
-.vnccs-cloner-loading-text {
-    color: var(--text-secondary);
-    font-family: var(--font);
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-}
-.vnccs-cloner-loading-dots::after {
-    content: '';
-    animation: clonerDots 1.5s steps(4, end) infinite;
-}
-@keyframes clonerDots {
-    0%, 20% { content: ''; }
-    40% { content: '.'; }
-    60% { content: '..'; }
-    80%, 100% { content: '...'; }
-}
 
 /* ── Modal Overrides ── */
 .vnccs-cloner-container .vnccs-common-modal-overlay {
@@ -925,17 +826,6 @@ const STYLE = `
     text-align: left;
     cursor: pointer;
 }
-.vnccs-cloner-trait-token {
-    max-width: 100%;
-    padding: 5px 8px;
-    border: 1px solid rgba(255,182,200,0.22);
-    border-radius: 7px;
-    background: rgba(184,169,232,0.14);
-    line-height: 1.4;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
 .vnccs-cloner-trait-empty { color: var(--text-secondary); }
 .vnccs-cloner-trait-input { min-height: 44px; font-size: 13px; }
 .vnccs-cloner-trait-values[hidden], .vnccs-cloner-trait-input[hidden] { display: none; }
@@ -1012,10 +902,69 @@ const STYLE = `
     letter-spacing: 1px;
     text-transform: uppercase;
 }
+
+.vnccs-cloner-container :is(button, [role="button"]):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.vnccs-cloner-container :is(input, select, .vnccs-common-ui-select-trigger) { box-sizing: border-box; }
+@media (prefers-reduced-motion: reduce) {
+    .vnccs-cloner-container *, .vnccs-cloner-container *::before, .vnccs-cloner-container *::after {
+        animation: none !important; transition: none !important;
+    }
+}
+.vnccs-cloner-trait-token {
+    position: relative;
+    min-width: 0;
+    box-sizing: border-box;
+    max-width: 100%;
+    padding: 5px 8px;
+    border: 1px solid rgba(255,182,200,0.22);
+    border-radius: 7px;
+    background: rgba(184,169,232,0.14);
+    line-height: 1.4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.vnccs-cloner-trait-token:has(.vnccs-cloner-trait-remove) { overflow: visible; }
+.vnccs-cloner-trait-text { display: block; overflow: hidden; text-overflow: ellipsis; }
+.vnccs-cloner-trait-edit, .vnccs-cloner-trait-remove {
+    appearance: none; min-width: 0; min-height: 0; margin: 0; padding: 0;
+    border: 0 !important; background: transparent !important; box-shadow: none !important;
+    transform: none !important; font: inherit; line-height: inherit; cursor: pointer;
+}
+.vnccs-cloner-trait-edit { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: inherit; }
+.vnccs-cloner-trait-remove {
+    position: absolute; top: -5px; right: -5px; width: 12px; height: 12px; z-index: 2;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%; background: var(--accent) !important; color: var(--bg-primary);
+    box-shadow: 0 0 0 2px var(--bg-secondary) !important;
+    transition: background-color 180ms ease, box-shadow 180ms ease;
+}
+.vnccs-cloner-trait-remove::after { content: ""; position: absolute; inset: -4px; border-radius: inherit; }
+.vnccs-cloner-trait-remove svg { width: 12px; height: 12px; pointer-events: none; }
+.vnccs-cloner-trait-remove:hover { background: var(--accent-hover) !important; }
+.vnccs-cloner-trait-empty { border: 0; padding: 0; min-height: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.vnccs-cloner-trait-token:focus-within { border-color: var(--accent); }
+.vnccs-cloner-trait-edit:focus-visible, .vnccs-cloner-trait-remove:focus-visible, button.vnccs-cloner-trait-empty:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: -2px;
+}
+.vnccs-cloner-trait-remove:focus-visible { outline: 2px solid var(--text-primary); outline-offset: 2px; }
 `;
 
 app.registerExtension({
     name: "VNCCS.CharacterCloner",
+    async setup() {
+        if (app._vnccsClonerQueuePatched) return;
+        app._vnccsClonerQueuePatched = true;
+        const queuePrompt = app.queuePrompt;
+        app.queuePrompt = async function (...args) {
+            for (const node of app.graph?._nodes || []) {
+                if (node.type === "CharacterCloner" && ![2, 4].includes(node.mode) && node._vnccsStateRestoreError) {
+                    throw new Error(node._vnccsStateRestoreError);
+                }
+            }
+            return queuePrompt.apply(app, args);
+        };
+    },
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name === "CharacterCloner") {
             const onNodeCreated = nodeType.prototype.onNodeCreated;
@@ -1071,26 +1020,8 @@ app.registerExtension({
                 let TAG_DATA = null;
 
                 const els = {};
-                const normalizeUploadFile = (file, prefix = "vnccs_upload") => {
-                    const originalName = String(file?.name || "").trim();
-                    const extMatch = originalName.match(/(\.[A-Za-z0-9]{1,8})$/);
-                    const ext = extMatch ? extMatch[1] : ".png";
-                    let name = originalName.replace(/[\\/]/g, "_").trim();
-                    name = name.replace(/^[\s.-]+/, "");
-                    name = name.replace(/\s+/g, "_");
-                    name = name.replace(/[^A-Za-z0-9._-]/g, "_");
-                    if (!name || !/[A-Za-z0-9]/.test(name)) {
-                        name = `${prefix}_${Date.now()}${ext}`;
-                    }
-                    if (name !== originalName) {
-                        name = `${prefix}_${name}`;
-                    }
-                    return name === file.name ? file : new File([file], name, {
-                        type: file.type,
-                        lastModified: file.lastModified,
-                    });
-                };
                 const saveState = () => {
+                    if (node._vnccsStateRestoreError) return;
                     if (dataWidget) dataWidget.value = JSON.stringify(state);
                     node._vnccsGetClonerState = () => state;
                     app.graph?.setDirtyCanvas(true, true);
@@ -1101,11 +1032,6 @@ app.registerExtension({
                             nsfw: !!state.character_info?.nsfw
                         }
                     }));
-                };
-                const normalizeAgeValue = (value) => {
-                    const parsed = parseFloat(value);
-                    if (!Number.isFinite(parsed)) return 18;
-                    return Math.max(1, Math.min(100, parsed));
                 };
                 const parsePoseStudioValues = () => {
                     const info = state.character_info || {};
@@ -1118,6 +1044,7 @@ app.registerExtension({
                         signature: `${Number.isFinite(age) ? Math.round(age) : "?"}|${Number.isFinite(gender) ? gender : "?"}`
                     };
                 };
+                const isPoseStudioMounted = createRequestGuard(node)();
                 let poseStudioSyncRetryCount = 0;
                 const patchPoseStudioSync = () => {
                     const sync = window.__vnccsPoseStudioCharacterCreatorSync;
@@ -1182,6 +1109,7 @@ app.registerExtension({
                     return true;
                 };
                 const syncPoseStudioAge = (ageValue = state.character_info.age, options = {}) => {
+                    if (!isPoseStudioMounted() || node._vnccsStateRestoreError) return;
                     state.character_info.age = normalizeAgeValue(ageValue);
                     node._vnccsGetPoseStudioValues = parsePoseStudioValues;
                     if (patchPoseStudioSync()) {
@@ -1207,6 +1135,7 @@ app.registerExtension({
                     }
                 };
                 const syncPoseStudioGender = (sexValue = state.character_info.sex) => {
+                    if (!isPoseStudioMounted() || node._vnccsStateRestoreError) return;
                     const sex = String(sexValue || "").toLowerCase();
                     if (sex === "male" || sex === "female") state.character_info.sex = sex;
                     node._vnccsGetPoseStudioValues = parsePoseStudioValues;
@@ -1229,41 +1158,56 @@ app.registerExtension({
                 };
 
                 const loadState = () => {
-                    beginCharacterRequest();
+                    currentInventorySelection = beginCharacterRequest();
                     beginCaptionRequest();
                     restoredInfoCharacter = null;
-                    if (dataWidget && dataWidget.value && dataWidget.value !== "{}") {
+                    if (dataWidget) {
                         try {
                             console.log("[VNCCS] Loading State from widget_data:", dataWidget.value);
-                            const parsed = JSON.parse(dataWidget.value);
-                            if (Object.prototype.hasOwnProperty.call(parsed, "character")) {
-                                state.character = parsed.character || "";
+                            const hasStoredState = !!dataWidget.value && dataWidget.value !== "{}";
+                            const parsed = JSON.parse(dataWidget.value || "{}");
+                            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+                                || (parsed.character_info !== undefined && (!parsed.character_info
+                                    || typeof parsed.character_info !== "object" || Array.isArray(parsed.character_info)))
+                                || (parsed.source_images !== undefined && !Array.isArray(parsed.source_images))) {
+                                throw new Error("Saved cloner state must contain character metadata and a reference list.");
                             }
-                            if (Array.isArray(parsed.source_images)) {
-                                state.source_images = parsed.source_images;
+                            if (parsed.source_images?.length && parsed.source_images_character
+                                && parsed.source_images_character !== parsed.character) {
+                                throw new Error("Saved reference image belongs to another character.");
                             }
-                            if (Object.prototype.hasOwnProperty.call(parsed, "source_images_character")) {
-                                state.source_images_character = parsed.source_images_character || "";
-                            } else if (state.source_images.length && !state.source_images_character) {
-                                state.source_images_character = state.character || "";
-                            }
-                            if (Object.prototype.hasOwnProperty.call(parsed, "selected_idx")) {
-                                state.selected_idx = parsed.selected_idx;
-                            }
+                            delete node._vnccsStateRestoreError;
+                            state.character = parsed.character || "";
+                            state.source_images = parsed.source_images || [];
+                            state.source_images_character = parsed.source_images_character || (state.source_images.length ? state.character : "");
+                            state.selected_idx = parsed.selected_idx ?? 0;
+                            state.selected_preview_sprite = parsed.selected_preview_sprite || null;
+                            state.char_preview_url = null;
                             state.previous_background_color = parsed.previous_background_color || "Green";
+                            for (const key of Object.keys(state.character_info)) delete state.character_info[key];
+                            Object.assign(state.character_info, defaultCharacterInfo, parsed.character_info);
                             if (parsed.character_info && typeof parsed.character_info === "object") {
-                                Object.assign(state.character_info, parsed.character_info);
                                 restoredInfoCharacter = parsed.character || null;
                             }
                             node._vnccsGetClonerState = () => state;
                             // Update UI
                             updateUIFromState();
-                            dataWidget.value = JSON.stringify(state);
+                            if (hasStoredState) dataWidget.value = JSON.stringify(state);
                             console.log("[VNCCS] State loaded successfully.");
                         } catch (e) {
+                            node._vnccsStateRestoreError = "Cannot restore saved cloner state. Original widget data is preserved. Restore a valid workflow before editing or running.";
                             console.error("[VNCCS] Failed to load state:", e);
+                            showModal("State Restore Failed", () => {
+                                const message = document.createElement("div");
+                                message.textContent = node._vnccsStateRestoreError;
+                                return message;
+                            }, [{ text: "Close" }]);
+                            return false;
                         }
+                    } else {
+                        delete node._vnccsStateRestoreError;
                     }
+                    return true;
                 };
 
                 // React to external changes (e.g. reload)
@@ -1277,6 +1221,7 @@ app.registerExtension({
                     syncDOMWidgetWidth(node, "ui");
                     setTimeout(() => syncDOMWidgetWidth(node, "ui"), 100);
                     loadState();
+                    loadCharList();
                 };
 
                 const FIELD_HELP = {
@@ -1297,72 +1242,17 @@ app.registerExtension({
 
                 // UI Builders
                 const createTraitField = (lbl, key, targetObj = state.character_info) => {
-                    const wrap = document.createElement("div");
-                    wrap.className = "vnccs-cloner-trait-row";
-                    setHelpText(wrap, helpFor(key));
-                    const label = document.createElement("span");
-                    label.className = "vnccs-cloner-trait-label";
-                    label.textContent = lbl;
-                    const editor = document.createElement("div");
-                    editor.className = "vnccs-cloner-trait-editor";
-                    const values = document.createElement("button");
-                    values.type = "button";
-                    values.className = "vnccs-cloner-trait-values";
-                    const inp = document.createElement("input");
-                    inp.type = "text";
-                    inp.className = "vnccs-cloner-input vnccs-cloner-trait-input";
-                    inp.setAttribute("aria-label", lbl);
-                    inp.placeholder = "Add tags";
-                    inp.hidden = true;
-                    const renderTags = () => {
-                        values.replaceChildren();
-                        const tokens = inp.value.split(",").map(token => token.trim()).filter(Boolean);
-                        for (const token of tokens.length ? tokens : ["Add tags"]) {
-                            const chip = document.createElement("span");
-                            chip.className = tokens.length ? "vnccs-cloner-trait-token" : "vnccs-cloner-trait-empty";
-                            chip.textContent = token;
-                            values.appendChild(chip);
-                        }
-                        values.setAttribute("aria-label", `Edit ${lbl.toLowerCase()} tags: ${inp.value || "Add tags"}`);
-                    };
-                    inp.setValue = value => {
-                        inp.value = value ?? "";
-                        renderTags();
-                    };
-                    inp.setValue(targetObj[key]);
-                    inp.oninput = (e) => {
-                        targetObj[key] = e.target.value;
-                        renderTags();
-                        saveState();
-                    };
-                    inp.startEditing = () => {
-                        values.hidden = true;
-                        inp.hidden = false;
-                        inp.focus({ preventScroll: true });
-                    };
-                    values.onclick = inp.startEditing;
-                    inp.onblur = () => {
-                        inp.hidden = true;
-                        values.hidden = false;
-                    };
-                    inp.onkeydown = e => {
-                        if (e.key === "Enter") {
-                            e.preventDefault();
-                            inp.blur();
-                            values.focus({ preventScroll: true });
-                        }
-                    };
-                    const add = document.createElement("button");
-                    add.type = "button";
-                    add.className = "vnccs-cloner-trait-add";
-                    add.textContent = "+";
-                    add.setAttribute("aria-label", `Choose ${lbl.toLowerCase()} presets`);
-                    add.title = "Choose Presets";
-                    add.onclick = () => openTagConstructor(key, inp, targetObj);
-                    editor.append(values, inp);
-                    wrap.append(label, editor, add);
-                    els[key] = inp;
-                    return wrap;
+                    const { element, input, display } = createTraitInput({
+                        prefix: "vnccs-cloner", label: lbl, key, target: targetObj,
+                        save: saveState, choose: input => openTagConstructor(key, input, targetObj),
+                        removable: true, motion: (...args) => els._ui?._playMotion(...args),
+                    });
+                    setHelpText(element, helpFor(key));
+                    (element.dataset ||= {}).vnccsWizardField = key;
+                    (els._wizardRows ||= Object.create(null))[key] = element;
+                    element._vnccsWizardRevealTarget = display;
+                    els[key] = input;
+                    return element;
                 };
 
                 const createField = (lbl, key, type = "text", opts = [], targetObj = state.character_info) => {
@@ -1371,6 +1261,8 @@ app.registerExtension({
                     }
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-cloner-field";
+                    (wrap.dataset ||= {}).vnccsWizardField = key;
+                    (els._wizardRows ||= Object.create(null))[key] = wrap;
                     setHelpText(wrap, helpFor(key));
 
                     if (type === "checkbox") {
@@ -1430,6 +1322,7 @@ app.registerExtension({
                     }
                     els[key] = inp;
                     wrap.appendChild(inp);
+                    wrap._vnccsWizardRevealTarget = inp;
                     return wrap;
                 };
 
@@ -1478,6 +1371,8 @@ app.registerExtension({
                 const createSegmentedField = (lbl, key, options, targetObj = state.character_info) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-cloner-field";
+                    (wrap.dataset ||= {}).vnccsWizardField = key;
+                    (els._wizardRows ||= Object.create(null))[key] = wrap;
                     setHelpText(wrap, helpFor(key));
                     wrap.innerHTML = `<div class="vnccs-cloner-label">${lbl}</div>`;
 
@@ -1508,6 +1403,7 @@ app.registerExtension({
                             btn.classList.toggle("is-active", btnValue === normalized);
                             btn.setAttribute("aria-pressed", btnValue === normalized ? "true" : "false");
                         });
+                        els._ui?.syncSelection(segmented);
                         if (persist) {
                             saveState();
                             if (key === "sex" || key === "gender") syncPoseStudioGender(normalized);
@@ -1542,6 +1438,8 @@ app.registerExtension({
                 const createGraphicToggle = (lbl, key, targetObj = state.character_info) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-cloner-field";
+                    (wrap.dataset ||= {}).vnccsWizardField = key;
+                    (els._wizardRows ||= Object.create(null))[key] = wrap;
                     setHelpText(wrap, helpFor(key));
 
                     const btn = document.createElement("button");
@@ -1560,24 +1458,29 @@ app.registerExtension({
                         <span class="vnccs-cloner-graphic-toggle-switch" aria-hidden="true"></span>
                     `;
 
+                    let enabled = false;
                     const setValue = (value, persist = false) => {
-                        const enabled = !!value;
-                        targetObj[key] = enabled;
+                        enabled = value === true || ["true", "1", "yes"].includes(String(value).toLowerCase());
                         btn.classList.toggle("is-active", enabled);
                         btn.setAttribute("aria-pressed", enabled ? "true" : "false");
-                        if (persist) saveState();
+                        if (persist) {
+                            targetObj[key] = enabled;
+                            saveState();
+                        }
                     };
 
-                    btn.onclick = () => setValue(!targetObj[key], true);
+                    btn.onclick = () => setValue(!enabled, true);
                     wrap.appendChild(btn);
-                    els[key] = { type: "graphic-toggle", setValue, get checked() { return !!targetObj[key]; } };
-                    setValue(!!targetObj[key]);
+                    els[key] = { type: "graphic-toggle", setValue, get checked() { return enabled; } };
+                    setValue(targetObj[key]);
                     return wrap;
                 };
 
                 const createSlider = (lbl, key, min, max, step, targetObj = state.character_info) => {
                     const wrap = document.createElement("div");
                     wrap.className = "vnccs-cloner-field";
+                    (wrap.dataset ||= {}).vnccsWizardField = key;
+                    (els._wizardRows ||= Object.create(null))[key] = wrap;
                     setHelpText(wrap, helpFor(key));
                     wrap.innerHTML = `<div class="vnccs-cloner-label">${lbl}</div>`;
 
@@ -1607,10 +1510,11 @@ app.registerExtension({
                         if (key === "age") syncPoseStudioAge(targetObj[key]);
                     };
                     num.onchange = (e) => {
-                        let v = parseFloat(e.target.value);
-                        if (Number.isNaN(v)) v = min;
-                        if (v < min) v = min;
-                        if (v > max) v = max;
+                        const v = e.target.valueAsNumber;
+                        if (!e.target.checkValidity() || !Number.isFinite(v)) {
+                            num.value = targetObj[key];
+                            return;
+                        }
                         num.value = v;
                         range.value = v;
                         targetObj[key] = v;
@@ -1645,6 +1549,8 @@ app.registerExtension({
                 };
 
                 const updateUIFromState = () => {
+                    const sex = String(state.character_info?.sex || state.character_info?.gender || "").trim().toLowerCase();
+                    els.previewContainer?.classList.toggle("is-male-character", sex === "male");
                     // Fields
                     for (let k in state.character_info) {
                         if (els[k]) {
@@ -1666,6 +1572,7 @@ app.registerExtension({
                     // Images
                     if (renderThumbs) renderThumbs();
                     syncPoseStudioAge();
+                    els._ui?.syncSelects();
                 };
 
                 // --- Helpers (Hoisted) ---
@@ -1743,6 +1650,10 @@ app.registerExtension({
                 };
 
                 const openTagConstructor = async (fieldKey, inputEl, targetObj = state.character_info) => {
+                    if (node._vnccsStateRestoreError) return;
+                    const character = state.character;
+                    const currentRequest = beginCaptionRequest();
+                    const isCurrent = () => currentRequest() && !node._vnccsStateRestoreError && state.character === character;
                     if (!TAG_DATA || (fieldKey === "skin_color" && !TAG_DATA.tags?.skin_color)) {
                         try {
                             if (!TAG_DATA) {
@@ -1756,6 +1667,7 @@ app.registerExtension({
                                 TAG_DATA.tags.skin_color = (await r.json()).tags.skin_color;
                             }
                         } catch (e) {
+                            if (!isCurrent()) return;
                             showModal("Error", () => {
                                 const d = document.createElement("div");
                                 d.innerText = "Error loading tag database: " + e;
@@ -1764,6 +1676,7 @@ app.registerExtension({
                             return;
                         }
                     }
+                    if (!isCurrent()) return;
 
                     const map = {
                         hair: ["hair_color", "hairstyles"],
@@ -1842,7 +1755,8 @@ app.registerExtension({
                         {
                             text: "APPLY",
                             class: "vnccs-btn-primary",
-                            action: () => {
+                            action: overlay => {
+                                if (!isCurrent() || !overlay.isConnected) return false;
                                 const final = selected.value();
                                 if (inputEl.setValue) inputEl.setValue(final);
                                 else inputEl.value = final;
@@ -1855,6 +1769,8 @@ app.registerExtension({
                 };
 
                 const beginCharacterRequest = createRequestGuard(node);
+                let currentInventorySelection = beginCharacterRequest();
+                const beginInventoryRequest = createRequestGuard(node);
                 const beginCaptionRequest = createRequestGuard(node);
                 const beginUploadRequest = createRequestGuard(node);
                 const loadChar = async (name, skipInfoLoad = false, { clearSources = false } = {}) => {
@@ -1889,9 +1805,14 @@ app.registerExtension({
                         }
                         updateUIFromState();
                         saveState();
-                        if (name && name !== "None") {
+                        if (name && name !== "None" && !state.source_images.length) {
                             const cacheUrl = mediaURL(`/vnccs/get_cached_preview?character=${encodeURIComponent(name)}&t=${Date.now()}`);
-                            await spritePreviewNavigator?.load(name, { fallbackUrl: cacheUrl });
+                            const selectedPreview = state.selected_preview_sprite;
+                            await spritePreviewNavigator?.load(name, {
+                                index: selectedPreview?.character === name && !selectedPreview.costume
+                                    ? selectedPreview.index : undefined,
+                                fallbackUrl: cacheUrl,
+                            });
                         }
                         return isCurrent();
                     } catch (error) {
@@ -1907,17 +1828,32 @@ app.registerExtension({
                 };
 
                 const loadCharList = async () => {
+                    const currentSelection = currentInventorySelection;
+                    const currentInventory = beginInventoryRequest();
                     try {
                         const r = await api.fetchApi("/vnccs/context_lists");
                         if (!r.ok) return;
                         const d = await r.json();
+                        if (!currentInventory() || node._vnccsStateRestoreError) return;
+                        if (!Array.isArray(d.characters)) throw new Error("Invalid character list.");
 
+                        const selectedBeforeInventory = els.charSelect.value;
+                        const pendingOptions = currentSelection() ? [] : Array.from(els.charSelect.options, option => option.value);
                         els.charSelect.innerHTML = "";
                         if (!d.characters || !d.characters.length) els.charSelect.add(new Option("None", ""));
                         else d.characters.forEach(c => els.charSelect.add(new Option(c, c)));
+                        pendingOptions.forEach(value => {
+                            if (!Array.from(els.charSelect.options).some(option => option.value === value)) els.charSelect.add(new Option(value, value));
+                        });
+                        if (!currentSelection()) {
+                            els.charSelect.value = selectedBeforeInventory;
+                            return;
+                        }
 
                         const available = Array.from(els.charSelect.options).map(option => option.value);
-                        const selected = available.includes(state.character) ? state.character : available[0] || "";
+                        const firstActive = available.find(Boolean) || "";
+                        const selected = state.character && available.includes(state.character)
+                            ? state.character : firstActive;
                         const hasWidgetData = restoredInfoCharacter === selected && Boolean(selected);
                         await setCharacter(selected, { clearSources: true, skipInfoLoad: hasWidgetData });
 
@@ -1925,6 +1861,9 @@ app.registerExtension({
                 };
 
                 const doCreate = () => {
+                    if (node._vnccsStateRestoreError) return;
+                    const currentRequest = beginCharacterRequest();
+                    const character = state.character;
                     let inpRef;
                     showModal("New Character", () => {
                         const inp = document.createElement("input");
@@ -1937,14 +1876,19 @@ app.registerExtension({
                         {
                             text: "Create", class: "vnccs-btn-primary",
                             action: async (ol, btn) => {
+                                const isCurrent = () => currentRequest() && ol.isConnected
+                                    && !node._vnccsStateRestoreError && state.character === character;
+                                if (!isCurrent()) return false;
                                 const n = inpRef.value.trim();
                                 if (!n) return true;
                                 try {
                                     await checkedJSON("/vnccs/create", { method: "POST", body: JSON.stringify({ name: n }) });
+                                    if (!isCurrent()) return false;
                                     const exists = Array.from(els.charSelect.options).some(o => o.value === n);
                                     if (!exists) els.charSelect.add(new Option(n, n));
                                     return !await setCharacter(n, { clearSources: true });
                                 } catch (e) {
+                                    if (!isCurrent()) return false;
                                     showModal("Error", () => { const d = document.createElement("div"); d.innerText = "Create Failed: " + e; return d; }, [{ text: "Close" }]);
                                     return true;
                                 }
@@ -1955,8 +1899,10 @@ app.registerExtension({
                 };
 
                 const doDelete = () => {
+                    if (node._vnccsStateRestoreError) return;
                     const charName = state.character;
                     if (!charName || charName === "None") return;
+                    const currentRequest = beginCharacterRequest();
                     showModal("Delete Character", () => {
                         const d = document.createElement("div");
                         d.append("Are you sure you want to delete ");
@@ -1970,12 +1916,17 @@ app.registerExtension({
                         {
                             text: "DELETE", class: "vnccs-btn-danger",
                             action: async (ol, btn) => {
+                                const isCurrent = () => currentRequest() && ol.isConnected
+                                    && !node._vnccsStateRestoreError && state.character === charName;
+                                if (!isCurrent()) return false;
                                 try {
                                     const r = await api.fetchApi("/vnccs/delete", {
                                         method: "POST",
                                         headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
                                         body: JSON.stringify({ name: charName }),
                                     });
+                                    if (!isCurrent()) return false;
+                                    if (!r.ok) throw new Error(await r.text() || `Delete failed (${r.status})`);
                                     if (r.ok) {
                                         const idx = Array.from(els.charSelect.options).findIndex(o => o.value === charName);
                                         if (idx > -1) els.charSelect.remove(idx);
@@ -1985,6 +1936,7 @@ app.registerExtension({
                                         return false;
                                     }
                                 } catch (e) {
+                                    if (!isCurrent()) return false;
                                     showModal("Error", () => { const d = document.createElement("div"); d.innerText = "" + e; return d; }, [{ text: "Close" }]);
                                     return false;
                                 }
@@ -1996,6 +1948,9 @@ app.registerExtension({
                 // --- LAYOUT ---
                 const container = document.createElement("div");
                 container.className = "vnccs-cloner-container";
+                container.classList.add("vnccs-common-ui-host");
+                els._ui = createSakuraInteractions(container, node);
+                registerCleanup(node, () => els._ui.dispose());
 
                 // Top Row
                 const topRow = document.createElement("div");
@@ -2005,6 +1960,7 @@ app.registerExtension({
                 // COL 1: SOURCE IMAGES (Left Column)
                 const colSrc = document.createElement("div");
                 colSrc.className = "vnccs-cloner-col";
+                colSrc.dataset.sakuraScroll = "source";
 
                 // --- CHARACTER SELECTOR (Moved to Left Top) ---
                 colSrc.innerHTML = '<div class="vnccs-cloner-section-title">Character Select</div>';
@@ -2014,6 +1970,7 @@ app.registerExtension({
 
                 const charSel = document.createElement("select");
                 charSel.className = "vnccs-cloner-select";
+                charSel.ariaLabel = "Character";
                 charSel.onchange = async (e) => {
                     await setCharacter(e.target.value, { clearSources: true });
                 };
@@ -2047,14 +2004,17 @@ app.registerExtension({
                 srcHeader.style.marginTop = "15px";
                 colSrc.appendChild(srcHeader);
 
-                const imgList = document.createElement("div");
-                imgList.className = "vnccs-cloner-img-list";
-                colSrc.appendChild(imgList);
-
                 // --- IMAGE PREVIEW/UPLOAD AREA ---
                 // Container for the Large Preview
                 const previewContainer = document.createElement("div");
                 previewContainer.className = "vnccs-cloner-preview-container";
+                previewContainer.classList.add("vnccs-common-ui-preview-host");
+                previewContainer.classList.toggle("is-male-character", String(state.character_info?.sex || state.character_info?.gender || "").trim().toLowerCase() === "male");
+                previewContainer.style.marginTop = "5px";
+                els.previewContainer = previewContainer;
+                const previewAura = document.createElement("div");
+                previewAura.className = "vnccs-common-ui-preview-aura";
+                previewContainer.appendChild(previewAura);
 
                 // The Large Image Element
                 const previewImg = document.createElement("img");
@@ -2076,6 +2036,45 @@ app.registerExtension({
                 const previewLoading = document.createElement("div");
                 previewLoading.className = "vnccs-cloner-preview-loading";
                 previewContainer.appendChild(previewLoading);
+
+                // Delete X
+                const delBtn = document.createElement("button");
+                delBtn.type = "button";
+                delBtn.className = "vnccs-cloner-preview-remove";
+                delBtn.innerText = "×";
+                delBtn.title = "Remove source image";
+                delBtn.hidden = true;
+                els.sourceRemove = delBtn;
+                delBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    const images = state.source_images;
+                    const imgObj = images[0];
+                    const currentRequest = beginCaptionRequest();
+                    const character = state.character;
+                    showModal("Remove Image", () => {
+                        const d = document.createElement("div");
+                        d.innerText = "Are you sure you want to remove this image?";
+                        return d;
+                    }, [
+                        { text: "Cancel" },
+                        {
+                            text: "Remove",
+                            class: "vnccs-btn-danger",
+                            action: overlay => {
+                                if (!currentRequest() || !overlay.isConnected || state.character !== character
+                                    || state.source_images !== images || state.source_images[0] !== imgObj) return false;
+                                beginCaptionRequest();
+                                state.source_images.splice(0, 1);
+                                state.selected_idx = 0;
+                                saveState();
+                                renderThumbs();
+                                return false;
+                            }
+                        }
+                    ]);
+                };
+                // Preview controls
+                previewContainer.appendChild(delBtn);
 
                 // Overlay Controls (Upload Button) - Always visible or overlay?
                 // User wants standard behaviour: Empty -> Upload Button. Filled -> Image + Mini Overlay?
@@ -2099,6 +2098,7 @@ app.registerExtension({
                 fileInput.accept = "image/*";
                 fileInput.style.display = "none";
                 fileInput.onchange = async (e) => {
+                    if (node._vnccsStateRestoreError) return;
                     const files = Array.from(e.target.files || []);
                     if (!files.length) return;
                     if (files.length > 1) {
@@ -2113,7 +2113,8 @@ app.registerExtension({
                     const currentRequest = beginUploadRequest();
                     const character = state.character;
                     const sources = state.source_images;
-                    const isCurrent = () => currentRequest() && state.character === character && state.source_images === sources;
+                    const isCurrent = () => currentRequest() && !node._vnccsStateRestoreError
+                        && state.character === character && state.source_images === sources;
                     uploadBtn.innerText = "UPLOADING...";
                     uploadBtn.disabled = true;
                     try {
@@ -2186,8 +2187,9 @@ app.registerExtension({
                 colSrc.appendChild(spriteNav);
                 spritePreviewNavigator = createSpritePreviewNavigator({
                     node,
-                    isSelectionCurrent: preview => preview.character === state.character,
+                    isSelectionCurrent: preview => preview.character === state.character && !state.source_images.length,
                     image: previewImg,
+                    interactions: els._ui,
                     placeholder: previewPlaceholder,
                     loading: previewLoading,
                     nav: spriteNav,
@@ -2218,6 +2220,7 @@ app.registerExtension({
                 // COL 2: ATTRIBUTES (Auto Gen)
                 const colAttr = document.createElement("div");
                 colAttr.className = "vnccs-cloner-col";
+                colAttr.dataset.sakuraScroll = "attributes";
 
                 const attrHeader = document.createElement("div");
                 attrHeader.className = "vnccs-cloner-section-title";
@@ -2229,6 +2232,7 @@ app.registerExtension({
                 autoGenBtn.style.flex = "0 0 auto"; // Prevent stretching
                 autoGenBtn.innerText = "Analyze Captions";
                 autoGenBtn.onclick = async () => {
+                    if (node._vnccsStateRestoreError) return;
                     if (autoGenBtn.disabled) return;
 
                     if (!state.source_images.length) {
@@ -2255,14 +2259,6 @@ app.registerExtension({
                     autoGenBtn.innerText = "ANALYZING...";
                     autoGenBtn.disabled = true;
 
-                    // Visual feedback highlighting selected thumb
-                    const thumbs = imgList.querySelectorAll("img");
-                    let thumb = null;
-                    if (thumbs[selIdx]) {
-                        thumb = thumbs[selIdx];
-                        thumb.classList.add("generating");
-                    }
-
                     try {
                         autoGenBtn.innerText = "CHECKING MODEL...";
                         if (!await ensureQwenVLReady()) return true;
@@ -2279,13 +2275,16 @@ app.registerExtension({
                             if (!isCurrent()) return;
                             console.log("[VNCCS] Auto-Gen Success. Data:", data);
 
-                            // Merge into state
-                            Object.assign(state.character_info, data);
-                            console.log("[VNCCS] State Updated:", state.character_info);
-
-                            updateUIFromState();
-                            console.log("[VNCCS] UI Updated.");
-                            saveState();
+                            const rowKeys = ["race", "skin_color", "body", "face", "hair", "eyes", "additional_details", "aesthetics"];
+                            const nextSex = String(data.sex || data.gender || state.character_info.sex || "").trim().toLowerCase();
+                            const wizardRows = typeof els === "undefined" ? [] : rowKeys.map(key => els._wizardRows?.[key]);
+                            animateWizardRows(wizardRows, () => {
+                                Object.assign(state.character_info, data);
+                                console.log("[VNCCS] State Updated:", state.character_info);
+                                updateUIFromState();
+                                console.log("[VNCCS] UI Updated.");
+                                saveState();
+                            }, { duration: 240, gap: 30, delay: 90, accent: nextSex === "male" ? "#63c7ff" : "#ff8fa3" });
                         } else {
                             console.log("[VNCCS] Auto-Gen Failed. Status:", r.status);
                             // Check for structured errors (404 for model, 500 for mmproj/other)
@@ -2381,38 +2380,11 @@ app.registerExtension({
                         loading.remove();
                         autoGenBtn.innerText = "Analyze Captions";
                         autoGenBtn.disabled = false;
-                        if (thumb) thumb.classList.remove("generating");
                     }
                 };
 
                 // Helper: Progress Polling
-                const ensureQwenVLReady = async () => {
-                    const statusResponse = await api.fetchApi("/vnccs/qwen_vl_model_status");
-                    if (!statusResponse.ok) throw new Error("Failed to check Qwen3.5 model files.");
-                    const modelStatus = await statusResponse.json();
-                    if (modelStatus.ready) return true;
-                    const approved = await new Promise(resolve => {
-                        const { modal } = showModal("Qwen3.5 Model Required", () => {
-                            const text = document.createElement("div");
-                            text.textContent = `${modelStatus.message || modelStatus.model_name} Download the required files from Hugging Face now?`;
-                            return text;
-                        }, [
-                            { text: "Cancel", action: () => { resolve(false); return false; } },
-                            { text: "DOWNLOAD & INSTALL", class: "vnccs-btn-primary", action: () => { resolve(true); return false; } },
-                        ]);
-                        modal.addEventListener("keydown", event => {
-                            if (event.key === "Escape") resolve(false);
-                        }, true);
-                    });
-                    if (!approved) return false;
-
-                    const start = await api.fetchApi("/vnccs/qwen_vl_download_model", { method: "POST" });
-                    if (!start.ok && start.status !== 409) {
-                        let err;
-                        try { err = await start.json(); } catch (e) { err = { error: await start.text() }; }
-                        throw new Error(err?.error || err?.message || "Failed to start QwenVL download.");
-                    }
-
+                const ensureQwenVLReady = createQwenVLModelLoader(node, showModal, () => {
                     const { overlay, modal } = showModal("Downloading Model...", (m) => {
                         const d = document.createElement("div");
                         d.className = "vnccs-cloner-download-modal";
@@ -2429,39 +2401,8 @@ app.registerExtension({
                     const statusEl = modal.querySelector("#vnccs-dl-status");
                     const barEl = modal.querySelector("#vnccs-dl-bar");
                     const pctEl = modal.querySelector("#vnccs-dl-pct");
-
-                    return await new Promise((resolve, reject) => {
-                        const poll = async () => {
-                            try {
-                                const r = await api.fetchApi("/vnccs/qwen_vl_download_status");
-                                if (!r.ok) throw new Error(await r.text());
-                                const d = await r.json();
-                                const progress = Math.max(0, Math.min(100, Number(d.progress) || 0));
-                                statusEl.innerText = d.current_file ? `Downloading ${d.current_file}...` : "Preparing model files...";
-                                barEl.style.width = `${progress}%`;
-                                pctEl.innerText = `${progress}%`;
-                                if (d.status === "completed") {
-                                    statusEl.innerText = "Download Complete!";
-                                    barEl.style.width = "100%";
-                                    pctEl.innerText = "100%";
-                                    setTimeout(() => overlay.remove(), 450);
-                                    resolve(true);
-                                    return;
-                                }
-                                if (d.status === "error") {
-                                    overlay.remove();
-                                    reject(new Error(d.error || "QwenVL download failed."));
-                                    return;
-                                }
-                                setTimeout(poll, 700);
-                            } catch (e) {
-                                overlay.remove();
-                                reject(e);
-                            }
-                        };
-                        poll();
-                    });
-                };
+                    return { overlay, statusEl, barEl, pctEl, completedMessage: "Download Complete!" };
+                }, true);
 
                 // Add Header
                 colAttr.appendChild(attrHeader);
@@ -2528,6 +2469,7 @@ app.registerExtension({
                         t.value = state.character_info.negative_prompt;
                         t.oninput = (e) => { state.character_info.negative_prompt = e.target.value; saveState(); }
                     }
+                    els[key] = t;
                     // If positive, it's auto-generated... maybe just show extra prompt field?
                     // Let's stick to "LoRA Trigger / Manual Prompt" and "Negative"
                     w.appendChild(t);
@@ -2545,10 +2487,11 @@ app.registerExtension({
                 node.addDOMWidget("ui", "ui", container, { serialize: false, hideOnZoom: false });
                 syncDOMWidgetWidthSoon(node, "ui");
 
-                // Define Render Thumbs Logic
+                // Keep the single source image in the large preview; a duplicate thumbnail adds no value.
                 renderThumbs = () => {
-                    imgList.innerHTML = "";
+                    const view = els._ui.captureView();
                     const images = state.source_images;
+                    if (els.sourceRemove) els.sourceRemove.hidden = images.length === 0;
 
                     // Default Selection
                     if (typeof state.selected_idx !== 'number' || state.selected_idx < 0 || state.selected_idx >= images.length) {
@@ -2558,14 +2501,12 @@ app.registerExtension({
                     // Preview Logic
                     if (images.length === 0) {
                         if (state.char_preview_url) {
-                            previewImg.src = mediaURL(state.char_preview_url);
-                            previewImg.style.display = "block";
-                            previewPlaceholder.style.display = "none";
+                            els._ui.presentPreview(previewImg, previewPlaceholder, mediaURL(state.char_preview_url), state.character);
                             uploadOverlay.style.opacity = "0";
                             previewContainer.onmouseenter = () => uploadOverlay.style.opacity = "1";
                             previewContainer.onmouseleave = () => uploadOverlay.style.opacity = "0";
                         } else {
-                            previewImg.style.display = "none";
+                            els._ui.emptyPreview(previewImg, previewPlaceholder, state.character, "Upload a source image");
                             previewImg.src = "";
                             previewPlaceholder.style.display = "flex";
                             uploadOverlay.style.opacity = "1";
@@ -2575,6 +2516,8 @@ app.registerExtension({
                             previewContainer.onmouseleave = null;
                         }
                     } else {
+                        spritePreviewNavigator?.invalidate();
+                        spritePreviewNavigator?.setLoading(false);
                         spritePreviewNavigator?.hideNav();
                         // Show Selected Image
                         const imgObj = images[state.selected_idx];
@@ -2587,74 +2530,15 @@ app.registerExtension({
                             params.append("filename", name);
                             params.append("type", type);
                             if (sub) params.append("subfolder", sub);
-                            previewImg.src = api.apiURL("/view?" + params.toString());
-                            previewImg.style.display = "block";
-                            previewPlaceholder.style.display = "none";
+                            els._ui.presentPreview(previewImg, previewPlaceholder, api.apiURL("/view?" + params.toString()), state.character);
                             uploadOverlay.style.opacity = "0";
                             previewContainer.onmouseenter = () => uploadOverlay.style.opacity = "1";
                             previewContainer.onmouseleave = () => uploadOverlay.style.opacity = "0";
                         }
                     }
 
-                    // Thumbnails Loop
-                    images.forEach((imgObj, idx) => {
-                        let name = "", type = "input", sub = "";
-                        if (typeof imgObj === 'string') { name = imgObj; }
-                        else if (imgObj && imgObj.name) { name = imgObj.name; type = imgObj.type || "input"; sub = imgObj.subfolder || ""; }
-                        if (!name) return;
-
-                        const wrap = document.createElement("div");
-                        wrap.className = "vnccs-cloner-thumb-wrap";
-                        if (idx === state.selected_idx) {
-                            wrap.classList.add("is-selected");
-                        }
-
-                        const img = document.createElement("img");
-                        const params = new URLSearchParams();
-                        params.append("filename", name);
-                        params.append("type", type);
-                        if (sub) params.append("subfolder", sub);
-                        img.src = api.apiURL("/view?" + params.toString());
-                        img.className = "vnccs-cloner-thumb";
-
-                        img.onclick = () => {
-                            beginCaptionRequest();
-                            state.selected_idx = idx;
-                            saveState();
-                            renderThumbs();
-                        };
-
-                        // Delete X
-                        const delBtn = document.createElement("div");
-                        delBtn.innerText = "×";
-                        delBtn.className = "vnccs-cloner-thumb-remove";
-                        delBtn.onclick = (e) => {
-                            e.stopPropagation();
-                            showModal("Remove Image", () => {
-                                const d = document.createElement("div");
-                                d.innerText = "Are you sure you want to remove this image?";
-                                return d;
-                            }, [
-                                { text: "Cancel" },
-                                {
-                                    text: "Remove",
-                                    class: "vnccs-btn-danger",
-                                    action: () => {
-                                        beginCaptionRequest();
-                                        state.source_images.splice(idx, 1);
-                                        if (state.selected_idx >= state.source_images.length) state.selected_idx = Math.max(0, state.source_images.length - 1);
-                                        saveState();
-                                        renderThumbs();
-                                        return false;
-                                    }
-                                }
-                            ]);
-                        };
-
-                        wrap.appendChild(img);
-                        wrap.appendChild(delBtn);
-                        imgList.appendChild(wrap);
-                    });
+                    els._ui.syncSelects();
+                    els._ui.restoreView(view);
                 };
 
                 const syncBackgroundControl = () => {
@@ -2676,8 +2560,10 @@ app.registerExtension({
                 const origSerialize = node.onSerialize;
                 node.onSerialize = function (o) {
                     origSerialize?.apply(this, arguments);
-                    syncBackgroundControl();
-                    dataWidget.value = JSON.stringify(state);
+                    if (!node._vnccsStateRestoreError) {
+                        syncBackgroundControl();
+                        dataWidget.value = JSON.stringify(state);
+                    }
                     const index = node.widgets?.indexOf(dataWidget) ?? -1;
                     if (index >= 0 && Array.isArray(o?.widgets_values)) o.widgets_values[index] = dataWidget.value;
                 };

@@ -6,24 +6,26 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../web/vnccs_control_center.js', import.meta.url), 'utf8');
 
-function setup(version = '3.2.0', versions = [{ version: '3.2.3' }], info = {}, utils = { error: 'not_found' }) {
+function setup(version = '3.2.0', versions = [{ version: '3.2.3' }], info = {}, utils = { error: 'not_found' }, runtime) {
     const requests = [];
     const context = createWidgetContext({
         AbortSignal,
         api: { async fetchApi(route) {
             requests.push(route);
             if (route === '/vnccs/module_status') return { ok: true, json: async () => ({
-                main: { version, ...info }, utils, dependencies: {},
+                main: { version, ...info }, utils, dependencies: {}, comfyui: runtime,
             }) };
             if (versions instanceof Error) throw versions;
             return { ok: versions !== null, json: async () => versions };
         } },
     });
-    vm.runInContext(source.slice(source.indexOf('class VNCCSControlCenterWidget'))
+    const constants = source.slice(source.indexOf('const INITIAL_NODE_W'), source.indexOf('function _injectVNCCSControlCenterStyles'));
+    vm.runInContext(constants + source.slice(source.indexOf('class VNCCSControlCenterWidget'))
         + '\nthis.Widget = VNCCSControlCenterWidget;', context);
     const widget = Object.create(context.Widget.prototype);
     Object.assign(widget, {
         _pillMain: {}, _pillUtils: {},
+        state: { active_kind: 'QI2' },
         _beginModuleStatusRequest: () => () => true,
         _resumePendingDependencyInstalls: async () => false,
         _showMissingDependenciesModal() {},
@@ -31,6 +33,27 @@ function setup(version = '3.2.0', versions = [{ version: '3.2.3' }], info = {}, 
     });
     return { widget, requests };
 }
+
+test('runtime response warns for selected H3 and ignores stale or unrelated selections', async () => {
+    for (const [supported, selected, stale, expected] of [
+        [false, 'MiniMaxH3', false, 1], [true, 'MiniMaxH3', false, 0],
+        [false, 'QI2', false, 0], [false, 'MiniMaxH3', true, 0],
+    ]) {
+        const { widget } = setup('3.2.3', [], {}, {}, { h3_still_supported: supported });
+        widget.state.active_kind = selected;
+        let warnings = 0;
+        widget._showH3UpdateModal = () => warnings++;
+        if (stale) widget._beginModuleStatusRequest = () => () => false;
+        await widget._fetchModuleStatus();
+        assert.equal(warnings, expected);
+    }
+    const { widget } = setup('3.2.3', [], {}, {}, { h3_still_supported: false });
+    widget.state.active_kind = 'MiniMaxH3';
+    widget._showH3UpdateModal = () => assert.fail('A late response must use the current family');
+    const pending = widget._fetchModuleStatus();
+    widget.state.active_kind = 'QI2';
+    await pending;
+});
 
 test('an older installed module shows the newer Registry release and update banner', async () => {
     const { widget, requests } = setup('3.2.0', [

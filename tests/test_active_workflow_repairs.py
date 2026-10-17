@@ -75,7 +75,7 @@ def test_creator_reuses_saved_preview_without_loading_models(runtime, monkeypatc
 
 
 @pytest.mark.parametrize('failed_stage', ['loading generation models', 'sampling the character image', 'decoding the character image'])
-def test_creator_errors_include_stage_and_traceback(runtime, monkeypatch, capsys, failed_stage):
+def test_creator_errors_include_stage_and_optional_traceback(runtime, monkeypatch, caplog, failed_stage):
     creator = runtime.creator
     monkeypatch.setattr(creator, 'load_generation_assets', lambda *a: ('key', object(), object(), object()))
     monkeypatch.setattr(creator, 'encode_generation_conditioning', lambda *a, **k: ('pos', 'neg', 'prompt'))
@@ -90,13 +90,16 @@ def test_creator_errors_include_stage_and_traceback(runtime, monkeypatch, capsys
     with pytest.raises(RuntimeError, match=failed_stage) as caught:
         creator.CharacterCreatorV2().process(json.dumps({'character': 'Alice', 'preview_valid': False}), unique_id='42')
     assert isinstance(caught.value.__cause__, RuntimeError)
-    logged = capsys.readouterr()
-    assert 'Alice' in logged.out and 'node 42' in logged.out
-    assert 'simulated device error' in logged.out
-    assert 'Traceback' in logged.err
+    failures = [record for record in caplog.records if record.name == 'VNCCS' and record.vnccs['event'] == 'failed']
+    assert len(failures) == 1
+    assert failures[0].vnccs['node_id'] == '42'
+    assert 'Alice' in failures[0].vnccs['error'] and failed_stage in failures[0].vnccs['error']
+    assert 'simulated device error' in failures[0].vnccs['error']
+    assert failures[0].exc_info is None
 
 
 def test_clothes_cache_and_comfy_signature_follow_primary_reference(runtime, tmp_path, monkeypatch):
+    runtime.utils.save_costume_info('Alice', 'Dress', {})
     cd = runtime.clothes
     source = runtime.inputs / 'ref.png'
     monkeypatch.setattr(cd, 'get_latest_sprite_path', lambda *a: str(source))
@@ -104,7 +107,7 @@ def test_clothes_cache_and_comfy_signature_follow_primary_reference(runtime, tmp
     calls = []
     def call_node(name, **kwargs):
         calls.append(name)
-        if name == cd.KLEIN_ENCODER_CLASS:
+        if name == "VNCCS_Flux_Klein_Encoder":
             return 'pos', 'neg', {}
         if name == 'KSampler':
             return ({},)
@@ -148,7 +151,12 @@ def test_pose_prompt_lists_survive_caching_and_single_pose_regeneration(runtime,
     monkeypatch.setattr(node, '_emit', lambda *a, **k: None)
     monkeypatch.setattr(node, '_extract_pipe', lambda *a: {'seed': 0})
     monkeypatch.setattr(node, '_run_source_upscaler', lambda image, *a, **k: image)
-    state = {'regenerate_from': 'pose_generation', 'regenerate_index': 1} if regenerate else {}
+    stage = 'original_pose_generation' if node_name == 'VNCCS_CharacterCloneGenerator' else 'pose_generation'
+    state = {'regenerate_from': stage, 'regenerate_index': 1} if regenerate else {}
+    if node_name == 'VNCCS_ClothesGenerator':
+        runtime.utils.save_costume_info('Alice', 'Coat', {})
+        state['character_name'] = 'Alice'
+        state['costume'] = 'Coat'
     with pytest.raises(ReachedEncoder):
         node.process(poses, character, SimpleNamespace(), prompts, widget_data=json.dumps(state))
     assert cached[0]['prompt'] == prompts
@@ -181,12 +189,12 @@ def test_each_pose_encoder_receives_its_own_prompt(runtime, monkeypatch, kind):
     monkeypatch.setattr(node, '_extract_pipe', lambda *a: values)
     monkeypatch.setattr(node, '_apply_pose_lora_to_model', lambda model, *a: model)
     monkeypatch.setattr(node, '_emit', lambda *a, **k: None)
-    monkeypatch.setattr(cg, 'VNCCS_MaskExtractor', lambda: SimpleNamespace(fill_alpha_with_color=lambda image: (image,)))
+    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", type("MaskExtractor", (), {"fill_alpha_with_color": staticmethod(lambda image: (image,))}))
     seen = []
     class EncodingVerified(Exception):
         pass
     def capture(name, **kwargs):
-        if name in {'TextEncodeQwenImage21', 'VNCCS_Flux_Klein_Encoder', 'MiniMaxH3ReferenceToVideo'}:
+        if name in {'TextEncodeQwenImage21', "VNCCS_Flux_Klein_Encoder", 'MiniMaxH3ReferenceToVideo'}:
             seen.append(kwargs['prompt'])
             if len(seen) == 2:
                 raise EncodingVerified()
@@ -208,7 +216,7 @@ def test_each_pose_encoder_receives_its_own_prompt(runtime, monkeypatch, kind):
 
 def test_custom_preview_reuses_available_pipe_and_never_builds_missing_inputs(runtime, monkeypatch):
     cc = sys.modules['_vnccs.nodes.vnccs_control_center']
-    state = {'selected_type': 'custom', 'active_kind': 'Klein9b'}
+    state = {'selected_type': 'custom', 'active_kind': 'Klein9b', 'preview_scope': 'workflow-a'}
     pipe = cc.VNCCSPipeProxy(object(), object(), object())
     monkeypatch.setattr(cc, '_build_control_center_pipe', lambda *a, **k: pipe)
     cc.VNCCS_ControlCenter().execute('catalog', state, model=object(), clip=object(), vae=object(), unique_id='test-preview')
@@ -223,7 +231,7 @@ def test_custom_preview_reuses_available_pipe_and_never_builds_missing_inputs(ru
         assert torch.is_inference_mode_enabled()
         return (torch.ones(1, 8, 8, 3),)
     monkeypatch.setattr(runtime.clothes.ClothesDesigner, 'process', preview)
-    payload = {'repo_id': 'catalog', 'node_state': state, 'control_center_id': 'test-preview'}
+    payload = {'repo_id': 'catalog', 'node_state': state, 'control_center_id': 'test-preview', 'control_center_scope': 'workflow-a'}
     assert 'image' in cc._clothes_preview_response(payload)
     assert used == [pipe]
     payload['node_state'] = {**state, 'seed': 99}
@@ -231,3 +239,21 @@ def test_custom_preview_reuses_available_pipe_and_never_builds_missing_inputs(ru
     payload['control_center_id'] = 'missing'
     assert cc._clothes_preview_response(payload)['status'] == 409
     assert used == [pipe]
+    other = cc.VNCCSPipeProxy(object(), object(), object())
+    other_state = {**state, 'preview_scope': 'workflow-b'}
+    monkeypatch.setattr(cc, '_build_control_center_pipe', lambda *a, **k: other)
+    cc.VNCCS_ControlCenter().execute('catalog', other_state, model=object(), clip=object(), vae=object(), unique_id='test-preview')
+    monkeypatch.setattr(cc, '_build_control_center_pipe', forbidden)
+    payload.update(node_state=state, control_center_id='test-preview')
+    assert 'image' in cc._clothes_preview_response(payload)
+    assert used[-1] is pipe
+    payload['control_center_scope'] = 'workflow-b'
+    assert 'image' in cc._clothes_preview_response(payload)
+    assert used[-1] is other
+    payload.pop('control_center_scope')
+    assert cc._clothes_preview_response(payload)['status'] == 409
+
+
+def test_unknown_character_root_is_available_to_emotion_generation(runtime):
+    runtime.creator.CharacterCreatorV2.create_character("Unknown")
+    assert runtime.generator._safe_character_root("Unknown") == runtime.utils.character_dir("Unknown")

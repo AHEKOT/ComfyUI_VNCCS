@@ -30,6 +30,26 @@ def test_green_foreground_on_teal_screen_and_enclosed_hole():
     torch.testing.assert_close(rgba[100, 60, :3], image[100, 60])
 
 
+def test_thin_screen_colored_gap_is_removed_even_when_enclosed():
+    key = torch.tensor([0.18, 0.9, 0.55])
+    image = key.expand(160, 128, 3).clone()
+    image[20:145, 25:105] = torch.tensor([0.75, 0.2, 0.3])
+    image[70:73, 45:90] = key
+    rgba, alpha, _ = process(image)
+    assert torch.all(alpha[70:73, 45:90] == 0)
+    assert torch.count_nonzero(rgba[71, 60]) == 0
+
+
+def test_narrow_shifted_screen_gap_has_no_opaque_green_remnant():
+    key = torch.tensor([0.39, 0.81, 0.66])
+    image = key.expand(120, 100, 3).clone()
+    image[15:105, 20:80] = torch.tensor([0.7, 0.12, 0.25])
+    image[45:85, 45:47] = torch.tensor([0.60, 0.74, 0.67])
+    rgba, alpha, _ = process(image, matte_cleanup=0)
+    assert float(alpha[60, 45]) < 0.1
+    assert rgba[60, 45, 1] <= max(rgba[60, 45, 0], rgba[60, 45, 2]) + 0.02
+
+
 def test_same_hue_clothing_inside_silhouette_survives_blue_plate():
     image = torch.tensor([0.28, 0.6, 0.81]).expand(180, 140, 3).clone()
     image[20:165, 25:115] = torch.tensor([0.9, 0.72, 0.55])
@@ -76,6 +96,84 @@ def test_dark_ink_edge_next_to_light_hair_keeps_coverage_without_green():
     rgba, alpha, _ = process(image)
     assert float(alpha[60, 29]) == pytest.approx(0.7, abs=0.01)
     torch.testing.assert_close(rgba[60, 29, :3], torch.zeros(3), atol=0.01, rtol=0)
+
+
+def test_dark_ink_edge_on_muted_screen_keeps_coverage_without_green():
+    key = torch.tensor([0.4, 0.8, 0.66])
+    image = key.expand(120, 100, 3).clone()
+    image[20:100, 30:70] = torch.tensor([0.8, 0.1, 0.2])
+    image[20:100, 30] = 0
+    image[20:100, 29] = key * 0.5
+    rgba, alpha, _ = process(image, matte_cleanup=0)
+    assert float(alpha[60, 29]) == pytest.approx(0.5, abs=0.01)
+    torch.testing.assert_close(rgba[60, 29, :3], torch.zeros(3), atol=0.01, rtol=0)
+
+
+def test_dark_same_hue_interior_is_not_repainted():
+    key = torch.tensor([0.4, 0.8, 0.66])
+    foreground = key * 0.5
+    image = key.expand(120, 100, 3).clone()
+    image[20:100, 30:70] = foreground
+    rgba, alpha, _ = process(image, matte_cleanup=0)
+    # Screen-colored boundary coverage is ambiguous; the opaque core is not.
+    assert torch.all(alpha[25:95, 35:65] == 1)
+    torch.testing.assert_close(rgba[60, 50, :3], foreground)
+
+
+def test_generated_screen_halo_is_removed_without_repainting_foreground():
+    key = torch.tensor([0.4, 0.8, 0.66])
+    image = key.expand(120, 100, 3).clone()
+    foreground = torch.tensor([0.8, 0.1, 0.2])
+    image[20:100, 30:70] = foreground
+    image[20:100, 29] = torch.tensor([0.25, 0.7, 0.5])
+    rgba, alpha, _ = process(image, matte_cleanup=0)
+    assert alpha[60, 29] < 0.5
+    assert rgba[60, 29, 1] <= torch.maximum(rgba[60, 29, 0], rgba[60, 29, 2]) + 0.05
+    torch.testing.assert_close(rgba[60, 50, :3], foreground)
+
+
+@pytest.mark.parametrize("key", [(0.4, 0.8, 0.66), (0.24, 0.48, 0.68)])
+def test_low_coverage_hair_selects_its_color_not_adjacent_skin(key):
+    key = torch.tensor(key)
+    hair = torch.tensor([0.7, 0.12, 0.25])
+    image = key.expand(100, 100, 3).clone()
+    image[20:80, 40:70] = hair
+    image[20:80, 70:90] = torch.tensor([0.96, 0.78, 0.65])
+    image[20:80, 39] = hair * 0.25 + key * 0.75
+    rgba, alpha, _ = process(image, matte_cleanup=0)
+    assert float(alpha[50, 39]) == pytest.approx(0.25, abs=0.035)
+    torch.testing.assert_close(rgba[50, 39, :3], hair, atol=0.04, rtol=0)
+
+
+def test_bad_sample_fit_does_not_erase_an_opaque_brown_outline():
+    key = torch.tensor([0.24, 0.48, 0.68])
+    outline = torch.tensor([0.55, 0.35, 0.29])
+    image = key.expand(100, 100, 3).clone()
+    image[20:80, 30:70] = torch.tensor([1.0, 0.9, 0.8])
+    image[20:80, 30] = outline
+    rgba, alpha, _ = process(image, matte_cleanup=0)
+    assert float(alpha[50, 30]) > 0.98
+    torch.testing.assert_close(rgba[50, 30, :3], outline, atol=0.015, rtol=0)
+
+
+def test_blue_gray_opaque_outline_is_not_a_blue_screen_remnant():
+    key = torch.tensor([0.24, 0.48, 0.68])
+    outline = torch.tensor([0.64, 0.65, 0.71])
+    image = key.expand(100, 100, 3).clone()
+    image[20:80, 30:70] = torch.tensor([0.16, 0.17, 0.20])
+    image[20:80, 30] = outline
+    rgba, alpha, _ = process(image, matte_cleanup=0)
+    assert float(alpha[50, 30]) > 0.98
+    torch.testing.assert_close(rgba[50, 30, :3], outline, atol=0.015, rtol=0)
+
+
+def test_disabled_rgb_recovery_leaves_surviving_pixels_unchanged():
+    key = torch.tensor([0.4, 0.8, 0.66])
+    image = key.expand(100, 100, 3).clone()
+    image[20:80, 30:70] = torch.tensor([0.8, 0.1, 0.2])
+    image[20:80, 29] = (image[20:80, 30] + key) * 0.5
+    rgba, alpha, _ = process(image, despill_strength=0)
+    torch.testing.assert_close(rgba[..., :3][alpha > 0], image[alpha > 0])
 
 
 def test_sparse_reconstruction_keeps_long_hair_without_bridging_gap():
@@ -130,14 +228,14 @@ def test_gpu_matches_cpu_and_returns_to_callers_device(device):
         torch.testing.assert_close(actual, expected, atol=0.002, rtol=0.002)
 
 
-def test_node_screen_matte_handles_batches_without_changing_legacy_defaults():
+def test_default_screen_matte_handles_batches():
     from nodes.vnccs_utils import VNCCSChromaKey
+    from nodes.character_generator import CHROMA_KEY_PRESETS
 
     node = VNCCSChromaKey()
-    required = node.INPUT_TYPES()["required"]
-    settings = {name: spec[1]["default"] for name, spec in required.items() if len(spec) > 1}
-    assert settings["matte_method"] == "guided_edge"
-    settings["matte_method"] = "screen_matte"
+    settings = dict(CHROMA_KEY_PRESETS["balanced"])
+    assert settings["matte_method"] == "screen_matte"
+    settings["screen_mode"] = "auto"
     image = torch.tensor([0.0, 1.0, 0.0]).expand(2, 100, 80, 3).clone()
     image[:, 20:80, 20:60] = torch.tensor([0.85, 0.3, 0.2])
     rgba, alpha, debug = node.chroma_key(image, **settings)
