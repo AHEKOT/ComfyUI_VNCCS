@@ -1,3 +1,12 @@
+# VNCCS 3.3.1 Changelog
+
+- Preserve existing lowercase sprite archives on case-insensitive filesystems.
+- Install the JamePeng Qwen runtime used by Easy Install from published wheels matched to the existing Python, platform, and PyTorch CUDA version. Preserve compatible installed builds instead of searching for this fork on PyPI.
+- Require the security scan and Python/widget tests before registry publication.
+- Keep LoRA catalog downloads off the HTTP loop and retain duplicate checks during concurrent custom LoRA additions.
+- Keep clothes mode tabs locked during preview generation and prevent old responses from unlocking newer jobs.
+- Remove the unused clothing description scanner and redundant sampling-settings wrapper.
+
 # VNCCS 3.3.0 Changelog
 
 This release modernizes the active VNCCS 3.2 pipeline, expands model-aware character styling, and hardens generation, previews, storage, and sprite selection. The changes below are relative to `main` (`3.2.5`).

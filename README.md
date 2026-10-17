@@ -37,6 +37,24 @@ Manual install:
 2. Alternatively, in the console: go to `ComfyUI/custom_nodes/` and run `git clone https://github.com/AHEKOT/ComfyUI_VNCCS.git vnccs`
 3. `cd vnccs`
 4. `pip install -r requirements.txt`
+5. `python install.py`
+
+Run both commands with the Python interpreter that starts ComfyUI. ComfyUI-Manager
+runs `install.py` as its installation hook.
+
+The character and clothes wizards and image analysis use the
+[JamePeng llama-cpp-python fork](https://github.com/JamePeng/llama-cpp-python/releases),
+which is also used by ComfyUI Easy Install. This is a different distribution source
+from the same-named PyPI package. The installer keeps an existing compatible fork
+and otherwise selects a published wheel matching the interpreter, operating
+system, and the CUDA version reported by the existing PyTorch. It does not replace
+PyTorch or CUDA or compile native code.
+
+Published configurations supported by this installer are CPython 3.10–3.14,
+Windows/Linux x64 with PyTorch CUDA 12.4, 12.6, 12.8, 13.0, or 13.1, and Apple
+Silicon macOS with Metal. Other configurations report a missing compatible wheel
+instead of installing a different GPU backend. Native package dependencies must
+also have compatible wheels for the selected interpreter.
 
 Post install steps:
 Launch ComfyUI and open Comfy Manager

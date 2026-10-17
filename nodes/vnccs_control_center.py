@@ -2238,7 +2238,9 @@ async def cc_lora_files(request):
     added_paths = set()
     if repo_id and " " not in repo_id:
         try:
-            config = _get_cc_config(repo_id)
+            import asyncio
+
+            config = await asyncio.get_running_loop().run_in_executor(None, _get_cc_config, repo_id)
             added_paths = {
                 _rel_within_folder(entry.get("local_path", ""))
                 for entry in config.get("lora", [])
@@ -2278,7 +2280,11 @@ async def cc_add_custom_lora(request):
         return web.json_response({"error": "Unsupported model family"}, status=400)
 
     try:
-        config = _get_cc_config(repo_id)
+        import asyncio
+
+        config = await asyncio.get_running_loop().run_in_executor(None, _get_cc_config, repo_id)
+        # Another add may have completed while this request awaited its catalog.
+        config = _merge_custom_loras(config)
         existing_paths = {
             entry.get("local_path", "").replace("\\", "/")
             for entry in config.get("lora", [])

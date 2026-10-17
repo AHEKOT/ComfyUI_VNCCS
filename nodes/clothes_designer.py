@@ -315,30 +315,6 @@ def _resolve_pipe_clothes_core_lora(pipe):
     raise ValueError("VNCCS Clothes Designer requires VNCCS Clothes Core LoRA from Control Center pipe.")
 
 
-class PipeContext:
-    def __init__(self, source=None, **updates):
-        s = source
-        self.model = getattr(s, "model", None) if s is not None else None
-        self.clip = getattr(s, "clip", None) if s is not None else None
-        self.vae = getattr(s, "vae", None) if s is not None else None
-        self.pos = getattr(s, "pos", None) if s is not None else None
-        self.neg = getattr(s, "neg", None) if s is not None else None
-        self.seed_int = getattr(s, "seed_int", getattr(s, "seed", 0)) if s is not None else 0
-        self.sample_steps = getattr(s, "sample_steps", getattr(s, "steps", 0)) if s is not None else 0
-        self.cfg = getattr(s, "cfg", 0.0) if s is not None else 0.0
-        self.denoise = getattr(s, "denoise", 1.0) if s is not None else 1.0
-        self.sampler_name = getattr(s, "sampler_name", None) if s is not None else None
-        self.scheduler = getattr(s, "scheduler", None) if s is not None else None
-        raw_loader_type = getattr(s, "loader_type", None) if s is not None else None
-        self.loader_type = "standard" if raw_loader_type == "nunchaku" else raw_loader_type
-        # TECH DEBT: deprecated Nunchaku fields kept as None for compatibility.
-        # Delete after old workflow JSON is migrated.
-        self.nunchaku_kind = None
-        self.nunchaku_settings = None
-        self.model_entry = getattr(s, "model_entry", None) if s is not None else None
-        for key, value in updates.items():
-            setattr(self, key, value)
-
 class ClothesDesigner:
     """
     VNCCS Clothes Designer Node
@@ -432,20 +408,6 @@ class ClothesDesigner:
             )
         except Exception:
             pass
-
-    @staticmethod
-    def _find_breasts_desc(char_info):
-        """Search all string fields in character info for a breast/chest description."""
-        # Prioritise 'body' field, then check the rest
-        fields = ["body"] + [k for k in char_info if k != "body"]
-        for key in fields:
-            val = char_info.get(key)
-            if not isinstance(val, str):
-                continue
-            m = re.search(r'[a-zA-Z\s]*(?:breasts?|flat\s+chest)[a-zA-Z\s]*', val, re.IGNORECASE)
-            if m:
-                return m.group(0).strip().strip(",").strip()
-        return None
 
     @staticmethod
     def construct_prompt(data, model_kind=""):
@@ -745,18 +707,6 @@ class ClothesDesigner:
         else:
             pos_cond, neg_cond, empty_latent = _call_comfy_node("VNCCS_Flux_Klein_Encoder", **encoder_kwargs)
         
-        out_pipe = PipeContext(
-            source=pipe,
-            model=model, clip=clip, vae=vae,
-            pos=pos_cond, neg=neg_cond,
-            seed_int=seed_int,
-            sample_steps=sample_steps,
-            cfg=cfg,
-            denoise=denoise,
-            sampler_name=sampler_name,
-            scheduler=scheduler,
-        )
-
         sampler_model = model
         if clothes_core_lora:
             log_event("lora_applied", component="ClothesDesigner", model=clothes_core_lora, strength=1)
@@ -784,17 +734,17 @@ class ClothesDesigner:
         elif is_qi2:
             latent_result = qi2_generator._qi2_sample(
                 sampler_model, pos_cond, neg_cond, empty_latent,
-                {"seed": out_pipe.seed_int, "steps": out_pipe.sample_steps,
-                 "cfg": out_pipe.cfg, "sampler_name": out_pipe.sampler_name,
-                 "scheduler": out_pipe.scheduler, "denoise": out_pipe.denoise},
+                {"seed": seed_int, "steps": sample_steps,
+                 "cfg": cfg, "sampler_name": sampler_name,
+                 "scheduler": scheduler, "denoise": denoise},
                 turbo=qi2_turbo,
             )
         else:
             latent_result = _call_comfy_node(
                 "KSampler",
-                model=sampler_model, seed=out_pipe.seed_int, steps=out_pipe.sample_steps,
-                cfg=out_pipe.cfg, sampler_name=out_pipe.sampler_name, scheduler=out_pipe.scheduler,
-                positive=pos_cond, negative=neg_cond, latent_image=empty_latent, denoise=out_pipe.denoise
+                model=sampler_model, seed=seed_int, steps=sample_steps,
+                cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
+                positive=pos_cond, negative=neg_cond, latent_image=empty_latent, denoise=denoise
             )[0]
 
         def normalize_decode_input(value):
