@@ -37,6 +37,58 @@ test('transport preserves the Comfy API receiver, custom headers and multipart u
     assert.equal(new Headers(h.calls[1].init.headers).has('Content-Type'), false);
 });
 
+test('VNCCS worker requests disable ComfyUI response deadlines', async () => {
+    const h = transport();
+    for (const route of [
+        '/vnccs/preview_generate', '/vnccs/cloner_auto_generate',
+        '/vnccs/control_center/clothes_preview', '/vnccs/character_styles/preview',
+        '/vnccs/character_wizard', '/vnccs/clothes_wizard',
+        '/vnccs/character_generator/regenerate',
+    ]) {
+        h.context.route = route;
+        await run(h.context, 'vnccsApi.fetchApi(route, { method: "POST", body: "{}" })');
+        assert.equal(h.calls.at(-1).init.timeoutMs, null, route);
+    }
+});
+
+test('slow preview requests remain pending past ComfyUI default deadline and return their result', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const h = transport();
+    let complete;
+    let outcome = null;
+    let requests = 0;
+    h.api.fetchApi = (_route, { timeoutMs = 60_000 }) => new Promise((resolve, reject) => {
+        requests++;
+        complete = resolve;
+        if (timeoutMs !== null) setTimeout(() => reject(new DOMException('Fetch timeout', 'TimeoutError')), timeoutMs);
+    });
+    const work = run(h.context, 'vnccsApi.fetchApi("/vnccs/preview_generate", { method: "POST", body: "{}" })')
+        .then(result => { outcome = result; }, error => { outcome = error; });
+    t.mock.timers.tick(120_000);
+    await Promise.resolve();
+    assert.equal(outcome, null, 'Loading models and generation must not be cut off by an HTTP response timer');
+    const result = response(200, { image: 'finished-preview' });
+    complete(result);
+    await work;
+    assert.equal(outcome, result);
+    assert.equal(requests, 1, 'A long generation must not submit duplicate jobs');
+});
+
+test('transport retains metadata deadlines, explicit timeouts and caller cancellation', async () => {
+    const h = transport();
+    await run(h.context, 'vnccsApi.fetchApi("/vnccs/context_lists")');
+    assert.equal(h.calls.at(-1).init.timeoutMs, undefined);
+    await run(h.context, 'vnccsApi.fetchApi("/upload/image", { method: "POST" })');
+    assert.equal(h.calls.at(-1).init.timeoutMs, undefined);
+    const controller = new AbortController();
+    h.context.signal = controller.signal;
+    await run(h.context, 'vnccsApi.fetchApi("/vnccs/preview_generate", { method: "POST", timeoutMs: 250, signal })');
+    assert.equal(h.calls.at(-1).init.timeoutMs, 250);
+    assert.equal(h.calls.at(-1).init.signal, controller.signal);
+    controller.abort();
+    assert.equal(h.calls.at(-1).init.signal.aborted, true);
+});
+
 test('media URLs preserve the proxy prefix without changing data and already resolved URLs', () => {
     const { context } = transport();
     for (const [input, expected] of [
