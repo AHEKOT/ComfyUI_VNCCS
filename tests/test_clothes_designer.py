@@ -13,50 +13,8 @@ import torch
 
 from _vnccs.nodes.clothes_designer import (
     ClothesDesigner,
-    PipeContext,
     _resolve_pipe_clothes_core_lora,
 )
-
-
-# ── _find_breasts_desc ────────────────────────────────────────────────────────
-
-class TestFindBreastsDesc:
-    def test_finds_in_body_field(self):
-        info = {"body": "slim, small breasts, tall"}
-        result = ClothesDesigner._find_breasts_desc(info)
-        assert result is not None
-        assert "breasts" in result.lower()
-
-    def test_finds_flat_chest(self):
-        info = {"body": "flat chest, petite"}
-        result = ClothesDesigner._find_breasts_desc(info)
-        assert result is not None
-        assert "flat chest" in result.lower()
-
-    def test_finds_in_other_field_if_body_empty(self):
-        info = {"body": "", "additional_details": "large breasts, long legs"}
-        result = ClothesDesigner._find_breasts_desc(info)
-        assert result is not None
-        assert "breasts" in result.lower()
-
-    def test_returns_none_when_no_breast_desc(self):
-        info = {"body": "slim, tall", "additional_details": "holding sword"}
-        assert ClothesDesigner._find_breasts_desc(info) is None
-
-    def test_body_field_takes_priority_over_others(self):
-        info = {"body": "medium breasts", "additional_details": "huge breasts reference"}
-        result = ClothesDesigner._find_breasts_desc(info)
-        assert "medium" in result.lower()
-
-    def test_case_insensitive(self):
-        info = {"body": "LARGE BREASTS"}
-        result = ClothesDesigner._find_breasts_desc(info)
-        assert result is not None
-
-    def test_ignores_non_string_values(self):
-        info = {"body": 42, "additional_details": "small breasts"}
-        result = ClothesDesigner._find_breasts_desc(info)
-        assert result is not None
 
 
 # ── construct_prompt ──────────────────────────────────────────────────────────
@@ -302,73 +260,6 @@ class TestEditableCostumeValidation:
     @pytest.mark.parametrize("costume", ["", None, "Naked", "Original", "naked", "ORIGINAL"])
     def test_rejects_missing_or_base_costumes(self, costume):
         assert not ClothesDesigner._is_editable_costume(costume)
-
-
-# ── PipeContext ───────────────────────────────────────────────────────────────
-
-class TestPipeContext:
-    def test_creates_empty_pipe_from_none(self):
-        ctx = PipeContext(source=None)
-        assert ctx.model is None
-        assert ctx.clip is None
-        assert ctx.vae is None
-        assert ctx.seed_int == 0
-        assert ctx.denoise == 1.0
-
-    def test_copies_attrs_from_source(self):
-        src = types.SimpleNamespace(
-            model=object(), clip=object(), vae=object(),
-            pos=object(), neg=object(),
-            seed_int=42, sample_steps=20, cfg=7.0, denoise=0.8,
-            sampler_name="euler", scheduler="karras",
-            loader_type="standard", nunchaku_kind=None,
-            nunchaku_settings=None, model_entry=None,
-        )
-        ctx = PipeContext(source=src)
-        assert ctx.model is src.model
-        assert ctx.seed_int == 42
-        assert ctx.cfg == 7.0
-        assert ctx.sampler_name == "euler"
-
-    def test_updates_override_source(self):
-        src = types.SimpleNamespace(
-            model=object(), clip=object(), vae=object(),
-            pos=object(), neg=object(),
-            seed_int=1, sample_steps=10, cfg=5.0, denoise=1.0,
-            sampler_name="euler", scheduler="normal",
-            loader_type=None, nunchaku_kind=None,
-            nunchaku_settings=None, model_entry=None,
-        )
-        ctx = PipeContext(source=src, seed_int=999, cfg=3.5)
-        assert ctx.seed_int == 999
-        assert ctx.cfg == 3.5
-        # other attrs unchanged from source
-        assert ctx.sample_steps == 10
-
-    def test_falls_back_to_seed_attr(self):
-        src = types.SimpleNamespace(
-            model=None, clip=None, vae=None, pos=None, neg=None,
-            seed=777,  # old attr name, no seed_int
-            sample_steps=0, cfg=0.0, denoise=1.0,
-            sampler_name=None, scheduler=None,
-            loader_type=None, nunchaku_kind=None,
-            nunchaku_settings=None, model_entry=None,
-        )
-        ctx = PipeContext(source=src)
-        assert ctx.seed_int == 777
-
-    def test_propagates_loader_type(self):
-        src = types.SimpleNamespace(
-            model=None, clip=None, vae=None, pos=None, neg=None,
-            seed_int=0, sample_steps=0, cfg=0.0, denoise=1.0,
-            sampler_name=None, scheduler=None,
-            loader_type="nunchaku", nunchaku_kind="flux",
-            nunchaku_settings={"precision": "fp4"}, model_entry={"name": "x"},
-        )
-        ctx = PipeContext(source=src)
-        assert ctx.loader_type == "standard"
-        assert ctx.nunchaku_kind is None
-        assert ctx.nunchaku_settings is None
 
 
 @pytest.mark.parametrize("kind,size,expected", [

@@ -46,6 +46,7 @@ def get_qwen_vl_chat_handler(llama_cpp):
         "No Qwen3.5 chat handler found in llama-cpp-python. "
         "Qwen3.5 requires Qwen35ChatHandler; "
         "refusing to use Llava15ChatHandler because it can crash with Qwen VL GGUF/mmproj. "
+        "Install the JamePeng runtime with VNCCS install.py using ComfyUI's Python. "
         f"Available handlers: {available}"
     )
 
