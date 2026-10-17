@@ -879,7 +879,7 @@ test("switching between base QI2 and built-in Turbo updates Turbo LoRA visibilit
     assert.ok(widget.scrollArea.querySelector(".vnccs-cc-turbo-strip"));
 });
 
-test("LoRA cards retain their pre-rollback tools row and responsive sizing independently of model cards", () => {
+test("LoRA cards keep two columns and fixed text, tool and detail rows", () => {
     const { widget } = setup();
     const card = widget._renderLoraCard({ name: "A".repeat(200), kind: "QI2", custom: true,
         status: "missing", hf_path: "style.safetensors", description: "Long description" }, { compact: true });
@@ -887,10 +887,14 @@ test("LoRA cards retain their pre-rollback tools row and responsive sizing indep
     const remove = card.querySelector(".vnccs-cc-lora-remove-btn");
     assert.equal(remove.parentNode, card.querySelector(".vnccs-cc-lora-card-tools"));
     assert.equal(remove.ariaLabel, `Remove ${"A".repeat(200)} from list`);
-    assert.match(css, /\.vnccs-cc-lora-card-tools\s*\{[^}]*flex-wrap: wrap/);
-    assert.match(css, /grid-template-columns: repeat\(auto-fit, minmax\(min\(100%, 180px\), 1fr\)\)/);
-    assert.match(css, /\.vnccs-cc-lora-card--compact\s*\{[^}]*min-height: 56px/);
-    assert.doesNotMatch(css.match(/\.vnccs-cc-lora-card--compact\s*\{([^}]*)\}/)[1], /max-height:/);
+    assert.match(css, /\.vnccs-cc-lora-grid\s*\{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+    assert.match(css, /\.vnccs-cc-lora-card\s*\{[^}]*display: grid;[^}]*grid-template-rows: 28px 14px 28px;[^}]*height: 96px/);
+    assert.match(css, /\.vnccs-cc-lora-card--compact\s*\{[^}]*grid-template-rows: 28px 14px;[^}]*height: 60px/);
+    assert.match(css, /\.vnccs-cc-lora-card-detail-row\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\) 40px/);
+    for (const name of ["name", "desc"]) {
+        assert.match(css, new RegExp(`\\.vnccs-cc-lora-card-${name}\\s*\\{[^}]*height: 14px;[^}]*white-space: nowrap;[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;`));
+    }
+    assert.doesNotMatch(css.match(/\.vnccs-cc-lora-card:hover[^}]+\}/)[0], /transform:/);
     assert.doesNotMatch(css.match(/\.vnccs-cc-lora-remove-btn\s*\{([^}]*)\}/)[1], /position: absolute/);
 });
 
@@ -925,12 +929,23 @@ test("compact LoRA statuses and download buttons retain the same reserved slot",
             assert.ok(card.querySelector(".vnccs-cc-download-btn"));
         }
     }
-    assert.match(css, /\.vnccs-cc-lora-card--compact \.vnccs-cc-lora-card-top\s*\{[^}]*flex-wrap: nowrap/);
-    assert.match(css, /\.vnccs-cc-lora-card--compact \.vnccs-cc-lora-card-tools\s*\{[^}]*flex: 0 0 auto;[^}]*flex-wrap: nowrap/);
+    assert.match(css, /\.vnccs-cc-lora-card-top\s*\{[^}]*flex-wrap: nowrap/);
+    assert.match(css, /\.vnccs-cc-lora-card-tools\s*\{[^}]*flex: 0 0 auto;[^}]*flex-wrap: nowrap/);
     assert.match(css, /\.vnccs-cc-download-slot\s*\{[^}]*flex: 0 0 80px;[^}]*height: var\(--vnccs-cc-control-height\)/);
     assert.match(css, /\.vnccs-cc-download-btn\s*\{[^}]*flex-shrink: 0;[^}]*white-space: nowrap/);
     assert.match(css, /\.vnccs-cc-lora-card--compact \.vnccs-cc-lora-card-status\s*\{[^}]*overflow: hidden;[^}]*white-space: nowrap/);
     assert.match(css, /\.vnccs-cc-download-btn\[hidden\]\s*\{[^}]*display: none/);
+});
+
+test("absent LoRA description and version retain their static row and cells", () => {
+    const { widget } = setup();
+    const card = widget._renderLoraCard({ name: "Style", status: "installed" }, { compact: true });
+    const row = card.querySelector(".vnccs-cc-lora-card-detail-row");
+    assert.ok(row);
+    assert.equal(row.children.length, 2);
+    assert.equal(row.children[0].textContent, "");
+    assert.equal(row.children[1].textContent, "");
+    assert.match(css, /\.vnccs-cc-lora-card-version\s*\{[^}]*height: 14px/);
 });
 
 test("live LoRA polling keeps its compact status in the same slot and retains the full message", () => {

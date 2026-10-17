@@ -819,17 +819,18 @@ ${SAKURA_INTERACTION_CSS}
 }
 .vnccs-cc-lora-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 6px;
 }
 .vnccs-cc-lora-grid--compact {
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 180px), 1fr));
     align-items: start;
 }
 .vnccs-cc-lora-card {
     box-sizing: border-box;
+    display: grid;
+    grid-template-rows: 28px 14px 28px;
+    height: 96px;
     min-width: 0;
-    overflow-wrap: anywhere;
     gap: 5px;
     padding: 7px 8px;
     cursor: default;
@@ -837,7 +838,6 @@ ${SAKURA_INTERACTION_CSS}
 }
 .vnccs-cc-lora-card:hover:not(.vnccs-cc-lora-card--active) {
     border-color: rgba(255,143,163,0.32);
-    transform: translateY(-1px);
 }
 .vnccs-cc-lora-card--active {
     border-color: rgba(255,143,163,0.52);
@@ -848,37 +848,34 @@ ${SAKURA_INTERACTION_CSS}
 .vnccs-cc-lora-card--compact {
     padding: 6px 7px;
     gap: 4px;
-    min-height: 56px;
+    grid-template-rows: 28px 14px;
+    height: 60px;
 }
 .vnccs-cc-lora-card--compact .vnccs-cc-lora-card-meta {
     gap: 1px;
 }
 .vnccs-cc-lora-card-top {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: flex-start;
     gap: 6px;
+    height: 28px;
+    min-width: 0;
 }
 .vnccs-cc-lora-card-meta {
     display: flex;
     flex-direction: column;
     gap: 3px;
-    flex: 1 1 100px;
+    flex: 1 1 0;
     min-width: 0;
 }
 .vnccs-cc-lora-card-tools {
     display: flex;
-    flex-wrap: wrap;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
     align-items: center;
     gap: 4px;
     margin-left: auto;
-}
-.vnccs-cc-lora-card--compact .vnccs-cc-lora-card-top { flex-wrap: nowrap; }
-.vnccs-cc-lora-card--compact .vnccs-cc-lora-card-meta { flex-basis: 0; }
-.vnccs-cc-lora-card--compact .vnccs-cc-lora-card-tools {
-    flex: 0 0 auto;
-    flex-wrap: nowrap;
-    justify-content: flex-end;
     height: var(--vnccs-cc-control-height);
 }
 .vnccs-cc-lora-card--compact .vnccs-cc-lora-card-status {
@@ -895,10 +892,11 @@ ${SAKURA_INTERACTION_CSS}
     font-size: 10.5px;
     font-weight: 700;
     color: #e8e8f0;
-    line-height: 1.2;
-    white-space: normal;
-    overflow: visible;
-    text-overflow: clip;
+    line-height: 14px;
+    height: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .vnccs-cc-lora-card--compact .vnccs-cc-lora-card-name {
     font-size: 10px;
@@ -928,6 +926,7 @@ ${SAKURA_INTERACTION_CSS}
     line-height: 1.35;
 }
 .vnccs-cc-lora-remove-btn {
+    flex: 0 0 26px;
     min-width: 26px;
     height: 24px;
     border-radius: 6px;
@@ -993,27 +992,31 @@ ${SAKURA_INTERACTION_CSS}
 .vnccs-cc-lora-card-desc {
     font-size: 10px;
     color: #a3a3b3;
-    line-height: 1.3;
-    white-space: normal;
-    overflow: visible;
+    line-height: 14px;
+    height: 14px;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .vnccs-cc-lora-card-detail-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 40px;
+    align-items: center;
     gap: 6px;
     min-width: 0;
-}
-.vnccs-cc-lora-card-detail-row .vnccs-cc-lora-card-desc {
-    flex: 1;
-    min-width: 0;
+    height: 14px;
 }
 .vnccs-cc-lora-card-version {
-    flex-shrink: 0;
+    height: 14px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: right;
     color: var(--vnccs-cc-muted);
     font-size: 9px;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    line-height: 1;
+    line-height: 14px;
     white-space: nowrap;
 }
 .vnccs-cc-lora-card-actions {
@@ -4273,6 +4276,7 @@ class VNCCSControlCenterWidget {
         const nameEl = document.createElement("span");
         nameEl.className = "vnccs-cc-lora-card-name";
         nameEl.textContent = entry.name;
+        nameEl.title = entry.name;
         meta.appendChild(nameEl);
 
         this._mountDownloadStatus(card, tools, "lora", entry, "vnccs-cc-lora-card-status", mode);
@@ -4280,25 +4284,16 @@ class VNCCSControlCenterWidget {
         if (tools.children.length) top.appendChild(tools);
         card.appendChild(top);
 
-        if (entry.description || entry.version) {
-            const detailRow = document.createElement("div");
-            detailRow.className = "vnccs-cc-lora-card-detail-row";
-
-            const desc = document.createElement("div");
-            desc.className = "vnccs-cc-lora-card-desc";
-            desc.textContent = entry.description || "";
-            detailRow.appendChild(desc);
-
-            if (entry.version) {
-                const versionEl = document.createElement("span");
-                versionEl.className = "vnccs-cc-lora-card-version";
-                versionEl.textContent = `v${entry.version}`;
-                versionEl.title = `Version ${entry.version}`;
-                detailRow.appendChild(versionEl);
-            }
-
-            card.appendChild(detailRow);
-        }
+        const detailRow = document.createElement("div");
+        detailRow.className = "vnccs-cc-lora-card-detail-row";
+        const desc = document.createElement("div");
+        desc.className = "vnccs-cc-lora-card-desc";
+        desc.textContent = desc.title = entry.description || "";
+        const versionEl = document.createElement("span");
+        versionEl.className = "vnccs-cc-lora-card-version";
+        versionEl.textContent = versionEl.title = entry.version ? `v${entry.version}` : "";
+        detailRow.append(desc, versionEl);
+        card.appendChild(detailRow);
 
         const footer = document.createElement("div");
         footer.className = active ? "vnccs-cc-lora-strength-row" : "vnccs-cc-lora-card-actions";
