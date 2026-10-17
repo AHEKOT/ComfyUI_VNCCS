@@ -84,6 +84,32 @@ test("events from other nodes do not alter this widget; removal cleans up the li
     assert.equal(listeners.size, 0);
 });
 
+test("progress for another character or an empty source cannot restore old cards", async () => {
+    const { widget, emit, setProgressSnapshot } = setup();
+    widget.data.character_name = 'Bob';
+    emit({ character_name: 'Alice', images: ['Alice-preview'], total: 4 });
+    assert.equal(widget.stageState.pose_generation.status, 'waiting');
+    assert.equal(widget.renders, 0);
+    setProgressSnapshot({ scope: widget.progressScope(), node_id: '17', character_name: 'Alice', epoch: 'server', revision: 1,
+        stages: { pose_generation: { status: 'done', images: ['Alice-preview'], total: 4 } } });
+    await widget.refreshProgress();
+    assert.equal(widget.stageState.pose_generation.images, null);
+    widget._sourceCharacter = '';
+    widget.data.character_name = '';
+    emit({ images: ['old-preview'], total: 4 });
+    await widget.refreshProgress();
+    assert.equal(widget.stageState.pose_generation.images, null);
+    assert.equal(widget.renders, 0);
+});
+
+test("progress for the selected character still updates its cards", () => {
+    const { widget, emit } = setup();
+    widget.data.character_name = 'Alice';
+    emit({ character_name: 'Alice', images: ['Alice-preview'], total: 4 });
+    assert.deepEqual(Array.from(widget.stageState.pose_generation.images), ['Alice-preview']);
+    assert.equal(widget.renders, 1);
+});
+
 for (const [name, flags] of [
     ["Character Generator", {}],
     ["Character Clone Generator", { isClone: true }],

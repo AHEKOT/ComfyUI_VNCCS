@@ -1476,6 +1476,7 @@ class CharacterGeneratorWidget {
             if (this._disposed) return;
             const detail = event.detail || {};
             if (String(detail.node_id) !== String(this.node.id)) return;
+            if (this._sourceCharacter === "" || (detail.character_name != null && detail.character_name !== (this.data.character_name || ""))) return;
             const scope = this.progressScope();
             if (detail.scope && detail.scope !== scope) return;
             if (!this.acceptsProgressRequest(detail.request_id)) return;
@@ -2533,9 +2534,8 @@ class CharacterGeneratorWidget {
                     changed = true;
                 }
             }
-            if (payload?.character && this.data.character_name !== payload.character) {
-                this.data.character_name = payload.character;
-                changed = true;
+            if (payload && Object.prototype.hasOwnProperty.call(payload, "character")) {
+                changed = this.syncSourceCharacter(payload.character || "") || changed;
             }
             if (this.isClothes && payload?.costume !== undefined && this.data.costume !== payload.costume) {
                 this.data.costume = payload.costume;
@@ -2552,6 +2552,24 @@ class CharacterGeneratorWidget {
             // Leave the previous value if the source widget is mid-edit.
         }
         return changed;
+    }
+
+    syncSourceCharacter(character) {
+        this._sourceCharacter = character;
+        if (this.data.character_name === character) return false;
+        this.data.character_name = character;
+        if (this.stageState) {
+            this.resetStagesFrom(this.stages[0]?.[0]);
+            this.finishRegenerate({ render: false });
+            this.closeViewer();
+            this.viewer = this.viewerFocus = this.restoredViewer = null;
+            this._previewPlaceholderStage = this._pendingAutoPreviewStage = null;
+            if (this.previewEl && this.chainEl) {
+                this.renderPreview();
+                this.renderChain();
+            }
+        }
+        return true;
     }
 
     mannequinURL() {
@@ -2577,12 +2595,8 @@ class CharacterGeneratorWidget {
                 pairs.push({ costume, emotion });
             }
         }
-        let changed = false;
         const signature = JSON.stringify(pairs);
-        if (this.data.character_name !== character) {
-            this.data.character_name = character;
-            changed = true;
-        }
+        let changed = this.syncSourceCharacter(character);
         if (JSON.stringify(this.data.emotion_pairs || []) !== signature) {
             this.data.emotion_pairs = pairs;
             changed = true;
@@ -2689,7 +2703,7 @@ class CharacterGeneratorWidget {
         return JSON.stringify([
             this.stages.map(([key]) => {
                 const stage = this.stageState[key] || {};
-                return [key, stage.status || "waiting", stage.images || null, stage.message || "", stage.current ?? null, stage.total ?? null, stage.processing_index ?? null, stage.processing_indices ?? null];
+                return [key, stage.status || "waiting", stage.images || null, stage.message || "", stage.current ?? null, stage.total ?? null, stage.processing_index ?? null, stage.processing_indices ?? null, stage.preview_aspect ?? null];
             }),
             this.selectedPreview,
             this.regenerateState ? [this.regenerateState.from, this.regenerateState.activeStage, this.regenerateState.imageIndex] : null,
@@ -2715,15 +2729,16 @@ class CharacterGeneratorWidget {
 
     async refreshProgress() {
         const scope = this.progressScope();
-        if (!scope || this._progressPending || this._disposed) return;
+        if (!scope || this._progressPending || this._disposed || this._sourceCharacter === "") return;
         this._progressPending = true;
         const requestData = this.data;
+        const characterName = this.data.character_name;
         const requestId = this.data.ui?.progress_request_id;
         const epoch = this._progressEpoch;
         const revision = this._progressRevision;
         try {
             const { snapshot } = await checkedJSON(`/vnccs/character_generator/progress?scope=${encodeURIComponent(scope)}`);
-            if (this._disposed || this.data !== requestData || scope !== this.progressScope() || requestId !== this.data.ui?.progress_request_id) return;
+            if (this._disposed || this.data !== requestData || characterName !== this.data.character_name || this._sourceCharacter === "" || scope !== this.progressScope() || requestId !== this.data.ui?.progress_request_id) return;
             if (this._progressEpoch !== epoch && snapshot?.epoch !== this._progressEpoch) return;
             if (!snapshot) {
                 if (this._regenerateRequestPending || revision !== this._progressRevision) return;
@@ -2741,6 +2756,7 @@ class CharacterGeneratorWidget {
                 return;
             }
             if (snapshot.scope !== scope || String(snapshot.node_id) !== String(this.node.id)) return;
+            if (snapshot.character_name != null && snapshot.character_name !== (this.data.character_name || "")) return;
             if (!this.acceptsProgressRequest(snapshot.request_id)) return;
             if (snapshot.run_id && snapshot.run_id === this._interruptedProgressRunId) return;
             if (this._progressScope === scope && this._progressEpoch === snapshot.epoch && snapshot.revision < (this._progressRevision || 0)) return;
@@ -2780,6 +2796,9 @@ class CharacterGeneratorWidget {
             if (this.viewer?.open) this.syncViewerImage();
             this.renderPreview();
             this.renderChain();
+            if (!this.viewer?.open && this.restoredViewer?.open && this.stageState[this.selectedPreview]?.images?.some(Boolean)) {
+                this.openViewer(this.restoredViewer.index || 0, this.restoredViewer);
+            }
             this.saveBrowserState();
         } finally { this._progressPending = false; }
     }
@@ -2806,22 +2825,7 @@ class CharacterGeneratorWidget {
         }
         this.userSelectedPreview = Boolean(saved.userSelectedPreview);
 
-        if (saved.stageState && typeof saved.stageState === "object") {
-            for (const [key] of this.stages) {
-                const stage = saved.stageState[key];
-                if (!stage || typeof stage !== "object") continue;
-                this.stageState[key] = {
-                    status: stage.status || "waiting",
-                    images: Array.isArray(stage.images) ? stage.images : null,
-                    message: stage.message || "",
-                    current: stage.current,
-                    total: stage.total,
-                    processing_index: stage.processing_index,
-                    processing_indices: stage.processing_indices,
-                };
-            }
-        }
-
+        // Transient results belong to the current server's progress snapshot.
         if (saved.viewer && typeof saved.viewer === "object") {
             if (saved.viewer.open && this.stages.some(([key]) => key === saved.viewer.stage)) {
                 this.selectedPreview = saved.viewer.stage;
@@ -2837,57 +2841,18 @@ class CharacterGeneratorWidget {
         }
     }
 
-    saveBrowserState(includeImages = true) {
+    saveBrowserState() {
         if (!this.storageKey()) return;
         this.syncCharacterSourceData();
         this.syncStagesFromData();
-        const stageState = {};
-        for (const [key] of this.stages) {
-            const stage = this.stageState[key] || {};
-            stageState[key] = {
-                status: stage.status || "waiting",
-                images: includeImages ? stage.images : null,
-                message: stage.message || "",
-                current: stage.current,
-                total: stage.total,
-                processing_index: stage.processing_index,
-                processing_indices: stage.processing_indices,
-            };
-        }
         const payload = {
             version: 2,
             settings: JSON.stringify(this.data),
             selectedPreview: this.selectedPreview,
             userSelectedPreview: this.userSelectedPreview,
-            stageState,
             viewer: this.serializableViewerState(),
         };
-        try {
-            if (!storage.setItem(this.storageKey(), JSON.stringify(payload))) throw new Error("Cache unavailable");
-        } catch {
-            if (!includeImages) return;
-            const compactState = {};
-            for (const [key] of this.stages) {
-                const stage = this.stageState[key] || {};
-                const images = Array.isArray(stage.images)
-                    ? stage.images.filter(src => typeof src === "string" && !src.startsWith("data:"))
-                    : null;
-                compactState[key] = {
-                    status: stage.status || "waiting",
-                    images,
-                    message: stage.message || "",
-                    current: stage.current,
-                    total: stage.total,
-                    processing_index: stage.processing_index,
-                    processing_indices: stage.processing_indices,
-                };
-            }
-            try {
-                if (!storage.setItem(this.storageKey(), JSON.stringify({ ...payload, stageState: compactState }))) throw new Error("Cache unavailable");
-            } catch {
-                this.saveBrowserState(false);
-            }
-        }
+        storage.setItem(this.storageKey(), JSON.stringify(payload));
     }
 
     scheduleBrowserStateSave() {
@@ -4176,13 +4141,11 @@ class CharacterGeneratorWidget {
         const count = grid.children.length;
         const images = [...grid.children].map(tile => tile._clothesRevealBase || tile._previewImage || (tile._pendingImage?._previewReady ? tile._pendingImage : null));
         const known = images.find(image => image?.naturalWidth > 0 && image?.naturalHeight > 0);
-        const fallback = known ? known.naturalWidth / known.naturalHeight : 1;
-        const aspects = images.map((image, index) => {
-            const fixed = Number(grid.children[index]._previewAspect);
-            if (Number.isFinite(fixed) && fixed > 0) return fixed;
-            return image?.naturalWidth > 0 && image?.naturalHeight > 0
-                ? image.naturalWidth / image.naturalHeight : fallback;
-        });
+        const fixed = Number(this.stageState?.[this.selectedPreview]?.preview_aspect);
+        const fallback = known ? known.naturalWidth / known.naturalHeight : CHARACTER_MANNEQUIN_ASPECT;
+        // All cards share one frame, including pending previews and mannequins.
+        const aspect = Number.isFinite(fixed) && fixed > 0 ? fixed : fallback;
+        const aspects = images.map(() => aspect);
         let best = null;
         for (let cols = 1; cols <= count; cols++) {
             const rows = Math.ceil(count / cols);

@@ -129,7 +129,7 @@ function setup(state = {}, { loaded = true, repoId = "" } = {}) {
     document.animations = [];
     const context = createWidgetContext({
         document, setHelpText() {},
-        api: { fetchApi: route => new Promise((resolve, reject) => pending.push({ route, resolve, reject })) },
+        api: { fetchApi: (route, options) => new Promise((resolve, reject) => pending.push({ route, options, resolve, reject })) },
         enableMiddleMouseCanvasPan() {}, attachHelpTooltips() {}, syncDOMWidgetWidthSoon() {},
         requestAnimationFrame: callback => frames.push(callback),
         setTimeout() {}, clearTimeout() {},
@@ -160,6 +160,7 @@ function setup(state = {}, { loaded = true, repoId = "" } = {}) {
     });
     if (!loaded) widget.config = null;
     widget._beginConfigRequest = context.createRequestGuard(widget.node);
+    widget._beginDownloadStatusRequest = context.createRequestGuard(widget.node);
     widget._buildUI();
     document.body.appendChild(widget.container);
     widget._renderAll();
@@ -602,10 +603,13 @@ for (const [name, category, render] of [
     ["Turbo LoRA", "lora", (widget, entry) => widget._renderTurboInlineStrip(entry)],
     ["compact LoRA", "lora", (widget, entry) => widget._renderLoraCard(entry, { compact: true })],
     ["full LoRA", "lora", (widget, entry) => widget._renderLoraCard(entry)],
+    ["ControlNet", "controlnet", (widget, entry) => widget._renderCnetEntry("controlnet", entry)],
+    ["Other", "other", (widget, entry) => widget._renderCnetEntry("other", entry)],
 ]) {
     test(`${name} replaces a missing status with one download button in the heading`, () => {
         const { widget, document } = setup();
         const entry = { name: "Asset with a long name", kind: "QI2", type: "unet", description: "Description" };
+        if (category !== "lora") widget.state.loras = [{ name: entry.name, auto_apply: true }];
         const key = `cc_${category}_${entry.name}`;
         const downloads = [];
         widget._downloadEntry = (cat, asset) => downloads.push([cat, asset.name]);
@@ -657,11 +661,103 @@ for (const [name, category, render] of [
             entry.status = status;
             widget.dlStatus = {};
             const card = render(widget, entry);
-            assert.equal(card.querySelector(".vnccs-cc-download-btn"), null);
+            assert.equal(card.querySelector(".vnccs-cc-download-btn").hidden, true);
             assert.equal(card.querySelector(".vnccs-cc-model-card-status, .vnccs-cc-lora-card-status, .vnccs-cc-turbo-strip-status").hidden, false);
+            if (status === "installed" && category !== "lora") assert.equal(card._downloadView.label.textContent, "Installed");
         }
     });
+
+    test(`${name} retains its card and status slot through animated download and retry transitions`, async () => {
+        const { widget, document, pending, context } = setup({}, { repoId: "owner/models" });
+        const entry = { name: `${name} download`, kind: "QI2", type: "unet", status: "missing" };
+        widget.config[category] ??= [];
+        widget.config[category].push(entry);
+        const card = render(widget, entry);
+        widget.scrollArea.appendChild(card);
+        const { slot, label, button, badge } = card._downloadView;
+        const key = `cc_${category}_${entry.name}`;
+        widget._renderAll = () => assert.fail("Download transitions must not rebuild the interface");
+        widget.scrollArea.scrollTop = 170;
+        widget.scrollArea.scrollLeft = 9;
+        button.focus();
+        document.motionEnabled = true;
+        const request = widget._downloadEntry(category, entry);
+        await widget._downloadEntry(category, entry);
+        assert.equal(pending.length, 1, "Repeated clicks cannot submit a second download");
+        assert.equal(document.activeElement, label);
+        assert.equal(label.textContent, "Queued");
+        pending[0].resolve({ ok: true, text: async () => '{"status":"queued"}' });
+        await request;
+
+        for (const status of ["downloading", "error", "queued", "downloading", "success", "installed"]) {
+            widget._downloadRefreshPending = status === "success";
+            if (status === "installed") entry.status = status;
+            widget.dlStatus[key] = { status, progress: 37, message: "Long transfer details ".repeat(50) };
+            widget._updateDownloadIndicators();
+            assert.equal(card._downloadView.slot, slot);
+            assert.equal(slot.children.length, 2);
+            assert.equal(card._downloadView.label, label);
+            assert.equal(card._downloadView.button, button);
+            assert.equal(card._downloadView.badge, badge);
+            assert.equal(widget.scrollArea.scrollTop, 170);
+            assert.equal(widget.scrollArea.scrollLeft, 9);
+            assert.equal(label.role, "status");
+            const count = document.animations.length;
+            widget.dlStatus[key].progress = 38;
+            widget._updateDownloadIndicators();
+            assert.equal(document.animations.length, count, "Percentage ticks must not restart status animations");
+        }
+        for (const animation of document.animations.filter(item => item.element === slot)) {
+            assert.ok(animation.keyframes.every(frame => frame.transform === undefined), "Status transitions only fade within their reserved space");
+        }
+        context.window.matchMedia = () => ({ matches: true });
+        const count = document.animations.length;
+        widget.dlStatus[key] = { status: "queued" };
+        widget._updateDownloadIndicators();
+        assert.equal(document.animations.length, count);
+        widget._stopMotion();
+        widget.node.onRemoved();
+        assert.equal(widget._motionAnimations.size, 0);
+    });
 }
+
+test("download verification preserves cards, open controls and drafts through a failed catalog refresh", async () => {
+    const { widget, document, pending, serialized, focused } = setup({}, { repoId: "owner/models" });
+    widget._downloadStatusRepoId = "owner/models";
+    const entry = widget.config.models[0];
+    entry.status = "missing";
+    widget._renderAll();
+    const card = widget.scrollArea.querySelector(`[data-download-key="cc_models_${entry.name}"]`);
+    const view = card._downloadView;
+    const steps = focused("Steps");
+    steps.value = "31";
+    steps.focus();
+    widget.scrollArea.scrollTop = 180;
+    const original = serialized.value;
+    widget.dlStatus[`cc_models_${entry.name}`] = { status: "success" };
+    widget._downloadRefreshPending = true;
+    widget._updateDownloadIndicators();
+    assert.equal(view.label.textContent, "Checking");
+    widget._renderAll = () => assert.fail("Catalog verification must preserve existing cards");
+    const failed = widget.fetchConfig("owner/models", true, { preserveCards: true });
+    pending[0].resolve({ ok: false, json: async () => ({ error: "Catalog unavailable" }) });
+    await failed;
+    assert.equal(widget._downloadRefreshPending, true);
+    assert.equal(view.label.textContent, "Checking");
+    assert.equal(document.activeElement, steps);
+    const retry = widget.fetchConfig("owner/models", true, { preserveCards: true });
+    assert.match(pending[1].route, /force_refresh=true/);
+    respond(pending[1], { ...widget.config, models: widget.config.models.map(model => ({ ...model, status: "installed" })) });
+    await retry;
+    assert.equal(widget._downloadRefreshPending, false);
+    assert.equal(view.label.textContent, "Installed");
+    assert.equal(card._downloadView, view);
+    assert.equal(view.button.hidden, true);
+    assert.equal(steps.value, "31");
+    assert.equal(document.activeElement, steps);
+    assert.equal(widget.scrollArea.scrollTop, 180);
+    assert.equal(serialized.value, original);
+});
 
 test("muted labels meet normal-text contrast on the existing dark surfaces", () => {
     const luminance = color => {
@@ -798,7 +894,7 @@ test("LoRA cards retain their pre-rollback tools row and responsive sizing indep
     assert.doesNotMatch(css.match(/\.vnccs-cc-lora-remove-btn\s*\{([^}]*)\}/)[1], /position: absolute/);
 });
 
-test("compact LoRA statuses use a fixed slot while download buttons fit their labels", () => {
+test("compact LoRA statuses and download buttons retain the same reserved slot", () => {
     const { widget } = setup();
     const entry = { name: "VNCCS Overhaul QI2", kind: "QI2", status: "missing",
         description: "Overhaul for Character Creator", version: "2.0" };
@@ -814,7 +910,7 @@ test("compact LoRA statuses use a fixed slot while download buttons fit their la
         widget.dlStatus = { [`cc_lora_${entry.name}`]: dls };
         const card = widget._renderLoraCard(entry, { compact: true, mode: "pipe" });
         const status = card.querySelector(".vnccs-cc-lora-card-status");
-        assert.equal(status.parentNode, card.querySelector(".vnccs-cc-lora-card-tools"));
+        assert.equal(status.parentNode.parentNode, card.querySelector(".vnccs-cc-lora-card-tools"));
         assert.equal(card.querySelector(".vnccs-cc-lora-card-meta").children.length, 1, "Only the name participates in the text column's height");
         assert.equal(card.querySelector(".vnccs-cc-lora-card-detail-row").textContent, "Overhaul for Character Creatorv2.0");
         assert.equal(card.querySelector(".vnccs-cc-row-progress"), null, "Compact warnings use the existing status slot");
@@ -830,8 +926,8 @@ test("compact LoRA statuses use a fixed slot while download buttons fit their la
         }
     }
     assert.match(css, /\.vnccs-cc-lora-card--compact \.vnccs-cc-lora-card-top\s*\{[^}]*flex-wrap: nowrap/);
-    assert.match(css, /\.vnccs-cc-lora-card--compact \.vnccs-cc-lora-card-tools\s*\{[^}]*flex: 0 0 58px;[^}]*flex-wrap: nowrap;[^}]*height: 24px/);
-    assert.match(css, /\.vnccs-cc-lora-card--compact\.vnccs-cc-lora-card--downloadable \.vnccs-cc-lora-card-tools\s*\{[^}]*flex-basis: auto/);
+    assert.match(css, /\.vnccs-cc-lora-card--compact \.vnccs-cc-lora-card-tools\s*\{[^}]*flex: 0 0 auto;[^}]*flex-wrap: nowrap/);
+    assert.match(css, /\.vnccs-cc-download-slot\s*\{[^}]*flex: 0 0 80px;[^}]*height: var\(--vnccs-cc-control-height\)/);
     assert.match(css, /\.vnccs-cc-download-btn\s*\{[^}]*flex-shrink: 0;[^}]*white-space: nowrap/);
     assert.match(css, /\.vnccs-cc-lora-card--compact \.vnccs-cc-lora-card-status\s*\{[^}]*overflow: hidden;[^}]*white-space: nowrap/);
     assert.match(css, /\.vnccs-cc-download-btn\[hidden\]\s*\{[^}]*display: none/);
@@ -874,7 +970,7 @@ test("live LoRA polling keeps its compact status in the same slot and retains th
         assert.equal(status.tabIndex, retry ? -1 : 0);
         assert.equal(download.hidden, !retry);
         assert.equal(download.disabled, !retry, "Queued or active downloads must not allow a second submission");
-        assert.equal(card.classList.contains("vnccs-cc-lora-card--downloadable"), retry);
+        assert.equal(download.parentNode, slot, "The button and status retain one fixed slot");
         assert.equal(document.activeElement, input);
         assert.equal(widget.scrollArea.scrollTop, 120);
         assert.equal(widget.scrollArea.scrollLeft, 8);
@@ -909,6 +1005,7 @@ test("LoRA status colors match fresh cards after live queue and error transition
                 ["queued", "#b8a9e8"], ["downloading", "#b8a9e8"],
                 ["error", "#ff4757"], ["queued", "#b8a9e8"], ["installed", "#00d68f"],
             ]) {
+                if (status === "installed") entry.status = status;
                 widget.dlStatus[key] = { status, progress: 37 };
                 widget._updateDownloadIndicators();
                 const fresh = widget._renderLoraCard({ ...entry, status }, { compact, mode: "pipe" });

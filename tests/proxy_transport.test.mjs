@@ -100,14 +100,21 @@ function generator() {
     return { ...h, widget, node };
 }
 
-test('generator UI cache is workflow-scoped and never imports cached settings', () => {
+test('generator UI cache restores view preferences without importing cached results or settings', () => {
     const h = generator();
     const firstKey = h.widget.storageKey();
-    const saved = { version: 2, settings: JSON.stringify(h.widget.data), selectedPreview: 'bg_remove', stageState: { bg_remove: { status: 'done', images: ['/view?a'] } } };
+    const saved = { version: 2, settings: JSON.stringify(h.widget.data), selectedPreview: 'bg_remove', stageState: {
+        pose_generation: { status: 'waiting', message: 'Stopped', current: 3, total: 4, images: ['/view?old-1', '/view?old-2'] },
+        bg_remove: { status: 'done', images: ['/view?a'] },
+    } };
+    h.widget.stageState.pose_generation = { status: 'waiting', images: null };
     h.context.saved = saved;
     run(h.context, 'storage.setItem(widget.storageKey(), JSON.stringify(saved))');
     h.widget.restoreBrowserState();
-    assert.equal(h.widget.stageState.bg_remove.status, 'done');
+    assert.equal(h.widget.selectedPreview, 'bg_remove');
+    assert.equal(h.widget.stageState.bg_remove.status, 'waiting');
+    assert.equal(h.widget.stageState.pose_generation.images, null);
+    assert.equal(h.widget.stageState.pose_generation.total, undefined);
     const before = JSON.stringify(h.widget.data);
     saved.settings = '{}'; saved.data = { pose_generation: { target_size: 8192 } };
     run(h.context, 'storage.setItem(widget.storageKey(), JSON.stringify(saved))');
@@ -118,6 +125,67 @@ test('generator UI cache is workflow-scoped and never imports cached settings', 
     h.widget.stageState.bg_remove = { status: 'waiting' };
     h.widget.restoreBrowserState();
     assert.equal(h.widget.stageState.bg_remove.status, 'waiting');
+});
+
+test('fresh server has no cards even when the browser retains an interrupted four-card batch', async () => {
+    const h = generator();
+    h.widget.stageState.pose_generation = { status: 'waiting', images: null };
+    h.context.saved = { version: 2, settings: JSON.stringify(h.widget.data), stageState: {
+        pose_generation: { status: 'waiting', images: ['/view?old-1', '/view?old-2'], current: 3, total: 4, message: 'Stopped' },
+    } };
+    run(h.context, 'storage.setItem(widget.storageKey(), JSON.stringify(saved))');
+    h.widget.restoreBrowserState();
+    h.api.fetchApi = async () => response(200, { snapshot: null });
+    await h.widget.refreshProgress();
+    assert.equal(h.widget.stageState.pose_generation.status, 'waiting');
+    assert.equal(h.widget.stageState.pose_generation.images, null);
+    assert.equal(h.widget.stageState.pose_generation.total, undefined);
+});
+
+test('browser UI cache stores no transient stage results or image payloads', () => {
+    const h = generator();
+    h.widget.serializableViewerState = () => ({ open: false });
+    h.widget.stageState.pose_generation = { status: 'done', images: ['data:image/png;base64,AAAA'], total: 4 };
+    h.context.Widget.prototype.saveBrowserState.call(h.widget);
+    const saved = JSON.parse(run(h.context, 'storage.getItem(widget.storageKey())'));
+    assert.equal(saved.settings, JSON.stringify(h.widget.data));
+    assert.equal(saved.stageState, undefined);
+    assert.deepEqual(saved.viewer, { open: false });
+});
+
+test('current server snapshot restores results and the cached viewer after reload', async () => {
+    const h = generator();
+    h.widget.stageState.pose_generation = { status: 'waiting', images: null };
+    h.widget.selectedPreview = 'pose_generation';
+    h.widget.userSelectedPreview = false;
+    const viewer = { open: true, stage: 'pose_generation', index: 1, centerNormX: 0.4, centerNormY: 0.6 };
+    h.widget.restoredViewer = viewer;
+    h.widget.openViewer = (index, restored) => { h.widget.viewer = { open: true, index, restored }; };
+    const scope = h.widget.progressScope();
+    h.api.fetchApi = async () => response(200, { snapshot: {
+        scope, node_id: '5', epoch: 'current-server', revision: 1, run_id: 'current-run', stages: {
+            pose_generation: { status: 'done', images: ['/view?new-1', '/view?new-2'], total: 2, preview_aspect: 2 / 3 },
+        },
+    } });
+    await h.widget.refreshProgress();
+    assert.equal(h.widget.stageState.pose_generation.preview_aspect, 2 / 3);
+    assert.deepEqual(Array.from(h.widget.stageState.pose_generation.images), ['/view?new-1', '/view?new-2']);
+    assert.equal(h.widget.viewer?.index, 1);
+    assert.equal(h.widget.viewer?.restored, viewer);
+});
+
+test('character selection changing during a progress request rejects its late snapshot', async () => {
+    const h = generator();
+    h.widget.data.character_name = 'Alice';
+    let resolve;
+    h.api.fetchApi = () => new Promise(done => { resolve = done; });
+    const pending = h.widget.refreshProgress();
+    h.widget.syncSourceCharacter('Bob');
+    resolve(response(200, { snapshot: { scope: h.widget.progressScope(), node_id: '5', epoch: 'server', revision: 1,
+        stages: { pose_generation: { status: 'done', images: ['Alice-preview'] } } } }));
+    await pending;
+    assert.equal(h.widget.data.character_name, 'Bob');
+    assert.equal(h.widget.stageState.pose_generation.images, null);
 });
 
 test('progress snapshots restore missed stages but cannot replace a newer event', async () => {

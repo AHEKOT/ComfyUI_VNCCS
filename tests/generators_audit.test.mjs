@@ -525,12 +525,8 @@ for (const [type, flags, savedPreview, legacyPreview] of [
             assert.equal(widget.viewer, null);
             assert.equal(widget.viewerFocus, null);
             assert.equal(disposedViewer, 1);
-            if (restore === 'matching-cache') {
-                assert.deepEqual(Array.from(widget.currentImages()), ['Bob']);
-            } else {
-                assert.equal(widget.restoredViewer?.open ?? false, false);
-                assert.ok(Object.values(widget.stageState).every(stage => stage.status === 'waiting' && stage.images === null));
-            }
+            assert.equal(widget.restoredViewer?.open ?? false, false);
+            assert.ok(Object.values(widget.stageState).every(stage => stage.status === 'waiting' && stage.images === null));
             widget.persistUI();
             const serialized = { widgets_values: ['old data'] };
             node.onSerialize(serialized);
@@ -918,6 +914,41 @@ for (const clone of [false, true]) {
         node.inputs = [];
         assert.equal(widget.syncCharacterSourceData(), undefined);
         assert.equal(widget.data.character_name, 'Bob');
+    });
+}
+
+for (const [type, flags] of [
+    ['CharacterCreatorV2', {}], ['CharacterCloner', { isClone: true }],
+    ['ClothesDesigner', { isClothes: true }], ['EmotionGeneratorV2', { isEmotions: true }],
+]) {
+    test(`${type} empty selection clears the generator character and all transient cards`, () => {
+        const sourceWidget = { name: flags.isEmotions ? 'character' : 'widget_data',
+            value: flags.isEmotions ? 'Alice' : '{"character":"Alice"}' };
+        const source = { id: 1, type, widgets: [sourceWidget] };
+        const node = { id: 2, inputs: [{ name: 'pipe', link: 1 }] };
+        node.graph = { links: { 1: { origin_id: 1 } }, getNodeById: id => id === 1 ? source : node };
+        const context = generatorContext();
+        const widget = Object.assign(Object.create(context.Widget.prototype), {
+            node, ...flags, data: { character_name: 'Alice' }, stages: [['pose_generation', 'Pose']],
+            stageState: { pose_generation: { status: 'waiting', images: ['old-1', 'old-2'], current: 3, total: 4 } },
+            _previewPlaceholderStage: 'pose_generation', _pendingAutoPreviewStage: 'upscaler',
+            restoredViewer: { open: true }, previewEl: {}, chainEl: {},
+            previewRenders: 0, chainRenders: 0,
+            renderPreview() { this.previewRenders++; }, renderChain() { this.chainRenders++; },
+        });
+        widget.syncCharacterSourceData();
+        sourceWidget.value = flags.isEmotions ? '' : '{"character":""}';
+        assert.equal(widget.syncCharacterSourceData(), true);
+        assert.equal(widget.data.character_name, '');
+        assert.equal(widget._sourceCharacter, '');
+        assert.equal(widget.stageState.pose_generation.images, null);
+        assert.equal(widget.stageState.pose_generation.total, undefined);
+        assert.equal(widget._previewPlaceholderStage, null);
+        assert.equal(widget._pendingAutoPreviewStage, null);
+        assert.equal(widget.restoredViewer, null);
+        assert.equal(widget.previewRenders, 1);
+        assert.equal(widget.chainRenders, 1);
+        assert.equal(widget.syncCharacterSourceData(), false);
     });
 }
 

@@ -539,7 +539,7 @@ for (const [name, flags] of [["Character", {}], ["Clone", { isClone: true }], ["
     });
 }
 
-test("decoded generator cards preserve image aspect ratios and maximize workflow-sized galleries", async () => {
+test("decoded generator cards share a stable frame and contain mixed image aspect ratios at workflow sizes", async () => {
     const h = setup();
     h.context.app = { registerExtension() {} };
     vm.runInContext(generator.replace(/^import .*;\n/gm, "") + '\nthis.Generator = CharacterGeneratorWidget;', h.context);
@@ -568,8 +568,11 @@ test("decoded generator cards preserve image aspect ratios and maximize workflow
             assert.ok(width <= cellW + 0.001 && height <= cellH + 0.001);
             assert.ok(Math.abs(width - cellW) < 0.001 || Math.abs(height - cellH) < 0.001, "Each image fills its cell along one axis without distortion");
             assert.ok(width > 0 && height > 0);
-            assert.ok(Math.abs(width / height - sizes[index][0] / sizes[index][1]) < 0.001);
+            assert.equal(tile.style.width, widget.previewGrid.children[0].style.width);
+            assert.equal(tile.style.height, widget.previewGrid.children[0].style.height);
+            assert.ok(Math.abs(width / height - sizes[0][0] / sizes[0][1]) < 0.001);
         });
+        assert.match(generator, /\.vnccs-pipe-img-content\s*\{[^}]*object-fit: contain/);
         assert.doesNotMatch(widget.previewGrid.style.gridTemplateColumns, /1fr/);
     }
 });

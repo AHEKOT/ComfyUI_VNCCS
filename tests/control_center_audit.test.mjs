@@ -33,7 +33,7 @@ function setup(state = {}) {
     const node = { id: 1, widgets: [serialized], setDirtyCanvas() {} };
     const widget = Object.create(context.Widget.prototype);
     Object.assign(widget, {
-        node, state, config: catalog, statusText: {}, scrollArea: { appendChild() {}, querySelector: () => null, contains: () => false },
+        node, state, config: catalog, statusText: {}, scrollArea: { appendChild() {}, querySelector: () => null, querySelectorAll: () => [], contains: () => false },
         _beginConfigRequest: context.createRequestGuard(node),
         _beginDownloadStatusRequest: context.createRequestGuard(node),
         _getRepoId: () => "", _syncOutputSlots() {}, _syncCnetSlots() {},
@@ -346,7 +346,7 @@ function installNumericDom(context) {
             classList: { add() {}, toggle() {} },
             appendChild(child) { this.children.push(child); },
             append(...children) { this.children.push(...children); },
-            querySelector: () => null,
+            querySelector: () => null, contains: () => false, setAttribute(name, value) { this[name] = value; },
             checkValidity() { return this.value !== ""; },
             get value() { return tag === "select" ? (this.children.find(child => child.selected) || this.children[0])?.value ?? "" : value; },
             get valueAsNumber() { return value === "" ? NaN : Number(value); },
@@ -841,7 +841,7 @@ test("missing custom LoRA files are not queued as remote downloads", async () =>
         const element = { children: [], dataset: {}, classList: { add() {} },
             appendChild(child) { this.children.push(child); },
             append(...children) { this.children.push(...children); },
-            querySelector: () => null,
+            querySelector: () => null, contains: () => false, setAttribute(name, value) { this[name] = value; },
         };
         elements.push(element);
         return element;
@@ -861,7 +861,7 @@ for (const failure of ["HTTP", "network"]) {
         await downloading;
         assert.equal(widget.dlStatus.cc_models_QI2.status, "error");
         assert.equal(widget.message, failure === "network" ? "Connection closed" : "Download rejected");
-        assert.equal(widget.renders, 2);
+        assert.equal(widget.renders || 0, 0, "Download failures update the existing card");
     });
 }
 
