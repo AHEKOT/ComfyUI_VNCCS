@@ -14,6 +14,91 @@ import utils
 from nodes import vnccs_control_center as cc
 
 
+@pytest.mark.parametrize("handler", [cc.cc_lora_files, cc.cc_add_custom_lora])
+def test_lora_catalog_lookup_keeps_http_loop_responsive(monkeypatch, handler):
+    started, release = threading.Event(), threading.Event()
+    saved = []
+    entry = {"name": "Mine", "local_path": "models/loras/mine.safetensors"}
+
+    def load(repo_id):
+        assert repo_id == "example/catalog"
+        started.set()
+        assert release.wait(2), "Catalog lookup must not block the HTTP loop"
+        return {"lora": []}
+
+    monkeypatch.setattr(cc, "_get_cc_config", load)
+    monkeypatch.setattr(cc, "_CC_CONFIG_CACHE", {})
+    monkeypatch.setattr(cc, "_load_custom_loras", lambda: list(saved))
+    monkeypatch.setattr(cc.folder_paths, "get_filename_list", lambda category: ["mine.safetensors"])
+    monkeypatch.setattr(cc, "_build_custom_lora_entry", lambda *args, **kwargs: entry)
+    monkeypatch.setattr(cc, "_save_custom_loras", saved.extend)
+    monkeypatch.setattr(cc.web, "json_response", lambda data, status=200: SimpleNamespace(data=data, status=status), raising=False)
+
+    async def body():
+        return {"repo_id": "example/catalog", "path": "mine.safetensors"}
+
+    async def run():
+        request = SimpleNamespace(
+            rel_url=SimpleNamespace(query={"repo_id": "example/catalog"}),
+            headers={"Host": "localhost", "X-VNCCS-CSRF": "1"}, json=body,
+        )
+        job = asyncio.create_task(handler(request))
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            assert not job.done()
+            release.set()
+            return await asyncio.wait_for(job, 2)
+        finally:
+            release.set()
+            await job
+
+    response = asyncio.run(run())
+    assert response.status == 200
+    if handler is cc.cc_add_custom_lora:
+        assert response.data == {"status": "ok", "entry": entry}
+        assert saved == [entry]
+    else:
+        assert response.data == {"items": [{"path": "mine.safetensors", "label": "mine.safetensors", "already_added": False}]}
+        assert saved == []
+
+
+@pytest.mark.parametrize("second_path", ["one/style.safetensors", "two/style.safetensors"])
+def test_concurrent_custom_lora_adds_recheck_paths_and_names(monkeypatch, tmp_path, second_path):
+    catalog_readers = threading.Barrier(2)
+    registry = tmp_path / "custom_loras.json"
+    weights = tmp_path / "style.safetensors"
+    weights.write_bytes(b"installed weights")
+
+    def load(repo_id):
+        catalog_readers.wait(timeout=5)
+        return {"lora": []}
+
+    monkeypatch.setattr(cc, "_get_cc_config", load)
+    monkeypatch.setattr(cc, "_CC_CONFIG_CACHE", {})
+    monkeypatch.setattr(cc, "_get_custom_loras_path", lambda **kwargs: str(registry))
+    monkeypatch.setattr(cc, "get_full_path_agnostic", lambda *args, **kwargs: str(weights))
+    monkeypatch.setattr(cc.web, "json_response", lambda data, status=200: SimpleNamespace(data=data, status=status), raising=False)
+
+    async def add(path):
+        async def body():
+            return {"repo_id": "example/catalog", "path": path}
+        return await cc.cc_add_custom_lora(SimpleNamespace(
+            headers={"Host": "localhost", "X-VNCCS-CSRF": "1"}, json=body,
+        ))
+
+    async def run():
+        return await asyncio.gather(add("one/style.safetensors"), add(second_path))
+
+    responses = asyncio.run(run())
+    duplicate = second_path == "one/style.safetensors"
+    assert sorted(response.status for response in responses) == ([200, 409] if duplicate else [200, 200])
+    entries = cc._load_custom_loras()
+    assert {entry["local_path"] for entry in entries} == {
+        f"models/loras/{path}" for path in ("one/style.safetensors", second_path)
+    }
+    assert len({entry["name"] for entry in entries}) == len(entries) == (1 if duplicate else 2)
+
+
 @pytest.mark.parametrize("category,folder,filename", [
     ("models", "diffusion_models", "qwen_image_2.1_int8_convrot.safetensors"),
     ("clip", "text_encoders", "qwen3vl_8b_int8_convrot.safetensors"),

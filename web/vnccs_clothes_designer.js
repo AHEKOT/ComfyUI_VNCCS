@@ -1015,6 +1015,7 @@ app.registerExtension({
                     if (els.btnGen) els.btnGen.disabled = !canEdit;
                     if (els.btnDel) els.btnDel.disabled = !canEdit;
                     if (els.costSel) els.costSel.disabled = busy || !els.costSel.options.length;
+                    for (const tab of els.tabBar?.children || []) tab.disabled = busy;
                     if (els.wizardBtn) els.wizardBtn.disabled = !canEdit;
                     els.promptEnhancement?.setDisabled?.(busy);
                     ["top", "bottom", "head", "face", "shoes"].forEach(k => {
@@ -2213,9 +2214,7 @@ app.registerExtension({
                         }
                     } catch (e) { if (isCurrent()) showInfo("Error", e.toString()); }
                     finally {
-                        stopClothesPreviewGeneration(generationRevision);
-                        btnGen.innerText = "GENERATE PREVIEW / SAVE";
-                        btnGen.disabled = !!node._vnccsClothesSelectionPending || !hasSelectedEditableCostume();
+                        if (currentRequest()) stopClothesPreviewGeneration(generationRevision);
                     }
                 };
                 els.btnGen = btnGen;
@@ -2295,6 +2294,7 @@ app.registerExtension({
                     const visiblePreview = els.previewImg?.style?.display !== "none" && els.previewImg?.getAttribute?.("src");
                     if (restorePlaceholder && !visiblePreview && els.placeholder) els.placeholder.style.display = "flex";
                     node._vnccsClothesPreviewRunning = false;
+                    if (els.btnGen) els.btnGen.innerText = "GENERATE PREVIEW / SAVE";
                     syncCostumeEditControls();
                 };
                 const startClothesPreviewGeneration = () => {
@@ -2513,6 +2513,7 @@ app.registerExtension({
                 // Tab Header
                 const tabBar = document.createElement("div");
                 tabBar.className = "cd-tab-bar";
+                els.tabBar = tabBar;
                 tabBar.setAttribute("role", "group");
                 tabBar.setAttribute("aria-label", "Clothes mode");
 
@@ -2523,6 +2524,7 @@ app.registerExtension({
                     t.className = "cd-tab" + (state.activeTab === id ? " active" : "");
                     t.innerText = label;
                     t.onclick = () => {
+                        if (node._vnccsClothesSelectionPending || node._vnccsClothesPreviewRunning) return;
                         els.cancelPreviewGeneration?.(true);
                         beginClothesUploadRequest();
                         state.activeTab = id;

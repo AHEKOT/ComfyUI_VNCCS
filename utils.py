@@ -265,7 +265,7 @@ def staged_image_batch(target_dir, *, version_existing=True, lock_root=None):
             version_dir = None
             if version_existing and old_images:
                 number = 1
-                while f"V{number}" in existing:
+                while os.path.lexists(os.path.join(target_dir, f"V{number}")):
                     number += 1
                 version_dir = os.path.join(stage, f"V{number}")
                 os.makedirs(version_dir)

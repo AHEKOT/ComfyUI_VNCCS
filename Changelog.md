@@ -1,3 +1,28 @@
+# VNCCS 3.3.1 Changelog
+
+This patch release fixes Qwen runtime installation, conflicting clothes preview actions, and sprite archive preservation. The changes below are relative to `main` (`3.3.0`).
+
+## Qwen Runtime Installation
+
+- Added `install.py` to install the JamePeng `llama-cpp-python` fork. Removed the plain PyPI requirement, which could not resolve the required fork version on a fresh installation.
+- The installer selects a published wheel matching the operating system, Python version, and CUDA version reported by the existing PyTorch. Compatible JamePeng installations are preserved.
+
+## Clothes Designer
+
+- Locked the Generate Clothes and Clone Clothes tabs while a preview is running or a character/costume selection is loading. Switching modes can no longer clear the busy state and queue an extra preview.
+- Prevented older preview responses from resetting the button label or unlocking controls belonging to a newer preview, restored workflow, or replacement job.
+- Removed the unused clothing description scanner and redundant sampling-settings wrapper. Sampling uses the same resolved settings directly; node outputs and saved workflow fields remain unchanged.
+
+## Control Center
+
+- Moved catalog loading for listing and adding custom LoRAs off the HTTP event loop, keeping other requests and progress updates responsive during remote catalog downloads.
+- Custom LoRA additions now refresh the registry after a catalog lookup finishes, preserving duplicate-path rejection and unique names during concurrent additions.
+
+## Sprite Storage
+
+- Fixed archive numbering on case-insensitive filesystems. Existing lowercase archives such as `v1` are preserved when a new generation creates its next numbered archive, preventing earlier sprites from being discarded.
+
+
 # VNCCS 3.3.0 Changelog
 
 This release modernizes the active VNCCS 3.2 pipeline, expands model-aware character styling, and hardens generation, previews, storage, and sprite selection. The changes below are relative to `main` (`3.2.5`).

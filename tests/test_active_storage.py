@@ -120,6 +120,29 @@ def test_successful_publication_versions_current_and_preserves_archives(tmp_path
     assert list(tmp_path.iterdir()) == [target]
 
 
+def test_publication_preserves_lowercase_archives_on_case_insensitive_filesystems(tmp_path, monkeypatch):
+    target = tmp_path / "Neutral"
+    (target / "v1").mkdir(parents=True)
+    (target / "v1" / "first.png").write_bytes(b"first")
+    (target / "old.png").write_bytes(b"old")
+    lexists = utils.os.path.lexists
+
+    def case_insensitive_lexists(path):
+        candidate = Path(path)
+        if candidate.parent == target:
+            return any(entry.name.casefold() == candidate.name.casefold() for entry in target.iterdir())
+        return lexists(path)
+
+    monkeypatch.setattr(utils.os.path, "lexists", case_insensitive_lexists)
+    with utils.staged_image_batch(str(target)) as stage:
+        Path(stage, "new.png").write_bytes(b"new")
+    assert (target / "v1" / "first.png").read_bytes() == b"first"
+    assert (target / "V2" / "old.png").read_bytes() == b"old"
+    assert (target / "new.png").read_bytes() == b"new"
+    assert not (target / "old.png").exists()
+    assert list(tmp_path.iterdir()) == [target]
+
+
 def test_archive_current_image_batch_retires_only_active_images(tmp_path):
     target = tmp_path / "Original" / "Neutral"
     (target / "V1").mkdir(parents=True)

@@ -8,8 +8,12 @@ on:
       - "pyproject.toml"
 
 jobs:
+  checks:
+    uses: ./.github/workflows/tests.yml
+
   publish-node:
     name: Publish Custom Node to registry
+    needs: checks
     runs-on: ubuntu-latest
     steps:
       - name: Check out code

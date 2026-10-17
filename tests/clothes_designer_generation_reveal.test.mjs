@@ -19,6 +19,107 @@ const classes = () => {
     };
 };
 
+function previewRequestHarness() {
+    const block = (start, end) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
+    const common = readFileSync(new URL("../web/vnccs_common.js", import.meta.url), "utf8");
+    const guards = common.slice(common.indexOf("export function registerCleanup"), common.indexOf("// ── DOM Widget Width Sync"))
+        .replaceAll("export ", "");
+    const control = () => ({
+        disabled: false, dataset: {}, style: {}, classList: classes(),
+        setAttribute() {}, removeAttribute() {}, getAttribute() { return ""; },
+    });
+    const node = { _randomizeSeedIfNeeded() {} };
+    const state = { character: "Alice", costume: "Dress", activeTab: "generate", character_info: {},
+        clone_image: { name: "reference.png" }, costume_info: { top: "silk" } };
+    const els = Object.fromEntries([
+        "btnGen", "btnNew", "btnDel", "charSelect", "wizardBtn", "top", "bottom", "head", "face", "shoes",
+        "generationLayer", "generationBase", "generationNew", "generationScan", "previewFrame", "previewImg", "placeholder",
+    ].map(key => [key, control()]));
+    els.costSel = { ...control(), options: [{}] };
+    els.tabBar = { children: [] };
+    const requests = [];
+    const context = vm.createContext({
+        node, state, els, btnGen: els.btnGen, spritePrevBtn: control(), spriteNextBtn: control(),
+        hasSelectedEditableCostume: () => true, spritePreviewNavigator: null,
+        getConnectedControlCenterState: () => ({}), saveCostumeToBackend: async () => {},
+        saveState() {}, setClothesCoreLora() {}, beginClothesUploadRequest() {}, refreshTabs() {},
+        showInfo() { assert.fail("Unexpected preview failure"); },
+        document: { createElement: control },
+        api: { fetchApi: () => new Promise(resolve => { requests.push(resolve); }) },
+    });
+    vm.runInContext(`${guards}
+        const beginPreviewRequest = createRequestGuard(node);
+        ${block("const syncCostumeEditControls =", "const onValidationError =")}
+        ${block("let previewGenerationRevision = 0;", "const revealClothesPreview =")}
+        ${block("els.cancelPreviewGeneration =", "spritePreviewNavigator = createSpritePreviewNavigator(")}
+        ${block("const createTab =", "const contentArea =")}
+        els.tabBar.children = [createTab("generate", "Generate"), createTab("clone", "Clone")];
+        ${block("btnGen.onclick = async", "els.btnGen = btnGen;")}
+        globalThis.startWorkflowPreview = startClothesPreviewGeneration;
+        globalThis.restorePreview = () => { els.cancelPreviewGeneration(true); beginPreviewRequest(); };
+    `, context);
+    const complete = index => requests[index]({ ok: true, json: async () => ({}) });
+    return { context, node, state, els, requests, complete, generate: () => els.btnGen.onclick() };
+}
+
+test("Clothes preview locks both mode tabs until the request finishes", async () => {
+    const h = previewRequestHarness();
+    const generation = h.generate();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.requests.length, 1);
+    for (const tab of h.els.tabBar.children) {
+        assert.equal(tab.disabled, true);
+        tab.onclick();
+        assert.equal(h.state.activeTab, "generate");
+        assert.equal(h.node._vnccsClothesPreviewRunning, true);
+        assert.equal(h.els.btnGen.disabled, true);
+    }
+    await h.generate();
+    assert.equal(h.requests.length, 1, "A busy preview must not queue another request");
+    h.complete(0);
+    await generation;
+    assert.equal(h.els.btnGen.disabled, false);
+    assert.equal(h.els.btnGen.innerText, "GENERATE PREVIEW / SAVE");
+    for (const tab of h.els.tabBar.children) assert.equal(tab.disabled, false);
+    h.els.tabBar.children[1].onclick();
+    assert.equal(h.state.activeTab, "clone");
+});
+
+for (const replacement of ["restoration", "workflow", "removal"]) {
+    test(`An old clothes preview cannot change controls after ${replacement}`, async () => {
+        const h = previewRequestHarness();
+        const first = h.generate();
+        await new Promise(resolve => setImmediate(resolve));
+        let second;
+        if (replacement === "restoration") {
+            h.context.restorePreview();
+            second = h.generate();
+            await new Promise(resolve => setImmediate(resolve));
+            assert.equal(h.requests.length, 2);
+        } else if (replacement === "workflow") {
+            h.context.startWorkflowPreview();
+        } else h.node.onRemoved();
+        const before = {
+            disabled: h.els.btnGen.disabled, label: h.els.btnGen.innerText,
+            running: h.node._vnccsClothesPreviewRunning,
+            tabs: h.els.tabBar.children.map(tab => tab.disabled),
+        };
+        h.complete(0);
+        await first;
+        assert.deepEqual({
+            disabled: h.els.btnGen.disabled, label: h.els.btnGen.innerText,
+            running: h.node._vnccsClothesPreviewRunning,
+            tabs: h.els.tabBar.children.map(tab => tab.disabled),
+        }, before);
+        if (second) {
+            assert.equal(h.els.btnGen.disabled, true);
+            h.complete(1);
+            await second;
+            assert.equal(h.els.btnGen.disabled, false);
+        }
+    });
+}
+
 test("Clothes Designer keeps the source preview and wipes the generated outfit behind a synchronized scan", async () => {
     const animations = [], finish = [];
     const listeners = new Map();
