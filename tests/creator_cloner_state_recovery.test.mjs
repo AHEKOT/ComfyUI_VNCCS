@@ -357,7 +357,7 @@ test('Cloner preserves workflow bytes when reference ownership differs from the 
 });
 
 for (const kind of ['creator', 'cloner']) {
-    for (const available of [[], ['Bob']]) {
+    for (const available of [[], ['Bob'], ['Bob', 'Alice'], null, 'http', 'network']) {
         test(`${kind} inventory ${JSON.stringify(available)} resolves the restored character safely`, async () => {
             const h = setup(kind);
             const selected = { value: '', options: [], add(option) { this.options.push(option); },
@@ -365,12 +365,15 @@ for (const kind of ['creator', 'cloner']) {
             Object.assign(h.context.els, { charSelect: selected, ckptSelect: { options: [], add() {} }, loraStackSelects: [] });
             Object.assign(h.context, {
                 Option: class { constructor(text, value) { this.text = text; this.value = value; } },
-                fetchInventory: async route => ({ ok: true, json: async () => {
-                    if (route === '/vnccs/context_lists') return { characters: available };
-                    if (route.includes('preview_meta')) return { count: 0 };
-                    return kind === 'cloner' ? { character_info: { name: 'Bob', hair: 'disk Bob hair' } }
-                        : { name: 'Bob', hair: 'disk Bob hair' };
-                } }),
+                fetchInventory: async route => {
+                    if (route === '/vnccs/context_lists' && available === 'network') throw new Error('Offline');
+                    return { ok: available !== 'http', json: async () => {
+                        if (route === '/vnccs/context_lists') return { characters: available };
+                        if (route.includes('preview_meta')) return { count: 0 };
+                        return kind === 'cloner' ? { character_info: { name: 'Bob', hair: 'disk Bob hair' } }
+                            : { name: 'Bob', hair: 'disk Bob hair' };
+                    } };
+                },
                 migrateGenerationModeSettings() {}, migratePromptModes() {}, renderControlCenterCards() {},
                 syncGenerationControls() {}, refreshGenerationModeUI() {}, applyGenerationProfile() {},
                 saveCurrentGenerationModeValues() {}, getModeProfile: () => ({}),
@@ -380,13 +383,14 @@ for (const kind of ['creator', 'cloner']) {
                 ANIMA_CLIP_NAME: 'clip', ANIMA_VAE_NAME: 'vae', QI2_MODEL_NAME: 'model', QI2_CLIP_NAME: 'clip', QI2_VAE_NAME: 'vae',
                 isCreatorOverhaulLora: () => false, clearSourceImages() { h.state.source_images = []; },
                 spritePreviewNavigator: { invalidate() {}, load: async () => {}, hideNav() {} },
-                hideSpriteNav() {}, tryCachePreview() {}, clearCharacterSelection() { h.state.character = ''; },
+                hideSpriteNav() {}, tryCachePreview() {}, clearPreviewHandlers() {}, setPreviewLoading() {},
                 ensureOption(element, value) { if (element && value && !element.options.some(option => option.value === value)) element.add({ value }); },
             });
             h.context.api.fetchApi = h.context.fetchInventory;
             const text = source(kind === 'creator' ? 'vnccs_character_creator_v2' : 'vnccs_character_cloner');
             const loaders = kind === 'creator'
-                ? between(text, 'const beginInitRequest =', 'const doGenerate =')
+                ? between(text, 'const clearCharacterSelection =', 'const tryCachePreview =')
+                    + between(text, 'const beginInitRequest =', 'const doGenerate =')
                 : between(text, 'const setCharacter =', 'const updateUIFromState =') +
                     between(text, 'const beginCharacterRequest =', 'const doCreate =');
             vm.runInContext(`${guards}
@@ -400,15 +404,18 @@ for (const kind of ['creator', 'cloner']) {
             const workflow = { widgets_values: ['old snapshot'] };
             h.node.onSerialize(workflow);
             const saved = JSON.parse(workflow.widgets_values[0]);
-            const fallsBack = kind === 'cloner' && available.length > 0;
-            assert.equal(saved.character, fallsBack ? 'Bob' : 'Alice');
-            assert.equal(saved.character_info.hair, fallsBack ? 'disk Bob hair' : 'authored Alice hair');
+            const confirmed = Array.isArray(available);
+            const expected = !confirmed || available.includes('Alice') ? 'Alice' : available[0] || '';
+            assert.equal(saved.character, expected);
+            assert.equal(saved.character_info.hair, expected === 'Alice' ? 'authored Alice hair' : expected ? 'disk Bob hair' : '');
             if (kind === 'cloner') {
-                if (fallsBack) assert.deepEqual(saved.source_images, []);
+                if (expected !== 'Alice') assert.deepEqual(saved.source_images, []);
                 else assert.equal(saved.source_images[0].name, 'alice.png');
             }
-            assert.equal(selected.value, fallsBack ? 'Bob' : 'Alice');
-            assert.ok(selected.options.some(option => option.value === (fallsBack ? 'Bob' : 'Alice')));
+            if (confirmed) {
+                assert.equal(selected.value, expected);
+                assert.deepEqual(selected.options.map(option => option.value).filter(Boolean), available);
+            }
         });
     }
 }

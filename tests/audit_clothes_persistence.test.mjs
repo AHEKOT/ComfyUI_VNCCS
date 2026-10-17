@@ -53,12 +53,16 @@ function setup({ contexts, metadata, save, nativeCharacterSelect = false, disk =
         refreshTabs() { renderedTabs.push(context.h.state.activeTab); },
         syncDOMWidgetWidth() {},
         spritePreviewNavigator: { invalidate() {}, hideNav() {} },
-        updatePreviewImage() {}, loadCharacterInfo: async () => true,
+        updatePreviewImage() {}, applyPoseStudioValues() {},
         showInfo: (title, message) => messages.push({ title, message }),
         Option: class { constructor(text, value) { this.text = text; this.value = value; } },
         api: { fetchApi: async (route, options) => {
             requests.push({ route, options });
             if (route === '/vnccs/context_lists') return contexts ? contexts.promise : response({ characters: ['Alice'] });
+            if (route.startsWith('/vnccs/character_info?')) {
+                const name = new URLSearchParams(route.split('?')[1]).get('character');
+                return response({ name, age: 18, sex: 'female' });
+            }
             if (route.startsWith('/vnccs/list_costumes?')) return response(['Naked', 'Dress', 'Coat']);
             if (route.startsWith('/vnccs/get_costume?')) return metadata ? metadata.promise : response(disk);
             if (route === '/vnccs/save_costume') {
@@ -69,11 +73,14 @@ function setup({ contexts, metadata, save, nativeCharacterSelect = false, disk =
         } },
     });
     const initial = between(source, '// Initial Load\n', 'container.appendChild(topRow);')
-        .replace('(async () => {', 'globalThis.initialLoad = (async () => {');
+        .replace('const loadCharList = async () => {', 'const loadCharList = () => globalThis.initialLoad = (async () => {')
+        .replace('};\n                loadCharList();', '})();\n                loadCharList();');
     vm.runInContext(`${guards}
         ${between(source, '// State\n', '// Modal Helper')}
         Object.assign(els, controls);
+        ${between(source, 'const beginCharacterInfoRequest =', '// UI Builders')}
         ${between(source, 'const hasSelectedEditableCostume =', 'const showCreateCostumeRequired =')}
+        ${between(source, 'const syncCostumeEditControls =', 'const onValidationError =')}
         ${between(source, 'const beginCostumesRequest =', 'const updatePreviewImage =')}
         ${between(source, 'node._vnccsRestoreClothesState =', '// Initial Load')}
         ${between(source, 'const onConfigure = nodeType.prototype.onConfigure;', '\n        }\n    }\n});')}
@@ -91,9 +98,7 @@ function setup({ contexts, metadata, save, nativeCharacterSelect = false, disk =
 
 function wireSelection(h) {
     Object.assign(h.context, { charSel: h.els.charSelect, costSel: h.els.costSel, applyPoseStudioValues() {} });
-    vm.runInContext(`${between(source, 'const syncCostumeEditControls =', 'const onValidationError =')}
-        ${between(source, 'const beginCharacterInfoRequest =', '// UI Builders')}
-        ${between(source, 'charSel.onchange =', 'charRow.appendChild(charSel)')}
+    vm.runInContext(`${between(source, 'charSel.onchange =', 'charRow.appendChild(charSel)')}
         ${between(source, 'costSel.onchange =', 'els.costSel = costSel;')}`, h.context);
 }
 
@@ -133,33 +138,53 @@ test(`Clothes field saves keep the newest draft after an earlier ${firstFails ? 
 }
 
 for (const characters of [[], ['Alice']]) {
-    test(`Clothes inventory ${JSON.stringify(characters)} keeps the restored missing character visible`, async () => {
+    test(`Clothes inventory ${JSON.stringify(characters)} replaces the restored missing character`, async () => {
         const contexts = deferred(), h = setup({ contexts, nativeCharacterSelect: true });
         h.configure({ character: 'Missing Bob', costume: 'Dress', costume_info: { top: 'authored silk' } });
         contexts.resolve(response({ characters }));
         await h.context.initialLoad;
-        assert.equal(h.els.charSelect.value, 'Missing Bob');
-        assert.equal(h.serialize().character, 'Missing Bob');
-        assert.equal(h.serialize().costume_info.top, 'authored silk');
-        assert.ok(h.els.charSelect.options.some(option => option.value === 'Missing Bob'));
+        const expected = characters[0] || '';
+        assert.equal(h.els.charSelect.value, expected);
+        assert.equal(h.serialize().character, expected);
+        assert.equal(h.serialize().costume_info.top, expected ? 'disk cotton' : '');
+        assert.ok(!h.els.charSelect.options.some(option => option.value === 'Missing Bob'));
+        if (!expected) assert.equal(h.els.costSel.options.length, 0);
     });
 }
 
-test('Clothes configure keeps an unavailable character visible after inventory has loaded', async () => {
+test('Clothes configure rechecks an unavailable character after inventory has loaded', async () => {
     const h = setup({ nativeCharacterSelect: true });
     await h.context.initialLoad;
     h.configure({ character: 'Missing Bob', costume: 'Dress', costume_info: { top: 'restored wool' } });
-    assert.equal(h.els.charSelect.value, 'Missing Bob');
-    assert.equal(h.serialize().character, 'Missing Bob');
-    assert.equal(h.serialize().costume_info.top, 'restored wool');
+    await h.context.initialLoad;
+    assert.equal(h.els.charSelect.value, 'Alice');
+    assert.equal(h.serialize().character, 'Alice');
+    assert.equal(h.serialize().costume_info.top, 'disk cotton');
 });
+
+for (const failure of ['http', 'schema', 'network']) {
+    test(`Clothes failed character inventory preserves the saved selection and draft (${failure})`, async () => {
+        const contexts = deferred(), h = setup({ contexts, nativeCharacterSelect: true });
+        h.configure({ character: 'Missing Bob', costume: 'Dress', costume_info: { top: 'authored silk' } });
+        const original = h.dataWidget.value;
+        contexts.resolve(failure === 'network' ? Promise.reject(new Error('Offline'))
+            : failure === 'http' ? { ok: false, status: 503, text: async () => 'Unavailable' }
+            : response({ characters: null }));
+        await h.context.initialLoad;
+        assert.equal(h.dataWidget.value, original);
+        assert.equal(h.els.charSelect.value, 'Missing Bob');
+        assert.equal(h.state.costume_info.top, 'authored silk');
+        assert.equal(h.messages.length, 1);
+        assert.equal(h.node._vnccsClothesSelectionPending, false);
+    });
+}
 
 for (const phase of ['confirmation', 'response', 'error_body']) {
     test(`Clothes restoration discards an obsolete wizard at ${phase}`, async () => {
         const h = setup();
         h.configure({ character: 'Alice', costume: 'Dress', costume_info: { top: 'Alice silk' } });
         await h.context.initialLoad;
-        const pending = deferred();
+        const pending = deferred(), refreshed = deferred(), fetchCurrent = h.context.api.fetchApi;
         let buttons;
         Object.assign(h.context, {
             document: { createElement: () => ({ value: 'old wizard', append() {}, focus() {} }) },
@@ -168,6 +193,12 @@ for (const phase of ['confirmation', 'response', 'error_body']) {
             showWizardModelError: error => h.messages.push(error),
         });
         h.context.api.fetchApi = async route => {
+            if (route === '/vnccs/context_lists') {
+                h.requests.push({ route });
+                return refreshed.promise;
+            }
+            if (route.startsWith('/vnccs/character_info?') || route.startsWith('/vnccs/list_costumes?')
+                || route.startsWith('/vnccs/get_costume?')) return fetchCurrent(route);
             h.requests.push({ route });
             if (route === '/vnccs/clothes_wizard') return phase === 'error_body'
                 ? { ok: false, json: () => pending.promise } : pending.promise;
@@ -188,6 +219,9 @@ for (const phase of ['confirmation', 'response', 'error_body']) {
         assert.equal(h.dataWidget.value, original);
         assert.equal(h.requests.length, count, 'An old wizard must neither generate nor save after restoration');
         assert.deepEqual(h.messages, []);
+        refreshed.resolve(response({ characters: ['Alice'] }));
+        await h.context.initialLoad;
+        assert.equal(h.state.costume_info.top, 'new workflow wool');
     });
 }
 
@@ -310,16 +344,20 @@ test('reload before costume save acknowledgement retains authored draft and unkn
     await save;
 });
 
-test('typing before initial server response preserves the draft in the hidden workflow widget', async () => {
+test('pending character inventory blocks edits until the restored costume is ready', async () => {
     const contexts = deferred(), h = setup({ contexts });
     h.configure({ character: 'Alice', costume: 'Dress' });
     vm.runInContext(`${between(source, 'const createField =', 'const createSegmentedField =')}\ncreateField('top', '', false);`, h.context);
+    const original = h.dataWidget.value;
+    assert.equal(h.node._vnccsClothesSelectionPending, true);
     h.els.top.oninput({ target: { value: 'typed before response' } });
-    assert.equal(JSON.parse(h.dataWidget.value).costume_info.top, 'typed before response');
+    assert.equal(h.dataWidget.value, original, 'Loading must not accept edits for an unverified character');
     contexts.resolve(response({ characters: ['Alice'] }));
     await h.context.initialLoad;
-    assert.equal(h.serialize().costume_info.top, 'typed before response');
-    assert.equal(h.els.top.value, 'typed before response');
+    assert.equal(h.els.top.disabled, false);
+    h.els.top.oninput({ target: { value: 'typed after response' } });
+    assert.equal(JSON.parse(h.dataWidget.value).costume_info.top, 'typed after response');
+    assert.equal(h.serialize().costume_info.top, 'typed after response');
 });
 
 test('explicit costume selection loads disk metadata after restoration', async () => {
@@ -336,10 +374,11 @@ test('Clothes metadata started by New cannot overwrite a replacement workflow fo
     const h = setup();
     h.configure({ character: 'Alice', costume: 'Dress', costume_info: { top: 'old silk' } });
     await h.context.initialLoad;
-    const metadata = deferred();
-    h.context.api.fetchApi = () => metadata.promise;
+    const metadata = deferred(), refreshed = deferred(), fetchCurrent = h.context.api.fetchApi;
+    h.context.api.fetchApi = route => route === '/vnccs/context_lists' ? refreshed.promise
+        : route.startsWith('/vnccs/get_costume?') ? metadata.promise : fetchCurrent(route);
     const operation = h.loadCostumeInfo();
-    assert.equal(h.node._vnccsClothesSelectionPending, undefined, 'New reloads metadata without a selector transaction');
+    assert.equal(h.node._vnccsClothesSelectionPending, false, 'New reloads metadata without a selector transaction');
     h.configure({ character: 'Alice', costume: 'Dress', costume_info: { top: 'new workflow wool' } });
     const restored = h.serialize();
     metadata.resolve(response({ top: 'stale disk cotton' }));
@@ -347,14 +386,19 @@ test('Clothes metadata started by New cannot overwrite a replacement workflow fo
     assert.deepEqual(h.serialize(), restored);
     assert.equal(h.els.top.value, 'new workflow wool');
     assert.deepEqual(h.messages, []);
+    refreshed.resolve(response({ characters: ['Alice'] }));
+    await h.context.initialLoad;
+    assert.equal(h.state.costume_info.top, 'new workflow wool');
 });
 
 test('Clothes inventory started by New cannot load metadata over a replacement workflow', async () => {
     const h = setup();
     h.configure({ character: 'Alice', costume: 'Dress', costume_info: { top: 'old silk' } });
     await h.context.initialLoad;
-    const inventory = deferred(), laterRequests = [];
+    const inventory = deferred(), refreshed = deferred(), laterRequests = [], fetchCurrent = h.context.api.fetchApi;
     h.context.api.fetchApi = route => {
+        if (route === '/vnccs/context_lists') return refreshed.promise;
+        if (route.startsWith('/vnccs/character_info?')) return fetchCurrent(route);
         laterRequests.push(route);
         return route.startsWith('/vnccs/list_costumes?') ? inventory.promise : response({ top: 'stale disk cotton' });
     };
@@ -367,6 +411,9 @@ test('Clothes inventory started by New cannot load metadata over a replacement w
     assert.equal(h.els.top.value, 'new workflow wool');
     assert.equal(laterRequests.length, 1, 'An obsolete inventory must not begin a metadata request');
     assert.deepEqual(h.messages, []);
+    refreshed.resolve(response({ characters: ['Alice'] }));
+    await h.context.initialLoad;
+    assert.equal(h.state.costume_info.top, 'new workflow wool');
 });
 
 test('unknown costume metadata is preserved without changing unrelated controls', async () => {

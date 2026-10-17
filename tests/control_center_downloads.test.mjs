@@ -9,8 +9,11 @@ const common = readFileSync(new URL("../web/vnccs_common.js", import.meta.url), 
 
 function setup(fetchApi) {
     const input = {};
-    const label = { textContent: "⏳ Queued" };
+    const label = { textContent: "Queued" };
+    const button = {};
+    const slot = { contains: () => false };
     const badge = {};
+    const events = [];
     const row = {
         dataset: { downloadKey: "cc_lora_model" },
         classList: { contains: () => false },
@@ -18,6 +21,7 @@ function setup(fetchApi) {
         querySelector(selector) {
             if (selector === ".vnccs-cc-row-bg") return this.bg;
             if (selector === ".vnccs-cc-badge") return badge;
+            if (selector === ".vnccs-cc-download-btn") return null;
             return label;
         },
         insertBefore(element) {
@@ -32,7 +36,8 @@ function setup(fetchApi) {
         createElement: () => ({ style: {}, dataset: {} }),
     };
     const context = createWidgetContext({
-        document,
+        document, setHelpText() {},
+        window: { dispatchEvent: event => events.push(event) },
         api: { fetchApi: fetchApi || (async () => ({ ok: true, json: async () => statuses })) },
         setInterval: callback => { poll = callback; return 1; },
         clearInterval: () => {},
@@ -43,7 +48,7 @@ function setup(fetchApi) {
     const node = {};
     const widget = Object.create(context.Widget.prototype);
     Object.assign(widget, {
-        node,
+        node, state: {}, config: { lora: [{ name: "model", status: "missing" }] },
         _beginDownloadStatusRequest: context.createRequestGuard(node),
         container: { contains: element => element === input },
         scrollArea: { scrollTop: 120, scrollLeft: 8, querySelectorAll: () => [row] },
@@ -52,12 +57,21 @@ function setup(fetchApi) {
         renders: 0,
         refreshes: 0,
         _renderAll() { this.renders++; },
-        async fetchConfig() { this.refreshes++; },
+        async fetchConfig(repo, force, options) {
+            assert.equal(force, true);
+            assert.equal(options.preserveCards, true);
+            this.refreshes++;
+            this._downloadRefreshPending = false;
+            this.config.lora[0].status = "installed";
+            this._updateDownloadIndicators();
+        },
         _getRepoId: () => "public/models",
     });
+    row._downloadView = { cat: "lora", entry: widget.config.lora[0], slot, label, button, badge,
+        statusClass: "vnccs-cc-model-card-status", mode: "" };
     widget._startPolling();
     return {
-        widget, node, row, label, badge, document, input, context,
+        widget, node, row, label, badge, document, input, context, events,
         pollOnce: () => poll(),
         async poll(status) {
             statuses = { cc_lora_model: status };
@@ -69,13 +83,28 @@ function setup(fetchApi) {
 test("polling updates real progress while preserving the focused input and scroll", async () => {
     const state = setup();
     await state.poll({ status: "downloading", progress: 37, message: "Downloading: 37%" });
-    assert.equal(state.label.textContent, "Downloading: 37%");
+    assert.equal(state.label.textContent, "37%");
+    assert.equal(state.label.ariaLabel, "Downloading: 37%");
     assert.equal(state.row.bg.style.transform, "scaleX(0.37)");
     assert.equal(state.badge.textContent, "⬇");
     assert.equal(state.widget.renders, 0);
     assert.equal(state.document.activeElement, state.input);
     assert.equal(state.widget.scrollArea.scrollTop, 120);
     assert.equal(state.widget.scrollArea.scrollLeft, 8);
+});
+
+test("Control Center publishes changed server download statuses to existing card clients", async () => {
+    const state = setup();
+    const downloading = { status: "downloading", progress: 15 };
+    await state.poll(downloading);
+    assert.equal(state.events.length, 1);
+    assert.equal(state.events[0].type, "vnccs-cc-registry-updated");
+    assert.equal(state.events[0].detail.repo_id, "public/models");
+    assert.equal(state.events[0].detail.download_status.cc_lora_model, downloading);
+    await state.poll(downloading);
+    assert.equal(state.events.length, 1, "Unchanged snapshots must not restart every client");
+    await state.poll({ status: "downloading", progress: 30 });
+    assert.equal(state.events.length, 2);
 });
 
 test("hidden Control Center pauses status polling until the page is visible", async () => {
@@ -102,26 +131,23 @@ test("idle download progress updates retain the layer without rebuilding the car
     assert.equal(layer.style.transform, "scaleX(0.45)");
     assert.equal(state.widget.renders, 0);
     await state.poll({ status: "error", message: "Transfer interrupted" });
-    assert.equal(state.widget.renders, 1, "An error rebuilds the card to expose its retry button");
+    assert.equal(state.widget.renders, 0, "Retry uses the existing button without rebuilding the card");
+    assert.equal(state.row._downloadView.button.hidden, false);
 });
 
-test("completion while editing keeps its pending refresh until the input loses focus", async () => {
+test("completion verifies the catalog while editing without rebuilding cards or losing focus", async () => {
     const state = setup();
-    await state.poll({ status: "success" });
-    await state.poll({ status: "success" });
-    assert.equal(state.widget.refreshes, 0);
-    assert.equal(state.widget._downloadRefreshPending, true);
-    state.document.activeElement = null;
+    const view = state.row._downloadView;
     await state.poll({ status: "success" });
     assert.equal(state.widget.refreshes, 1);
     assert.equal(state.widget._downloadRefreshPending, false);
+    assert.equal(state.label.textContent, "Installed");
+    assert.equal(state.document.activeElement, state.input);
+    assert.equal(state.row._downloadView, view);
+    assert.equal(state.widget.renders, 0);
     await state.poll({ status: "success" });
     assert.equal(state.widget.refreshes, 1);
-
-    state.label.textContent = "Pipe";
-    state.document.activeElement = state.input;
-    await state.poll({ status: "success" });
-    assert.equal(state.label.textContent, "Pipe");
+    assert.equal(state.label.textContent, "Installed");
 });
 
 test("unknown progress remains indeterminate, and measured zero remains zero", () => {
@@ -135,6 +161,9 @@ test("unknown progress remains indeterminate, and measured zero remains zero", (
     widget._applyProgressLayer(row, "cc_lora_model", { status: "downloading", progress: 150 });
     assert.equal(row.bg.style.transform, "scaleX(1)");
     widget._applyProgressLayer(row, "cc_lora_model", { status: "success" });
+    assert.equal(row.bg, layer, "Catalog verification keeps the same indeterminate strip");
+    assert.equal(row.ariaBusy, "true");
+    widget._applyProgressLayer(row, "cc_lora_model", { status: "installed" });
     assert.equal(row.bg, null);
 });
 
@@ -157,7 +186,7 @@ test("a slow status poll prevents overlapping requests and still publishes its r
     pending[0]({ ok: true, json: async () => ({ cc_lora_model: { status: "success" } }) });
     await old;
     assert.equal(state.widget.dlStatus.cc_lora_model.status, "success");
-    assert.equal(state.widget._downloadRefreshPending, true);
+    assert.equal(state.widget._downloadRefreshPending, false);
     assert.equal(state.widget._downloadStatusPolling, false);
     const next = state.pollOnce();
     assert.equal(pending.length, 2);
@@ -210,3 +239,18 @@ for (const previousStatus of [{}, { cc_lora_model: { status: "success" } }]) {
         assert.equal(state.widget.dlStatus.cc_lora_model.progress, 25);
     });
 }
+
+test("a poll started during submission cannot erase the local queue after the server accepts the download", async () => {
+    const pending = [];
+    const { widget, pollOnce } = setup((route, options) => new Promise(resolve => pending.push({ route, options, resolve })));
+    widget._activeKind = () => "QI2";
+    widget.dlStatus = {};
+    const download = widget._downloadEntry("lora", { name: "model" });
+    const poll = pollOnce();
+    pending[0].resolve({ ok: true, text: async () => '{"status":"queued"}' });
+    await download;
+    pending[1].resolve({ ok: true, json: async () => ({}) });
+    await poll;
+    assert.equal(widget.dlStatus.cc_lora_model.status, "queued");
+    assert.equal(widget.renders, 0);
+});

@@ -1749,7 +1749,7 @@ app.registerExtension({
                     const card = document.createElement("div");
                     card.className = "ems-model-card";
                     card.classList.toggle("is-installed", installed);
-                    card.classList.toggle("is-selected", selected || toggled);
+                    card.classList.toggle("is-selected", (cat !== "lora" || installed) && (selected || toggled));
                     card.classList.toggle("is-missing", !installed);
                     if (pickerHead) {
                         card.dataset.sakuraPickerHead = "";
@@ -1986,7 +1986,7 @@ app.registerExtension({
                             ? !!state.gen.turbo_enabled && String(state.gen.dmd_lora_name || "").replace(/\\/g, "/") === rel
                             : (state.gen.dmd_lora_strength || 0) > 0 && String(state.gen.dmd_lora_name || "").replace(/\\/g, "/") === rel;
                         const card = document.createElement("div");
-                        card.className = "ems-lora-card" + (enabled ? " is-selected" : "");
+                        card.className = "ems-lora-card" + (installed && enabled ? " is-selected" : "");
                         if (installed) {
                             card.onclick = () => setCcTurboMode(!enabled, rel);
                         }
@@ -2611,24 +2611,24 @@ app.registerExtension({
                 charHeader.appendChild(charSelect);
 
                 const setCharacterOptions = (characters, preferred = "") => {
+                    if (!Array.isArray(characters)) throw new Error("Invalid character list.");
                     const previous = preferred || state.character || charWidget?.value || charSelect.value || "";
-                    const values = Array.isArray(characters) ? characters.filter(Boolean) : [];
+                    const values = characters.filter(Boolean);
                     charSelect.innerHTML = "";
-                    const savedMissing = previous && previous !== "Character Name" && !values.includes(previous);
-                    if (savedMissing) charSelect.appendChild(new Option(`${previous} (missing)`, previous));
-                    if (!values.length && !savedMissing) {
+                    if (charWidget) charWidget.options.values = values;
+                    if (!values.length) {
                         charSelect.appendChild(new Option("No characters", ""));
+                        charSelect.value = "";
                         state.character = "";
                         spritePreviewNavigator?.hideNav();
                         if (charWidget) commitWidget(charWidget, "", false);
                         return "";
                     }
                     values.forEach(name => charSelect.appendChild(new Option(name, name)));
-                    const selected = values.includes(previous) || savedMissing ? previous : values[0];
+                    const selected = values.includes(previous) ? previous : values[0];
                     charSelect.value = selected;
                     state.character = selected;
                     if (charWidget) {
-                        charWidget.options.values = savedMissing ? [previous, ...values] : values;
                         if (charWidget.value !== selected) commitWidget(charWidget, selected, false);
                     }
                     return selected;
@@ -2645,8 +2645,17 @@ app.registerExtension({
                         if (disposed || token !== characterListRefreshToken) return;
                         const before = state.character || charSelect.value || "";
                         const selected = setCharacterOptions(characters, before);
+                        if (selected !== before) {
+                            resetSelectedEmotionsForCharacterChange();
+                            state.costumes = [];
+                            state.selectedCostumes = new Set();
+                            renderCostumes();
+                            updateCostumesData();
+                        }
                         if (selected && (fetchData || selected !== before)) {
                             fetchCharacterData(selected);
+                        } else if (!selected) {
+                            spritePreviewNavigator?.load("");
                         }
                     } catch (error) {
                         console.error("[VNCCS Emotion Studio] Failed to refresh character list", error);
@@ -2986,6 +2995,7 @@ app.registerExtension({
                     renderEmotions();
                     renderCostumes();
                     updateButtonState();
+                    return refreshCharacterList();
                 };
                 node._vnccsEmotionApplySerializedInfo = (info) => {
                     const values = Array.isArray(info?.widgets_values) ? info.widgets_values : null;

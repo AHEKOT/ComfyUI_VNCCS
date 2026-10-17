@@ -1110,11 +1110,13 @@ class VNCCS_CharacterGenerator:
         self._progress_run = uuid.uuid4().hex
         request_id = ui.get("progress_request_id") if isinstance(ui, dict) else None
         self._progress_request = request_id if isinstance(request_id, str) and len(request_id) <= 100 else None
+        self._progress_character = payload.get("character_name")
         self._progress_scope = begin_progress(
             ui.get("progress_scope") if isinstance(ui, dict) else None,
             self._unwrap_scalar(unique_id), self._progress_run,
             self._regenerate_from(payload), self._regenerate_index(payload) is not None,
             request_id=self._progress_request,
+            character_name=self._progress_character,
         )
 
     def _emit(
@@ -1175,7 +1177,7 @@ class VNCCS_CharacterGenerator:
         if scope and revision is None:
             return
         if scope and revision is not None:
-            payload.update(scope=scope, revision=revision, epoch=PROGRESS_EPOCH, request_id=getattr(self, "_progress_request", None), run_id=getattr(self, "_progress_run", None))
+            payload.update(scope=scope, revision=revision, epoch=PROGRESS_EPOCH, request_id=getattr(self, "_progress_request", None), run_id=getattr(self, "_progress_run", None), character_name=getattr(self, "_progress_character", None))
         try:
             server.PromptServer.instance.send_sync("vnccs.character_generator.stage", payload)
         except Exception as exc:

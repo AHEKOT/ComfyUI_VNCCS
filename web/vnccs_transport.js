@@ -11,7 +11,13 @@ export const vnccsApi = new Proxy(api, {
                 headers.set("Content-Type", "application/json");
             }
             // Plain records also work with older Comfy clients that spread headers.
-            return target.fetchApi(route, { cache: "no-store", ...options, headers: Object.fromEntries(headers.entries()) });
+            return target.fetchApi(route, {
+                cache: "no-store",
+                // Model loading and queued inference have no fixed response deadline.
+                ...(method === "POST" && route.startsWith("/vnccs/") ? { timeoutMs: null } : {}),
+                ...options,
+                headers: Object.fromEntries(headers.entries()),
+            });
         };
         const value = target[property];
         return typeof value === "function" ? (...args) => value.apply(target, args) : value;

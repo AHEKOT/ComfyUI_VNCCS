@@ -1,3 +1,47 @@
+# VNCCS 3.3.0 Changelog
+
+This release modernizes the active VNCCS 3.2 pipeline, expands model-aware character styling, and hardens generation, previews, storage, and sprite selection. The changes below are relative to `main` (`3.2.5`).
+
+## Character Creator and Styles
+
+- Character presets, style selections, and prompt settings are now stored per generation mode, so switching between Qwen Image 2.1, Anima, and Illustrious no longer carries incompatible values between profiles.
+- Added a dedicated Anima library with 510 artist styles and packaged previews.
+- Anima and Illustrious can blend an optional second style. Both selected styles are serialized and included in the generated prompt; QI2 continues to use its own style-reference path.
+- Added a persistent **Prompt Enhancement** switch for QI2. Disabling it sends the structured character prompt directly instead of rewriting it through text generation.
+
+## Clothes, Sprites, and Emotions
+
+- Clothes generation now always starts from the current `Naked` sprite, falling back only to `Original`. Existing costume outputs and version archives can no longer become generation references.
+- Clothes Designer previews now follow the selected costume and current editor values without replacing the generation source contract. QI2 clothes also gained their own persistent **Prompt Enhancement** switch.
+- Version archives are excluded only inside sprite batches, so archive folders such as `V1` and `V2` stay out of generation while characters or costumes named `V1` remain valid.
+- Regenerating a character base now retires superseded `Original` sprites into version archives instead of leaving stale originals active.
+- Emotion generation resolves the current source sprites before loading models, honors the selected pose set and per-costume sprite count, excludes archived sprites, and displays source sprites while results are pending.
+
+## Generation and Runtime Reliability
+
+- Generator galleries now publish previews incrementally, preserve the user's selected preview, and keep completed results visible even when UI inputs change after a run has started.
+- ComfyUI interruptions now stop VNCCS generation animations and busy states. The last valid preview or source image remains visible, and incomplete results are not promoted as new output.
+- Hardened preview and workflow cache invalidation, model refreshes, safetensors validation, download recovery, progress restoration, and stage diagnostics.
+- Viggle LoRA loading and cleanup now use ComfyUI's native model-management lifecycle instead of maintaining a separate VNCCS unload path.
+- Character, costume, and style writes now use stronger locking, atomic publication, revision checks, and stale-response guards to prevent interrupted or concurrent work from overwriting newer data.
+
+## Background Removal and Image Processing
+
+- `Screen Matte` is now the default chroma-key method, with improved background sampling, edge cleanup, and color-spill handling.
+- Fixed H3 still-frame decoding and several alpha, chroma-key, and source-image edge cases across generators.
+
+## Interface and Workflow Experience
+
+- Consolidated small UI and animation fixes into the shared Sakura interaction layer: consistent controls and dialogs, smoother card and wizard reveals, stable gallery placeholders, preserved focus and scroll position, and cleaner responsive layouts without accidental overflow.
+- Character Creator, Character Cloner, Clothes Designer, generators, Emotion Studio, and Control Center now share more consistent loading, empty, success, error, and interruption feedback.
+- Character and costume selectors plus create, delete, preview, and generation actions are locked while their workflow is busy, preventing conflicting edits during active jobs.
+
+## Compatibility and Cleanup
+
+- Removed retired VNCCS 3.0 nodes, workflows, migration tools, sprite and pose editors, unused web modules, old pose presets, and bundled BEN/BiRefNet implementations. Current VNCCS 3.2 workflows remain the supported workflow set.
+- Removed obsolete runtime dependencies and raised the minimum `llama-cpp-python` version to `0.3.46` for the current Qwen integration.
+- **Compatibility note:** migrate any remaining VNCCS 3.0 projects with an earlier VNCCS release before upgrading, because the Migration Assistant and legacy workflow nodes are no longer shipped.
+
 # VNCCS 3.2.5 Changelog
 
 This patch release fixes Character Creator and style preview generation failing on a freshly started ComfyUI server. The changes below are relative to `main` (`3.2.4`).

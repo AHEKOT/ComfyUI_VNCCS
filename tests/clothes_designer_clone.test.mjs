@@ -104,6 +104,7 @@ test("background buttons update restored QI2 state, preview payload and workflow
         getConnectedModelKind: () => "qi2",
         syncResolutionControl() {}, renderClothesCoreLoraCard() {},
         refreshTabs() {}, syncCostumeEditControls() {},
+        beginSelectionRequest() {}, beginCharacterInfoRequest() {}, beginCostumeInfoRequest() {}, loadCharList() {},
         setHelpText() {}, helpFor() {},
         document: { createElement: () => ({
             children: [], attrs: {}, classList: { add() {}, toggle() {} },

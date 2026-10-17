@@ -13,6 +13,9 @@ const deferred = () => {
     return { promise, resolve };
 };
 const response = data => ({ ok: true, json: async () => data });
+const clothesInitialization = text => between(text, '// Initial Load', 'container.appendChild(topRow)')
+    .replace('const loadCharList = async () => {', 'const loadCharList = () => globalThis.initialization = (async () => {')
+    .replace('};\n                loadCharList();', '})();\n                loadCharList();');
 
 for (const kind of ['creator', 'cloner']) {
     for (const obsolete of ['current', 'before_confirmation', 'selection', 'removal', 'close']) {
@@ -359,8 +362,8 @@ for (const operation of ['character', 'costume', 'initialization']) {
         let code;
         if (operation === 'character') code = between(text, 'charSel.onchange =', 'charRow.appendChild(charSel)');
         else if (operation === 'costume') code = between(text, 'costSel.onchange =', 'els.costSel = costSel;');
-        else code = between(text, '// Initial Load', 'container.appendChild(topRow)').replace('(async () => {', 'globalThis.initialization = (async () => {');
-        vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\nconst beginSelectionRequest = createRequestGuard(node);\nconst beginClothesWizardRequest = createRequestGuard(node);\nglobalThis.supersede = beginPreviewRequest;\n${code}`, context);
+        else code = clothesInitialization(text);
+        vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\nconst beginSelectionRequest = createRequestGuard(node);\nconst beginCharacterListRequest = createRequestGuard(node);\nconst beginClothesWizardRequest = createRequestGuard(node);\nglobalThis.supersede = beginPreviewRequest;\n${code}`, context);
         const pending = operation === 'initialization' ? context.initialization : context[operation === 'character' ? 'charSel' : 'costSel'].onchange({ target: { value: operation === 'character' ? 'Alice' : 'Dress' } });
         await new Promise(resolve => setImmediate(resolve));
         context.supersede(); // A newer generated/cache preview now owns the display.
@@ -385,13 +388,13 @@ test('new clothes cache preview does not cancel delayed context and selector ini
         els: { charSelect: { innerHTML: '', add: value => options.push(value.value) }, previewImg: { style: {} }, placeholder: { style: {} } },
         api: { fetchApi: route => route.startsWith('/vnccs/get_preview?') ? Promise.resolve({ ok: true }) : contextRequest.promise },
         spritePreviewNavigator: { invalidate() {}, showFallback: url => shown.push(url) },
-        hasSelectedEditableCostume: () => true, setClothesCoreLora() {}, syncGenerationControls() {}, saveState() {},
+        hasSelectedEditableCostume: () => true, setClothesCoreLora() {}, syncGenerationControls() {}, syncCostumeEditControls() {}, saveState() {},
         loadCharacterInfo: async () => { metadataLoads++; return true; },
         loadCostumes: async () => { state.costumes = ['Dress', 'Casual']; return true; },
     });
     const text = source('vnccs_clothes_designer');
-    const initialCode = between(text, '// Initial Load', 'container.appendChild(topRow)').replace('(async () => {', 'globalThis.initialization = (async () => {');
-    vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\nconst beginSelectionRequest = createRequestGuard(node);\n${between(text, 'const updatePreviewImage =', 'const onPreviewUpdated =')}\nglobalThis.update = updatePreviewImage;\n${initialCode}`, context);
+    const initialCode = clothesInitialization(text);
+    vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\nconst beginSelectionRequest = createRequestGuard(node);\nconst beginCharacterListRequest = createRequestGuard(node);\n${between(text, 'const updatePreviewImage =', 'const onPreviewUpdated =')}\nglobalThis.update = updatePreviewImage;\n${initialCode}`, context);
     await context.update(true);
     contextRequest.resolve(response({ characters: ['Alice', 'Bob'] }));
     await context.initialization;
@@ -424,8 +427,8 @@ test('delayed clothes initialization cannot take ownership from a newer characte
         updatePreviewImage: () => shown.push([state.character, state.costume]),
     });
     const text = source('vnccs_clothes_designer');
-    const initialCode = between(text, '// Initial Load', 'container.appendChild(topRow)').replace('(async () => {', 'globalThis.initialization = (async () => {');
-    vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\nconst beginSelectionRequest = createRequestGuard(node);\nconst beginClothesWizardRequest = createRequestGuard(node);\n${between(text, 'charSel.onchange =', 'charRow.appendChild(charSel)')}\n${initialCode}`, context);
+    const initialCode = clothesInitialization(text);
+    vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\nconst beginSelectionRequest = createRequestGuard(node);\nconst beginCharacterListRequest = createRequestGuard(node);\nconst beginClothesWizardRequest = createRequestGuard(node);\n${between(text, 'charSel.onchange =', 'charRow.appendChild(charSel)')}\n${initialCode}`, context);
     const selection = context.charSel.onchange({ target: { value: 'Bob' } });
     contextRequest.resolve(response({ characters: ['Alice', 'Bob'] }));
     await context.initialization;

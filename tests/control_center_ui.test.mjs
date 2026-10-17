@@ -129,7 +129,7 @@ function setup(state = {}, { loaded = true, repoId = "" } = {}) {
     document.animations = [];
     const context = createWidgetContext({
         document, setHelpText() {},
-        api: { fetchApi: route => new Promise((resolve, reject) => pending.push({ route, resolve, reject })) },
+        api: { fetchApi: (route, options) => new Promise((resolve, reject) => pending.push({ route, options, resolve, reject })) },
         enableMiddleMouseCanvasPan() {}, attachHelpTooltips() {}, syncDOMWidgetWidthSoon() {},
         requestAnimationFrame: callback => frames.push(callback),
         setTimeout() {}, clearTimeout() {},
@@ -160,6 +160,7 @@ function setup(state = {}, { loaded = true, repoId = "" } = {}) {
     });
     if (!loaded) widget.config = null;
     widget._beginConfigRequest = context.createRequestGuard(widget.node);
+    widget._beginDownloadStatusRequest = context.createRequestGuard(widget.node);
     widget._buildUI();
     document.body.appendChild(widget.container);
     widget._renderAll();
@@ -595,6 +596,169 @@ test("MODEL and CLIP + VAE retain their compact heading, status, padding, and fo
     assert.doesNotMatch(css, /\.vnccs-cc-root \*::after \{ box-sizing/);
 });
 
+for (const [name, category, render] of [
+    ["MODEL", "models", (widget, entry) => widget._renderModelCard("unet", [entry])],
+    ["CLIP", "clip", (widget, entry) => widget._renderClipVaeCard({ ...entry, _cat: "clip" })],
+    ["VAE", "vae", (widget, entry) => widget._renderClipVaeCard({ ...entry, _cat: "vae" })],
+    ["Turbo LoRA", "lora", (widget, entry) => widget._renderTurboInlineStrip(entry)],
+    ["compact LoRA", "lora", (widget, entry) => widget._renderLoraCard(entry, { compact: true })],
+    ["full LoRA", "lora", (widget, entry) => widget._renderLoraCard(entry)],
+    ["ControlNet", "controlnet", (widget, entry) => widget._renderCnetEntry("controlnet", entry)],
+    ["Other", "other", (widget, entry) => widget._renderCnetEntry("other", entry)],
+]) {
+    test(`${name} replaces a missing status with one download button in the heading`, () => {
+        const { widget, document } = setup();
+        const entry = { name: "Asset with a long name", kind: "QI2", type: "unet", description: "Description" };
+        if (category !== "lora") widget.state.loras = [{ name: entry.name, auto_apply: true }];
+        const key = `cc_${category}_${entry.name}`;
+        const downloads = [];
+        widget._downloadEntry = (cat, asset) => downloads.push([cat, asset.name]);
+        const input = document.createElement("input");
+        widget.scrollArea.appendChild(input);
+        input.focus();
+        widget.scrollArea.scrollTop = 120;
+        widget.scrollArea.scrollLeft = 8;
+
+        for (const status of ["missing", "outdated", "error"]) {
+            entry.status = status;
+            widget.dlStatus = {};
+            const card = render(widget, entry);
+            widget.scrollArea.appendChild(card);
+            const heading = card.querySelector(".vnccs-cc-model-card-top, .vnccs-cc-lora-card-top") || card;
+            const label = card.querySelector(".vnccs-cc-model-card-status, .vnccs-cc-lora-card-status, .vnccs-cc-turbo-strip-status");
+            const button = card.querySelector(".vnccs-cc-download-btn");
+            const action = status === "outdated" ? "Update" : "Download";
+            assert.equal(card.querySelectorAll("button").length, 1);
+            assert.ok(heading.contains(button));
+            assert.equal(label.hidden, true);
+            assert.equal(button.type, "button");
+            assert.equal(button.textContent, action);
+            assert.equal(button.ariaLabel, `${action} ${entry.name}`);
+            let stopped = false;
+            button.onclick({ stopPropagation() { stopped = true; } });
+            assert.equal(stopped, true);
+            assert.deepEqual(downloads.at(-1), [category, entry.name]);
+
+            widget._downloadRefreshPending = true;
+            for (const nextStatus of ["queued", "downloading", "success", "error", "auth_required"]) {
+                widget.dlStatus[key] = { status: nextStatus, progress: 37, message: "Transfer details" };
+                widget._updateDownloadIndicators();
+                const retry = nextStatus === "error";
+                assert.equal(card.querySelector(".vnccs-cc-download-btn"), button);
+                assert.equal(button.hidden, !retry);
+                assert.equal(button.disabled, !retry);
+                assert.equal(label.hidden, retry);
+                assert.equal(label.ariaLabel, nextStatus === "success" ? "Checking installation…"
+                    : nextStatus === "auth_required" ? "⚠ Key Required"
+                    : nextStatus === "queued" ? "⏳ Queued" : "Transfer details");
+                assert.equal(document.activeElement, input);
+                assert.equal(widget.scrollArea.scrollTop, 120);
+                assert.equal(widget.scrollArea.scrollLeft, 8);
+            }
+            card.remove();
+        }
+        for (const status of ["installed", "queued", "downloading", "auth_required"]) {
+            entry.status = status;
+            widget.dlStatus = {};
+            const card = render(widget, entry);
+            assert.equal(card.querySelector(".vnccs-cc-download-btn").hidden, true);
+            assert.equal(card.querySelector(".vnccs-cc-model-card-status, .vnccs-cc-lora-card-status, .vnccs-cc-turbo-strip-status").hidden, false);
+            if (status === "installed" && category !== "lora") assert.equal(card._downloadView.label.textContent, "Installed");
+        }
+    });
+
+    test(`${name} retains its card and status slot through animated download and retry transitions`, async () => {
+        const { widget, document, pending, context } = setup({}, { repoId: "owner/models" });
+        const entry = { name: `${name} download`, kind: "QI2", type: "unet", status: "missing" };
+        widget.config[category] ??= [];
+        widget.config[category].push(entry);
+        const card = render(widget, entry);
+        widget.scrollArea.appendChild(card);
+        const { slot, label, button, badge } = card._downloadView;
+        const key = `cc_${category}_${entry.name}`;
+        widget._renderAll = () => assert.fail("Download transitions must not rebuild the interface");
+        widget.scrollArea.scrollTop = 170;
+        widget.scrollArea.scrollLeft = 9;
+        button.focus();
+        document.motionEnabled = true;
+        const request = widget._downloadEntry(category, entry);
+        await widget._downloadEntry(category, entry);
+        assert.equal(pending.length, 1, "Repeated clicks cannot submit a second download");
+        assert.equal(document.activeElement, label);
+        assert.equal(label.textContent, "Queued");
+        pending[0].resolve({ ok: true, text: async () => '{"status":"queued"}' });
+        await request;
+
+        for (const status of ["downloading", "error", "queued", "downloading", "success", "installed"]) {
+            widget._downloadRefreshPending = status === "success";
+            if (status === "installed") entry.status = status;
+            widget.dlStatus[key] = { status, progress: 37, message: "Long transfer details ".repeat(50) };
+            widget._updateDownloadIndicators();
+            assert.equal(card._downloadView.slot, slot);
+            assert.equal(slot.children.length, 2);
+            assert.equal(card._downloadView.label, label);
+            assert.equal(card._downloadView.button, button);
+            assert.equal(card._downloadView.badge, badge);
+            assert.equal(widget.scrollArea.scrollTop, 170);
+            assert.equal(widget.scrollArea.scrollLeft, 9);
+            assert.equal(label.role, "status");
+            const count = document.animations.length;
+            widget.dlStatus[key].progress = 38;
+            widget._updateDownloadIndicators();
+            assert.equal(document.animations.length, count, "Percentage ticks must not restart status animations");
+        }
+        for (const animation of document.animations.filter(item => item.element === slot)) {
+            assert.ok(animation.keyframes.every(frame => frame.transform === undefined), "Status transitions only fade within their reserved space");
+        }
+        context.window.matchMedia = () => ({ matches: true });
+        const count = document.animations.length;
+        widget.dlStatus[key] = { status: "queued" };
+        widget._updateDownloadIndicators();
+        assert.equal(document.animations.length, count);
+        widget._stopMotion();
+        widget.node.onRemoved();
+        assert.equal(widget._motionAnimations.size, 0);
+    });
+}
+
+test("download verification preserves cards, open controls and drafts through a failed catalog refresh", async () => {
+    const { widget, document, pending, serialized, focused } = setup({}, { repoId: "owner/models" });
+    widget._downloadStatusRepoId = "owner/models";
+    const entry = widget.config.models[0];
+    entry.status = "missing";
+    widget._renderAll();
+    const card = widget.scrollArea.querySelector(`[data-download-key="cc_models_${entry.name}"]`);
+    const view = card._downloadView;
+    const steps = focused("Steps");
+    steps.value = "31";
+    steps.focus();
+    widget.scrollArea.scrollTop = 180;
+    const original = serialized.value;
+    widget.dlStatus[`cc_models_${entry.name}`] = { status: "success" };
+    widget._downloadRefreshPending = true;
+    widget._updateDownloadIndicators();
+    assert.equal(view.label.textContent, "Checking");
+    widget._renderAll = () => assert.fail("Catalog verification must preserve existing cards");
+    const failed = widget.fetchConfig("owner/models", true, { preserveCards: true });
+    pending[0].resolve({ ok: false, json: async () => ({ error: "Catalog unavailable" }) });
+    await failed;
+    assert.equal(widget._downloadRefreshPending, true);
+    assert.equal(view.label.textContent, "Checking");
+    assert.equal(document.activeElement, steps);
+    const retry = widget.fetchConfig("owner/models", true, { preserveCards: true });
+    assert.match(pending[1].route, /force_refresh=true/);
+    respond(pending[1], { ...widget.config, models: widget.config.models.map(model => ({ ...model, status: "installed" })) });
+    await retry;
+    assert.equal(widget._downloadRefreshPending, false);
+    assert.equal(view.label.textContent, "Installed");
+    assert.equal(card._downloadView, view);
+    assert.equal(view.button.hidden, true);
+    assert.equal(steps.value, "31");
+    assert.equal(document.activeElement, steps);
+    assert.equal(widget.scrollArea.scrollTop, 180);
+    assert.equal(serialized.value, original);
+});
+
 test("muted labels meet normal-text contrast on the existing dark surfaces", () => {
     const luminance = color => {
         const channels = color.match(/\w\w/g).map(value => parseInt(value, 16) / 255)
@@ -715,7 +879,7 @@ test("switching between base QI2 and built-in Turbo updates Turbo LoRA visibilit
     assert.ok(widget.scrollArea.querySelector(".vnccs-cc-turbo-strip"));
 });
 
-test("LoRA cards retain their pre-rollback tools row and responsive sizing independently of model cards", () => {
+test("LoRA cards keep two columns and fixed text, tool and detail rows", () => {
     const { widget } = setup();
     const card = widget._renderLoraCard({ name: "A".repeat(200), kind: "QI2", custom: true,
         status: "missing", hf_path: "style.safetensors", description: "Long description" }, { compact: true });
@@ -723,14 +887,18 @@ test("LoRA cards retain their pre-rollback tools row and responsive sizing indep
     const remove = card.querySelector(".vnccs-cc-lora-remove-btn");
     assert.equal(remove.parentNode, card.querySelector(".vnccs-cc-lora-card-tools"));
     assert.equal(remove.ariaLabel, `Remove ${"A".repeat(200)} from list`);
-    assert.match(css, /\.vnccs-cc-lora-card-tools\s*\{[^}]*flex-wrap: wrap/);
-    assert.match(css, /grid-template-columns: repeat\(auto-fit, minmax\(min\(100%, 180px\), 1fr\)\)/);
-    assert.match(css, /\.vnccs-cc-lora-card--compact\s*\{[^}]*min-height: 56px/);
-    assert.doesNotMatch(css.match(/\.vnccs-cc-lora-card--compact\s*\{([^}]*)\}/)[1], /max-height:/);
+    assert.match(css, /\.vnccs-cc-lora-grid\s*\{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+    assert.match(css, /\.vnccs-cc-lora-card\s*\{[^}]*display: grid;[^}]*grid-template-rows: 28px 14px 28px;[^}]*height: 96px/);
+    assert.match(css, /\.vnccs-cc-lora-card--compact\s*\{[^}]*grid-template-rows: 28px 14px;[^}]*height: 60px/);
+    assert.match(css, /\.vnccs-cc-lora-card-detail-row\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\) 40px/);
+    for (const name of ["name", "desc"]) {
+        assert.match(css, new RegExp(`\\.vnccs-cc-lora-card-${name}\\s*\\{[^}]*height: 14px;[^}]*white-space: nowrap;[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;`));
+    }
+    assert.doesNotMatch(css.match(/\.vnccs-cc-lora-card:hover[^}]+\}/)[0], /transform:/);
     assert.doesNotMatch(css.match(/\.vnccs-cc-lora-remove-btn\s*\{([^}]*)\}/)[1], /position: absolute/);
 });
 
-test("compact LoRA download statuses share one fixed slot with the download button", () => {
+test("compact LoRA statuses and download buttons retain the same reserved slot", () => {
     const { widget } = setup();
     const entry = { name: "VNCCS Overhaul QI2", kind: "QI2", status: "missing",
         description: "Overhaul for Character Creator", version: "2.0" };
@@ -746,7 +914,7 @@ test("compact LoRA download statuses share one fixed slot with the download butt
         widget.dlStatus = { [`cc_lora_${entry.name}`]: dls };
         const card = widget._renderLoraCard(entry, { compact: true, mode: "pipe" });
         const status = card.querySelector(".vnccs-cc-lora-card-status");
-        assert.equal(status.parentNode, card.querySelector(".vnccs-cc-lora-card-tools"));
+        assert.equal(status.parentNode.parentNode, card.querySelector(".vnccs-cc-lora-card-tools"));
         assert.equal(card.querySelector(".vnccs-cc-lora-card-meta").children.length, 1, "Only the name participates in the text column's height");
         assert.equal(card.querySelector(".vnccs-cc-lora-card-detail-row").textContent, "Overhaul for Character Creatorv2.0");
         assert.equal(card.querySelector(".vnccs-cc-row-progress"), null, "Compact warnings use the existing status slot");
@@ -758,41 +926,111 @@ test("compact LoRA download statuses share one fixed slot with the download butt
         }
         if (dls.status === "error") {
             assert.equal(status.hidden, true);
-            assert.ok(card.querySelector(".vnccs-cc-lora-download-btn"));
+            assert.ok(card.querySelector(".vnccs-cc-download-btn"));
         }
     }
-    assert.match(css, /\.vnccs-cc-lora-card--compact \.vnccs-cc-lora-card-top\s*\{[^}]*flex-wrap: nowrap/);
-    assert.match(css, /\.vnccs-cc-lora-card--compact \.vnccs-cc-lora-card-tools\s*\{[^}]*flex: 0 0 58px;[^}]*flex-wrap: nowrap;[^}]*height: 24px/);
+    assert.match(css, /\.vnccs-cc-lora-card-top\s*\{[^}]*flex-wrap: nowrap/);
+    assert.match(css, /\.vnccs-cc-lora-card-tools\s*\{[^}]*flex: 0 0 auto;[^}]*flex-wrap: nowrap/);
+    assert.match(css, /\.vnccs-cc-download-slot\s*\{[^}]*flex: 0 0 80px;[^}]*height: var\(--vnccs-cc-control-height\)/);
+    assert.match(css, /\.vnccs-cc-download-btn\s*\{[^}]*flex-shrink: 0;[^}]*white-space: nowrap/);
     assert.match(css, /\.vnccs-cc-lora-card--compact \.vnccs-cc-lora-card-status\s*\{[^}]*overflow: hidden;[^}]*white-space: nowrap/);
+    assert.match(css, /\.vnccs-cc-download-btn\[hidden\]\s*\{[^}]*display: none/);
+});
+
+test("absent LoRA description and version retain their static row and cells", () => {
+    const { widget } = setup();
+    const card = widget._renderLoraCard({ name: "Style", status: "installed" }, { compact: true });
+    const row = card.querySelector(".vnccs-cc-lora-card-detail-row");
+    assert.ok(row);
+    assert.equal(row.children.length, 2);
+    assert.equal(row.children[0].textContent, "");
+    assert.equal(row.children[1].textContent, "");
+    assert.match(css, /\.vnccs-cc-lora-card-version\s*\{[^}]*height: 14px/);
 });
 
 test("live LoRA polling keeps its compact status in the same slot and retains the full message", () => {
-    const { widget } = setup();
+    const { widget, document } = setup();
     const entry = { name: "Overhaul", kind: "QI2", status: "missing", description: "Creator style" };
     const key = `cc_lora_${entry.name}`;
-    widget.dlStatus[key] = { status: "queued" };
     const card = widget._renderLoraCard(entry, { compact: true, mode: "pipe" });
     widget.scrollArea.appendChild(card);
     const status = card.querySelector(".vnccs-cc-lora-card-status"), slot = status.parentNode;
+    const download = card.querySelector(".vnccs-cc-download-btn");
+    assert.equal(status.hidden, true);
+    assert.notEqual(download.disabled, true);
+    const input = document.createElement("input");
+    widget.scrollArea.appendChild(input);
+    input.focus();
+    widget.scrollArea.scrollTop = 120;
+    widget.scrollArea.scrollLeft = 8;
+    document.motionEnabled = true;
     widget._downloadRefreshPending = true;
     for (const [dls, expected] of [
+        [{ status: "queued" }, "Queued"],
         [{ status: "downloading", progress: 98, message: "Downloading: 98% · 149.0/152.1 MB" }, "98%"],
         [{ status: "downloading", progress: 150, message: "Verifying transferred bytes" }, "100%"],
         [{ status: "downloading", progress: -2, message: "Starting download" }, "0%"],
         [{ status: "downloading", message: "Unknown size " + "download details ".repeat(100) }, "Loading"],
         [{ status: "success" }, "Checking"],
+        [{ status: "error", message: "Transfer interrupted" }, "Transfer interrupted"],
+        [{ status: "queued" }, "Queued"],
     ]) {
         widget.dlStatus[key] = dls;
         widget._updateDownloadIndicators();
         assert.equal(status.parentNode, slot);
         assert.equal(status.textContent, expected);
-        assert.equal(status.ariaLabel, dls.message || "Checking installation…");
+        assert.equal(status.ariaLabel, dls.message || (dls.status === "queued" ? "⏳ Queued" : "Checking installation…"));
+        const retry = dls.status === "error";
+        assert.equal(status.hidden, retry, "Polling must reveal the queued status that initially shared the download button's slot");
+        assert.equal(status.tabIndex, retry ? -1 : 0);
+        assert.equal(download.hidden, !retry);
+        assert.equal(download.disabled, !retry, "Queued or active downloads must not allow a second submission");
+        assert.equal(download.parentNode, slot, "The button and status retain one fixed slot");
+        assert.equal(document.activeElement, input);
+        assert.equal(widget.scrollArea.scrollTop, 120);
+        assert.equal(widget.scrollArea.scrollLeft, 8);
         assert.equal(card.querySelector(".vnccs-cc-lora-card-meta").children.length, 1);
     }
     const fullCard = widget._renderLoraCard(entry);
     widget.dlStatus[key] = { status: "downloading", progress: 98, message: "Downloading: 98% · 149.0/152.1 MB" };
     assert.equal(widget._statusLabel("downloading", widget.dlStatus[key]), "Downloading: 98% · 149.0/152.1 MB");
     assert.equal(fullCard.classList.contains("vnccs-cc-lora-card--compact"), false);
+});
+
+test("LoRA status colors match fresh cards after live queue and error transitions", () => {
+    const { widget } = setup();
+    const colorOf = element => {
+        let color;
+        for (const [, selector, declarations] of css.matchAll(/(?:^|\n)(\.[\w-]+)\s*\{([^}]*)\}/g)) {
+            if (!element.classList.contains(selector.slice(1))) continue;
+            const declared = declarations.match(/(?:^|;)\s*color:\s*([^;]+);/);
+            if (declared) color = declared[1];
+        }
+        return color;
+    };
+    for (const compact of [false, true]) {
+        for (const initial of ["missing", "queued", "error", "installed"]) {
+            const entry = { name: `LoRA ${initial}`, kind: "QI2", status: initial };
+            const key = `cc_lora_${entry.name}`;
+            widget.dlStatus = {};
+            const card = widget._renderLoraCard(entry, { compact, mode: "pipe" });
+            widget.scrollArea.appendChild(card);
+            const label = card.querySelector(".vnccs-cc-lora-card-status");
+            for (const [status, expected] of [
+                ["queued", "#b8a9e8"], ["downloading", "#b8a9e8"],
+                ["error", "#ff4757"], ["queued", "#b8a9e8"], ["installed", "#00d68f"],
+            ]) {
+                if (status === "installed") entry.status = status;
+                widget.dlStatus[key] = { status, progress: 37 };
+                widget._updateDownloadIndicators();
+                const fresh = widget._renderLoraCard({ ...entry, status }, { compact, mode: "pipe" });
+                assert.equal(colorOf(label), expected, `${initial} to ${status} must update the existing label color`);
+                assert.equal(colorOf(label), colorOf(fresh.querySelector(".vnccs-cc-lora-card-status")));
+                assert.equal(label.classList.contains("vnccs-cc-model-card-status--missing"), false);
+            }
+            card.remove();
+        }
+    }
 });
 
 test("nested dialogs contain Tab, close with Escape, and return focus without scrolling or saving drafts", () => {

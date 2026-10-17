@@ -920,6 +920,7 @@ app.registerExtension({
                 let spritePreviewNavigator = null;
                 const beginPreviewRequest = createRequestGuard(node);
                 const beginSelectionRequest = createRequestGuard(node);
+                const beginCharacterListRequest = createRequestGuard(node);
                 const beginDeleteRequest = createRequestGuard(node);
                 const beginClothesWizardRequest = createRequestGuard(node);
                 const beginClothesUploadRequest = createRequestGuard(node);
@@ -2562,12 +2563,10 @@ app.registerExtension({
                     beginClothesWizardRequest();
                     beginDeleteRequest();
                     spritePreviewNavigator?.invalidate?.();
-                    if (node._vnccsClothesSelectionPending) {
-                        beginSelectionRequest();
-                        beginCharacterInfoRequest();
-                        beginCostumeInfoRequest();
-                        node._vnccsClothesSelectionPending = false;
-                    }
+                    beginSelectionRequest();
+                    beginCharacterInfoRequest();
+                    beginCostumeInfoRequest();
+                    node._vnccsClothesSelectionPending = false;
                     try {
                         const restored = JSON.parse(dataWidget.value || "{}");
                         if (!restored || typeof restored !== "object" || Array.isArray(restored)
@@ -2595,6 +2594,7 @@ app.registerExtension({
                         refreshTabs();
                         syncGenerationControls();
                         syncCostumeEditControls();
+                        loadCharList();
                     } catch (error) {
                         node._vnccsStateRestoreError = "Cannot restore saved clothes state. Original widget data is preserved. Restore a valid workflow before editing or running.";
                         console.warn("[VNCCS] Clothes Designer state restore failed", error);
@@ -2604,34 +2604,56 @@ app.registerExtension({
                 registerCleanup(node, () => { delete node._vnccsRestoreClothesState; delete node._vnccsCostumeDraft; });
 
                 // Initial Load
-                (async () => {
+                const loadCharList = async () => {
                     const isMounted = createRequestGuard(node)();
+                    const currentList = beginCharacterListRequest();
                     const currentSelection = beginSelectionRequest();
                     const currentPreview = beginPreviewRequest();
-                    const r = await api.fetchApi("/vnccs/context_lists");
-                    const d = await r.json();
-                    if (!isMounted()) return;
-                    if (node._vnccsStateRestoreError) return;
-                    setClothesCoreLora();
-                    syncGenerationControls();
-                    saveState(); // Ensure defaults are persisted immediately
+                    node._vnccsClothesSelectionPending = true;
+                    syncCostumeEditControls();
+                    try {
+                        const d = await checkedJSON("/vnccs/context_lists");
+                        if (!isMounted() || !currentList() || node._vnccsStateRestoreError) return;
+                        if (!Array.isArray(d.characters)) throw new Error("Invalid character list.");
+                        setClothesCoreLora();
+                        syncGenerationControls();
 
-                    // Char List
-                    const selectedCharacter = els.charSelect.value || state.character;
-                    els.charSelect.innerHTML = "";
-                    d.characters.forEach(c => els.charSelect.add(new Option(c, c)));
-                    if (selectedCharacter) {
-                        if (!d.characters.includes(selectedCharacter)) els.charSelect.add(new Option(selectedCharacter, selectedCharacter));
+                        const selectedCharacter = currentSelection()
+                            ? (d.characters.includes(state.character) ? state.character : d.characters[0] || "")
+                            : els.charSelect.value;
+                        els.charSelect.innerHTML = "";
+                        d.characters.forEach(c => els.charSelect.add(new Option(c, c)));
+                        if (!currentSelection()) {
+                            if (selectedCharacter && !d.characters.includes(selectedCharacter)) {
+                                els.charSelect.add(new Option(selectedCharacter, selectedCharacter));
+                            }
+                            els.charSelect.value = selectedCharacter;
+                            return;
+                        }
+                        if (!selectedCharacter) {
+                            els.charSelect.add(new Option("No characters", ""));
+                            state.character = "";
+                            state.character_info = { ...defaultState.character_info };
+                            els.costSel.innerHTML = "";
+                            resetCostumeSelection();
+                            return;
+                        }
                         els.charSelect.value = selectedCharacter;
-                    }
-                    else if (d.characters.length) { state.character = d.characters[0]; els.charSelect.value = state.character; }
 
-                    if (!currentSelection()) return;
-                    if (!await loadCharacterInfo() || !currentSelection()) return;
-                    if (!await loadCostumes(true) || !currentSelection()) return;
-                    if (currentPreview()) updatePreviewImage();
-                    saveState();
-                })();
+                        if (!await loadCharacterInfo(selectedCharacter) || !currentSelection()) return;
+                        if (!await loadCostumes(true) || !currentSelection()) return;
+                        if (currentPreview()) updatePreviewImage();
+                        saveState();
+                    } catch (error) {
+                        if (isMounted() && currentSelection()) showInfo("Character List Failed", error.message || String(error));
+                    } finally {
+                        if (isMounted() && currentSelection()) {
+                            node._vnccsClothesSelectionPending = false;
+                            syncCostumeEditControls();
+                        }
+                    }
+                };
+                loadCharList();
                 container.appendChild(topRow);
 
                 // Sync LoRA options from Control Center

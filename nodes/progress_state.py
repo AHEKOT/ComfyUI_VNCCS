@@ -34,7 +34,7 @@ def _valid_scope(scope):
     return isinstance(scope, str) and re.fullmatch(r"[A-Za-z0-9:_-]{1,200}", scope)
 
 
-def begin_progress(scope, node_id, run_id=None, start_stage=None, preserve_images=False, request_id=None):
+def begin_progress(scope, node_id, run_id=None, start_stage=None, preserve_images=False, request_id=None, character_name=None):
     if not _valid_scope(scope):
         return None
     global _revision
@@ -42,16 +42,18 @@ def begin_progress(scope, node_id, run_id=None, start_stage=None, preserve_image
         _revision += 1
         previous = _states.pop(scope, None)
         stages = {}
-        if previous and start_stage in previous["stages"]:
+        if previous and previous.get("character_name") == character_name and start_stage in previous["stages"]:
             resetting = False
             for key, value in previous["stages"].items():
                 resetting = resetting or key == start_stage
                 if not resetting:
                     stages[key] = deepcopy(value)
                 elif preserve_images:
-                    stages[key] = {"status": "waiting", "images": list(value.get("images") or []), "message": ""}
+                    stages[key] = {"status": "waiting", "images": list(value.get("images") or []), "message": "",
+                                   "preview_aspect": value.get("preview_aspect")}
         _states[scope] = {"node_id": str(node_id), "scope": scope, "revision": _revision,
                           "epoch": PROGRESS_EPOCH, "run_id": run_id or uuid.uuid4().hex,
+                          "character_name": character_name,
                           "request_id": request_id, "updated": time.monotonic(), "stages": stages,
                           "active_stage": start_stage, "error": None}
         while len(_states) > MAX_STATES:
@@ -103,6 +105,7 @@ def record_progress(scope, event, run_id=None):
                 "status": event.get("status", "waiting"), "images": images,
                 "message": str(event.get("message", ""))[:4000],
                 "current": event.get("current"), "total": event.get("total"),
+                "preview_aspect": event.get("preview_aspect", previous.get("preview_aspect")),
             }
             for key in ("processing_index", "processing_indices"):
                 if key in event:

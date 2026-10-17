@@ -2291,7 +2291,9 @@ app.registerExtension({
                     beginCharacterWizardRequest();
                     beginPreviewRequest();
                     state.character = "";
+                    if (els.charSelect) els.charSelect.value = "";
                     restoredWidgetInfoCharacter = null;
+                    for (const key of Object.keys(state.character_info)) delete state.character_info[key];
                     Object.assign(state.character_info, getDefaultCharacterInfo(), { name: "" });
                     state.preview_valid = false;
                     state.preview_source = "gen";
@@ -3041,7 +3043,7 @@ app.registerExtension({
                     if (pickerHead) card.dataset.sakuraFocusDefault = "true";
                     card.classList.toggle("is-picker-head", pickerHead);
                     card.classList.toggle("is-installed", installed);
-                    card.classList.toggle("is-selected", selected || toggled);
+                    card.classList.toggle("is-selected", (cat !== "lora" || installed) && (selected || toggled));
                     card.classList.toggle("is-missing", !installed);
                     if (installed || pickerHead) {
                         card.onclick = () => onSelect?.(rel, entry);
@@ -3211,7 +3213,7 @@ app.registerExtension({
                         const next = normalizeOverhaulStrength(slider.value);
                         slider.value = String(next);
                         slider.setAttribute("aria-valuetext", next === 0 ? "0 — Off" : String(next));
-                        card.classList.toggle("is-selected", next > 0);
+                        card.classList.toggle("is-selected", next > 0 && ccResolveStatus(entry, "lora") === "installed");
                         return next;
                     };
                     updateValue();
@@ -3410,8 +3412,7 @@ app.registerExtension({
                             ccKind(item) === "qi2" && ccType(item) === "helper"
                             && (item.name === QI2_OVERHAUL_ENTRY.name || isCreatorOverhaulLora(ccRelPath(item)))
                         ) || QI2_OVERHAUL_ENTRY;
-                        const installed = localAssetRelSet(localAssets.loras).has(ccRelPath(entry));
-                        containerEl.appendChild(buildOverhaulCard(installed ? { ...entry, status: "installed" } : entry));
+                        containerEl.appendChild(buildOverhaulCard(entry));
                     }
 
                     addGroup("Age LoRA", ageEntries, entry => {
@@ -4734,6 +4735,7 @@ app.registerExtension({
                         const pendingOptions = currentSelection() ? [] : Array.from(els.charSelect.options, option => option.value);
                         els.charSelect.innerHTML = "";
                         [...new Set([...characters, ...pendingOptions])].forEach(c => els.charSelect.add(new Option(c, c)));
+                        if (!els.charSelect.options.length) els.charSelect.add(new Option("None", ""));
                         if (!currentSelection()) els.charSelect.value = selectedBeforeInventory;
 
                         // Restore values or defaults into independent per-mode profiles.
@@ -4773,8 +4775,7 @@ app.registerExtension({
                         refreshGenerationModeUI();
 
                         if (!currentSelection()) return;
-                        const selected = state.character || characters[0] || "";
-                        ensureOption(els.charSelect, selected);
+                        const selected = characters.includes(state.character) ? state.character : characters[0] || "";
                         const hasWidgetData = restoredWidgetInfoCharacter && restoredWidgetInfoCharacter === selected;
                         if (selected) await loadChar(selected, hasWidgetData);
                         else clearCharacterSelection();

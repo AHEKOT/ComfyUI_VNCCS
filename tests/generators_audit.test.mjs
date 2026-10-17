@@ -525,12 +525,8 @@ for (const [type, flags, savedPreview, legacyPreview] of [
             assert.equal(widget.viewer, null);
             assert.equal(widget.viewerFocus, null);
             assert.equal(disposedViewer, 1);
-            if (restore === 'matching-cache') {
-                assert.deepEqual(Array.from(widget.currentImages()), ['Bob']);
-            } else {
-                assert.equal(widget.restoredViewer?.open ?? false, false);
-                assert.ok(Object.values(widget.stageState).every(stage => stage.status === 'waiting' && stage.images === null));
-            }
+            assert.equal(widget.restoredViewer?.open ?? false, false);
+            assert.ok(Object.values(widget.stageState).every(stage => stage.status === 'waiting' && stage.images === null));
             widget.persistUI();
             const serialized = { widgets_values: ['old data'] };
             node.onSerialize(serialized);
@@ -921,6 +917,41 @@ for (const clone of [false, true]) {
     });
 }
 
+for (const [type, flags] of [
+    ['CharacterCreatorV2', {}], ['CharacterCloner', { isClone: true }],
+    ['ClothesDesigner', { isClothes: true }], ['EmotionGeneratorV2', { isEmotions: true }],
+]) {
+    test(`${type} empty selection clears the generator character and all transient cards`, () => {
+        const sourceWidget = { name: flags.isEmotions ? 'character' : 'widget_data',
+            value: flags.isEmotions ? 'Alice' : '{"character":"Alice"}' };
+        const source = { id: 1, type, widgets: [sourceWidget] };
+        const node = { id: 2, inputs: [{ name: 'pipe', link: 1 }] };
+        node.graph = { links: { 1: { origin_id: 1 } }, getNodeById: id => id === 1 ? source : node };
+        const context = generatorContext();
+        const widget = Object.assign(Object.create(context.Widget.prototype), {
+            node, ...flags, data: { character_name: 'Alice' }, stages: [['pose_generation', 'Pose']],
+            stageState: { pose_generation: { status: 'waiting', images: ['old-1', 'old-2'], current: 3, total: 4 } },
+            _previewPlaceholderStage: 'pose_generation', _pendingAutoPreviewStage: 'upscaler',
+            restoredViewer: { open: true }, previewEl: {}, chainEl: {},
+            previewRenders: 0, chainRenders: 0,
+            renderPreview() { this.previewRenders++; }, renderChain() { this.chainRenders++; },
+        });
+        widget.syncCharacterSourceData();
+        sourceWidget.value = flags.isEmotions ? '' : '{"character":""}';
+        assert.equal(widget.syncCharacterSourceData(), true);
+        assert.equal(widget.data.character_name, '');
+        assert.equal(widget._sourceCharacter, '');
+        assert.equal(widget.stageState.pose_generation.images, null);
+        assert.equal(widget.stageState.pose_generation.total, undefined);
+        assert.equal(widget._previewPlaceholderStage, null);
+        assert.equal(widget._pendingAutoPreviewStage, null);
+        assert.equal(widget.restoredViewer, null);
+        assert.equal(widget.previewRenders, 1);
+        assert.equal(widget.chainRenders, 1);
+        assert.equal(widget.syncCharacterSourceData(), false);
+    });
+}
+
 test('clothes generator follows its own Designer and synchronizes character and costume before queueing', () => {
     const designer = (id, character, costume) => ({ id, type: 'ClothesDesigner', widgets: [{
         name: 'widget_data', value: JSON.stringify({ character, costume }),
@@ -1254,8 +1285,8 @@ for (const fail of [false, true]) {
     });
 }
 
-for (const available of [[], ['Bob']]) {
-    test(`Emotion Studio inventory preserves unavailable saved character (${available.length} available)`, () => {
+for (const available of [[], ['Bob'], ['Bob', 'Alice']]) {
+    test(`Emotion Studio inventory resolves saved character (${available.length} available)`, () => {
         const character = { name: 'character', value: 'Alice', options: {} };
         const select = { value: 'Alice', appendChild() {} };
         const node = { widgets: [character] };
@@ -1271,13 +1302,58 @@ for (const available of [[], ['Bob']]) {
         const serializeEnd = emotionSource.indexOf('                // Fix layout', serializeStart);
         vm.runInContext(emotionSource.slice(start, end) + '\nthis.setOptions = setCharacterOptions;\n'
             + emotionSource.slice(serializeStart, serializeEnd), context);
-        assert.equal(context.setOptions(available), 'Alice');
-        assert.equal(character.value, 'Alice');
-        assert.equal(select.value, 'Alice');
+        const expected = available.includes('Alice') ? 'Alice' : available[0] || '';
+        assert.equal(context.setOptions(available), expected);
+        assert.equal(character.value, expected);
+        assert.equal(select.value, expected);
         const saved = { widgets_values: ['old'] };
         node.onSerialize(saved);
-        assert.equal(saved.widgets_values[0], 'Alice');
-        assert.equal(character.options.values[0], 'Alice');
+        assert.equal(saved.widgets_values[0], expected);
+        assert.deepEqual(Array.from(character.options.values), available);
+    });
+}
+
+for (const result of [[], ['Bob'], ['Bob', 'Alice'], 'http', 'schema', 'network', 'obsolete']) {
+    test(`Emotion Studio configuration reconciles character inventory without stale data (${JSON.stringify(result)})`, async () => {
+        const state = { character: 'Alice', gen: {}, costumes: ['Dress'], selectedCostumes: new Set(['Dress']),
+            selectedEmotions: new Set(['happy']) };
+        const character = { value: 'Alice', options: { values: ['Alice'] } };
+        const select = { value: 'Alice', options: [], appendChild(option) { this.options.push(option); },
+            set innerHTML(value) { this.options = []; } };
+        const loads = [], previews = [], errors = [], node = {};
+        let finish;
+        const pending = new Promise(resolve => { finish = resolve; });
+        const context = createWidgetContext({ node, state, charWidget: character, charSelect: select, disposed: false,
+            console: { error: (...args) => errors.push(args) },
+            Option: class { constructor(label, value) { this.text = label; this.value = value; } },
+            commitWidget(widget, value) { widget.value = value; }, restoreStateFromWidgets() {},
+            renderEmotions() {}, renderCostumes() {}, updateButtonState() {}, updateCostumesData() {},
+            resetSelectedEmotionsForCharacterChange() { state.selectedEmotions.clear(); },
+            fetchCharacterData(name) { loads.push(name); },
+            spritePreviewNavigator: { hideNav() {}, load: name => previews.push(name) },
+            api: { fetchApi: () => pending },
+        });
+        const start = emotionSource.indexOf('                const setCharacterOptions =');
+        const end = emotionSource.indexOf('                if (charWidget) {\n                    if (charWidget.options.values)', start);
+        const restoreStart = emotionSource.indexOf('                node._vnccsEmotionRestoreFromWidgets =');
+        const restoreEnd = emotionSource.indexOf('                node._vnccsEmotionApplySerializedInfo', restoreStart);
+        vm.runInContext(emotionSource.slice(start, end) + emotionSource.slice(restoreStart, restoreEnd), context);
+        const operation = node._vnccsEmotionRestoreFromWidgets();
+        if (result === 'obsolete') context.disposed = true;
+        finish(result === 'network' ? Promise.reject(new Error('Offline'))
+            : result === 'http' ? { ok: false, status: 503 }
+            : { ok: true, json: async () => Array.isArray(result) ? result : null });
+        await operation;
+        const confirmed = Array.isArray(result), switched = confirmed && !result.includes('Alice');
+        const expected = switched ? result[0] || '' : 'Alice';
+        assert.equal(state.character, expected);
+        assert.equal(character.value, expected);
+        assert.equal(select.value, expected);
+        assert.deepEqual([...state.selectedCostumes], switched ? [] : ['Dress']);
+        assert.deepEqual([...state.selectedEmotions], switched ? [] : ['happy']);
+        assert.deepEqual(loads, switched && expected ? [expected] : []);
+        assert.deepEqual(previews, confirmed && !expected ? [''] : []);
+        assert.equal(errors.length, confirmed || result === 'obsolete' ? 0 : 1);
     });
 }
 

@@ -134,6 +134,7 @@ test('workflow restoration merges generation defaults and preserves manual resol
         node, state, dataWidget, els: {},
         defaultState: { gen_settings: { target_size: null, seed: 0 }, character_info: {}, costume_info: {} },
         beginClothesUploadRequest() {}, beginClothesWizardRequest() {}, beginDeleteRequest() {},
+        beginSelectionRequest() {}, beginCharacterInfoRequest() {}, beginCostumeInfoRequest() {}, loadCharList() {},
         spritePreviewNavigator: null, refreshTabs() {},
         syncGenerationControls: () => synchronized++,
         syncCostumeEditControls: () => editControlsSynced++,

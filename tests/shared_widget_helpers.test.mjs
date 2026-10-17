@@ -37,14 +37,53 @@ test('shared input helpers retain resolution presets, age bounds and upload cont
     assert.match(context.normalizeUploadFile(new File(['image'], '???'), 'clone').name, /^clone_clone_\d+\.png$/);
 });
 
+test('Creator clients use Control Center catalog and download updates without a second file inventory', async () => {
+    const listeners = new Map(), timers = new Map(), node = {};
+    const oldStatus = deferred();
+    const state = { config: { lora: [{ name: 'Turbo', status: 'installed' }] }, downloadStatus: {} };
+    let renders = 0;
+    const context = createWidgetContext({ window: {
+        addEventListener: (name, callback) => listeners.set(name, callback),
+        removeEventListener: name => listeners.delete(name),
+    }, setInterval(callback) { timers.set(1, callback); return 1; }, clearInterval: id => timers.delete(id),
+        api: { fetchApi: () => oldStatus.promise } });
+    vm.runInContext(guards, context);
+    context.createControlCenterClient('public/catalog', () => true, state, () => renders++, node);
+    const update = listeners.get('vnccs-cc-registry-updated');
+    assert.equal(typeof update, 'function');
+    const catalog = { lora: [{ name: 'Turbo', status: 'missing' }] };
+    context.serverRegistry('VNCCS_CC_REGISTRY')['public/catalog'] = catalog;
+    update({ detail: { repo_id: 'another/catalog' } });
+    assert.equal(renders, 0);
+    const oldPoll = timers.get(1)();
+    const downloading = { cc_lora_Turbo: { status: 'downloading', progress: 15 } };
+    update({ detail: { repo_id: 'public/catalog', download_status: downloading } });
+    assert.equal(state.config, catalog);
+    assert.equal(state.downloadStatus, downloading);
+    assert.equal(timers.size, 1);
+    oldStatus.resolve(response({}));
+    await oldPoll;
+    assert.equal(state.downloadStatus, downloading, 'An older poll cannot undo a newer Control Center snapshot');
+    const installed = { lora: [{ name: 'Turbo', status: 'installed', local_path: 'models/loras/other-folder/turbo.safetensors' }] };
+    context.serverRegistry('VNCCS_CC_REGISTRY')['public/catalog'] = installed;
+    update({ detail: { repo_id: 'public/catalog', download_status: {} } });
+    assert.equal(state.config, installed, 'The backend remains responsible for finding files in configured ComfyUI folders');
+    assert.deepEqual(state.downloadStatus, {});
+    node.onRemoved();
+    assert.equal(listeners.size, 0);
+    assert.equal(timers.size, 0);
+    update({ detail: { repo_id: 'public/catalog' } });
+    assert.equal(renders, 2);
+});
+
 test('Control Center clients retain scoped caches, polling updates, errors and removal cleanup', async () => {
     const calls = [], timers = new Map(), cache = new Map();
-    let config = { complete: true, version: 1 }, status = {}, failed = false, renders = 0, removed = 0;
+    let config = { complete: true, version: 1 }, status = {}, failed = false, renders = 0, removed = 0, timerId = 0;
     const node = { onRemoved() { removed++; } };
     const context = createWidgetContext({
         node,
         localStorage: { getItem: key => cache.get(key), setItem: (key, value) => cache.set(key, value) },
-        setInterval(callback, delay) { assert.equal(delay, 2000); timers.set(1, callback); return 1; },
+        setInterval(callback, delay) { assert.equal(delay, 2000); timers.set(++timerId, callback); return timerId; },
         clearInterval: id => timers.delete(id),
         api: { apiURL: route => `/server-a${route}`, fetchApi: async route => {
             calls.push(route);
@@ -59,6 +98,8 @@ test('Control Center clients retain scoped caches, polling updates, errors and r
     const other = context.createControlCenterClient('public/catalog', value => value?.complete, otherState, () => {});
     assert.equal(await other.fetchConfig(), config);
     assert.equal(calls.length, 1, 'The registry avoids a second network request');
+    assert.equal(timers.size, 2, 'Each client owns its initial status poll');
+    other.stopPolling();
     client.startPolling(); client.startPolling();
     assert.equal(timers.size, 1);
     status = { model: { status: 'downloading' } };
@@ -228,7 +269,7 @@ for (const initiator of ['creator client', 'Control Center widget']) {
         test(`${initiator} and Control Center share catalog waiters through ${scenario}`, async () => {
             const pending = [], clientNode = {}, widgetNode = {};
             const context = createWidgetContext({
-                window: { dispatchEvent() {} },
+                window: { dispatchEvent() {}, addEventListener() {}, removeEventListener() {} },
                 CustomEvent: class { constructor(type, data) { this.type = type; this.detail = data.detail; } },
                 api: { fetchApi: () => { const request = deferred(); pending.push(request); return request.promise; } },
             });

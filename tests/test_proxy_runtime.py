@@ -112,6 +112,27 @@ def test_progress_isolated_between_workflows_and_resets_for_a_new_run():
     assert progress.begin_progress('../bad', 5) is None
 
 
+def test_preview_aspect_survives_phase_updates_reconnection_and_new_runs():
+    scope = progress.begin_progress('preview-aspect:5', 5, 'first')
+    progress.record_progress(scope, event(preview_aspect=2 / 3, current=0, total=4), 'first')
+    for update in [event(message='Sampling poses'), event(images=['preview']), event(status='done')]:
+        progress.record_progress(scope, update, 'first')
+        assert progress.progress_snapshot(scope)['stages']['pose_generation']['preview_aspect'] == 2 / 3
+    progress.begin_progress(scope, 5, 'second')
+    progress.record_progress(scope, event(preview_aspect=1), 'second')
+    assert progress.progress_snapshot(scope)['stages']['pose_generation']['preview_aspect'] == 1
+
+
+def test_progress_results_belong_to_the_selected_character():
+    scope = progress.begin_progress('character:5', 5, 'alice', character_name='Alice')
+    progress.record_progress(scope, event(status='done', images=['Alice-preview']), 'alice')
+    assert progress.progress_snapshot(scope)['character_name'] == 'Alice'
+    progress.begin_progress(scope, 5, 'bob', 'pose_generation', True, character_name='Bob')
+    snapshot = progress.progress_snapshot(scope)
+    assert snapshot['character_name'] == 'Bob'
+    assert snapshot['stages'] == {}
+
+
 def test_progress_limits_memory_and_expires_old_snapshots(monkeypatch):
     monkeypatch.setattr(progress, 'MAX_STATES', 2)
     monkeypatch.setattr(progress, 'MAX_IMAGE_CHARS', 10)
@@ -394,6 +415,21 @@ def generator_module(monkeypatch):
     monkeypatch.setitem(sys.modules, spec.name, generator)
     spec.loader.exec_module(generator)
     return generator
+
+
+def test_generator_publishes_character_identity_in_events_and_reconnect_snapshots(monkeypatch, generator_module):
+    import server
+    generator = generator_module
+    emitted = []
+    monkeypatch.setattr(server.PromptServer.instance, 'send_sync', lambda name, payload: emitted.append(payload), raising=False)
+    node = generator.VNCCS_CharacterGenerator()
+    node._begin_progress({'character_name': 'Alice', 'ui': {'progress_scope': 'character-events:5'}}, '5')
+    node._emit('5', 'pose_generation', 'running', current=0, total=4, preview_aspect=2 / 3)
+    node._emit('5', 'pose_generation', 'running', message='Sampling poses')
+    snapshot = generator.progress_snapshot('character-events:5')
+    assert snapshot['character_name'] == 'Alice'
+    assert snapshot['stages']['pose_generation']['preview_aspect'] == 2 / 3
+    assert emitted and all(event['character_name'] == 'Alice' for event in emitted)
 
 
 @pytest.mark.parametrize('tasks,error', [
