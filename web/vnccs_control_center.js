@@ -910,11 +910,20 @@ ${SAKURA_INTERACTION_CSS}
     letter-spacing: 0.05em;
     text-transform: uppercase;
 }
+.vnccs-cc-lora-card-status--ok {
+    color: #00d68f;
+}
 .vnccs-cc-lora-card-status--active {
     color: #ff8fa3;
 }
 .vnccs-cc-lora-card-status--pipe {
     color: #00d68f;
+}
+.vnccs-cc-lora-card-status--progress {
+    color: #b8a9e8;
+}
+.vnccs-cc-lora-card-status--missing {
+    color: #ff4757;
 }
 .vnccs-cc-lora-card-status--corner {
     line-height: 1.35;
@@ -4235,13 +4244,13 @@ class VNCCSControlCenterWidget {
             statusLbl.classList.add(effectiveActive ? "vnccs-cc-lora-card-status--active" : "vnccs-cc-lora-card-status--pipe");
         } else if (status === "downloading" || status === "queued") {
             statusLbl.textContent = this._statusLabel(status, dls, compact);
-            statusLbl.classList.add("vnccs-cc-model-card-status--progress");
+            statusLbl.classList.add("vnccs-cc-lora-card-status--progress");
         } else if (status === "outdated") {
             statusLbl.textContent = this._statusLabel(status, dls, compact);
-            statusLbl.classList.add("vnccs-cc-model-card-status--missing");
+            statusLbl.classList.add("vnccs-cc-lora-card-status--missing");
         } else {
             statusLbl.textContent = this._statusLabel(status, dls, compact);
-            statusLbl.classList.add("vnccs-cc-model-card-status--missing");
+            statusLbl.classList.add("vnccs-cc-lora-card-status--missing");
         }
         if (compact) {
             statusLbl.tabIndex = downloadable ? -1 : 0;

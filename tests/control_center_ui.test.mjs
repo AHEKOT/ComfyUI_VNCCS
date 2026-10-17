@@ -886,6 +886,41 @@ test("live LoRA polling keeps its compact status in the same slot and retains th
     assert.equal(fullCard.classList.contains("vnccs-cc-lora-card--compact"), false);
 });
 
+test("LoRA status colors match fresh cards after live queue and error transitions", () => {
+    const { widget } = setup();
+    const colorOf = element => {
+        let color;
+        for (const [, selector, declarations] of css.matchAll(/(?:^|\n)(\.[\w-]+)\s*\{([^}]*)\}/g)) {
+            if (!element.classList.contains(selector.slice(1))) continue;
+            const declared = declarations.match(/(?:^|;)\s*color:\s*([^;]+);/);
+            if (declared) color = declared[1];
+        }
+        return color;
+    };
+    for (const compact of [false, true]) {
+        for (const initial of ["missing", "queued", "error", "installed"]) {
+            const entry = { name: `LoRA ${initial}`, kind: "QI2", status: initial };
+            const key = `cc_lora_${entry.name}`;
+            widget.dlStatus = {};
+            const card = widget._renderLoraCard(entry, { compact, mode: "pipe" });
+            widget.scrollArea.appendChild(card);
+            const label = card.querySelector(".vnccs-cc-lora-card-status");
+            for (const [status, expected] of [
+                ["queued", "#b8a9e8"], ["downloading", "#b8a9e8"],
+                ["error", "#ff4757"], ["queued", "#b8a9e8"], ["installed", "#00d68f"],
+            ]) {
+                widget.dlStatus[key] = { status, progress: 37 };
+                widget._updateDownloadIndicators();
+                const fresh = widget._renderLoraCard({ ...entry, status }, { compact, mode: "pipe" });
+                assert.equal(colorOf(label), expected, `${initial} to ${status} must update the existing label color`);
+                assert.equal(colorOf(label), colorOf(fresh.querySelector(".vnccs-cc-lora-card-status")));
+                assert.equal(label.classList.contains("vnccs-cc-model-card-status--missing"), false);
+            }
+            card.remove();
+        }
+    }
+});
+
 test("nested dialogs contain Tab, close with Escape, and return focus without scrolling or saving drafts", () => {
     const { widget, document, serialized, flush, focused } = setup();
     const opener = focused("CFG");
