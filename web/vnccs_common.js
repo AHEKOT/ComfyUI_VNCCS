@@ -404,7 +404,20 @@ export function createControlCenterClient(repoId, hasRequiredFamilies, state, re
         clearInterval(interval);
         interval = null;
     };
-    if (node) registerCleanup(node, stopPolling);
+    const onRegistryUpdate = event => {
+        if (!isMounted() || event.detail?.repo_id !== repoId) return;
+        const config = serverRegistry("VNCCS_CC_REGISTRY")[repoId];
+        if (config) state.config = config;
+        if (event.detail.download_status) state.downloadStatus = event.detail.download_status;
+        startPolling();
+        render();
+    };
+    window.addEventListener("vnccs-cc-registry-updated", onRegistryUpdate);
+    if (node) registerCleanup(node, () => {
+        stopPolling();
+        window.removeEventListener("vnccs-cc-registry-updated", onRegistryUpdate);
+    });
+    startPolling();
     return { fetchConfig, startPolling, stopPolling };
 }
 

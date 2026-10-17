@@ -25,8 +25,8 @@ export function createWidgetContext(sandbox = {}) {
     api.addEventListener ||= () => {};
     api.removeEventListener ||= () => {};
     const context = vm.createContext({
-        Headers, crypto: webcrypto, setInterval: () => 0, clearInterval() {},
-        window: { addEventListener() {}, removeEventListener() {} },
+        Headers, CustomEvent, crypto: webcrypto, setInterval: () => 0, clearInterval() {},
+        window: { addEventListener() {}, removeEventListener() {}, dispatchEvent() {} },
         document: { visibilityState: 'hidden', addEventListener() {}, removeEventListener() {} },
         ...sandbox, api,
     });

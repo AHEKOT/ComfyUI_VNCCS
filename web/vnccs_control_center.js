@@ -881,13 +881,17 @@ ${SAKURA_INTERACTION_CSS}
     height: 24px;
 }
 .vnccs-cc-lora-card--compact.vnccs-cc-lora-card--has-remove .vnccs-cc-lora-card-tools { flex-basis: 88px; }
+.vnccs-cc-lora-card--compact.vnccs-cc-lora-card--downloadable .vnccs-cc-lora-card-tools { flex-basis: auto; }
 .vnccs-cc-lora-card--compact .vnccs-cc-lora-card-status {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.vnccs-cc-lora-card-status[hidden] { display: none; }
+.vnccs-cc-model-card-status[hidden],
+.vnccs-cc-lora-card-status[hidden],
+.vnccs-cc-turbo-strip-status[hidden],
+.vnccs-cc-download-btn[hidden] { display: none; }
 .vnccs-cc-lora-card-name {
     font-size: 10.5px;
     font-weight: 700;
@@ -932,7 +936,8 @@ ${SAKURA_INTERACTION_CSS}
     background: rgba(255, 71, 87, 0.16);
     border-color: rgba(255, 71, 87, 0.42);
 }
-.vnccs-cc-lora-download-btn {
+.vnccs-cc-download-btn {
+    flex-shrink: 0;
     min-width: 58px;
     height: 24px;
     padding: 0 7px;
@@ -946,8 +951,9 @@ ${SAKURA_INTERACTION_CSS}
     line-height: 1;
     cursor: pointer;
     font-family: inherit;
+    white-space: nowrap;
 }
-.vnccs-cc-lora-download-btn:hover {
+.vnccs-cc-download-btn:hover {
     background: rgba(255,143,163,0.2);
     border-color: rgba(255,143,163,0.52);
 }
@@ -1985,6 +1991,7 @@ class VNCCSControlCenterWidget {
                 if (!r.ok) return;
                 const newStatuses = await r.json();
                 if (!isCurrent() || this._getRepoId() !== repoId) return;
+                const changedStatuses = JSON.stringify(this.dlStatus) !== JSON.stringify(newStatuses);
                 const repaintCards = [...new Set([...Object.keys(this.dlStatus), ...Object.keys(newStatuses)])].some(key => {
                     const old = this.dlStatus[key]?.status;
                     const next = newStatuses[key]?.status;
@@ -2003,6 +2010,9 @@ class VNCCSControlCenterWidget {
 
                 this._downloadStatusRepoId = repoId;
                 this.dlStatus = newStatuses;
+                if (changedStatuses) window.dispatchEvent(new CustomEvent("vnccs-cc-registry-updated", {
+                    detail: { repo_id: repoId, download_status: newStatuses },
+                }));
                 this._updateDownloadIndicators();
 
                 if (this._isUserInteracting()) return;
@@ -2904,6 +2914,18 @@ class VNCCSControlCenterWidget {
         return b;
     }
 
+    _downloadButton(cat, entry, status) {
+        const action = status === "outdated" ? "Update" : "Download";
+        const button = this._btn(action, event => {
+            event.stopPropagation();
+            this._downloadEntry(cat, entry);
+        }, `${action} ${entry.name}`);
+        button.className = "vnccs-cc-download-btn";
+        button.dataset.focusKey = `download-${cat}-${entry.name}`;
+        setHelpText(button, this._statusLabel(status, this.dlStatus[`cc_${cat}_${entry.name}`]));
+        return button;
+    }
+
     _badge(status) {
         const cls = { installed:"installed", missing:"missing", queued:"queued",
                       downloading:"downloading", error:"error", outdated:"outdated",
@@ -3073,10 +3095,6 @@ class VNCCSControlCenterWidget {
 
     _isDownloadableStatus(status) {
         return status === "missing" || status === "error" || status === "outdated";
-    }
-
-    _downloadLabel(status) {
-        return status === "outdated" ? "↑ Update" : "⬇ Download";
     }
 
     _statusLabel(status, dls = {}, compact = false) {
@@ -3779,7 +3797,7 @@ class VNCCSControlCenterWidget {
         card.className = "vnccs-cc-model-card";
         this._applyProgressLayer(card, key, dls);
 
-        // Top: badge + name + status label
+        // Top: badge + name + status or download button
         const top = document.createElement("div");
         top.className = "vnccs-cc-model-card-top";
         top.appendChild(this._badge(status));
@@ -3791,6 +3809,7 @@ class VNCCSControlCenterWidget {
 
         const statusLbl = document.createElement("span");
         statusLbl.className = "vnccs-cc-model-card-status";
+        statusLbl.hidden = this._isDownloadableStatus(status);
         if (status === "installed") {
             statusLbl.textContent = this._statusLabel(status, dls);
             statusLbl.classList.add("vnccs-cc-model-card-status--ok");
@@ -3805,6 +3824,7 @@ class VNCCSControlCenterWidget {
             statusLbl.classList.add("vnccs-cc-model-card-status--missing");
         }
         top.appendChild(statusLbl);
+        if (this._isDownloadableStatus(status)) top.appendChild(this._downloadButton("models", cur, status));
         card.appendChild(top);
 
         // Description
@@ -3815,7 +3835,7 @@ class VNCCSControlCenterWidget {
             card.appendChild(desc);
         }
 
-        // Footer: variant dropdown at bottom + download button
+        // Footer: variant dropdown at bottom
         const footer = document.createElement("div");
         footer.className = "vnccs-cc-model-card-footer";
 
@@ -3859,8 +3879,6 @@ class VNCCSControlCenterWidget {
             warning.className = "vnccs-cc-row-progress";
             warning.textContent = "Authentication required";
             footer.appendChild(warning);
-        } else if (this._isDownloadableStatus(status)) {
-            footer.appendChild(this._btn(this._downloadLabel(status), () => this._downloadEntry("models", cur)));
         }
 
         if (footer.children.length) card.appendChild(footer);
@@ -3908,6 +3926,7 @@ class VNCCSControlCenterWidget {
 
         const statusLbl = document.createElement("span");
         statusLbl.className = "vnccs-cc-model-card-status";
+        statusLbl.hidden = this._isDownloadableStatus(status);
         if (status === "installed") {
             statusLbl.textContent = this._statusLabel(status, dls);
             statusLbl.classList.add("vnccs-cc-model-card-status--ok");
@@ -3922,6 +3941,7 @@ class VNCCSControlCenterWidget {
             statusLbl.classList.add("vnccs-cc-model-card-status--missing");
         }
         top.appendChild(statusLbl);
+        if (this._isDownloadableStatus(status)) top.appendChild(this._downloadButton(cat, entry, status));
         card.appendChild(top);
 
         if (entry.description) {
@@ -3929,13 +3949,6 @@ class VNCCSControlCenterWidget {
             desc.className = "vnccs-cc-model-card-desc";
             desc.textContent = entry.description;
             card.appendChild(desc);
-        }
-
-        if (this._isDownloadableStatus(status)) {
-            const footer = document.createElement("div");
-            footer.className = "vnccs-cc-model-card-footer";
-            footer.appendChild(this._btn(this._downloadLabel(status), () => this._downloadEntry(cat, entry)));
-            card.appendChild(footer);
         }
 
         return card;
@@ -4044,6 +4057,7 @@ class VNCCSControlCenterWidget {
 
         const statusLbl = document.createElement("div");
         statusLbl.className = "vnccs-cc-turbo-strip-status";
+        statusLbl.hidden = this._isDownloadableStatus(status);
         if (installed) {
             statusLbl.textContent = active ? "Active" : "Installed";
             statusLbl.classList.add(active ? "vnccs-cc-turbo-strip-status--active" : "vnccs-cc-turbo-strip-status--ok");
@@ -4081,12 +4095,7 @@ class VNCCSControlCenterWidget {
             warning.textContent = "Authentication required";
             row.appendChild(warning);
         } else if (this._isDownloadableStatus(status)) {
-            const btn = this._btn(this._downloadLabel(status), () => this._downloadEntry("lora", entry));
-            btn.onclick = event => {
-                event.stopPropagation();
-                this._downloadEntry("lora", entry);
-            };
-            row.appendChild(btn);
+            row.appendChild(this._downloadButton("lora", entry, status));
         }
 
         return row;
@@ -4203,20 +4212,7 @@ class VNCCSControlCenterWidget {
             tools.appendChild(removeBtn);
         }
 
-        if (compact && downloadable) {
-            const downloadBtn = document.createElement("button");
-            downloadBtn.type = "button";
-            downloadBtn.className = "vnccs-cc-lora-download-btn";
-            downloadBtn.textContent = status === "outdated" ? "Update" : "Download";
-            downloadBtn.title = this._downloadLabel(status);
-            setHelpText(downloadBtn, fullStatusLabel);
-            downloadBtn.ariaLabel = `${status === "outdated" ? "Update" : "Download"} ${entry.name}`;
-            downloadBtn.onclick = e => {
-                e.stopPropagation();
-                this._downloadEntry("lora", entry);
-            };
-            tools.appendChild(downloadBtn);
-        }
+        if (downloadable) tools.appendChild(this._downloadButton("lora", entry, status));
 
         const top = document.createElement("div");
         top.className = "vnccs-cc-lora-card-top";
@@ -4232,6 +4228,7 @@ class VNCCSControlCenterWidget {
 
         const statusLbl = document.createElement("span");
         statusLbl.className = "vnccs-cc-lora-card-status";
+        statusLbl.hidden = !!downloadable;
         if (status === "installed") {
             const effectiveActive = !isPipeMode && ls.auto_apply === true;
             statusLbl.textContent = effectiveActive ? "Active" : "Pipe";
@@ -4247,7 +4244,6 @@ class VNCCSControlCenterWidget {
             statusLbl.classList.add("vnccs-cc-model-card-status--missing");
         }
         if (compact) {
-            statusLbl.hidden = !!downloadable;
             statusLbl.tabIndex = downloadable ? -1 : 0;
             statusLbl.title = fullStatusLabel;
             statusLbl.ariaLabel = status === "installed" ? statusLbl.textContent : fullStatusLabel;
@@ -4288,11 +4284,7 @@ class VNCCSControlCenterWidget {
         footer.className = active ? "vnccs-cc-lora-strength-row" : "vnccs-cc-lora-card-actions";
         footer.onclick = e => e.stopPropagation();
 
-        if (downloadable && !compact) {
-            const btn = this._btn(this._downloadLabel(status), () => this._downloadEntry("lora", entry));
-            btn.addEventListener("click", e => e.stopPropagation());
-            footer.appendChild(btn);
-        } else if (status === "auth_required" && !compact) {
+        if (status === "auth_required" && !compact) {
             const warning = document.createElement("span");
             warning.className = "vnccs-cc-row-progress";
             warning.textContent = "Authentication required";
@@ -4650,7 +4642,16 @@ class VNCCSControlCenterWidget {
                 const compact = row.classList.contains("vnccs-cc-lora-card--compact");
                 const fullText = dls.status === "success" ? "Checking installation…" : this._statusLabel(dls.status, dls);
                 const text = compact ? this._statusLabel(dls.status, dls, true) : fullText;
-                if (compact) {
+                const downloadButton = row.querySelector(".vnccs-cc-download-btn");
+                if (compact || downloadButton) {
+                    const downloadable = !!downloadButton && this._isDownloadableStatus(dls.status);
+                    if (downloadButton) {
+                        downloadButton.hidden = !downloadable;
+                        downloadButton.disabled = !downloadable;
+                    }
+                    if (compact) row.classList.toggle("vnccs-cc-lora-card--downloadable", downloadable);
+                    label.hidden = downloadable;
+                    label.tabIndex = downloadable ? -1 : 0;
                     label.title = label.ariaLabel = fullText;
                     setHelpText(label, fullText);
                 }

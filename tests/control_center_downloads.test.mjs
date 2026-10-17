@@ -11,6 +11,7 @@ function setup(fetchApi) {
     const input = {};
     const label = { textContent: "⏳ Queued" };
     const badge = {};
+    const events = [];
     const row = {
         dataset: { downloadKey: "cc_lora_model" },
         classList: { contains: () => false },
@@ -18,6 +19,7 @@ function setup(fetchApi) {
         querySelector(selector) {
             if (selector === ".vnccs-cc-row-bg") return this.bg;
             if (selector === ".vnccs-cc-badge") return badge;
+            if (selector === ".vnccs-cc-download-btn") return null;
             return label;
         },
         insertBefore(element) {
@@ -33,6 +35,7 @@ function setup(fetchApi) {
     };
     const context = createWidgetContext({
         document,
+        window: { dispatchEvent: event => events.push(event) },
         api: { fetchApi: fetchApi || (async () => ({ ok: true, json: async () => statuses })) },
         setInterval: callback => { poll = callback; return 1; },
         clearInterval: () => {},
@@ -57,7 +60,7 @@ function setup(fetchApi) {
     });
     widget._startPolling();
     return {
-        widget, node, row, label, badge, document, input, context,
+        widget, node, row, label, badge, document, input, context, events,
         pollOnce: () => poll(),
         async poll(status) {
             statuses = { cc_lora_model: status };
@@ -76,6 +79,20 @@ test("polling updates real progress while preserving the focused input and scrol
     assert.equal(state.document.activeElement, state.input);
     assert.equal(state.widget.scrollArea.scrollTop, 120);
     assert.equal(state.widget.scrollArea.scrollLeft, 8);
+});
+
+test("Control Center publishes changed server download statuses to existing card clients", async () => {
+    const state = setup();
+    const downloading = { status: "downloading", progress: 15 };
+    await state.poll(downloading);
+    assert.equal(state.events.length, 1);
+    assert.equal(state.events[0].type, "vnccs-cc-registry-updated");
+    assert.equal(state.events[0].detail.repo_id, "public/models");
+    assert.equal(state.events[0].detail.download_status.cc_lora_model, downloading);
+    await state.poll(downloading);
+    assert.equal(state.events.length, 1, "Unchanged snapshots must not restart every client");
+    await state.poll({ status: "downloading", progress: 30 });
+    assert.equal(state.events.length, 2);
 });
 
 test("hidden Control Center pauses status polling until the page is visible", async () => {

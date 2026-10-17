@@ -1835,6 +1835,7 @@ app.registerExtension({
                         if (!r.ok) return;
                         const d = await r.json();
                         if (!currentInventory() || node._vnccsStateRestoreError) return;
+                        if (!Array.isArray(d.characters)) throw new Error("Invalid character list.");
 
                         const selectedBeforeInventory = els.charSelect.value;
                         const pendingOptions = currentSelection() ? [] : Array.from(els.charSelect.options, option => option.value);
@@ -1852,8 +1853,7 @@ app.registerExtension({
                         const available = Array.from(els.charSelect.options).map(option => option.value);
                         const firstActive = available.find(Boolean) || "";
                         const selected = state.character && available.includes(state.character)
-                            ? state.character : firstActive || state.character || "";
-                        if (selected && !available.includes(selected)) els.charSelect.add(new Option(`${selected} (missing)`, selected));
+                            ? state.character : firstActive;
                         const hasWidgetData = restoredInfoCharacter === selected && Boolean(selected);
                         await setCharacter(selected, { clearSources: true, skipInfoLoad: hasWidgetData });
 

@@ -49,7 +49,6 @@ function setup(saved) {
         ] } },
         ccKind: entry => entry.kind?.toLowerCase(), ccType: entry => entry.type?.toLowerCase(),
         ccRelPath: entry => entry.local_path.replace(/^models\/loras\//, ""),
-        ccResolveStatus: entry => entry.status || "missing",
         cardStatusLabel: status => status,
         ccDownloadEntry: (cat, entry) => downloads.push([cat, entry.name]),
         localAssetRelSet: names => new Set(names || []), localAssets: { loras: [] },
@@ -61,6 +60,7 @@ function setup(saved) {
         block("const cloneSettingsValue", "const syncGenerationControls") +
         block("const migrateGenerationModeSettings", "const clearPreviewHandlers") +
         block("const syncBackgroundForGenerationMode", "const clearCharacterSelection") +
+        block("const ccStatusKey =", "const ccRelPath =") +
         block("const buildAssetCard", "const selectCcAsset") +
         block("const renderModeLoraCards", "const renderModelPicker") +
         `this.render = renderModeLoraCards; this.makeCard = buildOverhaulCard;
@@ -133,6 +133,58 @@ test("missing card retains catalog identity for Download and can be set to zero"
     slider.value = "0";
     slider.oninput();
     assert.equal(state.gen_settings.qi2_overhaul_strength, 0);
+});
+
+test("backend Missing keeps Download visible even when the local name list and saved settings disagree", () => {
+    const { ctx, state } = setup();
+    ctx.ccState.config.lora.forEach(entry => { entry.status = "missing"; });
+    ctx.localAssets.loras = ["turbo.safetensors", "QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV1.safetensors"];
+    state.gen_settings.turbo_enabled = true;
+    state.gen_settings.dmd_lora_name = "turbo.safetensors";
+    state.gen_settings.qi2_overhaul_strength = 1;
+    const root = new Element("div");
+    ctx.render(root, "qi2");
+    const cards = walk(root).filter(element => element.className === "vnccs-creator-model-card");
+    assert.equal(cards.length, 2);
+    for (const card of cards) {
+        assert.equal(card.classes.has("is-installed"), false);
+        assert.equal(card.classes.has("is-selected"), false);
+        assert.equal(walk(card).some(element => element.type === "checkbox"), false);
+        assert.ok(walk(card).some(element => element.className === "vnccs-creator-model-card-download"));
+    }
+    assert.equal(state.gen_settings.turbo_enabled, true);
+    assert.equal(state.gen_settings.qi2_overhaul_strength, 1);
+});
+
+for (const downloadStatus of ["queued", "downloading"]) {
+    test(`Creator Turbo and Overhaul follow server ${downloadStatus} over cached Installed`, () => {
+        const { ctx, state } = setup();
+        state.gen_settings.turbo_enabled = true;
+        state.gen_settings.dmd_lora_name = "turbo.safetensors";
+        for (const entry of ctx.ccState.config.lora) {
+            ctx.ccState.downloadStatus[`cc_lora_${entry.name}`] = { status: downloadStatus };
+        }
+        const root = new Element("div");
+        ctx.render(root, "qi2");
+        for (const card of walk(root).filter(element => element.className === "vnccs-creator-model-card")) {
+            assert.equal(card.classes.has("is-installed"), false);
+            assert.equal(card.classes.has("is-selected"), false);
+            assert.equal(walk(card).some(element => element.type === "checkbox"), false);
+            const status = walk(card).find(element => element.className.startsWith("vnccs-creator-model-card-status"));
+            assert.equal(status.textContent, downloadStatus);
+            assert.equal(walk(card).find(element => element.className === "vnccs-creator-model-card-download").disabled, true);
+        }
+    });
+}
+
+test("server-installed Overhaul remains installed when the local filename list is empty", () => {
+    const { ctx } = setup();
+    ctx.localAssets.loras = [];
+    const entry = ctx.ccState.config.lora[1];
+    entry.local_path = "models/loras/configured-folder/VNCCS_QI2_AnimeOverhaulV1.2.safetensors";
+    const card = ctx.makeCard(entry);
+    assert.equal(card.classes.has("is-installed"), true);
+    assert.equal(walk(card).some(element => element.className === "vnccs-creator-model-card-download"), false);
 });
 
 test("catalog Overhaul version stays installed and cannot enter manual slots", () => {
