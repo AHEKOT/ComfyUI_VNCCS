@@ -1,10 +1,9 @@
-"""Background Creator: durable workspace, QI2/Moss, TripoSplat and HTTP actions."""
+"""Background Creator: durable QI2/Moss backgrounds, variants and HTTP actions."""
 
 from __future__ import annotations
 
 import asyncio
 import copy
-import gc
 import hashlib
 import io
 import json
@@ -18,7 +17,6 @@ import unicodedata
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -32,13 +30,9 @@ from ..operation_logger import log_event
 MAX_JSON_BYTES = 4 * 1024 * 1024
 MAX_IMAGE_BYTES = 64 * 1024 * 1024
 MAX_IMAGE_PIXELS = 4096 * 4096
-MAX_MODEL_BYTES = 4 * 1024 * 1024 * 1024
 MAX_IMAGES = 256
-MAX_CGS = 512
-MAX_MODELS = 512
 _LOCK = threading.RLock()
 _ID = re.compile(r"^[a-f0-9]{32}$")
-_ASSET_KINDS = {"ply", "splat", "reference", "prepared"}
 
 
 class BackgroundConflictError(RuntimeError):
@@ -63,12 +57,12 @@ def _id(value):
 
 def _name(value):
     if not isinstance(value, str):
-        raise ValueError("A background or CG name is required")
+        raise ValueError("A background name is required")
     name = unicodedata.normalize("NFC", value.strip())
     if (not name or len(name) > 96 or name in {".", ".."} or name.endswith(".")
             or any(ord(char) < 32 or ord(char) == 127 or char in '<>:"/\\|?*' for char in name)
             or re.fullmatch(r"(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", name, re.I)):
-        raise ValueError("Invalid background or CG name")
+        raise ValueError("Invalid background name")
     return name
 
 
@@ -118,38 +112,6 @@ def _atomic(path, payload):
         temporary.unlink(missing_ok=True)
 
 
-def _copy_asset(source, target, maximum):
-    """Publish a complete copy; retries may reuse only identical immutable files."""
-    _contained(root(), target.relative_to(root()).as_posix())
-    if not source.is_file() or source.stat().st_size > maximum:
-        raise ValueError("Background Creator source asset is missing or too large")
-    if target.exists():
-        def digest(path):
-            value = hashlib.sha256()
-            with path.open("rb") as stream:
-                while chunk := stream.read(1024 * 1024):
-                    value.update(chunk)
-            return value.digest()
-        if not target.is_file() or target.stat().st_size != source.stat().st_size or digest(target) != digest(source):
-            raise BackgroundConflictError("An existing background asset differs; both copies are preserved")
-        return
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        count = 0
-        with source.open("rb") as incoming, temporary.open("xb") as outgoing:
-            while chunk := incoming.read(1024 * 1024):
-                count += len(chunk)
-                if count > maximum:
-                    raise ValueError("Background Creator source asset is too large")
-                outgoing.write(chunk)
-            outgoing.flush()
-            os.fsync(outgoing.fileno())
-        os.replace(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def _read_json(path):
     with path.open("rb") as stream:
         payload = stream.read(MAX_JSON_BYTES + 1)
@@ -166,24 +128,8 @@ def _dimensions(width, height):
         raise ValueError("Background Creator image dimensions are invalid or too large")
 
 
-def _camera(value):
-    camera = _object(value, "camera")
-    for key in ("position", "target", "up"):
-        vector = camera.get(key)
-        if (not isinstance(vector, list) or len(vector) != 3
-                or any(type(number) not in (float, int) or not math.isfinite(number)
-                       or abs(number) > 1e6 for number in vector)):
-            raise ValueError("Invalid Background Creator camera vector")
-    fov = camera.get("fov")
-    if type(fov) not in (int, float) or not math.isfinite(fov) or not 5 <= fov <= 120:
-        raise ValueError("Invalid Background Creator camera FOV")
-    if math.dist(camera["position"], camera["target"]) < 1e-7 or math.hypot(*camera["up"]) < 1e-7:
-        raise ValueError("Background Creator camera is degenerate")
-    return camera
-
-
-def _validate(document, directory_name, *, legacy=False):
-    if not isinstance(document, dict) or type(document.get("schema_version")) is not int or document["schema_version"] != (1 if legacy else 2):
+def _validate(document, directory_name):
+    if not isinstance(document, dict) or type(document.get("schema_version")) is not int or document["schema_version"] != 2:
         raise ValueError("Unsupported Background Creator document version")
     _id(document.get("background_id"))
     if _name(document.get("name")) != directory_name:
@@ -192,12 +138,10 @@ def _validate(document, directory_name, *, legacy=False):
         raise ValueError("Invalid Background Creator document revision")
     if type(document.get("archived")) is not bool or not isinstance(document.get("editor"), dict):
         raise ValueError("Invalid Background Creator document state")
-    if "model_settings" in document:
-        _model_settings(document["model_settings"])
-    images, cgs = document.get("images"), document.get("cgs")
-    if not isinstance(images, list) or len(images) > MAX_IMAGES or not isinstance(cgs, list) or len(cgs) > MAX_CGS:
+    images = document.get("images")
+    if not isinstance(images, list) or len(images) > MAX_IMAGES:
         raise ValueError("Invalid Background Creator asset list")
-    image_ids, cg_ids = set(), set()
+    image_ids = set()
     for image in images:
         if not isinstance(image, dict) or _id(image.get("image_id")) in image_ids:
             raise ValueError("Invalid or duplicate background image")
@@ -208,44 +152,20 @@ def _validate(document, directory_name, *, legacy=False):
             raise ValueError("Invalid background preview revision")
     if document.get("selected_image_id") not in image_ids | {""}:
         raise ValueError("Selected background image does not exist")
-    models = ([document["model"]] if document.get("model") else []) if legacy else document.get("models")
-    if not isinstance(models, list) or len(models) > MAX_MODELS:
-        raise ValueError("Invalid Background Creator model list")
-    model_sources = {}
-    for model in models:
-        if not isinstance(model, dict):
-            raise ValueError("Invalid Background Creator model")
-        model_id = _id(model.get("model_id"))
-        if model_id in model_sources:
-            raise ValueError("Duplicate Background Creator model")
-        if model.get("source_image_id") not in image_ids:
-            raise ValueError("Model source image does not exist")
-        model_sources[model_id] = model["source_image_id"]
-        _object(model.get("settings"), "model settings")
-    for cg in cgs:
-        if not isinstance(cg, dict) or _id(cg.get("cg_id")) in cg_ids:
-            raise ValueError("Invalid or duplicate background CG")
-        cg_ids.add(cg["cg_id"])
-        _name(cg.get("name"))
-        model_id = _id(cg.get("model_id"))
-        if not legacy and (model_id not in model_sources or cg.get("source_image_id") != model_sources[model_id]):
-            raise ValueError("CG does not match its background and model variant")
-        _dimensions(cg.get("width"), cg.get("height"))
-        _camera(cg.get("camera"))
     return document
 
 
-def _read_document(directory, *, legacy=False):
-    filename = "background.json" if legacy else f"{directory.name}.json"
+def _read_document(directory):
+    filename = f"{directory.name}.json"
     path = _contained(directory, filename)
     try:
         document, payload = _read_json(path)
-        return _validate(document, directory.name, legacy=legacy), payload
+        return _validate(document, directory.name), payload
     except (OSError, ValueError, TypeError, KeyError, RecursionError) as primary_error:
         try:
             backup = _contained(directory, filename + ".backup")
             document, payload = _read_json(backup)
-            _validate(document, directory.name, legacy=legacy)
+            _validate(document, directory.name)
         except (OSError, ValueError, TypeError, KeyError, RecursionError) as backup_error:
             raise BackgroundStorageError(f"Cannot restore background '{directory.name}'; original files are preserved") from backup_error
         document["_recovery"] = {"source": filename + ".backup", "error": str(primary_error)}
@@ -267,95 +187,8 @@ def _directories():
     return result
 
 
-def _migrate_layout():
-    """Copy the earlier split library without changing its IDs, revisions or originals."""
-    legacy_root = _path("backgrounds")
-    if not legacy_root.is_dir():
-        return
-    for source in sorted(legacy_root.iterdir()):
-        if source.is_symlink():
-            raise BackgroundStorageError("Background library contains a symbolic link")
-        if not source.is_dir() or not any((source / filename).exists() for filename in ("background.json", "background.json.backup")):
-            continue
-        old, payload = _read_document(source, legacy=True)
-        marker = {"background_id": old["background_id"], "sha256": hashlib.sha256(payload).hexdigest()}
-        target = _path(old["name"])
-        if any(entry.name != old["name"] and entry.name.casefold() == old["name"].casefold() for entry in root().iterdir()):
-            raise BackgroundConflictError("Background name conflicts with an existing scene directory")
-        path = _contained(target, f"{target.name}.json")
-        backup = _contained(target, f"{target.name}.json.backup")
-        journal = _contained(target, ".background-migration.json")
-        if path.exists() or backup.exists():
-            current, _previous = _read_document(target)
-            if current["background_id"] != old["background_id"] or current.get("_legacy") != marker:
-                raise BackgroundConflictError("The old background library changed or its name conflicts; both copies are preserved")
-            if journal.exists():
-                if _read_json(journal)[0] != marker:
-                    raise BackgroundConflictError("Background migration journal does not match its source")
-                if not path.exists() and not old.get("_recovery"):
-                    current.pop("_recovery", None)
-                    _atomic(path, _json_bytes(current))
-                journal.unlink(missing_ok=True)
-            continue
-        if target.exists() and any(target.iterdir()):
-            if not journal.is_file() or _read_json(journal)[0] != marker:
-                raise BackgroundConflictError("Background migration destination already contains other data")
-        _atomic(journal, _json_bytes(marker))
-        document = _object(old, "legacy document")
-        recovered = document.pop("_recovery", None)
-        latest = document.pop("model", None)
-        document.update(schema_version=2, models=[], _legacy=marker)
-        for image in document["images"]:
-            _copy_asset(_contained(source, "images", f"{image['image_id']}.png"),
-                        _contained(target, "background", f"{image['image_id']}.png"), MAX_IMAGE_BYTES)
-        models_root = _path("models", document["name"])
-        scenes = []
-        if models_root.is_dir():
-            for model_directory in sorted(models_root.iterdir()):
-                if model_directory.is_symlink():
-                    raise BackgroundStorageError("Background models contain a symbolic link")
-                if not model_directory.is_dir() or not (model_directory / "scene.json").exists():
-                    continue
-                model_id = _id(model_directory.name)
-                scene, _raw = _read_json(_contained(model_directory, "scene.json"))
-                if not isinstance(scene, dict) or scene.get("background_id") != document["background_id"] or scene.get("model_id") != model_id:
-                    raise BackgroundStorageError("Legacy model manifest does not match its owner")
-                scenes.append((model_directory, scene))
-        # The previous selected model remains last; other variants retain creation order.
-        scenes.sort(key=lambda item: (item[1]["model_id"] == (latest or {}).get("model_id"), str(item[1].get("created_at", ""))))
-        for model_directory, scene in scenes:
-            model = {"model_id": scene["model_id"], "source_image_id": scene.get("source_image_id"),
-                     "scene_id": scene.get("scene_id", ""), "settings": scene.get("background_settings", {})}
-            if latest and model["model_id"] == latest["model_id"]:
-                if model["source_image_id"] != latest["source_image_id"]:
-                    raise BackgroundStorageError("Legacy model source does not match its background variant")
-                model.update(latest)
-            document["models"].append(model)
-            _copy_model(model_directory, scene, _model_directory(document, model["model_id"]))
-        model_sources = {model["model_id"]: model["source_image_id"] for model in document["models"]}
-        if latest and latest["model_id"] not in model_sources:
-            raise BackgroundStorageError("Legacy background model is missing; original files are preserved")
-        for cg in document["cgs"]:
-            if cg["model_id"] not in model_sources:
-                raise BackgroundStorageError("Legacy CG model is missing; original files are preserved")
-            cg["source_image_id"] = model_sources[cg["model_id"]]
-            for kind in ("raw", "image"):
-                _copy_asset(_path("cg", document["name"], cg["name"], cg["cg_id"], f"{kind}.png"),
-                            _contained(target, "CG", cg["name"], cg["cg_id"], f"{kind}.png"), MAX_IMAGE_BYTES)
-        _validate(document, target.name)
-        encoded = _json_bytes(document)
-        # Publish metadata only after every referenced asset is complete and the source is unchanged.
-        if _read_document(source, legacy=True)[1] != payload:
-            raise BackgroundConflictError("Background changed during migration; original files are preserved")
-        _atomic(backup, encoded)
-        if not recovered:
-            _atomic(path, encoded)
-        journal.unlink(missing_ok=True)
-
-
 def _locate(background_id):
     _id(background_id)
-    _migrate_layout()
     for directory in _directories():
         document, payload = _read_document(directory)
         if document["background_id"] == background_id:
@@ -385,32 +218,25 @@ def _commit(directory, document, previous):
 
 def list_backgrounds():
     with _LOCK:
-        _migrate_layout()
         documents = [_read_document(directory)[0] for directory in _directories()]
         return sorted((item for item in documents if not item["archived"]), key=lambda item: item["name"].casefold())
 
 
-def create_background(name, initial_state=None, *, legacy_scene_id=None, model_settings=None):
+def create_background(name, initial_state=None):
     name = _name(name)
     editor = _object({} if initial_state is None else initial_state, "editor state")
     with _LOCK:
-        _migrate_layout()
         if root().exists() and any(directory.name.casefold() == name.casefold() for directory in root().iterdir()):
             raise BackgroundConflictError("A background with this name already exists")
         directory = _path(name)
         document = {
             "schema_version": 2, "background_id": uuid.uuid4().hex, "name": name,
             "revision": 1, "archived": False, "editor": editor, "images": [],
-            "selected_image_id": "", "models": [], "cgs": [],
+            "selected_image_id": "",
         }
-        if model_settings is not None:
-            document["model_settings"] = _model_settings(model_settings)
-        if legacy_scene_id is not None:
-            document["legacy_scene_id"] = _id(legacy_scene_id)
         encoded = _json_bytes(document)
         directory.mkdir(parents=True, exist_ok=False)
-        for kind in ("background", "model", "CG"):
-            _contained(directory, kind).mkdir()
+        _contained(directory, "background").mkdir()
         _atomic(_contained(directory, f"{name}.json.backup"), encoded)
         _atomic(_contained(directory, f"{name}.json"), encoded)
         return document
@@ -421,7 +247,7 @@ def load_background(background_id):
         return _locate(background_id)[1]
 
 
-def save_background(background_id, state, expected_revision, *, model_settings=None):
+def save_background(background_id, state, expected_revision):
     editor = _object(state, "editor state")
     with _LOCK:
         directory, document, previous = _editable(background_id, expected_revision)
@@ -430,8 +256,6 @@ def save_background(background_id, state, expected_revision, *, model_settings=N
             raise ValueError("Selected background image does not exist")
         document["editor"] = editor
         document["selected_image_id"] = selected
-        if model_settings is not None:
-            document["model_settings"] = _model_settings(model_settings)
         return _commit(directory, document, previous)
 
 
@@ -463,8 +287,8 @@ def add_image(background_id, image, settings, expected_revision):
         sets = document.get("generated_sets", [])
         if not isinstance(sets, list) or any(not isinstance(item, dict) for item in sets):
             raise BackgroundStorageError("Saved background sets must be a list; existing data is retained")
-        sources = {item.get("source_image_id") for item in [*document["models"], *document["cgs"], *sets]}
-        # Saved outputs and legacy assets retain their source; only the working preview is replaced.
+        sources = {item.get("source_image_id") for item in sets}
+        # Saved output sets retain their source; only the working preview is replaced.
         replace = selected is not None and "preview_revision" in selected and selected["image_id"] not in sources
         if not replace and len(document["images"]) >= MAX_IMAGES:
             raise ValueError("Background image limit reached")
@@ -566,149 +390,6 @@ def background_set_image_path(background_id, set_id, index):
         return path
 
 
-def _model_directory(document, model_id):
-    return _path(document["name"], "model", _id(model_id))
-
-
-def _copy_model(source, scene, target):
-    objects = scene.get("objects")
-    if not isinstance(objects, list) or not 1 <= len(objects) <= 32:
-        raise ValueError("Background model must contain Gaussian objects")
-    copies, total, object_ids = [], 0, set()
-    for item in objects:
-        if not isinstance(item, dict) or _id(item.get("object_id")) in object_ids:
-            raise ValueError("Background model object is invalid or duplicated")
-        object_id = item["object_id"]
-        object_ids.add(object_id)
-        files = item.get("files")
-        if not isinstance(files, dict) or not files.get("ply"):
-            raise ValueError("Background model PLY is missing")
-        retained = {}
-        for kind in _ASSET_KINDS:
-            relative = files.get(kind)
-            if not relative:
-                continue
-            if not isinstance(relative, str) or Path(relative).is_absolute() or ":" in relative or relative.startswith("\\"):
-                raise ValueError("Invalid background model asset path")
-            source_file = _contained(source, relative.replace("\\", "/"))
-            if not source_file.is_file():
-                raise FileNotFoundError("Background model asset is missing")
-            total += source_file.stat().st_size
-            if total > MAX_MODEL_BYTES:
-                raise ValueError("Background model assets are too large")
-            suffix = {"ply": ".ply", "splat": ".splat", "reference": ".png", "prepared": ".png"}[kind]
-            target_relative = f"objects/{object_id}/{kind}{suffix}"
-            retained[kind] = target_relative
-            copies.append((source_file, target_relative))
-        item["files"] = retained
-        item.pop("urls", None)
-    encoded = _json_bytes(scene)
-    copied_bytes = 0
-    for source_file, relative in copies:
-        copied_bytes += source_file.stat().st_size
-        if copied_bytes > MAX_MODEL_BYTES:
-            raise ValueError("Background model assets are too large")
-        _copy_asset(source_file, _contained(target, relative), MAX_MODEL_BYTES)
-    _atomic(_contained(target, "scene.json"), encoded)
-
-
-def commit_model(background_id, image_id, scene_directory, scene, settings, expected_revision):
-    _id(image_id)
-    scene = _object(scene, "model scene")
-    settings = _object(settings, "model settings")
-    with _LOCK:
-        directory, document, previous = _editable(background_id, expected_revision)
-        if not any(image["image_id"] == image_id for image in document["images"]):
-            raise ValueError("Model source image does not exist")
-        if len(document["models"]) >= MAX_MODELS:
-            raise ValueError("Background model limit reached")
-        model_id = uuid.uuid4().hex
-        target = _model_directory(document, model_id)
-        if target.exists():
-            raise FileExistsError("Background model variant already exists")
-        scene.update(background_id=background_id, model_id=model_id, source_image_id=image_id,
-                     background_settings=settings)
-        for key in ("exports", "preview", "capture_set", "reference", "skydome", "textures"):
-            scene.pop(key, None)
-        _copy_model(Path(scene_directory), scene, target)
-        document["models"].append({"model_id": model_id, "source_image_id": image_id,
-                                   "scene_id": scene.get("scene_id", ""), "settings": settings})
-        return _commit(directory, document, previous)
-
-
-def model_scene(background_id, model_id):
-    with _LOCK:
-        _directory, document, _previous = _locate(background_id)
-        model = next((model for model in document["models"] if model["model_id"] == model_id), None)
-        if model is None:
-            raise FileNotFoundError("Background model variant does not exist")
-        path = _contained(_model_directory(document, model_id), "scene.json")
-        scene, _payload = _read_json(path)
-        if (not isinstance(scene, dict) or scene.get("background_id") != background_id or scene.get("model_id") != model_id
-                or scene.get("source_image_id") != model["source_image_id"]):
-            raise BackgroundStorageError("Background model manifest does not match its owner")
-        return scene
-
-
-def model_asset_path(background_id, model_id, object_id, kind):
-    _id(object_id)
-    if kind not in _ASSET_KINDS:
-        raise ValueError("Unsupported background model asset kind")
-    with _LOCK:
-        scene = model_scene(background_id, model_id)
-        item = next((item for item in scene.get("objects", []) if item.get("object_id") == object_id), None)
-        if item is None:
-            raise FileNotFoundError("Background model object does not exist")
-        _directory, document, _previous = _locate(background_id)
-        directory = _model_directory(document, model_id)
-        relative = item.get("files", {}).get(kind)
-        if kind == "splat" and not relative:
-            ply = model_asset_path(background_id, model_id, object_id, "ply")
-            return _ensure_cached_splat(ply)
-        if not isinstance(relative, str):
-            raise FileNotFoundError("Background model asset does not exist")
-        path = _contained(directory, relative)
-        if not path.is_file():
-            raise FileNotFoundError("Background model asset file is missing")
-        return path
-
-
-def commit_cg(background_id, name, raw, finished, camera, settings, model_id, expected_revision):
-    name, model_id = _name(name), _id(model_id)
-    camera, settings = _camera(camera), _object(settings, "CG settings")
-    raw_bytes, finished_bytes = _image_bytes(raw), _image_bytes(finished)
-    with _LOCK:
-        directory, document, previous = _editable(background_id, expected_revision)
-        model = model_scene(background_id, model_id)
-        if len(document["cgs"]) >= MAX_CGS:
-            raise ValueError("Background CG limit reached")
-        cg_id = uuid.uuid4().hex
-        target = _path(document["name"], "CG", name, cg_id)
-        metadata = {"cg_id": cg_id, "name": name, "background_id": background_id,
-                    "model_id": model_id, "source_image_id": model["source_image_id"], "camera": camera, "settings": settings,
-                    "width": finished.width, "height": finished.height}
-        _json_bytes(metadata)
-        target.mkdir(parents=True, exist_ok=False)
-        _atomic(_contained(target, "raw.png"), raw_bytes)
-        _atomic(_contained(target, "image.png"), finished_bytes)
-        document["cgs"].append(metadata)
-        return _commit(directory, document, previous)
-
-
-def cg_image_path(background_id, cg_id, kind="image"):
-    _id(cg_id)
-    if kind not in {"image", "raw"}:
-        raise ValueError("Unsupported background CG image kind")
-    with _LOCK:
-        _directory, document, _previous = _locate(background_id)
-        cg = next((item for item in document["cgs"] if item["cg_id"] == cg_id), None)
-        if cg is None:
-            raise FileNotFoundError("Background CG does not exist")
-        path = _path(document["name"], "CG", cg["name"], cg_id, f"{kind}.png")
-        if not path.is_file():
-            raise FileNotFoundError("Background CG image file is missing")
-        return path
-
 ASSETS = {
     "diffusion_models": "qwen_image_2.1_int8_convrot.safetensors",
     "text_encoders": "qwen3vl_8b_int8_convrot.safetensors",
@@ -732,11 +413,6 @@ DEFAULT_EDITOR = {
     "aspect": "16:9", "style": "Hand-painted anime", "aesthetics": "", "negative": "",
     "variants": [{"id": name.lower(), "name": name, "time": name, "weather": "", "additional_details": ""}
                  for name in ("Morning", "Evening", "Night")],
-    "cg_prompt": (
-        "Complete this rough 3D background render into a finished image. Preserve the camera angle, "
-        "perspective, composition, geometry, and lighting. Reconstruct missing details and remove "
-        "Gaussian splat artifacts. Do not add people or characters."
-    ),
     "generation": {
         "model_type": "qi2",
         "steps": 25, "cfg": 1.0, "sampler": "euler", "scheduler": "simple", "seed": 0,
@@ -804,7 +480,7 @@ def normalize_editor(data: Any) -> dict[str, Any]:
     day = {"id": "day", "name": "Day", "time": "Day", "weather": "", "additional_details": ""}
     editor["variants"] = [card for card in editor["variants"] if card != day]
     for key, limit in (("description", 8000), ("scene_description", 40000), ("prompt", 40000), ("style", 1000), ("aesthetics", 4000),
-                       ("negative", 8000), ("cg_prompt", 8000)):
+                       ("negative", 8000)):
         if key in data:
             editor[key] = _text(data[key], key, limit)
     attrs = data.get("attributes", {})
@@ -990,10 +666,7 @@ def configuration() -> dict[str, Any]:
             "assets": model_types["qi2"]["assets"], "installed": model_types["qi2"]["installed"], "model_types": model_types,
             "loras": _installed("loras"), "diffusion_models": _installed("diffusion_models"), "aspects": list(ASPECTS),
             "samplers": fetch_sampler_scheduler_lists()[0] or ["euler"],
-            "schedulers": fetch_sampler_scheduler_lists()[1] or ["simple"],
-            "triposplat_assets": [{"category": category, "name": name,
-                "installed": any(entry.replace("\\", "/").rsplit("/", 1)[-1] == name for entry in _installed(category))}
-                for category, names in TRIPOSPLAT_ASSETS.items() for name in names]}
+            "schedulers": fetch_sampler_scheduler_lists()[1] or ["simple"]}
 
 
 def _load_clip(model_type="qi2"):
@@ -1169,11 +842,6 @@ def wizard(description: str, editor: dict[str, Any], draw_id: str, cancel_event)
         return editor
 
 
-def _pil_to_tensor(image):
-    import torch
-    return torch.from_numpy(np.array(image.convert("RGB"), dtype=np.float32) / 255).unsqueeze(0)
-
-
 def _tensor_to_pil(tensor):
     pixels = tensor[0].detach().float().cpu().numpy()
     if not np.isfinite(pixels).all():
@@ -1181,13 +849,10 @@ def _tensor_to_pil(tensor):
     return Image.fromarray(np.rint(np.clip(pixels, 0, 1) * 255).astype(np.uint8)).convert("RGB")
 
 
-def generate_image(editor: dict[str, Any], draw_id: str, cancel_event, reference=None):
+def generate_image(editor: dict[str, Any], draw_id: str, cancel_event):
     import torch
     editor = normalize_editor(editor)
     settings = editor["generation"]
-    # The model-type selector belongs to background generation; CG keeps its existing QI2 path.
-    if reference is not None and settings["model_type"] == "moss":
-        settings = normalize_editor({"generation": editor.get("generation_profiles", {}).get("qi2", {})})["generation"]
     moss = settings["model_type"] == "moss"
     if settings["turbo"] and (settings["steps"] != 6 or abs(settings["cfg"] - 1) > 1e-6):
         raise ValueError("QI2 Viggle Turbo requires six steps and CFG 1")
@@ -1195,18 +860,6 @@ def generate_image(editor: dict[str, Any], draw_id: str, cancel_event, reference
         raise ValueError("The QI2 Turbo model already includes acceleration; disable the Viggle adapter")
     width, height = dimensions(editor)
     prompt = compose_prompt(editor)
-    if reference is not None:
-        from PIL import Image
-        if not isinstance(reference, Image.Image):
-            raise ValueError("CG refinement requires a captured frame")
-        width, height = reference.size
-        if any(value < 64 or value > 4096 or value % 16 for value in (width, height)) or width * height > 16_000_000:
-            raise ValueError("Captured frame dimensions must be multiples of 16, between 64 and 4096, and at most 16 MP")
-        prompt = editor["cg_prompt"] or DEFAULT_EDITOR["cg_prompt"]
-        if editor["style"]:
-            prompt += f"\nVisual style: {editor['style']}."
-        if editor["aesthetics"]:
-            prompt += "\n" + editor["aesthetics"]
     with _model_session(draw_id, cancel_event), torch.inference_mode():
         _ensure_direct_sampling_prompt_context(f"background_{draw_id}")
         _stage(draw_id, cancel_event, "loading", 0.03, "Loading MOSS-Image" if moss else "Loading Qwen Image 2.1")
@@ -1232,21 +885,15 @@ def generate_image(editor: dict[str, Any], draw_id: str, cancel_event, reference
                 "Return exactly four lines in the following order, with no blank lines or extra fields. "
                 "Copy the first three values unchanged and put the complete scene description on the fourth line:\n"
                 "Style: <unchanged style>\nTime: <unchanged time>\nInterior/Exterior: <unchanged setting>\n"
-                "Scene description: <detailed English paragraph>"
-                if reference is None else
-                "Rewrite the user's request as one clear English image-generation prompt for an environment. "
-                "Preserve the requested scene, style, composition, lighting and concrete details. "
-                "For a reference-image edit, preserve the exact camera viewpoint and all edit constraints. "
-                "Do not introduce people or characters. Return only the finished prompt, with no analysis or preamble.",
+                "Scene description: <detailed English paragraph>",
                 draw_id=draw_id, context="Moss prompt enhancement" if moss else "Qwen Image 2.1 prompt enhancement")
             if enhanced:
                 enhanced = _text(enhanced, "Enhanced prompt", 16000)
-                if reference is None:
-                    parsed = _parse_prompt(enhanced)
-                    enhanced = parsed[3] if parsed else re.sub(r"^Scene description:\s*", "", enhanced)
-                prompt = compose_prompt({**editor, "scene_description": enhanced}) if reference is None else enhanced
+                parsed = _parse_prompt(enhanced)
+                enhanced = parsed[3] if parsed else re.sub(r"^Scene description:\s*", "", enhanced)
+                prompt = compose_prompt({**editor, "scene_description": enhanced})
         log_event("prompts", component="Background Creator", node_id=draw_id,
-                  context=f"{'Moss' if moss else 'Qwen Image 2.1'} {'CG refinement' if reference is not None else 'background'}",
+                  context=f"{'Moss' if moss else 'Qwen Image 2.1'} background",
                   model=settings["diffusion_model_name"], positive=prompt, negative=editor["negative"], truncate=False,
                   display_text=f"Positive prompt:\n{prompt}\n\nNegative prompt:\n{editor['negative']}")
         _stage(draw_id, cancel_event, "conditioning", 0.3, "Encoding the background prompt")
@@ -1255,17 +902,10 @@ def generate_image(editor: dict[str, Any], draw_id: str, cancel_event, reference
             negative = _call_comfy_node("CLIPTextEncode", clip=clip, text=editor["negative"])[0]
             latent = _call_comfy_node("EmptyFlux2LatentImage", width=width, height=height, batch_size=1)[0]
         else:
-            images = {"image_1": _pil_to_tensor(reference.convert("RGB"))} if reference is not None else {}
             encoded = _call_comfy_node("TextEncodeQwenImage21", clip=clip, vae=vae, prompt=prompt,
-                negative_prompt=editor["negative"], resolution=0 if reference is not None else 1024,
-                images=images)
+                negative_prompt=editor["negative"], resolution=1024, images={})
             positive, negative = encoded[:2]
-            if reference is None:
-                latent = _call_comfy_node("EmptyLatentImage", width=width, height=height, batch_size=1)[0]
-            else:
-                latent = encoded[2] if len(encoded) > 2 else None
-                if latent is None:
-                    raise RuntimeError("QI2 returned no camera-aligned reference latent; update ComfyUI")
+            latent = _call_comfy_node("EmptyLatentImage", width=width, height=height, batch_size=1)[0]
         _stage(draw_id, cancel_event, "sampling", 0.35, "Rendering the background")
         with _report_comfy_sampling_progress(draw_id, settings["steps"], cancel_event):
             if settings["turbo"]:
@@ -1288,303 +928,7 @@ def generate_image(editor: dict[str, Any], draw_id: str, cancel_event, reference
                        "width": width, "height": height, "seed": settings["seed"], "model": settings["model_type"]}
 
 
-
-
-_MAX_HEADER_BYTES = 64 * 1024
-
-
-_MAX_VERTICES = 64 * 1024 * 1024
-
-
-_CHUNK = 65_536
-
-
-_TYPE_MAP = {
-    "char": "i1",
-    "int8": "i1",
-    "uchar": "u1",
-    "uint8": "u1",
-    "short": "<i2",
-    "int16": "<i2",
-    "ushort": "<u2",
-    "uint16": "<u2",
-    "int": "<i4",
-    "int32": "<i4",
-    "uint": "<u4",
-    "uint32": "<u4",
-    "float": "<f4",
-    "float32": "<f4",
-    "double": "<f8",
-    "float64": "<f8",
-}
-
-
-_REQUIRED = {
-    "x",
-    "y",
-    "z",
-    "f_dc_0",
-    "f_dc_1",
-    "f_dc_2",
-    "opacity",
-    "scale_0",
-    "scale_1",
-    "scale_2",
-    "rot_0",
-    "rot_1",
-    "rot_2",
-    "rot_3",
-}
-
-
-_CORE_FLOAT_FIELDS = tuple(sorted(_REQUIRED))
-
-
-@dataclass(frozen=True)
-class PlyInfo:
-    path: Path
-    vertex_count: int
-    data_offset: int
-    dtype: np.dtype
-
-
-def _read_header(path: Path) -> tuple[bytes, int]:
-    with path.open("rb") as handle:
-        data = b""
-        while len(data) <= _MAX_HEADER_BYTES:
-            block = handle.read(4096)
-            if not block:
-                break
-            data += block
-            marker = data.find(b"end_header\n")
-            if marker >= 0:
-                return data[: marker + len(b"end_header\n")], marker + len(b"end_header\n")
-    raise ValueError(f"{path.name}: missing or oversized PLY header")
-
-
-def inspect_ply(path: str | os.PathLike[str]) -> PlyInfo:
-    source = Path(path).resolve()
-    if not source.is_file():
-        raise FileNotFoundError(source)
-    header, offset = _read_header(source)
-    try:
-        lines = header.decode("ascii").splitlines()
-    except UnicodeDecodeError as exc:
-        raise ValueError(f"{source.name}: PLY header is not ASCII") from exc
-    if not lines or lines[0].strip() != "ply":
-        raise ValueError(f"{source.name}: not a PLY file")
-    if "format binary_little_endian 1.0" not in lines:
-        raise ValueError(f"{source.name}: only binary little-endian PLY is supported")
-
-    count: int | None = None
-    fields: list[tuple[str, str]] = []
-    in_vertices = False
-    for line in lines[1:]:
-        parts = line.strip().split()
-        if not parts or parts[0] in {"comment", "obj_info"}:
-            continue
-        if parts[0] == "element":
-            in_vertices = len(parts) == 3 and parts[1] == "vertex"
-            if in_vertices:
-                try:
-                    count = int(parts[2])
-                except ValueError as exc:
-                    raise ValueError(f"{source.name}: invalid vertex count") from exc
-            continue
-        if parts[0] == "property" and in_vertices:
-            if len(parts) != 3 or parts[1] == "list":
-                raise ValueError(f"{source.name}: list PLY properties are not supported")
-            scalar = _TYPE_MAP.get(parts[1])
-            if scalar is None:
-                raise ValueError(f"{source.name}: unsupported PLY property type {parts[1]!r}")
-            name = parts[2]
-            if not name.replace("_", "").isalnum() or name in {field[0] for field in fields}:
-                raise ValueError(f"{source.name}: invalid or duplicate PLY property {name!r}")
-            fields.append((name, scalar))
-
-    if count is None or count < 0 or count > _MAX_VERTICES:
-        raise ValueError(f"{source.name}: invalid or unsafe vertex count")
-    dtype = np.dtype(fields)
-    missing = sorted(_REQUIRED.difference(dtype.names or ()))
-    if missing:
-        raise ValueError(f"{source.name}: missing Gaussian fields: {', '.join(missing)}")
-    expected = offset + count * dtype.itemsize
-    actual_size = source.stat().st_size
-    if expected != actual_size:
-        relation = "truncated" if expected > actual_size else "contains trailing data"
-        raise ValueError(f"{source.name}: {relation} in PLY vertex payload")
-    return PlyInfo(source, count, offset, dtype)
-
-
-def validate_ply_payload(path: str | os.PathLike[str]) -> dict[str, Any]:
-    """Read every generated record and reject non-finite or degenerate data."""
-    info = inspect_ply(path)
-    if info.vertex_count <= 0:
-        raise ValueError(f"{info.path.name}: Gaussian PLY contains no vertices")
-    data = np.memmap(
-        info.path,
-        mode="r",
-        dtype=info.dtype,
-        offset=info.data_offset,
-        shape=(info.vertex_count,),
-    )
-    float_names = [
-        name
-        for name in info.dtype.names or ()
-        if info.dtype.fields[name][0].kind == "f"
-    ]
-    invalid_values = 0
-    invalid_scales = 0
-    invalid_quaternions = 0
-    ranges: dict[str, list[float]] = {}
-    try:
-        for start in range(0, info.vertex_count, _CHUNK):
-            records = data[start : start + _CHUNK]
-            for name in float_names:
-                values = np.asarray(records[name], dtype=np.float32)
-                finite = np.isfinite(values)
-                invalid_values += int((~finite).sum())
-                if finite.any():
-                    current = [float(values[finite].min()), float(values[finite].max())]
-                    previous = ranges.get(name)
-                    ranges[name] = (
-                        current
-                        if previous is None
-                        else [min(previous[0], current[0]), max(previous[1], current[1])]
-                    )
-            log_scales = np.column_stack(
-                tuple(np.asarray(records[f"scale_{index}"], dtype=np.float64) for index in range(3))
-            )
-            with np.errstate(over="ignore", under="ignore", invalid="ignore"):
-                decoded_scales = np.exp(log_scales)
-            invalid_scales += int(
-                ((~np.isfinite(decoded_scales)) | (decoded_scales <= 0)).sum()
-            )
-            rotation = np.column_stack(
-                tuple(np.asarray(records[f"rot_{index}"], dtype=np.float32) for index in range(4))
-            )
-            norms = np.linalg.norm(rotation, axis=1)
-            invalid_quaternions += int(((~np.isfinite(norms)) | (norms <= 1e-12)).sum())
-    finally:
-        del data
-    if invalid_values or invalid_scales or invalid_quaternions:
-        raise ValueError(
-            f"{info.path.name}: invalid Gaussian payload: "
-            f"{invalid_values:,} NaN/Inf value(s), "
-            f"{invalid_scales:,} invalid scale(s), "
-            f"{invalid_quaternions:,} degenerate quaternion(s)"
-        )
-    return {
-        "path": str(info.path),
-        "gaussians": info.vertex_count,
-        "invalid_values": 0,
-        "invalid_scales": 0,
-        "invalid_quaternions": 0,
-        "ranges": ranges,
-    }
-
-
-def ply_to_splat(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> dict[str, Any]:
-    validate_ply_payload(source)
-    info = inspect_ply(source)
-    data = np.memmap(
-        info.path,
-        mode="r",
-        dtype=info.dtype,
-        offset=info.data_offset,
-        shape=(info.vertex_count,),
-    )
-    opacity = 1.0 / (1.0 + np.exp(-np.clip(np.asarray(data["opacity"], dtype=np.float32), -60.0, 60.0)))
-    log_scales = np.column_stack(
-        tuple(np.asarray(data[f"scale_{index}"], dtype=np.float32) for index in range(3))
-    )
-    # A malformed Gaussian must not overflow the sort weights or the packed
-    # SPLAT payload. The bounds are deliberately much wider than useful scene
-    # scales while still remaining finite in float32.
-    scales = np.exp(np.clip(log_scales, -30.0, 30.0))
-    weights = opacity * np.prod(scales, axis=1)
-    order = np.argsort(-weights, kind="stable")
-
-    output = Path(target).resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_name(f".{output.name}.{uuid.uuid4().hex}.tmp")
-    descriptor_handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    c0 = np.float32(0.28209479177387814)
-    try:
-        with os.fdopen(descriptor_handle, "wb") as handle:
-            for start in range(0, info.vertex_count, _CHUNK):
-                indices = order[start : start + _CHUNK]
-                xyz = np.column_stack((data["x"][indices], data["y"][indices], data["z"][indices])).astype(
-                    "<f4", copy=False
-                )
-                chunk_scales = scales[indices].astype("<f4", copy=False)
-                rgb = np.column_stack(
-                    tuple(np.asarray(data[f"f_dc_{index}"][indices], dtype=np.float32) for index in range(3))
-                )
-                rgb = np.clip((rgb * c0 + 0.5) * 255.0, 0, 255).astype(np.uint8)
-                alpha = np.clip(opacity[indices, None] * 255.0, 0, 255).astype(np.uint8)
-                rgba = np.concatenate((rgb, alpha), axis=1)
-                rotation = np.column_stack(
-                    tuple(np.asarray(data[f"rot_{index}"][indices], dtype=np.float32) for index in range(4))
-                )
-                rotation /= np.maximum(np.linalg.norm(rotation, axis=1, keepdims=True), 1e-12)
-                rotation = np.clip(rotation * 128.0 + 128.0, 0, 255).astype(np.uint8)
-                packed = np.empty((len(indices), 32), dtype=np.uint8)
-                packed[:, 0:12] = xyz.view(np.uint8).reshape(-1, 12)
-                packed[:, 12:24] = chunk_scales.view(np.uint8).reshape(-1, 12)
-                packed[:, 24:28] = rgba
-                packed[:, 28:32] = rotation
-                handle.write(packed.tobytes())
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, output)
-    except Exception:
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
-        raise
-    finally:
-        del data
-    return {"path": str(output), "gaussians": info.vertex_count, "format": "splat"}
-
-
-def decode_source_camera(latent, image_size):
-    # Upstream: TripoSplat-Training/deg/utils/render_utils.py, [dx, dy, dz, k, w].
-    values = np.asarray(latent, dtype=np.float64).reshape(-1)
-    if values.size != 5 or not np.isfinite(values).all():
-        raise ValueError("TripoSplat predicted an invalid source camera")
-    direction, inverse_distance, half_width = values[:3], values[3], values[4]
-    length = np.linalg.norm(direction)
-    if not math.isfinite(length) or length < 1e-6 or half_width <= 0:
-        raise ValueError("TripoSplat predicted a degenerate source camera")
-    width, height = image_size
-    # Undo the square conditioning image's 20% padding and restore the input aspect.
-    half_height = half_width * height / (1.2 * max(width, height))
-    distance = 1 / inverse_distance if inverse_distance >= 1e-3 else 1000.0
-    fov = math.degrees(2 * math.atan(half_height / distance))
-    # shortcut: near-orthographic predictions use 5° perspective; add true ortho if needed.
-    bounded_fov = max(5.0, min(120.0, fov))
-    distance = half_height / math.tan(math.radians(bounded_fov) / 2)
-    if not math.isfinite(distance) or not 1e-7 < distance <= 1e6:
-        raise ValueError("TripoSplat predicted an out-of-range source camera")
-    # Gaussian.save_ply's X rotation followed by Factory's canonical orientation.
-    position = direction[[1, 2, 0]] * (distance / length)
-    return {
-        "position": position.tolist(),
-        "target": [0.0, 0.0, 0.0],
-        "up": [0.0, 1.0, 0.0],
-        "fov": bounded_fov,
-    }
-
-# Local execution owns no files outside this node's library and ComfyUI model roots.
-TRIPOSPLAT_ASSETS = {
-    "diffusion_models": ("triposplat_fp16.safetensors",),
-    "vae": ("triposplat_vae_decoder_fp16.safetensors", "flux2-vae.safetensors"),
-    "clip_vision": ("dino_v3_vit_h.safetensors",),
-}
-_PIPELINE = None
-_PIPELINE_SIGNATURE = None
+# Generation runs under the shared ComfyUI inference lock.
 _GENERATION_PROGRESS = {}
 
 
@@ -1698,43 +1042,6 @@ def _content_length_ok(request, maximum):
     return request.content_length is not None and 0 <= declared <= maximum and declared == request.content_length
 
 
-def _model_settings(value):
-    if not isinstance(value, dict):
-        raise ValueError("TripoSplat settings must be an object")
-    result = {"steps": 20, "guidance_scale": 3, "num_gaussians": 262144, "seed": 0,
-              "conditioning_resolution": 1024, "prevent_upscale": False, "remove_background": False}
-    for key, low, high, integer in (("steps", 1, 100, True), ("guidance_scale", 1, 20, False),
-                                   ("seed", 0, 2**31-1, True), ("num_gaussians", 32768, 1048576, True)):
-        if key in value:
-            result[key] = _number(value[key], key, low, high, integer=integer)
-    if result["num_gaussians"] not in {32768, 65536, 131072, 262144, 524288, 1048576}:
-        raise ValueError("Unsupported Gaussian count")
-    return result
-
-
-def _ensure_cached_splat(ply):
-    # Derived cache is disposable; canonical model.ply remains immutable.
-    target = ply.with_suffix(".splat")
-    with _LOCK:
-        info = inspect_ply(ply)
-        if not target.exists() or target.stat().st_size != info.vertex_count * 32:
-            ply_to_splat(ply, target)
-    return target
-
-
-def _legacy_root():
-    import folder_paths
-    return Path(folder_paths.get_output_directory()).resolve() / "vnccs_3d_factory" / "scenes"
-
-
-def _legacy_scene(scene_id):
-    directory = _contained(_legacy_root(), _id(scene_id))
-    scene, _payload = _read_json(_contained(directory, "scene.json"))
-    if not isinstance(scene, dict) or scene.get("scene_id") != scene_id or not isinstance(scene.get("objects"), list):
-        raise BackgroundStorageError("Invalid legacy background scene")
-    return scene, directory
-
-
 def _new_job(kind):
     with _JOBS_LOCK:
         if sum(job["status"] in {"queued", "running"} for job in _JOBS.values()) >= 8:
@@ -1779,91 +1086,7 @@ def _run_job(job, callback):
         _emit(job, "failed", job.get("progress", 0), "Generation failed")
 
 
-def _triposplat_pipeline(job):
-    global _PIPELINE, _PIPELINE_SIGNATURE
-    import torch
-    import comfy.model_management as management
-    from ..data.triposplat import triposplat as engine
-    paths = {name: _resolve_model_path(category, name) for category, names in TRIPOSPLAT_ASSETS.items() for name in names}
-    device = management.get_torch_device()
-    management.unload_all_models()
-    cleanup_runtime()
-    signature = (str(device), *((str(path), path.stat().st_size, path.stat().st_mtime_ns) for path in paths.values()))
-    if _PIPELINE is not None and signature == _PIPELINE_SIGNATURE:
-        return _PIPELINE
-    _PIPELINE = None
-    _PIPELINE_SIGNATURE = None
-    gc.collect()
-    pipeline = engine.TripoSplatPipeline.__new__(engine.TripoSplatPipeline)
-    pipeline._device, pipeline._load_device = torch.device(device), torch.device("cpu")
-    dtypes = engine.component_dtypes(device)
-    components = (("dinov3", engine.load_dinov3, "dino_v3_vit_h.safetensors"),
-                  ("vae_encoder", engine.load_vae_encoder, "flux2-vae.safetensors"),
-                  ("flow_model", engine.load_flow_model, "triposplat_fp16.safetensors"),
-                  ("decoder", engine.load_decoder, "triposplat_vae_decoder_fp16.safetensors"))
-    for index, (attribute, loader, name) in enumerate(components):
-        _check_job_cancel(job)
-        _emit(job, "loading", 5 + index * 4, f"Loading TripoSplat {attribute}")
-        setattr(pipeline, attribute, loader(str(paths[name]), device=pipeline._load_device, dtype=dtypes[attribute]))
-    _PIPELINE, _PIPELINE_SIGNATURE = pipeline, signature
-    return pipeline
-
-
-def _reconstruct(job, payload):
-    import torch
-    settings = payload["model_settings"]
-    directory = _path(".jobs", job["job_id"])
-    object_id = uuid.uuid4().hex
-    assets = _contained(directory, "objects", object_id)
-    assets.mkdir(parents=True, exist_ok=False)
-    try:
-        with _model_session(job["job_id"], job["cancel_event"]), torch.inference_mode():
-            pipeline = _triposplat_pipeline(job)
-            generator = torch.Generator(device=pipeline._device).manual_seed(settings["seed"])
-            with Image.open(image_path(job["background_id"], payload["image_id"])) as source:
-                image = source.convert("RGB")
-            image.save(assets / "reference.png")
-            prepared = pipeline.preprocess_image(image, remove_background=False)
-            prepared.save(assets / "prepared.png")
-            _emit(job, "encoding", 25, "Encoding background geometry")
-            conditioning = pipeline.encode_image(prepared, generator=generator)
-
-            def sampling(step, total):
-                _check_job_cancel(job)
-                _emit(job, "sampling", 35 + 45 * step / max(1, total), f"Reconstructing background {step}/{total}")
-            latent = pipeline.sample_latent(conditioning, steps=settings["steps"], guidance_scale=settings["guidance_scale"],
-                                            shift=3, generator=generator, show_progress=False, callback=sampling)
-            camera = decode_source_camera(latent["camera"].detach().float().cpu().numpy(), image.size)
-            del conditioning
-            _check_job_cancel(job)
-
-            def decoding(stage, step, total):
-                _check_job_cancel(job)
-                _emit(job, "decoding", 82 + 8 * step / max(1, total), "Decoding background Gaussians")
-            gaussian = pipeline.decode_latent(latent["latent"], num_gaussians=settings["num_gaussians"],
-                                               generator=generator, callback=decoding)
-            report = gaussian.validate()
-            _check_job_cancel(job)
-            gaussian.save_ply(assets / "model.ply", callback=lambda *_: _check_job_cancel(job), _validated_report=report)
-            validate_ply_payload(assets / "model.ply")
-            scene = {"schema_version": 11, "scene_id": job["job_id"], "camera": camera,
-                     "lighting": {"preset": "off", "background": "#000000"},
-                     "objects": [{"object_id": object_id, "name": "Background", "source_camera": camera,
-                                  "transform": {"position": [0, 0, 0], "rotation": [0, 0, 0], "scale": 1},
-                                  "gaussians": int(gaussian.get_xyz.shape[0]), "settings": settings,
-                                  "files": {"ply": f"objects/{object_id}/model.ply",
-                                            "reference": f"objects/{object_id}/reference.png",
-                                            "prepared": f"objects/{object_id}/prepared.png"}}]}
-            del gaussian, latent
-            _check_job_cancel(job)
-            return commit_model(job["background_id"], payload["image_id"], directory, scene, settings, payload["revision"])
-    finally:
-        # Only the disposable directory created by this job is removed.
-        shutil.rmtree(directory)
-        cleanup_runtime()
-
-
-EMPTY_STATE = '{"schema_version":2,"background_id":"","selected_image_id":"","model_id":"","selected_cg_id":"","step":"background"}'
+EMPTY_STATE = '{"schema_version":2,"background_id":"","selected_image_id":""}'
 _ID = re.compile(r"^[a-f0-9]{32}$")
 
 
@@ -1874,29 +1097,14 @@ def parse_state(raw):
         state = json.loads(raw)
     except (ValueError, TypeError) as exc:
         raise ValueError("Background Creator state is not valid JSON") from exc
-    if not isinstance(state, dict) or type(state.get("schema_version")) is not int or state["schema_version"] not in {1, 2}:
+    if not isinstance(state, dict) or type(state.get("schema_version")) is not int or state["schema_version"] != 2:
         raise ValueError("Unsupported Background Creator state version")
-    for key in ("scene_id", "background_id", "selected_image_id", "model_id", "selected_cg_id"):
+    for key in ("background_id", "selected_image_id"):
         value = state.get(key, "")
         if not isinstance(value, str) or (value and not _ID.fullmatch(value)):
             raise ValueError(f"Background Creator {key} is invalid")
     if state.get("operation") is not None:
         raise ValueError("Background Creator cannot import connected images. Use Upload image inside the widget to import a background.")
-    if state.get("step", "background") not in {"background", "model"}:
-        raise ValueError("Invalid Background Creator workspace stage")
-    camera = state.get("camera")
-    if camera is not None:
-        if not isinstance(camera, dict):
-            raise ValueError("Background Creator camera is invalid")
-        for key in ("position", "target", "up"):
-            vector = camera.get(key)
-            if not isinstance(vector, list) or len(vector) != 3 or any(type(v) not in (int, float) or not math.isfinite(v) or abs(v) > 1e6 for v in vector):
-                raise ValueError("Background Creator camera vector is invalid")
-        fov = camera.get("fov")
-        if type(fov) not in (int, float) or not math.isfinite(fov) or not 5 <= fov <= 120:
-            raise ValueError("Background Creator camera FOV is invalid")
-        if math.dist(camera["position"], camera["target"]) < 1e-7 or math.hypot(*camera["up"]) < 1e-7:
-            raise ValueError("Background Creator camera is degenerate")
     return state
 
 
@@ -1914,15 +1122,13 @@ def _run_background(state, draw_id):
         if document.get("_recovery") or document.get("archived"):
             raise BackgroundStorageError("The selected background is read-only; its data is preserved")
         editor = normalize_editor(state.get("editor", document["editor"]))
-        model_settings = _model_settings(state.get("model_settings", document.get("model_settings", {})))
         selected = state.get("selected_image_id") or document["selected_image_id"]
         requested_image = selected
         image = next((item for item in document["images"] if item["image_id"] == selected), None)
         if selected and image is None:
             raise ValueError("Selected image does not belong to this background")
-        if ("variants" not in document["editor"] or editor != normalize_editor(document["editor"]) or selected != document["selected_image_id"]
-                or model_settings != _model_settings(document.get("model_settings", {}))):
-            document = save_background(background_id, {**editor, "selected_image_id": selected}, document["revision"], model_settings=model_settings)
+        if ("variants" not in document["editor"] or editor != normalize_editor(document["editor"]) or selected != document["selected_image_id"]):
+            document = save_background(background_id, {**editor, "selected_image_id": selected}, document["revision"])
         source, tensor = "generated", None
         if image and image["settings"].get("source") == "upload":
             source, tensor = "upload", _preview_tensor(image_path(background_id, selected))
@@ -1948,8 +1154,7 @@ def _run_background(state, draw_id):
         log_event("background_output", component="Background Creator", node_id=draw_id, background_id=background_id,
                   image_id=selected, source=source, inference_skipped=source != "generated")
         return {"ui": {"background_preview": [{"background_id": background_id, "image_id": selected, "source": source,
-                                                "request_image_id": requested_image, "editor": state.get("editor", editor),
-                                                "model_settings": state.get("model_settings", model_settings)}]},
+                                                "request_image_id": requested_image, "editor": state.get("editor", editor)}]},
                 "result": (tensor, variant_output(document, editor, selected))}
     finally:
         with _JOBS_LOCK:
@@ -1963,13 +1168,12 @@ class VNCCS_BackgroundCreator:
     FUNCTION = "create_background"
     CATEGORY = "VNCCS"
     OUTPUT_NODE = True
-    DESCRIPTION = "Background stage: RUN reuses a fresh preview, generates stale previews, or passes an uploaded image through. Model stage: output the selected completed CG. Settings remain in the selected background's JSON."
+    DESCRIPTION = "RUN reuses a fresh background preview, generates stale previews, or passes an uploaded image through. Variant prompts are a STRING list. Settings remain in the selected background's JSON."
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                # Preserve the scaffold's serialized widget order for existing workflows.
                 "seed": ("INT", {"default": 0, "min": 0, "max": 2**31 - 1, "control_after_generate": False}),
                 "background_data": ("STRING", {"default": EMPTY_STATE, "multiline": True, "dynamicPrompts": False}),
             },
@@ -1991,37 +1195,18 @@ class VNCCS_BackgroundCreator:
         if not state.get("background_id"):
             return float("nan")
         document = load_background(state["background_id"])
-        if state.get("step", "model" if state.get("selected_cg_id") else "background") == "model":
-            if not state.get("selected_cg_id"):
-                return float("nan")
-            path = cg_image_path(document["background_id"], state.get("selected_cg_id", ""))
-            return _model_file_signature(path)
         selected = state.get("selected_image_id") or document["selected_image_id"]
         image = next((item for item in document["images"] if item["image_id"] == selected), None)
         path = _path(document["name"], "background", f"{selected}.png") if selected else None
         key = None if image and image["settings"].get("source") == "upload" else _background_cache_key(state.get("editor", document["editor"]))
-        metadata = {name: document.get(name) for name in ("editor", "model_settings", "selected_image_id", "archived", "_recovery")}
+        metadata = {name: document.get(name) for name in ("editor", "selected_image_id", "archived", "_recovery")}
         return json.dumps([metadata, selected, _model_file_signature(path or ""), key], sort_keys=True)
 
     def create_background(self, seed=0, background_data=EMPTY_STATE, unique_id=None):
         state = parse_state(background_data)
-        if state.get("step", "model" if state.get("selected_cg_id") else "background") == "background" and state.get("background_id"):
+        if state.get("background_id"):
             return _run_background(state, unique_id)
-        if state.get("background_id") and state.get("selected_cg_id"):
-            document = load_background(state["background_id"])
-            return (_preview_tensor(cg_image_path(state["background_id"], state["selected_cg_id"])),
-                    variant_output(document, state.get("editor", document["editor"]), state.get("selected_image_id") or document["selected_image_id"]))
-        if state["schema_version"] == 1 and state.get("scene_id"):
-            scene, directory = _legacy_scene(state["scene_id"])
-            preview = scene.get("preview") or {}
-            relative = preview.get("file")
-            render = scene.get("render") or {}
-            if (not isinstance(relative, str) or preview.get("revision") != scene.get("revision")
-                    or preview.get("render_revision", preview.get("revision")) != scene.get("render_revision", scene.get("revision"))
-                    or any(preview.get(key) != render.get(key) for key in ("width", "height"))):
-                raise FileNotFoundError("The legacy background has no current saved preview")
-            return (_preview_tensor(_contained(directory, relative)), [])
-        raise ValueError("Select or create a background before RUN, or select a completed CG in the Model stage")
+        raise ValueError("Select or create a background before RUN")
 
 API_BASE = "/vnccs/background-creator"
 MAX_REQUEST_BYTES = 34 * 1024 * 1024
@@ -2032,31 +1217,15 @@ _JOBS_LOCK = threading.RLock()
 
 def public_document(document):
     value = copy.deepcopy(document)
-    # Keep the scaffold API field while the named scene JSON owns every variant.
-    value["model"] = copy.deepcopy(value.get("models", [])[-1]) if value.get("models") else None
-    value["model_settings"] = _model_settings(value.get("model_settings", (value["model"] or {}).get("settings", {})))
-    background_id = value["background_id"]
-    base = f"{API_BASE}/backgrounds/{background_id}"
+    base = f"{API_BASE}/backgrounds/{value['background_id']}"
     for image in value.get("images", []):
         image["url"] = f"{base}/images/{image['image_id']}"
         if "preview_revision" in image:
             image["url"] += f"?v={image['preview_revision']}"
-    for cg in value.get("cgs", []):
-        cg["url"] = f"{base}/cg/{cg['cg_id']}/image"
     for group in value.get("generated_sets", []):
         for index, image in enumerate(group["images"]):
             image["url"] = f"{base}/sets/{_id(group['set_id'])}/{index}"
     return value
-
-
-def public_model(background_id, model_id):
-    scene = model_scene(background_id, model_id)
-    base = f"{API_BASE}/backgrounds/{background_id}/models/{model_id}"
-    for item in scene.get("objects", []):
-        item["urls"] = {"splat": f"{base}/objects/{item['object_id']}/splat"}
-        item["locked"] = True
-        item.pop("files", None)
-    return scene
 
 
 def ensure_idle(background_id):
@@ -2065,17 +1234,14 @@ def ensure_idle(background_id):
             raise BackgroundConflictError("This background is busy. Wait for the job or stop it first.")
 
 
-def _job_camera(value):
-    state = parse_state(json.dumps({"schema_version": 2, "camera": value}))
-    return state["camera"]
-
-
 def start_job(background_id, payload, raw_image=None):
     if not isinstance(payload, dict):
         raise ValueError("Background job must be an object")
     action = payload.get("action")
-    if action not in {"background", "model", "cg", "wizard"}:
+    if action not in {"background", "wizard"}:
         raise ValueError("Unknown background action")
+    if raw_image is not None:
+        raise ValueError("Background generation jobs do not accept image uploads")
     editor = normalize_editor(payload.get("editor", {}))
     document = load_background(background_id)
     if document.get("_recovery"):
@@ -2086,25 +1252,6 @@ def start_job(background_id, payload, raw_image=None):
     if type(revision) is not int or revision != document["revision"]:
         raise BackgroundConflictError("The background changed. Reload it before starting this job.")
     values = {**payload, "editor": editor}
-    if action in {"model", "cg"}:
-        image_path(background_id, payload.get("image_id", ""))
-    if action == "cg":
-        values["name"] = _name(payload.get("name", "View"))
-        values["camera"] = _job_camera(payload.get("camera"))
-        if not values["camera"]:
-            raise ValueError("A saved camera is required")
-        model = model_scene(background_id, payload.get("model_id", ""))
-        if model["source_image_id"] != payload.get("image_id"):
-            raise ValueError("The CG model does not belong to the selected background variant")
-        if not raw_image:
-            raise ValueError("A rendered camera frame is required")
-        raw = _decode_image(raw_image).convert("RGB")
-        if raw.width % 16 or raw.height % 16 or min(raw.size) < 64 or max(raw.size) > 4096 or raw.width * raw.height > 16_000_000:
-            raise ValueError("CG frame dimensions must be multiples of 16 between 64 and 4096")
-        values["raw"] = raw
-    if action == "model":
-        settings = _model_settings(payload.get("model_settings", {}))
-        values["model_settings"] = settings
     with _JOBS_LOCK:
         ensure_idle(background_id)
         for old_id in list(_JOBS):
@@ -2129,18 +1276,11 @@ def _execute(job, payload):
         result = wizard(editor["scene_description"], editor, job["job_id"], job["cancel_event"])
         _check_job_cancel(job)
         return {"editor": result, "background_id": background_id}
-    if action in {"background", "cg"}:
-        key = _background_cache_key(editor) if action == "background" else None
-        image, settings = generate_image(editor, job["job_id"], job["cancel_event"], reference=payload.get("raw"))
-        _check_job_cancel(job)
-        if action == "background":
-            document = add_image(background_id, image, {**settings, "cache_key": key}, revision)
-        else:
-            document = commit_cg(background_id, payload.get("name", "View"), payload["raw"], image,
-                                         payload["camera"], settings, payload["model_id"], revision)
-        return {"document": public_document(document)}
-    return {"document": public_document(_reconstruct(job, payload))}
-
+    key = _background_cache_key(editor)
+    image, settings = generate_image(editor, job["job_id"], job["cancel_event"])
+    _check_job_cancel(job)
+    document = add_image(background_id, image, {**settings, "cache_key": key}, revision)
+    return {"document": public_document(document)}
 
 
 def job_status(job_id):
@@ -2149,7 +1289,7 @@ def job_status(job_id):
         if job is None:
             raise FileNotFoundError("Background job was not found")
         value = _job_public(job)
-    if job["status"] == "running" and job["action"] in {"background", "cg", "wizard"}:
+    if job["status"] == "running" and job["action"] in {"background", "wizard"}:
         snapshot = progress(job_id)
         if snapshot and snapshot.get("stage") != "unknown":
             value.update(message=snapshot.get("message", value["message"]), progress=100 * snapshot.get("progress", 0))
@@ -2162,28 +1302,9 @@ def cancel_job(job_id):
         if job is None:
             raise FileNotFoundError("Background job was not found")
         job["cancel_event"].set()
-        if job["action"] in {"background", "cg", "wizard"}:
+        if job["action"] in {"background", "wizard"}:
             interrupt(job_id)
     return job_status(job_id)
-
-
-def import_legacy(scene_id, editor=None):
-    """Copy the old scaffold without importing or changing its original extension."""
-    scene, directory = _legacy_scene(scene_id)
-    if not scene.get("objects"):
-        raise ValueError("The legacy scene has no background model")
-    # Retrying an interrupted import must reuse its durable identity.
-    name = f"Background {scene_id[:8]}"
-    existing = next((item for item in list_backgrounds() if item.get("legacy_scene_id") == scene_id), None)
-    document = existing or create_background(name, normalize_editor(editor or {}), legacy_scene_id=scene_id)
-    if not document["images"]:
-        reference = _contained(directory, scene["objects"][0]["files"]["reference"].replace("\\", "/"))
-        with Image.open(reference) as image:
-            document = add_image(document["background_id"], image.convert("RGB"), {}, document["revision"])
-    if not document["models"]:
-        document = commit_model(document["background_id"], document["selected_image_id"], directory, scene,
-                                scene["objects"][0].get("settings", {}), document["revision"])
-    return public_document(document)
 
 
 _REGISTERED = False
@@ -2258,8 +1379,7 @@ def register_routes(routes):
     @routes.post(base + "/backgrounds")
     @respond
     def create(info, payload, image):
-        return public_document(create_background(payload.get("name"), normalize_editor(payload.get("editor", {})),
-                                                 model_settings=_model_settings(payload.get("model_settings", {}))))
+        return public_document(create_background(payload.get("name"), normalize_editor(payload.get("editor", {}))))
 
     @routes.get(base + "/backgrounds/{background_id}")
     async def background(request):
@@ -2272,8 +1392,7 @@ def register_routes(routes):
         state = normalize_editor(payload.get("editor", {}))
         if "selected_image_id" in payload:
             state["selected_image_id"] = payload["selected_image_id"]
-        return public_document(save_background(info["background_id"], state, payload.get("revision"),
-            model_settings=_model_settings(payload["model_settings"]) if "model_settings" in payload else None))
+        return public_document(save_background(info["background_id"], state, payload.get("revision")))
 
     @routes.delete(base + "/backgrounds/{background_id}")
     @respond
@@ -2302,11 +1421,6 @@ def register_routes(routes):
     def cancel(info, payload, image):
         return cancel_job(info["job_id"])
 
-    @routes.post(base + "/legacy")
-    @respond
-    def legacy(info, payload, image):
-        return import_legacy(payload.get("scene_id", ""), payload.get("editor"))
-
     async def serve(request, callback, *, immutable=True):
         try:
             path = await asyncio.to_thread(callback)
@@ -2323,20 +1437,6 @@ def register_routes(routes):
     async def set_image(request):
         info = request.match_info
         return await serve(request, lambda: background_set_image_path(info["background_id"], info["set_id"], int(info["index"])))
-
-    @routes.get(base + "/backgrounds/{background_id}/models/{model_id}")
-    async def model(request):
-        return await perform(public_model, request.match_info["background_id"], request.match_info["model_id"])
-
-    @routes.get(base + "/backgrounds/{background_id}/models/{model_id}/objects/{object_id}/{kind}")
-    async def asset(request):
-        info = request.match_info
-        return await serve(request, lambda: model_asset_path(info["background_id"], info["model_id"], info["object_id"], info["kind"]))
-
-    @routes.get(base + "/backgrounds/{background_id}/cg/{cg_id}/{kind}")
-    async def cg(request):
-        info = request.match_info
-        return await serve(request, lambda: cg_image_path(info["background_id"], info["cg_id"], info["kind"]))
 
     _REGISTERED = True
 

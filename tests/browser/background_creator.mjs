@@ -12,55 +12,34 @@ const project = fileURLToPath(new URL("../../", import.meta.url));
 const output = resolve(process.argv[3] || join(tmpdir(), "vnccs-background-visual"));
 await mkdir(output, { recursive: true });
 const base = "/vnccs/background-creator";
-const backgroundId = "a".repeat(32), imageId = "b".repeat(32), modelId = "c".repeat(32);
-const camera = { position: [0, 0, 2], target: [0, 0, 0], up: [0, 1, 0], fov: 60 };
+const backgroundId = "a".repeat(32), imageId = "b".repeat(32);
 const assets = new Map();
 let document = { schema_version: 2, background_id: backgroundId, name: "Evening room", revision: 1,
     selected_image_id: imageId, editor: { description: "A cozy bedroom with warm evening light.", attributes: { location: "Tokyo", architecture: "wooden interior", lighting: "warm window light", objects: "bed, desk, bookshelves" } },
-    images: [{ image_id: imageId, width: 1600, height: 896 }], models: [{ model_id: modelId, source_image_id: imageId }], cgs: [] };
-const scenes = new Map();
+    images: [{ image_id: imageId, width: 1600, height: 896 }] };
 if (process.argv[4]) {
     const folder = resolve(process.argv[4]);
     document = JSON.parse(await readFile(join(folder, folder.split(sep).at(-1) + ".json"), "utf8"));
     for (const image of document.images) assets.set(`${base}/backgrounds/${document.background_id}/images/${image.image_id}`, { bytes: await readFile(join(folder, "background", image.image_id + ".png")), type: "image/png" });
-    // Read the selected variant's latest immutable model, without importing the backend or modifying the library.
-    const selected = document.models.filter(model => model.source_image_id === document.selected_image_id).at(-1);
-    if (selected) {
-        const modelFolder = join(folder, "model", selected.model_id), scene = JSON.parse(await readFile(join(modelFolder, "scene.json"), "utf8"));
-        for (const item of scene.objects) {
-            const url = `${base}/backgrounds/${document.background_id}/models/${selected.model_id}/objects/${item.object_id}/splat`;
-            assets.set(url, { bytes: await readFile(join(modelFolder, "objects", item.object_id, "ply.splat")), type: "application/octet-stream" });
-            item.urls = { splat: url }; item.locked = true;
-        }
-        scenes.set(selected.model_id, scene);
-    }
+
 } else {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="896"><defs><linearGradient id="sky" x2="0" y2="1"><stop stop-color="#506488"/><stop offset="1" stop-color="#d79b85"/></linearGradient></defs><rect width="1600" height="896" fill="#9e7a65"/><path d="M0 0h1600L1280 150H320Z" fill="#c3a58b"/><path d="m0 896 320-230h960l320 230" fill="#624e4b"/><rect x="530" y="140" width="540" height="400" fill="url(#sky)" stroke="#483d43" stroke-width="30"/><path d="M800 150v380M540 360h520" stroke="#483d43" stroke-width="18"/><rect x="150" y="560" width="650" height="170" rx="30" fill="#b77a80"/><rect x="1050" y="560" width="390" height="50" fill="#5f4340"/><path d="M1080 610v180m330-180v180" stroke="#5f4340" stroke-width="30"/></svg>';
     assets.set(`${base}/backgrounds/${backgroundId}/images/${imageId}`, { bytes: svg, type: "image/svg+xml" });
-    const splat = Buffer.alloc(32 * 512);
-    for (let index = 0; index < 512; index++) {
-        const offset = index * 32;
-        [0, (Math.floor(index / 32) - 8) / 20, (index % 32 - 16) / 20, 0.025, 0.025, 0.025].forEach((value, axis) => splat.writeFloatLE(value, offset + axis * 4));
-        splat.set([180, 130, 145, 255, 255, 128, 128, 128], offset + 24);
-    }
-    const url = `${base}/backgrounds/${backgroundId}/models/${modelId}/objects/${imageId}/splat`;
-    assets.set(url, { bytes: splat, type: "application/octet-stream" });
-    scenes.set(modelId, { model_id: modelId, source_image_id: imageId, camera, objects: [{ object_id: imageId, source_camera: camera, urls: { splat: url } }] });
+
 }
 document = structuredClone(document);
-document.models = document.models.filter(model => scenes.has(model.model_id));
-document.model = document.models.at(-1) || null;
 for (const image of document.images) image.url = `${base}/backgrounds/${document.background_id}/images/${image.image_id}`;
 const catalog = JSON.parse(await readFile(join(project, "control_center.json"), "utf8"));
 for (const category of ["models", "clip", "vae", "lora"]) for (const entry of catalog[category] || []) entry.status = "installed";
 const config = { installed: true, assets: [], diffusion_models: ["qwen_image_2.1_int8_convrot.safetensors", "user/Scenery.safetensors", "moss_image_sft_int8_convrot.safetensors"],
     model_types: { moss: { installed: true, assets: [{ category: "diffusion_models", installed: true }, { category: "text_encoders", installed: true }, { category: "vae", installed: true }] } },
-    loras: ["scenery/Painted_Backgrounds.safetensors", "scenery/Warm_Light.safetensors"], samplers: ["euler", "er_sde", "dpmpp_2m"], schedulers: ["simple", "normal"], triposplat_assets: [] };
+    loras: ["scenery/Painted_Backgrounds.safetensors", "scenery/Warm_Light.safetensors"], samplers: ["euler", "er_sde", "dpmpp_2m"], schedulers: ["simple", "normal"] };
 const creatorSource = await readFile(join(project, "web/vnccs_character_creator_v2.js"), "utf8");
 const referenceCreatorCSS = creatorSource.slice(creatorSource.indexOf(".vnccs-creator-generation-layer {"), creatorSource.indexOf(".vnccs-creator-preview-loading {"))
     + creatorSource.split("\n").filter(line => line.startsWith("@keyframes vnccs-creator-generation-")).join("\n")
     + creatorSource.slice(creatorSource.indexOf(".vnccs-creator-container .vnccs-style-edit,"), creatorSource.indexOf(".vnccs-creator-container .vnccs-style-editor {"))
     + creatorSource.slice(creatorSource.indexOf("/* Main Host */"), creatorSource.indexOf("/* Columns */"))
+    + creatorSource.slice(creatorSource.indexOf(".vnccs-creator-resolution-field {"), creatorSource.indexOf(".vnccs-creator-overhaul-control {"))
     + creatorSource.slice(creatorSource.indexOf(".vnccs-creator-trait-row {"), creatorSource.indexOf(".vnccs-creator-tag-grid {"));
 const appModule = `export const app={extensions:[],graph:{_nodes:[],extra:{},setDirtyCanvas(){}},canvas:{ds:{scale:1,offset:[0,0]}},registerExtension(extension){this.extensions.push(extension)}};`;
 const apiModule = `export const api=new EventTarget();api.apiURL=route=>route;api.fetchApi=(route,options)=>fetch(route,options);`;
@@ -74,8 +53,8 @@ import { editorDefaults, composePrompt } from '/web/vnccs_background_creator.js'
 window.composedPrompt=()=>composePrompt(widget.state.editor);
 window.setup=async({width=1600,height=1000,empty=false}={})=>{
  window.widget?.node.onRemoved?.();const host=document.querySelector('#host');host.replaceChildren();host.style.height='';
- const saved=await (await fetch('/fixture')).json();const selected=saved.models.filter(model=>model.source_image_id===saved.selected_image_id).at(-1);
- const state={schema_version:2,background_id:empty?'':saved.background_id,background_name:empty?'':saved.name,selected_image_id:empty?'':saved.selected_image_id,model_id:empty?'':selected?.model_id||'',selected_cg_id:'',step:'background',editor:editorDefaults(empty?{}:saved.editor)};
+ const saved=await (await fetch('/fixture')).json();
+ const state={schema_version:2,background_id:empty?'':saved.background_id,background_name:empty?'':saved.name,selected_image_id:empty?'':saved.selected_image_id,editor:editorDefaults(empty?{}:saved.editor)};
  class Node{
   constructor(){this.id=7;this.type='VNCCS_BackgroundCreator';this.size=[width,height];this.graph=app.graph;this.properties={};this.widgets=[{name:'seed',value:0},{name:'background_data',value:'unconfigured'}];}
   setSize(size){this.size=[...size];host.style.width=size[0]+'px';this.widgets.find(widget=>widget.element)?.triggerDraw();}
@@ -140,7 +119,7 @@ const server = createServer(async (request, response) => {
             if(request.method==='POST'){
                 let raw='';for await(const chunk of request)raw+=chunk;
                 const payload=JSON.parse(raw);mutations.push(payload);
-                document={schema_version:2,background_id:'8'.repeat(32),name:payload.name,revision:1,editor:payload.editor,model_settings:payload.model_settings,selected_image_id:'',images:[],models:[],cgs:[]};
+                document={schema_version:2,background_id:'8'.repeat(32),name:payload.name,revision:1,editor:payload.editor,selected_image_id:'',images:[]};
                 content=JSON.stringify(document);
             }else content = JSON.stringify({ backgrounds: [document] });
         }
@@ -167,10 +146,9 @@ const server = createServer(async (request, response) => {
                 let raw = ""; for await (const chunk of request) raw += chunk;
                 const data = JSON.parse(raw); mutations.push(data);
                 document.editor = data.editor; document.selected_image_id = data.selected_image_id; document.revision++;
-                document.model_settings = data.model_settings;
             }
             content = JSON.stringify(document);
-        } else if (url.pathname.startsWith(`${base}/backgrounds/${document.background_id}/models/`)) content = JSON.stringify(scenes.get(url.pathname.split("/").at(-1)));
+        }
         else if (url.pathname === "/vnccs/control_center/check") content = JSON.stringify(catalog);
         else if (url.pathname === "/vnccs/manager/status") content = "{}";
         else if (url.pathname === "/vnccs/character_generator/progress") content = JSON.stringify({snapshot:null});
@@ -186,7 +164,8 @@ await new Promise((done, reject) => { server.once("error", reject); server.liste
 const browser = await chromium.launch({ headless: true, args: ["--enable-unsafe-swiftshader"], ...(process.argv[2] ? { executablePath: process.argv[2] } : {}) })
     .catch(error => { server.close(); throw error; });
 const page = await browser.newPage({ viewport: { width: 1800, height: 1120 }, deviceScaleFactor: 2 });
-const errors = [], warnings = [], report = { scenarios: [], sceneLoaded: Boolean(process.argv[4]) };
+const retiredRequests = [], errors = [], warnings = [], report = { scenarios: [], sceneLoaded: Boolean(process.argv[4]) };
+page.on("request", request => { if (/vendor\/spark|background-creator\/backgrounds\/[^/]+\/models/.test(request.url())) retiredRequests.push(request.url()); });
 page.on("pageerror", error => errors.push(String(error)));
 page.on("console", message => { if (["warning", "error"].includes(message.type())) warnings.push(message.text()); });
 const settle = async () => { await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))); };
@@ -211,6 +190,46 @@ const variantEditorClearance=async()=>page.evaluate(()=>{
     }
     return clipped;
 });
+const previewNavigation=async name=>{
+    const dialog=page.getByRole('dialog'), viewport=dialog.locator('[data-preview-viewport]'), image=dialog.locator('[data-large-preview]');
+    await image.waitFor({state:'visible'});await image.evaluate(image=>image.decode());
+    await page.getByRole('dialog').evaluate(element=>Promise.allSettled(element.getAnimations({subtree:true}).map(animation=>animation.finished)));
+    const read=()=>image.evaluate(image=>{
+        const bounds=image.getBoundingClientRect(), viewport=image.parentElement;
+        return {x:bounds.x,y:bounds.y,width:bounds.width,height:bounds.height,scale:new DOMMatrix(image.style.transform).a,
+            fit:Math.min(viewport.clientWidth/image.naturalWidth,viewport.clientHeight/image.naturalHeight)};
+    });
+    const state=await page.evaluate(()=>({raw:widget.node.widgets[1].value,size:[...widget.node.size],source:widget.state.selected_image_id}));
+    const bounds=await viewport.boundingBox(), anchor={x:bounds.x+bounds.width*.65,y:bounds.y+bounds.height*.4}, before=await read();
+    await page.mouse.move(anchor.x,anchor.y);await page.mouse.wheel(0,-240);
+    await page.waitForFunction(scale=>new DOMMatrix(document.querySelector('.vnccs-common-modal-overlay:not([inert]) [data-large-preview]').style.transform).a>scale,before.scale);
+    const enlarged=await read();
+    (report.previewChecks??=[]).push({name,anchor,before,enlarged});
+    assert.ok(enlarged.width>before.width,'Mouse wheel zooms the image');
+    assert.ok(Math.abs((anchor.x-before.x)/before.width-(anchor.x-enlarged.x)/enlarged.width)<.002,'Zoom retains the image point under the horizontal cursor position');
+    assert.ok(Math.abs((anchor.y-before.y)/before.height-(anchor.y-enlarged.y)/enlarged.height)<.002,'Zoom retains the image point under the vertical cursor position');
+    for(const button of ['left','middle']){
+        const start=await read();await page.mouse.move(anchor.x,anchor.y);await page.mouse.down({button});
+        await page.mouse.move(anchor.x+60,anchor.y+35,{steps:5});await page.mouse.up({button});
+        const end=await read();
+        assert.ok(Math.abs(end.x-start.x-60)<1 && Math.abs(end.y-start.y-35)<1,`${button} drag pans in rendered pixels despite node zoom`);
+        assert.equal(await viewport.evaluate(element=>element.classList.contains('is-dragging')),false);
+    }
+    await capture(name);
+    await page.mouse.move(anchor.x,anchor.y);await page.mouse.down();
+    await viewport.dispatchEvent('pointercancel',{pointerId:1});const cancelled=await read();
+    await page.mouse.move(anchor.x+30,anchor.y+20);await page.mouse.up();
+    assert.deepEqual(await read(),cancelled,'Cancelled drags cannot continue moving the image');
+    for(const [delta,ratio] of [[-100,8],[100,1]]){
+        await viewport.evaluate((element,delta)=>{
+            const bounds=element.getBoundingClientRect();
+            for(let index=0;index<80;index++)element.dispatchEvent(new WheelEvent('wheel',{deltaY:delta,clientX:bounds.x+bounds.width/2,clientY:bounds.y+bounds.height/2,cancelable:true,bubbles:true}));
+        },delta);
+        const zoom=await read();assert.ok(Math.abs(zoom.scale/zoom.fit-ratio)<.0001,'Zoom stays between the fit scale and eight times the fit scale');
+    }
+    assert.deepEqual(await page.evaluate(()=>({raw:widget.node.widgets[1].value,size:[...widget.node.size],source:widget.state.selected_image_id})),state,'Zoom and pan do not change saved settings, the source or node dimensions');
+    return {wheel:true,leftPan:true,middlePan:true,cursorAnchor:true,cancel:true,limits:[1,8]};
+};
 const geometry = async () => page.evaluate(() => {
     const rect = element => { const r = element.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; };
     const root = widget.container;
@@ -272,6 +291,32 @@ try {
         await page.waitForFunction(() => [...document.querySelectorAll('[data-preview]')].every(image => image.complete && image.naturalWidth));
         await capture(name); const measured = await geometry(); report.scenarios.push({ name, width, height, ...measured });
         if(width===1600){
+            const range=page.locator('[data-setting="generation.resolution_mp"]'), original=await page.evaluate(()=>widget.state.editor.generation.resolution_mp);
+            assert.deepEqual(await range.evaluate(element=>({min:element.min,max:element.max,step:element.step})),{min:'1',max:'4',step:'0.1'});
+            const resolutionStyle=await range.evaluate(control=>{
+                const field=control.closest('.vnccs-common-creator-resolution-field'), reference=field.cloneNode(true);
+                for(const element of [reference,...reference.querySelectorAll('*')])element.className=element.className.replaceAll('vnccs-common-creator-','vnccs-creator-');
+                Object.assign(reference.style,{position:'absolute',left:'-100000px',width:field.clientWidth+'px'});widget.container.append(reference);
+                const values=field=>{
+                    const read=(selector,properties)=>{const style=getComputedStyle(selector?field.querySelector(selector):field);return Object.fromEntries(properties.map(key=>[key,style[key]]));};
+                    return {field:read('', ['display','marginTop','marginBottom']),range:read('input',['accentColor','cursor','height','padding','borderWidth','borderRadius','backgroundColor']),
+                        head:read('[class$="-resolution-head"]',['display','alignItems','justifyContent','gap']),value:read('[data-resolution]',['color','fontFamily','fontSize','fontWeight'])};
+                };
+                const result={actual:values(field),reference:values(reference)};reference.remove();return result;
+            });
+            assert.deepEqual(resolutionStyle.actual,resolutionStyle.reference,'The resolution control uses Character Creator styling');
+            const values=[];
+            for(const [key,value] of [['Home',1],['ArrowLeft',1],['ArrowRight',1.1],['ArrowRight',1.2],['ArrowRight',1.3],['End',4],['ArrowRight',4]]){
+                await range.focus();await range.press(key);
+                assert.equal(await range.inputValue(),String(value));
+                assert.equal(await page.locator('[data-resolution]').textContent(),`${value.toFixed(1)} MP`);
+                assert.equal(await page.evaluate(()=>JSON.parse(widget.node.widgets[1].value).editor.generation.resolution_mp),value);
+                values.push(value);
+                if(value===1.3)await range.locator('..').screenshot({path:join(output,'resolution-step-1-3.png')});
+            }
+            await range.evaluate((element,value)=>{element.value=String(value);element.dispatchEvent(new Event('input',{bubbles:true}));element.blur();},original);
+            await page.evaluate(()=>widget.persist());
+            report.resolutionControl={min:1,max:4,step:.1,keyboardValues:values,styleMatchesCharacterCreator:true};
             const description=page.locator('[data-setting="scene_description"]');
             const surface=()=>description.evaluate(element=>{
                 const style=getComputedStyle(element);
@@ -288,6 +333,9 @@ try {
             await description.evaluate(element=>element.blur());
             await description.evaluate(element=>Promise.allSettled(element.getAnimations().map(animation=>animation.finished)));
         }
+        assert.equal(await page.locator('header,nav,[data-step],[data-viewer],[data-panel="model"]').count(),0,'The header and model stage are removed');
+        assert.equal(measured.panels.length,3);
+        assert.ok(measured.panels[0].y-measured.root.y<12,'No space is reserved for the removed header');
         for(const key of ['prompt','aesthetics','negative'])assert.equal(await page.locator('[data-setting="'+key+'"]').count(),0);
         assert.equal(await page.locator('.bg-bottom').count(),0);
         assert.equal(await page.locator('.bg-meta,[data-dimensions]').count(),0,'The background preview has no image dimensions label');
@@ -397,12 +445,26 @@ try {
     await page.waitForFunction(()=>[...document.querySelectorAll('[data-variation-image]')].every(image=>!image.hidden && image.complete && image.naturalWidth));
     assert.deepEqual(await page.locator('[data-variation-image]').evaluateAll(images=>images.map(image=>image.getAttribute('src'))),previewURLs,'Saved card previews return after reopening the workflow');
     report.variantResults={completedEvent:true,reload:true,mainPreviewPreserved:true,fixtureImages:true};
+    const cards=await page.locator('[data-edit-variation]').evaluateAll(cards=>cards.map(card=>card.dataset.editVariation));
+    for(const [index,id] of cards.entries()){
+        await page.locator(`[data-edit-variation="${id}"]`).click();
+        assert.equal(await page.getByRole('dialog').locator('[data-large-preview]').getAttribute('src'),previewURLs[index],'Each generated card opens its own image');
+        await page.evaluate(()=>widget.render());
+        assert.equal(await page.getByRole('dialog').locator('[data-large-preview]').getAttribute('src'),previewURLs[index],'A render must not replace a modal variant with the base background');
+        if(!index)report.variantPreviewNavigation=await previewNavigation('variant-preview-zoomed');
+        await page.getByRole('dialog').locator('[data-close-preview]').click();
+        assert.equal(await page.locator('[data-variation-editor]').isVisible(),true,'Inline editing remains available after viewing a generated result');
+    }
     await page.locator('[data-model-toggle]').click(); await capture('model-picker');
     await page.locator('[data-model-choice="user/Scenery.safetensors"]').click();
     assert.equal(await page.evaluate(() => JSON.parse(widget.node.widgets[1].value).editor.generation.diffusion_model_name), "user/Scenery.safetensors");
     await page.locator('[data-model-toggle]').click();
     await page.locator('[data-model-choice="qwen_image_2.1_int8_convrot.safetensors"]').click();
     await page.locator('[data-enlarge]').click(); await capture('background-enlarged');
+    report.previewNavigation=await previewNavigation('background-preview-zoomed');
+    await page.locator('#host').evaluate(host=>host.style.zoom='.75');
+    report.scaledPreviewNavigation=await previewNavigation('background-preview-node-zoom-75');
+    await page.locator('#host').evaluate(host=>host.style.zoom='');
     assert.equal(await page.getByRole('dialog').locator('[data-variants],[data-variant-count],[data-variant]').count(),0);
     await page.locator('[data-close-preview]').click();
     await page.locator('[data-setting="style"]').fill('Anime, digital art, cel shaded');
@@ -415,6 +477,7 @@ try {
     await capture('scene-fields');
     assert.deepEqual(await page.locator('[data-variation-cards] .bg-variation-item>span').allTextContents(), ['Morning','Evening','Night']);
     await page.locator('[data-edit-variation="morning"]').click();
+    await page.locator('[data-close-preview]').click();
     assert.equal(await page.getByRole('dialog').count(),0,'Selecting a variant opens an inline editor');
     assert.equal(await page.locator('[data-variation-editor]').isVisible(),true);
     assert.equal(await page.locator('[data-variation-field="time"]').inputValue(),'Morning');
@@ -483,14 +546,13 @@ try {
     await page.evaluate(async () => {
         await widget.persist();
         const output = { background_preview: [{ background_id: widget.state.background_id, image_id: widget.state.selected_image_id,
-            request_image_id: widget.state.selected_image_id, source: 'cache', editor: structuredClone(widget.state.editor),
-            model_settings: structuredClone(widget.state.model_settings) }] };
+            request_image_id: widget.state.selected_image_id, source: 'cache', editor: structuredClone(widget.state.editor) }] };
         widget.api.dispatchEvent(new CustomEvent('executing', { detail: '7' }));
         if (!widget.busy) throw new Error('RUN did not lock the background controls');
         widget.node.onExecuted(output); await widget.workflowCompletion;
-        if (widget.busy || widget.state.step !== 'background') throw new Error('RUN changed the workspace stage or left controls locked');
+        if (widget.busy) throw new Error('RUN left controls locked');
     });
-    assert.equal(await page.locator('[data-panel="model"]').isVisible(), false);
+    assert.equal(await page.locator('[data-panel="model"]').count(), 0);
     assert.match(await page.locator('[role="status"]').textContent(), /reused from cache/);
     await capture('run-background');
     const prompt = page.locator('[data-setting="scene_description"]'); await prompt.fill('A quiet bedroom. Keep my exact composition.'); await prompt.dispatchEvent('input');
@@ -505,18 +567,7 @@ try {
         widget.node.setSize(size);widget.node.onResize();return positions;
     });
     assert.ok(positions.length>0 && positions.every(position=>position.before>0 && Math.abs(position.after-position.before)<=1), "Every overflowing panel retains its actual scroll on refresh");
-    await page.locator('[data-step="model"]').click();
-    await page.waitForFunction(() => widget.viewer && !widget.loadingModel && widget.viewer.meshes.length > 0);
-    await page.waitForTimeout(600); await capture('model');
-    report.webgl = await page.evaluate(() => ({ gaussians: widget.viewer.meshes.reduce((count, mesh) => count + mesh.numSplats, 0), renderer: widget.viewer.renderer.getContext().getParameter(widget.viewer.renderer.getContext().RENDERER), canvas: { width: widget.viewer.canvas.width, height: widget.viewer.canvas.height } }));
-    const viewport = await page.locator('[data-viewer] canvas').boundingBox(), before = await page.evaluate(() => widget.viewer.getCameraState());
-    await page.mouse.move(viewport.x + viewport.width / 2, viewport.y + viewport.height / 2); await page.mouse.down();
-    await page.mouse.move(viewport.x + viewport.width / 2 + 70, viewport.y + viewport.height / 2 + 20, { steps: 12 }); await page.mouse.up(); await settle();
-    assert.notDeepEqual(await page.evaluate(() => widget.viewer.getCameraState()), before, "The actual WebGL camera responds to dragging");
-    await page.locator('[data-recenter]').click();
-    await page.locator('[data-save-view]').click(); await capture('save-view');
-    await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
-    await page.locator('[data-step="background"]').click();
+
     await page.evaluate(() => {
         window.jobDone=false;window.jobError=null;
         window.previewJobRun=widget.runJob('background').then(()=>{window.jobDone=true},error=>{window.jobError=String(error);window.jobDone=true});
@@ -561,7 +612,6 @@ try {
     assert.equal(await page.locator('[data-generation-layer]').isVisible(),false);
     assert.equal(await page.locator('.bg-preview').getAttribute('aria-busy'),null);
     assert.equal(await page.locator('[data-action="background"]').textContent(),'Generate background');
-    assert.equal(await page.evaluate(()=>widget.state.step),'background');
     await capture('generation-complete');
     const firstPreview=await page.evaluate(()=>({id:widget.state.selected_image_id,count:widget.document.images.length,url:widget.container.querySelector('[data-preview]').src}));
     await page.emulateMedia({reducedMotion:'reduce'});
@@ -589,7 +639,7 @@ try {
     await page.emulateMedia({reducedMotion:null});
     await page.evaluate(() => setup({ width: 1280, height: 800, empty: true })); await capture('empty');
     const emptyFrame=await geometry();assert.ok(Math.abs(emptyFrame.preview.width/emptyFrame.preview.height-16/9)<.005,'The empty frame uses the same fixed ratio');
-    assert.equal(await page.locator('[data-enlarge]').isVisible(), false); assert.equal(await page.locator('[data-action="model"]').isDisabled(), true);
+    assert.equal(await page.locator('[data-enlarge]').isVisible(), false); assert.equal(await page.locator('[data-action="model"]').count(), 0);
     await page.evaluate(()=>setup());
     const imagesBeforeDeletion=await page.evaluate(()=>widget.document.images.length);
     await page.getByRole('button',{name:'Delete Rainy dawn variant',exact:true}).click();
@@ -655,9 +705,10 @@ try {
     await capture('new-background-defaults');
     report.newBackground={legacyDayCopied:false,freshVariants:true};
     assert.ok(mutations.length > 0, 'Edits still save into the selected background JSON');
+    assert.deepEqual(retiredRequests, []); report.retiredModelRequests=retiredRequests;
     assert.deepEqual(errors, []); report.errors = errors; report.warnings = warnings; report.fixtureOnlyMutations = mutations.length;
     await writeFile(join(output, 'report.json'), JSON.stringify(report, null, 2));
-    console.log(JSON.stringify({ output, scenarios: report.scenarios.length, webgl: report.webgl, errors, warnings }));
+    console.log(JSON.stringify({ output, scenarios: report.scenarios.length, retiredModelRequests: retiredRequests.length, errors, warnings }));
 } catch (error) {
     await page.screenshot({ path: join(output, 'failure.png'), fullPage: true });
     await writeFile(join(output, 'report.json'), JSON.stringify({ ...report, errors, warnings, failure: String(error) }, null, 2));

@@ -65,8 +65,6 @@ class RouteTable:
 web = types.SimpleNamespace(json_response=Response, FileResponse=FileResponse, RouteTableDef=RouteTable,
                             HTTPException=HTTPException, HTTPRequestEntityTooLarge=HTTPRequestEntityTooLarge)
 
-CAMERA = {"position": [0, 0, 3], "target": [0, 0, 0], "up": [0, 1, 0], "fov": 42}
-
 
 @pytest.fixture
 def library(monkeypatch, tmp_path):
@@ -89,45 +87,13 @@ def with_image(name="Sunset room"):
                              {"seed": 7}, document["revision"])
 
 
-def scene_source(tmp_path):
-    source = tmp_path / "factory-scene"
-    object_id = "b" * 32
-    assets = source / "objects" / object_id
-    assets.mkdir(parents=True, exist_ok=True)
-    (assets / "model.ply").write_bytes(b"immutable PLY fixture")
-    Image.new("RGB", (32, 16), "green").save(assets / "reference.png")
-    scene = {"schema_version": 11, "scene_id": "a" * 32, "camera": CAMERA,
-             "render": {"width": 32, "height": 16},
-             "objects": [{"object_id": object_id, "source_camera": CAMERA,
-                          "files": {"ply": f"objects/{object_id}/model.ply",
-                                    "reference": f"objects/{object_id}/reference.png"}}]}
-    return source, scene
-
-
-def with_model(tmp_path):
-    document = with_image()
-    source, scene = scene_source(tmp_path)
-    return storage.commit_model(document["background_id"], document["selected_image_id"],
-                                source, scene, {"seed": 9}, document["revision"]), source, scene
-
-
-def test_windows_factory_paths_are_copied_as_portable_asset_references(library, tmp_path):
-    document = with_image()
-    source, scene = scene_source(tmp_path)
-    scene["objects"][0]["files"] = {key: value.replace("/", "\\") for key, value in scene["objects"][0]["files"].items()}
-    document = storage.commit_model(document["background_id"], document["selected_image_id"], source,
-                                    scene, {}, document["revision"])
-    saved = storage.model_scene(document["background_id"], document["models"][-1]["model_id"])
-    assert all("\\" not in path for path in saved["objects"][0]["files"].values())
-    assert storage.model_asset_path(document["background_id"], document["models"][-1]["model_id"], "b" * 32, "ply").read_bytes() == b"immutable PLY fixture"
-
-
 def test_empty_library_and_named_document_backup(library):
     assert storage.list_backgrounds() == []
     document = storage.create_background("Evening Café", {"prompt": "Sunset"})
     assert len(document["background_id"]) == 32
     assert document["schema_version"] == 2 and document["revision"] == 1
-    assert document["models"] == [] and "model" not in document
+    assert not {"models", "model", "cgs", "model_settings"} & document.keys()
+    assert sorted(item.name for item in document_path(document).parent.iterdir()) == ["Evening Café.json", "Evening Café.json.backup", "background"]
     path = document_path(document)
     assert path.is_file()
     assert json.loads(path.read_bytes()) == document
@@ -142,7 +108,7 @@ def test_editor_revisions_selection_and_previous_json_backup(library):
     path = document_path(document)
     previous = path.read_bytes()
     state = {"prompt": "Changed", "selected_image_id": document["selected_image_id"],
-             "camera": CAMERA, "unfinished_prompt": "(bright"}
+             "unfinished_prompt": "(bright"}
     updated = storage.save_background(document["background_id"], state, document["revision"])
     assert updated["revision"] == document["revision"] + 1
     assert updated["editor"] == state
@@ -207,112 +173,9 @@ def test_preview_write_failure_retains_image_metadata_and_cleans_temporary_files
     assert storage.load_background(document["background_id"]) == document
 
 
-def test_model_snapshot_owns_assets_and_keeps_previous_model(library, tmp_path):
-    document, source, scene = with_model(tmp_path)
-    background_id = document["background_id"]
-    model_id = document["models"][-1]["model_id"]
-    object_id = scene["objects"][0]["object_id"]
-    ply = storage.model_asset_path(background_id, model_id, object_id, "ply")
-    assert ply.is_relative_to(library / document["name"] / "model" / model_id)
-    original = ply.read_bytes()
-    (source / scene["objects"][0]["files"]["ply"]).write_bytes(b"replaced Factory asset")
-    assert ply.read_bytes() == original
-    snapshot = storage.model_scene(background_id, model_id)
-    assert snapshot["objects"][0]["source_camera"] == CAMERA
-    assert snapshot["source_image_id"] == document["selected_image_id"]
-    assert scene["objects"][0]["files"]["ply"].endswith("model.ply")
-    replacement = storage.commit_model(background_id, document["selected_image_id"], source,
-                                       scene, {"seed": 10}, document["revision"])
-    assert replacement["models"][-1]["model_id"] != model_id
-    assert len(replacement["models"]) == 2
-    assert replacement["models"][0] == document["models"][0]
-    assert storage.model_asset_path(background_id, model_id, object_id, "ply").read_bytes() == original
-
-
-def test_multiple_source_variants_models_and_cgs_keep_their_original_links(library, tmp_path):
-    document, source, scene = with_model(tmp_path)
-    background_id = document["background_id"]
-    first_image, first_model = document["selected_image_id"], document["models"][-1]["model_id"]
-    object_id = scene["objects"][0]["object_id"]
-    first_image_path = storage.image_path(background_id, first_image)
-    first_model_path = storage.model_asset_path(background_id, first_model, object_id, "ply")
-    original_image, original_model = first_image_path.read_bytes(), first_model_path.read_bytes()
-    raw = Image.new("RGB", (32, 16), "red")
-    document = storage.commit_cg(background_id, "First angle", raw, raw, CAMERA, {}, first_model, document["revision"])
-    first_cg = document["cgs"][-1]
-    first_cg_bytes = storage.cg_image_path(background_id, first_cg["cg_id"]).read_bytes()
-    document = storage.add_image(background_id, Image.new("RGB", (32, 16), "blue"),
-                                 {"seed": 2}, document["revision"])
-    second_image = document["selected_image_id"]
-    assert document["models"][0]["model_id"] == first_model
-    document = storage.commit_model(background_id, second_image, source, scene, {"seed": 2}, document["revision"])
-    second_model = document["models"][-1]["model_id"]
-    document = storage.commit_cg(background_id, "Second angle", raw, raw, CAMERA, {}, second_model, document["revision"])
-    second_cg = document["cgs"][-1]
-    # Rendering an older model retains its source even when a newer image is selected.
-    document = storage.commit_cg(background_id, "Another first angle", raw, raw, CAMERA, {}, first_model, document["revision"])
-    document = storage.commit_model(background_id, first_image, source, scene, {"seed": 3}, document["revision"])
-    rebuilt_model = document["models"][-1]["model_id"]
-    reloaded = storage.load_background(background_id)
-    assert len(reloaded["images"]) == 2 and len(reloaded["models"]) == 3
-    assert {model["model_id"]: model["source_image_id"] for model in reloaded["models"]} == {
-        first_model: first_image, second_model: second_image, rebuilt_model: first_image}
-    assert [(cg["model_id"], cg["source_image_id"]) for cg in reloaded["cgs"]] == [
-        (first_model, first_image), (second_model, second_image), (first_model, first_image)]
-    assert storage.model_scene(background_id, rebuilt_model)["source_image_id"] == first_image
-    assert first_image_path.read_bytes() == original_image
-    assert first_model_path.read_bytes() == original_model
-    assert storage.cg_image_path(background_id, first_cg["cg_id"]).read_bytes() == first_cg_bytes
-    assert storage.cg_image_path(background_id, second_cg["cg_id"]).is_file()
-    saved = json.loads(document_path(reloaded).read_bytes())
-    assert saved["models"] == reloaded["models"] and "model" not in saved
-    assert {path.name for path in document_path(reloaded).parent.iterdir()} == {
-        f"{reloaded['name']}.json", f"{reloaded['name']}.json.backup", "background", "model", "CG"}
-
-
-def test_splat_cache_is_owned_by_background_creator(library, tmp_path, monkeypatch):
-    document, _source, scene = with_model(tmp_path)
-    cached = tmp_path / "derived.splat"
-    cached.write_bytes(b"derived SPLAT")
-    convert = mock.Mock(return_value=cached)
-    monkeypatch.setattr(storage, "_ensure_cached_splat", convert)
-    result = storage.model_asset_path(document["background_id"], document["models"][-1]["model_id"], scene["objects"][0]["object_id"], "splat")
-    assert result == cached
-    assert convert.call_args.args[0].suffix == ".ply"
-
-
-def test_cg_keeps_raw_finished_camera_and_archived_assets(library, tmp_path):
-    document, _source, _scene = with_model(tmp_path)
-    background_id = document["background_id"]
-    model_id = document["models"][-1]["model_id"]
-    raw, finished = Image.new("RGB", (32, 16), "red"), Image.new("RGB", (64, 32), "blue")
-    document = storage.commit_cg(background_id, "Window view", raw, finished, CAMERA,
-                                 {"prompt": "Finish the frame", "seed": 42}, model_id, document["revision"])
-    cg = document["cgs"][0]
-    finished_path = storage.cg_image_path(background_id, cg["cg_id"])
-    assert finished_path == library / document["name"] / "CG" / "Window view" / cg["cg_id"] / "image.png"
-    with Image.open(finished_path) as image:
-        assert image.size == (64, 32)
-    with Image.open(storage.cg_image_path(background_id, cg["cg_id"], "raw")) as image:
-        assert image.size == (32, 16)
-    assert json.loads(document_path(document).read_bytes())["cgs"][0]["camera"] == CAMERA
-    assert cg["source_image_id"] == document["selected_image_id"]
-    assert not (finished_path.parent / "camera.json").exists()
-    preserved = files(library)
-    document = storage.archive_background(background_id, document["revision"])
-    assert storage.list_backgrounds() == []
-    assert storage.load_background(background_id)["archived"] is True
-    assert storage.cg_image_path(background_id, cg["cg_id"]).read_bytes() == preserved[finished_path.relative_to(library).as_posix()]
-    assert storage.model_scene(background_id, model_id)["model_id"] == model_id
-    with pytest.raises(ValueError, match="archived"):
-        storage.save_background(background_id, {}, document["revision"])
-    with pytest.raises(storage.BackgroundConflictError):
-        storage.create_background(document["name"])
-
-
-@pytest.mark.parametrize("operation", ["save", "archive", "image", "model", "cg"])
-def test_stale_writes_preserve_every_file_byte(library, tmp_path, operation):
-    document, source, scene = with_model(tmp_path)
+@pytest.mark.parametrize("operation", ["save", "archive", "image"])
+def test_stale_writes_preserve_every_file_byte(library, operation):
+    document = with_image()
     background_id, revision = document["background_id"], document["revision"] - 1
     before = files(library)
     image = Image.new("RGB", (8, 8))
@@ -320,8 +183,6 @@ def test_stale_writes_preserve_every_file_byte(library, tmp_path, operation):
         "save": lambda: storage.save_background(background_id, {"prompt": "Stale"}, revision),
         "archive": lambda: storage.archive_background(background_id, revision),
         "image": lambda: storage.add_image(background_id, image, {}, revision),
-        "model": lambda: storage.commit_model(background_id, document["selected_image_id"], source, scene, {}, revision),
-        "cg": lambda: storage.commit_cg(background_id, "Stale", image, image, CAMERA, {}, document["models"][-1]["model_id"], revision),
     }
     with pytest.raises(storage.BackgroundConflictError):
         operations[operation]()
@@ -409,7 +270,7 @@ def test_invalid_ids_nan_unknown_selection_and_limits_do_not_write(library, monk
     assert files(library) == before
 
 
-def test_image_and_model_symlinks_are_rejected(library, tmp_path):
+def test_image_symlinks_are_rejected(library, tmp_path):
     document = with_image()
     image_id = document["selected_image_id"]
     target = storage.image_path(document["background_id"], image_id)
@@ -422,169 +283,6 @@ def test_image_and_model_symlinks_are_rejected(library, tmp_path):
         pytest.skip("Symbolic links are not available on this platform")
     with pytest.raises(ValueError, match="symbolic links"):
         storage.image_path(document["background_id"], image_id)
-    source, scene = scene_source(tmp_path)
-    ply = source / scene["objects"][0]["files"]["ply"]
-    ply.unlink()
-    ply.symlink_to(outside)
-    before = files(library)
-    with pytest.raises(ValueError, match="symbolic links"):
-        storage.commit_model(document["background_id"], image_id, source, scene, {}, document["revision"])
-    assert files(library) == before
-
-
-def test_model_manifest_traversal_is_rejected_before_writes(library, tmp_path):
-    document = with_image()
-    source, scene = scene_source(tmp_path)
-    scene["objects"][0]["files"]["ply"] = "../outside.ply"
-    before = files(library)
-    with pytest.raises(ValueError, match="path"):
-        storage.commit_model(document["background_id"], document["selected_image_id"], source, scene, {}, document["revision"])
-    assert files(library) == before
-
-
-@pytest.fixture
-def legacy_library(library):
-    name, background_id = "Legacy room", "a" * 32
-    image_ids, model_ids = ["b" * 32, "c" * 32], ["d" * 32, "e" * 32]
-    object_id, cg_id = "f" * 32, "1" * 32
-    previous = library / "backgrounds" / name
-    (previous / "images").mkdir(parents=True)
-    image_entries, model_entries = [], []
-    for index, (image_id, model_id) in enumerate(zip(image_ids, model_ids), start=1):
-        Image.new("RGB", (32, 16), "red" if index == 1 else "blue").save(previous / "images" / f"{image_id}.png")
-        image_entries.append({"image_id": image_id, "width": 32, "height": 16, "settings": {"seed": index}})
-        model_root = library / "models" / name / model_id
-        asset_root = model_root / "objects" / object_id
-        asset_root.mkdir(parents=True)
-        (asset_root / "ply.ply").write_bytes(f"legacy immutable PLY {index}".encode())
-        manifest = {"schema_version": 11, "scene_id": str(index + 1) * 32,
-                    "background_id": background_id, "model_id": model_id, "source_image_id": image_id,
-                    "background_settings": {"seed": index}, "camera": CAMERA,
-                    "objects": [{"object_id": object_id, "source_camera": CAMERA,
-                                 "files": {"ply": f"objects/{object_id}/ply.ply"}}]}
-        (model_root / "scene.json").write_text(json.dumps(manifest), encoding="utf-8")
-        model_entries.append({"model_id": model_id, "source_image_id": image_id,
-                              "scene_id": manifest["scene_id"], "settings": {"seed": index}})
-    cg = {"cg_id": cg_id, "name": "Window", "background_id": background_id,
-          "model_id": model_ids[0], "camera": CAMERA, "settings": {"seed": 6}, "width": 32, "height": 16}
-    cg_root = library / "cg" / name / cg["name"] / cg_id
-    cg_root.mkdir(parents=True)
-    Image.new("RGB", (32, 16), "green").save(cg_root / "raw.png")
-    Image.new("RGB", (32, 16), "blue").save(cg_root / "image.png")
-    (cg_root / "camera.json").write_text(json.dumps(cg), encoding="utf-8")
-    document = {"schema_version": 1, "background_id": background_id, "name": name, "revision": 12,
-                "archived": False, "editor": {"description": "Keep the authored prompt"},
-                "images": image_entries, "selected_image_id": image_ids[-1],
-                "model": model_entries[-1], "cgs": [cg]}
-    encoded = json.dumps(document, indent=2).encode() + b"\n"
-    (previous / "background.json").write_bytes(encoded)
-    (previous / "background.json.backup").write_bytes(encoded)
-    return document, model_entries, files(library)
-
-
-def assert_legacy_migrated(library, legacy):
-    previous, models, original_files = legacy
-    document = storage.load_background(previous["background_id"])
-    assert document["schema_version"] == 2 and document["revision"] == previous["revision"]
-    assert document["background_id"] == previous["background_id"] and document["editor"] == previous["editor"]
-    assert document["images"] == previous["images"] and document["selected_image_id"] == previous["selected_image_id"]
-    assert {model["model_id"]: model["source_image_id"] for model in document["models"]} == {
-        model["model_id"]: model["source_image_id"] for model in models}
-    assert document["cgs"][0]["source_image_id"] == models[0]["source_image_id"]
-    assert document["cgs"][0]["camera"] == CAMERA
-    assert "model" not in json.loads(document_path(document).read_bytes())
-    assert document_path(document) == library / previous["name"] / f"{previous['name']}.json"
-    for relative, payload in original_files.items():
-        assert (library / relative).read_bytes() == payload
-    for image in previous["images"]:
-        assert storage.image_path(document["background_id"], image["image_id"]).read_bytes() == original_files[
-            f"backgrounds/{previous['name']}/images/{image['image_id']}.png"]
-    for model in models:
-        path = storage.model_asset_path(document["background_id"], model["model_id"], "f" * 32, "ply")
-        assert path.read_bytes() == original_files[f"models/{previous['name']}/{model['model_id']}/objects/{'f' * 32}/ply.ply"]
-    assert len(storage.list_backgrounds()) == 1
-    assert storage.load_background(document["background_id"]) == document
-    return document
-
-
-def test_legacy_library_migrates_all_model_variants_and_preserves_originals(library, legacy_library):
-    assert_legacy_migrated(library, legacy_library)
-
-
-def test_interrupted_legacy_migration_retries_without_resetting_ids(library, legacy_library, monkeypatch):
-    previous = legacy_library[0]
-    target = library / previous["name"] / f"{previous['name']}.json"
-    atomic = storage._atomic
-    failed = []
-
-    def fail_once(path, payload):
-        if path == target and not failed:
-            failed.append(path)
-            raise OSError("Interrupted migration")
-        atomic(path, payload)
-
-    monkeypatch.setattr(storage, "_atomic", fail_once)
-    with pytest.raises(OSError, match="Interrupted migration"):
-        storage.load_background(previous["background_id"])
-    assert_legacy_migrated(library, legacy_library)
-
-
-def test_migrated_library_does_not_overwrite_concurrent_legacy_changes(library, legacy_library):
-    document = assert_legacy_migrated(library, legacy_library)
-    path = library / "backgrounds" / document["name"] / "background.json"
-    previous = json.loads(path.read_bytes())
-    previous["revision"] += 1
-    previous["editor"]["description"] = "Changed by the previous version"
-    path.write_text(json.dumps(previous), encoding="utf-8")
-    preserved = files(library)
-    with pytest.raises(storage.BackgroundConflictError, match="changed"):
-        storage.load_background(document["background_id"])
-    assert files(library) == preserved
-
-
-def test_legacy_model_source_mismatch_never_publishes_canonical_document(library, legacy_library):
-    previous = legacy_library[0]
-    path = library / "backgrounds" / previous["name"] / "background.json"
-    damaged = json.loads(path.read_bytes())
-    damaged["model"]["source_image_id"] = damaged["images"][0]["image_id"]
-    path.write_text(json.dumps(damaged), encoding="utf-8")
-    originals = files(library)
-    with pytest.raises(storage.BackgroundStorageError, match="source"):
-        storage.load_background(previous["background_id"])
-    target = library / previous["name"] / f"{previous['name']}.json"
-    assert not target.exists() and not target.with_suffix(".json.backup").exists()
-    for relative, payload in originals.items():
-        assert (library / relative).read_bytes() == payload
-
-
-def test_damaged_legacy_primary_remains_recovered_read_only(library, legacy_library):
-    previous = legacy_library[0]
-    original = library / "backgrounds" / previous["name"] / "background.json"
-    damaged = b"{unfinished authored data"
-    original.write_bytes(damaged)
-    document = storage.load_background(previous["background_id"])
-    assert document["_recovery"]["source"] == f"{previous['name']}.json.backup"
-    assert original.read_bytes() == damaged
-    assert document["editor"] == previous["editor"]
-    preserved = files(library)
-    with pytest.raises(storage.BackgroundStorageError, match="read-only"):
-        storage.save_background(document["background_id"], {"description": "Do not write"}, document["revision"])
-    assert files(library) == preserved
-
-
-def test_model_manifest_must_match_canonical_source_variant(library, tmp_path):
-    document, _source, _scene = with_model(tmp_path)
-    model = document["models"][-1]
-    path = library / document["name"] / "model" / model["model_id"] / "scene.json"
-    scene = json.loads(path.read_bytes())
-    scene["source_image_id"] = "0" * 32
-    path.write_text(json.dumps(scene), encoding="utf-8")
-    preserved = files(library)
-    with pytest.raises(storage.BackgroundStorageError, match="owner"):
-        storage.commit_cg(document["background_id"], "Wrong variant", Image.new("RGB", (32, 16)),
-                          Image.new("RGB", (32, 16)), CAMERA, {}, model["model_id"], document["revision"])
-    assert files(library) == preserved
-
 
 def test_defaults_are_isolated_and_only_qi2_fields_survive():
     editor = generation.normalize_editor({"generation_mode": "illustrious",
@@ -662,12 +360,11 @@ def runtime(monkeypatch):
     monkeypatch.setattr(sampling, "_report_comfy_sampling_progress", lambda *_: nullcontext())
     monkeypatch.setattr(progress, "_set_draw_progress", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(progress, "set_interrupt", mock.Mock())
-    monkeypatch.setattr(generation, "_pil_to_tensor", lambda image: ("reference", image.size))
     decoded_size = [generation.dimensions({})]
     monkeypatch.setattr(generation, "_tensor_to_pil", lambda tensor: Image.new("RGB", decoded_size[0]))
 
     def encode_qwen(clip, prompt, negative_prompt, vae=None, resolution=1024, images=None):
-        return "positive", "negative", {"samples": "camera-aligned-reference"}
+        return "positive", "negative", {"samples": "unused-encoder-latent"}
 
     def call(name, **kwargs):
         calls.append((name, kwargs))
@@ -805,40 +502,6 @@ def test_generation_profiles_preserve_qwen_settings_and_default_legacy_scenes_to
     for invalid in ({"generation": {"model_type": "unknown"}}, {"generation_profiles": []}, {"generation_profiles": {"unknown": {}}}):
         with pytest.raises(ValueError):
             generation.normalize_editor(invalid)
-
-
-def test_refinement_keeps_camera_frame_geometry_and_encoder_latent(runtime):
-    runtime.decoded_size[0] = (800, 512)
-    editor = {"aspect": "1:1", "cg_prompt": "Finish this painted room, preserving the source camera.",
-              "style": "Anime background", "generation": {"prompt_enhance": False}}
-    image, metadata = generation.generate_image(editor, "view-cg", threading.Event(), Image.new("RGB", (800, 512)))
-    calls = dict(runtime.calls)
-    encode = calls["TextEncodeQwenImage21"]
-    assert encode["images"] == {"image_1": ("reference", (800, 512))}
-    assert encode["resolution"] == 0
-    assert set(encode) == {"clip", "vae", "prompt", "negative_prompt", "resolution", "images"}
-    assert image.size == (800, 512)
-    assert encode["prompt"].startswith(editor["cg_prompt"])
-    assert "Visual style: Anime background." in encode["prompt"]
-    assert "EmptyLatentImage" not in calls
-    assert calls["KSampler"]["latent_image"] == {"samples": "camera-aligned-reference"}
-    assert (metadata["width"], metadata["height"]) == (800, 512)
-
-
-def test_refinement_missing_aligned_latent_fails_instead_of_changing_geometry(runtime, monkeypatch):
-    def call(name, **kwargs):
-        return ("positive", "negative", None) if name == "TextEncodeQwenImage21" else runtime.call(name, **kwargs)
-    monkeypatch.setattr(generation, "_call_comfy_node", call)
-    with pytest.raises(RuntimeError, match="camera-aligned"):
-        generation.generate_image({}, "missing-latent", threading.Event(), Image.new("RGB", (800, 512)))
-    assert "KSampler" not in dict(runtime.calls)
-
-
-@pytest.mark.parametrize("size", [(100, 100), (16, 16), (4112, 64), (4096, 4096)])
-def test_rejects_invalid_capture_geometry_before_loading(runtime, size):
-    with pytest.raises(ValueError, match="Captured frame"):
-        generation.generate_image({}, "bad-capture", threading.Event(), Image.new("RGB", size))
-    assert runtime.calls == []
 
 
 def test_decoding_must_match_requested_size(runtime):
@@ -1011,25 +674,11 @@ def job_with_image(workspace):
                              {"source": "upload"}, document["revision"])
 
 
-def job_with_model(workspace):
-    document = job_with_image(workspace)
-    source = workspace.tmp_path / "source-scene"
-    object_id = "b" * 32
-    assets = source / "objects" / object_id
-    assets.mkdir(parents=True)
-    (assets / "model.ply").write_bytes(b"immutable Gaussian fixture")
-    scene = {"schema_version": 11, "scene_id": "a" * 32, "camera": CAMERA,
-             "objects": [{"object_id": object_id, "source_camera": CAMERA,
-                          "files": {"ply": f"objects/{object_id}/model.ply"}}]}
-    return storage.commit_model(document["background_id"], document["selected_image_id"],
-                                source, scene, {"seed": 1}, document["revision"])
-
-
 def job_payload(document, action, **changes):
     return {"action": action, "revision": document["revision"], "editor": copy.deepcopy(document["editor"]), **changes}
 
 
-@pytest.mark.parametrize("payload", [None, [], {"action": "unknown"}, {"action": "export"}])
+@pytest.mark.parametrize("payload", [None, [], {"action": "unknown"}, {"action": "export"}, {"action": "model"}, {"action": "cg"}])
 def test_invalid_job_action_never_queues_or_changes_document(workspace, payload):
     with pytest.raises(ValueError):
         service.start_job(workspace.document["background_id"], payload)
@@ -1096,96 +745,6 @@ def test_uneditable_documents_fail_before_inference(workspace, condition):
     workspace.worker.submit.assert_not_called()
 
 
-def test_invalid_cg_name_fails_before_inference(workspace):
-    document = job_with_model(workspace)
-    payload = job_payload(document, "cg", name="../bad", image_id=document["selected_image_id"],
-                          model_id=document["models"][-1]["model_id"], camera=CAMERA)
-    with pytest.raises(ValueError, match="name"):
-        service.start_job(document["background_id"], payload, png())
-    workspace.worker.submit.assert_not_called()
-
-
-def test_cg_job_uses_captured_camera_frame_and_persists_finished_preview(workspace):
-    document = job_with_model(workspace)
-    model_id = document["models"][-1]["model_id"]
-    payload = job_payload(document, "cg", name="Window", image_id=document["selected_image_id"],
-                          model_id=model_id, camera=copy.deepcopy(CAMERA))
-    service.start_job(document["background_id"], payload, png())
-    payload["camera"]["position"][0] = 99
-    job = workspace.run_pending()
-    assert job["status"] == "completed", job["error"]
-    reference = workspace.generated.call_args.kwargs["reference"]
-    assert reference.size == (128, 64) and reference.getpixel((0, 0)) == (255, 0, 0)
-    updated = storage.load_background(document["background_id"])
-    cg = updated["cgs"][0]
-    assert cg["camera"] == CAMERA and cg["model_id"] == model_id
-    assert cg["source_image_id"] == document["selected_image_id"]
-    with Image.open(storage.cg_image_path(document["background_id"], cg["cg_id"])) as image:
-        assert image.getpixel((0, 0)) == (0, 0, 255)
-    assert job["result"]["document"]["cgs"][0]["url"].endswith(f"/{cg['cg_id']}/image")
-
-
-def test_public_document_exposes_all_models_without_persisting_latest_alias(workspace):
-    document = job_with_model(workspace)
-    background_id = document["background_id"]
-    first_model = document["models"][-1]
-    document = storage.add_image(background_id, Image.new("RGB", (128, 64), "green"),
-                                 {"seed": 2}, document["revision"])
-    scene = storage.model_scene(background_id, first_model["model_id"])
-    source = storage.root() / document["name"] / "model" / first_model["model_id"]
-    document = storage.commit_model(background_id, document["selected_image_id"], source,
-                                    scene, {"seed": 2}, document["revision"])
-    public = service.public_document(document)
-    assert len(public["models"]) == 2
-    assert public["model"] == public["models"][-1]
-    assert public["models"][0] == first_model
-    assert {model["source_image_id"] for model in public["models"]} == {image["image_id"] for image in document["images"]}
-    assert "model" not in document and "model" not in storage.load_background(background_id)
-
-
-def test_cg_rejects_a_model_from_another_source_image_before_inference(workspace):
-    document = job_with_model(workspace)
-    model_id = document["models"][-1]["model_id"]
-    document = storage.add_image(document["background_id"], Image.new("RGB", (128, 64), "green"),
-                                 {"seed": 2}, document["revision"])
-    payload = job_payload(document, "cg", name="Wrong source", image_id=document["selected_image_id"],
-                          model_id=model_id, camera=CAMERA)
-    with pytest.raises(ValueError):
-        service.start_job(document["background_id"], payload, png())
-    workspace.worker.submit.assert_not_called()
-    workspace.generated.assert_not_called()
-    assert storage.load_background(document["background_id"]) == document
-
-
-def test_cg_for_an_older_source_remains_available_after_new_background_variant(workspace):
-    document = job_with_model(workspace)
-    first_image_id, first_model_id = document["selected_image_id"], document["models"][-1]["model_id"]
-    document = storage.add_image(document["background_id"], Image.new("RGB", (128, 64), "green"),
-                                 {"seed": 2}, document["revision"])
-    payload = job_payload(document, "cg", name="Older source", image_id=first_image_id,
-                          model_id=first_model_id, camera=CAMERA)
-    service.start_job(document["background_id"], payload, png())
-    job = workspace.run_pending()
-    assert job["status"] == "completed", job["error"]
-    updated = storage.load_background(document["background_id"])
-    assert len(updated["images"]) == 2 and updated["models"] == document["models"]
-    cg = updated["cgs"][-1]
-    assert cg["source_image_id"] == first_image_id and cg["model_id"] == first_model_id
-    assert storage.cg_image_path(document["background_id"], cg["cg_id"]).is_file()
-
-
-@pytest.mark.parametrize("camera,frame", [(None, png()), ({}, png()), (CAMERA, None),
-    (CAMERA, png((127, 64))), (CAMERA, png((32, 16)))])
-def test_invalid_cg_inputs_fail_before_queueing(workspace, camera, frame):
-    document = job_with_model(workspace)
-    payload = job_payload(document, "cg", image_id=document["selected_image_id"],
-                          model_id=document["models"][-1]["model_id"], camera=camera)
-    with pytest.raises(ValueError):
-        service.start_job(document["background_id"], payload, frame)
-    workspace.worker.submit.assert_not_called()
-    assert storage.load_background(document["background_id"]) == document
-
-
 def test_cancelled_queued_job_never_calls_models_or_writes(workspace):
     document = workspace.document
     queued = service.start_job(document["background_id"], job_payload(document, "background"))
@@ -1237,16 +796,6 @@ def test_inference_cancellation_is_reported_as_cancelled(workspace):
     job = workspace.run_pending()
     assert job["status"] == "cancelled"
     assert storage.load_background(document["background_id"]) == document
-
-
-def test_public_model_keeps_snapshot_private_and_maps_only_local_assets(workspace):
-    document = job_with_model(workspace)
-    background_id, model_id = document["background_id"], document["models"][-1]["model_id"]
-    public = service.public_model(background_id, model_id)
-    item = public["objects"][0]
-    assert item["locked"] is True and "files" not in item
-    assert item["urls"]["splat"] == f"{service.API_BASE}/backgrounds/{background_id}/models/{model_id}/objects/{item['object_id']}/splat"
-    assert "files" in storage.model_scene(background_id, model_id)["objects"][0]
 
 
 class Request:
@@ -1315,58 +864,6 @@ def test_http_save_preserves_legacy_selected_image_references(routes, workspace)
     assert storage.load_background(document["background_id"])["selected_image_id"] == first_id
 
 
-def test_http_scene_and_model_settings_round_trip_in_the_same_named_background_json(routes, workspace):
-    response = call(routes, "POST", "/backgrounds", Request({"name": "Configured room",
-        "editor": {"scene_description": "A bedroom", "style": "Anime"},
-        "model_settings": {"steps": 12, "num_gaussians": 32768, "seed": 9}}))
-    assert response.status == 200
-    document = json.loads(response.text)
-    info = {"background_id": document["background_id"]}
-    path = document_path(document)
-    original = path.read_bytes()
-    other = copy.deepcopy(storage.load_background(workspace.document["background_id"]))
-    response = call(routes, "PATCH", "/backgrounds/{background_id}", Request({
-        "revision": document["revision"], "editor": {"scene_description": "A detailed painted bedroom",
-            "generation": {"steps": 33}}, "model_settings": {"steps": 31, "num_gaussians": 65536, "seed": 17}}, info=info))
-    assert response.status == 200
-    saved = json.loads(path.read_bytes())
-    assert saved["editor"]["scene_description"] == "A detailed painted bedroom"
-    assert saved["editor"]["generation"]["steps"] == 33
-    assert saved["model_settings"]["steps"] == 31
-    assert saved["model_settings"]["num_gaussians"] == 65536 and saved["model_settings"]["seed"] == 17
-    assert path.with_suffix(".json.backup").read_bytes() == original
-    assert list(path.parent.glob("*.json")) == [path]
-    loaded = json.loads(call(routes, "GET", "/backgrounds/{background_id}", Request(info=info)).text)
-    assert loaded["editor"] == saved["editor"] and loaded["model_settings"] == saved["model_settings"]
-    assert storage.load_background(workspace.document["background_id"]) == other
-    response = call(routes, "PATCH", "/backgrounds/{background_id}", Request({
-        "revision": saved["revision"], "editor": saved["editor"]}, info=info))
-    assert response.status == 200
-    assert json.loads(path.read_bytes())["model_settings"] == saved["model_settings"]
-
-
-@pytest.mark.parametrize("settings", [None, [], {"steps": 0}, {"num_gaussians": 12345}])
-def test_http_invalid_model_settings_cannot_replace_background_json(routes, workspace, settings):
-    document = workspace.document
-    path = document_path(document)
-    original = path.read_bytes()
-    response = call(routes, "PATCH", "/backgrounds/{background_id}", Request({
-        "revision": document["revision"], "editor": {}, "model_settings": settings},
-        info={"background_id": document["background_id"]}))
-    assert response.status == 400
-    assert path.read_bytes() == original
-
-
-def test_legacy_background_model_settings_load_from_existing_model_without_rewriting_json(workspace):
-    document = job_with_model(workspace)
-    path = document_path(document)
-    original = path.read_bytes()
-    assert "model_settings" not in document
-    public = service.public_document(document)
-    assert public["model_settings"] == service._model_settings(document["models"][-1]["settings"])
-    assert path.read_bytes() == original
-
-
 @pytest.mark.parametrize("raw", [b"[]", b"null", b"false", b"{invalid"])
 def test_http_invalid_json_returns_400_without_creating_documents(routes, workspace, raw):
     before = storage.list_backgrounds()
@@ -1424,107 +921,30 @@ def test_http_job_actions_status_cancellation_and_busy_edit_guard(routes, worksp
     assert response.status == 404
 
 
-def test_http_model_and_cg_asset_routes_use_own_ids(routes, workspace):
-    document = job_with_model(workspace)
-    model_id = document["models"][-1]["model_id"]
-    document = storage.commit_cg(document["background_id"], "Wide", Image.new("RGB", (128, 64)),
-        Image.new("RGB", (128, 64), "blue"), CAMERA, {}, model_id, document["revision"])
-    info = {"background_id": document["background_id"], "model_id": model_id}
-    response = call(routes, "GET", "/backgrounds/{background_id}/models/{model_id}", Request(info=info))
-    assert response.status == 200
-    object_id = json.loads(response.text)["objects"][0]["object_id"]
-    response = call(routes, "GET", "/backgrounds/{background_id}/models/{model_id}/objects/{object_id}/{kind}",
-                    Request(info={**info, "object_id": object_id, "kind": "ply"}))
-    assert isinstance(response, web.FileResponse)
-    response = call(routes, "GET", "/backgrounds/{background_id}/models/{model_id}/objects/{object_id}/{kind}",
-                    Request(info={**info, "object_id": object_id, "kind": "model"}))
-    assert response.status == 404
-    response = call(routes, "GET", "/backgrounds/{background_id}/cg/{cg_id}/{kind}",
-                    Request(info={**info, "cg_id": document["cgs"][0]["cg_id"], "kind": "image"}))
-    assert isinstance(response, web.FileResponse)
-
-
-class ImageTensor:
-    def __init__(self, data):
-        self.data = np.asarray(data)
-        self.shape = self.data.shape
-
-    def __getitem__(self, key):
-        return ImageTensor(self.data[key])
-
-    def detach(self):
-        return self
-
-    def float(self):
-        return self
-
-    def cpu(self):
-        return self
-
-    def numpy(self):
-        return self.data
-
-
-def write_gaussian(path):
-    fields = ["x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity", "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"]
-    header = "ply\nformat binary_little_endian 1.0\nelement vertex 1\n" + "".join(f"property float {name}\n" for name in fields) + "end_header\n"
-    data = np.zeros(1, dtype=[(name, "<f4") for name in fields])
-    data["rot_0"] = 1
-    path.write_bytes(header.encode() + data.tobytes())
-
-
-def test_independent_gaussian_cache_validates_and_retains_canonical_data(library):
-    path = storage._path("cache-test", "model.ply")
-    path.parent.mkdir(parents=True)
-    write_gaussian(path)
-    original = path.read_bytes()
-    target = storage._ensure_cached_splat(path)
-    assert len(target.read_bytes()) == 32
-    assert storage._ensure_cached_splat(path).read_bytes() == target.read_bytes()
-    assert path.read_bytes() == original
-    with path.open("ab") as stream:
-        stream.write(b"corrupt")
-    with pytest.raises(ValueError, match="trailing"):
-        storage._ensure_cached_splat(path)
-
-
-@pytest.mark.parametrize("size", [(1200, 800), (800, 1200), (1024, 1024)])
-def test_predicted_camera_keeps_original_crop_and_orientation(size):
-    direction = np.array([1, 2, 3], dtype=float)
-    camera = storage.decode_source_camera([*direction, 0.5, 0.8], size)
-    np.testing.assert_allclose(camera["position"], direction[[1, 2, 0]] / np.linalg.norm(direction) * 2)
-    height = 2 * math.hypot(*camera["position"]) * math.tan(math.radians(camera["fov"]) / 2)
-    assert height == pytest.approx(1.6 * size[1] / (1.2 * max(size)))
-
-
 @pytest.mark.parametrize("raw", ["{", "[]", '{"schema_version":true}', '{"schema_version":3}',
-    '{"schema_version":1,"scene_id":"../file"}', '{"schema_version":2,"camera":{}}',
+    '{"schema_version":1}', '{"schema_version":1,"scene_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}', '{"schema_version":2,"selected_image_id":{}}',
     '{"schema_version":2,"operation":"generate"}', '{"schema_version":2,"operation":"import_connected"}'])
 def test_invalid_workflow_never_executes(raw):
     assert storage.VNCCS_BackgroundCreator.VALIDATE_INPUTS(raw) is not True
 
 
-def test_workflow_contract_and_completed_output_do_not_start_inference(library, monkeypatch):
+def test_node_outputs_the_uploaded_background_without_inference(library, monkeypatch):
     node = storage.VNCCS_BackgroundCreator()
     inputs = node.INPUT_TYPES()
     assert list(inputs["required"]) == ["seed", "background_data"]
     assert inputs["required"]["background_data"][1]["dynamicPrompts"] is False
-    assert "image" not in inputs.get("optional", {})
-    assert "image" not in inputs["required"]
+    assert "image" not in inputs.get("optional", {}) and "image" not in inputs["required"]
     assert node.RETURN_TYPES == ("IMAGE", "STRING") and node.RETURN_NAMES == ("image", "Prompt")
     assert node.OUTPUT_IS_LIST == (False, True)
-    document = storage.create_background("Output")
-    path = library / "output.png"
-    Image.new("RGB", (160, 80), "blue").save(path)
-    monkeypatch.setattr(storage, "cg_image_path", lambda *_: path)
+    document = storage.create_background("Output", generation.normalize_editor({}))
+    document = storage.add_image(document["background_id"], Image.new("RGB", (160, 80), "blue"), {"source": "upload"}, document["revision"])
     monkeypatch.setattr(storage, "_preview_tensor", lambda source: np.asarray(Image.open(source))[None])
-    inference = mock.Mock(side_effect=AssertionError("Workflow output must not run inference"))
+    inference = mock.Mock(side_effect=AssertionError("Uploaded backgrounds must not run inference"))
     monkeypatch.setattr(storage, "generate_image", inference)
-    monkeypatch.setattr(storage, "_reconstruct", inference)
-    raw = json.dumps({"schema_version": 2, "background_id": document["background_id"], "selected_cg_id": "c" * 32})
-    result, prompts = node.create_background(background_data=raw)
-    assert len(prompts) == 3
-    assert result.shape == (1, 80, 160, 3)
+    raw = json.dumps({"schema_version": 2, "background_id": document["background_id"]})
+    result = node.create_background(background_data=raw)
+    tensor, prompts = result["result"]
+    assert len(prompts) == 3 and tensor.shape == (1, 80, 160, 3)
     with pytest.raises(ValueError, match="Select or create"):
         node.create_background()
     inference.assert_not_called()
@@ -1542,7 +962,7 @@ def test_removed_import_operation_cannot_change_saved_backgrounds(library):
 
 def background_run_state(document, **changes):
     return {"schema_version": 2, "background_id": document["background_id"], "selected_image_id": document["selected_image_id"],
-            "step": "background", "editor": copy.deepcopy(document["editor"]), "model_settings": service._model_settings({}), **changes}
+            "editor": copy.deepcopy(document["editor"]), **changes}
 
 
 def run_background(document, **changes):
@@ -1603,34 +1023,32 @@ def test_changed_generation_inputs_invalidate_run_cache_and_replace_current_prev
     assert storage.image_path(document["background_id"], original_id) == original_image
 
 
-def test_inactive_profiles_and_3d_settings_do_not_invalidate_background_cache(workspace):
+def test_inactive_profiles_do_not_invalidate_background_cache(workspace):
     run_background(workspace.document)
     document = storage.load_background(workspace.document["background_id"])
     editor = copy.deepcopy(document["editor"])
     editor["generation_profiles"] = {"moss": {"steps": 19}}
-    editor["cg_prompt"] = "Preserve a different camera framing."
-    result = run_background(document, editor=editor, model_settings={"steps": 31})
+    result = run_background(document, editor=editor)
     assert result["ui"]["background_preview"][0]["source"] == "cache"
     workspace.generated.assert_called_once()
     saved = storage.load_background(document["background_id"])
     assert saved["editor"]["generation_profiles"]["moss"]["steps"] == 19
-    assert saved["model_settings"]["steps"] == 31
+    assert "model_settings" not in saved
 
 
 def test_uploaded_background_run_never_loads_models_and_saves_user_settings(workspace, monkeypatch):
-    document = job_with_model(workspace)
+    document = job_with_image(workspace)
     image_path = storage.image_path(document["background_id"], document["selected_image_id"])
     original = image_path.read_bytes()
     editor = generation.normalize_editor({"scene_description": "Authored room", "generation": {"model_type": "moss", "seed": 91}})
     monkeypatch.setattr(generation, "_background_cache_key", mock.Mock(side_effect=AssertionError("Uploads do not need model assets")))
-    result = run_background(document, editor=editor, model_settings={"steps": 27})
+    result = run_background(document, editor=editor)
     assert result["ui"]["background_preview"][0]["source"] == "upload"
     assert result["result"][0].shape == (1, 64, 128, 3)
     workspace.generated.assert_not_called()
     saved = storage.load_background(document["background_id"])
     assert saved["editor"]["scene_description"] == "Authored room" and saved["editor"]["generation"]["seed"] == 91
-    assert saved["model_settings"]["steps"] == 27
-    assert saved["models"] == document["models"] and saved["images"] == document["images"]
+    assert saved["images"] == document["images"]
     assert image_path.read_bytes() == original
     signature = storage.VNCCS_BackgroundCreator.IS_CHANGED(background_data=json.dumps(background_run_state(saved)))
     assert signature
@@ -1693,64 +1111,6 @@ def test_comfy_cache_signature_detects_disk_changes_with_unchanged_workflow(work
     assert storage.VNCCS_BackgroundCreator.IS_CHANGED(background_data=raw) != before
 
 
-def test_legacy_scaffold_import_retries_without_changing_originals(library, tmp_path, monkeypatch):
-    old_root = tmp_path / "old-scenes"
-    monkeypatch.setattr(storage, "_legacy_root", lambda: old_root)
-    scene_id, object_id = "a" * 32, "b" * 32
-    directory = old_root / scene_id
-    assets = directory / "objects" / object_id
-    assets.mkdir(parents=True)
-    write_gaussian(assets / "model.ply")
-    Image.new("RGB", (160, 80), "green").save(assets / "reference.png")
-    scene = {"schema_version": 11, "scene_id": scene_id, "camera": CAMERA,
-             "objects": [{"object_id": object_id, "source_camera": CAMERA,
-                "files": {"ply": f"objects/{object_id}/model.ply", "reference": f"objects/{object_id}/reference.png"}}]}
-    (directory / "scene.json").write_text(json.dumps(scene))
-    original = files(old_root)
-    commit = storage.commit_model
-    monkeypatch.setattr(storage, "commit_model", mock.Mock(side_effect=OSError("Interrupted copy")))
-    with pytest.raises(OSError):
-        storage.import_legacy(scene_id)
-    monkeypatch.setattr(storage, "commit_model", commit)
-    first = storage.import_legacy(scene_id)
-    second = storage.import_legacy(scene_id)
-    assert first == second
-    assert len(first["images"]) == len(first["models"]) == 1
-    assert files(old_root) == original
-
-
-@pytest.mark.parametrize("cancel", [False, True])
-def test_reconstruction_owns_assets_and_preserves_data_on_cancellation(workspace, monkeypatch, cancel):
-    document = job_with_image(workspace)
-    before = files(storage.root())
-    gaussian = types.SimpleNamespace(validate=lambda: {}, get_xyz=np.zeros((1, 3)),
-                                    save_ply=lambda path, **kwargs: write_gaussian(path))
-    camera = ImageTensor([1, 2, 3, 0.5, 0.8])
-    pipeline = types.SimpleNamespace(_device="cpu", preprocess_image=lambda image, **_: image,
-        encode_image=lambda *_args, **_kwargs: {}, sample_latent=lambda *_args, **_kwargs: {"camera": camera, "latent": "latent"},
-        decode_latent=lambda *_args, **_kwargs: gaussian)
-    if cancel:
-        def fail(*args, **kwargs):
-            raise storage.GenerationCancelled("Stopped reconstruction")
-        pipeline.decode_latent = fail
-    monkeypatch.setattr(storage, "_triposplat_pipeline", lambda _: pipeline)
-    monkeypatch.setattr(storage, "set_interrupt", lambda _: None)
-    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(inference_mode=nullcontext,
-        Generator=lambda **kwargs: types.SimpleNamespace(manual_seed=lambda _: object())))
-    storage.start_job(document["background_id"], job_payload(document, "model", image_id=document["selected_image_id"]))
-    job = workspace.run_pending()
-    if cancel:
-        assert job["status"] == "cancelled"
-        assert files(storage.root()) == before
-    else:
-        assert job["status"] == "completed"
-        model = job["result"]["document"]["models"][0]
-        saved = storage.model_scene(document["background_id"], model["model_id"])
-        assert saved["objects"][0]["source_camera"] == storage.decode_source_camera([1, 2, 3, 0.5, 0.8], (128, 64))
-        assert storage.model_asset_path(document["background_id"], model["model_id"], saved["objects"][0]["object_id"], "ply").is_file()
-    assert not list(storage.root().glob(".jobs/*"))
-
-
 def test_cross_origin_mutations_fail_before_reading_request(routes, workspace):
     request = Request({"name": "Forbidden"}, headers={"Sec-Fetch-Site": "cross-site"})
     response = call(routes, "POST", "/backgrounds", request)
@@ -1773,10 +1133,12 @@ def test_feature_imports_are_local_and_do_not_load_model_dependencies():
     assert not any("factory3d" in name or "unicanvas" in name or "VNCCS_Utils" in name for name in imports)
     top = [name.name for entry in tree.body if isinstance(entry, ast.Import) for name in entry.names]
     assert "torch" not in top and "torchvision" not in top
-    data = Path(storage.__file__).parents[1] / "data" / "triposplat"
-    assert (data / "LICENSE").is_file() and len((data / "UPSTREAM_COMMIT").read_text().strip()) == 40
-    assert "torchvision" not in (data / "model.py").read_text()
-    assert "torchvision" not in (data / "triposplat.py").read_text()
+    assert not any(name.startswith("data.") for name in imports)
+    base = Path(storage.__file__).parents[1]
+    assert not (base / "data" / "triposplat" / "triposplat.py").exists()
+    assert not (base / "web" / "vendor" / "spark" / "spark.module.js").exists()
+    for name in ("_reconstruct", "_triposplat_pipeline", "inspect_ply", "ply_to_splat", "commit_model", "commit_cg", "public_model", "_migrate_layout", "_copy_model", "_legacy_scene", "import_legacy", "_camera"):
+        assert not hasattr(storage, name)
 
 
 def test_full_prompt_override_preserves_legacy_description():
@@ -1900,14 +1262,6 @@ def test_sparse_scene_prompts_request_detail_and_preserve_field_contract(runtime
     assert editor == original
 
 
-def test_reference_enhancement_keeps_camera_constraints_without_scene_expansion(runtime):
-    runtime.decoded_size[0] = (800, 512)
-    generation.generate_image({}, "reference-enhancement", threading.Event(), Image.new("RGB", (800, 512)))
-    system = dict(runtime.calls)["TextGenerate"]["system_prompt"]
-    assert "preserve the exact camera viewpoint and all edit constraints" in system
-    assert "100-180 words" not in system and "badroom" not in system
-
-
 def test_variants_default_to_three_empty_cards_and_base_prompt_always_uses_day():
     editor = generation.normalize_editor({"attributes": {"time": "Night"}})
     assert editor["attributes"]["time"] == "Night", "Legacy authored settings remain recoverable"
@@ -1989,7 +1343,7 @@ def test_background_sets_publish_complete_immutable_images_and_same_json(library
     settings = {"upscaler": {"mode": "off"}, "sampler": {"seed": 42}}
     paths = storage.publish_background_set(document["background_id"], document["selected_image_id"], cards, images, settings, document["revision"])
     saved = storage.load_background(document["background_id"])
-    assert saved["images"] == document["images"] and saved["models"] == document["models"] and saved["editor"] == document["editor"]
+    assert saved["images"] == document["images"] and saved["editor"] == document["editor"]
     assert saved["generator_settings"] == settings
     assert saved["generated_sets"][0]["variants"] == cards
     assert [path.name for path in paths] == ["00_Original.png", "01_Morning.png", "02_Evening.png", "03_Night.png"]
@@ -2180,3 +1534,9 @@ def test_untouched_legacy_day_is_removed_without_mutating_or_losing_authored_var
     for authored in [{**plain, "weather": "Rain"}, {**plain, "additional_details": "Lamps on"},
                      {**plain, "id": "custom-day"}, {**plain, "custom": {"retained": True}}]:
         assert generation.normalize_editor({"variants": [authored]})["variants"] == [authored]
+
+
+def test_routes_have_no_model_cg_or_legacy_endpoints(routes):
+    assert routes
+    for method, path in routes:
+        assert not any(part in path.split("/") for part in ("models", "cg", "legacy"))
